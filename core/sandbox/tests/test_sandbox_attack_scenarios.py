@@ -8,7 +8,9 @@ Run: python3 -m pytest core/sandbox/tests/test_sandbox_attack_scenarios.py -v
 """
 
 import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import unittest
@@ -35,9 +37,69 @@ def _compile(source: str, path: Path, extra_flags=()) -> bool:
     return r.returncode == 0 and path.exists()
 
 
+# Exit statuses that mean "the seccomp filter killed the probe with
+# SIGSYS before it could print": a negative signal code when the death
+# propagates as a signal, or 128+SIGSYS when a wrapper layer (unshare /
+# the pid-1 shim) re-encodes it as an exit status.
+_SIGSYS_STATUSES = (-signal.SIGSYS, 128 + signal.SIGSYS)
+
+
+def _assert_syscall_blocked(tc: unittest.TestCase, r, name: str,
+                            token: str = "r", blocked_rc: int = 0):
+    """Assert a syscall probe was actually denied — precisely.
+
+    The probes print ``<token>=<val>`` and encode the syscall outcome
+    in their exit status (``blocked_rc`` when the syscall failed, the
+    other value when it SUCCEEDED). The historical assertion pattern
+    (``"r=-1" in stdout or rc != 0``) was unfalsifiable: the probes
+    exit 1 exactly when the syscall succeeded, so *every* outcome —
+    including a live sandbox hole — satisfied ``rc != 0``.
+
+    Accepted outcomes, asserted exactly:
+      * probe ran: printed value is negative (syscall failed) AND the
+        exit status is the probe's own blocked encoding;
+      * probe never printed: only a SIGSYS kill by the filter counts —
+        any other silent exit (exec failure, wrapper error) FAILS.
+    """
+    out = r.stdout or ""
+    m = re.search(rf"{re.escape(token)}=(-?\d+)", out)
+    if m is not None:
+        val = int(m.group(1))
+        tc.assertLess(
+            val, 0,
+            f"{name}: syscall SUCCEEDED inside the sandbox "
+            f"({token}={val}, rc={r.returncode}) — the block has "
+            f"regressed; treat this as a live sandbox hole",
+        )
+        tc.assertEqual(
+            r.returncode, blocked_rc,
+            f"{name}: probe printed {token}={val} (blocked) but exited "
+            f"{r.returncode} instead of {blocked_rc} — probe/wrapper "
+            f"disagreement, investigate rather than trust the run",
+        )
+    else:
+        tc.assertIn(
+            r.returncode, _SIGSYS_STATUSES,
+            f"{name}: probe produced no '{token}=' output and exited "
+            f"{r.returncode} (stdout={out!r}, stderr="
+            f"{(r.stderr or '')[:200]!r}) — neither a completed probe "
+            f"nor a SIGSYS kill; the outcome proves nothing about the "
+            f"block",
+        )
+
+
 class TestSyscallFilterBlocks(unittest.TestCase):
     """Claims: keyctl, bpf, userfaultfd, perf_event_open, io_uring_setup,
-    socket(AF_UNIX / AF_PACKET / AF_NETLINK), TIOCSTI are all blocked."""
+    socket(AF_PACKET / AF_NETLINK), TIOCSTI are all blocked.
+
+    AF_UNIX is layered: on the mount-ns path socket(AF_UNIX) is
+    deliberately ALLOWED (Python >= 3.14 multiprocessing needs it) and
+    the defense is that host pathname sockets are unreachable (fresh
+    tmpfs masks /run and /tmp; pivot_root leaves the host read-only,
+    and connect(2) on a read-only mount fails the MAY_WRITE check); on
+    the preexec-only fallback the socket() call itself is blocked. The
+    AF_UNIX test asserts the composite claim — a host-side listening
+    socket must be unreachable either way."""
 
     def setUp(self):
         if not check_net_available():
@@ -57,18 +119,62 @@ class TestSyscallFilterBlocks(unittest.TestCase):
         )
         return r
 
-    def test_af_unix_socket_blocked(self):
-        r = self._run_c("""
+    def test_af_unix_host_pathname_socket_unreachable(self):
+        """The docker.sock escape shape: a listening host pathname
+        socket OUTSIDE the sandbox's target/output grants must be
+        unreachable. Two acceptable mechanisms, asserted precisely:
+        socket(AF_UNIX) itself EPERMs (preexec-only path), or the
+        socket is created but connect() to the host path fails
+        (mount-ns path: fresh tmpfs masks the host filesystem).
+        CONNECTED means a live escape — the probe exits 1 for it."""
+        # Host-side listener in a directory NOT granted to the sandbox.
+        host_dir = TemporaryDirectory()
+        self.addCleanup(host_dir.cleanup)
+        sock_path = os.path.join(host_dir.name, "host.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(sock_path)
+        listener.listen(1)
+        os.chmod(sock_path, 0o777)  # perms must not be the blocker
+
+        src = """
             #include <sys/socket.h>
+            #include <sys/un.h>
             #include <stdio.h>
-            int main(){int s=socket(AF_UNIX,SOCK_STREAM,0);
-              printf("fd=%d\\n",s);return s<0?0:1;}
-        """, "afunix")
-        # seccomp should return -EPERM → fd == -1 → our exit code 0 per the program
-        # but the filter may also kill with SIGSYS. Either is correct.
+            #include <string.h>
+            int main(int argc, char **argv){
+              int s=socket(AF_UNIX,SOCK_STREAM,0);
+              if(s<0){printf("fd=-1\\n");return 0;}
+              struct sockaddr_un a; memset(&a,0,sizeof a);
+              a.sun_family=AF_UNIX;
+              strncpy(a.sun_path,argv[1],sizeof a.sun_path-1);
+              int r=connect(s,(struct sockaddr*)&a,sizeof a);
+              if(r<0){printf("connect=-1\\n");return 0;}
+              printf("CONNECTED\\n");return 1;}
+        """
+        path = Path(self.tmp.name) / "afunix"
+        self.assertTrue(_compile(src, path), "failed to compile afunix")
+        r = run_untrusted(
+            [str(path), sock_path],
+            target=str(self.tmp.name), output=str(self.out),
+            capture_output=True, text=True, timeout=10,
+        )
+        out = r.stdout or ""
+        self.assertNotIn(
+            "CONNECTED", out,
+            f"sandboxed child connected to a host AF_UNIX pathname "
+            f"socket at {sock_path} — docker.sock-shape escape is LIVE "
+            f"(rc={r.returncode})",
+        )
+        self.assertEqual(
+            r.returncode, 0,
+            f"probe exited {r.returncode} without reporting an outcome "
+            f"(stdout={out!r}, stderr={(r.stderr or '')[:200]!r}) — "
+            f"the run proves nothing about the AF_UNIX defense",
+        )
         self.assertTrue(
-            "fd=-1" in (r.stdout or "") or r.returncode < 0 or r.returncode != 0,
-            f"AF_UNIX socket() should be blocked: rc={r.returncode} stdout={r.stdout}",
+            "fd=-1" in out or "connect=-1" in out,
+            f"probe produced no recognised outcome: {out!r}",
         )
 
     def test_socketpair_af_unix_allowed(self):
@@ -91,10 +197,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){long r=syscall(SYS_keyctl,0,0,0,0,0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "keyctl")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"keyctl should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "keyctl")
 
     def test_io_uring_setup_blocked(self):
         """Closes the io_uring-bypasses-Landlock gap on 5.13-6.2."""
@@ -105,10 +208,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){long r=syscall(SYS_io_uring_setup,1,(void*)0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "iour")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"io_uring_setup should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "io_uring_setup")
 
     def test_tiocsti_blocked(self):
         """TIOCSTI injection is the classic sandbox-escape via the parent tty."""
@@ -126,10 +226,13 @@ class TestSyscallFilterBlocks(unittest.TestCase):
         # + start_new_session), or TIOCSTI fails. Both are acceptable — both
         # prevent the attack.
         out = r.stdout or ""
-        self.assertTrue(
-            "notty" in out or "r=-1" in out or r.returncode != 0,
-            f"TIOCSTI should not succeed: {out}",
-        )
+        if "notty" in out:
+            # /dev/tty unavailable inside the sandbox (stdin=DEVNULL +
+            # start_new_session) — the attack is prevented upstream of
+            # the ioctl filter. Probe encodes this as exit 0.
+            self.assertEqual(r.returncode, 0)
+            return
+        _assert_syscall_blocked(self, r, "ioctl(TIOCSTI)")
 
     def test_bpf_blocked(self):
         """eBPF program loading is a kernel attack surface."""
@@ -140,10 +243,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){long r=syscall(SYS_bpf,0,0,0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "bpf")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"bpf syscall should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "bpf")
 
     def test_userfaultfd_blocked(self):
         """userspace page-fault handler — kernel-escalation primitive."""
@@ -154,10 +254,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){long r=syscall(SYS_userfaultfd,0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "ufd")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"userfaultfd should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "userfaultfd")
 
     def test_perf_event_open_blocked(self):
         """perf subsystem — historical kernel-exploit surface."""
@@ -168,10 +265,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){long r=syscall(SYS_perf_event_open,0,0,0,0,0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "pe")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"perf_event_open should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "perf_event_open")
 
     def test_process_vm_readv_blocked(self):
         """Cross-process memory read — credential-scraping primitive."""
@@ -187,10 +281,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
               long r=syscall(SYS_process_vm_readv,1,&iov,1,&iov,1,0);
               printf("r=%ld\\n",r);return r<0?0:1;}
         """, "pvmr")
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"process_vm_readv should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "process_vm_readv")
 
     def test_af_packet_socket_blocked(self):
         """AF_PACKET socket — raw-packet sniffing primitive."""
@@ -200,10 +291,7 @@ class TestSyscallFilterBlocks(unittest.TestCase):
             int main(){int s=socket(AF_PACKET,SOCK_RAW,0);
               printf("fd=%d\\n",s);return s<0?0:1;}
         """, "afpkt")
-        self.assertTrue(
-            "fd=-1" in (r.stdout or "") or r.returncode != 0,
-            f"AF_PACKET socket() should be blocked: {r.stdout}",
-        )
+        _assert_syscall_blocked(self, r, "socket(AF_PACKET)", token="fd")
 
 
 class TestProfilePtraceBehavior(unittest.TestCase):
@@ -242,11 +330,9 @@ class TestProfilePtraceBehavior(unittest.TestCase):
     def test_ptrace_blocked_in_full(self):
         r = self._run_probe("full")
         # Full profile: ptrace should be seccomp-blocked (returns -1 or
-        # SIGSYS-killed).
-        self.assertTrue(
-            "r=-1" in (r.stdout or "") or r.returncode != 0,
-            f"ptrace must be blocked in 'full': rc={r.returncode} out={r.stdout}",
-        )
+        # SIGSYS-killed). This probe encodes "blocked" as exit 1
+        # (it exits 0 when PTRACE_TRACEME succeeded).
+        _assert_syscall_blocked(self, r, "ptrace", blocked_rc=1)
 
     def test_ptrace_allowed_in_debug(self):
         r = self._run_probe("debug")
@@ -540,28 +626,23 @@ class TestNewMountAPIBlocked(unittest.TestCase):
 
     def test_fsopen_blocked(self):
         r = self._run_syscall_probe("SYS_fsopen", "fsopen")
-        self.assertTrue("r=-1" in (r.stdout or "") or r.returncode != 0,
-                        f"fsopen should be blocked: {r.stdout}")
+        _assert_syscall_blocked(self, r, "fsopen")
 
     def test_fsmount_blocked(self):
         r = self._run_syscall_probe("SYS_fsmount", "fsmount")
-        self.assertTrue("r=-1" in (r.stdout or "") or r.returncode != 0,
-                        f"fsmount should be blocked: {r.stdout}")
+        _assert_syscall_blocked(self, r, "fsmount")
 
     def test_fspick_blocked(self):
         r = self._run_syscall_probe("SYS_fspick", "fspick")
-        self.assertTrue("r=-1" in (r.stdout or "") or r.returncode != 0,
-                        f"fspick should be blocked: {r.stdout}")
+        _assert_syscall_blocked(self, r, "fspick")
 
     def test_move_mount_blocked(self):
         r = self._run_syscall_probe("SYS_move_mount", "move_mount")
-        self.assertTrue("r=-1" in (r.stdout or "") or r.returncode != 0,
-                        f"move_mount should be blocked: {r.stdout}")
+        _assert_syscall_blocked(self, r, "move_mount")
 
     def test_mount_setattr_blocked(self):
         r = self._run_syscall_probe("SYS_mount_setattr", "mount_setattr")
-        self.assertTrue("r=-1" in (r.stdout or "") or r.returncode != 0,
-                        f"mount_setattr should be blocked: {r.stdout}")
+        _assert_syscall_blocked(self, r, "mount_setattr")
 
 
 class TestProcNetTCPLeak(unittest.TestCase):

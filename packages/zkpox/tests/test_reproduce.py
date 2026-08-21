@@ -286,7 +286,13 @@ def test_replay_kwargs_accepted_by_real_run_untrusted_contract(
 
     def gated(cmd, **kwargs):
         # Re-run the real helper's front-door validation without
-        # executing anything: monkeypatch the inner run() to a no-op.
+        # executing anything: monkeypatch the inner run() to a no-op
+        # and pin the userns preflight (the contract under test is
+        # the kwarg allowlist, not host capability).
+        monkeypatch.setattr(
+            core.sandbox.context, "_require_userns_or_optin",
+            lambda *a, **k: False,
+        )
         monkeypatch.setattr(
             core.sandbox.context, "run",
             lambda *a, **k: types.SimpleNamespace(
@@ -408,6 +414,23 @@ def test_attach_reproduction_keeps_tier_when_not_reproduced(tmp_path):
 # ----------------------------------------------------------------------
 
 
+def _untrusted_contract_available() -> bool:
+    """The integration tests execute witness code under
+    ``run_untrusted()``, which fails closed on Linux hosts without
+    unprivileged user namespaces unless the operator opted into
+    degraded containment. Skip there — the refusal is the sandbox's
+    contract working as designed, not a reproduction failure."""
+    if sys.platform == "darwin":
+        return True
+    from core.sandbox import check_net_available
+    if check_net_available():
+        return True
+    import os
+    return os.environ.get(
+        "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "",
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _has_libasan() -> bool:
     cxx = next((c for c in ("c++", "g++", "clang++") if shutil.which(c)), None)
     if cxx is None:
@@ -440,6 +463,8 @@ int main() {
 
 @pytest.mark.skipif(not _has_libasan(),
                     reason="gcc -fsanitize=address not usable")
+@pytest.mark.skipif(not _untrusted_contract_available(),
+                    reason="no unprivileged userns and no degraded opt-in")
 def test_real_sanitizer_witness_reproduces(tmp_path):
     """End-to-end: an LLM_EMIT_RUN witness whose bytes are a BOF
     source recorded as SANITIZER_REPORT must reproduce — recompile
@@ -474,6 +499,8 @@ int main(void){
 @pytest.mark.skipif(shutil.which("gcc") is None and
                     shutil.which("cc") is None,
                     reason="no C compiler")
+@pytest.mark.skipif(not _untrusted_contract_available(),
+                    reason="no unprivileged userns and no degraded opt-in")
 def test_real_fuzz_replay_reproduces(tmp_path):
     """End-to-end Mode B: a FUZZ witness (crash input) replayed
     against the actual binary N times. Build a stdin crasher,

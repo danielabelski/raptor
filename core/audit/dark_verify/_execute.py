@@ -11,17 +11,19 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from core.paths import confine
 from core.run.scratch import scratch_dir
 
 from ._harness import (
+    _CALL_MARKER_PREFIX,
     generate_c_harness,
     generate_go_harness,
     generate_java_harness,
@@ -48,10 +50,6 @@ _WITNESS_TIMEOUT_S = 10
 _COMPILE_TIMEOUT_S = 30
 _MAX_OUTPUT_BYTES = 8192
 
-_UNSAFE_SETUP_RE = re.compile(
-    r"(?:system\s*\(|popen\s*\(|exec[lv]p?e?\s*\(|fork\s*\("
-    r"|__asm__|asm\s*\(|#\s*include\s*[<\"])"
-)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _QUALIFIED_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.:/]*$")
@@ -183,6 +181,186 @@ def _arg_expression_error(expr_s: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# setup_lines: declaration-only grammar (C/C++/Rust)
+# ---------------------------------------------------------------------------
+#
+# setup_lines are pasted verbatim into the compiled harness main().
+# The prompt contract says "variable declaration lines ... NO function
+# calls, NO control flow" — but validation used to be a substring
+# blocklist, which this file's own arg_expressions doctrine (above)
+# concedes is trivially bypassed. The LLM controls both the prediction
+# (expected_crash / expected_sanitizer / expected_return) and, through
+# free-form setup code, the observation: `raise(SIGSEGV)`, a null
+# write, a forged ASan stderr line, or a printf of the harness's JSON
+# shape each minted verdict="confirmed" against provably benign
+# targets. So setup_lines get the same ALLOWLIST treatment as
+# arg_expressions: each line must parse as a single variable
+# declaration with a literal initializer. Everything else — calls,
+# casts, derefs, control flow, preprocessor, multiple statements — is
+# a validation error (fail closed: the witness is dropped, never run).
+
+_C_STRING_LIT_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+_C_CHAR_LIT_RE = re.compile(r"'(?:\\.|[^'\\])'")
+
+# declarator: one-or-more type words, optional pointer stars, the
+# variable name, optional array dims. No parens (kills function
+# declarators, casts and __attribute__), no commas (one variable per
+# line keeps the grammar honest).
+_C_DECL_LHS_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*"            # first type word
+    r"(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"     # further type words / name
+    r"(?:\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*)?"  # pointer declarator + name
+    r"(?:\s*\[\s*[0-9]*\s*\])*"           # array dims
+    r"\s*$"
+)
+
+# initializer after string/char literals were replaced by the inert
+# token `_S_`: numbers (incl. hex/suffixed), identifiers (NULL, other
+# setup vars), brace init-lists, commas, unary +/-, address-of.
+_C_INIT_RHS_RE = re.compile(r"^[A-Za-z0-9_+\-&,.{}\s]*$")
+
+
+def _c_setup_line_error(line: str) -> str | None:
+    """Declaration-only allowlist for one C/C++ setup line."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    # Neutralise string/char literal CONTENT first so data bytes can't
+    # trip (or dodge) the structural checks below.
+    neutral = _C_STRING_LIT_RE.sub("_S_", stripped)
+    neutral = _C_CHAR_LIT_RE.sub("_S_", neutral)
+    if '"' in neutral or "'" in neutral:
+        return "unbalanced string/char literal"
+    if not neutral.endswith(";") or neutral.count(";") != 1:
+        return "must be a single declaration ending in ';'"
+    body = neutral[:-1].strip()
+    for ch, what in (("(", "function call / cast"), (")", "function call / cast"),
+                     ("#", "preprocessor"), ("/", "comment or division"),
+                     ("\\", "line continuation"), ("?", "conditional"),
+                     ("%", "operator"), ("!", "operator"), ("^", "operator"),
+                     ("|", "operator"), ("~", "operator"), ("<", "operator"),
+                     (">", "operator")):
+        if ch in body:
+            return f"disallowed construct ({what}): {ch!r}"
+    lhs, eq, rhs = body.partition("=")
+    if eq and ("=" in rhs):
+        return "multiple assignment"
+    if not _C_DECL_LHS_RE.match(lhs.strip()):
+        return "not a variable declaration"
+    if eq and not _C_INIT_RHS_RE.match(rhs.strip()):
+        return "initializer outside the literal grammar"
+    if "*" in rhs:
+        return "initializer outside the literal grammar"
+    return None
+
+
+_RUST_LET_RE = re.compile(
+    r"^let\s+(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s*:\s*[A-Za-z_][A-Za-z0-9_:<>\[\]&'\s,]*?)?"
+    r"\s*=\s*(?P<rhs>.+)$"
+)
+
+# Rust initializer character set (after string/char literals are
+# masked): identifier paths (`::`, `.`), calls, refs, containers,
+# numeric literals. Notably ABSENT: `{`/`}` (blocks, closures with
+# captures, struct-init escape), `|` (closures), `=` `<` `>` (no
+# turbofish, no comparisons), `*` `/` `%` (no arithmetic-deref
+# smuggling), `#` (attributes), `?` (early return), `\\`.
+_RUST_EXPR_CHARSET_RE = re.compile(r"^[A-Za-z0-9_:.,&!;()\[\]\s+-]*$")
+
+_RUST_MACRO_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*!")
+
+# Prompt contract for Rust setup_lines: "NO unsafe blocks, NO
+# std::process". `unsafe` has no legitimate spelling in a literal /
+# constructor initializer; `process` covers std::process spellings.
+_RUST_FORBIDDEN_TOKENS = ("unsafe", "process")
+
+
+def _rust_expr_error(expr: str) -> str | None:
+    """Allowlist for one Rust initializer EXPRESSION.
+
+    Wider than the shared arg_expression grammar: plain function /
+    constructor / method calls over identifier paths and literals are
+    allowed (`bytes::Bytes::from_static(&[0x40u8])` is the bread and
+    butter of real Rust witnesses). This stays sound because setup
+    lines execute BEFORE the harness's pre-call sentinel: a setup
+    expression that crashes does so pre-sentinel (classified as a
+    setup-phase failure, never a confirmation), and the verdict
+    channel itself is authenticated (JSON token + post-sentinel
+    sanitizer ordering). Statements, blocks, closures, non-vec!
+    macros, comparisons and arithmetic-deref shapes stay rejected —
+    the field remains a single expression, not code.
+
+    NOTE the asymmetry with arg_expressions: call arguments evaluate
+    AFTER the sentinel (a panicking argument would read as the target
+    crashing), so args keep the strict literal grammar.
+    """
+    masked = _C_STRING_LIT_RE.sub("_S_", expr.strip())
+    masked = _C_CHAR_LIT_RE.sub("_S_", masked)
+    if not masked:
+        return "empty initializer"
+    if '"' in masked:
+        return "unbalanced string literal"
+    # Residual single quotes (unbalanced char literal, lifetimes) are
+    # caught by the charset check below — `'` is not in the set.
+    for tok in _RUST_FORBIDDEN_TOKENS:
+        if tok in masked:
+            return f"disallowed construct: {tok}"
+    if not _RUST_EXPR_CHARSET_RE.match(masked):
+        return "disallowed character"
+    for m in _RUST_MACRO_RE.finditer(masked):
+        if m.group(1) != "vec":
+            return f"macro not allowed: {m.group(1)}!"
+    # Bracket balance + `;` and `,` only inside brackets (array
+    # `[elem; count]`, argument lists). A top-level `;` is a second
+    # statement.
+    depth = 0
+    for ch in masked:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth < 0:
+                return "unbalanced brackets"
+        elif ch == ";" and depth == 0:
+            return "multiple statements"
+    if depth != 0:
+        return "unbalanced brackets"
+    return None
+
+
+def _rust_setup_line_error(line: str) -> str | None:
+    """let-binding-only allowlist for one Rust setup line."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if not stripped.endswith(";"):
+        return "must be a single let-binding ending in ';'"
+    body = stripped[:-1].strip()
+    m = _RUST_LET_RE.match(body)
+    if not m:
+        return "not a let-binding declaration"
+    return _rust_expr_error(m.group("rhs"))
+
+
+_SETUP_VALIDATORS = {
+    "c": _c_setup_line_error,
+    "cpp": _c_setup_line_error,
+    "rust": _rust_setup_line_error,
+}
+
+
+# Java imports are pasted (semicolon-stripped) into `import <x>;` at
+# the top of the harness — an embedded newline used to survive the
+# strip and open a top-level injection point. Allowlist: a dotted
+# identifier path with an optional `static` prefix and `.*` suffix.
+_JAVA_IMPORT_RE = re.compile(
+    r"^(?:static\s+)?[A-Za-z_$][A-Za-z0-9_$]*"
+    r"(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*(?:\.\*)?$"
+)
+
+
 def validate_spec(
     spec: DarkWitnessSpec,
     target_root: Path | None = None,
@@ -214,13 +392,68 @@ def validate_spec(
                 f"({reason}): {expr_s[:60]!r}"
             )
 
+    # Compiled-language harness generators fall back to raw spec.args
+    # when arg_expressions is absent — those values are then pasted as
+    # target-language EXPRESSIONS, so they get the same allowlist at
+    # the use-site (interpreted languages render args as quoted DATA
+    # and are exempt).
+    if lang in ("c", "cpp", "rust", "go", "java") and (
+            "arg_expressions" not in lc):
+        for arg in spec.args:
+            arg_s = str(arg)
+            reason = _arg_expression_error(arg_s)
+            if reason:
+                return (
+                    f"code injection risk in args used as expression "
+                    f"({reason}): {arg_s[:60]!r}"
+                )
+
     rt = lc.get("return_type", "")
     if rt and not _TYPE_RE.match(rt):
         return f"invalid return_type: {rt!r}"
 
+    # param_types are pasted verbatim into the C extern declaration —
+    # unvalidated, `int); __attribute__((constructor)) ...` compiled
+    # and crashed before main. Each element must be a plain type
+    # spelling (same grammar as return_type).
+    for pt in lc.get("param_types", []):
+        pt_s = str(pt)
+        if not _TYPE_RE.match(pt_s):
+            return f"invalid param_type: {pt_s[:60]!r}"
+
+    # setup_lines (C/C++/Rust): declaration-only grammar. Checked here
+    # (the shared pre-execution chokepoint) as well as in the native
+    # executors so no dispatch path can skip it.
+    if lang in _SETUP_VALIDATORS:
+        setup_err = _validate_setup(lc.get("setup_lines", []), lang)
+        if setup_err:
+            return setup_err
+
     cn = lc.get("class_name", "")
     if cn and not _QUALIFIED_RE.match(cn):
         return f"invalid class_name: {cn!r}"
+
+    if lang == "java":
+        # imports are pasted into `import <x>;` lines — allowlist to a
+        # dotted identifier path (an embedded newline used to survive
+        # the generator's ';' strip and inject top-level Java code).
+        for imp in lc.get("imports", []):
+            imp_s = str(imp).strip()
+            if imp_s and not _JAVA_IMPORT_RE.match(imp_s):
+                return f"invalid java import: {imp_s[:60]!r}"
+        # Bind the harness to the finding's FILE: the compile classpath
+        # spans the whole target tree, so an unbound class_name reaches
+        # any class in the repo — a lookalike method on another class
+        # would mint a verdict for this finding. Java's public-class
+        # rule ties the file stem to the class; nested classes keep the
+        # stem as their outer prefix.
+        if cn:
+            stem = PurePosixPath(spec.file.replace("\\", "/")).stem
+            if cn != stem and not cn.startswith(stem + "."):
+                return (
+                    f"class_name {cn!r} not bound to the finding's file "
+                    f"({spec.file!r} implies {stem!r})"
+                )
 
     up = lc.get("use_path", "")
     if up:
@@ -332,8 +565,19 @@ def _classify_json_output(
     spec: DarkWitnessSpec,
     stdout: str,
     language: str,
+    *,
+    expected_token: str = "",
 ) -> DarkVerifyResult:
-    """Classify JSON-formatted output from any language harness."""
+    """Classify JSON-formatted output from any language harness.
+
+    When *expected_token* is set, the JSON must echo it back in its
+    ``token`` field. The harness template embeds the token (generated
+    in-process AFTER the LLM response was parsed — neither the witness
+    LLM nor the scanned repo can know it), so a status line printed by
+    anything other than the harness's own epilogue — a forged
+    ``{"status":"returned",...}`` from pasted code or from the target
+    itself — fails authentication and classifies as inconclusive.
+    """
     stdout = stdout.strip()
     if not stdout:
         return DarkVerifyResult(
@@ -349,6 +593,16 @@ def _classify_json_output(
             finding_key=spec.finding_key, verdict="inconclusive",
             language=language,
             match_detail=f"unparseable output: {stdout[:200]}",
+        )
+
+    if expected_token and data.get("token") != expected_token:
+        return DarkVerifyResult(
+            finding_key=spec.finding_key, verdict="inconclusive",
+            language=language,
+            match_detail=(
+                "witness output missing the harness token — not emitted "
+                "by the harness epilogue; not accepted"
+            ),
         )
 
     status = data.get("status", "")
@@ -592,6 +846,7 @@ def _run_script_witness(
     target_root: Path,
     timeout_s: int,
     language: str,
+    expected_token: str = "",
 ) -> DarkVerifyResult:
     """Write a script to disk, run it in the sandbox, classify output.
 
@@ -625,7 +880,8 @@ def _run_script_witness(
         )
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
-        return _classify_json_output(spec, stdout, language)
+        return _classify_json_output(
+            spec, stdout, language, expected_token=expected_token)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -675,12 +931,13 @@ def _make_interpreted_executor(
                 match_detail=not_found_msg,
             )
 
-        harness_src = harness_fn(spec, target_root)
+        token = secrets.token_hex(8)
+        harness_src = harness_fn(spec, target_root, witness_token=token)
         return _run_script_witness(
             spec, harness_src, suffix=suffix,
             cmd_prefix=[interp],
             target_root=target_root, timeout_s=timeout_s,
-            language=lang,
+            language=lang, expected_token=token,
         )
 
     return executor
@@ -697,6 +954,8 @@ def _run_native_binary(
     target_root: Path,
     timeout_s: int,
     lang: str,
+    *,
+    expected_token: str = "",
 ) -> DarkVerifyResult:
     """Run a compiled binary and classify the result."""
     from core.config import RaptorConfig
@@ -719,7 +978,8 @@ def _run_native_binary(
     )
 
     sandbox_info = getattr(proc, "sandbox_info", None)
-    return _classify_native_output(spec, proc, sandbox_info, lang)
+    return _classify_native_output(
+        spec, proc, sandbox_info, lang, expected_token=expected_token)
 
 
 def _sanitizer_matches(expected: str, detail: dict) -> bool:
@@ -747,6 +1007,8 @@ def _classify_native_output(
     proc: subprocess.CompletedProcess,
     sandbox_info: dict | None,
     lang: str,
+    *,
+    expected_token: str = "",
 ) -> DarkVerifyResult:
     """Classify output from a native binary execution.
 
@@ -757,11 +1019,58 @@ def _classify_native_output(
     about the mechanism, not that the hypothesis is right — it never
     confirms (a harness bug, a bad argument expression, or an
     unrelated defect all crash too).
+
+    When *expected_token* is set, a crash/sanitizer signal additionally
+    only confirms if the harness's pre-call sentinel
+    (``__raptor_witness_start__:<token>``) reached stderr first — the
+    signal must come from the target call, not from anything that ran
+    before it (setup code, constructors, initializers).
     """
     from core.witness.sandbox_outcome import outcome_from_sandbox_info
     from core.witness.types import WitnessOutcome
 
     outcome, detail = outcome_from_sandbox_info(sandbox_info, proc.returncode)
+
+    call_reached = True
+    sanitizer_after_call = True
+    if expected_token:
+        stderr_text = proc.stderr or ""
+        marker = _CALL_MARKER_PREFIX + expected_token
+        marker_at = stderr_text.find(marker)
+        call_reached = marker_at >= 0
+        if call_reached and outcome == WitnessOutcome.SANITIZER_REPORT:
+            # The report must come from the target call, not from
+            # anything that ran before the sentinel: setup expressions
+            # execute pre-sentinel and may write to stderr, so a
+            # forged sanitizer line planted there must not match. A
+            # real sanitizer aborts at the faulting instruction —
+            # inside the target call, after the sentinel.
+            post = stderr_text[marker_at + len(marker):]
+            sanitizer_after_call = "Sanitizer" in post
+
+    if outcome in (
+        WitnessOutcome.SANITIZER_REPORT, WitnessOutcome.EXIT_SIGNAL,
+    ) and not call_reached:
+        return DarkVerifyResult(
+            finding_key=spec.finding_key, verdict="inconclusive",
+            language=lang,
+            match_detail=(
+                "crash/sanitizer signal observed BEFORE the target call "
+                "(pre-call sentinel absent) — setup-phase failure, not "
+                "accepted as confirmation"
+            ),
+        )
+
+    if outcome == WitnessOutcome.SANITIZER_REPORT and not sanitizer_after_call:
+        return DarkVerifyResult(
+            finding_key=spec.finding_key, verdict="inconclusive",
+            language=lang,
+            match_detail=(
+                "sanitizer text observed only BEFORE the pre-call "
+                "sentinel — not produced by the target call; not "
+                "accepted as confirmation"
+            ),
+        )
 
     if outcome == WitnessOutcome.SANITIZER_REPORT:
         sanitizer_type = detail.get("sanitizer", "")
@@ -844,7 +1153,8 @@ def _classify_native_output(
             actual_return=stdout[:200],
             match_detail="expected crash but process exited normally",
         )
-    return _classify_json_output(spec, stdout, lang)
+    return _classify_json_output(
+        spec, stdout, lang, expected_token=expected_token)
 
 
 # ---------------------------------------------------------------------------
@@ -852,11 +1162,18 @@ def _classify_native_output(
 # ---------------------------------------------------------------------------
 
 
-def _validate_setup(lines: list[str]) -> str | None:
-    """Reject setup lines containing dangerous patterns."""
+def _validate_setup(lines: list[str], lang: str = "c") -> str | None:
+    """Declaration-only allowlist over setup lines (see the grammar
+    block above ``validate_spec``). Returns a reason string on the
+    first offending line, None when every line is acceptable."""
+    checker = _SETUP_VALIDATORS.get(lang, _c_setup_line_error)
     for i, line in enumerate(lines):
-        if _UNSAFE_SETUP_RE.search(line):
-            return f"unsafe pattern in setup line {i}: {line[:60]}"
+        reason = checker(str(line))
+        if reason:
+            return (
+                f"setup line {i} outside the declaration grammar "
+                f"({reason}): {str(line)[:60]}"
+            )
     return None
 
 
@@ -876,12 +1193,13 @@ def _execute_python(
             finding_key=spec.finding_key, verdict="error", language="python",
             match_detail=f"validation failed: {validation_error}",
         )
-    script = generate_witness_script(spec, target_root)
+    token = secrets.token_hex(8)
+    script = generate_witness_script(spec, target_root, witness_token=token)
     return _run_script_witness(
         spec, script, suffix=".py",
         cmd_prefix=[sys.executable],
         target_root=target_root, timeout_s=timeout_s,
-        language="python",
+        language="python", expected_token=token,
     )
 
 
@@ -892,7 +1210,7 @@ def _execute_native(
     *,
     lang: str = "c",
 ) -> DarkVerifyResult:
-    setup_err = _validate_setup(spec.lang_config.get("setup_lines", []))
+    setup_err = _validate_setup(spec.lang_config.get("setup_lines", []), lang)
     if setup_err:
         return DarkVerifyResult(
             finding_key=spec.finding_key, verdict="error", language=lang,
@@ -906,7 +1224,8 @@ def _execute_native(
             match_detail=f"compiler not found: {cc}",
         )
 
-    harness_src = generate_c_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_c_harness(spec, target_root, witness_token=token)
     try:
         with scratch_dir("raptor_dark_c_") as work_dir:
             ext = ".c" if lang == "c" else ".cpp"
@@ -944,7 +1263,8 @@ def _execute_native(
                 )
 
             return _run_native_binary(
-                spec, binary, target_root, timeout_s, lang)
+                spec, binary, target_root, timeout_s, lang,
+                expected_token=token)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -979,7 +1299,8 @@ def _execute_go(
             match_detail="go compiler not found",
         )
 
-    harness_src = generate_go_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_go_harness(spec, target_root, witness_token=token)
     try:
         with scratch_dir("raptor_dark_go_") as work_dir:
             harness_file = work_dir / "harness_main.go"
@@ -1029,7 +1350,8 @@ def _execute_go(
                 )
 
             return _run_native_binary(
-                spec, binary, target_root, timeout_s, "go")
+                spec, binary, target_root, timeout_s, "go",
+                expected_token=token)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -1055,12 +1377,13 @@ def _execute_js(
             finding_key=spec.finding_key, verdict="error", language="javascript",
             match_detail="node not found",
         )
-    harness_src = generate_js_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_js_harness(spec, target_root, witness_token=token)
     return _run_script_witness(
         spec, harness_src, suffix=".js",
         cmd_prefix=[node_bin],
         target_root=target_root, timeout_s=timeout_s,
-        language="javascript",
+        language="javascript", expected_token=token,
     )
 
 
@@ -1082,12 +1405,13 @@ def _execute_ts(
                 language="typescript",
                 match_detail="tsx/ts-node/npx not found",
             )
-    harness_src = generate_ts_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_ts_harness(spec, target_root, witness_token=token)
     return _run_script_witness(
         spec, harness_src, suffix=".ts",
         cmd_prefix=cmd_prefix,
         target_root=target_root, timeout_s=timeout_s,
-        language="typescript",
+        language="typescript", expected_token=token,
     )
 
 
@@ -1179,14 +1503,16 @@ def _execute_rust(
             match_detail="rustc not found",
         )
 
-    setup_err = _validate_setup(spec.lang_config.get("setup_lines", []))
+    setup_err = _validate_setup(
+        spec.lang_config.get("setup_lines", []), "rust")
     if setup_err:
         return DarkVerifyResult(
             finding_key=spec.finding_key, verdict="error", language="rust",
             match_detail=setup_err,
         )
 
-    harness_src = generate_rust_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_rust_harness(spec, target_root, witness_token=token)
     try:
         with scratch_dir("raptor_dark_rs_") as work_dir:
             harness_file = work_dir / "harness.rs"
@@ -1255,7 +1581,8 @@ def _execute_rust(
                     )
 
             return _run_native_binary(
-                spec, binary, target_root, timeout_s, "rust")
+                spec, binary, target_root, timeout_s, "rust",
+                expected_token=token)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(
@@ -1284,7 +1611,8 @@ def _execute_java(
             match_detail="javac/java not found",
         )
 
-    harness_src = generate_java_harness(spec, target_root)
+    token = secrets.token_hex(8)
+    harness_src = generate_java_harness(spec, target_root, witness_token=token)
     try:
         with scratch_dir("raptor_dark_java_") as work_dir:
             harness_file = work_dir / "DarkWitnessHarness.java"
@@ -1339,7 +1667,8 @@ def _execute_java(
             )
 
             stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
-            return _classify_json_output(spec, stdout, "java")
+            return _classify_json_output(
+                spec, stdout, "java", expected_token=token)
 
     except subprocess.TimeoutExpired:
         return DarkVerifyResult(

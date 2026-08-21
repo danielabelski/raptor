@@ -390,7 +390,22 @@ def parse_witness_response(
     if data is None:
         return None
 
+    # Bind the witness to the finding's function. The function is the
+    # load-bearing half of the finding key (the file half is already
+    # bound by validate_import_path / the compile step): accepting the
+    # LLM's spelling here would let a witness call ANY reachable
+    # function — a well-understood lookalike with deterministic
+    # behaviour — and mint a confirm/refute verdict for the original
+    # finding. A response naming a different function is rejected
+    # outright (no witness executes), never silently rewritten.
     func_name = data.get("function", function)
+    if func_name != function:
+        logger.debug(
+            "witness response substituted function %r for the finding's "
+            "%r — rejected (witness must exercise the finding's function)",
+            func_name, function,
+        )
+        return None
 
     if lang == "python":
         module_path = data.get("module_path", "")

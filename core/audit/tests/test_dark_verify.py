@@ -832,7 +832,7 @@ class TestExecuteWitnessC:
         )
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "error"
-        assert "unsafe" in r.match_detail
+        assert "declaration grammar" in r.match_detail
 
 
 # -- generate_ts_harness -------------------------------------------------------
@@ -2671,9 +2671,10 @@ class TestCompileSandboxParity:
         )
         spy = _SandboxSpy([
             _completed(),  # compile
-            _completed(stdout=json.dumps({"status": "returned", "value": "7"})),
+            _completed(stdout=json.dumps({"status": "returned", "token": "feedface", "value": "7"})),
         ])
         monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
         _forbid_bare_subprocess(monkeypatch)
         spec = DarkWitnessSpec(
             finding_key="f1", file="add.c", function="add",
@@ -2702,9 +2703,10 @@ class TestCompileSandboxParity:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         spy = _SandboxSpy([
             _completed(),  # go build
-            _completed(stdout=json.dumps({"status": "returned", "value": "7"})),
+            _completed(stdout=json.dumps({"status": "returned", "token": "feedface", "value": "7"})),
         ])
         monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
         _forbid_bare_subprocess(monkeypatch)
         spec = DarkWitnessSpec(
             finding_key="f1", file="main.go", function="Add",
@@ -2733,9 +2735,10 @@ class TestCompileSandboxParity:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         spy = _SandboxSpy([
             _completed(),  # rustc
-            _completed(stdout=json.dumps({"status": "returned", "value": "84"})),
+            _completed(stdout=json.dumps({"status": "returned", "token": "feedface", "value": "84"})),
         ])
         monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
         _forbid_bare_subprocess(monkeypatch)
         spec = DarkWitnessSpec(
             finding_key="f1", file="lib.rs", function="double_it",
@@ -2771,9 +2774,10 @@ class TestCompileSandboxParity:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         spy = _SandboxSpy([
             _completed(),  # javac
-            _completed(stdout=json.dumps({"status": "returned", "value": "49"})),
+            _completed(stdout=json.dumps({"status": "returned", "token": "feedface", "value": "49"})),
         ])
         monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
         _forbid_bare_subprocess(monkeypatch)
         spec = DarkWitnessSpec(
             finding_key="f1", file="MathUtil.java", function="square",
@@ -3529,3 +3533,382 @@ class TestScriptingStringArgsAreData:
             [["#{1+1}"], {"k": "$v"}], nil_kw="nil",
         )
         assert lit == "['#{1+1}'], {'k' => '$v'}"
+
+
+# ---------------------------------------------------------------------------
+# W1 witness/verdict provenance — forged-oracle regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestForgedWitnessFailsClosed:
+    """Adversarial-review PoC vectors (U08-F300 / U07-F7): each of these
+    LLM-authored specs empirically minted verdict="confirmed" against a
+    provably benign target (``int f(int x){return x+1;}``) before the
+    structural validators landed. All four must now fail CLOSED at spec
+    validation — no compile, no execution, never a verdict."""
+
+    def _benign_target(self, tmp_path):
+        (tmp_path / "lib.c").write_text(
+            "int f(int x){ return x+1; }\n", encoding="utf-8")
+        return tmp_path
+
+    def test_setup_lines_crash_forgery_rejected(self, tmp_path):
+        root = self._benign_target(tmp_path)
+        spec = DarkWitnessSpec(
+            finding_key="k1", file="lib.c", function="f", language="c",
+            expected_crash=True,
+            lang_config={
+                "param_types": ["int"], "return_type": "int",
+                "arg_expressions": ["1"],
+                "setup_lines": ["int _k = *(volatile int*)0; (void)_k;"],
+            },
+        )
+        assert validate_spec(spec, root) is not None
+        r = execute_witness(spec, root)
+        assert r.verdict == "error"
+        assert "declaration grammar" in r.match_detail
+
+    def test_param_types_constructor_injection_rejected(self, tmp_path):
+        root = self._benign_target(tmp_path)
+        spec = DarkWitnessSpec(
+            finding_key="k2", file="lib.c", function="f", language="c",
+            expected_crash=True,
+            lang_config={
+                "param_types": [
+                    "int); __attribute__((constructor)) static void "
+                    "_pwn(void){__builtin_trap();} extern int _decoy(int"
+                ],
+                "return_type": "int", "arg_expressions": ["1"],
+                "setup_lines": [],
+            },
+        )
+        assert validate_spec(spec, root) is not None
+        r = execute_witness(spec, root)
+        assert r.verdict == "error"
+        assert "param_type" in r.match_detail
+
+    def test_forged_asan_stderr_rejected(self, tmp_path):
+        root = self._benign_target(tmp_path)
+        spec = DarkWitnessSpec(
+            finding_key="k3", file="lib.c", function="f", language="c",
+            expected_sanitizer="heap-buffer-overflow",
+            lang_config={
+                "param_types": ["int"], "return_type": "int",
+                "arg_expressions": ["1"],
+                "setup_lines": [
+                    'fprintf(stderr, "==1==ERROR: AddressSanitizer: '
+                    'heap-buffer-overflow on address 0x602000000011\\n");',
+                    "fflush(0); abort();",
+                ],
+            },
+        )
+        assert validate_spec(spec, root) is not None
+        r = execute_witness(spec, root)
+        assert r.verdict == "error"
+
+    def test_forged_json_sentinel_rejected(self, tmp_path):
+        root = self._benign_target(tmp_path)
+        spec = DarkWitnessSpec(
+            finding_key="k4", file="lib.c", function="f", language="c",
+            expected_return="9999",
+            lang_config={
+                "param_types": ["int"], "return_type": "int",
+                "arg_expressions": ["1"],
+                "setup_lines": [
+                    'printf("{\\"status\\":\\"returned\\",'
+                    '\\"value\\":\\"9999\\"}\\n");',
+                    "fflush(0); exit(0);",
+                ],
+            },
+        )
+        assert validate_spec(spec, root) is not None
+        r = execute_witness(spec, root)
+        assert r.verdict == "error"
+
+    def test_rust_setup_forgeries_rejected(self):
+        for line in (
+            "let _ = std::process::abort();",
+            "let x = 1; panic!();",
+            "let v = vec![std::process::abort()];",
+            'eprintln!("==ERROR: AddressSanitizer: x");',
+        ):
+            spec = DarkWitnessSpec(
+                finding_key="k", file="l.rs", function="f", language="rust",
+                lang_config={"arg_expressions": [], "setup_lines": [line]},
+            )
+            assert validate_spec(spec) is not None, line
+
+    def test_legit_rust_constructor_calls_pass(self):
+        # Setup lines execute BEFORE the pre-call sentinel, so plain
+        # constructor/method calls are admissible there (real witnesses
+        # need them); the ordering+token channel keeps the verdict
+        # unforgeable. Regression: the first grammar cut rejected
+        # `bytes::Bytes::from_static(&[0x40u8])` and blocked a
+        # legitimate confirmation lane.
+        spec = DarkWitnessSpec(
+            finding_key="k", file="lib.rs", function="next",
+            language="rust", expected_crash=True,
+            lang_config={
+                "arg_expressions": ["&payload"],
+                "setup_lines": [
+                    "let payload = bytes::Bytes::from_static(&[0x40u8]);",
+                    "let opt = Option::Some(5);",
+                    'let b = bytes::Bytes::copy_from_slice(b"abc");',
+                ],
+            },
+        )
+        assert validate_spec(spec) is None
+
+    def test_rust_closures_blocks_macros_still_rejected(self):
+        for line in (
+            'let c = || std::fs::remove_file("x");',
+            "let u = unsafe { core::ptr::read(p) };",
+            'let f = format!("{}", 1);',
+            "let z = 1 < 2;",
+        ):
+            spec = DarkWitnessSpec(
+                finding_key="k", file="l.rs", function="f", language="rust",
+                lang_config={"arg_expressions": [], "setup_lines": [line]},
+            )
+            assert validate_spec(spec) is not None, line
+
+    def test_legit_declarations_still_pass(self):
+        c_spec = DarkWitnessSpec(
+            finding_key="k", file="lib.c", function="f", language="c",
+            expected_crash=True,
+            lang_config={
+                "param_types": ["char *", "unsigned long"],
+                "return_type": "int",
+                "arg_expressions": ["buf", "256"],
+                "setup_lines": [
+                    'char buf[10] = "AAAA";',
+                    "int n = 5;",
+                    "unsigned long long sz = 0;",
+                    "struct foo s2 = {0};",
+                    "char *p = NULL;",
+                ],
+            },
+        )
+        assert validate_spec(c_spec) is None
+        rust_spec = DarkWitnessSpec(
+            finding_key="k", file="lib.rs", function="f", language="rust",
+            expected_crash=True,
+            lang_config={
+                "arg_expressions": ["&buf"],
+                "setup_lines": [
+                    "let mut buf = vec![0u8; 10];",
+                    "let x: usize = 3;",
+                    'let s = "x".to_string();',
+                    "let a = [0u8; 4];",
+                    "let r = &[1, 2];",
+                ],
+            },
+        )
+        assert validate_spec(rust_spec) is None
+
+    def test_java_import_newline_injection_rejected(self):
+        spec = DarkWitnessSpec(
+            finding_key="k", file="A.java", function="m", language="java",
+            lang_config={
+                "class_name": "A",
+                "imports": [
+                    "java.util.HashMap\nclass Pwn { static { "
+                    "Runtime.getRuntime().halt(1); } }",
+                ],
+                "arg_expressions": [],
+            },
+        )
+        err = validate_spec(spec)
+        assert err is not None and "import" in err
+
+    def test_java_class_name_bound_to_finding_file(self):
+        spec = DarkWitnessSpec(
+            finding_key="k", file="src/AuthUtils.java", function="check",
+            language="java",
+            lang_config={"class_name": "SomeOtherClass",
+                         "arg_expressions": []},
+        )
+        err = validate_spec(spec)
+        assert err is not None and "not bound" in err
+        nested = DarkWitnessSpec(
+            finding_key="k", file="src/AuthUtils.java", function="check",
+            language="java",
+            lang_config={"class_name": "AuthUtils.Inner",
+                         "arg_expressions": []},
+        )
+        assert validate_spec(nested) is None
+
+    def test_native_args_fallback_validated_as_expressions(self):
+        # No arg_expressions key: generators fall back to raw spec.args,
+        # pasted verbatim — must go through the same allowlist.
+        spec = DarkWitnessSpec(
+            finding_key="k", file="lib.c", function="f", language="c",
+            args=['1); system("id"); (0'],
+            lang_config={"param_types": ["int"], "return_type": "int"},
+        )
+        err = validate_spec(spec)
+        assert err is not None and "args used as expression" in err
+
+
+class TestWitnessSubstitutionRejected:
+    """U07-F8: parse_witness_response accepted any 'function' the LLM
+    returned — a witness could exercise a lookalike and mint a verdict
+    for the original finding. Substitution must reject the response."""
+
+    def test_python_substitution_rejected(self):
+        resp = json.dumps({
+            "module_path": "pkg.mod", "function": "other_func",
+            "args": ["x"], "expected_exception": "TypeError",
+        })
+        spec = parse_witness_response(
+            resp, "pkg/mod.py:parse_input", "pkg/mod.py", "parse_input")
+        assert spec is None
+
+    def test_c_substitution_rejected(self):
+        resp = json.dumps({
+            "function": "helper_that_crashes",
+            "arg_expressions": ["1"], "param_types": ["int"],
+            "return_type": "int", "expected_crash": True,
+        })
+        spec = parse_witness_response(
+            resp, "lib.c:parse_input", "lib.c", "parse_input")
+        assert spec is None
+
+    def test_matching_function_accepted(self):
+        resp = json.dumps({
+            "module_path": "pkg.mod", "function": "parse_input",
+            "args": ["x"], "expected_exception": "TypeError",
+        })
+        spec = parse_witness_response(
+            resp, "pkg/mod.py:parse_input", "pkg/mod.py", "parse_input")
+        assert spec is not None
+        assert spec.function == "parse_input"
+
+    def test_omitted_function_defaults_to_finding(self):
+        resp = json.dumps({
+            "module_path": "pkg.mod",
+            "args": ["x"], "expected_exception": "TypeError",
+        })
+        spec = parse_witness_response(
+            resp, "pkg/mod.py:parse_input", "pkg/mod.py", "parse_input")
+        assert spec is not None
+        assert spec.function == "parse_input"
+
+
+class TestHarnessTokenBinding:
+    """The harness embeds an in-process token in its own JSON epilogue
+    and a pre-call sentinel on stderr; classification requires both, so
+    forged status lines and pre-call crashes never mint verdicts."""
+
+    def _spec(self, **kw):
+        base = dict(finding_key="k", file="lib.c", function="f",
+                    language="c")
+        base.update(kw)
+        return DarkWitnessSpec(**base)
+
+    def test_json_without_token_is_inconclusive(self):
+        spec = self._spec(expected_return="1")
+        out = json.dumps({"status": "returned", "value": "1"})
+        r = _classify_output(spec, out, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+        assert "token" in r.match_detail
+
+    def test_json_with_wrong_token_is_inconclusive(self):
+        spec = self._spec(expected_return="1")
+        out = json.dumps(
+            {"status": "returned", "token": "0000", "value": "1"})
+        r = _classify_output(spec, out, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+
+    def test_json_with_token_confirms(self):
+        spec = self._spec(expected_return="1")
+        out = json.dumps(
+            {"status": "returned", "token": "feedface", "value": "1"})
+        r = _classify_output(spec, out, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
+    def test_no_expected_token_keeps_legacy_behaviour(self):
+        spec = self._spec(expected_return="1")
+        out = json.dumps({"status": "returned", "value": "1"})
+        r = _classify_output(spec, out, "c")
+        assert r.verdict == "confirmed"
+
+    def test_crash_without_precall_sentinel_never_confirms(self):
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_crash=True)
+        proc = _completed(returncode=-11)
+        info = {"signal": "SIGSEGV", "signal_num": 11, "crashed": True}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+        assert "sentinel" in r.match_detail
+
+    def test_crash_with_precall_sentinel_confirms(self):
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_crash=True)
+        proc = _completed(returncode=-11)
+        proc.stderr = "__raptor_witness_start__:feedface\n"
+        info = {"signal": "SIGSEGV", "signal_num": 11, "crashed": True}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
+    def test_sanitizer_only_before_sentinel_never_confirms(self):
+        # Setup expressions run pre-sentinel and may write stderr — a
+        # forged sanitizer line planted there must not confirm even
+        # though the sentinel itself is present.
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=0)
+        proc.stderr = (
+            "==1==ERROR: AddressSanitizer: heap-buffer-overflow\n"
+            "__raptor_witness_start__:feedface\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: heap-buffer-overflow"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+        assert "BEFORE the pre-call sentinel" in r.match_detail
+
+    def test_sanitizer_after_sentinel_confirms(self):
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=1)
+        proc.stderr = (
+            "__raptor_witness_start__:feedface\n"
+            "==1==ERROR: AddressSanitizer: heap-buffer-overflow\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: heap-buffer-overflow"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
+    def test_sanitizer_without_sentinel_never_confirms(self):
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=1)
+        proc.stderr = "==1==ERROR: AddressSanitizer: heap-buffer-overflow\n"
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: heap-buffer-overflow"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+        assert "sentinel" in r.match_detail
+
+    def test_harness_templates_embed_token_and_sentinel(self, tmp_path):
+        spec = self._spec(
+            expected_return="2",
+            lang_config={"param_types": ["int"], "return_type": "int",
+                         "arg_expressions": ["1"], "setup_lines": []},
+        )
+        src = generate_c_harness(spec, tmp_path, witness_token="feedface")
+        assert '__raptor_witness_start__:feedface' in src
+        assert '\\"token\\":\\"feedface\\"' in src
+
+    def test_token_shape_is_enforced(self, tmp_path):
+        spec = self._spec(lang_config={"arg_expressions": []})
+        with pytest.raises(ValueError):
+            generate_c_harness(
+                spec, tmp_path, witness_token='x"); attack(("')

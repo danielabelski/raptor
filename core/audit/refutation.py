@@ -733,6 +733,27 @@ _DETECTOR_FAMILY_HYP_RES: Dict[str, re.Pattern] = {
         r"uninitiali[sz]|no default|left unset|garbage|indetermin|"
         r"without (?:being )?initiali[sz]", re.IGNORECASE,
     ),
+    # Return-domain mismatch: a hypothesis about a callee failure
+    # signal escaping an exact-sentinel comparison (a return value
+    # other than the tested -1, a non-exact sentinel check, a wide
+    # error domain treated as binary). The paired `return_domain`
+    # detector receipt carries a constructive domain proof, so this
+    # regex only needs to recognise the hypothesis phrasing, never
+    # decide the code.
+    "return_domain": re.compile(
+        r"(?:return|error|failure)[^.;]{0,160}?(?:other than|"
+        r"instead of|outside|beyond|different from|not the exact|"
+        r"not the (?:expected|tested|checked))|"
+        r"sentinel value|"
+        r"(?:failure|error) (?:return|signal|code|value)"
+        r"[^.;]{0,80}?(?:not fail.closed|fail.open)|"
+        r"tri-?state[^.;]{0,80}?binary|"
+        r"bypass\w*[^.;]{0,80}?(?:==\s*-1|-1 (?:check|comparison|"
+        r"test))|"
+        r"(?:==\s*-1|-1 (?:check|comparison))[^.;]{0,80}?"
+        r"(?:bypass|miss|escape|fall)",
+        re.IGNORECASE,
+    ),
 }
 _INT_FAMILY_HYP_RE = re.compile(
     r"overflow|narrow|truncat|wraps?\b|int(?:8|16|32|64)\b|width",

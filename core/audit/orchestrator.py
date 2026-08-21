@@ -8666,6 +8666,25 @@ def _run_mechanical_detectors(
         logger.debug("mechanical: fail_open failed", exc_info=True)
 
     try:
+        from .return_domain import detect_return_domain_mismatches
+
+        _rd_roots = [config.target_path]
+        if getattr(config, "study_root", None):
+            _rd_roots.append(Path(config.study_root))
+        for rdm in detect_return_domain_mismatches(
+            source_texts, roots=_rd_roots,
+        ):
+            _add(
+                rdm.file,
+                rdm.function,
+                "return_domain",
+                rdm.line,
+                rdm.description,
+            )
+    except Exception:
+        logger.debug("mechanical: return_domain failed", exc_info=True)
+
+    try:
         from .pattern_completeness import detect_pattern_gaps
 
         for pg in detect_pattern_gaps(source_texts):

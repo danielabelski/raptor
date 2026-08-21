@@ -1697,3 +1697,88 @@ class TestReceiptContradictionRescue:
     def test_no_receipts_no_rescue(self):
         r = rescue_self_refuted(self._refuted_auth_outcome())
         assert r is None
+
+
+class TestReturnDomainFamilyDismissal:
+    """A `return_domain` detector receipt (sentinel-vs-domain mismatch
+    with a constructive body proof) outranks a raised-then-dismissed
+    hypothesis about a failure signal escaping an exact-sentinel
+    comparison."""
+
+    _DETECTORS = [{
+        "detector": "return_domain",
+        "file": "src/net.c",
+        "function": "handle_packet",
+        "line": 42,
+        "description": (
+            "check_peer: decision tests `== -1` but the callee "
+            "provably also returns {-2}"
+        ),
+    }]
+
+    def _outcome(self, conf="refuted", mechanism=None):
+        return _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": mechanism or (
+                    "check_peer() returns a negative value other "
+                    "than -1 on some failure path, bypassing the "
+                    "`== -1` check"
+                ),
+                "confidence": conf,
+                "counter": "the callee only ever returns 0 or -1",
+            }],
+        )
+
+    def test_refuted_dismissal_floored(self):
+        r = rescue_self_refuted(
+            self._outcome(), detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+        assert r.gate == "anti_self_refutation"
+        assert r.demote_to == "suspicious"
+        assert "detector receipt" in r.reason
+
+    def test_sentinel_phrasing_floored(self):
+        r = rescue_self_refuted(
+            self._outcome(
+                mechanism=(
+                    "the callee's failure signal is not the exact "
+                    "sentinel value the function checks"
+                ),
+            ),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+
+    def test_fail_closed_phrasing_floored(self):
+        r = rescue_self_refuted(
+            self._outcome(
+                mechanism=(
+                    "a failure return from the checker is not "
+                    "fail-closed, so the caller proceeds"
+                ),
+            ),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+
+    def test_unrelated_hypothesis_not_floored(self):
+        r = rescue_self_refuted(
+            self._outcome(
+                mechanism="heap overflow when copying the banner",
+            ),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+    def test_confident_dismissal_not_consumed(self):
+        r = rescue_self_refuted(
+            self._outcome(conf="high"),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+    def test_no_receipt_no_rescue(self):
+        r = rescue_self_refuted(self._outcome())
+        assert r is None

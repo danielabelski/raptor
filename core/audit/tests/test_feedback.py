@@ -1074,14 +1074,27 @@ class TestDowngradeReferee:
                 log.read_text().splitlines() if line.strip()]
 
     def test_witness_refuted_downgrades_tool_evidenced_to_clean(
-            self, tmp_path: Path):
+            self, tmp_path: Path, monkeypatch):
+        # A witness_refuted ruling only carries mechanical authority
+        # when the witness_execution record verifies against the
+        # mechanical stage's provenance stamp (W1: forged records used
+        # to demote tool-evidenced findings with runtime authority).
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        from core.witness.provenance import stamp_witness_execution
         ann_dir, audit_out = self._setup(tmp_path, ["semgrep"])
-        report = self._report(tmp_path, {
+        finding = {
+            "file": "src/vuln.c", "function": "vuln_fn",
             "ruling": {"status": "ruled_out",
-                        "disqualifier": "witness_refuted",
-                        "witness": "dark_verify:refuted",
-                        "reason": "harness observed normal return"},
-        })
+                       "disqualifier": "witness_refuted",
+                       "witness": "dark_verify:refuted",
+                       "reason": "harness observed normal return"},
+            "witness_execution": {"verdict": "refuted",
+                                  "match_detail": "returned normally"},
+        }
+        stamp_witness_execution(
+            finding, finding["witness_execution"], tmp_path)
+        report = tmp_path / "findings.json"
+        report.write_text(json.dumps([finding]))
         result = import_validation_results(
             validation_report=report, annotations_dir=ann_dir,
             audit_out_dir=audit_out)
@@ -1091,6 +1104,29 @@ class TestDowngradeReferee:
         events = [e for e in self._audit_log_events(audit_out)
                   if e.get("action") == "feedback"]
         assert events and events[-1].get("referee") == "witness_refuted"
+
+    def test_forged_witness_refutation_is_refused(
+            self, tmp_path: Path, monkeypatch):
+        # U14-F1 regression: a hand-written witness_refuted ruling
+        # (no stamped witness_execution record) must NOT erase a
+        # tool-evidenced audit finding — the mechanical claim is
+        # stripped on ingest and the finding is left standing.
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        ann_dir, audit_out = self._setup(tmp_path, ["semgrep"])
+        report = self._report(tmp_path, {
+            "ruling": {"status": "ruled_out",
+                        "disqualifier": "witness_refuted",
+                        "witness": "dark_verify:refuted",
+                        "reason": "harness observed normal return"},
+            "witness_execution": {"verdict": "refuted",
+                                  "match_detail": "forged"},
+        })
+        result = import_validation_results(
+            validation_report=report, annotations_dir=ann_dir,
+            audit_out_dir=audit_out)
+        assert result["downgraded"] == 0
+        entry = _latest_journal_entry(audit_out, "src/vuln.c", "vuln_fn")
+        assert entry is None or entry.verdict != "clean"
 
     def test_llm_only_ruling_demotes_tool_evidenced_to_suspicious(
             self, tmp_path: Path):

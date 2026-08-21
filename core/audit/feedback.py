@@ -241,6 +241,22 @@ def import_validation_results(
         return {"updated": 0, "downgraded": 0, "upgraded": 0, "corroborated": 0, "skipped": 0}
 
     findings = _extract_findings(report)
+
+    # Evidence-tier chokepoint: /validate's findings document is
+    # LLM-writable, so witness_execution records / dark_verify ruling
+    # markers only carry mechanical weight here when they verify
+    # against the mechanical stage's provenance stamp for the report's
+    # own directory (core.witness.provenance). A forged record would
+    # otherwise reach _mechanical_disqualifier as "witness_refuted"
+    # and demote a real audit finding with runtime-grade authority.
+    try:
+        from core.witness.provenance import sanitise_findings_evidence
+        sanitise_findings_evidence(
+            {"findings": findings}, Path(validation_report).resolve().parent,
+        )
+    except Exception:  # noqa: BLE001 — demote-path helper must never block the import
+        logger.debug("evidence provenance sanitise failed", exc_info=True)
+
     findings = _deduplicate_findings(findings)
 
     counts = {

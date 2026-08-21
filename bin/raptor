@@ -173,11 +173,15 @@ if [ -z "${RAPTOR_NO_LAUNCHER_HARDENING:-}" ]; then
     unset _claude_path
 
     # Per-session TMPDIR: <base>/raptor-<uid>/session-<pid>-<rand>
-    # (0700; <base> = operator TMPDIR or /tmp). Keeps tool scratch
-    # private and sweepable. Sweep runs at LAUNCH — exec means no
-    # EXIT trap survives — removing session dirs whose pid is dead;
-    # pid reuse only delays cleanup a cycle (safe direction).
-    _tmp_base="${TMPDIR:-/tmp}"
+    # (0700; <base> = RAPTOR_WORK_DIR, else operator TMPDIR, else
+    # /tmp). Keeps tool scratch private and sweepable, and gives
+    # operators ONE stable prefix for endpoint-security (EDR)
+    # exclusions (docs/troubleshooting.md; core/run/workdir.py
+    # builds the same family for non-launcher entry points). Sweep
+    # runs at LAUNCH — exec means no EXIT trap survives — removing
+    # session dirs whose pid is dead; pid reuse only delays cleanup
+    # a cycle (safe direction).
+    _tmp_base="${RAPTOR_WORK_DIR:-${TMPDIR:-/tmp}}"
     _tmp_base="${_tmp_base%/}/raptor-$(_rp id -u)"
     _rp mkdir -p -m 700 "$_tmp_base" 2>/dev/null || true
     # Squat check: base must be a non-symlink dir owned by us

@@ -16,6 +16,7 @@ arrives only when a producer emits ranges -- a later format extension.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ from .record import load_records
 from .registry import category_of
 from .store import CoverageStore
 from .summary import _inventory_name_index, _match_to_inventory
+
+logger = logging.getLogger(__name__)
 
 
 def _inventory_paths(checklist: dict[str, Any]) -> set:
@@ -479,6 +482,18 @@ def import_understand(
     for f, ln in _understand_points(run_dir):
         store.mark(_to_inventory_path(f, inv, inv_index), ln, ln, tool)
         marks += 1
+    # Record the caller→callee structure the traces carry (previously
+    # discarded here after the per-line flatten). Touched-tier extent
+    # for the edge-obligations pass — best-effort, idempotent, never
+    # fails the import.
+    try:
+        from .edges import collect_touched_edges, write_touched
+        edges = collect_touched_edges(Path(run_dir), checklist)
+        if edges:
+            write_touched(Path(run_dir), edges)
+    except Exception:  # noqa: BLE001 — derived artifact only
+        logger.debug("touched-edge capture failed for %s",
+                     run_dir, exc_info=True)
     return marks
 
 

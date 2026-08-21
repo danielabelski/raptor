@@ -843,6 +843,18 @@ def main():
             if not p:
                 print(f"Project '{args.name}' not found.")
                 return
+            if p.expires_at:
+                # Operator override for machine-project auto-expiry:
+                # explicitly choosing the project makes it
+                # operator-owned — clear the marker so it cannot
+                # expire out from under them.
+                p.expires_at = ""
+                mgr._save(p)
+                print(
+                    f"  note: cleared auto-expiry marker on "
+                    f"'{p.name}' — explicit use makes it "
+                    f"operator-owned"
+                )
             mgr.set_active(args.name)
             print(f"Active project: {p.name} ({p.target})")
             print(f"  Output dir: {p.output_dir}")

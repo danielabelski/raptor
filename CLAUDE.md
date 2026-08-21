@@ -114,6 +114,14 @@ When a command like `/scan`, `/agentic`, `/validate`, `/codeql`, or `/fuzz` is r
 
 Do not use the current working directory as a fallback — it is always the RAPTOR repo dir, not the user's target. Do not use any of these if the user already specified a path.
 
+**Volatile-target sanity gate (default resolution only):** when the active project's target is scratch/volatile — the system temp dir itself (`/tmp`, `/var/tmp`), a nonexistent path, or an empty directory — the mechanical default resolution (`core.run.output.resolve_default_target`) refuses with a loud banner instead of steering the run at scratch space (a stale machine-generated `corpus-*` project once left `/tmp` as the active target). When you hit this banner on a no-path command, present a structured choice (see INTERACTIVE PROMPTS; gate with `libexec/raptor-may-ask` first):
+1. **Pick the real target (Recommended)** — ask for / confirm the intended codebase path and re-run the command with it explicitly; also offer `/project use none` (or the right project) to fix the session.
+2. **Proceed against the volatile target** — re-run with the volatile path passed explicitly (explicit paths always bypass the gate).
+
+**Non-interactive fallback:** refuse — report the banner and stop; do not pick a target on the operator's behalf.
+
+Machine-generated `corpus-*` projects also carry a creation-time auto-expiry marker consumed at `.active` resolution — one left active by a crashed corpus run deactivates itself after the TTL. Expiry never applies to operator-named projects, and an explicit `/project use <name>` clears the marker (operator ownership).
+
 ---
 
 ## RUN LIFECYCLE

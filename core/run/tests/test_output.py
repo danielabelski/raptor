@@ -249,12 +249,19 @@ class TestResolveDefaultTarget(unittest.TestCase):
     project → ``RAPTOR_CALLER_DIR`` → None."""
 
     def test_active_project_target_wins(self):
+        # The project target must be a real, populated dir — the
+        # volatile-target sanity gate refuses nonexistent/empty
+        # defaults (see test_volatile_default_target.py); this test
+        # is about precedence over RAPTOR_CALLER_DIR.
         with TemporaryDirectory() as d:
-            with _mock_project(d, target="/path/to/project/target"):
+            target = Path(d) / "proj"
+            target.mkdir()
+            (target / "main.c").write_text("int main(void){}\n")
+            with _mock_project(d, target=str(target)):
                 with patch.dict(os.environ,
                                 {"RAPTOR_CALLER_DIR": "/path/from/env"}):
                     self.assertEqual(resolve_default_target(),
-                                     "/path/to/project/target")
+                                     str(target))
 
     def test_falls_back_to_caller_dir_when_no_project(self):
         with _NO_SYMLINK:

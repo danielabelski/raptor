@@ -149,12 +149,24 @@ COLD_PROFILE_GATES: dict[str, bool] = {
 }
 
 
+#: Auto-expiry TTL for the throwaway corpus-* projects created below.
+#: The context manager restores the previous active project on exit,
+#: but a crashed/killed run skips the finally — pre-fix the corpus
+#: project (target /tmp) then stayed active indefinitely, steering
+#: every subsequent no-path command at /tmp under the default-target
+#: rules. The TTL marker is consumed at .active resolution; see
+#: core.project.project.MACHINE_PROJECT_PREFIXES.
+_CORPUS_PROJECT_TTL_HOURS = 24
+
+
 def _corpus_project_context(run_tag: str):
     """Context manager: create a temporary project, restore the previous one on exit."""
     from contextlib import contextmanager
 
     @contextmanager
     def _ctx():
+        from datetime import datetime, timedelta, timezone
+
         from core.project.project import ProjectManager
 
         mgr = ProjectManager()
@@ -169,6 +181,16 @@ def _corpus_project_context(run_tag: str):
             )
         except ValueError:
             pass
+        # Creation-time auto-expiry stamp (machine-generated project;
+        # never applied to operator-created names). Stamped on the
+        # already-exists path too so a re-used tag re-arms the TTL.
+        project = mgr.load(project_name)
+        if project is not None:
+            project.expires_at = (
+                datetime.now(timezone.utc)
+                + timedelta(hours=_CORPUS_PROJECT_TTL_HOURS)
+            ).isoformat()
+            mgr._save(project)
         mgr.set_active(project_name)
 
         try:

@@ -4,9 +4,12 @@ Centralises the logic for choosing where a command writes its output.
 Checks (in order): explicit --out argument, active project, default out/ dir.
 """
 
+import contextlib
 import logging
 import os
 import re
+import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -84,6 +87,42 @@ def _resolve_active_project() -> tuple[str, str, str] | None:
     return None
 
 
+def volatile_target_reason(target: str | None) -> str | None:
+    """Reason string when *target* is a scratch/volatile path, else None.
+
+    Flags exactly three shapes (a stale machine-generated project once
+    left ``/tmp`` as the active default target, and only an interactive
+    ask caught it):
+
+    * the system temp root itself (``/tmp``, ``/var/tmp``,
+      ``tempfile.gettempdir()``) — subdirectories are legitimate
+      checkouts and do NOT flag;
+    * a nonexistent path;
+    * an empty directory.
+    """
+    if not target:
+        return None
+    try:
+        resolved = Path(target).resolve()
+    except (OSError, ValueError):
+        return "cannot be resolved"
+    temp_roots = {Path("/tmp"), Path("/var/tmp")}
+    with contextlib.suppress(OSError, ValueError):
+        temp_roots.add(Path(tempfile.gettempdir()).resolve())
+    if resolved in temp_roots:
+        return "is the system temp directory"
+    if not resolved.exists():
+        return "does not exist"
+    if resolved.is_dir():
+        try:
+            next(resolved.iterdir())
+        except StopIteration:
+            return "is an empty directory"
+        except OSError:
+            return "cannot be read"
+    return None
+
+
 def resolve_default_target() -> str | None:
     """CLAUDE.md DEFAULT TARGET DIRECTORY resolution: (1) active project,
     (2) ``RAPTOR_CALLER_DIR``, (3) None (caller asks the user).
@@ -95,10 +134,35 @@ def resolve_default_target() -> str | None:
     inherit the same behaviour without re-implementing it. Returns the
     resolved target path or None if neither signal is present — the
     caller is expected to error or prompt.
+
+    Sanity gate: when the active project's target is scratch/volatile
+    (the system temp dir itself, nonexistent, or an empty directory —
+    e.g. a stale machine-generated corpus project pointing at /tmp),
+    the DEFAULT resolution refuses with a loud banner and returns None
+    instead of silently steering the run at scratch space. The caller
+    then asks the operator (interactive sessions confirm via the
+    documented structured prompt; non-interactive sessions stop). An
+    EXPLICIT target path always bypasses this gate — it only guards
+    the implicit default.
     """
     active = _resolve_active_project()
     if active is not None:
-        return active[2]
+        _out, project_name, project_target = active
+        reason = volatile_target_reason(project_target)
+        if reason:
+            banner = (
+                f"REFUSING default target: active project "
+                f"'{project_name}' points at {project_target}, which "
+                f"{reason}. Not steering a no-path command at scratch "
+                f"space.\n"
+                f"  To proceed anyway: pass the target path explicitly.\n"
+                f"  To fix the session: /project use <real-project> "
+                f"or /project use none"
+            )
+            logger.warning("%s", banner)
+            print(banner, file=sys.stderr)
+            return None
+        return project_target
     env = os.environ.get("RAPTOR_CALLER_DIR")
     return env or None
 

@@ -97,6 +97,21 @@ _LANG_SLOT_RE = re.compile(r"\A[a-zA-Z0-9_+#.-]{1,32}\Z")
 # project JSON unboundedly.
 _MAX_SETTING_LEN = 4096
 
+# Machine-generated project naming patterns eligible for auto-expiry.
+# Projects are operator artifacts: expiry NEVER applies to a name
+# outside these prefixes, and even for matching names it applies only
+# when the creating machinery ALSO stamped ``expires_at`` (both
+# conditions — belt and braces). Currently only the corpus runner's
+# throwaway ``corpus-<tag>`` projects (target /tmp) qualify: one left
+# active by a crashed run turned every subsequent no-path command into
+# an audit of /tmp under the default-target rules.
+MACHINE_PROJECT_PREFIXES = ("corpus-",)
+
+
+def is_machine_project_name(name: str) -> bool:
+    """True when *name* matches a machine-generated naming pattern."""
+    return any(name.startswith(p) for p in MACHINE_PROJECT_PREFIXES)
+
 
 def split_setting_key(key: str):
     """Split ``build-command.<lang>`` into ``("build-command", lang)``.
@@ -210,6 +225,14 @@ class Project:
     # latter stored as a lang→cmd dict, bare sets use the ``default``
     # slot). See SETTINGS_REGISTRY.
     settings: dict = field(default_factory=dict)
+    # Creation-time auto-expiry marker (ISO timestamp), stamped ONLY by
+    # machine creators (corpus runner) on MACHINE_PROJECT_PREFIXES
+    # names, consumed at .active resolution (ProjectManager.get_active)
+    # — an expired machine project silently stops being the active
+    # default target. Empty = never expires (every operator-created
+    # project). Overridable: an explicit ``/project use <name>`` clears
+    # it — the operator choosing the project makes it operator-owned.
+    expires_at: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -228,6 +251,7 @@ class Project:
                 k: (dict(v) if isinstance(v, dict) else v)
                 for k, v in self.settings.items()
             },
+            "expires_at": self.expires_at,
         }
 
     @classmethod
@@ -262,6 +286,7 @@ class Project:
             threat_model_updated=str(data.get("threat_model_updated") or ""),
             trust=cls._parse_trust(data.get("trust")),
             settings=cls._parse_settings(data.get("settings")),
+            expires_at=str(data.get("expires_at") or ""),
         )
 
     @staticmethod
@@ -303,6 +328,28 @@ class Project:
             # canonical lang→cmd dict on the default slot.
             settings["build-command"] = {"default": build}
         return settings
+
+    def is_expired_machine_project(self, now: datetime | None = None) -> bool:
+        """True iff this is a machine-generated project whose
+        auto-expiry timestamp has passed.
+
+        Both conditions are required: the name must match a
+        MACHINE_PROJECT_PREFIXES pattern AND ``expires_at`` must be a
+        parseable ISO timestamp in the past. Operator-named projects
+        never expire regardless of the field; a malformed timestamp
+        fails open (no expiry) — projects are operator artifacts and
+        expiry must never surprise-delete a real one.
+        """
+        if not self.expires_at or not is_machine_project_name(self.name):
+            return False
+        try:
+            expiry = datetime.fromisoformat(self.expires_at)
+        except ValueError:
+            return False
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        return current >= expiry
 
     # ------------------------------------------------------------------
     # v4 trust markers — operator assertions. NEVER auto-set from
@@ -975,14 +1022,38 @@ class ProjectManager:
             active_link.unlink(missing_ok=True)
 
     def get_active(self) -> str | None:
-        """Get the active project name from the .active symlink."""
+        """Get the active project name from the .active symlink.
+
+        Consumes machine-project auto-expiry: when the linked project
+        is a MACHINE_PROJECT_PREFIXES name whose ``expires_at`` has
+        passed (stamped at creation by the corpus runner), the symlink
+        is cleared with a loud log line and None is returned — a
+        throwaway corpus project left active by a crashed run must not
+        keep steering no-path commands at /tmp. Operator projects are
+        never expired; ``/project use <name>`` clears the marker.
+        """
         active_link = self.projects_dir / ".active"
         if active_link.is_symlink():
             target = os.readlink(active_link)
             if target.endswith(".json") and "/" not in target and "\\" not in target:
                 project_file = self.projects_dir / target
                 if project_file.exists():
-                    return target[:-5]
+                    name = target[:-5]
+                    if is_machine_project_name(name):
+                        project = self.load(name)
+                        if (project is not None
+                                and project.is_expired_machine_project()):
+                            logger.warning(
+                                "Active project '%s' is a machine-"
+                                "generated project past its auto-expiry "
+                                "(%s) — deactivating. Re-activate "
+                                "explicitly with '/project use %s' to "
+                                "keep it (this clears the expiry).",
+                                name, project.expires_at, name,
+                            )
+                            active_link.unlink(missing_ok=True)
+                            return None
+                    return name
                 # Dangling — clean up
                 active_link.unlink(missing_ok=True)
         return None

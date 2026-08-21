@@ -912,6 +912,11 @@
   "kind": "literal",
   "note": "tool-dependency registry keys (doctor/banner); crossed the seed threshold when the perl entry (perlasm generated-asm inventory) was added - not a name vocabulary"
  },
+ "core/container/failures.py::DockerFailureClass": {
+  "count": 11,
+  "kind": "literal",
+  "note": "docker/compose failure-class enum (Literal type): infra failure taxonomy for stderr classification, not target API names"
+ },
  "core/coverage/registry.py::_REGISTRY": {
   "count": 23,
   "kind": "literal"
@@ -957,6 +962,16 @@
  "core/dockerfile/parser.py::_KNOWN_DIRECTIVES": {
   "count": 18,
   "kind": "literal"
+ },
+ "core/env/verify.py::HTTP_REQUEST_KEY_ALIASES": {
+  "count": 14,
+  "kind": "literal",
+  "note": "verify-plan protocol key aliases: LLM/operator spelling -> canonical http_request check field names (schema normalisation, not API vocabulary)"
+ },
+ "core/env/verify.py::TCP_PROBE_KEY_ALIASES": {
+  "count": 15,
+  "kind": "literal",
+  "note": "verify-plan protocol key aliases: LLM/operator spelling -> canonical tcp_probe check field names (schema normalisation, not API vocabulary)"
  },
  "core/evidence/__init__.py::to_dict": {
   "count": 10,
@@ -1394,6 +1409,11 @@
   "count": 12,
   "kind": "literal"
  },
+ "libexec/raptor-cve-env-bench::_RECORD_FIELDS": {
+  "count": 10,
+  "kind": "literal",
+  "note": "outcome-sidecar field names copied verbatim into each bench record (record schema keys, not a function-name vocabulary)"
+ },
  "libexec/raptor-review::dispatch": {
   "count": 11,
   "kind": "literal"
@@ -1670,6 +1690,86 @@
  "packages/cve_diff/cve_diff/report/markdown.py::_humanize_class": {
   "count": 15,
   "kind": "literal"
+ },
+ "packages/cve_env/cve_env/agent/audit.py::AuditStatus": {
+  "count": 15,
+  "kind": "literal",
+  "note": "audit-trail status enum (Literal type) for per-turn agent audit rows, pinned by the classifier test corpus - framework taxonomy, not target API names"
+ },
+ "packages/cve_env/cve_env/agent/audit.py::payload": {
+  "count": 12,
+  "kind": "literal",
+  "note": "audit JSONL record field names (framework record keys, not target API names)"
+ },
+ "packages/cve_env/cve_env/agent/core_loop.py::_TERMINATED_TO_STOP_REASON": {
+  "count": 14,
+  "kind": "literal",
+  "note": "ToolUseLoop terminated_by -> stop_reason translation table between two framework-internal enums the shared _map_status classifier keys on"
+ },
+ "packages/cve_env/cve_env/agent/tools.py::ALL_TOOLS": {
+  "count": 11,
+  "kind": "literal",
+  "note": "JSON-schema required-parameter names inside the dockerfile_gen ToolDef declaration (tool input schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/agent/tools.py::TOOL_NAMES": {
+  "count": 11,
+  "kind": "literal",
+  "note": "the agent's own canonical tool belt (framework tool registry, mirrored by ALL_TOOLS ToolDefs), not target API vocabulary"
+ },
+ "packages/cve_env/cve_env/agent/tools.py::docker_build": {
+  "count": 10,
+  "kind": "literal",
+  "note": "tool-result payload field names returned to the agent as JSON (record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/agent/tools.py::payload": {
+  "count": 10,
+  "kind": "literal",
+  "note": "tool-result payload field names returned to the agent as JSON (record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/cli.py::_STAGE_BY_TOOL": {
+  "count": 22,
+  "kind": "literal",
+  "note": "framework tool-name -> pipeline-stage map for the end-of-run human report; intentionally divergent sibling of config.py::TOOL_TO_STAGE (different value schema/consumer, drift-guarded by test_stage_table_sync.py) - internal taxonomy, not target API names"
+ },
+ "packages/cve_env/cve_env/cli.py::outcome_dict": {
+  "count": 18,
+  "kind": "literal",
+  "note": "outcome-sidecar JSON field names (manual allowlist over Outcome dataclass fields; record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/config.py::TOOL_TO_STAGE": {
+  "count": 21,
+  "kind": "literal",
+  "note": "framework tool-name -> budget-stage map for per-stage cost attribution; intentionally divergent sibling of cli.py::_STAGE_BY_TOOL (uppercase stage schema) - internal taxonomy, not target API names"
+ },
+ "packages/cve_env/cve_env/models.py::OutcomeStatus": {
+  "count": 14,
+  "kind": "literal",
+  "note": "terminal build-outcome status enum (Literal type, includes legacy aliases) - framework failure-class taxonomy, not target API names"
+ },
+ "packages/cve_env/cve_env/tools/docker_compose_up.py::docker_compose_up_payload": {
+  "count": 11,
+  "kind": "literal",
+  "note": "tool-result payload field names returned to the agent as JSON (record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/tools/github_fetch.py::_BUILD_ARTIFACT_BASENAMES": {
+  "count": 25,
+  "kind": "literal",
+  "note": "cross-ecosystem build-manifest basenames (Dockerfile, pom.xml, go.mod, ...) prioritised when listing a repo tree - ecosystem file-name taxonomy, not target API function names"
+ },
+ "packages/cve_env/cve_env/tools/github_fetch.py::github_fetch_payload": {
+  "count": 10,
+  "kind": "literal",
+  "note": "tool-result payload field names returned to the agent as JSON (record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/tools/nvd_lookup.py::nvd_lookup_payload": {
+  "count": 11,
+  "kind": "literal",
+  "note": "tool-result payload field names returned to the agent as JSON (record schema keys, not a name vocabulary)"
+ },
+ "packages/cve_env/cve_env/tools/source_build.py::_BUILD_CONFIG_TO_TYPE": {
+  "count": 11,
+  "kind": "literal",
+  "note": "ecosystem build-config basename -> build-type map (maven/gradle/npm/...) - ecosystem file-name taxonomy, not target API function names"
  },
  "packages/describe/package_manager.py::_INSTALL_ADVICE": {
   "count": 11,

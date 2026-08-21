@@ -232,6 +232,22 @@ def _run_semgrep(
             rel = path
         matches.append(Match(file=rel, line=line, snippet=""))
     errors: list[str] = list(result.errors or [])
+    # Belt-and-braces returncode consult: the runner populates errors
+    # for every rc outside {0, 1} since the U14-F3 fix, but the
+    # mechanical-control evidence chain (dual control, ground truth,
+    # fix-mutant) must never depend on a single layer to distinguish
+    # engine failure from verified silence.
+    if result.returncode not in (0, 1) and not errors:
+        errors.append(
+            f"semgrep exited with returncode {result.returncode}"
+        )
+    # A fixture the engine could not examine proves nothing about it.
+    for ff in (result.files_failed or [])[:5]:
+        if isinstance(ff, dict):
+            errors.append(
+                "semgrep failed to scan "
+                f"{ff.get('path', '?')}: {ff.get('reason', 'error')}"
+            )
     return matches, errors
 
 
@@ -254,6 +270,13 @@ def _run_coccinelle(
         matches.append(Match(file=rel, line=int(line),
                              snippet=str(snippet)[:500]))
     errors = list(getattr(result, "errors", []) or [])
+    # spatch's keyword-based _parse_errors misses failures that don't
+    # print a known error string — consult the returncode so a crashed
+    # or refused spatch run never reads as verified silence in the
+    # mechanical-control chain.
+    returncode = getattr(result, "returncode", 0)
+    if returncode != 0 and not errors:
+        errors.append(f"spatch exited with returncode {returncode}")
     return matches, errors
 
 

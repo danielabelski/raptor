@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from core.sandbox import evidence as evidence_mod
 from core.sandbox import summary as summary_mod
 from core.sandbox import triage as triage_mod
 
@@ -904,6 +905,45 @@ class TestTelemetryProvenance:
         assert result["inputs"]["integrity"]["sandbox_summary"] == "verified"
         assert result["verdict"] == triage_mod.VERDICT_SUSPICIOUS
         assert not any("provenance token" in c for c in result["caveats"])
+
+    def test_writer_flagged_corrupt_summary_reads_tampered(self, tmp_path):
+        """A summary the WRITER flagged (corrupt evidence lines — the
+        in-place-overwrite shape the inode check cannot see) must read
+        as tampered even though its MAC verifies: the token proves the
+        summariser wrote it, and what it wrote is a tamper report. The
+        surviving denials must not be treated as the run's usable
+        denial evidence."""
+        import os as _os
+        summary_mod.set_active_run_dir(tmp_path)
+        try:
+            summary_mod.record_denial(
+                "cat /root/.ssh/id_rsa", 1, "write",
+                path="/root/.ssh/id_rsa")
+            summary_mod.record_denial("benign", 1, "network")
+            jsonl = evidence_mod.evidence_write_path(
+                tmp_path, summary_mod.DENIALS_FILE)
+            raw = jsonl.read_bytes()
+            fd = _os.open(jsonl, _os.O_WRONLY)
+            try:
+                _os.pwrite(fd, b" " * raw.index(b"\n"), 0)
+            finally:
+                _os.close(fd)
+            written = summary_mod.summarize_and_write(tmp_path)
+        finally:
+            summary_mod.set_active_run_dir(None)
+        assert written["corrupt_lines"] == 1
+        result = triage_mod.triage_run(tmp_path)
+        assert result["inputs"]["integrity"]["sandbox_summary"] == "tampered"
+        assert any(s["type"] == "telemetry_tampering"
+                   for s in result["signals"])
+        # No stripping either: removing the flag breaks the MAC.
+        import json as _json
+        summary_path = tmp_path / summary_mod.SUMMARY_FILE
+        payload = _json.loads(summary_path.read_text())
+        payload.pop("corrupt_lines")
+        summary_path.write_text(_json.dumps(payload))
+        result2 = triage_mod.triage_run(tmp_path)
+        assert result2["inputs"]["integrity"]["sandbox_summary"] == "tampered"
 
     def test_forged_audit_degraded_marker_ignored(self, tmp_path):
         _write_summary(tmp_path, [

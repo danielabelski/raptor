@@ -436,10 +436,16 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     # file), and closing stops any later record_denial from appending
     # to the renamed inode. Only when the active handle belongs to
     # this run_dir — sweep-mode calls for other dirs leave it alone.
+    # A failed verification is carried into the summary as an
+    # inode_mismatch tamper flag (MAC-bound) rather than warn-and-
+    # continue: pre-fix the summariser went on to read whatever file
+    # now sat at the path and minted a valid MAC over it, laundering
+    # the swap into integrity=verified.
+    inode_mismatch = False
     with _lock:
         if (_evidence_handle is not None
                 and _evidence_handle.path.parent.parent == run_dir):
-            _evidence_handle.close()
+            inode_mismatch = not _evidence_handle.close()
             _evidence_handle = None
     # New (.audit/) location preferred; legacy <run_dir>/ location
     # kept as a read fallback for runs produced by older versions.
@@ -482,17 +488,27 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         return None
 
     records = []
+    corrupt_lines = 0
     try:
         with open(tmp, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
+                    # Honest writers emit exactly one JSON object per
+                    # line — a blank/whitespace-only line is what an
+                    # in-place overwrite with spaces (same length,
+                    # same inode, invisible to the inode check) reads
+                    # back as. Count it as corruption, don't skip it
+                    # silently.
+                    corrupt_lines += 1
                     continue
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
-                    continue  # skip malformed lines, keep going
+                    corrupt_lines += 1
+                    continue
                 if not isinstance(record, dict):
+                    corrupt_lines += 1
                     continue
                 records.append(record)
     except OSError:
@@ -522,7 +538,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         # leaves a leftover file but doesn't affect summary output.
         pass
 
-    if not records:
+    if not records and not corrupt_lines and not inode_mismatch:
         return None
 
     # Verdict split. macOS audit mode records ALLOWED operations too —
@@ -568,6 +584,41 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         "by_type": by_type,
         "denials": denials,
     }
+    if corrupt_lines or inode_mismatch:
+        # Tamper flags. Corrupt lines mean someone rewrote evidence in
+        # place (the inode check cannot see that on the Landlock-only
+        # tier, where the run dir is a writable grant and .audit/
+        # cannot be carved out); an inode mismatch means the file was
+        # swapped outright. Either way the record set as a whole is
+        # untrusted — the flags are bound into the MAC below so they
+        # cannot be stripped, and triage refuses to treat a flagged
+        # summary as usable denial evidence (integrity=tampered). The
+        # aggregated records stay in the file for operator forensics
+        # only.
+        #
+        # Residual: an in-place rewrite that substitutes byte-
+        # identical-length VALID JSON is invisible to this layer (and
+        # to the inode check). Closing that fully needs per-record
+        # MACs threaded through the tracer's inherited-fd writer.
+        if corrupt_lines:
+            summary["corrupt_lines"] = corrupt_lines
+        if inode_mismatch:
+            summary["inode_mismatch"] = True
+        logger.warning(
+            "SANDBOX EVIDENCE TAMPER SUSPECTED in %s: %d corrupt "
+            "line(s)%s in the denials JSONL — the run's denial "
+            "evidence is untrusted as a whole and the summary is "
+            "flagged for triage.",
+            run_dir, corrupt_lines,
+            " + evidence-file inode mismatch" if inode_mismatch else "",
+        )
+        _log_security_event(
+            "sandbox_evidence_corrupt",
+            f"denials evidence corrupt under {run_dir}",
+            corrupt_lines=corrupt_lines,
+            inode_mismatch=inode_mismatch,
+            surviving_records=len(records),
+        )
     if allowed_reports:
         # Informational section: operations the macOS audit profile
         # ALLOWED and reported. Kept out of the denial counts (they
@@ -593,7 +644,8 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         .encode("utf-8")
     ).hexdigest()
     _token = _tmac.mint(_tmac.summary_fields(
-        len(denials), _denials_sha, run=_tmac.run_binding(run_dir)))
+        len(denials), _denials_sha, run=_tmac.run_binding(run_dir),
+        corrupt_lines=corrupt_lines, inode_mismatch=inode_mismatch))
     if _token:
         summary["mac"] = _token
 

@@ -310,13 +310,26 @@ def triage_report_fields(report_sha256: str, run: str) -> dict:
     }
 
 
-def summary_fields(total_denials: int, denials_sha256: str, run: str) -> dict:
+def summary_fields(total_denials: int, denials_sha256: str, run: str,
+                   corrupt_lines: int = 0,
+                   inode_mismatch: bool = False) -> dict:
     """MAC fields for sandbox-summary.json: the denial payload is
     covered by its content hash, so a planted or edited summary fails
-    verification even when the headline counters are preserved."""
-    return {
+    verification even when the headline counters are preserved.
+
+    ``corrupt_lines`` / ``inode_mismatch`` are the summariser's tamper
+    flags (evidence rewritten in place / evidence file swapped). They
+    join the MAC only when set so tokens minted before the flags
+    existed keep verifying; binding them means a target that can edit
+    the summary cannot strip the flags without breaking the token."""
+    fields = {
         "kind": "sandbox-summary",
         "run": run,
         "total_denials": total_denials,
         "denials_sha256": denials_sha256,
     }
+    if corrupt_lines:
+        fields["corrupt_lines"] = int(corrupt_lines)
+    if inode_mismatch:
+        fields["inode_mismatch"] = True
+    return fields

@@ -188,20 +188,33 @@ def _verify_summary(
         ) -> Tuple[Optional[dict], str]:
     """Returns ``(usable_summary, integrity)`` — a summary that fails
     verification is dropped entirely (its denials are untrusted as a
-    whole; there is no per-record salvage)."""
+    whole; there is no per-record salvage). A summary the WRITER
+    flagged as tamper-suspect (corrupt evidence lines / evidence-file
+    inode mismatch) is dropped the same way even when its MAC
+    verifies: the token only proves the summariser wrote it, and what
+    the summariser wrote is "this run's evidence was tampered with"."""
     if summary is None:
         return None, _INTEGRITY_VERIFIED
+    corrupt_lines = summary.get("corrupt_lines", 0)
+    inode_mismatch = bool(summary.get("inode_mismatch"))
+    writer_flagged = bool(corrupt_lines) or inode_mismatch
     token = summary.get("mac")
     if not token:
         if not allow_legacy:
+            return None, _INTEGRITY_TAMPERED
+        if writer_flagged:
             return None, _INTEGRITY_TAMPERED
         return summary, _INTEGRITY_LEGACY
     fields = telemetry_mac.summary_fields(
         summary.get("total_denials", 0),
         _denials_sha256(summary.get("denials", [])),
         run=run,
+        corrupt_lines=corrupt_lines,
+        inode_mismatch=inode_mismatch,
     )
     if telemetry_mac.verify(fields, token):
+        if writer_flagged:
+            return None, _INTEGRITY_TAMPERED
         return summary, _INTEGRITY_VERIFIED
     return None, _INTEGRITY_TAMPERED
 

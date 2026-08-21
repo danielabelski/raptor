@@ -219,7 +219,7 @@ class TestSummarizeAndWrite:
         # Summary file from first call still intact
         assert (tmp_path / summary_mod.SUMMARY_FILE).exists()
 
-    def test_skips_malformed_jsonl_lines(self, tmp_path):
+    def test_malformed_jsonl_lines_flag_summary_as_corrupt(self, tmp_path):
         # Pre-populate JSONL with one valid + one garbage line
         jsonl = tmp_path / summary_mod.DENIALS_FILE
         jsonl.write_text(
@@ -228,8 +228,68 @@ class TestSummarizeAndWrite:
             + json.dumps({"ts": "y", "type": "write", "cmd": "c2", "returncode": 1}) + "\n"
         )
         result = summary_mod.summarize_and_write(tmp_path)
-        # Two valid records survived; garbage skipped without error
+        # Valid records still aggregate (operator forensics), but the
+        # summary carries the tamper flag — pre-fix the garbage line
+        # was skipped SILENTLY and the summary minted as fully
+        # trustworthy, laundering an in-place evidence rewrite.
         assert result["total_denials"] == 2
+        assert result["corrupt_lines"] == 1
+        on_disk = json.loads(
+            (tmp_path / summary_mod.SUMMARY_FILE).read_text())
+        assert on_disk["corrupt_lines"] == 1
+
+    def test_space_overwritten_record_counts_as_corrupt(self, tmp_path,
+                                                        monkeypatch):
+        """The in-place-overwrite shape: same inode, same length, one
+        record pwrite'd over with spaces. The inode check cannot see
+        it; the whitespace-only line must count as corruption and flag
+        the summary (MAC-bound), never silently vanish."""
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        summary_mod.set_active_run_dir(tmp_path)
+        summary_mod.record_denial("incriminating", 1, "seccomp",
+                                  profile="full")
+        summary_mod.record_denial("benign", 1, "network")
+        jsonl = _denials_path(tmp_path)
+        raw = jsonl.read_bytes()
+        first_len = raw.index(b"\n")
+        fd = os.open(jsonl, os.O_WRONLY)
+        try:
+            os.pwrite(fd, b" " * first_len, 0)
+        finally:
+            os.close(fd)
+        result = summary_mod.summarize_and_write(tmp_path)
+        assert result is not None
+        assert result["corrupt_lines"] == 1
+        assert result["total_denials"] == 1  # survivor kept for forensics
+        # The tamper flag is bound into the MAC: stripping it must
+        # break verification.
+        from core.sandbox import telemetry_mac as tmac
+        run = tmac.run_binding(tmp_path)
+        import hashlib as _hashlib
+        sha = _hashlib.sha256(
+            json.dumps(result["denials"], sort_keys=True,
+                       ensure_ascii=True).encode()).hexdigest()
+        assert tmac.verify(
+            tmac.summary_fields(1, sha, run=run, corrupt_lines=1),
+            result["mac"])
+        assert not tmac.verify(
+            tmac.summary_fields(1, sha, run=run),  # flag stripped
+            result["mac"])
+
+    def test_inode_swap_flags_summary(self, tmp_path, monkeypatch):
+        """A swapped evidence file (verify() fails at close) must flag
+        the summary rather than mint verified provenance over whatever
+        content now sits at the path."""
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        summary_mod.set_active_run_dir(tmp_path)
+        summary_mod.record_denial("real", 1, "network")
+        jsonl = _denials_path(tmp_path)
+        content = jsonl.read_bytes()
+        jsonl.unlink()
+        jsonl.write_bytes(content)  # same bytes, NEW inode
+        result = summary_mod.summarize_and_write(tmp_path)
+        assert result is not None
+        assert result["inode_mismatch"] is True
 
     def test_empty_jsonl_returns_none_and_removes_jsonl(self, tmp_path):
         jsonl = tmp_path / summary_mod.DENIALS_FILE

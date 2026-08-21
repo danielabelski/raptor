@@ -1059,11 +1059,17 @@ class TestProxyIsGlobalScreen(unittest.TestCase):
             use_egress_proxy=True, proxy_hosts=["localhost"],
             output=self.tmp.name, caller_label="is-global-test",
         ) as run:
-            # Any CONNECT through the proxy to localhost forces the is_global path
+            # Any CONNECT through the proxy to localhost forces the is_global path.
+            # Generous --max-time: the budget covers the whole sandbox
+            # bring-up (namespaces, forwarder, seccomp) before curl even
+            # sends CONNECT — a loaded host blew a 2s budget and the
+            # denial event never got a chance to exist (observed as an
+            # empty events list under a full parallel battery). The
+            # denial itself is immediate once the CONNECT arrives.
             run(
-                ["curl", "-s", "-o", "/dev/null", "--max-time", "2",
+                ["curl", "-s", "-o", "/dev/null", "--max-time", "15",
                  "https://localhost/"],
-                capture_output=True, text=True, timeout=8,
+                capture_output=True, text=True, timeout=45,
             )
         events = run.events  # cumulative per-sandbox view (see sandbox.md)
         results = [e.get("result") for e in events]

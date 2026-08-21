@@ -289,6 +289,21 @@ def is_conduit_candidate(body: str) -> bool:
 
 # ─── Guarded-sink detection (Joern) ─────────────────────────────────────────
 
+#: Distinct guard verdict for TRANSIENT degradation: the run HAS a
+#: Joern lane but the guard consultation could not be answered right
+#: now (server dead/restarting, query error or timeout, garbled
+#: reply).  Consumers that use the guard verdict as a promotion VETO
+#: must fail closed on this value — pre-fix it collapsed into the
+#: same ``None`` as "function calls no tested sink", so a promotion
+#: whose only mechanical counter-evidence channel was down proceeded
+#: as if the veto had been consulted and declined.  That asymmetry
+#: (a confirming joern:live receipt needs a HEALTHY server, while the
+#: guard veto silently evaporated on a sick one) let trap verdicts
+#: flap with server state.  ``None`` keeps its deterministic
+#: meanings: no Joern server provisioned for this run, an unqueryable
+#: function name, or no tested sink called.
+GUARD_UNAVAILABLE = "unavailable"
+
 
 def check_sink_guarded(
     function_name: str,
@@ -308,11 +323,16 @@ def check_sink_guarded(
     evidence (``compute_demotion_verdict`` does).
 
     Returns "guarded" if all tested sinks have a dominating
-    conditional, "unguarded" if any lacks one, None if the query
-    fails or the function calls no tested sink.
+    conditional, "unguarded" if any lacks one,
+    :data:`GUARD_UNAVAILABLE` when the consultation degraded (server
+    down / query error / unparseable reply — transient; never cached),
+    and None for the deterministic non-answers (no server provisioned,
+    invalid function name, or no tested sink called).
     """
-    if joern_server is None or not joern_server.is_alive():
+    if joern_server is None:
         return None
+    if not joern_server.is_alive():
+        return GUARD_UNAVAILABLE
 
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", function_name):
         return None
@@ -325,10 +345,10 @@ def check_sink_guarded(
         result = joern_server.query(query, timeout=30, validate=False)
         if result.errors:
             logger.debug("guard query error for %s: %s", function_name, result.errors)
-            return None
+            return GUARD_UNAVAILABLE
         output = (result.raw_output or "").strip()
         if "/" not in output:
-            return None
+            return GUARD_UNAVAILABLE
         guarded_s, total_s = output.rsplit("/", 1)
         guarded = int(guarded_s)
         total = int(total_s)
@@ -337,7 +357,7 @@ def check_sink_guarded(
         return "guarded" if guarded == total else "unguarded"
     except Exception:
         logger.debug("guard query exception for %s", function_name, exc_info=True)
-        return None
+        return GUARD_UNAVAILABLE
 
 
 def query_unguarded_sinks(
@@ -373,6 +393,11 @@ def query_unguarded_sinks(
                     sinks.append(json.loads(line[len("JOERN_UNGUARDED:"):]))
                 except (json.JSONDecodeError, ValueError):
                     continue
+        # Deterministic order: Joern's traversal order is not stable
+        # across server sessions, and these records feed the review
+        # prompt — unordered evidence made reviewer input (and hence
+        # sampled verdicts) vary run to run.
+        sinks.sort(key=lambda s: (s.get("line") or 0, str(s.get("sink") or "")))
         return sinks
     except Exception:
         logger.debug("unguarded sinks query failed for %s", function_name, exc_info=True)
@@ -416,6 +441,12 @@ def query_sink_arg_index(
                     args.append(json.loads(line[len("JOERN_SINK_ARG:"):]))
                 except (json.JSONDecodeError, ValueError):
                     continue
+        # Deterministic order — same doctrine as query_unguarded_sinks.
+        args.sort(key=lambda a: (
+            str(a.get("sink") or ""),
+            a.get("arg_index") if isinstance(a.get("arg_index"), int) else -1,
+            str(a.get("source_param") or ""),
+        ))
         return args
     except Exception:
         logger.debug(
@@ -555,6 +586,7 @@ def has_safety_self_contradiction(body: str) -> bool:
 
 __all__ = [
     "DANGEROUS_LIBC_SINKS",
+    "GUARD_UNAVAILABLE",
     "build_sink_reachable_set",
     "check_sink_guarded",
     "compute_demotion_verdict",

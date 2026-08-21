@@ -1144,8 +1144,17 @@ class JoernServer:
         source_param: str | None = None,
         timeout: int | None = None,
         max_call_depth: int = 2,
+        errors_out: list | None = None,
     ) -> list[TaintFlow]:
-        """Run a source-to-sink taint query via the server."""
+        """Run a source-to-sink taint query via the server.
+
+        ``errors_out``: optional caller-supplied list that receives the
+        underlying query errors.  An empty flow list is AMBIGUOUS
+        without it — "no taint path exists" and "the query never ran
+        (server restarting / timed out)" both return ``[]``, so a
+        verdict-bearing caller would book a degraded query as a
+        refutation.
+        """
         if timeout is None:
             timeout = self._query_timeout_s
         from .runner import (
@@ -1169,6 +1178,8 @@ class JoernServer:
         result = self.query(query, timeout=timeout, validate=True)
         if result.errors:
             logger.warning("server taint query errors: %s", result.errors)
+            if errors_out is not None:
+                errors_out.extend(result.errors)
         return result.flows
 
     def run_taint_exists_query(

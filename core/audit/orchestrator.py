@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from core.analysis.reachability_gates import (
+    GUARD_UNAVAILABLE,
     build_sink_reachable_set,
     check_sink_guarded,
     compute_demotion_verdict,
@@ -15031,16 +15032,29 @@ def _run_tool_chain(
 
                 if not pre_hit and joern_server is not None:
                     sinks = tool_cfg.get("sinks", [])
+                    _live_errors: list = []
                     live_hits = _joern_live_query(
                         joern_server,
                         function_name,
                         sinks,
+                        errors_out=_live_errors,
                     )
                     if live_hits:
                         confirmed.append("joern:live")
                         joern_hit = True
                         if tier_counters:
                             _increment_tier_dict(tier_counters, "joern", "confirmed")
+                    elif _live_errors:
+                        # Degraded query (server restarting / timeout)
+                        # — an unanswered question, NOT a refutation.
+                        logger.debug(
+                            "tool_chain joern error %s:%s: %s",
+                            file_path, function_name, _live_errors,
+                        )
+                        if errored_types is not None:
+                            errored_types.add(tool_type)
+                        if tier_counters:
+                            _increment_tier_dict(tier_counters, "joern", "errors")
                     elif tier_counters:
                         _increment_tier_dict(tier_counters, "joern", "refuted")
                 elif not pre_hit and tier_counters:
@@ -15875,15 +15889,26 @@ def _proactive_validate(
 
         if not pre_hit and sinks and joern_server is not None:
             ran.add("joern")
+            _live_errors: list = []
             live_hits = _joern_live_query(
                 joern_server,
                 outcome.function,
                 sinks,
+                errors_out=_live_errors,
             )
             if live_hits:
                 confirmed_tools.append("joern:live")
                 if tier_counters:
                     _increment_tier_dict(tier_counters, "joern", "confirmed")
+            elif _live_errors:
+                # Degraded query — unanswered, not refuted.
+                logger.debug(
+                    "cwe-dispatch joern error %s:%s: %s",
+                    outcome.file, outcome.function, _live_errors,
+                )
+                errored.add("joern")
+                if tier_counters:
+                    _increment_tier_dict(tier_counters, "joern", "errors")
             elif tier_counters:
                 _increment_tier_dict(tier_counters, "joern", "refuted")
 
@@ -16268,11 +16293,12 @@ def _run_critique(
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
                 continue
-            if _check_sink_guarded_cached(
-                    outcome.function, joern_server) == "guarded":
+            _gblk = _guard_blocks_promotion(
+                outcome.function, joern_server, result.tier_counters)
+            if _gblk:
                 logger.info(
-                    "critique promotion blocked %s:%s — all tested sink calls "
-                    "guarded", outcome.file, outcome.function,
+                    "critique promotion blocked %s:%s — sink-guard veto: %s",
+                    outcome.file, outcome.function, _gblk,
                 )
                 continue
             tool = "+".join(high_prec)
@@ -17603,12 +17629,51 @@ _sink_guard_cache: dict[str, str] = {}
 
 
 def _check_sink_guarded_cached(function_name: str, joern_server) -> str:
-    """Cache-wrapped sink guard check to avoid redundant Joern queries."""
+    """Cache-wrapped sink guard check to avoid redundant Joern queries.
+
+    Only definitive verdicts ("guarded"/"unguarded"/no-tested-sink
+    ``None``) are cached.  :data:`GUARD_UNAVAILABLE` is TRANSIENT
+    (server restarting, query timeout) — caching it pinned a single
+    flaky moment as the function's guard answer for the whole run,
+    so a later consultation with a recovered server never got to
+    correct it.
+    """
     if function_name in _sink_guard_cache:
         return _sink_guard_cache[function_name]
     verdict = check_sink_guarded(function_name, joern_server)
-    _sink_guard_cache[function_name] = verdict
+    if verdict != GUARD_UNAVAILABLE:
+        _sink_guard_cache[function_name] = verdict
     return verdict
+
+
+def _guard_blocks_promotion(
+    function_name: str,
+    joern_server,
+    tier_counters: dict | None = None,
+) -> str | None:
+    """Consult the guarded-sink veto for a promotion decision.
+
+    Returns a block reason ("guarded" or "guard-unavailable") or None
+    when the promotion may proceed.
+
+    Fail-closed doctrine: when the run has a Joern lane but the veto
+    consultation degraded (:data:`GUARD_UNAVAILABLE`), the promotion
+    is BLOCKED, not waved through.  Pre-fix the degraded consultation
+    read as "not guarded" and the promotion proceeded — the confirming
+    joern:live receipt requires a healthy server while its only
+    mechanical counter-evidence channel evaporated on a sick one, a
+    nondeterministic verdict-integrity asymmetry (observed as trap
+    flaps keyed to server state).  Runs without a Joern lane are
+    unaffected (``None`` from the gate, promotion proceeds as before).
+    """
+    verdict = _check_sink_guarded_cached(function_name, joern_server)
+    if verdict == "guarded":
+        return "guarded"
+    if verdict == GUARD_UNAVAILABLE:
+        if tier_counters is not None:
+            _increment_tier_dict(tier_counters, "joern_guard", "errors")
+        return "guard-unavailable"
+    return None
 
 
 def _correlated_mech_detector_tool(
@@ -17825,12 +17890,15 @@ def _promote_suspicious(
             outcome, hypothesis, cwe, mechanical_findings,
         )
         if mech_tool:
-            if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+            _gblk = _guard_blocks_promotion(
+                outcome.function, joern_server, result.tier_counters)
+            if _gblk:
                 logger.info(
-                    "sweep promotion blocked %s:%s via %s — all tested sink calls guarded",
+                    "sweep promotion blocked %s:%s via %s — sink-guard veto: %s",
                     outcome.file,
                     outcome.function,
                     mech_tool,
+                    _gblk,
                 )
             elif _premise_blocks_confirm(premise_h, [mech_tool]):
                 _note_premise_blocked_validation(
@@ -17971,8 +18039,9 @@ def _promote_suspicious(
                 agg_channels, post_mean = _aggregate_channel_confirmations(
                     confirmed,
                 )
-                if agg_channels and _check_sink_guarded_cached(
-                        outcome.function, joern_server) != "guarded":
+                if agg_channels and not _guard_blocks_promotion(
+                        outcome.function, joern_server,
+                        result.tier_counters):
                     tool = "+".join(confirmed)
                     promoted = _promote_outcome(outcome, tool)
                     _record_aggregated_promotion(
@@ -18005,12 +18074,15 @@ def _promote_suspicious(
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
                 continue
-            if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+            _gblk = _guard_blocks_promotion(
+                outcome.function, joern_server, result.tier_counters)
+            if _gblk:
                 logger.info(
-                    "sweep promotion blocked %s:%s via %s — all tested sink calls guarded",
+                    "sweep promotion blocked %s:%s via %s — sink-guard veto: %s",
                     outcome.file,
                     outcome.function,
                     "+".join(confirmed),
+                    _gblk,
                 )
                 continue
             tool = "+".join(high_prec)
@@ -18107,14 +18179,16 @@ def _synthesize_unmapped_suspicious(
             outcome.file, outcome.function, synth.stamp, _block,
         )
         return
-    if _check_sink_guarded_cached(outcome.function, joern_server) == "guarded":
+    _gblk = _guard_blocks_promotion(
+        outcome.function, joern_server, result.tier_counters)
+    if _gblk:
         _increment_tier_dict(
             result.tier_counters, "synthesis_on_demand", "inconclusive",
         )
         logger.info(
             "on-demand synthesis promotion blocked %s:%s via %s — "
-            "all tested sink calls guarded",
-            outcome.file, outcome.function, synth.stamp,
+            "sink-guard veto: %s",
+            outcome.file, outcome.function, synth.stamp, _gblk,
         )
         return
     _premise_h = _primary_hypothesis_entry(outcome, hypothesis)
@@ -18423,6 +18497,23 @@ def _is_detection_only(tool_id: str) -> bool:
             return False
         from core.audit.sweep import get_rule_role
         return get_rule_role(rule_path) == "detection"
+
+    if tool_id in ("joern:live", "joern:pre_sweep"):
+        # Bare taint reachability: proves a source→sink dataflow
+        # EXISTS, and nothing about the hypothesis mechanism — the
+        # live query returns flows for a correctly clamped memcpy
+        # wrapper (guards/clamps on the path are invisible to
+        # reachableByFlows).  As sole promote-evidence it minted
+        # suspicious verdicts on guarded code whenever the reviewer
+        # had ALSO refuted the hypothesis (the joern trap flap: the
+        # LLM's chain routing sometimes included joern, the confirm
+        # was then deterministic, and the guarded-sink veto could not
+        # counter it).  Hypothesis-bound reachability keeps its
+        # verification role via the joern:flow channel (joern_verify
+        # matches the hypothesis's own endpoints, with vacuity
+        # guards); the generic channels corroborate via aggregation,
+        # never convict alone.
+        return True
 
     if tool_id.startswith("smt:"):
         verb = tool_id.split("smt:", 1)[1]
@@ -18889,11 +18980,15 @@ def _promote_clean_refuted(
                         )
                         _queue_premise_study_question(config, outcome, h)
                         continue
-                    if _check_sink_guarded_cached(
-                            outcome.function, joern_server) == "guarded":
+                    _gblk = _guard_blocks_promotion(
+                        outcome.function, joern_server,
+                        result.tier_counters)
+                    if _gblk:
                         logger.info(
-                            "clean-refuted promotion blocked %s:%s via %s — guarded",
-                            outcome.file, outcome.function, "+".join(confirmed),
+                            "clean-refuted promotion blocked %s:%s via %s "
+                            "— sink-guard veto: %s",
+                            outcome.file, outcome.function,
+                            "+".join(confirmed), _gblk,
                         )
                         continue
 
@@ -18978,12 +19073,14 @@ def _promote_clean_refuted(
                 )
                 _queue_premise_study_question(config, outcome, h)
                 continue
-            if _check_sink_guarded_cached(
-                    outcome.function, joern_server) == "guarded":
+            _gblk = _guard_blocks_promotion(
+                outcome.function, joern_server, result.tier_counters)
+            if _gblk:
                 logger.info(
                     "refuted-hypothesis promotion blocked %s:%s via %s — "
-                    "all tested sink calls guarded",
+                    "sink-guard veto: %s",
                     outcome.file, outcome.function, "+".join(high_prec),
+                    _gblk,
                 )
                 continue
 
@@ -19188,12 +19285,14 @@ def _dispatch_secondary_hypotheses(
                     outcome.file, outcome.function, "+".join(confirmed),
                 )
                 continue
-            if _check_sink_guarded_cached(
-                    outcome.function, joern_server) == "guarded":
+            _gblk = _guard_blocks_promotion(
+                outcome.function, joern_server, result.tier_counters)
+            if _gblk:
                 logger.info(
                     "secondary-hypothesis promotion blocked %s:%s via %s — "
-                    "all tested sink calls guarded",
+                    "sink-guard veto: %s",
                     outcome.file, outcome.function, "+".join(high_prec),
+                    _gblk,
                 )
                 continue
             if _premise_blocks_confirm(h, high_prec):

@@ -261,6 +261,23 @@ def stop_joern_server(server) -> None:
         logger.warning("Joern server stop timed out after 30s — abandoning")
 
 
+def _flow_sort_key(flow: Any) -> tuple:
+    """Deterministic ordering for taint flows: Joern's traversal order
+    is not stable across server sessions, and flows feed reviewer
+    prompts and evidence records — unordered results made LLM input
+    vary run to run for identical code."""
+    steps = getattr(flow, "steps", None) or []
+    first = steps[0] if steps else None
+    return (
+        str(getattr(flow, "source_method", "") or ""),
+        str(getattr(flow, "sink_call", "") or ""),
+        getattr(flow, "sink_arg_idx", -1) or -1,
+        str(getattr(first, "file", "") or ""),
+        getattr(first, "line", 0) or 0,
+        len(steps),
+    )
+
+
 def joern_live_query(
     server,
     function_name: str,
@@ -269,8 +286,16 @@ def joern_live_query(
     *,
     label: str | None = None,
     max_call_depth: int | None = None,
+    errors_out: list | None = None,
 ) -> list[Any]:
-    """Fire a targeted taint query via the live Joern server."""
+    """Fire a targeted taint query via the live Joern server.
+
+    ``errors_out``: optional list receiving one entry per sink query
+    that DEGRADED (server restarting, timeout, transport error).  An
+    empty return with a non-empty ``errors_out`` means "unanswered",
+    not "no flow" — verdict-bearing callers must account the two
+    differently (degradation is never a verdict).
+    """
     from packages.joern.runner import _validate_substitution_value
 
     if not _validate_substitution_value(function_name):
@@ -285,21 +310,33 @@ def joern_live_query(
         if not _validate_substitution_value(sink_name):
             continue
         try:
+            query_errors: list = []
             flows = server.run_taint_query(
                 function_name, sink_name, timeout=timeout,
+                errors_out=query_errors,
                 **depth_kwargs,
             )
+            if query_errors and errors_out is not None:
+                errors_out.append(
+                    f"{function_name}->{sink_name}: "
+                    + "; ".join(str(e) for e in query_errors[:3])
+                )
             if flows:
                 logger.info(
                     "joern live query: %s → %s = %d flow(s)",
                     function_name, sink_name, len(flows),
                 )
-                return flows
-        except Exception:
+                return sorted(flows, key=_flow_sort_key)
+        except Exception as exc:
             logger.debug(
                 "joern live query failed: %s → %s",
                 function_name, sink_name, exc_info=True,
             )
+            if errors_out is not None:
+                errors_out.append(
+                    f"{function_name}->{sink_name}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     return []
 
@@ -464,8 +501,12 @@ def enrich_summaries_from_joern(
         return
 
     try:
+        # sorted(): set iteration order varies with PYTHONHASHSEED, so
+        # the batch query (and the merge order of its results) differed
+        # run to run — deterministic input is a precondition for
+        # reproducible reviewer context.
         summaries = joern_server.run_summary_batch(
-            list(methods), timeout=60,
+            sorted(methods), timeout=60,
         )
     except Exception:
         logger.debug("joern summary batch failed", exc_info=True)

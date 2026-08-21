@@ -544,3 +544,67 @@ class TestSinkVocabularySingleSource:
             '"sprintf", "gets", "strncpy", "strncat", "snprintf", "system", '
             '"popen", "execve", "execvp", "fopen", "open")'
         ) in rendered
+
+
+# ─── check_sink_guarded tri-state (transient degradation) ────────────────────
+
+
+class TestCheckSinkGuardedTriState:
+    """The guard verdict must distinguish transient degradation
+    (GUARD_UNAVAILABLE — fail closed at promotion vetoes, never cache)
+    from the deterministic non-answers (None).  Pre-fix both collapsed
+    into None, so a promotion whose veto channel was down proceeded as
+    if the veto had declined — trap verdicts flapped with server
+    state."""
+
+    def test_no_server_is_none(self):
+        assert rg.check_sink_guarded("fn", None) is None
+
+    def test_dead_server_is_unavailable(self):
+        server = _FakeJoernServer(alive=False)
+        assert rg.check_sink_guarded("fn", server) == rg.GUARD_UNAVAILABLE
+
+    def test_query_errors_are_unavailable(self):
+        server = _FakeJoernServer(raw_output="", errors=["server restarting"])
+        assert rg.check_sink_guarded("fn", server) == rg.GUARD_UNAVAILABLE
+
+    def test_garbled_reply_is_unavailable(self):
+        server = _FakeJoernServer(raw_output="scala compile spew")
+        assert rg.check_sink_guarded("fn", server) == rg.GUARD_UNAVAILABLE
+
+    def test_query_exception_is_unavailable(self):
+        class _Boom(_FakeJoernServer):
+            def query(self, *a, **kw):
+                raise RuntimeError("socket reset")
+        assert rg.check_sink_guarded("fn", _Boom()) == rg.GUARD_UNAVAILABLE
+
+    def test_no_tested_sinks_is_none(self):
+        server = _FakeJoernServer(raw_output="0/0")
+        assert rg.check_sink_guarded("fn", server) is None
+
+    def test_invalid_name_is_none(self):
+        server = _FakeJoernServer(raw_output="1/1")
+        assert rg.check_sink_guarded("not valid!", server) is None
+
+    def test_guarded_and_unguarded_still_verdict(self):
+        assert rg.check_sink_guarded(
+            "fn", _FakeJoernServer(raw_output="2/2")) == "guarded"
+        assert rg.check_sink_guarded(
+            "fn", _FakeJoernServer(raw_output="1/2")) == "unguarded"
+
+    def test_unavailable_never_demotes(self):
+        """compute_demotion_verdict must not demote on a degraded
+        guard consultation (demotion requires positive 'guarded')."""
+        cm = {
+            "entry_points": [{"name": "main"}],
+            "call_edges": [
+                {"caller": "main", "callee": "parse"},
+                {"caller": "parse", "callee": "memcpy"},
+            ],
+            "sinks": [{"function": "memcpy"}],
+        }
+        server = _FakeJoernServer(errors=["restarting"])
+        verdict = compute_demotion_verdict(
+            "parse", "copies input with memcpy(", cm, joern_server=server,
+        )
+        assert verdict is None

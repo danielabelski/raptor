@@ -3389,9 +3389,10 @@ class TestJoernLiveQuery:
         result = _joern_live_query(server, "parse_header", ["memcpy"])
         assert len(result) == 1
         assert result[0].sink_call == "memcpy"
-        server.run_taint_query.assert_called_once_with(
-            "parse_header", "memcpy", timeout=30,
-        )
+        server.run_taint_query.assert_called_once()
+        call_args = server.run_taint_query.call_args
+        assert call_args[0] == ("parse_header", "memcpy")
+        assert call_args[1]["timeout"] == 30
 
     def test_live_query_short_circuits_on_first_hit(self):
         from unittest.mock import MagicMock
@@ -5564,3 +5565,197 @@ class TestJoernReReviewDuplicateGaps:
         assert result.outcomes[0].status == "suspicious"
         assert result.suspicious == 1
         assert result.clean == 0
+
+
+class TestGuardVetoFailClosed:
+    """Transient guard degradation must fail closed at promotion
+    vetoes and never be cached (the joern trap-flap fix: the
+    confirming joern:live receipt needs a healthy server while the
+    guard veto silently evaporated on a sick one)."""
+
+    def _fresh_cache(self):
+        from core.audit import orchestrator as orch
+        orch._sink_guard_cache.clear()
+        return orch
+
+    def test_unavailable_not_cached(self):
+        from unittest.mock import MagicMock
+        orch = self._fresh_cache()
+
+        server = MagicMock()
+        server.is_alive.return_value = False   # degraded now...
+        assert orch._check_sink_guarded_cached("fn_a", server) == \
+            orch.GUARD_UNAVAILABLE
+        assert "fn_a" not in orch._sink_guard_cache
+
+        # ...recovered later: the next consultation must re-query.
+        server.is_alive.return_value = True
+        result = MagicMock()
+        result.errors = []
+        result.raw_output = "2/2"
+        server.query.return_value = result
+        assert orch._check_sink_guarded_cached("fn_a", server) == "guarded"
+        assert orch._sink_guard_cache["fn_a"] == "guarded"
+        orch._sink_guard_cache.clear()
+
+    def test_definitive_verdicts_still_cached(self):
+        from unittest.mock import MagicMock
+        orch = self._fresh_cache()
+
+        server = MagicMock()
+        server.is_alive.return_value = True
+        result = MagicMock()
+        result.errors = []
+        result.raw_output = "1/2"
+        server.query.return_value = result
+        assert orch._check_sink_guarded_cached("fn_b", server) == "unguarded"
+        assert orch._sink_guard_cache["fn_b"] == "unguarded"
+        # Cached: no second query.
+        server.query.reset_mock()
+        assert orch._check_sink_guarded_cached("fn_b", server) == "unguarded"
+        server.query.assert_not_called()
+        orch._sink_guard_cache.clear()
+
+    def test_guard_blocks_promotion_on_guarded(self):
+        from unittest.mock import MagicMock
+        orch = self._fresh_cache()
+
+        server = MagicMock()
+        server.is_alive.return_value = True
+        result = MagicMock()
+        result.errors = []
+        result.raw_output = "2/2"
+        server.query.return_value = result
+        assert orch._guard_blocks_promotion("fn_c", server) == "guarded"
+        orch._sink_guard_cache.clear()
+
+    def test_guard_blocks_promotion_on_unavailable(self):
+        """The flap shape: veto channel down -> promotion must BLOCK,
+        not proceed, and the tier counter must record the degradation
+        so the run is diagnosable."""
+        from unittest.mock import MagicMock
+        orch = self._fresh_cache()
+
+        server = MagicMock()
+        server.is_alive.return_value = False
+        counters = {"joern_guard": orch.TierCounters()}
+        assert orch._guard_blocks_promotion(
+            "fn_d", server, counters) == "guard-unavailable"
+        assert counters["joern_guard"].errors == 1
+        orch._sink_guard_cache.clear()
+
+    def test_guard_allows_promotion_without_joern_lane(self):
+        """Runs with no Joern server keep the pre-fix behavior —
+        the veto is a non-answer, promotion proceeds."""
+        orch = self._fresh_cache()
+        assert orch._guard_blocks_promotion("fn_e", None) is None
+        orch._sink_guard_cache.clear()
+
+    def test_guard_allows_promotion_on_no_tested_sinks(self):
+        from unittest.mock import MagicMock
+        orch = self._fresh_cache()
+
+        server = MagicMock()
+        server.is_alive.return_value = True
+        result = MagicMock()
+        result.errors = []
+        result.raw_output = "0/0"
+        server.query.return_value = result
+        assert orch._guard_blocks_promotion("fn_f", server) is None
+        orch._sink_guard_cache.clear()
+
+
+class TestJoernLiveErrorAccounting:
+    """A degraded live query is an unanswered question, never a
+    refutation — and its flows must come back in deterministic order."""
+
+    def test_errors_out_on_exception(self):
+        from unittest.mock import MagicMock
+
+        server = MagicMock()
+        server.run_taint_query.side_effect = RuntimeError("timeout")
+        errors: list = []
+        result = _joern_live_query(
+            server, "fn", ["memcpy"], errors_out=errors)
+        assert result == []
+        assert len(errors) == 1
+        assert "RuntimeError" in errors[0]
+
+    def test_errors_out_on_server_reported_errors(self):
+        from unittest.mock import MagicMock
+
+        server = MagicMock()
+
+        def _query(fn, sink, timeout=30, errors_out=None, **kw):
+            if errors_out is not None:
+                errors_out.append("server is restarting")
+            return []
+
+        server.run_taint_query.side_effect = _query
+        errors: list = []
+        result = _joern_live_query(
+            server, "fn", ["memcpy"], errors_out=errors)
+        assert result == []
+        assert errors and "restarting" in errors[0]
+
+    def test_clean_no_flow_reports_no_errors(self):
+        from unittest.mock import MagicMock
+
+        server = MagicMock()
+        server.run_taint_query.return_value = []
+        errors: list = []
+        result = _joern_live_query(
+            server, "fn", ["memcpy"], errors_out=errors)
+        assert result == []
+        assert errors == []
+
+    def test_flows_returned_in_deterministic_order(self):
+        from unittest.mock import MagicMock
+
+        from packages.joern.models import FlowStep, TaintFlow
+
+        def _flow(file, line, sink="memcpy"):
+            return TaintFlow(
+                source_method="fn", source_param="p",
+                sink_call=sink, sink_arg_idx=0,
+                steps=[FlowStep(
+                    file=file, function="fn", line=line,
+                    code="x", variable="p",
+                )],
+            )
+
+        a = _flow("a.c", 10)
+        b = _flow("b.c", 5)
+        c = _flow("a.c", 2)
+
+        server = MagicMock()
+        server.run_taint_query.return_value = [b, a, c]
+        first = _joern_live_query(server, "fn", ["memcpy"])
+        server.run_taint_query.return_value = [a, c, b]
+        second = _joern_live_query(server, "fn", ["memcpy"])
+        assert first == second
+        assert [f.steps[0].file for f in first] == ["a.c", "a.c", "b.c"]
+        assert [f.steps[0].line for f in first] == [2, 10, 5]
+
+
+class TestJoernReachabilityDetectionRole:
+    """Bare joern reachability receipts corroborate; they never
+    convict alone.  reachableByFlows returns flows for a correctly
+    clamped memcpy wrapper — guards on the path are invisible — so a
+    joern:live confirm must not single-handedly promote a hypothesis
+    the reviewer itself refuted (the trap-flap shape)."""
+
+    def test_joern_live_is_detection_only(self):
+        from core.audit.orchestrator import _is_detection_only
+        assert _is_detection_only("joern:live") is True
+
+    def test_joern_pre_sweep_is_detection_only(self):
+        from core.audit.orchestrator import _is_detection_only
+        assert _is_detection_only("joern:pre_sweep") is True
+
+    def test_hypothesis_bound_joern_channels_keep_verification_role(self):
+        """joern:flow / joern:guard-dominance match the hypothesis's
+        own endpoints (joern_verify) — they stay promote-grade."""
+        from core.audit.orchestrator import _is_detection_only
+        assert _is_detection_only("joern:flow") is False
+        assert _is_detection_only("joern:guard-dominance") is False

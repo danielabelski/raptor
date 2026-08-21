@@ -259,12 +259,11 @@ and downstream metrics reflect the exclusion.
 
 After the merge, the sanitizer-cut gate re-checks taint findings whose
 every source-to-sink path crosses a full-proof sanitizer.  Enforcement
-is the default (corpus-earned): suppress-verdict findings are removed
-from `combined.sarif`, with one evidence record per suppression in
+is the default: suppress-verdict findings are removed from
+`combined.sarif`, with one evidence record per suppression in
 `suppressions.jsonl`.  Per-tool SARIFs are never filtered in any mode.
 `--no-sanitizer-cut-enforce` keeps the verdicts record-only;
-`--no-sanitizer-cut-postpass` skips the pass entirely.  See
-for the precision evidence behind the default.
+`--no-sanitizer-cut-postpass` skips the pass entirely.
 
 ### Metrics
 
@@ -308,14 +307,11 @@ a false-pass "0 findings" result.
 
 ### Parallel Execution
 
-By default, packs run in parallel via `ThreadPoolExecutor` with
-`max_workers` from `tuning.json` (`max_semgrep_workers`, default
-`auto` = half the available CPUs). Each pack's semgrep process gets a
-`--jobs` share of the cores divided by the number of packs actually
-running at once, so concurrent packs cannot each claim every core. A
-post-completion check verifies that every submitted pack's SARIF file
-actually exists on disk -- missing files (filesystem error, sandbox
-teardown race) are added to the `failed_scans` list.
+By default, packs run in parallel (`max_semgrep_workers` in
+`tuning.json`, default `auto` = half the available CPUs). Concurrent
+packs share the cores instead of each claiming every one, and a
+post-completion check adds any pack whose SARIF never landed on disk
+to the `failed_scans` list.
 
 With `--codeql`, the CodeQL stage (database build + analyze) runs
 concurrently with the Semgrep packs; its console lines are tagged

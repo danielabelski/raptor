@@ -50,9 +50,15 @@ ALARM_FILENAME = "promotion-alarms.jsonl"
 ALARMED_VERDICTS = frozenset({"finding"})
 
 # review_result key stamped by the orchestrator's G2 gate when a
-# finding is allowed through on a domain-model invariant match instead
-# of tool evidence.  A designed exception, not a bypass — the alarm
-# honours it and records nothing.
+# finding is allowed through on a receipt-checked domain-model
+# invariant match instead of tool evidence.  A designed exception, not
+# a bypass — but the stamp is ADVISORY: the review result is parsed
+# LLM JSON, so a raw model response can plant the key.  The alarm
+# honours the exception only after re-deriving the match from the
+# outcome's hypothesis/file and the on-disk domain model
+# (:func:`core.audit.invariant_gate.reverify_bypass`); an unverifiable
+# claim fires the alarm and is demoted like any other forged
+# promotion.
 G2_BYPASS_KEY = "g2_invariant_bypass"
 
 
@@ -72,6 +78,7 @@ def build_alarm_record(
     review_result: dict[str, Any] | None = None,
     hypothesis: str = "",
     run_id: str = "",
+    bypass_verified: bool | None = None,
 ) -> dict[str, Any] | None:
     """Return an alarm record when the outcome violates the
     tool-gated-promotion invariant, else None.
@@ -79,15 +86,22 @@ def build_alarm_record(
     ``evidence_tool`` must be the CONFIRMING receipt stamp
     (``outcome.evidence_tool``), never the ``tools_dispatched`` union —
     a dispatched-but-unconfirmed tool is not evidence.
+
+    ``bypass_verified`` is the caller's re-derivation of the G2
+    exception (:func:`core.audit.invariant_gate.reverify_bypass`).
+    The mere PRESENCE of the ``g2_invariant_bypass`` key silences
+    nothing — the key is reachable from raw LLM output.  Only a
+    re-verified exception (``bypass_verified=True``) is honoured; an
+    unverified claim fires with the claim recorded for audit.
     """
     if verdict not in ALARMED_VERDICTS:
         return None
     if _has_tool_evidence(evidence_tool):
         return None
     bypass = (review_result or {}).get(G2_BYPASS_KEY)
-    if bypass:
+    if bypass and bypass_verified:
         return None
-    return {
+    record = {
         "event": ALARM_EVENT,
         "ts": datetime.now(timezone.utc).isoformat(),
         "stage": stage,
@@ -98,6 +112,19 @@ def build_alarm_record(
         "evidence_tool": evidence_tool or "",
         "hypothesis": (hypothesis or "")[:500],
     }
+    if bypass:
+        # The claimed invariant ids (+ tiers when the gate stamped
+        # them) go on the record so the operator can audit what the
+        # unverified claim named.
+        record["bypass_claimed"] = [str(b)[:100] for b in bypass][:16] \
+            if isinstance(bypass, (list, tuple)) else str(bypass)[:200]
+        tiers = (review_result or {}).get("g2_invariant_bypass_tiers")
+        if isinstance(tiers, dict):
+            record["bypass_claimed_tiers"] = {
+                str(k)[:100]: str(v)[:40]
+                for k, v in list(tiers.items())[:16]
+            }
+    return record
 
 
 def emit_alarm(out_dir: Path, record: dict[str, Any]) -> None:
@@ -175,15 +202,34 @@ def check_and_emit(
     when the outcome is legitimate.
     """
     try:
+        verdict = getattr(outcome, "status", "") or ""
+        evidence_tool = getattr(outcome, "evidence_tool", "") or ""
+        review_result = getattr(outcome, "review_result", None)
+
+        # Re-derive the G2 exception only when it would matter (an
+        # evidence-less finding carrying the bypass key) — the
+        # re-verification loads the run's domain model.
+        bypass_verified: bool | None = None
+        if (
+            verdict in ALARMED_VERDICTS
+            and not _has_tool_evidence(evidence_tool)
+            and isinstance(review_result, dict)
+            and review_result.get(G2_BYPASS_KEY)
+        ):
+            from .invariant_gate import reverify_bypass
+
+            bypass_verified = reverify_bypass(out_dir, outcome)
+
         record = build_alarm_record(
             stage=stage,
             file=getattr(outcome, "file", "") or "",
             function=getattr(outcome, "function", "") or "",
-            verdict=getattr(outcome, "status", "") or "",
-            evidence_tool=getattr(outcome, "evidence_tool", "") or "",
-            review_result=getattr(outcome, "review_result", None),
+            verdict=verdict,
+            evidence_tool=evidence_tool,
+            review_result=review_result,
             hypothesis=getattr(outcome, "hypothesis", "") or "",
             run_id=run_id,
+            bypass_verified=bypass_verified,
         )
         if record is not None:
             if enforce:

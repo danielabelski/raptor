@@ -2144,5 +2144,10 @@
  "packages/static-analysis/scanner.py::_SEMGREP_LANG_ALIASES": {
   "count": 11,
   "kind": "literal"
+ },
+ "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
+  "count": 109,
+  "kind": "literal",
+  "note": "language-keyword / prose stopword list for the G2 structural-anchor matcher \u2014 tokens that anchor NOTHING (keywords, stock types, ubiquitous prose), not an API vocabulary; the anchors themselves come from study receipt quotes"
  }
 }

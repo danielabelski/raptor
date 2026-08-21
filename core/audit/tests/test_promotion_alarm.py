@@ -130,13 +130,40 @@ class TestBuildAlarmRecord:
             )
             assert rec is not None, f"alarm silent on {tool!r}"
 
-    def test_g2_invariant_bypass_is_designed_exception(self):
+    def test_g2_bypass_honoured_only_when_reverified(self):
+        # The bypass key alone silences nothing — the review result is
+        # parsed LLM JSON, so a raw model response can plant the
+        # key. Only the caller's re-derivation of the match
+        # (bypass_verified=True) honours the designed exception.
         rec = build_alarm_record(
             stage="journal-write", file="a.c", function="f",
             verdict="finding", evidence_tool="",
             review_result={"g2_invariant_bypass": ["INV-001"]},
+            bypass_verified=True,
         )
         assert rec is None
+
+    def test_g2_bypass_key_alone_fires_with_claim_recorded(self):
+        rec = build_alarm_record(
+            stage="journal-write", file="a.c", function="f",
+            verdict="finding", evidence_tool="",
+            review_result={
+                "g2_invariant_bypass": ["INV-001"],
+                "g2_invariant_bypass_tiers": {"INV-001": "verbatim"},
+            },
+        )
+        assert rec is not None
+        assert rec["bypass_claimed"] == ["INV-001"]
+        assert rec["bypass_claimed_tiers"] == {"INV-001": "verbatim"}
+
+    def test_g2_bypass_unverified_fires(self):
+        rec = build_alarm_record(
+            stage="journal-write", file="a.c", function="f",
+            verdict="finding", evidence_tool="",
+            review_result={"g2_invariant_bypass": ["INV-001"]},
+            bypass_verified=False,
+        )
+        assert rec is not None
 
     def test_hypothesis_is_truncated(self):
         rec = build_alarm_record(
@@ -271,7 +298,11 @@ class TestJournalChokepoint:
             )
         assert _alarm_lines(tmp_path) == []
 
-    def test_g2_bypass_marker_suppresses_journal_alarm(self, tmp_path):
+    def test_planted_g2_bypass_key_fires_and_demotes(self, tmp_path):
+        # No domain model on disk → the bypass claim is unverifiable →
+        # the alarm fires and the finding is demoted like any other
+        # forged promotion (a defect class where the raw-LLM bypass key must not
+        # silence the alarm).
         from core.audit.collector import append_journal_for_outcome
 
         outcome = _FakeOutcome(
@@ -287,7 +318,89 @@ class TestJournalChokepoint:
                  "line_start": 10, "line_end": 30},
             checked_by=["audit"],
         )
+        lines = _alarm_lines(tmp_path)
+        assert len(lines) == 1
+        assert lines[0]["blocked"] is True
+        assert lines[0]["bypass_claimed"] == ["INV-042"]
+        assert outcome.status == "suspicious"
+
+    def test_reverified_g2_bypass_suppresses_journal_alarm(self, tmp_path):
+        # A receipt-checked invariant that structurally matches the
+        # hypothesis re-verifies from the on-disk domain model — the
+        # designed exception is honoured at the chokepoint.
+        from core.audit.collector import append_journal_for_outcome
+
+        (tmp_path / "domain-model.json").write_text(json.dumps({
+            "invariants": [{
+                "id": "INV-042",
+                "statement": (
+                    "user input must be sanitised before it reaches "
+                    "the sql query"
+                ),
+                "negation": "unsanitised input reaches the query",
+                "provenance": "verbatim",
+                "receipt": {
+                    "file": "src/auth.py",
+                    "line": 12,
+                    "quote": 'cursor.execute("SELECT %s" % query)',
+                    "verified": True,
+                    "sha256": "ab" * 8,
+                    "tier": "verbatim",
+                },
+            }],
+        }))
+        outcome = _FakeOutcome(
+            status="finding", evidence_tool="",
+            hypothesis="unsanitised input reaches query",
+            review_result={"g2_invariant_bypass": ["INV-042"]},
+        )
+        append_journal_for_outcome(
+            out_dir=tmp_path,
+            target_path=tmp_path,
+            run_id="run-x",
+            outcome=outcome,
+            gap={"file": outcome.file, "name": outcome.function,
+                 "line_start": 10, "line_end": 30},
+            checked_by=["audit"],
+        )
         assert _alarm_lines(tmp_path) == []
+        assert outcome.status == "finding"
+
+    def test_llm_summarized_invariant_never_reverifies(self, tmp_path):
+        # The quote-less study leftovers the domain model keeps at
+        # tier llm_summarized (receipt=None) are exactly the
+        # population this class exploited — they must not re-verify.
+        from core.audit.collector import append_journal_for_outcome
+
+        (tmp_path / "domain-model.json").write_text(json.dumps({
+            "invariants": [{
+                "id": "INV-100",
+                "statement": (
+                    "user input must be sanitised before it reaches "
+                    "the sql query"
+                ),
+                "negation": "unsanitised input reaches the query",
+                "provenance": "llm_summarized",
+                "receipt": None,
+            }],
+        }))
+        outcome = _FakeOutcome(
+            status="finding", evidence_tool="",
+            hypothesis="unsanitised input reaches query",
+            review_result={"g2_invariant_bypass": ["INV-100"]},
+        )
+        append_journal_for_outcome(
+            out_dir=tmp_path,
+            target_path=tmp_path,
+            run_id="run-x",
+            outcome=outcome,
+            gap={"file": outcome.file, "name": outcome.function,
+                 "line_start": 10, "line_end": 30},
+            checked_by=["audit"],
+        )
+        lines = _alarm_lines(tmp_path)
+        assert len(lines) == 1
+        assert outcome.status == "suspicious"
 
 
 class TestExportChokepoint:

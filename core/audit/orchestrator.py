@@ -9241,38 +9241,26 @@ def _match_domain_model_invariants(
     file_path: str,
     domain_model: dict[str, Any] | None,
 ) -> list[str]:
-    """Match a hypothesis against domain-model invariants.
+    """Match a hypothesis against RECEIPT-CHECKED domain-model invariants.
 
-    Returns list of matching invariant IDs. An invariant matches when
-    its statement or negation shares significant terms with the
-    hypothesis. The match is deliberately loose — the invariant's
-    mechanical provenance (from the study pipeline) justifies the
-    leniency.
+    Returns list of matching invariant IDs. Delegates to the shared
+    :mod:`core.audit.invariant_gate` matcher: only invariants with an
+    actionable provenance tier (verbatim/mechanical) AND a verified
+    receipt qualify, the invariant's scope must cover *file_path*, and
+    the hypothesis must share a source-anchored identifier with the
+    receipt quote on top of the word-overlap floor. ``llm_summarized``
+    invariants (quote-less study output) never match — word overlap
+    between two pieces of LLM prose is not mechanical provenance
+   .
     """
-    if not domain_model or not hypothesis:
-        return []
-    invariants = domain_model.get("invariants", [])
-    if not invariants:
-        return []
+    from .invariant_gate import match_receipted_invariants
 
-    import re as _re
-
-    hyp_lower = hypothesis.lower()
-    hyp_words = set(_re.findall(r"[a-z_]\w{3,}", hyp_lower))
-    if len(hyp_words) < 2:
-        return []
-
-    matched = []
-    for inv in invariants:
-        inv_id = inv.get("id", "")
-        statement = (inv.get("statement", "") + " " + inv.get("negation", "")).lower()
-        inv_words = set(_re.findall(r"[a-z_]\w{3,}", statement))
-        if not inv_words:
-            continue
-        overlap = hyp_words & inv_words
-        if len(overlap) >= 3 and len(overlap) / len(inv_words) >= 0.15:
-            matched.append(inv_id)
-    return matched
+    return [
+        m["id"]
+        for m in match_receipted_invariants(
+            hypothesis, file_path, domain_model,
+        )
+    ]
 
 
 def _resolve_hypothesis(outcome: ReviewOutcome) -> str:
@@ -9280,28 +9268,12 @@ def _resolve_hypothesis(outcome: ReviewOutcome) -> str:
 
     Prefers the singular ``hypothesis`` field.  When it is empty, falls
     back to the highest-confidence entry in the ``hypotheses`` array.
+    Delegates to the shared resolver so the G2 gate (grant side) and
+    the promotion alarm (re-verification side) read the same claim.
     """
-    review = outcome.review_result or {}
-    hyp = review.get("hypothesis") or outcome.hypothesis or ""
-    if hyp and hyp.strip():
-        return hyp
+    from .invariant_gate import resolve_hypothesis
 
-    hypotheses = review.get("hypotheses") or []
-    _RANK = {"high": 0, "medium": 1, "low": 2, "refuted": 3}
-    best = None
-    best_rank = 999
-    for entry in hypotheses:
-        if not isinstance(entry, dict):
-            continue
-        mechanism = entry.get("mechanism") or ""
-        if not mechanism.strip():
-            continue
-        confidence = entry.get("confidence", "low")
-        rank = _RANK.get(confidence, 2)
-        if rank < best_rank:
-            best = mechanism
-            best_rank = rank
-    return best or ""
+    return resolve_hypothesis(outcome)
 
 
 def _check_finding_gates(
@@ -9327,23 +9299,33 @@ def _check_finding_gates(
         violations.append("G1: finding emitted without testable hypothesis")
 
     if not is_tool_evidence(evidence):
-        matched_invariants = _match_domain_model_invariants(
+        from .invariant_gate import match_receipted_invariants
+
+        matched_invariants = match_receipted_invariants(
             hypothesis,
             outcome.file,
             domain_model,
         )
         if matched_invariants:
-            inv_ids = ", ".join(matched_invariants)
+            inv_ids = ", ".join(
+                f"{m['id']}({m['tier']})" for m in matched_invariants
+            )
             # Machine-readable marker for the designed exception so the
             # promotion-without-tool-evidence alarm can distinguish it
-            # from a genuine gate bypass.
+            # from a genuine gate bypass. ADVISORY: the alarm re-derives
+            # the match from the on-disk domain model instead of
+            # trusting this stamp (the review result is parsed LLM JSON,
+            # so a raw model response can plant the key).
             if outcome.review_result is not None:
-                outcome.review_result["g2_invariant_bypass"] = (
-                    list(matched_invariants)
-                )
+                outcome.review_result["g2_invariant_bypass"] = [
+                    m["id"] for m in matched_invariants
+                ]
+                outcome.review_result["g2_invariant_bypass_tiers"] = {
+                    m["id"]: m["tier"] for m in matched_invariants
+                }
             logger.info(
                 "G2 bypassed for %s:%s — hypothesis matches "
-                "domain-model invariant(s): %s",
+                "receipt-checked domain-model invariant(s): %s",
                 outcome.file,
                 outcome.function,
                 inv_ids,

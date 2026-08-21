@@ -391,7 +391,8 @@ def cmd_gaps(args):
         sys.exit(1)
 
     gaps = data.get("gaps", [])
-    if not gaps:
+    edge_lines = _edge_gap_lines(out_dir)
+    if not gaps and not edge_lines:
         print("  No gaps — all functions reviewed.")
         return
 
@@ -409,6 +410,61 @@ def cmd_gaps(args):
         fn = _line(g.get('file', ''))
         nm = _line(g.get('name', ''), max_chars=80)
         print(f"  {pri:<10} {fn:<30} {nm:<25} {strats}")
+    for line in edge_lines:
+        print(line)
+
+
+def _edge_gap_lines(out_dir) -> list:
+    """Edge-obligation gap state for --edges runs (absent file → no
+    section). Tier-1 gaps rank ABOVE function gaps in urgency; they
+    render as their own block. Tier-2 shows the folded-pending count."""
+    try:
+        raw = json.loads(
+            (out_dir / "edge-obligations.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    tier1 = raw.get("tier1") or []
+    tier2 = raw.get("tier2") or []
+    reviewed = set()
+    verdicted_folds = set()
+    try:
+        from core.audit.edge_review import edge_key  # noqa: PLC0415
+        from core.coverage.journal import load_entries
+        for e in load_entries(out_dir):
+            if getattr(e, "edge_callee", None) and e.verdict != "error":
+                reviewed.add(e.key)
+            for ev in getattr(e, "edge_verdicts", None) or []:
+                if isinstance(ev, dict) and ev.get("callee"):
+                    verdicted_folds.add(
+                        (e.file, e.function, str(ev["callee"])))
+    except Exception:  # noqa: BLE001 — layers degrade gracefully
+        return []
+    unreviewed = [r for r in tier1 if edge_key(r) not in reviewed]
+    pending2 = [
+        r for r in tier2
+        if (r.get("caller_file"), r.get("caller"),
+            str(r.get("callee"))) not in verdicted_folds
+    ]
+    if not unreviewed and not pending2:
+        return []
+    lines = ["", f"  Edge obligations ({len(unreviewed)} tier-1 "
+                 f"unreviewed, {len(pending2)} tier-2 pending)"]
+    for r in unreviewed[:15]:
+        loc = _line(
+            f"{r.get('caller_file')}:{r.get('caller')} -> "
+            f"{r.get('callee_file')}:{r.get('callee')}", max_chars=100)
+        why = _line(str(r.get("reason", "")), max_chars=40)
+        lines.append(f"    edge      {loc}  {why}")
+    if len(unreviewed) > 15:
+        lines.append(f"    (+{len(unreviewed) - 15} more tier-1 — see "
+                     "edge-obligations.json)")
+    if pending2:
+        lines.append(
+            f"    {len(pending2)} tier-2 edge contract(s) pending "
+            "(folded into caller reviews)")
+    return lines
 
 
 def cmd_history(args):

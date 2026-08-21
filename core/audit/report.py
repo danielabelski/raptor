@@ -135,6 +135,13 @@ def generate_report(
     if vendored_triage:
         report["vendored_triage"] = vendored_triage
 
+    # Cross-function edge obligations (--edges runs): tier counts,
+    # unreviewed tier-1 edges, and the blind-spot list — the
+    # 2026-05-29 design's headline output. Absent file -> absent key.
+    edge_block = _load_edge_obligations(out_dir)
+    if edge_block:
+        report["edge_obligations"] = edge_block
+
     # Dark outcomes ("tool-blind, needs concrete verification") from
     # the graded export — surfaced so the bucket reaches the operator
     # instead of being tallied invisibly as dormant.
@@ -195,6 +202,61 @@ def generate_report(
 def format_summary(report: dict[str, Any]) -> str:
     """Format a report dict as a human-readable summary."""
     return report.get("summary", _format_summary(report))
+
+
+def _load_edge_obligations(out_dir: Path) -> dict[str, Any] | None:
+    """Summarise edge-obligations.json + the journal's edge entries.
+
+    Reviewed = journal entries carrying ``edge_callee`` (any verdict
+    but ``error``) keyed against tier-1 obligations. Blind spots are
+    surfaced in full count with a bounded sample — never silently
+    truncated without the count saying so.
+    """
+    try:
+        raw = json.loads(
+            (out_dir / "edge-obligations.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    tier1 = raw.get("tier1") or []
+    tier2 = raw.get("tier2") or []
+    blind = raw.get("blind_spots") or []
+
+    reviewed_keys: set[str] = set()
+    findings: list[dict[str, Any]] = []
+    try:
+        from core.audit.edge_review import edge_key
+        from core.coverage.journal import load_entries
+        for entry in load_entries(out_dir):
+            callee_id = getattr(entry, "edge_callee", None)
+            if not callee_id or entry.verdict == "error":
+                continue
+            reviewed_keys.add(entry.key)
+            if entry.verdict == "finding":
+                findings.append({
+                    "caller": f"{entry.file}:{entry.function}",
+                    "callee": callee_id,
+                    "cwe": entry.cwe,
+                })
+        unreviewed = [
+            r for r in tier1 if edge_key(r) not in reviewed_keys
+        ]
+    except Exception:  # noqa: BLE001 — journal read is best-effort
+        logger.debug("edge journal summary failed", exc_info=True)
+        unreviewed = list(tier1)
+
+    block: dict[str, Any] = {
+        "tier1_total": len(tier1),
+        "tier1_unreviewed": len(unreviewed),
+        "tier2_total": len(tier2),
+        "blind_spot_count": len(blind),
+        "blind_spots_sample": blind[:25],
+        "stats": raw.get("stats") or {},
+    }
+    if findings:
+        block["edge_findings"] = findings
+    return block
 
 
 def write_report(report: dict[str, Any], out_dir: Path) -> Path:
@@ -265,6 +327,53 @@ def write_markdown_report(
         lines.append("## Run completeness")
         lines.append("")
         lines.extend(state_lines)
+        lines.append("")
+
+    # Cross-function edge obligations — headline placement: the
+    # blind-spot list (call sites the static graph cannot follow on
+    # attack paths) is first-class output, equal in prominence to the
+    # verdict tables, per the edge-obligations design.
+    edge_block = report.get("edge_obligations")
+    if edge_block:
+        lines.append("## Edge obligations (--edges)")
+        lines.append("")
+        lines.append(
+            f"- Tier-1 (boundary) edges: "
+            f"{edge_block.get('tier1_total', 0)} obligated, "
+            f"{edge_block.get('tier1_unreviewed', 0)} unreviewed")
+        lines.append(
+            f"- Tier-2 (on-path) edges folded into caller reviews: "
+            f"{edge_block.get('tier2_total', 0)}")
+        for f in edge_block.get("edge_findings", [])[:10]:
+            lines.append(
+                f"- **Contract violation:** "
+                f"{_line(str(f.get('caller', '')), max_chars=120)} -> "
+                f"{_line(str(f.get('callee', '')), max_chars=120)}"
+                + (f" ({_line(str(f.get('cwe')), max_chars=20)})"
+                   if f.get("cwe") else ""))
+        blind_n = edge_block.get("blind_spot_count", 0)
+        if blind_n:
+            lines.append("")
+            lines.append(
+                f"### Blind spots: {blind_n} call site(s) on attack "
+                "paths the static graph cannot follow")
+            lines.append(
+                "(function pointers / dynamic dispatch / unresolved or "
+                "ambiguous callees — manual review required; a "
+                "percentage cannot be taken over edges that cannot be "
+                "enumerated)")
+            for b in edge_block.get("blind_spots_sample", [])[:15]:
+                caller = b.get("caller") or "(module scope)"
+                lines.append(
+                    f"- {_line(str(b.get('file', '')), max_chars=100)}"
+                    f" :: {_line(str(caller), max_chars=60)} — "
+                    f"{_line(str(b.get('kind', '')), max_chars=24)}"
+                    f" `{_line(str(b.get('name', '')), max_chars=60)}`")
+            shown = min(15, len(edge_block.get("blind_spots_sample", [])))
+            if blind_n > shown:
+                lines.append(
+                    f"- (+{blind_n - shown} more — see "
+                    "edge-obligations.json)")
         lines.append("")
 
     # Summary

@@ -12,9 +12,9 @@ FIX = "a" * 40
 PARENT = "b" * 40
 
 
-def _bundle(consensus=None, **kw):
+def _bundle(consensus=None, repo_url="https://github.com/example/proj", **kw):
     ref = RepoRef(
-        repository_url="https://github.com/example/proj",
+        repository_url=repo_url,
         fix_commit=CommitSha(FIX),
         introduced=CommitSha(PARENT),
         canonical_score=100,
@@ -92,6 +92,52 @@ def test_consensus_on_a_different_pointer_refutes_not_confirms(tmp_path):
         tmp_path, _bundle(consensus=_consensus(slug="other/repo")),
     )
     assert not list(tmp_path.iterdir())
+
+
+def test_substring_slug_does_not_match_embedding_repo(tmp_path):
+    """Consensus slug "foo/bar" must NOT match a different repo whose
+    URL merely EMBEDS that slug as a substring — pre-fix this minted a
+    wrong-repo VERIFIED record."""
+    assert not write_consensus_outcome(
+        tmp_path,
+        _bundle(
+            consensus=_consensus(slug="foo/bar"),
+            repo_url="https://github.com/evilfoo/bar-extra",
+        ),
+    )
+    assert not list(tmp_path.iterdir())
+
+
+def test_cross_component_substring_slug_does_not_match(tmp_path):
+    """Slug "y/z" straddling two path components ("x-y/z-w") is the
+    second substring false-positive shape — must not match."""
+    assert not write_consensus_outcome(
+        tmp_path,
+        _bundle(
+            consensus=_consensus(slug="y/z"),
+            repo_url="https://github.com/x-y/z-w",
+        ),
+    )
+    assert not list(tmp_path.iterdir())
+
+
+def test_exact_slug_matches_with_git_suffix(tmp_path):
+    """Exact slug equality still verifies, including the `.git`
+    suffix and trailing-slash URL forms."""
+    assert write_consensus_outcome(
+        tmp_path,
+        _bundle(
+            consensus=_consensus(slug="foo/bar"),
+            repo_url="https://github.com/foo/bar.git",
+        ),
+    )
+    assert write_consensus_outcome(
+        tmp_path,
+        _bundle(
+            consensus=_consensus(slug="foo/bar"),
+            repo_url="https://github.com/foo/bar/",
+        ),
+    )
 
 
 def test_io_trouble_never_raises(tmp_path):

@@ -48,7 +48,20 @@ def _consensus_matches_bundle(consensus: dict[str, Any],
         return False
     if not (picked_sha.startswith(sha) or sha.startswith(picked_sha)):
         return False
-    return slug in (bundle.repo_ref.repository_url or "").lower()
+    # Exact slug comparison, mirroring report/markdown.py ``_matches``.
+    # A substring match (`slug in url`) minted wrong-repo VERIFIED
+    # records for two shapes: slug "foo/bar" inside
+    # "https://github.com/evilfoo/bar-extra", and cross-component
+    # "y/z" inside "https://github.com/x-y/z-w". Parse the URL path
+    # and require equality with the bare `owner/repo` slug instead.
+    from urllib.parse import urlparse
+    try:
+        path = urlparse(bundle.repo_ref.repository_url or "").path
+    except Exception:  # noqa: BLE001 — unparseable URL means "no match", never an error
+        return False
+    repo_slug = path.lstrip("/").rstrip("/").lower()
+    repo_slug = repo_slug.removesuffix(".git")
+    return slug == repo_slug
 
 
 def write_consensus_outcome(

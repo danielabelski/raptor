@@ -271,15 +271,43 @@ def now_iso() -> str:
 #: separate fds — interleaved partial writes corrupted lines.
 _append_lock = threading.Lock()
 
+#: Hardened open flags, mirroring ``core.json.jsonl.append_jsonl``:
+#: O_NOFOLLOW refuses a symlink planted at the journal path inside a
+#: writable run dir (fails with ELOOP); O_CLOEXEC keeps the fd out of
+#: spawned children (tool subprocesses must not inherit a journal fd).
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+#: Bounded retries for the (rare) short-write path in
+#: :func:`append_entry`. Each retry re-writes the WHOLE line after
+#: rolling back the partial bytes, so a persistent failure (ENOSPC)
+#: surfaces as a raised OSError with the journal still line-intact.
+_APPEND_MAX_ATTEMPTS = 3
+
 
 def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
-    """Locked single-line append to review-journal.jsonl.
+    """Locked, torn-write-safe single-line append to review-journal.jsonl.
 
-    The whole encoded line goes through one fd under a per-process
-    lock plus an advisory ``flock`` (cross-fd / cross-process safety —
-    a resumed segment or a sweep can append concurrently from another
-    process). No per-entry fsync — the caller can ``flush_journal()``
-    at batch end.
+    The whole encoded line is issued as ONE ``os.write`` under a
+    per-process lock plus an advisory ``flock`` (cross-fd /
+    cross-process safety — a resumed segment or a sweep can append
+    concurrently from another process). A single write() syscall on a
+    regular file is not interruptible mid-copy the way a Python-level
+    write LOOP is: the pre-fix loop could be abandoned between partial
+    writes (worker killed, exception), leaving a truncated line that
+    the NEXT append glued onto — one corrupt line AND one lost entry.
+
+    Torn-write handling (house precedent: ``core.json`` save/append
+    hardening): if the single write comes back short (ENOSPC, quota),
+    the partial bytes are rolled back with ``ftruncate`` to the
+    pre-write size — legal because ``flock`` is still held, so our
+    partial line is provably the tail of the file — and the whole
+    line is retried, bounded by ``_APPEND_MAX_ATTEMPTS``. Exhaustion
+    raises ``OSError`` with the journal left line-intact.
+
+    Raises ``OSError`` — notably ELOOP when the journal path is a
+    symlink (O_NOFOLLOW). No per-entry fsync — the caller can
+    ``flush_journal()`` at batch end.
     """
     journal_path = out_dir / JOURNAL_FILENAME
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -289,16 +317,36 @@ def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
     with _append_lock:
         fd = os.open(
             str(journal_path),
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            | _O_NOFOLLOW | _O_CLOEXEC,
             0o644,
         )
         try:
             if _HAS_FCNTL:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             try:
-                while data:
+                for attempt in range(1, _APPEND_MAX_ATTEMPTS + 1):
+                    size_before = os.fstat(fd).st_size
                     written = os.write(fd, data)
-                    data = data[written:]
+                    if written == len(data):
+                        break
+                    # Short write: roll the partial line back so the
+                    # journal never carries a torn tail. Safe under
+                    # the held flock — no cooperating writer can have
+                    # appended after our partial bytes.
+                    with contextlib.suppress(OSError):
+                        os.ftruncate(fd, size_before)
+                    logger.warning(
+                        "journal append short write (%d of %d bytes, "
+                        "attempt %d/%d) — rolled back",
+                        written, len(data), attempt, _APPEND_MAX_ATTEMPTS,
+                    )
+                    if attempt == _APPEND_MAX_ATTEMPTS:
+                        raise OSError(
+                            f"journal append failed after "
+                            f"{_APPEND_MAX_ATTEMPTS} short-write attempts "
+                            f"({written} of {len(data)} bytes)"
+                        )
             finally:
                 if _HAS_FCNTL:
                     fcntl.flock(fd, fcntl.LOCK_UN)

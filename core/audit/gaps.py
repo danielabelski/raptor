@@ -1725,6 +1725,13 @@ def _verify_entries_fold(
     for entry in entries:
         if entry.verdict == "error" or not is_function_grade(entry):
             continue
+        if getattr(entry, "edge_callee", None):
+            # Tier-1 edge entries record an edge-contract review, not
+            # a function review: they must neither suppress the
+            # caller's function gap nor qualify for function verdict
+            # reuse. Their own two-span staleness check lives in
+            # edge_review.reviewed_edge_keys.
+            continue
         key = f"{entry.file}:{entry.function}"
         # Candidate spans, tried in order — a match on ANY verifies:
         # * the entry's OWN recorded span: same-named items (macro

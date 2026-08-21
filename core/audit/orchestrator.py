@@ -3741,6 +3741,45 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         if ann_dir is not None:
             gaps = _merge_stale(gaps, ann_dir, config.target_path)
 
+    if config.edges:
+        # Cross-function edge obligations (--edges): scope the tiered
+        # obligation set, review unreviewed tier-1 (boundary) edges as
+        # dedicated contract units BEFORE the function loop — boundary
+        # contracts outrank function gaps — and stamp each caller's
+        # tier-2 edges onto its gap so the function review folds them
+        # in as an "edge contracts" section. Best-effort: a failed
+        # pass degrades to a normal function-only audit.
+        try:
+            from .edge_review import run_edge_pass
+            edge_summary, _tier2_by_caller = run_edge_pass(
+                config, checklist, context_map,
+                commit_fn=_commit_outcome,
+                on_progress=on_progress,
+            )
+            logger.info(
+                "edge pass: %d/%d tier-1 reviewed (%d finding(s), "
+                "%d suspicious, %d budget-skipped); %d tier-2 folded; "
+                "%d blind spot(s)",
+                edge_summary.get("reviewed", 0),
+                edge_summary.get("tier1_total", 0),
+                edge_summary.get("findings", 0),
+                edge_summary.get("suspicious", 0),
+                edge_summary.get("skipped_budget", 0),
+                edge_summary.get("tier2_total", 0),
+                edge_summary.get("blind_spots", 0),
+            )
+            if _tier2_by_caller:
+                for _gap in gaps:
+                    _lst = _tier2_by_caller.get(
+                        f"{_gap['file']}:{_gap['name']}")
+                    if _lst:
+                        _gap["edge_contracts"] = _lst
+        except Exception:
+            logger.warning(
+                "edge-obligation pass failed — continuing as a "
+                "function-only audit", exc_info=True,
+            )
+
     prior_constraints = load_constraints(config.out_dir)
     open_keys = (
         {f"{c.file}:{c.function}" for c in open_constraints(prior_constraints)}

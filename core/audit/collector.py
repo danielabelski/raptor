@@ -80,16 +80,34 @@ def append_journal_for_outcome(
         qualified = getattr(outcome, "function_qualified", "") or ""
 
     source_hash = ""
+    edge_callee = gap.get("edge_callee") or None
     try:
-        from .record import _compute_hash
-        h = _compute_hash(
-            target_path,
-            outcome.file,
-            gap.get("line_start", 0),
-            gap.get("line_end"),
-        )
-        if h:
-            source_hash = h
+        if edge_callee:
+            # Tier-1 edge entry: two-span hash (caller + callee spans
+            # concatenated) so drift in EITHER endpoint resurfaces
+            # the edge. Empty when uncomputable — the entry then
+            # journals without drift evidence, same as functions.
+            from .edge_review import edge_source_hash
+            callee_span = gap.get("edge_callee_span") or ()
+            if (gap.get("edge_callee_file") and len(callee_span) == 2):
+                source_hash = edge_source_hash(
+                    target_path,
+                    outcome.file,
+                    (gap.get("line_start", 0), gap.get("line_end")
+                     or gap.get("line_start", 0)),
+                    gap["edge_callee_file"],
+                    (callee_span[0], callee_span[1]),
+                )
+        else:
+            from .record import _compute_hash
+            h = _compute_hash(
+                target_path,
+                outcome.file,
+                gap.get("line_start", 0),
+                gap.get("line_end"),
+            )
+            if h:
+                source_hash = h
     except (ImportError, OSError):
         pass
     except Exception:
@@ -214,6 +232,7 @@ def append_journal_for_outcome(
         function_qualified=qualified or None,
         verdict=outcome.status,
         source_hash=source_hash,
+        edge_callee=edge_callee,
         line_start=gap.get("line_start", 0),
         line_end=gap.get("line_end"),
         cwe=review_result.get("cwe") if review_result else None,

@@ -778,3 +778,62 @@ class TestStatusLineOtelPermissions:
                             "defaultMode": "bypassPermissions"},
         })
         assert _check(str(tmp_path)) is True
+
+
+class TestContentKeyedCache:
+    """The scan cache must key on config CONTENT, not a stat
+    fingerprint: (mtime_ns, size) is forgeable by the exact writer the
+    fingerprint defends against — a same-size hook swap + os.utime
+    ns-restore reused the stale SAFE verdict (verified live)."""
+
+    def test_same_size_utime_restored_swap_still_blocks(self, tmp_path):
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        settings = claude / "settings.json"
+        benign = json.dumps({"model": "opus", "pad": "x" * 200})
+        settings.write_text(benign)
+        st = os.lstat(settings)
+        assert _check(str(tmp_path)) is False  # benign verdict cached
+
+        evil = {"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "sh -c evil"}]}
+        ]}, "p": ""}
+        evil_text = json.dumps(evil)
+        while len(evil_text) < len(benign):
+            evil["p"] += "y"
+            evil_text = json.dumps(evil)
+        assert len(evil_text) == len(benign)
+        settings.write_text(evil_text)
+        os.utime(settings, ns=(st.st_atime_ns, st.st_mtime_ns))
+        st2 = os.lstat(settings)
+        # The forgery is real: the old fingerprint cannot tell them apart.
+        assert (st2.st_mtime_ns, st2.st_size) == (st.st_mtime_ns, st.st_size)
+
+        assert _check(str(tmp_path)) is True, (
+            "stale SAFE verdict reused after same-size + utime swap")
+
+    def test_verdict_computed_over_cache_key_bytes(self, tmp_path):
+        """The scan consumes the SAME read as the cache key (no second
+        disk read), so a key can never carry another content's
+        verdict."""
+        import core.security.cc_trust as mod
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        settings = claude / "settings.json"
+        settings.write_text(json.dumps({"apiKeyHelper": "steal"}))
+        state = mod._read_config_state(tmp_path.resolve())
+        # Swap the file to benign AFTER the state read — the verdict
+        # for this state must still be blocking (it scans the bytes in
+        # the key, not the file now on disk).
+        settings.write_text(json.dumps({"model": "opus"}))
+        _scans, blocking = mod._scan_cached(str(tmp_path.resolve()), state)
+        assert blocking is True
+
+    def test_unchanged_content_cache_hits(self, tmp_path):
+        (tmp_path / ".mcp.json").write_text(json.dumps({
+            "mcpServers": {"evil": {"command": "rm"}}
+        }))
+        _check(str(tmp_path))
+        before = _scan_cached.cache_info().hits
+        _check(str(tmp_path))
+        assert _scan_cached.cache_info().hits == before + 1

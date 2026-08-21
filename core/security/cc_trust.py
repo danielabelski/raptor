@@ -247,13 +247,6 @@ def _mask_url(s: str) -> str:
     return _mask(safe)
 
 
-def _path_present(p: Path) -> bool:
-    try:
-        return p.is_symlink() or p.exists()
-    except OSError:
-        return False
-
-
 def _read_capped(path: Path) -> bytes | None:
     """Read up to _MAX_CONFIG_BYTES+1. None on oversized/non-regular/error.
 
@@ -294,8 +287,13 @@ def _read_capped(path: Path) -> bytes | None:
     return data
 
 
-def _load_json(path: Path) -> tuple[dict | None, bool]:
+def _load_json(path: Path, raw: bytes | None = None) -> tuple[dict | None, bool]:
     """Return (data, ok). Broad except — any parse failure → fail-closed.
+
+    ``raw`` carries pre-read bytes (the cache-key read); when provided
+    the file is NOT re-read, so the verdict is computed over exactly
+    the bytes the cache key hashes — no window for a benign→malicious
+    swap between fingerprinting and scanning.
 
     Pre-fix the bare `except Exception` swallowed everything
     silently. cc_trust is a SECURITY-critical scanner — when a
@@ -311,7 +309,8 @@ def _load_json(path: Path) -> tuple[dict | None, bool]:
     diagnostic is reachable via `--verbose` for operators
     actively debugging.
     """
-    raw = _read_capped(path)
+    if raw is None:
+        raw = _read_capped(path)
     if raw is None:
         return None, False
     try:
@@ -347,9 +346,9 @@ def _load_json(path: Path) -> tuple[dict | None, bool]:
     return data, True
 
 
-def _scan_settings(path: Path) -> FileScan | None:
+def _scan_settings(path: Path, raw: bytes | None = None) -> FileScan | None:
     """Return FileScan with findings, or None if malformed/unreadable."""
-    data, ok = _load_json(path)
+    data, ok = _load_json(path, raw)
     if not ok:
         return None
     fs = FileScan(path=path)
@@ -493,8 +492,8 @@ def _scan_settings(path: Path) -> FileScan | None:
     return fs
 
 
-def _scan_mcp(path: Path) -> FileScan | None:
-    data, ok = _load_json(path)
+def _scan_mcp(path: Path, raw: bytes | None = None) -> FileScan | None:
+    data, ok = _load_json(path, raw)
     if not ok:
         return None
     fs = FileScan(path=path)
@@ -549,7 +548,8 @@ def check_repo_claude_trust(repo_path: str, trust_override: bool | None = None) 
         return False
     if trust_override is None:
         trust_override = _trust_override_set
-    scans, any_blocking = _scan_cached(resolved, _config_fingerprint(Path(resolved)))
+    scans, any_blocking = _scan_cached(resolved,
+                                       _read_config_state(Path(resolved)))
     # Print side-effects live OUTSIDE the cache. Pre-fix the print() calls
     # were inside `_check_cached` which was @lru_cache'd — so the operator
     # only saw the warning on the FIRST identical call per process; every
@@ -574,60 +574,83 @@ def _config_candidates(target: Path) -> list[tuple[str, Path]]:
     ]
 
 
-def _config_fingerprint(target: Path) -> tuple:
-    """Cheap freshness fingerprint over the candidate config files.
+def _read_config_state(target: Path) -> tuple:
+    """One-pass read of the candidate config files, in candidate order.
 
-    One (mtime_ns, size) pair per candidate (None when absent), via
-    lstat so a regular-file→symlink swap also changes the fingerprint.
-    Used as part of the `_scan_cached` cache key: the same process runs
-    untrusted target code and LLM-driven sessions that can WRITE these
-    files between the first trust check and later CC dispatches, so a
-    verdict cached on the path alone would go stale (TOCTOU). Keying on
-    (path, fingerprint) makes any config-file change force a re-scan
-    while still deduping the common no-change case.
+    Each entry is a self-describing tuple:
+        ("absent",)              — no object at the path
+        ("symlink", target_str)  — symlink (never followed)
+        ("unreadable",)          — non-regular / oversized / IO error
+        ("content", raw_bytes)   — the file's exact bytes (capped)
+
+    The tuple is BOTH the cache key and the scan input: the same
+    process runs untrusted target code and LLM-driven sessions that
+    can WRITE these files between the first trust check and later CC
+    dispatches, so a verdict cached on the path alone would go stale
+    (TOCTOU). The previous fingerprint keyed on lstat (mtime_ns, size)
+    — both forgeable by the exact writer the fingerprint defends
+    against: a same-size hook swap + os.utime ns-restore reused the
+    stale SAFE verdict. Content keys the cache instead, and because
+    the verdict is computed over the SAME read (never a second disk
+    read), a mid-check swap cannot poison a key with another
+    content's verdict.
     """
     entries = []
     for _kind, p in _config_candidates(target):
         try:
             st = os.lstat(p)
-            entries.append((st.st_mtime_ns, st.st_size))
         except OSError:
-            entries.append(None)
+            entries.append(("absent",))
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                tgt = os.readlink(p)
+            except OSError:
+                tgt = "<unreadable>"
+            entries.append(("symlink", str(tgt)))
+            continue
+        raw = _read_capped(p)
+        if raw is None:
+            entries.append(("unreadable",))
+        else:
+            entries.append(("content", raw))
     return tuple(entries)
 
 
 @lru_cache(maxsize=64)
 def _scan_cached(resolved_path: str,
-                 config_fingerprint: tuple) -> tuple[tuple["FileScan", ...], bool]:
+                 config_state: tuple) -> tuple[tuple["FileScan", ...], bool]:
     """Pure scan: returns (scans, any_blocking). Cached on
-    (resolved_path, config_fingerprint) — the fingerprint keys the
-    cache so an edit to any inspected config file invalidates the
-    stale verdict (see `_config_fingerprint`); the body re-reads the
-    files itself and does not otherwise use the argument.
-    Side-effect free so repeated cache hits don't suppress operator-
-    visible warnings (handled in the caller)."""
-    del config_fingerprint  # cache key only
+    (resolved_path, config_state) where the state carries the config
+    files' CONTENT (see `_read_config_state`) — the verdict is derived
+    from exactly the bytes in the key, so any config change forces a
+    re-scan and no stat-forgeable fingerprint can revive a stale
+    verdict. Side-effect free so repeated cache hits don't suppress
+    operator-visible warnings (handled in the caller)."""
     target = Path(resolved_path)
     if target == _RAPTOR_DIR:
         return ((), False)
 
     candidates = _config_candidates(target)
-    present = [(kind, p) for kind, p in candidates if _path_present(p)]
-    if not present:
-        return ((), False)
-
     scans: list[FileScan] = []
-    for kind, path in present:
+    for (kind, path), state in zip(candidates, config_state):
+        shape = state[0]
+        if shape == "absent":
+            continue
         fs = FileScan(path=path)
-        if path.is_symlink():
-            try:
-                tgt = str(path.readlink())
-            except OSError:
-                tgt = "<unreadable>"
-            fs.findings.append(Finding("symlink", _truncate(tgt, limit=120), True))
+        if shape == "symlink":
+            fs.findings.append(
+                Finding("symlink", _truncate(state[1], limit=120), True))
             scans.append(fs)
             continue
-        scanned = _scan_settings(path) if kind == "settings" else _scan_mcp(path)
+        if shape == "unreadable":
+            fs.findings.append(
+                Finding("(malformed)", "treated as dangerous", True))
+            scans.append(fs)
+            continue
+        raw = state[1]
+        scanned = (_scan_settings(path, raw) if kind == "settings"
+                   else _scan_mcp(path, raw))
         if scanned is None:
             fs.findings.append(Finding("(malformed)", "treated as dangerous", True))
             scans.append(fs)

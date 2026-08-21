@@ -128,6 +128,13 @@ def generate_report(
             "count": not_attempted_count,
         }
 
+    # Vendored/generated triage decisions (per-function records in
+    # suppressions.jsonl) — the run summary states the counts so
+    # skipped/glanced functions are never silently absent.
+    vendored_triage = _load_vendored_triage(out_dir)
+    if vendored_triage:
+        report["vendored_triage"] = vendored_triage
+
     # Dark outcomes ("tool-blind, needs concrete verification") from
     # the graded export — surfaced so the bucket reaches the operator
     # instead of being tallied invisibly as dormant.
@@ -608,6 +615,39 @@ def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _load_vendored_triage(out_dir: Path) -> dict[str, int]:
+    """Count vendored/generated triage decisions from the
+    suppressions.jsonl audit trail (rule_id ``audit:vendored-triage``).
+    Returns ``{}`` when the tier made no decisions."""
+    path = out_dir / "suppressions.jsonl"
+    if not path.exists():
+        return {}
+    skipped = glanced = 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("rule_id") != "audit:vendored-triage":
+                    continue
+                if rec.get("tier") == "skip":
+                    skipped += 1
+                elif rec.get("tier") == "glance":
+                    glanced += 1
+    except OSError:
+        return {}
+    if not (skipped or glanced):
+        return {}
+    return {"skipped": skipped, "glanced": glanced}
+
+
 def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
@@ -875,6 +915,13 @@ def _format_summary(report: dict[str, Any]) -> str:
             f"Not attempted ({not_attempted.get('reason', 'budget')}): "
             f"{not_attempted.get('count', 0)} functions — see "
             "not-attempted.json; they stay gap-eligible next run"
+        )
+    vendored = report.get("vendored_triage")
+    if vendored:
+        lines.append(
+            f"Vendored/generated triage: {vendored.get('skipped', 0)} "
+            f"functions skipped, {vendored.get('glanced', 0)} routed to "
+            "glance — per-function records in suppressions.jsonl"
         )
 
     findings = report.get("findings", [])

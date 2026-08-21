@@ -1316,6 +1316,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pre_scan=args.pre_scan,
         schedule=args.schedule,
         on_demand_synthesis=not args.no_on_demand_synthesis,
+        vendored_triage=not args.no_vendored_triage,
         probe_determine_value=args.probe_determine_value,
         deepen_reserve_fraction=args.deepen_reserve,
         prior_journal_dirs=(
@@ -1409,6 +1410,12 @@ def _finalize_run(
     if reused:
         origin = "this run's prior segments" if segment else "prior runs"
         print(f"{reused} reused from {origin} (source unchanged, $0)",
+              flush=True)
+    vend_skipped = getattr(result, "vendored_skipped", 0)
+    vend_glanced = getattr(result, "vendored_glanced", 0)
+    if vend_skipped or vend_glanced:
+        print(f"Vendored/generated triage: {vend_skipped} skipped, "
+              f"{vend_glanced} glanced (records in suppressions.jsonl)",
               flush=True)
     from core.audit.cost_tracker import format_cost_summary
     cost_line = format_cost_summary(result)
@@ -1846,6 +1853,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         pre_scan=bool(run_cfg.get("pre_scan")),
         schedule=run_cfg.get("schedule") or "cost",
         on_demand_synthesis=bool(run_cfg.get("on_demand_synthesis", True)),
+        vendored_triage=bool(run_cfg.get("vendored_triage", True)),
         probe_determine_value=bool(run_cfg.get("probe_determine_value")),
         deepen_reserve_fraction=run_cfg.get("deepen_reserve_fraction"),
         same_run_reuse=True,
@@ -1956,6 +1964,7 @@ def _run_config_from_args(
         "pre_scan": args.pre_scan,
         "schedule": args.schedule,
         "on_demand_synthesis": not args.no_on_demand_synthesis,
+        "vendored_triage": not args.no_vendored_triage,
         "probe_determine_value": args.probe_determine_value,
         "deepen_reserve_fraction": args.deepen_reserve,
         "prior_journal_dirs": args.prior_journal,
@@ -2237,6 +2246,12 @@ def main() -> int:
                             "suspicious hypotheses whose CWE has no "
                             "tool-chain dispatch entry (synthesis is "
                             "LLM-cost bearing; capped per run)")
+    p_run.add_argument("--no-vendored-triage", action="store_true",
+                       help="Disable the vendored/generated-code triage "
+                            "tier for this run — vendored and generated "
+                            "files get normal review depth instead of "
+                            "the skip/glance tier (use when auditing a "
+                            "vendored library ON PURPOSE)")
     p_run.add_argument("--probe-determine-value", action="store_true",
                        help="Resolve claim-less constant study questions "
                             "('what is the value of X?') by compile-probe "

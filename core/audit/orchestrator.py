@@ -433,6 +433,12 @@ class OrchestratorConfig:
     # mechanisms are actually exercised). Buckets other than SKIP
     # (glance/investigate/deep_dive) are unaffected.
     triage: bool = True
+    # Vendored/generated-code triage tier (--no-vendored-triage to
+    # disable): files with corroborated generator provenance route to
+    # the skip tier, uncorroborated banners / vendored paths /
+    # generated-shape structure to the glance tier. Every decision
+    # writes a suppressions.jsonl record; pinned gaps are exempt.
+    vendored_triage: bool = True
     sweep_validate_findings: bool = True
     deepen_suspicious: bool = True
     # Slice of the LLM cost cap held back from the discovery loop so
@@ -801,6 +807,10 @@ class OrchestratorResult:
     terminated_by: str = "complete"
     prefilter_skipped: int = 0
     prefilter_hits: int = 0
+    # Vendored/generated triage decisions (run-summary counters;
+    # per-function records live in suppressions.jsonl).
+    vendored_skipped: int = 0
+    vendored_glanced: int = 0
     sweep_validated: int = 0
     sweep_demoted: int = 0
     sweep_promoted: int = 0
@@ -3017,6 +3027,117 @@ def _record_triage_suppressions(
     return written
 
 
+def _vendored_triage_verdicts(
+    config: OrchestratorConfig,
+    gaps: list[dict[str, Any]],
+    *,
+    checklist: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Per-file vendored/generated verdicts for the triage tier.
+
+    Gated by ``config.vendored_triage`` (``--no-vendored-triage``
+    disables the tier for a run). Best-effort — a detector failure
+    must never kill prep.
+    """
+    if not getattr(config, "vendored_triage", True):
+        logger.info(
+            "vendored/generated triage disabled for this run "
+            "(--no-vendored-triage)"
+        )
+        return {}
+    vendor_verdicts: dict[str, Any] = {}
+    try:
+        from .vendored_detector import KIND_GENERATED, detect_vendored_files
+
+        vendor_verdicts = detect_vendored_files(
+            gaps, target_path=config.target_path, checklist=checklist,
+        )
+    except Exception:
+        logger.debug(
+            "vendored/generated detection failed", exc_info=True,
+        )
+        return {}
+    if vendor_verdicts:
+        _n_gen = sum(
+            1 for v in vendor_verdicts.values() if v.kind == KIND_GENERATED
+        )
+        logger.info(
+            "vendored/generated triage: %d files detected "
+            "(%d generated, %d vendored)",
+            len(vendor_verdicts), _n_gen, len(vendor_verdicts) - _n_gen,
+        )
+    return vendor_verdicts
+
+
+def _record_vendored_suppressions(
+    gaps: list[dict[str, Any]],
+    triage_results: dict,
+    vendor_verdicts: dict[str, Any],
+    out_dir: Path | None,
+) -> tuple[int, int]:
+    """suppressions.jsonl audit trail for vendored/generated triage
+    decisions — one record per skipped or glance-routed function, same
+    house shape as the binary-oracle triage records (single writer:
+    core.analysis.reach_chokepoint.record_suppression). Functions the
+    tier saw but did not route (pinned, boundary-adjacent vendored)
+    get no record — no decision was made for them.
+
+    Returns ``(skipped, glanced)``.
+    """
+    if not vendor_verdicts or not out_dir:
+        return (0, 0)
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+    except ImportError:
+        return (0, 0)
+    from .triage import vendor_decision
+    from .vendored_detector import KIND_GENERATED
+
+    skipped = glanced = 0
+    for gap in gaps:
+        verdict = vendor_verdicts.get(gap["file"])
+        if verdict is None:
+            continue
+        key = f"{gap['file']}:{gap['name']}"
+        line = gap.get("line_start", 0) or 0
+        tr = triage_results.get(f"{key}:{line}") or triage_results.get(key)
+        if tr is None:
+            continue
+        tier = vendor_decision(tr)
+        if tier is None:
+            continue
+        record_suppression(
+            out_dir,
+            finding={
+                "finding_id": f"audit-triage:{key}:{line}",
+                "rule_id": "audit:vendored-triage",
+                "file_path": gap["file"],
+                "line": line,
+                "function": gap["name"],
+            },
+            verdict=(
+                "generated_code" if verdict.kind == KIND_GENERATED
+                else "vendored_code"
+            ),
+            reason=(
+                f"hypothesis triage: {verdict.kind} code "
+                f"({verdict.signal}: {verdict.detail}) — routed to "
+                f"{tier} tier"
+            ),
+            dropped=False,
+            extra={
+                "stage": "hypothesis-triage",
+                "tier": tier,
+                "signal": verdict.signal,
+            },
+        )
+        if tier == "skip":
+            skipped += 1
+        else:
+            glanced += 1
+    return (skipped, glanced)
+
+
 def _iris_prep_specs(
     config: OrchestratorConfig,
     gaps: list[dict[str, Any]],
@@ -3815,24 +3936,9 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for k, approx in (taint_approx_results or {}).items()
         if _taint_approx_has_flow(approx)
     )
-    from .triage import detect_generated_files
-
-    generated_files = set(detect_generated_files(gaps, target_path=config.target_path))
-    if generated_files:
-        logger.info(
-            "triage: %d generated files detected — functions will be skipped",
-            len(generated_files),
-        )
-    gen_prefilters: dict[str, PrefilterResult] = {}
-    for gap in gaps:
-        if gap["file"] in generated_files:
-            key = f"{gap['file']}:{gap['name']}"
-            gen_prefilters[key] = PrefilterResult(
-                file=gap["file"],
-                function=gap["name"],
-                skip_llm=True,
-                skip_reason="generated code",
-            )
+    vendor_verdicts = _vendored_triage_verdicts(
+        config, gaps, checklist=checklist,
+    )
     # Hydrated detector gaps + dispatch tables are built BEFORE triage
     # so the classifier can consume the dispatch-table census: a
     # function registered as a handler is invoked through a function
@@ -3873,8 +3979,8 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         dangerous_callee_keys=dangerous_callee_keys,
         callback_target_names=callback_target_names,
         priority_scores=priority_scores,
-        prefilter_results=gen_prefilters or None,
         target_path=Path(config.target_path),
+        vendor_verdicts=vendor_verdicts or None,
     )
     logger.info(format_triage_summary(triage_results))
     try:
@@ -3889,6 +3995,26 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             )
     except Exception:
         logger.debug("triage suppression records failed", exc_info=True)
+    # MANDATORY audit trail: every vendored/generated skip/glance
+    # decision leaves one suppressions.jsonl record — nothing is
+    # silently dropped. Counts surface in the run summary.
+    vendored_triage_counts = {
+        "files": len(vendor_verdicts), "skipped": 0, "glanced": 0,
+    }
+    try:
+        _n_vskip, _n_vglance = _record_vendored_suppressions(
+            gaps, triage_results, vendor_verdicts, config.out_dir,
+        )
+        vendored_triage_counts["skipped"] = _n_vskip
+        vendored_triage_counts["glanced"] = _n_vglance
+        if _n_vskip or _n_vglance:
+            logger.info(
+                "vendored/generated triage: %d functions skipped, %d "
+                "routed to glance — records in suppressions.jsonl",
+                _n_vskip, _n_vglance,
+            )
+    except Exception:
+        logger.debug("vendored suppression records failed", exc_info=True)
 
     from .negative_space import (
         check_sibling_negative_space,
@@ -4488,6 +4614,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "priority_scores": priority_scores,
         "taint_path_keys": taint_path_keys,
         "triage_results": triage_results,
+        "vendored_triage_counts": vendored_triage_counts,
         "conventions": conventions,
         "sibling_ns_findings": sibling_ns_findings,
         "peer_groups": peer_groups,
@@ -5474,6 +5601,9 @@ def _run_audit_body(
     trust_boundary_set = _prep.get("trust_boundary_set", set())
     priority_scores = _prep["priority_scores"]
     triage_results = _prep["triage_results"]
+    _vt_counts = _prep.get("vendored_triage_counts") or {}
+    result.vendored_skipped = int(_vt_counts.get("skipped", 0) or 0)
+    result.vendored_glanced = int(_vt_counts.get("glanced", 0) or 0)
     conventions = _prep["conventions"]
     sibling_ns_findings = _prep["sibling_ns_findings"]
     peer_groups = _prep["peer_groups"]

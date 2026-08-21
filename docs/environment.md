@@ -258,6 +258,63 @@ to 120. Raise it only for unusually slow toolchains.
 | `RAPTOR_SAGE_CVE_PRIOR` | `1` | Falsy disables mechanical reuse of SAGE-remembered verified CVE fix pointers in /cve-diff discovery. MAC-gated: rows without a verifying token are ignored regardless. |
 | `RAPTOR_EF_CONFIG` | unset | Path to `packages/exploit_feasibility`'s analysis-settings JSON (chain: explicit arg > `RAPTOR_EF_CONFIG` > `./.raptor.json` > `~/.config/raptor/config.json`). Not to be confused with `RAPTOR_CONFIG` (core.llm models config) — this reader historically shared that name; each side's schema guard names the right variable on mismatch. See "Exploit-feasibility analysis settings" below for the rest of the `RAPTOR_EF_*` family. |
 
+### cve-env (`CVE_ENV_*`)
+
+`packages/cve_env` (the LLM-agentic CVE → Docker environment builder,
+`bin/cve-env` / `libexec/raptor-cve-env`) reads its own `CVE_ENV_`
+family. Precedence is env var > `cve-env.toml` config file > code
+default; malformed values warn (or fall back silently where a row says
+so) and never abort a run.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CVE_ENV_CONFIG_FILE` | unset | Path to the optional `cve-env.toml` config file (the middle tier of the precedence chain). Unset, missing, or unreadable → no file, silently; env vars and code defaults still apply. Loaded once at module import — changing it later in the same process has no effect. |
+| `CVE_ENV_REPO_ROOT` | marker walk | Pins the project root for pip-installed layouts where no `pyproject.toml`/`.git` marker is reachable above the installed package (site-packages). Unset: walk up from the package looking for a marker, then the legacy `parents[2]` fallback. |
+| `CVE_ENV_ALLOW_DEVICES` | off | Exactly `1` keeps `devices:` bindings when a compose file is rewritten for local launch (equivalent to the tool's `allow_devices` parameter); any other value strips them. Fail-closed: device passthrough is opt-in. |
+| `CVE_ENV_DENY_REGISTRY` | unset | Comma-separated registry denylist filtering the `image_resolve` candidate cascade (URL-ish forms accepted; `docker.io` also drops bare-name and `library/*` refs). Empty/unset = no-op. For experimental benches testing behaviour when the high-success registries are unavailable. |
+| `CVE_ENV_IMAGE_RESOLVE_BUDGET_S` | `600` | Per-call wall budget (seconds, float) for one `image_resolve` candidate cascade; `0` disables. Malformed/negative falls back silently. Resolved at call time, so per-run overrides take effect. |
+| `CVE_ENV_DOCKER_RUN_TIMEOUT_S` | `600` | Wall bound (seconds, float) for `docker run --pull always`. Accepted range 10–3600; malformed or out-of-range values fall back silently to 600. |
+| `CVE_ENV_RECOVERY_GAP_TURNS` | `20` | Recovery audit telemetry: max turn gap between a build-path tool failure and a same-tool success for the success to count as a `recovery` audit row. Positive integer; malformed warns and uses the default. |
+| `CVE_ENV_RECOVERY_ELIGIBLE_STAGES` | `ACQUIRE,RESOLVE,LAUNCH,VERIFY` | Comma-separated stage set (upcased) where recovery emission is enabled. DIAGNOSTIC and RESEARCH are excluded by default — retries there are routine, not load-bearing signals. |
+| `CVE_ENV_EXTRA_PROMPT_PREFIX` | unset | Bench-harness experimental hook: text prepended at the very top of the composed system prompt. Capped at 2000 characters; values containing control characters are rejected (dropped entirely). |
+
+More knobs are read through helper functions whose env-var key is an
+opaque parameter (same scanner limitation as the `RAPTOR_EF_*` family
+above), so they are listed as prose:
+
+- `CVE_ENV_MODEL` (default `claude-opus-4-7`): model override, read
+  once at import. The A/B bench harness also sets it per run.
+- Stage budgets: `CVE_ENV_BUDGET_<STAGE>` (USD, float; `<STAGE>` one of
+  `RESEARCH`/`RESOLVE`/`ACQUIRE`/`LAUNCH`/`VERIFY`/`DIAGNOSTIC`/
+  `TERMINAL`/`OTHER`) overrides the per-stage soft budget used for
+  over-budget telemetry; `0` or negative = unbounded; malformed falls
+  back to the code default. Telemetry only — no termination rides on it.
+- Adaptive cost extension: `CVE_ENV_COST_EXTENSION_PCT` (default
+  `0.10`) and `CVE_ENV_MAX_COST_EXTENSIONS` (default `1`, `0` disables)
+  control the soft-cost-cap extension; malformed warns and uses the
+  default.
+- Registry cooldowns (seconds, int): `CVE_ENV_RATE_LIMIT_COOLDOWN_S`
+  and `CVE_ENV_TRANSPORT_COOLDOWN_S` (both default `30`) gate how long
+  `image_resolve` avoids a registry after rate-limit / transport
+  failures.
+- `source_build` extraction bounds: `CVE_ENV_MAX_TARBALL_BYTES`
+  (512 MiB), `CVE_ENV_MAX_JSON_BYTES` (64 MiB),
+  `CVE_ENV_MAX_EXTRACT_BYTES` (2 GiB), `CVE_ENV_MAX_EXTRACT_MEMBERS`
+  (500 000).
+- Post-build housekeeping toggles (shared toggle spellings, default
+  off; each has a CLI flag override): `CVE_ENV_AUTO_CLEANUP_CONTAINERS`
+  (`docker rm -f` this run's labeled containers),
+  `CVE_ENV_AUTO_PRUNE_IMAGES` (dangling-image prune),
+  `CVE_ENV_AUTO_STOP_COLIMA` (`colima stop` when no other build holds
+  the lockfile).
+
+Internal transport, not knobs: `CVE_ENV_OUTPUT_ROOT` (artifact output
+root; `bin/cve-env` / `libexec/raptor-cve-env` wire it to raptor's
+`out/` tree before the package loads) and `CVE_ENV_AGENT_BACKEND` (set
+per run by the A/B bench harness). The compose launcher similarly sets
+`DOCKER_DEFAULT_PLATFORM` in the child environment it builds for
+`docker compose` (platform pinning survives the env allowlist).
+
 ### OCI registry credentials
 
 `core.oci.auth` resolves pull credentials per registry: an anonymous

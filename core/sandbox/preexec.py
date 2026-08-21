@@ -52,6 +52,13 @@ _DEFAULT_LIMITS = {
     "max_file_mb": 10240,  # 10 GB max file size
     "cpu_seconds": 3600,   # 1 hour CPU time
     "nproc": 1024,         # 1024 processes inside the sandbox's user-ns
+    # RLIMIT_NOFILE. Bounds fd-exhaustion DoS (a sandboxed child could
+    # previously open descriptors until the host's per-process ceiling,
+    # commonly 2^20). 4096 is far above any observed tool's need
+    # (compilers, JVMs, scanners run in the low hundreds) while turning
+    # "open until the kernel gives up" into an early, attributable
+    # EMFILE. Clamped to the inherited hard limit; 0 disables.
+    "nofile": 4096,
 }
 
 # User config path for limit overrides
@@ -179,7 +186,8 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
                      seccomp_profile: str | None = None,
                      seccomp_block_udp: bool = False,
                      readable_paths: list | None = None,
-                     deny_all_tcp_connect: bool = False):
+                     deny_all_tcp_connect: bool = False,
+                     host_nproc_cap: int | None = None):
     """Create a preexec_fn that sets resource limits, Landlock, and seccomp.
 
     Resource limits (rlimit) apply for memory / CPU / file-size.
@@ -202,6 +210,16 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
     no allow rules (degraded-mode network fallback — see context.py);
     it engages Landlock even when no writable paths are set, as a
     net-only ruleset that leaves filesystem semantics untouched.
+
+    `host_nproc_cap` is the no-user-namespace substitute for the
+    prlimit/unshare NPROC containment: on the Landlock-only path the
+    child shares the HOST uid, so a flat cap would count the
+    operator's unrelated processes. context.py computes
+    "current same-uid process count + nproc" in the parent and passes
+    the absolute ceiling here; RLIMIT_NPROC then bounds fork-bomb
+    growth to the configured headroom instead of leaving it unbounded.
+    None (or 0) skips it — the namespace paths keep their stronger
+    ns-local accounting.
     """
     landlock_fn = None
     # `readable_paths is not None` (not truthiness): an empty list means
@@ -233,6 +251,7 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
         mem = limits.get("memory_mb", _DEFAULT_LIMITS["memory_mb"])
         file_mb = limits.get("max_file_mb", _DEFAULT_LIMITS["max_file_mb"])
         cpu = limits.get("cpu_seconds", _DEFAULT_LIMITS["cpu_seconds"])
+        nofile = limits.get("nofile", _DEFAULT_LIMITS["nofile"])
 
         mem_bytes = mem * 1024 * 1024
         file_bytes = file_mb * 1024 * 1024
@@ -270,6 +289,36 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
                     b"preexec: RLIMIT_CPU setrlimit failed (errno=%d); "
                     b"process may exceed requested CPU-time bound\n"
                     % _errno
+                )
+
+        if nofile > 0:
+            try:
+                # Clamp to the inherited hard limit — raising the hard
+                # limit needs CAP_SYS_RESOURCE and would fail the whole
+                # setrlimit otherwise.
+                _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                eff = nofile if hard == resource.RLIM_INFINITY else min(
+                    nofile, hard)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (eff, eff))
+            except (ValueError, OSError) as exc:
+                _errno = getattr(exc, "errno", 0) or 0
+                warn_post_fork(
+                    b"preexec: RLIMIT_NOFILE setrlimit failed (errno=%d); "
+                    b"fd-exhaustion bound not applied\n" % _errno
+                )
+        if host_nproc_cap and host_nproc_cap > 0:
+            try:
+                _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+                eff = (host_nproc_cap
+                       if hard == resource.RLIM_INFINITY
+                       else min(host_nproc_cap, hard))
+                resource.setrlimit(resource.RLIMIT_NPROC, (eff, eff))
+            except (ValueError, OSError) as exc:
+                _errno = getattr(exc, "errno", 0) or 0
+                warn_post_fork(
+                    b"preexec: RLIMIT_NPROC setrlimit failed (errno=%d); "
+                    b"fork-bomb bound not applied on the no-namespace "
+                    b"path\n" % _errno
                 )
 
         # Core dumps off. A sandboxed process can read anywhere in the

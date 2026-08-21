@@ -376,6 +376,32 @@ Advisory only: the rules verdict and exit code never change.
 
 ---
 
+## Resource limits
+
+Every sandboxed child gets rlimit caps alongside the isolation
+layers. Defaults (override per limit in
+`~/.config/raptor/sandbox.json`, or per call via `limits={...}`):
+
+| Key | Default | rlimit | Notes |
+|---|---|---|---|
+| `memory_mb` | `0` (off) | `RLIMIT_AS` | Deliberately off: ASAN-instrumented targets reserve ~56 TiB of shadow VA and break under ANY finite cap, and `/validate` PoCs run ASAN through the untrusted entry points. Set a value only for workloads you know are ASAN-free; use cgroup `memory.max` for a real RAM bound. |
+| `max_file_mb` | `10240` | `RLIMIT_FSIZE` | Caps a single written file (10 GB accommodates debug builds and corpora). |
+| `cpu_seconds` | `3600` | `RLIMIT_CPU` | Soft limit fires SIGXCPU 1s before the hard kill. |
+| `nproc` | `1024` | `RLIMIT_NPROC` | Namespace paths count it against the ns-local uid (nobody = zero pre-existing processes). On the Landlock-only path (no user namespace) the same budget is applied as an absolute ceiling of current-same-uid-process-count + `nproc`, bounding fork bombs without counting the operator's unrelated work. |
+| `nofile` | `4096` | `RLIMIT_NOFILE` | Bounds fd-exhaustion DoS; clamped to the inherited hard limit. `0` disables. |
+
+Example `~/.config/raptor/sandbox.json`:
+
+```json
+{
+    "memory_mb": 8192,
+    "max_file_mb": 20480,
+    "nofile": 8192
+}
+```
+
+---
+
 ## When the sandbox cannot engage
 
 `SandboxSetupError` is raised when sandbox isolation could not engage

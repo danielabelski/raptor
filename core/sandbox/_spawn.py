@@ -296,6 +296,7 @@ def _set_rlimits(limits: dict) -> None:
     mem = limits.get("memory_mb", _DEFAULT_LIMITS["memory_mb"])
     file_mb = limits.get("max_file_mb", _DEFAULT_LIMITS["max_file_mb"])
     cpu = limits.get("cpu_seconds", _DEFAULT_LIMITS["cpu_seconds"])
+    nofile = limits.get("nofile", _DEFAULT_LIMITS.get("nofile", 0))
     mem_bytes = mem * 1024 * 1024
     file_bytes = file_mb * 1024 * 1024
     if mem > 0:
@@ -313,6 +314,16 @@ def _set_rlimits(limits: dict) -> None:
             resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
         except (ValueError, OSError):
             warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_CPU setrlimit failed -- cpu cap not applied\n")
+    if nofile > 0:
+        try:
+            # Clamp to the inherited hard limit — raising it needs
+            # CAP_SYS_RESOURCE (host caps, not user-ns caps).
+            _, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            _eff = (nofile if _hard == resource.RLIM_INFINITY
+                    else min(nofile, _hard))
+            resource.setrlimit(resource.RLIMIT_NOFILE, (_eff, _eff))
+        except (ValueError, OSError):
+            warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_NOFILE setrlimit failed -- fd-exhaustion bound not applied\n")
     # RLIMIT_CORE is unconditional — coredumps are always suppressed.
     # Fail-closed: without RLIMIT_CORE=0 the kernel may write a core
     # dump containing the full address-space (including secrets the

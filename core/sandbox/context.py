@@ -1604,12 +1604,46 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         for _tp in (tool_paths or []):
             if _tp and _tp not in _preexec_readable:
                 _preexec_readable.append(_tp)
+
+    # NPROC bound for the no-namespace path. The namespace paths count
+    # RLIMIT_NPROC against the ns-local uid (nobody = zero pre-existing
+    # processes) via the prlimit wrapper / grandchild setrlimit; the
+    # Landlock-only subprocess path shares the HOST uid, where a flat
+    # cap would count the operator's unrelated processes — so it
+    # historically applied NO process bound at all and a fork bomb ran
+    # to the host ceiling. Bound it relative to the current same-uid
+    # process count instead: ceiling = count-at-setup + configured
+    # nproc headroom. Growth is capped at the same budget the
+    # namespace paths grant, without starving concurrent RAPTOR work.
+    _host_nproc_cap = None
+    if (sys.platform == "linux" and not use_seatbelt
+            and not effectively_disabled
+            and not (use_sandbox
+                     and (block_network or use_mount or restrict_reads))):
+        _nproc_budget = int(effective_limits.get("nproc", 0) or 0)
+        if _nproc_budget > 0:
+            try:
+                _uid = os.geteuid()
+                _count = 0
+                for _d in os.listdir("/proc"):
+                    if not _d.isdigit():
+                        continue
+                    try:
+                        if os.stat(f"/proc/{_d}").st_uid == _uid:
+                            _count += 1
+                    except OSError:
+                        continue
+                _host_nproc_cap = _count + _nproc_budget
+            except OSError:
+                _host_nproc_cap = None  # /proc unreadable — skip the cap
+
     preexec = _make_preexec_fn(effective_limits, writable_paths=writable_paths,
                                allowed_tcp_ports=allowed_tcp_ports,
                                seccomp_profile=seccomp_profile,
                                seccomp_block_udp=seccomp_block_udp,
                                readable_paths=_preexec_readable,
-                               deny_all_tcp_connect=_degraded_tcp_deny)
+                               deny_all_tcp_connect=_degraded_tcp_deny,
+                               host_nproc_cap=_host_nproc_cap)
 
     # Host-fingerprint persona — opt-in. Built once per sandbox() context
     # and reused across every run() call inside it. Cleanup happens in

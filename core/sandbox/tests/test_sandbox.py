@@ -75,8 +75,8 @@ class TestResourceLimits(unittest.TestCase):
                                "max_file_mb": 1024, "cpu_seconds": 60})
         with patch("resource.setrlimit") as mock:
             fn()
-        # Four rlimits configured: AS, FSIZE, CPU, CORE.
-        self.assertEqual(mock.call_count, 4)
+        # Five rlimits configured: AS, FSIZE, CPU, NOFILE (default), CORE.
+        self.assertEqual(mock.call_count, 5)
 
     def test_core_dump_suppressed(self):
         """RLIMIT_CORE=0 is always set — sandboxed crashes must not dump

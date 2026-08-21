@@ -576,12 +576,12 @@ class TestCcSubprocessEnv:
         from core.llm.cc_adapter import cc_subprocess_env
         monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
         monkeypatch.setenv("ANTHROPIC_MODEL", "anthropic.claude-mythos-5")
-        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.setenv("AWS_PROFILE", "bedrock-ci")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
         env = cc_subprocess_env()
         assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
         assert env["ANTHROPIC_MODEL"] == "anthropic.claude-mythos-5"
-        assert env["AWS_PROFILE"] == "mythos"
+        assert env["AWS_PROFILE"] == "bedrock-ci"
         assert env["AWS_REGION"] == "us-east-1"
 
     def test_aws_gated_on_bedrock(self, monkeypatch):
@@ -947,7 +947,7 @@ class TestMintChildAwsCredentials:
     def test_mints_when_no_secret_material(self, monkeypatch):
         from core.llm.cc_adapter import _mint_child_aws_credentials
         session_cls = self._patch_session(monkeypatch, self._frozen())
-        env = {"AWS_PROFILE": "mythos", "AWS_REGION": "us-east-1",
+        env = {"AWS_PROFILE": "bedrock-ci", "AWS_REGION": "us-east-1",
                "AWS_CONFIG_FILE": "/home/op/.aws/config"}
         _mint_child_aws_credentials(env)
         assert env["AWS_ACCESS_KEY_ID"] == "ASIAMINTED"
@@ -960,7 +960,7 @@ class TestMintChildAwsCredentials:
         assert "AWS_CONFIG_FILE" not in env
         assert env["AWS_REGION"] == "us-east-1"
         # The parent's profile drove the resolution.
-        assert session_cls.call_args.kwargs["profile"] == "mythos"
+        assert session_cls.call_args.kwargs["profile"] == "bedrock-ci"
 
     def test_static_key_present_no_mint(self, monkeypatch):
         from core.llm.cc_adapter import _mint_child_aws_credentials
@@ -986,7 +986,7 @@ class TestMintChildAwsCredentials:
         def boom(**kwargs):
             raise RuntimeError("no chain")
         self._install_botocore_stub(monkeypatch, boom)
-        env = {"AWS_PROFILE": "mythos"}
+        env = {"AWS_PROFILE": "bedrock-ci"}
         with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
             _mint_child_aws_credentials(env)  # must not raise
         assert "AWS_ACCESS_KEY_ID" not in env
@@ -1018,17 +1018,17 @@ class TestMintChildAwsCredentials:
         session_cls = MagicMock()
         self._install_botocore_stub(monkeypatch, session_cls)
         monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.setenv("AWS_PROFILE", "bedrock-ci")
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
         env = cc_subprocess_env()
         session_cls.assert_not_called()
-        assert env["AWS_PROFILE"] == "mythos"
+        assert env["AWS_PROFILE"] == "bedrock-ci"
 
     def test_cc_subprocess_env_mints_when_opted_in(self, monkeypatch):
         from core.llm.cc_adapter import cc_subprocess_env
         self._patch_session(monkeypatch, self._frozen())
         monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-        monkeypatch.setenv("AWS_PROFILE", "mythos")
+        monkeypatch.setenv("AWS_PROFILE", "bedrock-ci")
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
         env = cc_subprocess_env(mint_aws_credentials=True)
@@ -1055,7 +1055,7 @@ class TestMintChildAwsCredentials:
         from core.llm.cc_adapter import _mint_child_aws_credentials
         monkeypatch.setitem(sys.modules, "botocore", None)
         monkeypatch.setitem(sys.modules, "botocore.session", None)
-        env = {"AWS_PROFILE": "mythos"}
+        env = {"AWS_PROFILE": "bedrock-ci"}
         with caplog.at_level("WARNING", logger="core.llm.cc_adapter"):
             _mint_child_aws_credentials(env)  # must not raise
         assert "AWS_ACCESS_KEY_ID" not in env

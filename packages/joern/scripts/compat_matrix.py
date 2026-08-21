@@ -27,7 +27,17 @@ Usage (from the repo root):
     # test an already-extracted install without downloading
     python3 packages/joern/scripts/compat_matrix.py --joern-dir ~/bin/joern/joern-cli
 
+    # record sha256 pins for the downloaded assets / enforce them
+    python3 packages/joern/scripts/compat_matrix.py --tags v4.0.458 --update-pins
+    python3 packages/joern/scripts/compat_matrix.py --tags v4.0.458 --require-pinned
+
 Exit code 0 iff every tested version passes every step.
+
+Downloads are sha256-checked against compat_matrix_pins.json (the
+extracted launcher is EXECUTED, so a compromised release asset is code
+execution here): pinned+mismatch refuses the archive, unpinned warns
+loudly with the computed digest, --require-pinned refuses unpinned
+tags outright.
 
 The per-version E2E runs in a subprocess (--e2e mode, internal) with
 the release's joern-cli dir prepended to PATH: packages.joern.prereqs
@@ -79,6 +89,18 @@ _DOWNLOAD_URLS = (
 _MIN_ARCHIVE_BYTES = 100_000_000
 _E2E_TIMEOUT_S = 600
 
+# sha256 pins for release assets. The matrix downloads archives from
+# the live releases API and EXECUTES the extracted launcher — a
+# compromised release asset (or API response steering to one) is code
+# execution on the dev host. Pins are trust-on-first-use: an unpinned
+# asset downloads with a loud warning that prints its digest;
+# ``--update-pins`` records the digests of everything downloaded this
+# run; ``--require-pinned`` refuses unpinned tags outright (use it for
+# the standing support floor). Keyed "<tag>/<asset-filename>" so the
+# per-platform and platform-independent archives of one tag pin
+# independently.
+_PINS_FILE = Path(__file__).resolve().parent / "compat_matrix_pins.json"
+
 # Fixture with one intra-procedural flow (process -> strcpy) and one
 # inter-procedural flow (main argv -> process -> strcpy).  The taint
 # query sources from method parameters, so both are reachable; the
@@ -119,14 +141,90 @@ def _newest_tags(count: int) -> list[str]:
     return tags[:count]
 
 
-def _download(tag: str, dest: Path) -> None:
+def _load_pins(path: Path = _PINS_FILE) -> dict[str, str]:
+    """The pins mapping, without documentation keys. Missing or
+    unparseable file means "no pins" (every download warns)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        k: v for k, v in data.items()
+        if not k.startswith("_") and isinstance(v, str)
+    }
+
+
+def _save_pins(pins: dict[str, str], path: Path = _PINS_FILE) -> None:
+    """Persist *pins* (sorted, with the format comment preserved)."""
+    payload: dict[str, str] = {
+        "_comment": (
+            "sha256 pins for joern release assets, keyed "
+            "'<tag>/<asset-filename>'. Populate by running "
+            "compat_matrix.py --update-pins after verifying a "
+            "download out-of-band; verify pinned tags with "
+            "--require-pinned."
+        ),
+    }
+    payload.update({k: pins[k] for k in sorted(pins)})
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _pin_key(tag: str, asset_name: str) -> str:
+    return f"{tag}/{asset_name}"
+
+
+def _tag_has_pin(pins: dict[str, str], tag: str) -> bool:
+    """Whether ANY candidate asset for *tag* carries a pin — the
+    pre-download gate for ``--require-pinned`` (checked before
+    spending a ~1.7 GB download on an asset we'd refuse anyway)."""
+    candidates = {
+        template.format(tag=tag, arch=_arch()).rsplit("/", 1)[1]
+        for template in _DOWNLOAD_URLS
+    }
+    return any(_pin_key(tag, name) in pins for name in candidates)
+
+
+def _verify_pin(
+    pins: dict[str, str], tag: str, asset_name: str, digest: str,
+) -> bool:
+    """True when the asset is pinned and matches; False when unpinned.
+    A pinned-but-mismatching digest raises — the archive must not be
+    extracted, let alone executed."""
+    expected = pins.get(_pin_key(tag, asset_name))
+    if expected is None:
+        return False
+    if expected.lower() != digest.lower():
+        raise RuntimeError(
+            f"sha256 mismatch for {tag}/{asset_name}: pinned "
+            f"{expected}, downloaded {digest} — refusing to extract"
+        )
+    return True
+
+
+def _download(tag: str, dest: Path) -> tuple[str, str]:
+    """Download one release archive; returns (asset_name, sha256hex).
+
+    The digest is computed while streaming so pin verification never
+    re-reads the ~1.7 GB archive.
+    """
+    import hashlib
+
     last_err: Exception | None = None
     for template in _DOWNLOAD_URLS:
         url = template.format(tag=tag, arch=_arch())
+        asset_name = url.rsplit("/", 1)[1]
+        digest = hashlib.sha256()
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, \
                     open(dest, "wb") as out:
-                shutil.copyfileobj(resp, out, length=1 << 20)
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    out.write(chunk)
         except urllib.error.HTTPError as e:
             last_err = e
             continue
@@ -135,7 +233,7 @@ def _download(tag: str, dest: Path) -> None:
             raise RuntimeError(
                 f"download too small ({size} bytes) — bad asset?"
             )
-        return
+        return asset_name, digest.hexdigest()
     raise RuntimeError(f"no downloadable asset for {tag}: {last_err}")
 
 
@@ -289,6 +387,12 @@ def main() -> int:
                     help="scratch dir for downloads (default: mkdtemp)")
     ap.add_argument("--keep", action="store_true",
                     help="keep downloaded archives and extracted trees")
+    ap.add_argument("--update-pins", action="store_true",
+                    help="record the sha256 of every downloaded asset "
+                         "into compat_matrix_pins.json")
+    ap.add_argument("--require-pinned", action="store_true",
+                    help="refuse tags whose release asset has no sha256 "
+                         "pin (use for the standing support floor)")
     ap.add_argument("--e2e", type=str, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -312,13 +416,44 @@ def main() -> int:
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="joern-matrix-"))
     workdir.mkdir(parents=True, exist_ok=True)
 
+    pins = _load_pins()
     rows: list[tuple[str, dict]] = []
     for tag in tags:
         archive = workdir / f"{tag}.zip"
         tree = workdir / tag
         try:
+            if args.require_pinned and not _tag_has_pin(pins, tag):
+                rows.append((tag, {
+                    "pass": False,
+                    "exception": "unpinned release refused "
+                                 "(--require-pinned)",
+                }))
+                print(_format_row(tag, rows[-1][1]), flush=True)
+                continue
             print(f"[{tag}] downloading...", flush=True)
-            _download(tag, archive)
+            asset_name, digest = _download(tag, archive)
+            pinned = _verify_pin(pins, tag, asset_name, digest)
+            if args.require_pinned and not pinned:
+                # The tag had SOME pin (pre-download gate passed) but
+                # the asset actually served isn't the pinned one.
+                raise RuntimeError(
+                    f"asset {asset_name} for {tag} has no pin "
+                    f"(--require-pinned); sha256={digest}"
+                )
+            if not pinned:
+                if args.update_pins:
+                    pins[_pin_key(tag, asset_name)] = digest
+                    _save_pins(pins)
+                    print(f"[{tag}] pinned {asset_name} "
+                          f"sha256={digest}", flush=True)
+                else:
+                    print(
+                        f"[{tag}] WARNING: {asset_name} is not sha256-"
+                        f"pinned — downloaded digest {digest}. Re-run "
+                        f"with --update-pins to record it, or add it "
+                        f"to {_PINS_FILE.name}.",
+                        flush=True,
+                    )
             joern_dir = _extract(archive, tree)
             print(f"[{tag}] running E2E...", flush=True)
             result = _run_e2e_subprocess(joern_dir)

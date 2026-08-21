@@ -497,6 +497,55 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             self.assertEqual(store.who_checked("a.c", 10), ["semgrep"])
             self.assertEqual(store.function_verdict("a.c", 1, 20), "open")  # F1 in f1
 
+    def test_completion_merges_review_journal_into_store(self):
+        # /audit appends per-run review-journal.jsonl entries; completion
+        # must merge them into the project-level index (the source
+        # import_journal reads) and fold them into the durable store.
+        # Regression: the merge used to live only in the libexec shim and
+        # resolved the project via the .active symlink (a registry JSON
+        # file, never a directory), so completed audit runs reported 0%
+        # LLM coverage.
+        import json
+
+        from core.coverage.journal import INDEX_FILENAME
+        from core.coverage.store import CoverageStore
+        with TemporaryDirectory() as d:
+            proj = Path(d)
+            (proj / "checklist.json").write_text(self._checklist())
+            run = proj / "audit-20260821_120000"
+            start_run(run, "audit")
+            entry = {"ts": "2026-08-21T00:00:00Z", "run_id": run.name,
+                     "file": "a.c", "function": "f1", "verdict": "clean",
+                     "source_hash": "abc123def456"}
+            (run / "review-journal.jsonl").write_text(json.dumps(entry) + "\n")
+            complete_run(run)
+
+            self.assertTrue((proj / INDEX_FILENAME).exists())
+            store = CoverageStore(proj / "coverage.json")
+            self.assertEqual(store.who_checked_function("a.c", 1, 20),
+                             {"audit": "full"})
+
+    def test_interrupt_merges_review_journal_into_index(self):
+        # An interrupted run's verdicts are real reviews — they must
+        # reach the project index for sibling runs and the resume, even
+        # though interrupt_run takes no coverage-store snapshot.
+        import json
+
+        from core.coverage.journal import INDEX_FILENAME
+        from core.run.metadata import interrupt_run
+        with TemporaryDirectory() as d:
+            proj = Path(d)
+            (proj / "checklist.json").write_text(self._checklist())
+            run = proj / "audit-20260821_130000"
+            start_run(run, "audit")
+            entry = {"ts": "2026-08-21T00:00:00Z", "run_id": run.name,
+                     "file": "a.c", "function": "f1", "verdict": "clean",
+                     "source_hash": "abc123def456"}
+            (run / "review-journal.jsonl").write_text(json.dumps(entry) + "\n")
+            interrupt_run(run, "SIGTERM drain")
+
+            self.assertTrue((proj / INDEX_FILENAME).exists())
+
     def test_completion_converts_reads_manifest_to_read_coverage(self):
         # The coverage plugin captures LLM file-reads into .reads-manifest;
         # complete_run materialises that into a coverage-read.json record.

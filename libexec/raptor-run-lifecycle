@@ -53,80 +53,6 @@ from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
 from core.run.output import TargetMismatchError, get_output_dir  # noqa: E402
 
 
-def _journal_project_dir(out_dir: Path) -> Path | None:
-    """Project-level directory a run's journal should merge into.
-
-    ``.active`` is a symlink to the project's ``<name>.json`` FILE
-    (``ProjectManager.set_active``), so the project directory is the
-    JSON's ``output_dir`` field — the same derivation
-    ``_setup_checklist_symlink`` uses. Pre-fix this resolved the
-    symlink and required ``is_dir()``, which is always False for a
-    file target: the merge was dead code and the project index was
-    never updated.
-
-    Only returns the active project's dir when *out_dir* actually
-    lives under it — a standalone run completed while some project is
-    active must not pollute that project's index. Falls back to the
-    run's parent when it carries the project store markers (matches
-    ``_snapshot_run_coverage``'s ``proj = run_dir.parent``, which is
-    where the coverage snapshot reads the index back from).
-    """
-    try:
-        out_res = out_dir.resolve()
-    except OSError:
-        return None
-    try:
-        from core.json import load_json
-        from core.startup import PROJECTS_DIR, get_active_name
-        name = get_active_name()
-        if name:
-            data = load_json(PROJECTS_DIR / f"{name}.json")
-            if isinstance(data, dict) and data.get("output_dir"):
-                candidate = Path(data["output_dir"])
-                if candidate.is_dir():
-                    proj_res = candidate.resolve()
-                    if proj_res in out_res.parents:
-                        return proj_res
-    except Exception:  # noqa: BLE001 — fall through to the marker probe
-        pass
-    parent = out_res.parent
-    if (parent / "checklist.json").exists() or (
-        parent / "coverage.json"
-    ).exists():
-        return parent
-    return None
-
-
-def _merge_journal_index(out_dir: Path) -> None:
-    """Merge per-run review journals into the project-level index.
-
-    Covers the run root AND one-level tool subdirs (see
-    ``core.coverage.journal.merge_run_into_index``): /audit journals
-    at the root, /agentic's analysis agent under ``autonomous/``.
-    No-op when the run produced no journal or when no active project
-    context exists.
-    """
-    candidates = [out_dir / "review-journal.jsonl"]
-    try:
-        candidates += [d / "review-journal.jsonl"
-                       for d in out_dir.iterdir() if d.is_dir()]
-    except OSError:
-        pass
-    if not any(p.is_file() for p in candidates):
-        return
-    project_dir = _journal_project_dir(out_dir)
-    if project_dir is None:
-        return
-    try:
-        from core.coverage.journal import merge_run_into_index
-        merged = merge_run_into_index(project_dir, out_dir)
-        if merged:
-            print(f"  journal: {merged} entries merged into project index",
-                  file=sys.stderr)
-    except Exception as exc:  # noqa: BLE001 — merge is best-effort
-        print(f"  journal merge skipped: {exc}", file=sys.stderr)
-
-
 def _pop_flag(rest: list, name: str):
     """Extract ``<name> <value>`` from *rest* in place; None if absent.
 
@@ -274,13 +200,9 @@ def main():
                 entry = harness_model_entry(model)
                 if entry:
                     manifest = {"models": [entry]}
-            # Merge review journal into project-level index FIRST so
-            # ``complete_run``'s coverage-store snapshot (which
-            # imports the journal index via ``import_journal``) sees
-            # this run's entries. Pre-fix the merge ran AFTER
-            # complete_run, so the coverage-store snapshot missed
-            # every fresh /audit entry from the just-finished run.
-            _merge_journal_index(Path(sys.argv[2]))
+            # The review-journal → project-index merge happens inside
+            # ``complete_run`` (the completion chokepoint), so it fires
+            # for direct Python callers as well as this shim.
             complete_run(Path(sys.argv[2]), manifest=manifest,
                          expected_command=claim)
         except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
@@ -325,14 +247,10 @@ def main():
         claim = _pop_flag(rest, "--command")
         message = rest[0] if rest else None
         try:
-            # Ownership gate FIRST — same rationale as `complete`.
-            from core.run.metadata import ensure_run_command
-            ensure_run_command(Path(sys.argv[2]), claim)
-            # Merge the journal into the project index FIRST (same
-            # ordering rationale as `complete`): an interrupted run's
-            # verdicts are real reviews and must reach the project
-            # index so sibling runs (and the eventual resume) see them.
-            _merge_journal_index(Path(sys.argv[2]))
+            # ``interrupt_run`` gates ownership (expected_command)
+            # and merges the journal into the project index itself —
+            # an interrupted run's verdicts are real reviews and must
+            # reach sibling runs and the resume.
             from core.run.metadata import interrupt_run
             interrupt_run(Path(sys.argv[2]), message,
                           expected_command=claim)

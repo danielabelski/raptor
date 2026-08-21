@@ -1026,6 +1026,12 @@ def complete_run(output_dir: Path, extra: dict[str, Any] | None = None,
         extra = dict(extra or {})
         extra.setdefault("sandbox_triage", _triage_verdict)
     _update_status(output_dir, STATUS_COMPLETED, extra, manifest=manifest)
+    # Merge this run's review journal into the project-level index BEFORE
+    # the coverage snapshot — ``import_journal`` reads the index, not
+    # per-run journal files. Living here (the completion chokepoint)
+    # covers every ``complete_run`` caller, including the Python
+    # pipelines that never go through the libexec lifecycle shim.
+    _merge_run_journal(output_dir)
     # Materialise the LLM read-coverage record from the plugin's .reads-manifest
     # FIRST, so the snapshot below imports it alongside the scanner records.
     _convert_reads_manifest(output_dir)
@@ -1056,6 +1062,74 @@ def _stamp_findings_provenance(output_dir: Path) -> None:
     except Exception:
         logging.getLogger(__name__).debug(
             "_stamp_findings_provenance failed for %s", output_dir, exc_info=True
+        )
+
+
+def _journal_project_dir(out_dir: Path) -> Path | None:
+    """Project-level directory a run's journal should merge into.
+
+    ``.active`` is a symlink to the project's ``<name>.json`` FILE
+    (``ProjectManager.set_active``), so the project directory is the
+    JSON's ``output_dir`` field. Only returns the active project's dir
+    when *out_dir* actually lives under it — a standalone run
+    completed while some project is active must not pollute that
+    project's index. Falls back to the run's parent when it carries
+    the project store markers (matches ``_snapshot_run_coverage``'s
+    ``proj = run_dir.parent``, which is where the coverage snapshot
+    reads the index back from).
+    """
+    try:
+        out_res = Path(out_dir).resolve()
+    except OSError:
+        return None
+    try:
+        from core.startup import PROJECTS_DIR, get_active_name
+        name = get_active_name()
+        if name:
+            data = load_json(PROJECTS_DIR / f"{name}.json")
+            if isinstance(data, dict) and data.get("output_dir"):
+                candidate = Path(data["output_dir"])
+                if candidate.is_dir():
+                    proj_res = candidate.resolve()
+                    if proj_res in out_res.parents:
+                        return proj_res
+    except Exception:  # noqa: BLE001 — fall through to the marker probe
+        pass
+    parent = out_res.parent
+    if (parent / "checklist.json").exists() or (
+        parent / "coverage.json"
+    ).exists():
+        return parent
+    return None
+
+
+def _merge_run_journal(output_dir: Path) -> None:
+    """Best-effort: merge this run's review journals (run root + one-
+    level tool subdirs, see ``merge_run_into_index``) into the
+    project-level index so sibling runs, resume, and the coverage-
+    store import see its verdicts.
+
+    Lives at the completion chokepoint so EVERY ``complete_run`` /
+    ``interrupt_run`` caller gets it — including the Python pipelines
+    that never go through the libexec lifecycle shim. No-op for a
+    standalone run (no project dir resolves — see
+    :func:`_journal_project_dir`). Never raises — lifecycle hooks
+    must not fail on a merge error.
+    """
+    try:
+        run_dir = Path(output_dir)
+        proj = _journal_project_dir(run_dir)
+        if proj is None:
+            return
+        from core.coverage.journal import merge_run_into_index
+        merged = merge_run_into_index(proj, run_dir)
+        if merged:
+            logger.info(
+                "journal: %d entries merged into project index", merged,
+            )
+    except Exception:
+        logger.debug(
+            "_merge_run_journal failed for %s", output_dir, exc_info=True
         )
 
 
@@ -1240,6 +1314,10 @@ def interrupt_run(output_dir: Path, reason: str | None = None,
         extra.setdefault("sandbox_triage", _triage_verdict)
     _update_status(output_dir, STATUS_INTERRUPTED, extra)
     _convert_reads_manifest(output_dir)  # see fail_run
+    # An interrupted run's journal verdicts are real reviews — merge them
+    # into the project index so sibling runs (and the eventual resume)
+    # see them.
+    _merge_run_journal(output_dir)
 
 
 #: Statuses :func:`resume_run` accepts as re-enterable. ``completed``

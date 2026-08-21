@@ -201,6 +201,25 @@ class TestCalculateCostSplit:
         actual_cost = provider._calculate_cost_split(input_tokens, output_tokens)
         assert abs(actual_cost - expected_cost) < 1e-10
 
+    def test_bedrock_form_id_resolves_rates(self):
+        """Vendor/region-prefixed Bedrock ids resolve the bare model's
+        MODEL_COSTS entry — same normalisation chain as
+        context_window_for. Pre-fix they fell into the $0
+        unknown-model path and budget caps were unenforced."""
+        from core.llm.model_data import _bedrock_cost_multiplier
+        bare = next(iter(MODEL_COSTS))
+        rates = MODEL_COSTS[bare]
+        for prefixed in (f"anthropic.{bare}", f"us.anthropic.{bare}"):
+            provider = self._make_provider_instance(prefixed)
+            mult = _bedrock_cost_multiplier(prefixed)
+            expected = (
+                (1000 / 1000) * rates["input"]
+                + (500 / 1000) * rates["output"]
+            ) * mult
+            actual = provider._calculate_cost_split(1000, 500)
+            assert abs(actual - expected) < 1e-10, prefixed
+            assert actual > 0.0, prefixed
+
     def test_unknown_model_uses_cost_per_1k(self):
         """Unknown models fall back to cost_per_1k_tokens flat rate."""
         provider = self._make_provider_instance(

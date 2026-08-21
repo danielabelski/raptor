@@ -446,8 +446,22 @@ def try_tier1b(
             "Tier 1B: LLM-claimed validator_source_line not found as "
             "a + line in the fix diff (possible hallucination)",
         )
-    # Read post-fix source for verification.
-    src_path = repo_root / sink_uri.lstrip("/")
+    # Read post-fix source for verification.  Containment-checked:
+    # ``sink_uri`` arrives verbatim from finding/corpus records
+    # (cvefix_bridge threads it from the diff/finding shape), so a
+    # crafted ``..`` segment would walk the read outside ``repo_root``
+    # and adjudicate a barrier against an arbitrary host file.  Same
+    # defence as the rest of the arc (``finding_resolver.
+    # _read_finding_source``, ``injection_prescreen._read_source``).
+    try:
+        src_path = (repo_root / sink_uri.lstrip("/")).resolve()
+        src_path.relative_to(repo_root.resolve())
+    except (ValueError, OSError):
+        return Tier0Result(
+            Tier0Status.NOT_APPLICABLE,
+            f"Tier 1B: sink path {sink_uri!r} resolves outside the "
+            f"repo root — refusing to read it",
+        )
     if not src_path.is_file():
         return Tier0Result(
             Tier0Status.NOT_APPLICABLE,

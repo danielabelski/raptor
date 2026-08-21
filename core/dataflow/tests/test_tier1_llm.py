@@ -484,3 +484,107 @@ def test_charset_declines_across_function_boundary_js(tmp_path: Path):
     )
     assert r.status is not t1.Tier0Status.SOUND
     assert "function boundary" in r.reasoning
+
+
+# ---------------------------------------------------------------------------
+# Post-fix source read containment
+# ---------------------------------------------------------------------------
+
+def test_sink_uri_escaping_repo_root_declined(tmp_path: Path):
+    """A ``..`` sink_uri from a hostile/corrupted finding record must
+    not walk the post-fix read outside repo_root — pre-fix Tier 1B
+    read the out-of-root file and could mint a SOUND receipt against
+    it.  Same containment as ``finding_resolver._read_finding_source``
+    / ``injection_prescreen._read_source``."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    # Out-of-root file that WOULD adjudicate SOUND if it were read.
+    (tmp_path / "outside_secret.py").write_text(
+        "from werkzeug.security import safe_join\n"
+        "def f(path):\n"
+        "    abs_path = safe_join(BASE, path)\n"
+        "    return open(abs_path)\n"
+    )
+    diff = (
+        "+from werkzeug.security import safe_join\n"
+        "+    abs_path = safe_join(BASE, path)\n"
+    )
+    reply = json.dumps({
+        "kind": "known_safe_call",
+        "validator_source_line": "abs_path = safe_join(BASE, path)",
+        "variable_name": "abs_path",
+        "charset": "", "forbidden": "",
+        "library_call": "werkzeug.security.safe_join",
+    })
+    r = t1.try_tier1b(
+        fix_diff=diff, repo_root=repo_root,
+        sink_uri="../outside_secret.py", sink_line=4,
+        sink_class="pathtrav", language="python",
+        complete=_fake_complete(reply),
+    )
+    assert r.status is t1.Tier0Status.NOT_APPLICABLE
+    assert "outside the repo root" in r.reasoning
+
+
+def test_sink_uri_symlink_escape_declined(tmp_path: Path):
+    """A symlink inside the repo pointing outside it must not defeat
+    the containment check (resolve() collapses it)."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (tmp_path / "outside_secret.py").write_text(
+        "from werkzeug.security import safe_join\n"
+        "def f(path):\n"
+        "    abs_path = safe_join(BASE, path)\n"
+        "    return open(abs_path)\n"
+    )
+    (repo_root / "app.py").symlink_to(tmp_path / "outside_secret.py")
+    diff = (
+        "+from werkzeug.security import safe_join\n"
+        "+    abs_path = safe_join(BASE, path)\n"
+    )
+    reply = json.dumps({
+        "kind": "known_safe_call",
+        "validator_source_line": "abs_path = safe_join(BASE, path)",
+        "variable_name": "abs_path",
+        "charset": "", "forbidden": "",
+        "library_call": "werkzeug.security.safe_join",
+    })
+    r = t1.try_tier1b(
+        fix_diff=diff, repo_root=repo_root,
+        sink_uri="app.py", sink_line=4,
+        sink_class="pathtrav", language="python",
+        complete=_fake_complete(reply),
+    )
+    assert r.status is t1.Tier0Status.NOT_APPLICABLE
+    assert "outside the repo root" in r.reasoning
+
+
+def test_sink_uri_inner_dotdot_resolving_inside_still_reads(tmp_path: Path):
+    """A path with an inner ``..`` that still RESOLVES inside the repo
+    root is legitimate (finding tools emit these) — containment must
+    not reject it."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "app.py").write_text(
+        "from werkzeug.security import safe_join\n"
+        "def f(path):\n"
+        "    abs_path = safe_join(BASE, path)\n"
+        "    return open(abs_path)\n"
+    )
+    diff = (
+        "+from werkzeug.security import safe_join\n"
+        "+    abs_path = safe_join(BASE, path)\n"
+    )
+    reply = json.dumps({
+        "kind": "known_safe_call",
+        "validator_source_line": "abs_path = safe_join(BASE, path)",
+        "variable_name": "abs_path",
+        "charset": "", "forbidden": "",
+        "library_call": "werkzeug.security.safe_join",
+    })
+    r = t1.try_tier1b(
+        fix_diff=diff, repo_root=tmp_path,
+        sink_uri="sub/../app.py", sink_line=4,
+        sink_class="pathtrav", language="python",
+        complete=_fake_complete(reply),
+    )
+    assert r.status is t1.Tier0Status.SOUND

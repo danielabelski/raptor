@@ -29,8 +29,8 @@ Robustness contract:
 """
 from __future__ import annotations
 
-import glob
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
@@ -160,12 +160,23 @@ def load_from_paths(
 
 def discover_reports(root: Path) -> List[Path]:
     """Find every ``orchestrated_report.json`` under ``root``. Sorted
-    for determinism. Symlinks followed only one hop deep to avoid
-    cycle traversal."""
+    for determinism. Symlinked DIRECTORIES are never traversed — that
+    both forecloses symlink-cycle hangs and keeps discovery inside the
+    ``root`` tree (a planted directory symlink cannot pull reports in
+    from elsewhere on the filesystem). The previous implementation was
+    a bare recursive glob whose symlink behaviour was whatever the
+    running Python's ``glob`` did — the docstring's one-hop claim was
+    never implemented, and the actual behaviour could regress silently
+    across Python versions. ``os.walk(followlinks=False)`` makes the
+    invariant explicit.
+    """
     if not root.is_dir():
         return []
-    pattern = str(root / "**" / "orchestrated_report.json")
-    return sorted(Path(p) for p in glob.glob(pattern, recursive=True))
+    found: List[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        if "orchestrated_report.json" in filenames:
+            found.append(Path(dirpath) / "orchestrated_report.json")
+    return sorted(found)
 
 
 # ---------------------------------------------------------------------------

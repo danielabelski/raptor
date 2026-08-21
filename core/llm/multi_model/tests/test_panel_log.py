@@ -319,3 +319,49 @@ def test_distinct_models_sorted(tmp_path):
     ])
     records = load_from_orchestrated_report(path)
     assert distinct_models(records) == ["alpha", "mu", "zeta"]
+
+
+class TestDiscoverReportsSymlinkDiscipline:
+    """discover_reports claimed one-hop symlink discipline but was a
+    bare recursive glob with no symlink logic. The implemented
+    invariant: symlinked directories are never traversed — no cycle
+    hangs, no discovery escaping the root tree."""
+
+    def _report(self, d):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "orchestrated_report.json").write_text("{}")
+
+    def test_symlink_cycle_terminates_promptly(self, tmp_path):
+        import os as _os
+
+        from core.llm.multi_model.panel_log import discover_reports
+        root = tmp_path / "root"
+        self._report(root / "runs" / "a")
+        _os.symlink(root, root / "runs" / "loop")  # cycle
+        found = discover_reports(root)
+        assert found == [root / "runs" / "a" / "orchestrated_report.json"]
+
+    def test_symlinked_directory_outside_root_not_pulled_in(self, tmp_path):
+        import os as _os
+
+        from core.llm.multi_model.panel_log import discover_reports
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        self._report(root / "runs")
+        self._report(outside)
+        _os.symlink(outside, root / "planted")
+        found = discover_reports(root)
+        assert found == [root / "runs" / "orchestrated_report.json"]
+
+    def test_plain_tree_discovery_sorted(self, tmp_path):
+        from core.llm.multi_model.panel_log import discover_reports
+        root = tmp_path / "root"
+        self._report(root / "b")
+        self._report(root / "a" / "deep")
+        found = discover_reports(root)
+        assert found == sorted(found)
+        assert len(found) == 2
+
+    def test_missing_root_returns_empty(self, tmp_path):
+        from core.llm.multi_model.panel_log import discover_reports
+        assert discover_reports(tmp_path / "nope") == []

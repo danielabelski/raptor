@@ -1248,6 +1248,30 @@ def _collect_target_names(target: ast.AST, names: set) -> None:
         _collect_target_names(target.value, names)
 
 
+def _operator_mixes_taint(value: ast.AST, chain: set) -> bool:
+    """True when a string-building operator expression inside ``value``
+    combines a chain member with a non-chain :class:`ast.Name`.
+
+    Covers ``BinOp`` (``+`` concatenation and ``%`` formatting) and
+    f-strings (``JoinedStr``).  Call-ARGUMENT mixing
+    (``os.path.join(BASE, name)``) is deliberately NOT flagged: the
+    chain's documented contract accepts derivations through calls
+    (the whoogle archetype), and distinguishing a module constant
+    from a tainted local inside an argument list needs real taint
+    tracking — Tier 2's job.  Operator mixing is the shape the
+    charset proof actually breaks on: the concatenated non-chain
+    operand's characters reach the sink unvalidated.
+    """
+    for sub in ast.walk(value):
+        if isinstance(sub, (ast.BinOp, ast.JoinedStr)):
+            names = {
+                n.id for n in ast.walk(sub) if isinstance(n, ast.Name)
+            }
+            if (names & chain) and (names - chain):
+                return True
+    return False
+
+
 def _python_chain_reaches_sink(
     tree: ast.AST, start_var: str, validator_line: int,
     sink_line: int, sink_line_text: str,
@@ -1268,7 +1292,11 @@ def _python_chain_reaches_sink(
 
     Chain growth: any Assign/AnnAssign/AugAssign between validator and
     sink whose RHS references a chain variable adds its target name(s)
-    to the chain.
+    to the chain — UNLESS the RHS operator-mixes taint
+    (:func:`_operator_mixes_taint`): ``cmd = name + raw`` combines the
+    validated ``name`` with the unvalidated ``raw``, so ``cmd`` never
+    joins the chain (and a chain-member target is killed).  Mixing
+    through call ARGUMENTS is not modeled (see the helper's docstring).
 
     Chain KILL: an assignment whose target is a chain member and whose
     RHS references NO chain member REBINDS that variable to a fresh
@@ -1316,6 +1344,22 @@ def _python_chain_reaches_sink(
                 chain -= target_names
             continue
         if chain & rhs_names:
+            if _operator_mixes_taint(node.value, chain):
+                # Taint mixing on a plain Assign: a string-building
+                # operator expression (``cmd = name + raw``, an
+                # f-string interpolating both) combines a chain
+                # member with a non-chain name.  The target carries
+                # PARTIALLY-unvalidated data, so it must never join
+                # the chain — and if it was a member, it stops being
+                # one.  Pre-fix any RHS referencing at least one
+                # chain member added the target as fully validated,
+                # so the Tier 0 SOUND verdict suppressed the live
+                # ``raw``→sink flow (the AugAssign form already
+                # killed; the Assign spelling of the same mix did
+                # not).
+                if not at_validator:
+                    chain -= target_names
+                continue
             chain |= target_names
         elif not at_validator:
             # Rebind from non-chain RHS: the target no longer carries
@@ -1345,20 +1389,47 @@ def _lexical_var_reaches_sink(
     validator and sink rebinds it to a value the validator never
     constrained, so it must KILL the reach.
 
+    Compound assignments (``var += rhs`` and the other ``op=`` forms,
+    including JS logical assignment ``||= &&= ??=``) MIX new data into
+    the validated value; they KILL the reach whenever the RHS
+    references any identifier other than ``var`` itself — the mixed-in
+    operand's characters were never covered by the validator's charset
+    proof.  Pre-fix ``\\bvar\\b\\s*=(?!=)`` matched only the plain
+    ``=`` spelling, so ``x += req.query.evil`` slid past the
+    rebind-KILL entirely (the lexical analogue of the AugAssign mixing
+    kill the AST path already had).  Identifier detection does not
+    strip string literals, so ``x += ".cfg"`` also kills — extra
+    conservatism in the sound direction.
+
     Conservative by design: it detects reassignments lexically and errs
     toward KILL (declining the suppression → the finding falls through to
     LLM validation), which is the sound direction for a false-negative
     fix. Member/index writes (``var.f = …``, ``var[i] = …``) and
     comparisons (``==``/``!=``/``<=``/``>=``) do not count as rebinds.
+    Residual (documented): the self-referencing plain-assign mix
+    ``x = x + evil`` still passes — the AST path covers it for Python;
+    modelling it lexically without breaking ``x = validate(x)`` needs
+    a parser.
     """
     if not _re.search(rf"\b{_re.escape(var)}\b", sink_line_text):
         return False
     lines = source_text.splitlines()
     assign_re = _re.compile(rf"\b{_re.escape(var)}\b\s*=(?!=)")
+    compound_re = _re.compile(
+        rf"\b{_re.escape(var)}\b\s*"
+        r"(?:[-+*/%&|^]|<<|>>|\*\*|\|\||&&|\?\?)=(?!=)"
+    )
     self_re = _re.compile(rf"\b{_re.escape(var)}\b")
+    ident_re = _re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
     for lineno in range(validator_line + 1, sink_line):
         if 1 <= lineno <= len(lines):
             text = lines[lineno - 1]
+            m = compound_re.search(text)
+            if m:
+                rhs_idents = set(ident_re.findall(text[m.end():]))
+                if rhs_idents - {var}:
+                    return False  # compound assign mixes taint -> KILL
+                continue
             m = assign_re.search(text)
             if m and not self_re.search(text[m.end():]):
                 return False  # rebind from a non-self RHS -> KILL

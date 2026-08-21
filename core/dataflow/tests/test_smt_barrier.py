@@ -1654,3 +1654,129 @@ def test_extract_refuses_ruby_guard_with_regex_flags():
             f'+    raise ArgumentError unless name =~ /\\A[a-z0-9]+\\z/{flag}\n'
         )
         assert sb.extract_validator(diff, language="ruby") is None, flag
+
+
+# ---------------------------------------------------------------------------
+# Taint mixing on plain Assign (F303) + the lexical += analogue.
+# ---------------------------------------------------------------------------
+
+def test_chain_assign_mixing_never_grows_chain():
+    """``cmd = name + raw`` mixes validated ``name`` with unvalidated
+    ``raw`` — ``cmd`` must NOT join the chain.  Pre-fix any RHS
+    referencing at least one chain member added the target as fully
+    validated, and the Tier 0 SOUND verdict suppressed the live
+    ``raw``→sink flow (natural benign-but-vulnerable shape, not only
+    adversarial repos)."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    raw = request.args.get('extra')\n"
+        "    if not re.match(r'^[a-z0-9]+$', name):\n"
+        "        return 'bad'\n"
+        "    cmd = name + raw\n"
+        "    return os.system(cmd)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 4, 7, "    return os.system(cmd)",
+    ) is False
+
+
+def test_chain_assign_mixing_kills_chain_member_target():
+    """A chain member REBOUND to a mixed expression stops being
+    validated (``y = name; y = name + raw``)."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    raw = request.args.get('extra')\n"
+        "    if not re.match(r'^[a-z0-9]+$', name):\n"
+        "        return 'bad'\n"
+        "    y = name\n"
+        "    y = name + raw\n"
+        "    return os.system(y)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 4, 8, "    return os.system(y)",
+    ) is False
+
+
+def test_chain_fstring_mixing_never_grows_chain():
+    """f-string interpolation is operator mixing too:
+    ``cmd = f'{name} {raw}'``."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def serve(request):\n"
+        "    name = request.args.get('name')\n"
+        "    raw = request.args.get('extra')\n"
+        "    if not re.match(r'^[a-z0-9]+$', name):\n"
+        "        return 'bad'\n"
+        "    cmd = f'{name} {raw}'\n"
+        "    return os.system(cmd)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 4, 7, "    return os.system(cmd)",
+    ) is False
+
+
+def test_chain_concat_with_constant_still_grows():
+    """``safe_path = cfg + '.cfg'`` has no non-chain Name in the
+    operator expression — the pinned multi-step derivation keeps
+    working."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def f(name):\n"
+        '    if not re.match(r"^[a-z]+$", name): return\n'
+        "    cfg = os.path.join(BASE, name)\n"
+        "    safe_path = cfg + '.cfg'\n"
+        "    return open(safe_path)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 2, 5, "    return open(safe_path)",
+    ) is True
+
+
+def test_chain_mix_of_two_chain_members_still_grows():
+    """Concatenating two CHAIN members is not mixing —
+    ``full = stem + ext`` where both derive from the validated var."""
+    import ast as _ast_mod
+    tree = _ast_mod.parse(
+        "def f(name):\n"
+        '    if not re.match(r"^[a-z]+$", name): return\n'
+        "    stem = name\n"
+        "    ext = name\n"
+        "    full = stem + ext\n"
+        "    return open(full)\n"
+    )
+    assert sb._python_chain_reaches_sink(
+        tree, "name", 2, 6, "    return open(full)",
+    ) is True
+
+
+def test_try_tier0_assign_mixing_not_sound(tmp_path: Path):
+    """End-to-end F303 PoC: the CodeQL-flagged ``raw``→sink flow must
+    not be demoted by a SOUND verdict earned via the mixed ``cmd``."""
+    (tmp_path / "app.py").write_text(
+        "def serve(request):\n"                                     # 1
+        "    name = request.args.get('name')\n"                      # 2
+        "    raw = request.args.get('extra')\n"                      # 3
+        "    if not re.match(r'^[a-z0-9]+$', name):\n"               # 4
+        "        return 'bad'\n"                                      # 5
+        "    cmd = name + raw\n"                                      # 6
+        "    return os.system(cmd)\n"                                 # 7
+    )
+    diff = (
+        "@@ -1,5 +1,7 @@\n"
+        " def serve(request):\n"
+        "     name = request.args.get('name')\n"
+        "     raw = request.args.get('extra')\n"
+        "+    if not re.match(r'^[a-z0-9]+$', name):\n"
+        "+        return 'bad'\n"
+        "     cmd = name + raw\n"
+        "     return os.system(cmd)\n"
+    )
+    r = sb.try_tier0(
+        fix_diff=diff, repo_root=tmp_path,
+        sink_uri="app.py", sink_line=7, sink_class="cmdi",
+    )
+    assert r.status is not sb.Tier0Status.SOUND

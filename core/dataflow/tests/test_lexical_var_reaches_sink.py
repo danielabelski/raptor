@@ -83,3 +83,56 @@ def test_absent_at_sink_does_not_reach():
         "}\n"
     )
     assert _reaches(src, "p", 2, 3) is False
+
+
+def test_compound_assign_with_taint_kills():
+    """``p += req.query.evil`` mixes unvalidated data — the lexical
+    analogue of the AST path's AugAssign kill.  Pre-fix the rebind
+    regex matched only the plain ``=`` spelling, so the mix slid
+    through and the prescreen suppressed a live flow."""
+    src = (
+        "function h(req){\n"            # 1
+        "  let p = validate(req.q);\n"  # 2 validator
+        "  p += req.query.evil;\n"      # 3 mixes taint
+        "  exec(p);\n"                  # 4 sink
+        "}\n"
+    )
+    assert _reaches(src, "p", 2, 4) is False
+
+
+def test_other_compound_operators_kill_too():
+    for op in ("-=", "*=", "/=", "%=", "&=", "|=", "^=",
+               "<<=", ">>=", "**=", "||=", "&&=", "??="):
+        src = (
+            "function h(req){\n"
+            "  let p = validate(req.q);\n"
+            f"  p {op} req.query.evil;\n"
+            "  exec(p);\n"
+            "}\n"
+        )
+        assert _reaches(src, "p", 2, 4) is False, op
+
+
+def test_compound_assign_pure_self_survives():
+    """``p += p`` references only the validated value itself — no new
+    data enters, the reach survives (mirrors the AST rule)."""
+    src = (
+        "function h(req){\n"
+        "  let p = validate(req.q);\n"
+        "  p += p;\n"
+        "  exec(p);\n"
+        "}\n"
+    )
+    assert _reaches(src, "p", 2, 4) is True
+
+
+def test_comparison_operators_still_not_rebinds():
+    """``<=`` / ``>=`` / ``!=`` must not read as compound assigns."""
+    src = (
+        "function h(req){\n"
+        "  let p = validate(req.q);\n"
+        "  if (p <= limit) { log(p); }\n"
+        "  exec(p);\n"
+        "}\n"
+    )
+    assert _reaches(src, "p", 2, 4) is True

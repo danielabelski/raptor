@@ -155,7 +155,7 @@
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
   "artifacts:write_only_artifact::bench-meta.json": {
-   "note": "operator-facing run-provenance sidecar written by libexec/raptor-cve-env-bench next to results.jsonl (CVE count, backends, caps, start time); consumed by humans/jq when reading a bench dir, same class as suppressions.jsonl"
+   "note": "operator-facing run-provenance sidecar written by packages/cve_env/scripts/raptor-cve-env-bench next to results.jsonl (CVE count, backends, caps, start time); consumed by humans/jq when reading a bench dir, same class as suppressions.jsonl"
   },
   "artifacts:write_only_artifact::bench_report.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"

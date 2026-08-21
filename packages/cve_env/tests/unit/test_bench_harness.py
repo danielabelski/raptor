@@ -1,4 +1,4 @@
-"""Tests for libexec/raptor-cve-env-bench — the backend A/B harness.
+"""Tests for packages/cve_env/scripts/raptor-cve-env-bench — the A/B harness.
 
 The subprocess boundary is stubbed; the harness's own logic (CVE list
 handling, record shaping, sidecar/stdout outcome recovery, timeout
@@ -18,7 +18,8 @@ from types import SimpleNamespace
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SCRIPT = REPO_ROOT / "libexec" / "raptor-cve-env-bench"
+SCRIPT = (REPO_ROOT / "packages" / "cve_env" / "scripts"
+          / "raptor-cve-env-bench")
 
 
 def _load():

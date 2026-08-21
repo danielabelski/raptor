@@ -1409,7 +1409,7 @@
     "count": 12,
     "kind": "literal"
   },
-  "libexec/raptor-cve-env-bench::_RECORD_FIELDS": {
+  "packages/cve_env/scripts/raptor-cve-env-bench::_RECORD_FIELDS": {
     "count": 10,
     "kind": "literal",
     "note": "outcome-sidecar field names copied verbatim into each bench record (record schema keys, not a function-name vocabulary)"

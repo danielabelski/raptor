@@ -18,6 +18,27 @@ from ..helpers import (
 from ..parsers import parse_gharchive_event
 
 
+def _gharchive_day(timestamp: str) -> str:
+    """Derive the 8-digit ``YYYYMMDD`` day for the GH Archive day table
+    from a caller-supplied timestamp.
+
+    Accepts ISO forms ("2024-01-15T10:30:00Z", "2024-01-15 10:30:00")
+    and digit-only forms ("20240115", "202401151030"). The previous
+    inline derivation (``timestamp[:10].replace("-", "")``) produced
+    the wrong digit count for anything but a dash-separated date and
+    the 8-digit result was then rejected by the client's 12-digit
+    validation, so every recover_* call raised before querying.
+    """
+    digits = "".join(ch for ch in timestamp if ch.isdigit())
+    if len(digits) < 8:
+        raise ValueError(
+            f"timestamp {timestamp!r} does not contain a YYYYMMDD date "
+            "(need at least 8 digits, e.g. '2024-01-15T10:30:00Z' or "
+            "'20240115')"
+        )
+    return digits[:8]
+
+
 class GHArchiveCollector:
     """Collects evidence from GH Archive (BigQuery)."""
 
@@ -64,7 +85,7 @@ class GHArchiveCollector:
     def recover_commit(self, repo: str, sha: str, timestamp: str) -> CommitObservation:
         """Recover commit metadata from GH Archive."""
         owner, name = repo.split("/", 1)
-        date = timestamp[:10].replace("-", "")
+        date = _gharchive_day(timestamp)
 
         rows = self.client.query_events(repo=repo, event_type="PushEvent", from_date=date)
 
@@ -112,7 +133,7 @@ class GHArchiveCollector:
     def recover_force_push(self, repo: str, timestamp: str) -> CommitObservation:
         """Recover force-pushed commit from GH Archive."""
         owner, name = repo.split("/", 1)
-        date = timestamp[:10].replace("-", "")
+        date = _gharchive_day(timestamp)
 
         rows = self.client.query_events(repo=repo, event_type="PushEvent", from_date=date)
 
@@ -164,7 +185,7 @@ class GHArchiveCollector:
     ) -> IssueObservation:
         """Internal: Recover issue or PR from GH Archive."""
         owner, name = repo.split("/", 1)
-        date = timestamp[:10].replace("-", "")
+        date = _gharchive_day(timestamp)
         event_type = "PullRequestEvent" if item_type == "pr" else "IssuesEvent"
         payload_key = "pull_request" if item_type == "pr" else "issue"
 

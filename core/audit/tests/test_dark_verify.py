@@ -3912,3 +3912,57 @@ class TestHarnessTokenBinding:
         with pytest.raises(ValueError):
             generate_c_harness(
                 spec, tmp_path, witness_token='x"); attack(("')
+
+
+# -- setup-line grammar: backtracking budget ----------------------------------
+
+
+class TestSetupGrammarBacktrackingBudget:
+    """The declaration-grammar regexes run on LLM-authored setup
+    lines, so a line that merely FAILS to parse must fail in linear
+    time. Both historical quadratic witnesses are pinned: an
+    unclosed ``[`` before a whitespace run (C array dims), and a
+    type annotation with no ``=`` after a whitespace run (Rust
+    let-binding). Budgets are CPU time, not wall time."""
+
+    # 200k chars: the pre-fix quadratic engines needed tens of
+    # seconds here; the unambiguous grammars need milliseconds.
+    _N = 200_000
+    _CPU_BUDGET_S = 1.0
+
+    def _assert_cpu_bounded(self, fn):
+        import time as _time
+        start = _time.process_time()
+        fn()
+        assert _time.process_time() - start < self._CPU_BUDGET_S
+
+    def test_c_decl_unclosed_bracket_whitespace_is_linear(self):
+        line = "a[" + " " * self._N + "("
+        self._assert_cpu_bounded(lambda: ex._C_DECL_LHS_RE.match(line))
+
+    def test_rust_let_annotation_whitespace_is_linear(self):
+        line = "let x : T" + " " * self._N + "("
+        self._assert_cpu_bounded(lambda: ex._RUST_LET_RE.match(line))
+
+    def test_c_array_dim_forms_still_accepted(self):
+        for decl in ("char buf[16];", "int m[];", "int m[  ];",
+                     "char b [ 12 ] [ 3 ];", "unsigned long long x;",
+                     "struct foo *p;"):
+            assert ex._c_setup_line_error(decl) is None, decl
+
+    def test_c_rejections_unchanged(self):
+        for decl in ("int x(void);", "a[ (;", "char buf[1e];"):
+            assert ex._c_setup_line_error(decl) is not None, decl
+
+    def test_rust_annotation_forms_still_accepted(self):
+        for line in ("let mut v: Vec<u8> = 5;",
+                     "let z: std::vec::Vec< u8 , u8 > = q;",
+                     "let y = 5;"):
+            assert ex._rust_setup_line_error(line) is None, line
+
+    def test_setup_line_length_cap(self):
+        long_line = "int x = " + "1" * ex._MAX_SETUP_LINE_CHARS + ";"
+        err = ex._validate_setup([long_line], "c")
+        assert err is not None and "exceeds" in err
+        ok_line = "char buf[16];"
+        assert ex._validate_setup([ok_line], "c") is None

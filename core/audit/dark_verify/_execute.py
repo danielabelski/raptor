@@ -207,12 +207,18 @@ _C_CHAR_LIT_RE = re.compile(r"'(?:\\.|[^'\\])'")
 # declarator: one-or-more type words, optional pointer stars, the
 # variable name, optional array dims. No parens (kills function
 # declarators, casts and __attribute__), no commas (one variable per
-# line keeps the grammar honest).
+# line keeps the grammar honest). The dims group spells "optional
+# digits" as `(?:[0-9]+\s*)?` rather than `[0-9]*` so the two
+# whitespace runs around the digits can never both claim the same
+# spaces — with `[0-9]*` allowed to match empty, `\s*[0-9]*\s*` has
+# quadratically many partitions of one whitespace run and an
+# unclosed `[` made the validator a backtracking sink on
+# LLM-authored input.
 _C_DECL_LHS_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*"            # first type word
     r"(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"     # further type words / name
     r"(?:\s*\*+\s*[A-Za-z_][A-Za-z0-9_]*)?"  # pointer declarator + name
-    r"(?:\s*\[\s*[0-9]*\s*\])*"           # array dims
+    r"(?:\s*\[\s*(?:[0-9]+\s*)?\])*"      # array dims
     r"\s*$"
 )
 
@@ -256,9 +262,18 @@ def _c_setup_line_error(line: str) -> str | None:
     return None
 
 
+# The type annotation is spelled as non-space chunks separated by
+# `\s+` instead of one class with `\s` inside: a class that can eat
+# whitespace next to the `\s*=` that follows gives the engine
+# quadratically many ways to split the run before `=`, and an
+# annotation with no `=` after it made the validator a backtracking
+# sink on LLM-authored input. Chunking keeps the accepted language
+# identical (any interleaving of type chars and whitespace) while
+# every space belongs to exactly one quantifier.
 _RUST_LET_RE = re.compile(
     r"^let\s+(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*"
-    r"(?:\s*:\s*[A-Za-z_][A-Za-z0-9_:<>\[\]&'\s,]*?)?"
+    r"(?:\s*:\s*[A-Za-z_][A-Za-z0-9_:<>\[\]&',]*"
+    r"(?:\s+[A-Za-z0-9_:<>\[\]&',]+)*)?"
     r"\s*=\s*(?P<rhs>.+)$"
 )
 
@@ -1164,12 +1179,24 @@ def _classify_native_output(
 # ---------------------------------------------------------------------------
 
 
+# One variable declaration with a literal initializer fits in far
+# less; the cap only exists so a hostile line can't feed the grammar
+# regexes unbounded input.
+_MAX_SETUP_LINE_CHARS = 4096
+
+
 def _validate_setup(lines: list[str], lang: str = "c") -> str | None:
     """Declaration-only allowlist over setup lines (see the grammar
     block above ``validate_spec``). Returns a reason string on the
     first offending line, None when every line is acceptable."""
     checker = _SETUP_VALIDATORS.get(lang, _c_setup_line_error)
     for i, line in enumerate(lines):
+        if len(str(line)) > _MAX_SETUP_LINE_CHARS:
+            return (
+                f"setup line {i} outside the declaration grammar "
+                f"(line exceeds {_MAX_SETUP_LINE_CHARS} chars): "
+                f"{str(line)[:60]}"
+            )
         reason = checker(str(line))
         if reason:
             return (

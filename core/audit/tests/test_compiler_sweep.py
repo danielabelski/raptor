@@ -390,6 +390,9 @@ class TestSandboxInvocation:
 
 
 class TestToolchainFallback:
+    # slow: masking gcc sends the sweep down the real-clang analyzer
+    # path end to end — genuinely over the default-tier time budget.
+    @pytest.mark.slow
     @needs_clang
     def test_gcc_missing_falls_back_to_clang(
         self, tmp_path, sandbox_spy, monkeypatch,

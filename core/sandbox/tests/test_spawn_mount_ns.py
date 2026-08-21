@@ -202,6 +202,44 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
                           "/tmp canary leaked into sandboxed view — "
                           "per-sandbox tmpfs isolation broken")
 
+    def test_readable_file_under_target_bind_no_eexist(self):
+        """A readable_paths FILE living under the target bind must not
+        abort the spawn. The step-8 target bind already populates the
+        mount point inside the namespace, so the extra_ro_paths stub
+        creation (O_CREAT|O_EXCL) hit EEXIST and the child exited 126 —
+        observed as flaky sandboxed runs whenever the scanned tree
+        names its own helper files in readable_paths. Duplicated entry
+        exercises the same-path-twice variant of the flake."""
+        from core.sandbox._spawn import run_sandboxed
+        helper = Path(self.tmp.name) / "libexec" / "helper.sh"
+        helper.parent.mkdir()
+        helper.write_text("HELPER-CONTENT\n")
+        out = tempfile.TemporaryDirectory()
+        self.addCleanup(out.cleanup)
+        r = run_sandboxed(
+            ["cat", str(helper)],
+            target=self.tmp.name, output=out.name,
+            block_network=True,
+            nproc_limit=1024,
+            limits={"memory_mb": 0, "max_file_mb": 10240, "cpu_seconds": 300},
+            writable_paths=[out.name, "/tmp"],
+            # One file under the target bind, one duplicate, and the
+            # parent dir under the same bind — every shape that used
+            # to hit the O_EXCL stub open.
+            readable_paths=[str(helper), str(helper), str(helper.parent)],
+            allowed_tcp_ports=None,
+            seccomp_profile=None, seccomp_block_udp=False,
+            env=None, cwd=None, timeout=15,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(
+            r.returncode, 0,
+            f"spawn aborted (rc={r.returncode}) — extra_ro_paths stub "
+            f"creation must tolerate paths already served by the "
+            f"target bind; stderr: {r.stderr!r}",
+        )
+        self.assertIn("HELPER-CONTENT", r.stdout)
+
     def test_stub_dir_cleaned_up_after_run(self):
         """The parent-created tempfile.mkdtemp stub must be removed
         after the child exits. Without cleanup, /tmp accumulates

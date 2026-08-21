@@ -490,10 +490,22 @@ def setup_mount_ns(target: str | None, output: str | None,
     # the caller passed) — no argv rewriting needed. If the caller's
     # path is one we've already served via a per-ns mount, skip so we
     # don't fight our own stack.
+    # ``_step8_bound_dirs``: the target/output directories this step
+    # actually bind-mounts. Step 8b seeds its ``_bound_dirs`` predicate
+    # with them so an extra_ro_paths FILE living under the target or
+    # output bind (readable_paths naming files inside the scanned tree —
+    # the normal shape when the target contains the orchestrator's own
+    # helper scripts) skips placeholder creation: its mount point
+    # already exists, populated by the parent bind, and the
+    # O_CREAT|O_EXCL stub open would otherwise fail EEXIST and abort
+    # the whole spawn (exit 126) — observed as flaky sandboxed runs
+    # whenever the scanned tree names its own files in readable_paths.
+    _step8_bound_dirs: set = set()
     if target and not _shadows_per_ns(target):
         inside = f"{root}{target}"
         os.makedirs(inside, exist_ok=True)
         _mount(target, inside, None, MS_BIND)
+        _step8_bound_dirs.add(target)
         # Remount-bind-ro is best-effort. Skip when output == target
         # since output must remain writable. Landlock enforces
         # read-only on target at the filesystem-access layer
@@ -512,6 +524,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         inside = f"{root}{output}"
         os.makedirs(inside, exist_ok=True)
         _mount(output, inside, None, MS_BIND)
+        _step8_bound_dirs.add(output)
 
     # 8a. Shadow the evidence directory (<dir>/.audit — see
     # core/sandbox/evidence.py) inside the rw-bound target/output
@@ -562,10 +575,17 @@ def setup_mount_ns(target: str | None, output: str | None,
     # with ENOENT at mount(2). "/" is harmless either way (the
     # `d + "/"` prefix test never matches it) but excluded for
     # accuracy.
+    #
+    # Seeded with the step-8 target/output binds: file paths beneath
+    # them are already visible through the parent bind, so the
+    # O_CREAT|O_EXCL stub open would fail EEXIST (fail-closed exit
+    # 126) for a path that needs no stub at all.
     _bound_dirs: set = {
         "/dev", "/proc", "/sys",
         *(f"/{d}" for d in _SYSTEM_RO_DIRS),
+        *_step8_bound_dirs,
     }
+    _seen_extra_ro: set = set()
     if extra_ro_paths:
         for path in extra_ro_paths:
             if not path:
@@ -576,6 +596,14 @@ def setup_mount_ns(target: str | None, output: str | None,
             # bind target ("{root}etc") that diverges from the path
             # the caller's Landlock read rule references.
             path = os.path.abspath(path)
+            # Duplicate entries (the same path arriving via both
+            # readable_paths and tool_paths, or repeated caller
+            # entries) would hit the O_CREAT|O_EXCL stub open twice —
+            # the second pass fails EEXIST on the stub the first pass
+            # created and aborts the spawn. One bind per path.
+            if path in _seen_extra_ro:
+                continue
+            _seen_extra_ro.add(path)
             if _shadows_per_ns(path):
                 continue
             # Paths already served by the step-8 target/output binds

@@ -436,7 +436,7 @@ The verdict flows through the existing reachability chokepoint: /codeql + /agent
 - `/project binary list` / `remove` / `clear` — manage the persisted list.
 
 **Audit trail**:
-- `suppressions.jsonl` is written to the run's output directory whenever the chokepoint hard-suppresses a finding. One JSON record per suppression with `finding_id`, `rule_id`, `file_path`, `line`, `function`, `verdict`, `reason`, `dropped` (`false` marks records for findings that survived to the LLM; consumers must tolerate extra keys). Query with `jq -c . suppressions.jsonl`. /agentic, /codeql, and /audit (oracle-earned triage skips) write the same file shape.
+- `suppressions.jsonl` is written to the run's output directory whenever the chokepoint hard-suppresses a finding. One JSON record per suppression with `finding_id`, `rule_id`, `file_path`, `line`, `function`, `verdict`, `reason`, `dropped` (`false` marks records for findings that survived to the LLM; consumers must tolerate extra keys). Query with `jq -c . suppressions.jsonl`. /agentic, /codeql, and /audit (oracle-earned and vendored/generated triage decisions) write the same file shape.
 - The classifier's per-finding analysis record also carries `analysis.reachability_suppression: true` + `analysis.reachability_verdict: <verdict>` for per-finding inspection.
 
 **Defenses against hostile / wrong-binary scenarios**:

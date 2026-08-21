@@ -370,3 +370,35 @@ class TestOrchestratorIntegration:
         verdicts = _vendored_triage_verdicts(config, gaps, checklist=checklist)
         assert verdicts["mystery.c"].kind == KIND_GENERATED
         assert verdicts["mystery.c"].corroborated is False
+
+
+class TestFlagThreading:
+    """--no-vendored-triage: AuditPipelineOpts → OrchestratorConfig."""
+
+    class _StubClient:
+        class config:  # noqa: D106 — attribute bag
+            max_cost_per_scan = 10.0
+
+    def _build(self, opts):
+        from core.audit.pipeline import ReviewMode, _build_orchestrator_config
+
+        return _build_orchestrator_config(
+            opts, self._StubClient(), ["default"], ReviewMode.SECURITY,
+        )
+
+    def test_default_on(self, tmp_path):
+        from core.audit.pipeline import AuditPipelineOpts
+
+        opts = AuditPipelineOpts(
+            target_path=tmp_path, out_dir=tmp_path / "out",
+        )
+        assert self._build(opts).vendored_triage is True
+
+    def test_flag_disables(self, tmp_path):
+        from core.audit.pipeline import AuditPipelineOpts
+
+        opts = AuditPipelineOpts(
+            target_path=tmp_path, out_dir=tmp_path / "out",
+            vendored_triage=False,
+        )
+        assert self._build(opts).vendored_triage is False

@@ -121,6 +121,12 @@ class AuditPipelineOpts:
     # that a classifier skip can never exercise. Production default
     # unchanged (on).
     triage: bool = True
+    # Vendored/generated-code triage tier (--no-vendored-triage to
+    # disable): corroborated generator provenance → skip tier;
+    # uncorroborated banners / vendored paths / generated-shape
+    # structure → glance tier. Every decision leaves a
+    # suppressions.jsonl record; pinned gaps are exempt.
+    vendored_triage: bool = True
     # ── Accumulated-knowledge gates (see OrchestratorConfig) ────────
     # All default ON — production behaviour unchanged. The corpus
     # runner's cold profile turns them off so a measurement run sees
@@ -316,6 +322,7 @@ def _build_orchestrator_config(
         force=opts.force,
         prefilter_skip=opts.prefilter_skip,
         triage=opts.triage,
+        vendored_triage=opts.vendored_triage,
         profile=opts.profile,
         iris=opts.iris,
         sage_recall=opts.sage_recall,

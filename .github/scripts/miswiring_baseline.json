@@ -154,6 +154,9 @@
   "artifacts:write_only_artifact::baseline-delta.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::bench-meta.json": {
+   "note": "operator-facing run-provenance sidecar written by libexec/raptor-cve-env-bench next to results.jsonl (CVE count, backends, caps, start time); consumed by humans/jq when reading a bench dir, same class as suppressions.jsonl"
+  },
   "artifacts:write_only_artifact::bench_report.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -627,6 +630,21 @@
   },
   "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
+  },
+  "imports:import_missing_symbol:packages/cve_env/cve_env/cli.py:cve_env:config": {
+   "note": "nested src-layout false positive: pytest.ini's pythonpath entry (and the launcher shim's sys.path entry) is packages/cve_env, so bare `cve_env` resolves at runtime to the inner package packages/cve_env/cve_env/ where config.py exists; the indexer's packages/<pkg> alias rule maps `cve_env` to the outer __init__.py, a namespace anchor that exists only so pytest importlib mode namespaces the test tree"
+  },
+  "imports:import_missing_symbol:packages/cve_env/tests/unit/conftest.py:cve_env:config": {
+   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
+  },
+  "imports:import_missing_symbol:packages/cve_env/tests/unit/test_cli.py:cve_env:cli": {
+   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
+  },
+  "imports:import_missing_symbol:packages/cve_env/tests/unit/test_cve_id_label_threading.py:cve_env:config": {
+   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
+  },
+  "imports:import_missing_symbol:packages/cve_env/tests/unit/test_facade_contract.py:cve_env:cli": {
+   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
   },
   "imports:import_missing_symbol:packages/sca/osv.py:cvss:CVSS4": {
    "note": "deliberate optional dependency: 'from cvss import CVSS4' targets the third-party cvss PyPI package (CVSS v4.0 reference scorer), not the in-repo packages/cvss module the resolver maps it to; the import is ImportError-guarded and degrades to the database-provided severity label when the package is absent"

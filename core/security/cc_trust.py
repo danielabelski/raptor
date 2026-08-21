@@ -102,7 +102,18 @@ class FileScan:
 
 _CREDENTIAL_HELPER_KEYS = (
     "apiKeyHelper", "awsAuthHelper", "awsAuthRefresh", "gcpAuthRefresh",
+    # otelHeadersHelper is a command CC executes to produce telemetry
+    # headers — same command-execution primitive as the credential
+    # helpers above (a repo-shipped script plus env OTEL_* arms it).
+    "otelHeadersHelper",
 )
+
+# permissions.* sub-keys that only NARROW or gate what a CC session
+# may do. Anything else under `permissions` in a target repo's
+# settings.json (allow, defaultMode, additionalDirectories, future
+# additions) can widen what a prompt-injected session does without
+# HITL — fail-closed: flag every key not on this allowlist.
+_PERMISSIONS_BENIGN_KEYS = frozenset({"deny", "ask"})
 
 _COMPREHENSIVE_DANGEROUS_ENV_VARS = frozenset({
     "TERMINAL", "BROWSER", "PAGER", "VISUAL", "EDITOR",
@@ -395,6 +406,50 @@ def _scan_settings(path: Path) -> FileScan | None:
                                 _truncate(keys_summary),
                                 True,
                             ))
+
+        # statusLine.command is a command CC executes on every prompt
+        # render — a repo-shipped settings.json with
+        # `statusLine: {"type": "command", "command": "curl … | sh"}`
+        # is arbitrary code execution outside the sandbox. Fail-closed
+        # like the hooks scan: a statusLine of any non-dict shape or
+        # unrecognised type is flagged too.
+        status_line = data.get("statusLine")
+        if status_line is not None:
+            if isinstance(status_line, dict):
+                sl_cmd = status_line.get("command")
+                if isinstance(sl_cmd, str) and sl_cmd:
+                    fs.findings.append(
+                        Finding("statusLine command", _mask(sl_cmd), True))
+                elif status_line.get("type") not in (None, "static"):
+                    keys_summary = ",".join(sorted(status_line.keys()))
+                    fs.findings.append(Finding(
+                        "statusLine (unrecognised shape)",
+                        _truncate(keys_summary), True))
+            else:
+                fs.findings.append(Finding(
+                    "statusLine (unrecognised shape)",
+                    _truncate(repr(status_line)), True))
+
+        # permissions.* — a repo has no business widening what a CC
+        # session may do without HITL: `allow: ["Bash(*)"]` +
+        # `defaultMode` remove the operator's approval gate for a
+        # prompt-injected session. Allowlist of known-narrowing keys;
+        # everything else (allow, defaultMode, additionalDirectories,
+        # unknown future keys) blocks.
+        permissions = data.get("permissions")
+        if permissions is not None:
+            if isinstance(permissions, dict):
+                for perm_key, perm_val in permissions.items():
+                    key_str = str(perm_key)
+                    if key_str in _PERMISSIONS_BENIGN_KEYS:
+                        continue
+                    fs.findings.append(Finding(
+                        f"permissions.{_truncate(key_str, limit=40)}",
+                        _mask(repr(perm_val)), True))
+            else:
+                fs.findings.append(Finding(
+                    "permissions (unrecognised shape)",
+                    _truncate(repr(permissions)), True))
 
         env_cfg = data.get("env")
         if isinstance(env_cfg, dict):

@@ -228,10 +228,6 @@ and nm to suppress dead-code findings before they reach LLM analysis.
 Used by `/agentic` and `/codeql` to filter findings for functions the
 compiler removed.
 
-Implementation: `core/analysis/binary_oracle.py` (classifier),
-`core/analysis/binary_oracle_autodetect.py` (auto-detection),
-`core/analysis/binary_oracle_precision.py` (measurement harness).
-
 ### How It Works
 
 The classifier examines each function from the source inventory against
@@ -295,19 +291,10 @@ is dropped with a warning rather than driving every source function to
 
 ### Precision
 
-Precision has been validated across multiple corpora:
-
-- **1952/1952 verdicts correct** across 6 iteratively-tuned corpora
-  (consistency).
-- **187/187 correct on the held-out zstd v1.5.6 corpus** with no
-  classifier tuning (generalisation). Rule-of-three 95% upper bound
-  on miss rate: 1.6% on first-contact-with-unseen-data.
-
-The held-out corpus is non-vacuous: 473/1431 functions were exercised by
-the workload, and zero `absent` verdicts were issued on actually-live
-functions. Conditional on full-DWARF evidence -- a stripped binary
-downgrades to `tier="symbol_only"` and the chokepoint refuses to
-suppress.
+The `absent` verdict is corpus-validated before it is allowed to
+suppress anything, and the guarantee is conditional on full-DWARF
+evidence -- a stripped binary downgrades to `tier="symbol_only"` and
+the chokepoint refuses to suppress.
 
 ### CLI Flags
 
@@ -364,19 +351,6 @@ The classifier's per-finding analysis record also carries
 `analysis.reachability_suppression` and
 `analysis.reachability_verdict` for per-finding inspection.
 
-### Verification
-
-Two verification tools are provided:
-
-- `libexec/raptor-binary-oracle-e2e` -- end-to-end audit: builds a real
-  C target and walks 14 consumer surfaces (~50 assertions). No LLM calls.
-  Run via `bin/raptor` or `CLAUDECODE=1 libexec/...`.
-- `libexec/raptor-binary-oracle-precision --corpus <name>` -- re-measure
-  absent-precision on any corpus driver (synthetic, zlib, libsodium,
-  snappy, leveldb, regex-rust, zstd_holdout). Report includes per-corpus
-  cross-tab, aggregate with rule-of-three upper bound, n-concentration
-  dominator detection, and toolchain block for reproducibility.
-
 ---
 
 ## Exploit Feasibility
@@ -385,10 +359,9 @@ The exploit feasibility subsystem analyses a compiled binary's
 mitigations, ROP gadget quality, one-gadget constraints and glibc
 version to determine what exploitation techniques are architecturally
 possible. It answers "can this bug actually be weaponised?" before any
-time is spent on technique selection.
-
-Implementation: `packages/exploit_feasibility/`.
-Entry point: `libexec/raptor-run-feasibility`.
+time is spent on technique selection.  Entry point:
+`libexec/raptor-run-feasibility`; the Python API lives in
+`packages/exploit_feasibility`.
 
 ### Mitigation Profiling
 
@@ -530,8 +503,6 @@ ctx = load_exploit_context(context_file)
 - `/validate` Stage E uses feasibility output to assess exploitability.
 - The `check_exploit_viability()` API provides a single-call verdict
   for pipeline consumers.
-- See [exploit feasibility guide](binary-analysis.md) for detailed
-  scenario walkthroughs and API reference.
 
 ### What Feasibility Does Not Do
 

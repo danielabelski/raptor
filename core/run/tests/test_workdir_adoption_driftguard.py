@@ -19,6 +19,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _WORKDIR_ADOPTERS = [
+    "core/audit/dark_verify/_execute.py",
     "core/audit/dynamic_sweep.py",
     "packages/llm_analysis/exploit_verify.py",
     "packages/exploit_feasibility/analyzer.py",

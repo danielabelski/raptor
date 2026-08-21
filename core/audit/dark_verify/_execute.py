@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 
 from core.paths import confine
 from core.run.scratch import scratch_dir
+from core.run.workdir import exec_workdir
 
 from ._harness import (
     _CALL_MARKER_PREFIX,
@@ -860,7 +861,8 @@ def _run_script_witness(
     """
     script_dir = None
     try:
-        script_dir = Path(tempfile.mkdtemp(prefix="raptor_dark_"))
+        script_dir = Path(
+            tempfile.mkdtemp(prefix="raptor_dark_", dir=exec_workdir()))
         script_file = script_dir / f"witness{suffix}"
         script_file.write_text(script, encoding="utf-8")
 
@@ -1227,7 +1229,7 @@ def _execute_native(
     token = secrets.token_hex(8)
     harness_src = generate_c_harness(spec, target_root, witness_token=token)
     try:
-        with scratch_dir("raptor_dark_c_") as work_dir:
+        with scratch_dir("raptor_dark_c_", dir=exec_workdir()) as work_dir:
             ext = ".c" if lang == "c" else ".cpp"
             harness_file = work_dir / f"harness{ext}"
             harness_file.write_text(harness_src, encoding="utf-8")
@@ -1302,7 +1304,7 @@ def _execute_go(
     token = secrets.token_hex(8)
     harness_src = generate_go_harness(spec, target_root, witness_token=token)
     try:
-        with scratch_dir("raptor_dark_go_") as work_dir:
+        with scratch_dir("raptor_dark_go_", dir=exec_workdir()) as work_dir:
             harness_file = work_dir / "harness_main.go"
             harness_file.write_text(harness_src, encoding="utf-8")
 
@@ -1514,7 +1516,7 @@ def _execute_rust(
     token = secrets.token_hex(8)
     harness_src = generate_rust_harness(spec, target_root, witness_token=token)
     try:
-        with scratch_dir("raptor_dark_rs_") as work_dir:
+        with scratch_dir("raptor_dark_rs_", dir=exec_workdir()) as work_dir:
             harness_file = work_dir / "harness.rs"
             harness_file.write_text(harness_src, encoding="utf-8")
             binary = work_dir / "harness_bin"
@@ -1614,7 +1616,7 @@ def _execute_java(
     token = secrets.token_hex(8)
     harness_src = generate_java_harness(spec, target_root, witness_token=token)
     try:
-        with scratch_dir("raptor_dark_java_") as work_dir:
+        with scratch_dir("raptor_dark_java_", dir=exec_workdir()) as work_dir:
             harness_file = work_dir / "DarkWitnessHarness.java"
             harness_file.write_text(harness_src, encoding="utf-8")
 

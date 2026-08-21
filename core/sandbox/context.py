@@ -3536,6 +3536,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # and /dev/shm grants were replaced by a per-context 0700
             # scratch dir (TMPDIR-steered).
             result.sandbox_info["private_scratch"] = True
+        # Landlock metadata gap (kernel limitation, stamped honestly):
+        # Landlock has no access right for metadata-only operations —
+        # chmod/chown/utimensat/setxattr on any same-UID file OUTSIDE
+        # the writable allowlist still succeed when Landlock is the
+        # only filesystem barrier. Under mount-ns the read-only binds
+        # close this (metadata writes fail EROFS); seccomp cannot
+        # close it (the target path lives behind a pointer argument
+        # classic BPF cannot dereference). Stamp the posture so
+        # forensic readers know metadata trust does not hold for this
+        # run. See docs/sandbox.md "Known limitations".
+        if (sys.platform == "linux"
+                and not result.sandbox_info["mount_ns_active"]
+                and writable_paths and check_landlock_available()):
+            result.sandbox_info["landlock_metadata_ops_unrestricted"] = True
         if _degraded_tcp_deny:
             result.sandbox_info["degraded_net_deny"] = True
         if _use_proxy_netns:

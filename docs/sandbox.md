@@ -470,6 +470,16 @@ process-info denies are skipped so lldb/sample/dtrace can attach.
   as an untraceable surface.
 - **Audit mode is for operator workflows, not malware analysis** —
   code in an audited sandbox can detect tracing (TracerPid, timing).
+- **Metadata operations are unrestricted in Landlock-only mode.**
+  Landlock has no access right covering metadata-only syscalls, so a
+  child can chmod/chown/setxattr/utimensat any same-UID file outside
+  the writable allowlist (content reads/writes stay blocked). Seccomp
+  cannot close this either — the target path lives behind a pointer
+  argument that classic BPF cannot dereference. Mount-ns mode closes
+  it (read-only binds refuse metadata writes with EROFS). Runs in
+  this posture stamp `sandbox_info["landlock_metadata_ops_unrestricted"]`
+  so downstream readers do not treat file modes/timestamps observed
+  after such a run as trustworthy.
 
 ---
 

@@ -2059,8 +2059,71 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # host services. Reject socket FDs outright; allow regular
         # files, pipes, block devices, TTYs. Runtime cost: one fstat
         # per pass_fds entry.
+        _pass_fds_declared = kwargs.pop("pass_fds_declared", False)
         if kwargs.get("pass_fds"):
+            import fcntl as _fcntl
             import stat as _stat
+
+            def _fd_policy_problem(fd: int) -> str | None:
+                """Why this fd grants an out-of-policy capability, or None.
+
+                An inherited fd is a kernel capability that bypasses
+                every path-based layer: Landlock attached its access
+                rights when the PARENT opened it (pre-restriction), and
+                the mount namespace never sees it. A $HOME file fd is
+                readable under restrict_reads; a dirfd allows getdents/
+                openat into unlisted trees; an anonymous fd (memfd,
+                deleted inode) can smuggle executable content. Compare
+                the fd's real target against the same policy the
+                sandbox enforces on paths.
+                """
+                mode = os.fstat(fd).st_mode
+                if _stat.S_ISFIFO(mode) or _stat.S_ISCHR(mode):
+                    # Pipes are the documented stdio-plumbing shape;
+                    # character devices (tty, /dev/null) grant nothing
+                    # a sandboxed child doesn't already have.
+                    return None
+                if not (_stat.S_ISREG(mode) or _stat.S_ISDIR(mode)):
+                    return "not a regular file, directory, pipe, or tty"
+                try:
+                    fd_target = os.readlink(f"/proc/self/fd/{fd}")
+                except OSError:
+                    fd_target = ""
+                if not fd_target.startswith("/") or fd_target.endswith(
+                        " (deleted)"):
+                    return (f"anonymous or unlinked inode "
+                            f"({fd_target or 'unresolvable'})")
+                _writable = [os.path.abspath(w)
+                             for w in (writable_paths or [])]
+                _readable = [os.path.abspath(rp)
+                             for rp in (effective_read_paths or [])]
+                for base in (target, output):
+                    if base:
+                        _readable.append(os.path.abspath(base))
+
+                def _under(path: str, bases: list) -> bool:
+                    return any(
+                        path == b or path.startswith(b.rstrip("/") + "/")
+                        for b in bases
+                    )
+
+                try:
+                    _acc = _fcntl.fcntl(fd, _fcntl.F_GETFL) & os.O_ACCMODE
+                except OSError:
+                    _acc = os.O_RDWR
+                _write_capable = (
+                    _stat.S_ISREG(mode) and _acc in (os.O_WRONLY, os.O_RDWR)
+                )
+                if _write_capable and not _under(fd_target, _writable):
+                    return (f"write-capable fd to {fd_target!r}, outside "
+                            f"the sandbox's writable paths")
+                if restrict_reads and not _under(
+                        fd_target, _readable + _writable):
+                    return (f"{'directory' if _stat.S_ISDIR(mode) else 'readable'} "
+                            f"fd to {fd_target!r}, outside the read "
+                            f"allowlist while restrict_reads is on")
+                return None
+
             for fd in kwargs["pass_fds"]:
                 try:
                     mode = os.fstat(fd).st_mode
@@ -2070,6 +2133,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         f"a valid open file descriptor ({e.__class__.__name__}: {e})"
                     ) from e
                 if _stat.S_ISSOCK(mode):
+                    # Sockets stay refused even under pass_fds_declared:
+                    # they bypass the seccomp socket-family filter
+                    # outright and there is no in-policy socket shape.
                     raise TypeError(
                         f"sandbox().run(): pass_fds entry fd={fd} is a "
                         f"socket. Inherited sockets bypass the seccomp "
@@ -2079,6 +2145,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         f"to pass a pipe for stdin content, use a pipe "
                         f"fd (S_ISFIFO) or pass stdin= directly."
                     )
+                _problem = _fd_policy_problem(fd)
+                if _problem:
+                    if _pass_fds_declared:
+                        logger.warning(
+                            "Sandbox: pass_fds entry fd=%d grants an "
+                            "out-of-policy capability (%s) — allowed "
+                            "because the caller declared it with "
+                            "pass_fds_declared=True.", fd, _problem,
+                        )
+                    else:
+                        raise TypeError(
+                            f"sandbox().run(): pass_fds entry fd={fd} "
+                            f"grants an out-of-policy capability: "
+                            f"{_problem}. Inherited fds bypass Landlock "
+                            f"and the mount namespace (rights attached "
+                            f"at open time, before restrictions). Pass "
+                            f"pass_fds_declared=True to declare this "
+                            f"capability grant explicitly, or open the "
+                            f"file inside the sandbox's allowed paths."
+                        )
             logger.info(
                 f"Sandbox: caller passed pass_fds={kwargs['pass_fds']} "
                 f"for {' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd!r} — "

@@ -251,6 +251,38 @@ def _fetch_all_memories(client, batch=200):
     return all_mems, (total if total is not None else len(all_mems))
 
 
+def _resolve_memory_id(client, id_or_prefix):
+    """Resolve a possibly-truncated memory id to the full id.
+
+    ``list`` and ``backlog`` display ids truncated to 12 characters,
+    but every id-taking server call (get / forget / task --id / link /
+    corroborate) requires the full id and 404s on a prefix — so the
+    operator could not round-trip an id from the listing back into a
+    command. Resolve client-side: a full-length id passes through
+    without a fetch; anything shorter is prefix-matched against the
+    bounded memory walk. Exactly one match resolves; zero or several
+    raise with a clear message — never guess between candidates.
+    """
+    candidate = str(id_or_prefix).strip()
+    if len(candidate) >= 36:
+        return candidate
+    memories, _ = _fetch_all_memories(client)
+    matches = sorted({
+        getattr(m, "memory_id", "")
+        for m in memories
+        if getattr(m, "memory_id", "").startswith(candidate)
+    })
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"no memory id starts with '{candidate}'")
+    shown = ", ".join(m[:12] for m in matches[:5])
+    raise ValueError(
+        f"memory id prefix '{candidate}' is ambiguous "
+        f"({len(matches)} matches: {shown}, ...)"
+    )
+
+
 def cmd_status(client, args):
     from collections import Counter
     try:
@@ -444,8 +476,9 @@ def cmd_remember(client, args):
 
 def cmd_forget(client, args):
     try:
-        client.forget(args.memory_id, reason=args.reason)
-        print(f"Deprecated {args.memory_id[:12]}.")
+        memory_id = _resolve_memory_id(client, args.memory_id)
+        client.forget(memory_id, reason=args.reason)
+        print(f"Deprecated {memory_id[:12]}.")
     except Exception as e:
         print(f"Forget failed: {_safe(str(e))}", file=sys.stderr)
         return 1
@@ -544,8 +577,9 @@ def cmd_task(client, args):
             print("--status required when updating a task", file=sys.stderr)
             return 1
         try:
-            client.update_task_status(args.id, args.task_status)
-            print(f"Task {args.id[:12]} -> {args.task_status}")
+            task_id = _resolve_memory_id(client, args.id)
+            client.update_task_status(task_id, args.task_status)
+            print(f"Task {task_id[:12]} -> {args.task_status}")
         except Exception as e:
             print(f"Task update failed: {_safe(str(e))}", file=sys.stderr)
             return 1
@@ -630,8 +664,10 @@ def _report_task_created(client, memory_id: str, requested_domain) -> int:
 def cmd_link(client, args):
     link_type = args.link_type or "related"
     try:
-        client.link_memories(args.source, args.target, link_type=link_type)
-        print(f"Linked {args.source[:12]} -> {args.target[:12]} ({link_type})")
+        source = _resolve_memory_id(client, args.source)
+        target = _resolve_memory_id(client, args.target)
+        client.link_memories(source, target, link_type=link_type)
+        print(f"Linked {source[:12]} -> {target[:12]} ({link_type})")
     except Exception as e:
         print(f"Link failed: {_safe(str(e))}", file=sys.stderr)
         return 1
@@ -640,8 +676,9 @@ def cmd_link(client, args):
 
 def cmd_corroborate(client, args):
     try:
-        client.corroborate(args.memory_id, evidence=args.evidence)
-        print(f"Corroborated {args.memory_id[:12]}.")
+        memory_id = _resolve_memory_id(client, args.memory_id)
+        client.corroborate(memory_id, evidence=args.evidence)
+        print(f"Corroborated {memory_id[:12]}.")
     except Exception as e:
         print(f"Corroborate failed: {_safe(str(e))}", file=sys.stderr)
         return 1
@@ -650,7 +687,7 @@ def cmd_corroborate(client, args):
 
 def cmd_get(client, args):
     try:
-        m = client.get_memory(args.memory_id)
+        m = client.get_memory(_resolve_memory_id(client, args.memory_id))
     except Exception as e:
         print(f"Get failed: {_safe(str(e))}", file=sys.stderr)
         return 1

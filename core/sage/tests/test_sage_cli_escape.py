@@ -120,7 +120,9 @@ class TestEscapeSanitisation(unittest.TestCase):
             created_at=f"2026-01-01T00:00:00Z{CSI_PAYLOAD}",
             tags=[f"tag{OSC_PAYLOAD}", "clean-tag"],
         )
-        args = SimpleNamespace(memory_id="id")
+        # full-length id: short ids now take the prefix-resolution walk
+        # (test_sage_cli_id_prefix.py), which this stub does not serve
+        args = SimpleNamespace(memory_id="12345678-1234-1234-1234-123456789abc")
         out = _run(_cli.cmd_get, client, args)
         _assert_inert(self, out)
         self.assertIn("clean-tag", out)
@@ -133,7 +135,8 @@ class TestEscapeSanitisation(unittest.TestCase):
             content=f"line one\nline two {CSI_PAYLOAD}",
             created_at="", tags=[],
         )
-        args = SimpleNamespace(memory_id="id")
+        # full-length id — see test_get_escapes_every_field
+        args = SimpleNamespace(memory_id="12345678-1234-1234-1234-123456789abc")
         out = _run(_cli.cmd_get, client, args)
         _assert_inert(self, out)
         self.assertIn("line one\nline two", out)

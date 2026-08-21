@@ -46,6 +46,16 @@ What this detector must defend against:
     name-suffix allowlist via regex in
     ``data/binary_opt_in_locations.json``.
 
+  * **Manifest opt-out abuse** — attacker adds an innocuous allowlisted
+    field (``"os": ["linux"]``) to the scanned repo's own package.json
+    to switch the detector off.  Defence: manifest fields may ADD
+    scrutiny, never remove it.  The walk ALWAYS runs; a declaring
+    manifest merely annotates its hits (``manifest_declares_native``)
+    so reviewers see the package documented a native-binary surface.
+    (Pre-fix, a fully-declaring manifest set skipped the whole walk —
+    one attacker-controlled line suppressed every ``binary_in_package``
+    finding and the composite HOOK+BINARY promotion with it.)
+
   * **TOCTOU race** — file modified between stat and read.  Defence:
     one read of first 256 bytes; downstream review reads the file
     separately if needed.  This is a scan, not a runtime gate.
@@ -177,6 +187,12 @@ class BinaryHit:
     # forensic pass fails (non-ELF, capability_fingerprint error,
     # etc.); the BinaryHit is still emitted regardless.
     forensic_evidence: dict = field(default_factory=dict)
+    # True when the manifest closest above the file declares a native
+    # opt-in field (npm ``binary``/``cpu``/``os``, Cargo ``links``).
+    # Annotation ONLY: the field is attacker-controlled in a scanned
+    # repo, so it never suppresses the hit — it just tells reviewers
+    # the package claims a documented native-binary surface.
+    manifest_declares_native: bool = False
 
 
 def _classify_magic(head: bytes) -> Optional[str]:
@@ -245,8 +261,12 @@ def _manifest_declares_native(manifest: Manifest) -> bool:
     """True if the manifest declares it ships native binaries via a
     known opt-in field (npm ``binary``, Cargo ``links``, etc.).
 
-    Conservative: only checks fields enumerated in the allowlist
-    data file.  Unrecognised fields don't grant suppression.
+    Feeds the ``manifest_declares_native`` ANNOTATION on each hit —
+    never suppression.  The manifest lives in the scanned repo, so
+    every one of these fields is attacker-controlled; a declaration
+    can add reviewer context but must not remove findings.
+
+    Only fields enumerated in the allowlist data file are recognised.
     """
     allowlist = _load_allowlist()
     fields_per_ecosystem = allowlist.get("manifest_opt_in_fields", {})
@@ -401,8 +421,11 @@ def scan_target(
         still recurses into ``dist``/``build``/``target``/``vendor``,
         the common publication paths for planted binaries.
       * Suppresses via the data-file allowlist (legitimate
-        per-platform layouts) AND per-package opt-in (manifest
-        fields, per-platform package naming).
+        per-platform layouts) and per-platform package NAMING only.
+        Manifest opt-in fields (npm ``binary``/``cpu``/``os``, Cargo
+        ``links``) never suppress — they are attacker-controlled bytes
+        in the scanned repo, so they only annotate each hit via
+        ``manifest_declares_native``.  The walk always runs.
       * Walked-file budget capped to defend against pathological
         repos and tarball bombs that have somehow been extracted.
     """
@@ -413,13 +436,10 @@ def scan_target(
     # manifest "owns" each binary hit.  Most projects have one
     # top-level manifest; monorepos have several.
     manifests_list = list(manifests)
-    # Skip the walk entirely if every manifest declares native
-    # opt-in — caller's already saying "yes this ships binaries".
-    if manifests_list and all(
-        _manifest_declares_native(m) for m in manifests_list
-    ):
-        return []
     deps_list = list(deps)
+    # Per-manifest declaration answers, computed lazily so each
+    # manifest body is parsed at most once regardless of hit count.
+    declares_cache: dict = {}
     out: List[BinaryHit] = []
     for path in _walk_for_binaries(target):
         result = _classify_or_none(path)
@@ -439,12 +459,19 @@ def scan_target(
             continue
         if host is None:
             host = _placeholder_dep(target)
+        owner = _closest_manifest(path, manifests_list)
+        declared = False
+        if owner is not None:
+            if owner.path not in declares_cache:
+                declares_cache[owner.path] = _manifest_declares_native(owner)
+            declared = declares_cache[owner.path]
         out.append(BinaryHit(
             dependency=host,
             path=path,
             family=family,
             relpath=str(rel),
             forensic_evidence=_forensic_evidence(path, family),
+            manifest_declares_native=declared,
         ))
     return out
 
@@ -503,6 +530,28 @@ def _forensic_evidence(path: Path, family: str) -> dict:
                 if high:
                     evidence["high_severity_buckets"] = high
     return evidence
+
+
+def _closest_manifest(
+    path: Path,
+    manifests: Sequence[Manifest],
+) -> Optional[Manifest]:
+    """Return the manifest whose directory most closely dominates
+    ``path`` (same containment walk as :func:`_closest_dep`, without
+    requiring a declared dep).  None when no manifest dominates."""
+    best_depth = -1
+    best: Optional[Manifest] = None
+    for m in manifests:
+        m_dir = m.path.parent.resolve()
+        try:
+            path.resolve().relative_to(m_dir)
+        except ValueError:
+            continue
+        depth = len(m_dir.parts)
+        if depth > best_depth:
+            best = m
+            best_depth = depth
+    return best
 
 
 def _closest_dep(

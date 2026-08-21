@@ -940,6 +940,11 @@ def _binary_in_package_to_finding(
     evidence.update(forensic)
     if promotion_reasons:
         evidence["forensic_promotion_reasons"] = promotion_reasons
+    if bip.manifest_declares_native:
+        # Annotation only: the declaring field lives in the scanned
+        # repo's own manifest (attacker-controlled), so it never
+        # suppresses the finding or lowers severity.
+        evidence["manifest_declares_native"] = True
     return SupplyChainFinding(
         finding_id=(
             f"sca:supplychain:binary_in_package:"
@@ -953,6 +958,9 @@ def _binary_in_package_to_finding(
             f"`{bip.relpath}`; not in any opt-in legitimate location"
             + (f" — {'; '.join(promotion_reasons)}"
                if promotion_reasons else "")
+            + (" — manifest declares a native-binary opt-in field "
+               "(annotation only; declarations never suppress the walk)"
+               if bip.manifest_declares_native else "")
         ),
         evidence=evidence,
         severity=severity,                  # type: ignore[arg-type]

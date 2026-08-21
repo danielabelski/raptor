@@ -67,6 +67,19 @@ _CASES = {
         ["cmdi_exec_array_pos.java"],
         ["cmdi_exec_array_neg.java"],
     ),
+    "injection/sql-concat.yaml": (
+        ["sqlconcat_pos.java", "sqlconcat_pos.py", "sqlconcat_pos.js",
+         "sqlconcat_pos.php"],
+        ["sqlconcat_neg.java", "sqlconcat_neg.py"],
+    ),
+    "logging/logs-secrets.yaml": (
+        ["logsecrets_pos.py", "logsecrets_pos.java"],
+        ["logsecrets_neg.py"],
+    ),
+    "go/go-security.yaml": (
+        ["gotls_pos.go"],
+        ["gotls_neg.go"],
+    ),
 }
 
 pytestmark = pytest.mark.skipif(

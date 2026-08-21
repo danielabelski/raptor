@@ -119,13 +119,17 @@ for _pr, _pi in zip(p_reg, p_init):
     sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\n")
 
 // Generic: register_chrdev_region / alloc_chrdev_region then field init
+// The position binds to the first argument expression (mirroring the
+// platform leg above) — attaching it to the argument dots
+// (`(...@p_reg)`) never binds, which left this whole leg silently
+// dead (U12-F205).
 @chrdev_late_init@
-expression dev;
+expression dev, REGARG;
 identifier fld;
 position p_reg, p_init;
 @@
 
-\(register_chrdev\|register_chrdev_region\|alloc_chrdev_region\)(...@p_reg)
+\(register_chrdev\|register_chrdev_region\|alloc_chrdev_region\)(REGARG@p_reg, ...)
 ...
 * dev.fld@p_init = ...;
 

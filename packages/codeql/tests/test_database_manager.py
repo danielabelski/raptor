@@ -149,7 +149,8 @@ class TestBuildScript:
              patch.object(db_manager, 'get_cached_database', return_value=None), \
              patch.object(db_manager, 'compute_repo_hash', return_value='abc'), \
              patch.object(db_manager, 'get_database_dir', return_value=db_path):
-            db_manager.create_database(tmp_path, "javascript", bs)
+            db_manager.create_database(tmp_path, "javascript", bs,
+                                       traced_build=True)
 
         assert not list(tmp_path.glob(".raptor_codeql_build_*"))
 
@@ -162,7 +163,8 @@ class TestBuildScript:
              patch.object(db_manager, 'get_cached_database', return_value=None), \
              patch.object(db_manager, 'compute_repo_hash', return_value='abc'), \
              patch.object(db_manager, 'get_database_dir', return_value=db_path):
-            db_manager.create_database(tmp_path, "javascript", bs)
+            db_manager.create_database(tmp_path, "javascript", bs,
+                                       traced_build=True)
 
         assert not list(tmp_path.glob(".raptor_codeql_build_*"))
 
@@ -195,6 +197,43 @@ class TestBuildScript:
 # ---------------------------------------------------------------------------
 # Concurrent-write safety: build-in-staging + atomic-promote
 # ---------------------------------------------------------------------------
+
+
+class TestBuildEnvFilter:
+    """A build system that declares env_vars reaches the blocklist
+    filter — the branch every empty-env fixture skips. Pre-fix the
+    frozenset + list concat raised TypeError there, crashing every
+    traced ``database create`` whose build system carried env_vars
+    (maven/gradle/ant/npm/go all do)."""
+
+    def test_env_vars_declared_does_not_crash_create(self, db_manager,
+                                                     tmp_path):
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = "2.16.0\n"
+            r.stderr = "Finalizing database.\n"
+            return r
+
+        bs = BuildSystem(type="npm", command="npm run build",
+                         working_dir=tmp_path,
+                         env_vars={"LD_PRELOAD": "/tmp/evil.so",
+                                   "NODE_OPTIONS": "--max-old-space-size=1"},
+                         confidence=1.0, detected_files=[])
+        with patch('core.sandbox.run', side_effect=fake_run), \
+             patch.object(db_manager, '_count_database_files',
+                          return_value=0), \
+             patch.object(db_manager, 'save_metadata'), \
+             patch.object(db_manager, 'get_cached_database',
+                          return_value=None), \
+             patch.object(db_manager, 'compute_repo_hash',
+                          return_value='abc'), \
+             patch.object(db_manager, 'get_database_dir',
+                          return_value=tmp_path / "db"):
+            result = db_manager.create_database(tmp_path, "javascript", bs,
+                                                traced_build=True)
+        assert result is not None
+        assert not any("TypeError" in e for e in (result.errors or []))
 
 
 class TestStagingPromote:

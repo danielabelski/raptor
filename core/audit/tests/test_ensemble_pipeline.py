@@ -1621,3 +1621,82 @@ class TestBuildOrchestratorConfig:
             ).batch_sloc_threshold
         )
         assert cfg.multi_model is False
+
+
+class TestDisproofSignedness:
+    """Regression: every overflow hypothesis was encoded UNSIGNED
+    regardless of the resolved C type — signed int32 overflow at 2^31
+    read back UNSAT ('disproved') because the model only wrapped at
+    2^32."""
+
+    def _z3(self):
+        pytest.importorskip("z3")
+
+    def test_signed_overflow_at_2_31_is_not_disproved(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `n * 65536`",
+            "int n; if (n > 0 && n < 50000) { int total = n * 65536; }",
+        )
+        # n in [32768, 49999] overflows signed int32: must be SAT.
+        assert r.disproved is False, r.to_dict()
+        assert "signed_wrap" in r.reasoning
+
+    def test_signed_genuinely_bounded_still_disproves(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `n * 16`",
+            "int n; if (n > 0 && n < 1000) { int t = n * 16; }",
+        )
+        assert r.disproved is True, r.to_dict()
+        assert "int32" in r.reasoning
+
+    def test_unsigned_stays_on_unsigned_model(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `n * 16`",
+            "unsigned int n; if (n < 1000) { unsigned int t = n * 16; }",
+        )
+        assert r.disproved is True, r.to_dict()
+        assert "uint32" in r.reasoning
+
+    def test_mixed_signedness_is_inconclusive(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `a * b`",
+            "int a; unsigned int b; "
+            "if (a > 0 && a < 10 && b < 10) { int t = a * b; }",
+        )
+        assert r.disproved is None
+        assert "mixed" in r.reasoning
+
+    def test_plain_char_signedness_is_unknown(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer overflow in the calculation `c * 2`",
+            "char c; if (c > 0 && c < 100) { int t = c * 2; }",
+        )
+        assert r.disproved is None
+        assert "signedness unresolved" in r.reasoning
+
+    def test_signed_subtraction_is_inconclusive(self):
+        self._z3()
+        from core.audit.condition_smt import disprove_integer_overflow
+
+        r = disprove_integer_overflow(
+            "integer underflow in the calculation `a - b`",
+            "int a; int b; if (a > 0 && a < 10 && b > 0 && b < 10) "
+            "{ int t = a - b; }",
+        )
+        assert r.disproved is None
+        assert "signed subtraction" in r.reasoning

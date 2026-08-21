@@ -5103,6 +5103,34 @@ _INT_HYPO_RE = re.compile(
 
 _DISPROOF_TYPE_WIDTHS = _TYPE_WIDTHS
 
+# Signedness of the resolvable C type spellings. Plain ``char`` is
+# implementation-defined and deliberately ABSENT — unknown signedness
+# must gate a disproof to inconclusive, never default to unsigned.
+_UNSIGNED_TYPES = frozenset({
+    "unsigned char", "unsigned short", "unsigned int", "unsigned",
+    "unsigned long", "unsigned long long",
+    "u8", "u16", "u32", "u64", "__u8", "__u16", "__u32", "__u64",
+    "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+    "size_t", "uintptr_t",
+})
+_SIGNED_TYPES = frozenset({
+    "signed char", "short", "int", "long", "long long",
+    "s8", "s16", "s32", "s64", "__s8", "__s16", "__s32", "__s64",
+    "int8_t", "int16_t", "int32_t", "int64_t",
+    "ssize_t", "off_t", "loff_t", "ptrdiff_t",
+})
+
+
+def _type_signedness(vtype: str) -> str | None:
+    """``"unsigned"`` / ``"signed"`` / ``None`` (unknown) for a
+    resolved C type spelling."""
+    t = " ".join(vtype.split())
+    if t in _UNSIGNED_TYPES:
+        return "unsigned"
+    if t in _SIGNED_TYPES:
+        return "signed"
+    return None
+
 
 @dataclass
 class HypothesisDisproofResult:
@@ -5189,6 +5217,7 @@ def disprove_integer_overflow(
         )
 
     resolved_types: dict[str, int] = {}
+    resolved_signs: set[str | None] = set()
     for vn in var_names:
         vtype = var_types.get(vn, "")
         if not vtype:
@@ -5203,11 +5232,44 @@ def disprove_integer_overflow(
         width = _TYPE_WIDTHS.get(vtype, 0)
         if width:
             resolved_types[vn] = width
+            resolved_signs.add(_type_signedness(vtype))
 
     if not resolved_types:
         return HypothesisDisproofResult(
             hypothesis_class="integer_overflow",
             reasoning="could not resolve type widths for any variables",
+        )
+
+    # Signedness threads into the model: encoding a signed product as
+    # unsigned wrap moved the overflow boundary from 2^31 to 2^32, so
+    # a genuine signed int32 overflow (UB) at 3.27e9 came back UNSAT
+    # -> 'disproved'. Unknown or mixed signedness cannot be modelled
+    # honestly with one profile — inconclusive, never a guess.
+    if None in resolved_signs:
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=(
+                "operand signedness unresolved (implementation-"
+                "defined or unrecognised type) — cannot model; "
+                "inconclusive"
+            ),
+        )
+    if len(resolved_signs) > 1:
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=(
+                "mixed signed/unsigned operands — usual-arithmetic-"
+                "conversion semantics not modelled; inconclusive"
+            ),
+        )
+    signedness = resolved_signs.pop()
+    if signedness == "signed" and op_char == "-":
+        return HypothesisDisproofResult(
+            hypothesis_class="integer_overflow",
+            reasoning=(
+                "signed subtraction overflow is not modellable by the "
+                "check-overflow verb — inconclusive"
+            ),
         )
 
     # Guard premises: without source-level constraints on the operands
@@ -5216,7 +5278,12 @@ def disprove_integer_overflow(
     # branch is unreachable.  Same premise machinery as the sweep's
     # check-overflow verb.
     width = max(resolved_types.values())
-    profile = f"uint{width}" if width in (8, 16, 32, 64) else "uint64"
+    if width not in (8, 16, 32, 64):
+        width = 64
+    profile = (f"int{width}" if signedness == "signed"
+               else f"uint{width}")
+    overflow_kind = ("signed_wrap" if signedness == "signed"
+                     else "unsigned_wrap")
     try:
         from .sweep import _extract_comparison_premises, _premise_gate
     except Exception:  # noqa: BLE001 — sweep unavailable, no premises
@@ -5246,6 +5313,7 @@ def disprove_integer_overflow(
         from packages.exploit_feasibility.smt_verbs import check_overflow
         result = check_overflow(
             operands, op_char, profile=profile, guards=premises,
+            kind=overflow_kind,
         )
     except Exception as exc:  # noqa: BLE001 — degrade to inconclusive
         return HypothesisDisproofResult(
@@ -5261,8 +5329,9 @@ def disprove_integer_overflow(
             disproved=True,
             reasoning=(
                 f"Z3 UNSAT: {op_char}-chain over {var_names} cannot "
-                f"wrap at {width}-bit within the extracted guard "
-                f"premises {premises} — hypothesis disproved"
+                f"wrap at {profile} ({overflow_kind}) within the "
+                f"extracted guard premises {premises} — hypothesis "
+                f"disproved"
             ),
         )
     if feasible is True:
@@ -5272,7 +5341,8 @@ def disprove_integer_overflow(
             disproved=False,
             reasoning=(
                 f"Z3 SAT: overflow IS feasible for {var_names} at "
-                f"{width}-bit within the guarded value space"
+                f"{profile} ({overflow_kind}) within the guarded "
+                f"value space"
             ),
             witness=model if isinstance(model, dict) else None,
         )

@@ -275,6 +275,12 @@ def run_sandboxed(cmd: list[str], *,
                   # context.spawn_backend_available(), which is False
                   # on darwin.
                   exec_pid_callback=None,
+                  # child_pid_callback: Linux-only — used by context.py
+                  # to register the spawn child's process tree with the
+                  # egress proxy's unix-lane peer-credential gate. macOS
+                  # has no unix lanes (netns tier never engages on
+                  # darwin); accepted + ignored for signature parity.
+                  child_pid_callback=None,
                   ) -> subprocess.CompletedProcess:
     """Run ``cmd`` under macOS sandbox-exec with an SBPL profile
     derived from the logical sandbox kwargs.

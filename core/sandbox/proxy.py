@@ -84,6 +84,7 @@ import itertools
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Iterable
@@ -129,6 +130,14 @@ class _Lane:
     # concurrent runs, and without lane scoping any sandbox could
     # egress to hosts a sibling run allowlisted.
     allowed_hosts: "frozenset[str] | None" = None
+    # Root pids (host pid-ns view) of the sandbox process trees that
+    # may connect to this lane's UNIX socket. Populated per run by the
+    # spawn layer (add_lane_peer_root) and drained afterwards. The
+    # accept-time SO_PEERCRED gate walks the connecting pid's ancestry
+    # against this set — the unix-lane analogue of the loopback-TCP
+    # peer-uid gate. Empty set = no active run = only the proxy's own
+    # process may connect (in-process consumers / tests).
+    allowed_peer_roots: set = field(default_factory=set)
     lane_id: int = field(default_factory=lambda: next(_LANE_IDS))
 
 logger = logging.getLogger(__name__)
@@ -437,6 +446,57 @@ def _record_proxy_denial(host: str, port: int, resolved_ip: str | None,
 
 # RFC 6052 NAT64 well-known prefix — see _ip_is_blocked.
 _NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _peer_pid_in_trees(peer_pid: int, roots: "set[int]",
+                       max_hops: int = 64) -> bool:
+    """True iff *peer_pid* is one of *roots* or a /proc-visible
+    descendant of one (PPid-chain walk, bounded).
+
+    Fail-closed: an unreadable /proc entry (peer died mid-walk, pid
+    recycled) returns False — the legitimate peers (per-run forwarder
+    processes) simply reconnect, while a denied verdict on a vanished
+    pid costs nothing.
+    """
+    pid = peer_pid
+    for _ in range(max_hops):
+        if pid in roots:
+            return True
+        if pid <= 1:
+            return False
+        try:
+            with open(f"/proc/{pid}/status", "rb") as f:
+                data = f.read(4096)
+        except OSError:
+            return False
+        ppid = None
+        for line in data.splitlines():
+            if line.startswith(b"PPid:"):
+                try:
+                    ppid = int(line.split()[1])
+                except (IndexError, ValueError):
+                    return False
+                break
+        if ppid is None:
+            return False
+        pid = ppid
+    return False
+
+
+def _unix_peer_credentials(sock) -> "tuple[int, int] | None":
+    """(pid, uid) of the connected AF_UNIX peer via SO_PEERCRED, or
+    None when the kernel cannot say (non-Linux, closed socket)."""
+    import socket as _socket
+    import struct as _struct
+    try:
+        raw = sock.getsockopt(
+            _socket.SOL_SOCKET, _socket.SO_PEERCRED,
+            _struct.calcsize("3i"),
+        )
+        pid, uid, _gid = _struct.unpack("3i", raw)
+    except (OSError, AttributeError, ValueError):
+        return None
+    return pid, uid
 
 
 def _normalise_lane_hosts(hosts) -> "frozenset[str] | None":
@@ -1179,6 +1239,30 @@ class EgressProxy:
             )
         return True
 
+    def add_lane_peer_root(self, key: "str | int", pid: int) -> bool:
+        """Authorise *pid*'s process tree to connect to lane *key*'s
+        unix socket for the duration of a run.
+
+        Called by the spawn layer right after forking the sandbox
+        setup child. Returns False when no such lane exists (callers
+        treat that as "gate stays closed", mirroring set_lane_audit).
+        """
+        with self._lanes_lock:
+            lane = (self._unix_lanes.get(key) if isinstance(key, str)
+                    else self._tcp_lanes.get(key))
+            if lane is None:
+                return False
+            lane.allowed_peer_roots.add(int(pid))
+        return True
+
+    def discard_lane_peer_root(self, key: "str | int", pid: int) -> None:
+        """Withdraw a per-run peer-root authorisation. Idempotent."""
+        with self._lanes_lock:
+            lane = (self._unix_lanes.get(key) if isinstance(key, str)
+                    else self._tcp_lanes.get(key))
+            if lane is not None:
+                lane.allowed_peer_roots.discard(int(pid))
+
     def unbind_unix(self, path: str) -> None:
         """Stop the Unix socket server at *path* and unlink the file.
 
@@ -1222,6 +1306,52 @@ class EgressProxy:
         override the extra-info so it reports ``("unix", 0)`` instead
         of failing the non-loopback rejection.
         """
+        # Peer-credential gate — the unix-lane analogue of the
+        # loopback-TCP peer-uid check. The socket file's 0700 mode is
+        # necessary but not sufficient: every sandbox child runs as
+        # the SAME uid, so a sibling sandbox (or any same-uid host
+        # process) that can reach the inode would have its CONNECTs
+        # judged against THIS lane's allowlist and audit bit — a
+        # cross-context confused deputy. SO_PEERCRED is authoritative
+        # on Linux (credentials captured at connect(2) time): require
+        # our own uid AND a pid that is either the proxy's own process
+        # (in-process consumers) or inside a process tree the spawn
+        # layer registered for this lane's current run. Fail-closed —
+        # undeterminable credentials or an unregistered tree get the
+        # connection dropped without a protocol response.
+        _sock = writer.get_extra_info("socket")
+        _is_af_unix = (
+            _sock is not None
+            and getattr(_sock, "family", None) == socket.AF_UNIX
+        )
+        if lane is not None and _is_af_unix and sys.platform == "linux":
+            _cred = _unix_peer_credentials(_sock)
+            _denied = None
+            if _cred is None:
+                _denied = "peer credentials undeterminable"
+            else:
+                _pid, _uid = _cred
+                if _uid != os.geteuid():
+                    _denied = f"peer uid {_uid} != proxy uid {os.geteuid()}"
+                elif _pid != os.getpid():
+                    with self._lanes_lock:
+                        _roots = set(lane.allowed_peer_roots)
+                    if not _peer_pid_in_trees(_pid, _roots):
+                        _denied = (
+                            f"peer pid {_pid} is outside this lane's "
+                            f"registered sandbox process trees "
+                            f"({sorted(_roots) or 'none registered'})"
+                        )
+            if _denied:
+                logger.warning(
+                    "egress proxy: rejecting unix-lane peer on lane "
+                    "%r — %s (cross-context lane use is refused)",
+                    lane.label, _denied,
+                )
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                return
         task = asyncio.current_task()
         if task is not None:
             self._unix_tasks.add(task)

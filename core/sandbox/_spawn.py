@@ -635,9 +635,18 @@ def run_sandboxed(
     proxy_forwarder_port: int | None = None,
     extra_unix_bridges: Sequence[tuple[int, str]] | None = None,
     exec_pid_callback: Callable[[int], None] | None = None,
+    child_pid_callback: Callable[[int], None] | None = None,
     rootfs: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` inside a fully-isolated sandbox.
+
+    child_pid_callback: optional callable invoked in the PARENT with
+    the pid of the sandbox SETUP child (the root of the whole sandbox
+    process tree — forwarder, intermediate init, and target are all
+    its descendants) immediately after the fork. Used by context.py to
+    register the run's process tree with the egress proxy's unix-lane
+    peer-credential gate. Exceptions are logged and swallowed; the pid
+    is guaranteed valid (unreaped) until this function returns.
 
     exec_pid_callback: optional callable invoked in the PARENT with the
     pid of the exec'ing grandchild while it is still running. The pid is
@@ -1857,6 +1866,14 @@ def run_sandboxed(
             os._exit(126)
 
     # ================ PARENT ================
+    if child_pid_callback is not None:
+        try:
+            child_pid_callback(child_pid)
+        except Exception:
+            logger.warning(
+                "child_pid_callback raised; continuing with the run",
+                exc_info=True,
+            )
     # Initialised before the try so the outer finally can reference it
     # regardless of where in the parent flow we exit.
     tracer_pid: int | None = None

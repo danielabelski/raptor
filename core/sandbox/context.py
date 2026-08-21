@@ -846,6 +846,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     _use_proxy_netns = False
     _proxy_tcp_lane_port = None
     _proxy_unix_path: str | None = None
+    _proxy_lane_dir: str | None = None
     _proxy_forwarder_port: int | None = None
     if loopback_unix_bridges and not use_egress_proxy:
         raise ValueError(
@@ -914,22 +915,32 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         )
         if _proxy_netns_capable:
             _use_proxy_netns = True
-            import secrets as _secrets
             import tempfile as _tmpf
-            # Per-context random suffix: two concurrent sandbox()
-            # contexts in one orchestrator would otherwise collide on
-            # a pid-keyed path and knock the second down a tier.
-            _sock_name = (
-                f".raptor-proxy-{os.getpid()}-"
-                f"{_secrets.token_hex(4)}.sock"
+            # Per-instance PRIVATE lane directory, mode 0700 with a
+            # random per-context name. The lane socket used to live in
+            # the shared OUTPUT dir, where it was readdir-discoverable
+            # and connectable by every process that shares the rw
+            # bind: a sibling sandbox using the same output dir could
+            # connect to THIS context's lane and have its CONNECTs
+            # judged by THIS lane's allowlist and audit bit (cross-
+            # context confused deputy), and the sandboxed child itself
+            # could reach the lane directly through the rw bind. Only
+            # the parent-side forwarder needs the socket — it snapshots
+            # the HOST mount view before the child pivots — so the
+            # socket needs no presence inside the sandbox at all.
+            # mkdtemp gives 0700 + a unique name; the SO_PEERCRED gate
+            # at the proxy lane (see proxy._handle_unix_client) is the
+            # enforcement backstop for same-uid processes that still
+            # reach the inode.
+            _lane_base = _tmpf.gettempdir()
+            if len(_lane_base.encode()) > 60:
+                # sun_path is 108 bytes; a deep TMPDIR would overflow
+                # it once the mkdtemp token + filename are appended.
+                _lane_base = "/tmp"
+            _proxy_lane_dir = _tmpf.mkdtemp(
+                prefix=".raptor-lane-", dir=_lane_base,
             )
-            _proxy_unix_path = os.path.join(
-                output if output else _tmpf.gettempdir(), _sock_name,
-            )
-            if len(_proxy_unix_path.encode()) > 104:
-                _proxy_unix_path = os.path.join(
-                    _tmpf.gettempdir(), _sock_name,
-                )
+            _proxy_unix_path = os.path.join(_proxy_lane_dir, "lane.sock")
             try:
                 proxy_instance.bind_unix(
                     _proxy_unix_path,
@@ -951,6 +962,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 )
                 _use_proxy_netns = False
                 _proxy_unix_path = None
+                if _proxy_lane_dir is not None:
+                    import shutil as _shutil
+                    _shutil.rmtree(_proxy_lane_dir, ignore_errors=True)
+                    _proxy_lane_dir = None
         elif _proxy_abi < 4:
             logger.warning(
                 "Sandbox: no netns bridge (netns capability or the "
@@ -2867,62 +2882,82 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             else _readable_with_tools
                         )
                         _spawn_restrict_reads = restrict_reads
-                        result = _spawn_mod.run_sandboxed(
-                            cmd,
-                            target=target, output=output,
-                            rootfs=rootfs,
-                            block_network=block_network,
-                            nproc_limit=nproc_limit,
-                            limits=effective_limits,
-                            writable_paths=writable_paths or [],
-                            readable_paths=_spawn_readable,
-                            allowed_tcp_ports=list(allowed_tcp_ports)
+                        # Unix-lane peer gate registration: hand the
+                        # spawn child's pid (root of the sandbox
+                        # process tree, including the proxy forwarder)
+                        # to the proxy so the lane's SO_PEERCRED gate
+                        # admits THIS run's tree and nothing else.
+                        # Deregistered in the finally below.
+                        _lane_peer_pids: list[int] = []
+
+                        def _register_lane_peer(pid: int) -> None:
+                            if _use_proxy_netns and _proxy_unix_path:
+                                if proxy_instance.add_lane_peer_root(
+                                        _proxy_unix_path, pid):
+                                    _lane_peer_pids.append(pid)
+
+                        try:
+                            result = _spawn_mod.run_sandboxed(
+                                cmd,
+                                target=target, output=output,
+                                rootfs=rootfs,
+                                block_network=block_network,
+                                nproc_limit=nproc_limit,
+                                limits=effective_limits,
+                                writable_paths=writable_paths or [],
+                                readable_paths=_spawn_readable,
+                                allowed_tcp_ports=list(allowed_tcp_ports)
                                 if allowed_tcp_ports else None,
-                            seccomp_profile=seccomp_profile,
-                            seccomp_block_udp=seccomp_block_udp,
-                            env=_env_for_target,
-                            cwd=kwargs.get("cwd"),
-                            timeout=kwargs.get("timeout"),
-                            capture_output=kwargs.get("capture_output", False),
-                            text=kwargs.get("text", False),
-                            stdin=kwargs.get("stdin"),
-                            audit_mode=nonlocal_audit_mode,
-                            audit_run_dir=_audit_run_dir,
-                            audit_required=audit_required,
-                            audit_verbose=audit_verbose_active and nonlocal_audit_mode,
-                            observe_mode=observe and nonlocal_audit_mode,
-                            observe_nonce=(nonlocal_observe_nonce
+                                seccomp_profile=seccomp_profile,
+                                seccomp_block_udp=seccomp_block_udp,
+                                env=_env_for_target,
+                                cwd=kwargs.get("cwd"),
+                                timeout=kwargs.get("timeout"),
+                                capture_output=kwargs.get("capture_output", False),
+                                text=kwargs.get("text", False),
+                                stdin=kwargs.get("stdin"),
+                                audit_mode=nonlocal_audit_mode,
+                                audit_run_dir=_audit_run_dir,
+                                audit_required=audit_required,
+                                audit_verbose=audit_verbose_active and nonlocal_audit_mode,
+                                observe_mode=observe and nonlocal_audit_mode,
+                                observe_nonce=(nonlocal_observe_nonce
                                            if observe and nonlocal_audit_mode
                                            else None),
-                            restrict_reads=_spawn_restrict_reads,
-                            strict_env=strict_env,
-                            persona=_persona,
-                            etc_overlay=etc_overlay,
-                            # Default True here even though subprocess.run
-                            # defaults to False — _spawn's historical
-                            # behaviour was unconditional os.setsid() and
-                            # that's the stronger posture for a mount-ns
-                            # child (no inherited controlling tty, so
-                            # /dev/tty → ENXIO, so no tty-read leak to
-                            # operator keystrokes). Callers who need an
-                            # inherited session (interactive gdb under
-                            # /crash-analysis per run_untrusted's
-                            # docstring) pass start_new_session=False
-                            # explicitly and that is honoured.
-                            start_new_session=_start_new_session,
-                            inherit_netns=_inherit_netns,
-                            skip_pid_ns=_skip_pid_ns,
-                            skip_mount_ns=_skip_mount_ns,
-                            proxy_unix_socket=_proxy_unix_path if _use_proxy_netns else None,
-                            proxy_forwarder_port=_proxy_forwarder_port if _use_proxy_netns else None,
-                            extra_unix_bridges=(
-                                sorted(loopback_unix_bridges.items())
-                                if (loopback_unix_bridges
-                                    and _use_proxy_netns)
-                                else None
-                            ),
-                            exec_pid_callback=_exec_pid_callback,
-                        )
+                                restrict_reads=_spawn_restrict_reads,
+                                strict_env=strict_env,
+                                persona=_persona,
+                                etc_overlay=etc_overlay,
+                                # Default True here even though subprocess.run
+                                # defaults to False — _spawn's historical
+                                # behaviour was unconditional os.setsid() and
+                                # that's the stronger posture for a mount-ns
+                                # child (no inherited controlling tty, so
+                                # /dev/tty → ENXIO, so no tty-read leak to
+                                # operator keystrokes). Callers who need an
+                                # inherited session (interactive gdb under
+                                # /crash-analysis per run_untrusted's
+                                # docstring) pass start_new_session=False
+                                # explicitly and that is honoured.
+                                start_new_session=_start_new_session,
+                                inherit_netns=_inherit_netns,
+                                skip_pid_ns=_skip_pid_ns,
+                                skip_mount_ns=_skip_mount_ns,
+                                proxy_unix_socket=_proxy_unix_path if _use_proxy_netns else None,
+                                proxy_forwarder_port=_proxy_forwarder_port if _use_proxy_netns else None,
+                                extra_unix_bridges=(
+                                    sorted(loopback_unix_bridges.items())
+                                    if (loopback_unix_bridges
+                                        and _use_proxy_netns)
+                                    else None
+                                ),
+                                exec_pid_callback=_exec_pid_callback,
+                                child_pid_callback=_register_lane_peer,
+                            )
+                        finally:
+                            for _pp in _lane_peer_pids:
+                                proxy_instance.discard_lane_peer_root(
+                                    _proxy_unix_path, _pp)
                         used_spawn = True
                         # Authoritative setup-failure signal from the exec-
                         # status pipe (core/sandbox/_spawn.py) — unspoofable
@@ -3874,6 +3909,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             except Exception:
                 logger.debug(
                     "proxy tcp lane cleanup failed", exc_info=True,
+                )
+        # Per-instance lane directory follows its socket.
+        if _proxy_lane_dir is not None:
+            import shutil as _shutil
+            try:
+                _shutil.rmtree(_proxy_lane_dir, ignore_errors=True)
+            except Exception:
+                logger.debug(
+                    "proxy lane dir cleanup failed for %s",
+                    _proxy_lane_dir, exc_info=True,
                 )
         # Persona tmpdir lifecycle: created in build_persona above; the
         # source files were bind-mounted into the sandbox children but

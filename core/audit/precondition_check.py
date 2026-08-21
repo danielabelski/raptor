@@ -7,6 +7,24 @@ check and returns whether the precondition is supported, contradicted,
 or inconclusive.
 
 Only CONTRADICTED results demote; inconclusive results are left alone.
+
+Receipt grades: every supported result carries a ``grade``
+naming what kind of receipt earned it, because the positive direction
+(the suspicious→finding promotion floor) may only anchor on a
+tool-grounded receipt:
+
+- ``structural`` — a call-shaped sink match against the sanitized
+  source view (comments and string literals blanked): an actual call
+  site, not prose.  The only grade the promotion floor accepts as its
+  load-bearing anchor.
+- ``context_map`` — reachability derived from the context map, whose
+  entry points are LLM-authored (/understand output).  Corroborating,
+  never the anchor.
+- ``lexical`` — raw regex presence of a related pattern.  Weak.
+- ``absence`` — a regex found NOTHING and the claim expected absence.
+  "No pattern found" is not a positive receipt (the module's own
+  absent-verdict doctrine), so absence-supported arms can never anchor
+  a promotion.
 """
 
 from __future__ import annotations
@@ -19,6 +37,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Receipt grades for supported results (see module docstring).
+GRADE_STRUCTURAL = "structural"
+GRADE_CONTEXT_MAP = "context_map"
+GRADE_LEXICAL = "lexical"
+GRADE_ABSENCE = "absence"
+
 
 @dataclass
 class CheckResult:
@@ -28,6 +52,7 @@ class CheckResult:
     assumption: str
     verdict: str  # "supported", "contradicted", "inconclusive"
     evidence: str = ""  # what we found (or didn't)
+    grade: str = ""  # receipt grade for supported results
 
 
 @dataclass
@@ -326,6 +351,7 @@ def _check_null_termination(
             assumption="",
             verdict="supported",
             evidence=f"no null-termination found in {file}:{func}",
+            grade=GRADE_ABSENCE,
         )
     else:
         # LLM claims null-termination IS present
@@ -335,6 +361,7 @@ def _check_null_termination(
                 assumption="",
                 verdict="supported",
                 evidence=f"null-termination found: {', '.join(found_patterns[:3])}",
+                grade=GRADE_LEXICAL,
             )
         return CheckResult(
             check_type="caller_null_terminates",
@@ -398,6 +425,7 @@ def _check_bounds(
             assumption="",
             verdict="supported",
             evidence=f"no bounds checking found in {file}:{func}",
+            grade=GRADE_ABSENCE,
         )
     else:
         if has_bounds:
@@ -406,6 +434,7 @@ def _check_bounds(
                 assumption="",
                 verdict="supported",
                 evidence=f"bounds checking found: {', '.join(found[:3])}",
+                grade=GRADE_LEXICAL,
             )
         return CheckResult(
             check_type="caller_bounds_checks",
@@ -472,6 +501,7 @@ def _check_sanitization(
             assumption="",
             verdict="supported",
             evidence=f"no sanitization found in {file}:{func}",
+            grade=GRADE_ABSENCE,
         )
     else:
         if has_sanitization:
@@ -480,6 +510,7 @@ def _check_sanitization(
                 assumption="",
                 verdict="supported",
                 evidence=f"sanitization found: {', '.join(found[:3])}",
+                grade=GRADE_LEXICAL,
             )
         return CheckResult(
             check_type="caller_sanitizes",
@@ -563,15 +594,20 @@ def _check_attacker_control(
             assumption="",
             verdict="supported",
             evidence=f"{func} is not reachable from entry points",
+            grade=GRADE_CONTEXT_MAP,
         )
     else:
         # LLM claims attacker DOES control input
         if reachable:
+            # The context map's entry points are LLM-authored
+            # (/understand output) — corroborating, never a
+            # tool-grounded anchor.
             return CheckResult(
                 check_type="attacker_controls_input",
                 assumption="",
                 verdict="supported",
                 evidence=f"{func} is reachable from entry points",
+                grade=GRADE_CONTEXT_MAP,
             )
         return CheckResult(
             check_type="attacker_controls_input",
@@ -583,29 +619,36 @@ def _check_attacker_control(
         )
 
 
-_SINK_PATTERNS = [
+# Call-shaped sink patterns: the token must be followed by an opening
+# parenthesis, so declarations/prose fragments don't count. Matched
+# against the SANITIZED view only (comments and string literals
+# blanked) — a comment or format string that merely mentions a sink
+# must never earn the receipt — a hostile repo could plant sink
+# tokens in comments to satisfy the promotion floor's
+# load-bearing check.
+_SINK_CALL_PATTERNS = [
     # Memory-unsafe C APIs
-    re.compile(r"\bstrcpy\b"),
-    re.compile(r"\bstrcat\b"),
-    re.compile(r"\bsprintf\b"),
-    re.compile(r"\bgets\b"),
-    re.compile(r"\bmemcpy\b"),
-    re.compile(r"\bmemmove\b"),
+    re.compile(r"\bstrcpy\s*\("),
+    re.compile(r"\bstrcat\s*\("),
+    re.compile(r"\bsprintf\s*\("),
+    re.compile(r"\bgets\s*\("),
+    re.compile(r"\bmemcpy\s*\("),
+    re.compile(r"\bmemmove\s*\("),
     # File/path APIs
-    re.compile(r"\bfopen\b"),
-    re.compile(r"\bopen\b\s*\("),
-    re.compile(r"\bexecv\w*\b"),
-    re.compile(r"\bsystem\b\s*\("),
-    re.compile(r"\bpopen\b"),
+    re.compile(r"\bfopen\s*\("),
+    re.compile(r"\bopen\s*\("),
+    re.compile(r"\bexecv\w*\s*\("),
+    re.compile(r"\bsystem\s*\("),
+    re.compile(r"\bpopen\s*\("),
     # SQL
-    re.compile(r"\bexecute\b"),
-    re.compile(r"\bsqlite3_exec\b"),
-    re.compile(r"\bmysql_query\b"),
+    re.compile(r"\bexecute(?:many)?\s*\("),
+    re.compile(r"\bsqlite3_exec\s*\("),
+    re.compile(r"\bmysql_query\s*\("),
     # Python dangerous APIs
-    re.compile(r"\beval\b\s*\("),
-    re.compile(r"\bexec\b\s*\("),
-    re.compile(r"\bos\.system\b"),
-    re.compile(r"\bsubprocess\.\w+\b"),
+    re.compile(r"\beval\s*\("),
+    re.compile(r"\bexec\s*\("),
+    re.compile(r"\bos\.system\s*\("),
+    re.compile(r"\bsubprocess\.\w+\s*\("),
 ]
 
 
@@ -615,14 +658,20 @@ def _check_reaches_sink(
 ) -> CheckResult:
     """Check if a function directly calls a dangerous API (sink).
 
-    Only checks the function's own body for sink patterns. When the
-    LLM claims a function reaches a sink but the function only reaches
-    it through callees, return inconclusive — we can't confirm or
-    deny transitive reachability with a regex check.
+    Only checks the function's own body for sink CALL SITES — the
+    match runs on the sanitized view (comments/strings blanked) and
+    requires the call shape (``token(``), so prose mentioning a sink
+    never counts in either direction. When the LLM claims a function
+    reaches a sink but the function only reaches it through callees,
+    return inconclusive — we can't confirm or deny transitive
+    reachability with a regex check.
     """
+    from .source_view import sanitized_view
+
+    view = sanitized_view(source, file)
     found = []
-    for pat in _SINK_PATTERNS:
-        if pat.search(source):
+    for pat in _SINK_CALL_PATTERNS:
+        if pat.search(view):
             found.append(pat.pattern[:30])
 
     has_sink = bool(found)
@@ -644,6 +693,7 @@ def _check_reaches_sink(
             assumption="",
             verdict="supported",
             evidence=f"no sink calls found in {func}",
+            grade=GRADE_ABSENCE,
         )
     else:
         if has_sink:
@@ -651,7 +701,11 @@ def _check_reaches_sink(
                 check_type="function_reaches_sink",
                 assumption="",
                 verdict="supported",
-                evidence=f"sink calls found: {', '.join(found[:3])}",
+                evidence=(
+                    f"sink call sites found (sanitized view): "
+                    f"{', '.join(found[:3])}"
+                ),
+                grade=GRADE_STRUCTURAL,
             )
         return CheckResult(
             check_type="function_reaches_sink",

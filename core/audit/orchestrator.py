@@ -18230,11 +18230,22 @@ def _promote_suspicious_preconditions(
 
     - ALL stated preconditions verify in the vulnerability-supporting
       direction AND at least one load-bearing check
-      (attacker_controls_input / function_reaches_sink) is among them →
-      promote suspicious → finding with a distinct precondition receipt
-      recording which checks ran.
+      (attacker_controls_input / function_reaches_sink) is among them
+      AND at least one load-bearing supported check carries a
+      TOOL-GROUNDED receipt (``grade == "structural"``: a call-shaped
+      sink match on the sanitized source view) → promote suspicious →
+      finding with a distinct precondition receipt recording which
+      checks ran.
     - Partial support stays suspicious; the per-check results are
       recorded on the review result for the report and export layers.
+
+    The receipt-tier requirement is what keeps this floor
+    inside the "tool output is the verdict" doctrine: the LLM controls
+    the check list, absence-supported arms are "no pattern found" (not
+    a positive receipt), and attacker_controls_input corroborates via
+    LLM-authored entry points — none of those may anchor the mint.
+    Only the structural sink receipt is a mechanical fact about the
+    code, so promotion requires it.
 
     No LLM calls — purely mechanical (regex + context-map reachability).
     Bounded per function via ``_MAX_PRECONDITION_CHECKS_PER_FN``;
@@ -18294,6 +18305,7 @@ def _promote_suspicious_preconditions(
                     "assumption": c.assumption,
                     "verdict": c.verdict,
                     "evidence": c.evidence,
+                    "grade": getattr(c, "grade", ""),
                 }
                 for c in checks
             ],
@@ -18323,6 +18335,34 @@ def _promote_suspicious_preconditions(
                 "but no load-bearing check among %s",
                 outcome.file, outcome.function,
                 ",".join(sorted(supported_types)),
+            )
+            continue
+
+        # Receipt-tier floor: the load-bearing anchor must
+        # be tool-grounded. Absence-supported arms and context-map
+        # reachability (LLM-authored entry points) corroborate but
+        # never anchor.
+        from .precondition_check import GRADE_STRUCTURAL
+
+        structural_anchor = any(
+            c.verdict == "supported"
+            and c.check_type in _LOAD_BEARING_PRECONDITIONS
+            and getattr(c, "grade", "") == GRADE_STRUCTURAL
+            for c in checks
+        )
+        if not structural_anchor:
+            _increment_tier_dict(
+                result.tier_counters, "precondition_promotion",
+                "inconclusive",
+            )
+            logger.debug(
+                "precondition promotion withheld %s:%s — no "
+                "tool-grounded load-bearing receipt (grades: %s)",
+                outcome.file, outcome.function,
+                ",".join(
+                    f"{c.check_type}={getattr(c, 'grade', '') or '-'}"
+                    for c in checks if c.verdict == "supported"
+                ),
             )
             continue
 

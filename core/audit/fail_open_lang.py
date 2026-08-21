@@ -50,6 +50,7 @@ the channel returns ``inconclusive("language-unsupported")``.
 from __future__ import annotations
 
 import ast
+import bisect
 import logging
 import re
 from dataclasses import dataclass, field
@@ -223,22 +224,67 @@ def _return_value_class(node: ast.Return) -> tuple[str, str]:
     return OUTCOME_FALLBACK_ACTION, text
 
 
+_PY_ABORT_EXACT = frozenset({"sys.exit", "os._exit"})
+
+
+def _python_terminal_kind(handler: ast.ExceptHandler) -> tuple[str, str]:
+    """(kind, value) fail-closed witness for a handler body.
+
+    Boundary-aware: a ``raise``/abort inside a nested ``def``/
+    ``lambda`` does not terminate THIS handler (control demonstrably
+    continues), and one inside a nested ``try`` that has its own
+    ``except`` handlers may be swallowed locally — neither may mint a
+    fail-closed refutation receipt. Returns ``("raise"|"abort", value)``
+    only for a witness at the handler's own control level; ``("", "")``
+    otherwise (classification falls through to the structural shapes,
+    which land nested-try bodies in the undecided bucket).
+    """
+    stack: list[tuple[ast.AST, bool]] = [(s, False) for s in handler.body]
+    while stack:
+        node, swallowable = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda)):
+            continue
+        if isinstance(node, ast.Raise) and not swallowable:
+            return "raise", "re-raises"
+        if isinstance(node, ast.Call) and not swallowable:
+            name = _dec_name(node.func)
+            tail = name.rsplit(".", 1)[-1]
+            if name in _PY_ABORT_EXACT or tail == "abort":
+                return "abort", "aborts"
+        if isinstance(node, ast.Try) and node.handlers:
+            # Only the try BODY is covered by the nested handlers;
+            # raises in the nested handlers / orelse / finally still
+            # propagate out of this handler.
+            body_ids = {id(c) for c in node.body}
+            for child in ast.iter_child_nodes(node):
+                stack.append((child, swallowable or id(child) in body_ids))
+            continue
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, swallowable))
+    return "", ""
+
+
 def _classify_python_handler(
     handler: ast.ExceptHandler, lines: list[str],
 ) -> tuple[str, str]:
     """(outcome_kind, permissive_value) — census ``classify_handler``
     port with fail-closed shapes made explicit (the census returns
-    None for them; the channel needs them as refutation receipts)."""
+    None for them; the channel needs them as refutation receipts).
+
+    ``lines`` must be the SANITIZED view of the file (comments and
+    string literals blanked): the text regexes below otherwise read
+    prose as code — ``# never sys.exit here`` in an except-pass made
+    a permissive swallow read fail-closed, minting a refuted receipt.
+    """
     body = handler.body
     src_seg = "\n".join(
         lines[handler.lineno - 1:(handler.end_lineno or handler.lineno)],
     )
 
-    if any(isinstance(n, ast.Raise) for n in ast.walk(handler)):
-        return OUTCOME_FAIL_CLOSED, "re-raises"
-    if "sys.exit" in src_seg or re.search(r"\bos\._exit\(|\babort\(",
-                                          src_seg):
-        return OUTCOME_FAIL_CLOSED, "aborts"
+    kind, value = _python_terminal_kind(handler)
+    if kind:
+        return OUTCOME_FAIL_CLOSED, value
 
     returns = [s for s in body if isinstance(s, ast.Return)]
     if returns and all(
@@ -338,7 +384,9 @@ def python_handlers(source: str, file_path: str) -> list[HandlerOutcome]:
     except SyntaxError:
         logger.debug("fail_open_lang: syntax error in %s", file_path)
         return []
+    from .source_view import sanitized_view
     lines = source.splitlines()
+    view_lines = sanitized_view(source, language="python").splitlines()
     enclosing = _enclosing_function_names(tree)
     out: list[HandlerOutcome] = []
 
@@ -379,7 +427,9 @@ def python_handlers(source: str, file_path: str) -> list[HandlerOutcome]:
         ) if node.body else (node.lineno, node.lineno)
         try_calls = _collect_calls(node.body)
         for handler in node.handlers:
-            outcome_kind, value = _classify_python_handler(handler, lines)
+            outcome_kind, value = _classify_python_handler(
+                handler, view_lines,
+            )
             types, broad = _exc_types(handler)
             snippet_end = min(
                 handler.end_lineno or handler.lineno, handler.lineno + 2,
@@ -915,10 +965,38 @@ def _java_catch_types(clause, src: bytes) -> tuple[list[str], bool]:
     return (names or ["<expr>"]), broad
 
 
-def _java_calls_in(node, src: bytes) -> list[str]:
-    """Dotted method-invocation names inside a node."""
-    calls: list[str] = []
-    stack = list(node.children) if node is not None else []
+def _calls_in_range(
+    index: list[tuple[int, str]],
+    start_byte: int,
+    end_byte: int,
+    *,
+    exclude: tuple[int, int] | None = None,
+) -> list[str]:
+    """Call names from a one-pass (start_byte, name) index that fall
+    inside ``[start_byte, end_byte)``, optionally excluding one nested
+    byte range (e.g. a defer literal's own subtree).
+
+    Shared by the java/js/go handler walks: slicing a sorted index is
+    what keeps nested try/defer processing O(n log n) instead of the
+    per-node subtree re-walk that was O(depth x size) — measured 175s
+    on a 74KB Java file with 2000 nested trys.
+    """
+    lo = bisect.bisect_left(index, (start_byte, ""))
+    hi = bisect.bisect_left(index, (end_byte, ""))
+    if exclude is None:
+        return [name for _b, name in index[lo:hi]]
+    ex_start, ex_end = exclude
+    return [
+        name for b, name in index[lo:hi]
+        if not (ex_start <= b < ex_end)
+    ]
+
+
+def _java_call_index(root, src: bytes) -> list[tuple[int, str]]:
+    """One-pass ``(start_byte, dotted-name)`` index of every method
+    invocation / object creation under ``root``, sorted by offset."""
+    calls: list[tuple[int, str]] = []
+    stack = list(root.children) if root is not None else []
     while stack:
         cur = stack.pop()
         if cur.type in ("method_invocation", "object_creation_expression"):
@@ -934,30 +1012,56 @@ def _java_calls_in(node, src: bytes) -> list[str]:
                 name = (_ts_node_text(type_node, src)
                         if type_node is not None else "")
             if name:
-                calls.append(name)
+                calls.append((cur.start_byte, name))
         stack.extend(cur.children)
+    calls.sort()
     return calls
+
+
+def _java_throws_at_handler_level(block) -> bool:
+    """A ``throw`` that demonstrably terminates THIS catch clause.
+
+    Boundary-aware in both directions the raw walk was not: a throw
+    inside a lambda / anonymous-class body never executes here, and a
+    throw inside a nested ``try`` that has its own catch clauses may
+    be swallowed locally (the nested handlers cover only the nested
+    try BODY — throws in the nested catch/finally still propagate).
+    Neither may mint a fail-closed refutation receipt.
+    """
+    stack: list[tuple[Any, bool]] = [
+        (c, False) for c in (block.children if block is not None else [])
+    ]
+    while stack:
+        cur, swallowable = stack.pop()
+        if cur.type == "throw_statement" and not swallowable:
+            return True
+        if cur.type in ("lambda_expression", "class_body"):
+            continue
+        if cur.type in _JAVA_TRY_TYPES and any(
+            ch.type in ("catch_clause",) for ch in cur.children
+        ):
+            body = cur.child_by_field_name("body")
+            for ch in cur.children:
+                stack.append((ch, swallowable or (
+                    body is not None and ch == body)))
+            continue
+        stack.extend((ch, swallowable) for ch in cur.children)
+    return False
 
 
 def _classify_java_catch(clause, src: bytes) -> tuple[str, str]:
     """(outcome_kind, permissive_value) for one catch clause —
-    the census classification vocabulary on the Java grammar."""
+    the census classification vocabulary on the Java grammar.
+
+    Text regexes run over the SANITIZED clause text (comments/string
+    literals blanked): ``/* System.exit(1) would be too harsh */`` in
+    a return-true swallow otherwise reads as fail-closed 'aborts'.
+    """
+    from .source_view import sanitized_view
     block = clause.child_by_field_name("body")
-    text = _ts_node_text(clause, src)
+    text = sanitized_view(_ts_node_text(clause, src), language="java")
 
-    def _has_descendant(node, node_type: str) -> bool:
-        stack = list(node.children) if node is not None else []
-        while stack:
-            cur = stack.pop()
-            if cur.type == node_type:
-                return True
-            # A nested try's throw still aborts this handler's
-            # continuation — do not descend past lambda bodies though.
-            if cur.type != "lambda_expression":
-                stack.extend(cur.children)
-        return False
-
-    if _has_descendant(block, "throw_statement"):
+    if _java_throws_at_handler_level(block):
         return OUTCOME_FAIL_CLOSED, "re-throws"
     if _JAVA_ABORT_RE.search(text):
         return OUTCOME_FAIL_CLOSED, "aborts"
@@ -999,7 +1103,9 @@ def _classify_java_catch(clause, src: bytes) -> tuple[str, str]:
         # the all-returns branch above only when the log is absent).
         non_return = [s for s in stmts if s.type == "expression_statement"]
         if all(
-            _JAVA_QUIET_LOG_RE.search(_ts_node_text(s, src))
+            _JAVA_QUIET_LOG_RE.search(
+                sanitized_view(_ts_node_text(s, src), language="java"),
+            )
             for s in non_return
         ):
             return OUTCOME_QUIET_LOG_ONLY, ""
@@ -1038,16 +1144,6 @@ def _classify_java_catch(clause, src: bytes) -> tuple[str, str]:
     return OUTCOME_FALLBACK_ACTION, "substantial handler body"
 
 
-def _java_enclosing_function(node, src: bytes) -> str:
-    cur = node.parent
-    while cur is not None:
-        if cur.type in _JAVA_FUNC_TYPES:
-            name_node = cur.child_by_field_name("name")
-            return _ts_node_text(name_node, src) if name_node else ""
-        cur = cur.parent
-    return ""
-
-
 def java_handlers(
     source: str, file_path: str,
 ) -> list[HandlerOutcome] | None:
@@ -1069,20 +1165,31 @@ def java_handlers(
                      file_path, exc_info=True)
         return None
     lines = source.splitlines()
+    call_index = _java_call_index(tree.root_node, src)
     out: list[HandlerOutcome] = []
-    stack = [tree.root_node]
+    # The walk carries the enclosing-function name down instead of
+    # walking node.parent chains per try: tree-sitter's ``.parent`` is
+    # itself O(depth), so per-try upward walks were O(depth^2) on
+    # nested trys — the other half of the measured 175s/74KB stall
+    # (with the per-try subtree call re-walks).
+    stack: list[tuple[Any, str]] = [(tree.root_node, "")]
     while stack:
-        node = stack.pop()
-        stack.extend(node.children)
+        node, enclosing = stack.pop()
+        if node.type in _JAVA_FUNC_TYPES:
+            name_node = node.child_by_field_name("name")
+            enclosing = _ts_node_text(name_node, src) if name_node else ""
+        stack.extend((c, enclosing) for c in node.children)
         if node.type not in _JAVA_TRY_TYPES:
             continue
         body = node.child_by_field_name("body")
-        try_calls = _java_calls_in(body, src)
+        try_calls = (
+            _calls_in_range(call_index, body.start_byte, body.end_byte)
+            if body is not None else []
+        )
         try_span = (
             (body.start_point[0] + 1, body.end_point[0] + 1)
             if body is not None else (_line_of(node), _line_of(node))
         )
-        enclosing = _java_enclosing_function(node, src)
         for clause in node.children:
             if clause.type != "catch_clause":
                 continue
@@ -1250,9 +1357,6 @@ def java_class_extends(source: str, type_name: str) -> str | None:
 # back to this channel as fail-open hypotheses.
 
 _GO_FUNC_TYPES = ("function_declaration", "method_declaration")
-_GO_ABORT_RE = re.compile(
-    r"\bos\.Exit\s*\(|\blog\.Fatal\w*\s*\(|\bpanic\s*\(",
-)
 
 
 def _go_enclosing_function(node, src: bytes):
@@ -1271,24 +1375,55 @@ def _go_function_name(func_node, src: bytes) -> str:
     return _ts_node_text(name_node, src) if name_node is not None else ""
 
 
-def _go_calls_in(node, src: bytes, *, skip=None) -> list[str]:
-    """Call names inside a node (selector calls dotted), optionally
-    skipping one subtree (the recover defer literal itself)."""
-    calls: list[str] = []
-    stack = list(node.children) if node is not None else []
+def _go_call_index(root, src: bytes) -> list[tuple[int, str]]:
+    """One-pass ``(start_byte, name)`` index of every call expression
+    under ``root`` (selector calls dotted, identifier-shaped names
+    only — a func-literal invocation's "name" is the literal's whole
+    source text), sorted by offset. ``recover`` is excluded, as the
+    old per-defer subtree walk did."""
+    calls: list[tuple[int, str]] = []
+    stack = list(root.children) if root is not None else []
     while stack:
         cur = stack.pop()
-        if skip is not None and cur == skip:
-            continue
         if cur.type == "call_expression":
             name = _call_name(cur, src)
-            # Identifier-shaped names only: a func-literal invocation's
-            # "name" is the literal's whole source text.
             if name and name != "recover" \
                     and re.fullmatch(r"[A-Za-z_][\w.]*", name):
-                calls.append(name)
+                calls.append((cur.start_byte, name))
         stack.extend(cur.children)
+    calls.sort()
     return calls
+
+
+def _go_recover_body_calls(fn, src: bytes) -> tuple[bool, list[str]]:
+    """(has_recover, direct call names) for a deferred func literal.
+
+    AST-grounded replacement for the raw-text scan that read comments
+    and strings as code (``/* do not panic() here */`` flipped a
+    permissive recover-and-continue handler to fail-closed
+    're-panics'). Nested func literals are boundaries: a ``recover()``
+    or ``panic()`` inside one is not executed by THIS deferred
+    handler.
+    """
+    has_recover = False
+    names: list[str] = []
+    stack = list(fn.children) if fn is not None else []
+    while stack:
+        cur = stack.pop()
+        if cur.type == "func_literal":
+            continue
+        if cur.type == "call_expression":
+            fn_node = cur.child_by_field_name("function")
+            name = ""
+            if fn_node is not None and fn_node.type in (
+                    "identifier", "selector_expression"):
+                name = _ts_node_text(fn_node, src)
+            if name == "recover":
+                has_recover = True
+            elif name:
+                names.append(name)
+        stack.extend(cur.children)
+    return has_recover, names
 
 
 def go_recover_handlers(
@@ -1313,11 +1448,17 @@ def go_recover_handlers(
                      file_path, exc_info=True)
         return None
     lines = source.splitlines()
+    call_index = _go_call_index(tree.root_node, src)
     out: list[HandlerOutcome] = []
-    stack = [tree.root_node]
+    # Enclosing-function node carried down the walk (per-defer
+    # node.parent chains are O(depth) per hop — quadratic on nested
+    # blocks).
+    stack: list[tuple[Any, Any]] = [(tree.root_node, None)]
     while stack:
-        node = stack.pop()
-        stack.extend(node.children)
+        node, func_node = stack.pop()
+        if node.type in _GO_FUNC_TYPES:
+            func_node = node
+        stack.extend((c, func_node) for c in node.children)
         if node.type != "defer_statement":
             continue
         call = next(
@@ -1329,26 +1470,39 @@ def go_recover_handlers(
         fn = call.child_by_field_name("function")
         if fn is None or fn.type != "func_literal":
             continue
-        literal_text = _ts_node_text(fn, src)
-        if not re.search(r"\brecover\s*\(\s*\)", literal_text):
+        # AST-grounded recover/abort classification: the old raw-text
+        # scan (split on the first 'recover' spelling + regex over the
+        # remainder) read comments and string literals as code, so a
+        # planted '/* do not panic() here */' minted a fail-closed
+        # receipt for a recover-and-continue swallow.
+        has_recover, body_calls = _go_recover_body_calls(fn, src)
+        if not has_recover:
             continue
-        body_after_recover = literal_text.split("recover", 1)[1]
-        if _GO_ABORT_RE.search(body_after_recover):
+        panics = [n for n in body_calls if n == "panic"]
+        aborts = [
+            n for n in body_calls
+            if n == "os.Exit" or n.startswith("log.Fatal")
+        ]
+        if panics or aborts:
             outcome_kind = OUTCOME_FAIL_CLOSED
-            value = ("re-panics" if "panic" in body_after_recover
-                     else "aborts")
+            value = "re-panics" if panics else "aborts"
         else:
             outcome_kind = OUTCOME_RECOVER_CONTINUE
             value = ("recovered-and-logged"
-                     if re.search(r"\blog\.", body_after_recover)
+                     if any(n.startswith("log.") for n in body_calls)
                      else "recovered-and-discarded")
-        func_node = _go_enclosing_function(node, src)
         func_name = _go_function_name(func_node, src)
         # The guarded region is the whole enclosing function: a
         # deferred recover swallows a panic raised anywhere in it.
         region = (func_node.child_by_field_name("body")
                   if func_node is not None else None)
-        try_calls = _go_calls_in(region, src, skip=fn)
+        try_calls = (
+            _calls_in_range(
+                call_index, region.start_byte, region.end_byte,
+                exclude=(fn.start_byte, fn.end_byte),
+            )
+            if region is not None else []
+        )
         try_span = (
             (region.start_point[0] + 1, region.end_point[0] + 1)
             if region is not None
@@ -1631,7 +1785,9 @@ def _js_stmts(block) -> list:
 def _js_calls_in(node, src: bytes) -> list[str]:
     """Dotted call names inside a node (chained-call receivers whose
     text is not name-shaped are skipped; their inner calls are still
-    visited)."""
+    visited). For whole-file try walks use :func:`_js_call_index` +
+    :func:`_calls_in_range` — this subtree walk is for small nodes
+    (promise receivers)."""
     calls: list[str] = []
     stack = list(node.children) if node is not None else []
     while stack:
@@ -1648,6 +1804,26 @@ def _js_calls_in(node, src: bytes) -> list[str]:
     return calls
 
 
+def _js_call_index(root, src: bytes) -> list[tuple[int, str]]:
+    """One-pass ``(start_byte, name)`` index of every call/new
+    expression under ``root``, sorted by offset."""
+    calls: list[tuple[int, str]] = []
+    stack = list(root.children) if root is not None else []
+    while stack:
+        cur = stack.pop()
+        if cur.type in ("call_expression", "new_expression"):
+            fn = cur.child_by_field_name(
+                "function") or cur.child_by_field_name("constructor")
+            if fn is not None:
+                name = _ts_node_text(fn, src)
+                if re.fullmatch(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*",
+                                name):
+                    calls.append((cur.start_byte, name))
+        stack.extend(cur.children)
+    calls.sort()
+    return calls
+
+
 def _js_has_descendant(node, node_type: str) -> bool:
     """Descendant search that does not cross nested function bodies
     (a throw inside a callback does not abort this handler)."""
@@ -1658,6 +1834,36 @@ def _js_has_descendant(node, node_type: str) -> bool:
             return True
         if cur.type not in _JS_FUNC_TYPES:
             stack.extend(cur.children)
+    return False
+
+
+def _js_throws_at_handler_level(body) -> bool:
+    """A ``throw`` that demonstrably terminates THIS handler.
+
+    Like the descendant search it does not cross nested function /
+    class bodies; additionally a throw inside a nested ``try`` that
+    has its own handler may be swallowed locally (only the nested try
+    BODY is covered — throws in the nested catch/finally propagate),
+    so it may not mint a fail-closed refutation receipt.
+    """
+    stack: list[tuple[Any, bool]] = [
+        (c, False) for c in (body.children if body is not None else [])
+    ]
+    while stack:
+        cur, swallowable = stack.pop()
+        if cur.type == "throw_statement" and not swallowable:
+            return True
+        if cur.type in _JS_FUNC_TYPES or cur.type == "class_body":
+            continue
+        if cur.type == "try_statement" and any(
+            ch.type == "catch_clause" for ch in cur.children
+        ):
+            try_body = cur.child_by_field_name("body")
+            for ch in cur.children:
+                stack.append((ch, swallowable or (
+                    try_body is not None and ch == try_body)))
+            continue
+        stack.extend((ch, swallowable) for ch in cur.children)
     return False
 
 
@@ -1678,10 +1884,18 @@ def _classify_js_handler_body(body, src: bytes) -> tuple[str, str]:
     """(outcome_kind, permissive_value) for a catch-clause body or a
     ``.catch`` callback body — the census classification vocabulary on
     the JS grammar. ``body`` may be a statement_block or an arrow
-    function's bare expression body."""
+    function's bare expression body.
+
+    Text regexes run over the SANITIZED body text (comments/string
+    literals blanked): ``// never process.exit( here`` in a
+    return-true swallow otherwise read as fail-closed 'aborts' (the
+    throw check was boundary-aware, the abort check was not).
+    """
+    from .source_view import sanitized_view
     if body is None:
         return OUTCOME_PASS, ""
     text = _ts_node_text(body, src)
+    scan_text = sanitized_view(text, language="javascript")
 
     if body.type != "statement_block":
         # Arrow expression body: () => null / () => defaultValue.
@@ -1690,9 +1904,9 @@ def _classify_js_handler_body(body, src: bytes) -> tuple[str, str]:
             return OUTCOME_FALLBACK_ACTION, "handler calls fallback code"
         return _js_return_value_class(text, body)
 
-    if _js_has_descendant(body, "throw_statement"):
+    if _js_throws_at_handler_level(body):
         return OUTCOME_FAIL_CLOSED, "re-throws"
-    if _JS_ABORT_RE.search(text):
+    if _JS_ABORT_RE.search(scan_text):
         return OUTCOME_FAIL_CLOSED, "aborts"
 
     stmts = _js_stmts(body)
@@ -1706,19 +1920,21 @@ def _classify_js_handler_body(body, src: bytes) -> tuple[str, str]:
         value = _ts_node_text(value_node, src) if value_node else ""
         return _js_return_value_class(value, value_node)
 
-    if _JS_LOUD_LOG_RE.search(text):
+    if _JS_LOUD_LOG_RE.search(scan_text):
         return OUTCOME_FALLBACK_ACTION, "loud-log-and-continue"
 
     if all(s.type in ("continue_statement", "break_statement")
            for s in stmts):
         return OUTCOME_CONTINUE, ""
-    if _JS_QUIET_LOG_RE.search(text) and all(
+    if _JS_QUIET_LOG_RE.search(scan_text) and all(
         s.type in ("expression_statement", "return_statement")
         for s in stmts
     ):
         non_return = [s for s in stmts if s.type == "expression_statement"]
         if all(
-            _JS_QUIET_LOG_RE.search(_ts_node_text(s, src))
+            _JS_QUIET_LOG_RE.search(sanitized_view(
+                _ts_node_text(s, src), language="javascript",
+            ))
             for s in non_return
         ):
             return OUTCOME_QUIET_LOG_ONLY, ""
@@ -1758,30 +1974,26 @@ def _classify_js_handler_body(body, src: bytes) -> tuple[str, str]:
     return OUTCOME_FALLBACK_ACTION, "substantial handler body"
 
 
-def _js_enclosing_function(node, src: bytes) -> str:
-    """Nearest named enclosing function: declaration/method name, or
-    the variable/property an anonymous function is bound to."""
-    cur = node.parent
-    while cur is not None:
-        if cur.type in _JS_FUNC_TYPES:
-            name_node = cur.child_by_field_name("name")
-            if name_node is not None:
-                return _ts_node_text(name_node, src)
-            parent = cur.parent
-            if parent is not None and parent.type == "variable_declarator":
-                bound = parent.child_by_field_name("name")
-                if bound is not None:
-                    return _ts_node_text(bound, src)
-            if parent is not None and parent.type == "pair":
-                key = parent.child_by_field_name("key")
-                if key is not None:
-                    return _ts_node_text(key, src)
-            if parent is not None and parent.type in (
-                    "assignment_expression",):
-                lhs = parent.child_by_field_name("left")
-                if lhs is not None:
-                    return _ts_node_text(lhs, src)
-        cur = cur.parent
+def _js_function_name(fn, src: bytes) -> str:
+    """Name of one function node: declaration/method name, or the
+    variable/property an anonymous function is bound to (one parent
+    hop; never a full ancestor walk)."""
+    name_node = fn.child_by_field_name("name")
+    if name_node is not None:
+        return _ts_node_text(name_node, src)
+    parent = fn.parent
+    if parent is not None and parent.type == "variable_declarator":
+        bound = parent.child_by_field_name("name")
+        if bound is not None:
+            return _ts_node_text(bound, src)
+    if parent is not None and parent.type == "pair":
+        key = parent.child_by_field_name("key")
+        if key is not None:
+            return _ts_node_text(key, src)
+    if parent is not None and parent.type in ("assignment_expression",):
+        lhs = parent.child_by_field_name("left")
+        if lhs is not None:
+            return _ts_node_text(lhs, src)
     return ""
 
 
@@ -1830,15 +2042,25 @@ def js_handlers(
                      language, file_path, exc_info=True)
         return None
     lines = source.splitlines()
+    call_index = _js_call_index(tree.root_node, src)
     out: list[HandlerOutcome] = []
-    stack = [tree.root_node]
+    # Enclosing-function name carried down the walk (per-handler
+    # node.parent chains are O(depth) per hop — quadratic on nested
+    # trys; anonymous-function naming costs one parent hop per
+    # function node instead).
+    stack: list[tuple[Any, str]] = [(tree.root_node, "")]
     while stack:
-        node = stack.pop()
-        stack.extend(node.children)
+        node, enclosing = stack.pop()
+        if node.type in _JS_FUNC_TYPES:
+            enclosing = _js_function_name(node, src) or enclosing
+        stack.extend((c, enclosing) for c in node.children)
 
         if node.type == "try_statement":
             body = node.child_by_field_name("body")
-            try_calls = _js_calls_in(body, src)
+            try_calls = (
+                _calls_in_range(call_index, body.start_byte, body.end_byte)
+                if body is not None else []
+            )
             try_span = (
                 (body.start_point[0] + 1, body.end_point[0] + 1)
                 if body is not None else (_line_of(node), _line_of(node))
@@ -1863,7 +2085,7 @@ def js_handlers(
                     ln.strip() for ln in lines[line - 1:snippet_end]
                 ),
                 parser="tree-sitter",
-                enclosing_function=_js_enclosing_function(node, src),
+                enclosing_function=enclosing,
                 try_calls=try_calls,
                 try_span=try_span,
             ))
@@ -1902,7 +2124,7 @@ def js_handlers(
                 for ln in lines[line - 1:min(len(lines), line + 2)]
             ),
             parser="tree-sitter",
-            enclosing_function=_js_enclosing_function(node, src),
+            enclosing_function=enclosing,
             try_calls=receiver_calls,
             try_span=span,
         ))

@@ -27,16 +27,41 @@ _HASH_COMMENT_EXTS = (
 # JS/TS template literals).
 _BACKTICK_EXTS = (".go", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 
+# Language-id routing for callers that already know the language
+# (checkers holding an inventory language id or a tree-sitter grammar
+# name rather than a file path).
+_HASH_COMMENT_LANGS = frozenset({
+    "python", "ruby", "shell", "bash", "perl", "yaml", "toml",
+})
+_BACKTICK_LANGS = frozenset({
+    "go", "javascript", "typescript", "tsx", "jsx",
+})
 
-def sanitized_view(source: str, file_path: str = "") -> str:
+
+def sanitized_view(
+    source: str, file_path: str = "", *, language: str | None = None,
+) -> str:
     """Return *source* with comments and string literals blanked.
 
     Every blanked character becomes a space; newlines inside blanked
     regions are preserved, so offsets and line numbers computed on the
     view map 1:1 onto the original text.
+
+    The scanner is chosen from *language* (an inventory language id
+    such as ``"python"``/``"java"``/``"go"``) when given, else from
+    the *file_path* extension. Segments work too: the input does not
+    have to be a whole file, so a checker can sanitize just the
+    handler/clause text it is about to regex.
     """
     if not source:
         return source
+    if language:
+        lang = language.lower()
+        if lang in _HASH_COMMENT_LANGS:
+            return _strip_python_like(source)
+        return _strip_c_family(
+            source, backtick_strings=lang in _BACKTICK_LANGS,
+        )
     lower = (file_path or "").lower()
     if lower.endswith(_HASH_COMMENT_EXTS):
         return _strip_python_like(source)

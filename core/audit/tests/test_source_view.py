@@ -77,3 +77,34 @@ class TestEdgeCases:
     def test_unknown_extension_uses_c_family(self):
         view = sanitized_view("x; // memcpy\n", "a.unknown")
         assert "memcpy" not in view
+
+
+class TestLanguageParam:
+    def test_language_id_routes_hash_scanner(self):
+        view = sanitized_view("x = 1  # os.system here\n",
+                              language="python")
+        assert "os.system" not in view
+
+    def test_language_id_routes_c_family(self):
+        view = sanitized_view("a(); // memcpy here\n", language="java")
+        assert "memcpy" not in view
+
+    def test_language_id_routes_backticks(self):
+        view = sanitized_view("s := `exec( inside`\nrun()\n",
+                              language="go")
+        assert "exec(" not in view
+        assert "run()" in view
+
+    def test_segment_input_supported(self):
+        # Not a whole file: a bare catch-clause segment.
+        view = sanitized_view(
+            "catch (Exception e) { /* System.exit(1) */ return true; }",
+            language="java",
+        )
+        assert "System.exit" not in view
+        assert "return true" in view
+
+    def test_language_overrides_path(self):
+        view = sanitized_view("x = 1  # nope\n", "a.c",
+                              language="python")
+        assert "nope" not in view

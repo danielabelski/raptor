@@ -60,6 +60,62 @@ def test_is_available_returns_bool():
     assert isinstance(_macos_spawn.is_available(), bool)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+def test_timeout_kills_whole_sandbox_tree(tmp_path, monkeypatch):
+    """A target that hangs past ``timeout`` must not survive the
+    TimeoutExpired. subprocess.run's own timeout path SIGKILLed only
+    the direct child — the detached seatbelt shim — while the
+    sandbox-exec process group (deliberately a separate pgrp so the
+    shim can killpg it) kept running with its death-pipe watcher dead.
+    run_sandboxed now owns the Popen and, on timeout, closes death_w
+    (firing the shim's designed killpg teardown) and killpgs the
+    shim's session as a backstop.
+
+    Cross-platform: SANDBOX_EXEC is swapped for a pass-through shell
+    script so the REAL outer shim + inner trampoline run on Linux too;
+    the layering (shim → fake sandbox-exec → /bin/sh trampoline →
+    target) matches production, including the separate process group.
+    """
+    import subprocess as _subprocess
+    import time as _time
+
+    marker = "424271"  # unique sleep duration for pgrep
+
+    def sleepers():
+        out = _subprocess.run(
+            ["pgrep", "-f", f"sleep {marker}"],
+            capture_output=True, text=True, check=False,
+        ).stdout
+        return [ln for ln in out.split() if ln.strip()]
+
+    fake = tmp_path / "fake-sandbox-exec"
+    fake.write_text('#!/bin/sh\nshift 3\nexec "$@"\n')  # drop -p <profile> --
+    fake.chmod(0o755)
+    monkeypatch.setattr(_macos_spawn, "SANDBOX_EXEC", str(fake))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    try:
+        with pytest.raises(_subprocess.TimeoutExpired):
+            _macos_spawn.run_sandboxed(
+                ["/bin/sleep", marker],
+                output=str(out_dir),
+                capture_output=True, text=True, timeout=1.5,
+            )
+        # Teardown runs synchronously before the raise; poll briefly
+        # for the process table to reflect it.
+        deadline = _time.monotonic() + 5
+        while _time.monotonic() < deadline and sleepers():
+            _time.sleep(0.1)
+        assert sleepers() == [], (
+            "sandboxed target survived run_sandboxed timeout — the "
+            "shim tree was not torn down"
+        )
+    finally:
+        _subprocess.run(["pkill", "-9", "-f", f"sleep {marker}"],
+                        capture_output=True, check=False)
+
+
 def test_is_available_false_on_non_darwin():
     """On Linux, /usr/bin/sandbox-exec doesn't exist; is_available
     must return False without raising."""

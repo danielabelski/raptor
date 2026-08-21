@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -576,24 +577,80 @@ def run_sandboxed(cmd: list[str], *,
     child_env["_RAPTOR_TRUSTED"] = "1"
 
     # 6. Run.
+    #
+    # Popen + communicate rather than subprocess.run: run()'s own
+    # timeout path SIGKILLs only the DIRECT child — the seatbelt shim,
+    # detached in its own session — while the sandbox-exec process
+    # group the shim forked (deliberately placed in a separate pgrp so
+    # the shim can killpg it) survived, and the shim's death-pipe
+    # teardown died with the shim. A hostile target that simply hung
+    # past its timeout kept running on the operator host, unaudited,
+    # after the log streamer was stopped. Owning the Popen lets the
+    # timeout path fire the DESIGNED teardown channel first — closing
+    # death_w makes the still-alive shim killpg the sandbox group and
+    # exit — with a killpg of the shim's own session as the backstop.
+    def _teardown_shim_tree(process):
+        """Kill the shim and its sandbox subtree on timeout/abort."""
+        # 1. Death-pipe EOF: the shim's watcher loop (0.1s poll) reads
+        #    EOF and SIGKILLs the sandbox process group + child, then
+        #    exits. This reaches the sandbox-exec pgrp, which is NOT
+        #    in the shim's own process group.
+        try:
+            os.close(death_w)
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        # 2. Backstop: SIGKILL the shim's whole session-leader group
+        #    (start_new_session=True → pgid == shim pid; killpg cannot
+        #    reach this orchestrator). Without a new session the shim
+        #    shares our pgrp — fall back to killing just the shim.
+        if start_new_session:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+
     ready = b""
+    if input is not None and stdin is not None:
+        raise ValueError(
+            "stdin and input arguments may not both be used.")
+    _popen_stdin = subprocess.PIPE if input is not None else stdin
     try:
-        result = subprocess.run(
+        with subprocess.Popen(
             sandbox_cmd,
-            check=False,
             env=child_env,
             cwd=cwd,
-            timeout=timeout,
-            capture_output=capture_output,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
+            stdin=_popen_stdin,
             text=text,
-            # stdin/input mutual exclusion is subprocess.run's own
-            # contract; forward both verbatim so a caller error
-            # raises the same ValueError it would unsandboxed.
-            stdin=stdin,
-            input=input,
             preexec_fn=preexec,
             start_new_session=start_new_session,
             pass_fds=(status_w, death_r, *tuple(pass_fds or ())),
+        ) as _process:
+            try:
+                _stdout, _stderr = _process.communicate(
+                    input, timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _teardown_shim_tree(_process)
+                _process.wait()
+                raise
+            except BaseException:
+                # Mirror subprocess.run: never leave the tree running
+                # on KeyboardInterrupt or any other abort either.
+                _teardown_shim_tree(_process)
+                raise
+            _retcode = _process.poll()
+        result = subprocess.CompletedProcess(
+            sandbox_cmd, _retcode, _stdout, _stderr,
         )
     finally:
         # Close our copies. status_w MUST be closed before reading status_r,

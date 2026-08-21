@@ -8,6 +8,7 @@ in FunctionMetadata.
 """
 
 import ast
+import bisect
 import logging
 import re
 import threading
@@ -825,14 +826,129 @@ class CExtractor:
 
         return None
 
+    @staticmethod
+    def _brace_events(lines: list[str]) -> list[tuple[int, int]]:
+        """One lexical pass over the whole file: ordered ``(line_idx,
+        delta)`` events for every ``{`` (+1) / ``}`` (−1) outside
+        strings, char literals and comments — the same skipping rules
+        as :meth:`_find_end_brace`, applied once instead of once per
+        function."""
+        events: list[tuple[int, int]] = []
+        in_string: str | None = None
+        in_block_comment = False
+        for i, line in enumerate(lines):
+            j = 0
+            while j < len(line):
+                ch = line[j]
+                if in_block_comment:
+                    if ch == '*' and j + 1 < len(line) and line[j + 1] == '/':
+                        in_block_comment = False
+                        j += 2
+                        continue
+                    j += 1
+                    continue
+                if in_string is not None:
+                    if ch == '\\':
+                        j += 2
+                        continue
+                    if ch == in_string:
+                        in_string = None
+                    j += 1
+                    continue
+                if ch == '/' and j + 1 < len(line) and line[j + 1] == '*':
+                    in_block_comment = True
+                    j += 2
+                    continue
+                if ch == '/' and j + 1 < len(line) and line[j + 1] == '/':
+                    break
+                if ch in ('"', "'"):
+                    in_string = ch
+                    j += 1
+                    continue
+                if ch == '{':
+                    events.append((i, 1))
+                elif ch == '}':
+                    events.append((i, -1))
+                j += 1
+        return events
+
     @classmethod
     def _fill_line_ends(
         cls, lines: list[str], functions: list[FunctionInfo],
     ) -> None:
-        """Post-pass: fill ``line_end`` for every function that lacks it."""
-        for func in functions:
-            if func.line_end is None and func.line_start > 0:
-                func.line_end = cls._find_end_brace(lines, func.line_start - 1)
+        """Post-pass: fill ``line_end`` for every function that lacks it.
+
+        Linear, not per-function: calling :meth:`_find_end_brace` per
+        function scans to EOF whenever braces never re-balance, which
+        is O(N²) on a crafted file of never-closing openers (``int
+        fK(){`` on every line) — an effective hang at the 8 MiB
+        per-file cap, and this pass runs on EVERY C/C++ file as the
+        tree-sitter repair path. Instead, lex the file ONCE into brace
+        events, then answer each function from the event stream:
+
+        * ``base`` — brace depth just before the function's first
+          line (prefix depth of the last event on earlier lines);
+        * ``q`` — the first open-brace event at/after the start line
+          (``_find_end_brace`` ignores everything before its first
+          ``{``, closers included);
+        * the end is ``q`` itself when preceding closers already put
+          it at/below ``base`` (the reference scanner returns at a
+          ``{`` whose local depth is ≤ 0), else the first later event
+          where depth returns to ``base`` — precomputed as a
+          next-depth-below index with a monotonic stack.
+
+        Matches the per-function scanner on every input whose start
+        line begins outside a string/comment; when the start line is
+        INSIDE one (regex-extractor false positives only), the single
+        global lex is the more faithful of the two.
+        """
+        todo = [
+            f for f in functions
+            if f.line_end is None and f.line_start > 0
+        ]
+        if not todo:
+            return
+        events = cls._brace_events(lines)
+        m = len(events)
+        if m == 0:
+            return
+        ev_line = [e[0] for e in events]
+        depth_after: list[int] = []
+        d = 0
+        for _, delta in events:
+            d += delta
+            depth_after.append(d)
+        # next_open[i]: first event index >= i whose delta is +1.
+        next_open: list[int | None] = [None] * m
+        nxt: int | None = None
+        for i in range(m - 1, -1, -1):
+            if events[i][1] == 1:
+                nxt = i
+            next_open[i] = nxt
+        # next_below[i]: first j > i with depth_after[j] ==
+        # depth_after[i] - 1 (±1 steps make this the first crossing).
+        next_below: list[int | None] = [None] * m
+        stack: list[int] = []
+        for j in range(m):
+            while stack and depth_after[stack[-1]] - 1 == depth_after[j]:
+                next_below[stack.pop()] = j
+            stack.append(j)
+        for func in todo:
+            start0 = func.line_start - 1
+            p = bisect.bisect_left(ev_line, start0)
+            if p >= m:
+                continue
+            base = depth_after[p - 1] if p > 0 else 0
+            q = next_open[p]
+            if q is None:
+                continue
+            # Events between p and q are closers, so depth_after[q]
+            # <= base + 1: at most one next_below hop.
+            end_idx: int | None = q
+            while end_idx is not None and depth_after[end_idx] > base:
+                end_idx = next_below[end_idx]
+            if end_idx is not None:
+                func.line_end = events[end_idx][0] + 1  # 1-based
 
 
 _JAVA_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')

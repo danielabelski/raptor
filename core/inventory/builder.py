@@ -12,7 +12,12 @@ import hashlib
 import json
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -131,6 +136,35 @@ def _resolved_max_workers() -> int:
 
 
 MAX_WORKERS = _resolved_max_workers()
+
+# Stall watchdog for the extractor pool. The previous loop used
+# ``as_completed()`` + ``future.result(timeout=300)`` — but
+# ``as_completed`` only yields futures that have ALREADY completed, so
+# that result() timeout could never fire, and one hung worker (a
+# pathological file in a scanned repo) stalled the whole inventory
+# build — and every pipeline waiting on it — indefinitely. The timeout
+# belongs on the WAIT: a full window with zero completions declares
+# the remaining futures stalled; they are recorded as excluded files
+# and the pool is torn down without blocking on the hung workers.
+INVENTORY_STALL_TIMEOUT_S = 300
+
+
+def _drain_futures(futures, timeout_s, on_done):
+    """Consume ``futures`` as they complete, calling ``on_done`` for
+    each. Returns the set of futures still pending after a full
+    ``timeout_s`` window passed with ZERO completions (the stalled
+    set) — empty on a clean drain. Progress resets the window, so a
+    slow-but-moving pool is never cut off."""
+    pending = set(futures)
+    while pending:
+        done, pending = wait(
+            pending, timeout=timeout_s, return_when=FIRST_COMPLETED,
+        )
+        if not done:
+            return pending
+        for future in done:
+            on_done(future)
+    return set()
 
 # Per-file read cap. Bigger than any realistic source file (the
 # largest in CPython is ~30K LOC ≈ 1 MB) but small enough that a
@@ -361,31 +395,75 @@ def build_inventory(
         else:
             def submit_fn(fp, pool=pool):
                 return pool.submit(_process_file_in_worker, fp)
-        with pool:
-            futures = {submit_fn(fp): fp for fp in file_list}
-            for future in as_completed(futures):
+        def _rel_of(fp):
+            try:
+                return str(fp.relative_to(target)
+                           if target.is_dir() else fp.name)
+            except ValueError:
+                return str(fp)
+
+        futures = {submit_fn(fp): fp for fp in file_list}
+
+        def _on_done(future):
+            nonlocal skipped
+            fp = futures[future]
+            try:
+                _collect_result(future.result())
+            except Exception as exc:  # noqa: BLE001 — one bad file must not sink the pool
+                logger.warning(
+                    "inventory: per-file extractor raised on "
+                    "%s — skipping (%s: %s)",
+                    fp, exc.__class__.__name__, exc,
+                )
+                # Record it — a skipped file must never be silently
+                # invisible in the artifact.
+                excluded_files.append({
+                    "path": _rel_of(fp),
+                    "reason": "processing_error",
+                    "pattern_matched": exc.__class__.__name__,
+                })
+                skipped += 1
+
+        stalled = set()
+        try:
+            stalled = _drain_futures(
+                futures, INVENTORY_STALL_TIMEOUT_S, _on_done,
+            )
+            for future in stalled:
+                future.cancel()
                 fp = futures[future]
-                try:
-                    _collect_result(future.result(timeout=300))
-                except Exception as exc:  # noqa: BLE001 — one bad file must not sink the pool
-                    logger.warning(
-                        "inventory: per-file extractor raised on "
-                        "%s — skipping (%s: %s)",
-                        fp, exc.__class__.__name__, exc,
-                    )
-                    # Record it — a skipped file must never be silently
-                    # invisible in the artifact.
+                logger.warning(
+                    "inventory: no extractor completion within %ds — "
+                    "abandoning %s as stalled",
+                    INVENTORY_STALL_TIMEOUT_S, fp,
+                )
+                # Same visibility rule as processing_error: a dropped
+                # file must be recorded in the artifact.
+                excluded_files.append({
+                    "path": _rel_of(fp),
+                    "reason": "processing_timeout",
+                    "pattern_matched":
+                        f"stalled>{INVENTORY_STALL_TIMEOUT_S}s",
+                })
+                skipped += 1
+        finally:
+            if stalled:
+                # Never block on hung workers: drop the queue, then
+                # kill process-pool workers so neither this shutdown
+                # nor interpreter exit waits on them. (Thread-pool
+                # fallback threads can't be killed — the build still
+                # proceeds; the hung thread is abandoned.)
+                pool.shutdown(wait=False, cancel_futures=True)
+                # ProcessPoolExecutor has no public kill API; _processes
+                # is the documented-in-source worker map.
+                procs = getattr(pool, "_processes", None) or {}
+                for proc in list(procs.values()):
                     try:
-                        rel = str(fp.relative_to(target)
-                                  if target.is_dir() else fp.name)
-                    except ValueError:
-                        rel = str(fp)
-                    excluded_files.append({
-                        "path": rel,
-                        "reason": "processing_error",
-                        "pattern_matched": exc.__class__.__name__,
-                    })
-                    skipped += 1
+                        proc.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                pool.shutdown(wait=True)
     else:
         for filepath in file_list:
             _collect_result(

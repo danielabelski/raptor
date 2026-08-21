@@ -818,3 +818,70 @@ class TestTsProbeMatchesLoader:
             assert lang in _TS_PROBE_LANGUAGES, (
                 f"{lang} has node types but is not probed for the banner"
             )
+
+
+# ---------------------------------------------------------------------------
+# CExtractor._fill_line_ends — linear post-pass (U09-F1)
+# ---------------------------------------------------------------------------
+
+
+class TestCFillLineEndsLinear:
+    def test_matches_per_function_reference_scanner(self):
+        from core.inventory.extractors import CExtractor, FunctionInfo
+        src = (
+            "int f(void)\n"
+            "{\n"
+            "  if (x) { /* } */ y(\"}\"); }\n"
+            "}\n"
+            "static int g(int a) {\n"
+            "  return a; // }\n"
+            "}\n"
+            "int h(void)\n"
+            "{\n"
+            "  char c = '}';\n"
+            "}\n"
+        )
+        lines = src.split("\n")
+        starts = [1, 5, 8]
+        ref = {
+            s: CExtractor._find_end_brace(lines, s - 1) for s in starts
+        }
+        funcs = [FunctionInfo(name=f"fn{s}", line_start=s) for s in starts]
+        CExtractor._fill_line_ends(lines, funcs)
+        assert {f.line_start: f.line_end for f in funcs} == ref
+        assert ref == {1: 4, 5: 7, 8: 11}
+
+    def test_never_closing_openers_fill_is_linear(self):
+        # A file of N one-line functions each opening a brace that
+        # never closes made every function re-scan to EOF: O(N²) — an
+        # effective hang at the 8 MiB per-file cap. The linear fill
+        # must finish the whole batch in well under a second.
+        import time
+        from core.inventory.extractors import CExtractor, FunctionInfo
+        n = 50_000
+        lines = [f"int f{k}()" + "{" for k in range(n)]
+        funcs = [
+            FunctionInfo(name=f"f{k}", line_start=k + 1) for k in range(n)
+        ]
+        start = time.perf_counter()
+        CExtractor._fill_line_ends(lines, funcs)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 5.0, f"fill took {elapsed:.1f}s on {n} lines"
+        assert all(f.line_end is None for f in funcs)
+
+    def test_unbalanced_head_still_resolves_later_functions(self):
+        from core.inventory.extractors import CExtractor, FunctionInfo
+        lines = [
+            "int broken()",   # 1 — never opens
+            "int ok(void)",   # 2
+            "{",              # 3
+            "  return 1;",    # 4
+            "}",              # 5
+        ]
+        funcs = [
+            FunctionInfo(name="broken", line_start=1),
+            FunctionInfo(name="ok", line_start=2),
+        ]
+        CExtractor._fill_line_ends(lines, funcs)
+        by_name = {f.name: f.line_end for f in funcs}
+        assert by_name == {"broken": 5, "ok": 5}

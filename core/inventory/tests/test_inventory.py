@@ -2124,3 +2124,70 @@ class TestPhpCoverage:
         assert verdict("lonely") == "not_called"    # plain class control
         assert verdict("execute") == "reachable"    # class #[AsCommand] attribute
         assert verdict("index") == "reachable"      # *Controller naming convention
+
+
+# ---------------------------------------------------------------------------
+# _drain_futures — the stall watchdog on the extractor pool (U09-F1)
+# ---------------------------------------------------------------------------
+
+
+class TestDrainFutures:
+    def test_clean_drain_returns_empty_and_collects_all(self):
+        import concurrent.futures as cf
+        from core.inventory.builder import _drain_futures
+
+        seen = []
+        with cf.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(lambda k=k: k) for k in range(5)]
+            stalled = _drain_futures(
+                futures, 30, lambda fut: seen.append(fut.result()),
+            )
+        assert stalled == set()
+        assert sorted(seen) == [0, 1, 2, 3, 4]
+
+    def test_zero_completion_window_returns_stalled_set(self):
+        import concurrent.futures as cf
+        import threading
+        from core.inventory.builder import _drain_futures
+
+        release = threading.Event()
+        seen = []
+        pool = cf.ThreadPoolExecutor(max_workers=2)
+        try:
+            fast = pool.submit(lambda: "fast")
+            hung = pool.submit(release.wait)
+            stalled = _drain_futures(
+                [fast, hung], 0.2,
+                lambda fut: seen.append(fut.result()),
+            )
+            # The fast future completed (progress reset the window);
+            # the hung one is reported stalled instead of blocking
+            # forever — the pre-fix as_completed loop never returned.
+            assert stalled == {hung}
+            assert seen == ["fast"]
+        finally:
+            release.set()  # unblock the worker so shutdown can join
+            pool.shutdown(wait=True)
+
+    def test_exceptions_are_delivered_to_on_done(self):
+        import concurrent.futures as cf
+        from core.inventory.builder import _drain_futures
+
+        def _boom():
+            raise ValueError("bad file")
+
+        outcomes = []
+
+        def _on_done(fut):
+            try:
+                fut.result()
+                outcomes.append("ok")
+            except ValueError:
+                outcomes.append("error")
+
+        with cf.ThreadPoolExecutor(max_workers=1) as pool:
+            stalled = _drain_futures(
+                [pool.submit(_boom), pool.submit(lambda: 1)], 30, _on_done,
+            )
+        assert stalled == set()
+        assert sorted(outcomes) == ["error", "ok"]

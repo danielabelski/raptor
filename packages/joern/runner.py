@@ -821,6 +821,79 @@ def run_query(
     )
 
 
+def run_taint_query_result(
+    cpg: JoernCPG,
+    source_method: str,
+    sink_call: str,
+    *,
+    source_param: str | None = None,
+    timeout: int = 300,
+    subprocess_runner=None,
+    max_call_depth: int = 2,
+) -> JoernResult:
+    """Run a source-to-sink taint tracking query, errors included.
+
+    Returns the full :class:`JoernResult` so callers can tell "no
+    flows" (a genuine negative) apart from "query failed" (timeout,
+    server crash, validation reject — says nothing about the code).
+    Verdict-bearing callers must check ``result.errors`` before
+    reading an empty ``result.flows`` as a refutation.
+    """
+    if not _validate_substitution_value(source_method):
+        logger.warning(
+            "rejecting source_method %r: fails identifier validation",
+            source_method[:80],
+        )
+        return JoernResult(query="", errors=[
+            f"source_method fails identifier validation: "
+            f"{source_method[:80]!r}",
+        ])
+
+    if not _validate_substitution_value(sink_call):
+        logger.warning(
+            "rejecting sink_call %r: fails identifier validation",
+            sink_call[:80],
+        )
+        return JoernResult(query="", errors=[
+            f"sink_call fails identifier validation: {sink_call[:80]!r}",
+        ])
+
+    if source_param and not _validate_substitution_value(source_param):
+        logger.warning(
+            "rejecting source_param %r: fails identifier validation",
+            source_param[:80],
+        )
+        return JoernResult(query="", errors=[
+            f"source_param fails identifier validation: "
+            f"{source_param[:80]!r}",
+        ])
+
+    safe_source = _escape_scala_string(source_method)
+    safe_sink = _escape_scala_string(sink_call)
+
+    query = _build_taint_query(safe_source, safe_sink, source_param,
+                              max_call_depth=max_call_depth)
+
+    err = _validate_query(query)
+    if err:
+        logger.warning("generated taint query failed validation: %s", err)
+        return JoernResult(query=query, errors=[
+            f"generated taint query failed validation: {err}",
+        ])
+
+    result = run_query(
+        cpg, query,
+        timeout=timeout,
+        subprocess_runner=subprocess_runner,
+        validate=False,
+    )
+
+    if result.errors:
+        logger.warning("taint query errors: %s", result.errors)
+
+    return result
+
+
 def run_taint_query(
     cpg: JoernCPG,
     source_method: str,
@@ -833,52 +906,19 @@ def run_taint_query(
 ) -> list[TaintFlow]:
     """Run a source-to-sink taint tracking query.
 
-    Returns list of TaintFlow objects. Validates method/sink names
-    against the identifier allowlist before substitution.
+    Returns list of TaintFlow objects — empty on no flows AND on query
+    failure, so this shape suits positive-evidence callers only.
+    Verdict-bearing callers that would read an empty list as a
+    refutation must use :func:`run_taint_query_result` and check
+    ``errors``.
     """
-    if not _validate_substitution_value(source_method):
-        logger.warning(
-            "rejecting source_method %r: fails identifier validation",
-            source_method[:80],
-        )
-        return []
-
-    if not _validate_substitution_value(sink_call):
-        logger.warning(
-            "rejecting sink_call %r: fails identifier validation",
-            sink_call[:80],
-        )
-        return []
-
-    if source_param and not _validate_substitution_value(source_param):
-        logger.warning(
-            "rejecting source_param %r: fails identifier validation",
-            source_param[:80],
-        )
-        return []
-
-    safe_source = _escape_scala_string(source_method)
-    safe_sink = _escape_scala_string(sink_call)
-
-    query = _build_taint_query(safe_source, safe_sink, source_param,
-                              max_call_depth=max_call_depth)
-
-    err = _validate_query(query)
-    if err:
-        logger.warning("generated taint query failed validation: %s", err)
-        return []
-
-    result = run_query(
-        cpg, query,
+    return run_taint_query_result(
+        cpg, source_method, sink_call,
+        source_param=source_param,
         timeout=timeout,
         subprocess_runner=subprocess_runner,
-        validate=False,
-    )
-
-    if result.errors:
-        logger.warning("taint query errors: %s", result.errors)
-
-    return result.flows
+        max_call_depth=max_call_depth,
+    ).flows
 
 
 def _build_taint_query(

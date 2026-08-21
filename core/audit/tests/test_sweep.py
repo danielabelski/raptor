@@ -93,6 +93,158 @@ class TestRunSemgrepSweep:
         assert result.outcome in ("error", "refuted")
 
 
+class TestSemgrepErrorSemantics:
+    """Regression: tool failure (nonzero rc, crash, failed target parse)
+    classifies as 'error', never 'refuted' — a crashed scan says
+    nothing about the code and must not count against the hypothesis."""
+
+    def _sweep(self, tmp_path, monkeypatch, semgrep_result):
+        import packages.semgrep.runner as runner_mod
+        from core.audit.sweep import run_semgrep_sweep
+
+        (tmp_path / "test.c").write_text(
+            "int foo(char *p) { return p[0]; }\n",
+        )
+        monkeypatch.setattr(runner_mod, "is_available", lambda: True)
+        monkeypatch.setattr(
+            runner_mod, "run_rule", lambda *a, **kw: semgrep_result,
+        )
+        return run_semgrep_sweep(
+            target_path=tmp_path,
+            file_path="test.c",
+            function_name="foo",
+            rule_config="rule.yaml",
+        )
+
+    def test_bad_returncode_is_error_not_refuted(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        # The verifier PoC: completed semgrep proc rc=2, empty SARIF,
+        # errors=[] — used to classify as "refuted".
+        from packages.semgrep.models import SemgrepResult
+
+        result = self._sweep(tmp_path, monkeypatch, SemgrepResult(
+            name="r", config="rule.yaml", target="test.c",
+            findings=[], errors=[], returncode=2,
+        ))
+        assert result.outcome == "error"
+        assert any("exited with code 2" in e for e in result.errors)
+
+    def test_runner_errors_are_error_before_match_logic(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        from packages.semgrep.models import SemgrepResult
+
+        result = self._sweep(tmp_path, monkeypatch, SemgrepResult(
+            name="r", config="rule.yaml", target="test.c",
+            findings=[], errors=["Timeout after 120s"], returncode=-1,
+        ))
+        assert result.outcome == "error"
+        assert result.errors == ["Timeout after 120s"]
+
+    def test_target_in_files_failed_is_error(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        # rc 0, no findings — but the one target file failed to parse:
+        # the file was never analysed, so "no findings" is not a
+        # refutation.
+        from packages.semgrep.models import SemgrepResult
+
+        result = self._sweep(tmp_path, monkeypatch, SemgrepResult(
+            name="r", config="rule.yaml", target="test.c",
+            findings=[], errors=[], returncode=0,
+            files_failed=[str(tmp_path / "test.c")],
+        ))
+        assert result.outcome == "error"
+        assert any("files_failed" in e for e in result.errors)
+
+    def test_clean_scan_without_matches_still_refutes(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        # The genuine negative is preserved: rc 0, file analysed, no
+        # findings → refuted (the refutation lane must not weaken).
+        from packages.semgrep.models import SemgrepResult
+
+        result = self._sweep(tmp_path, monkeypatch, SemgrepResult(
+            name="r", config="rule.yaml", target="test.c",
+            findings=[], errors=[], returncode=0,
+            files_examined=[str(tmp_path / "test.c")],
+        ))
+        assert result.outcome == "refuted"
+
+
+class TestJoernErrorSemantics:
+    """Joern leg of the same class: an errored taint query (timeout, server
+    crash, validation reject) returns no flows — that must classify as
+    'error', never 'refuted'."""
+
+    def _cpg(self, tmp_path):
+        from packages.joern.models import JoernCPG
+
+        cpg_path = tmp_path / "cpg.bin"
+        cpg_path.write_bytes(b"")
+        return JoernCPG(path=cpg_path, target=tmp_path)
+
+    def _sweep(self, tmp_path, monkeypatch, joern_result):
+        import packages.joern.runner as runner_mod
+        from core.audit.sweep import run_joern_sweep
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.c").write_text("int f() { return 0; }\n")
+        monkeypatch.setattr(
+            runner_mod, "run_taint_query_result",
+            lambda *a, **kw: joern_result,
+        )
+        return run_joern_sweep(
+            target_path=tmp_path,
+            file_path="src/a.c",
+            function_name="foo",
+            source_param="x",
+            sink_call="memcpy",
+            cpg=self._cpg(tmp_path),
+        )
+
+    def test_errored_query_is_error_not_refuted(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        from packages.joern.models import JoernResult
+
+        result = self._sweep(tmp_path, monkeypatch, JoernResult(
+            query="q", flows=[], errors=["query timed out after 300s"],
+        ))
+        assert result.outcome == "error"
+        assert result.errors == ["query timed out after 300s"]
+
+    def test_no_flows_no_errors_still_refutes(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        from packages.joern.models import JoernResult
+
+        result = self._sweep(tmp_path, monkeypatch, JoernResult(
+            query="q", flows=[], errors=[],
+        ))
+        assert result.outcome == "refuted"
+
+    def test_run_taint_query_result_surfaces_run_query_errors(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        import packages.joern.runner as runner_mod
+        from packages.joern.models import JoernResult
+        from packages.joern.runner import run_taint_query_result
+
+        monkeypatch.setattr(
+            runner_mod, "run_query",
+            lambda *a, **kw: JoernResult(
+                query="q", flows=[], errors=["server process exited"],
+            ),
+        )
+        result = run_taint_query_result(
+            self._cpg(tmp_path), "foo", "memcpy",
+        )
+        assert result.errors == ["server process exited"]
+        assert result.flows == []
+
+
 class TestRunCoccinelleSweep:
     def test_missing_file(self, tmp_path: Path):
         from core.audit.sweep import run_coccinelle_sweep

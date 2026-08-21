@@ -295,6 +295,21 @@ def run_rule(
     findings = parse_sarif(sarif_text)
     parsed_json = parse_json_output(json_text)
 
+    # A completed subprocess is not a successful scan. With --error,
+    # rc 0 = clean and rc 1 = findings; anything else (invalid rule
+    # YAML, internal crash on a hostile source file, signal kill) means
+    # the tool never analysed the code — populate ``errors`` so every
+    # caller inherits the error-vs-refuted distinction instead of
+    # reading empty findings as a refutation (semgrep also sometimes
+    # emits empty SARIF on rule errors).
+    errors: list[str] = []
+    if proc.returncode not in (0, 1):
+        stderr_tail = (proc.stderr or "").strip()[-500:]
+        errors.append(
+            f"semgrep exited with code {proc.returncode}"
+            + (f": {stderr_tail}" if stderr_tail else "")
+        )
+
     return SemgrepResult(
         name=name,
         config=config,
@@ -308,7 +323,7 @@ def run_rule(
         sarif=sarif_text,
         json_output=json_text,
         elapsed_ms=elapsed,
-        errors=[],
+        errors=errors,
     )
 
 

@@ -204,6 +204,37 @@ class TestRunRuleMocked:
         assert result.returncode == -1
         assert "permission denied" in result.errors[0]
 
+    def test_completed_process_bad_exit_populates_errors(self, tmp_path):
+        # Regression: a completed subprocess exiting outside {0, 1}
+        # (invalid rule YAML, internal crash on a hostile source file)
+        # used to return errors=[] — downstream sweeps then read the
+        # empty findings as a refutation the tool never made.
+        target = tmp_path / "src"
+        target.mkdir()
+        with patch("packages.semgrep.runner.is_available", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="", stderr="fatal: invalid rule schema", returncode=2,
+            )
+            result = run_rule(target, "p/x", unsandboxed=True)
+        assert result.returncode == 2
+        assert result.errors
+        assert "exited with code 2" in result.errors[0]
+        assert "invalid rule schema" in result.errors[0]
+        assert not result.ok
+
+    def test_signal_kill_populates_errors(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+        with patch("packages.semgrep.runner.is_available", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="", stderr="", returncode=-11,
+            )
+            result = run_rule(target, "p/x", unsandboxed=True)
+        assert result.errors and "exited with code -11" in result.errors[0]
+        assert not result.ok
+
     def test_run_with_empty_sarif(self, tmp_path):
         target = tmp_path / "src"
         target.mkdir()

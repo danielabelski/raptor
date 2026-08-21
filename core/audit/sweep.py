@@ -457,6 +457,29 @@ class SweepResult:
         return entry
 
 
+def _target_in_failed_files(
+    files_failed: Any,
+    full_path: Path,
+    file_path: str,
+) -> bool:
+    """Whether the sweep's single target file is in semgrep's
+    ``files_failed`` list (parsed from --json-output).
+
+    Semgrep may report the path as passed on the command line
+    (absolute), or relative — compare both shapes.  ``files_examined``
+    being empty is deliberately NOT treated as failure: the JSON
+    sidecar is best-effort and absent in many injected-runner setups.
+    """
+    full_str = str(full_path)
+    for entry in files_failed or []:
+        s = str(entry)
+        if not s:
+            continue
+        if s == full_str or s == file_path or s.endswith("/" + file_path):
+            return True
+    return False
+
+
 def run_semgrep_sweep(
     *,
     target_path: Path,
@@ -518,6 +541,44 @@ def run_semgrep_sweep(
 
         result = run_rule(full_path, rule_config, timeout=120)
 
+        # Tool failure is never a refutation. The runner populates
+        # ``errors`` for not-installed / sandbox-refusal / timeout /
+        # OSError AND for completed subprocesses exiting outside
+        # {0, 1} (invalid dynamic rule YAML, internal crash on a
+        # hostile source file). Check the returncode here too so an
+        # older/injected runner without the rc→errors mapping still
+        # can't classify a crashed scan as "refuted" — a shape of
+        # evidence-channel suppression that actively counted AGAINST
+        # the hypothesis.
+        _rc = getattr(result, "returncode", 0)
+        if result.errors or _rc not in (0, 1):
+            return SweepResult(
+                tool="semgrep",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=list(result.errors)
+                or [f"semgrep exited with code {_rc}"],
+                rule_id=rule_config,
+            )
+
+        # A scan that completed but failed to parse THE target file
+        # analysed nothing — "no findings" says nothing about the code.
+        if _target_in_failed_files(
+            getattr(result, "files_failed", None), full_path, file_path,
+        ):
+            return SweepResult(
+                tool="semgrep",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[
+                    f"semgrep failed to parse {file_path} "
+                    "(reported in files_failed)"
+                ],
+                rule_id=rule_config,
+            )
+
         in_function = []
         for finding in result.findings:
             if hasattr(finding, "line"):
@@ -567,14 +628,11 @@ def run_semgrep_sweep(
             outcome = "inconclusive"
         elif in_function:
             outcome = "confirmed"
-        elif result.errors:
-            # A rule that failed to parse/run produced no findings for
-            # a reason that says NOTHING about the code. Reporting
-            # "refuted" here recorded tool failures as refutations —
-            # feeding tier counters and demotion logic a
-            # disconfirmation the tool never made.
-            outcome = "error"
         else:
+            # Tool failures (errors / bad returncode / target file in
+            # files_failed) already returned "error" above — a
+            # no-match from a scan that actually analysed the file is
+            # a genuine refutation.
             outcome = "refuted"
 
         if outcome == "refuted":
@@ -2434,7 +2492,7 @@ def run_joern_sweep(
         )
 
     try:
-        from packages.joern.runner import run_taint_query
+        from packages.joern.runner import run_taint_query_result
     except ImportError:
         return SweepResult(
             tool="joern",
@@ -2462,7 +2520,7 @@ def run_joern_sweep(
     except Exception:  # noqa: BLE001
         _depth = 2
 
-    flows = run_taint_query(
+    result = run_taint_query_result(
         cpg,
         function_name,
         sink_call,
@@ -2471,14 +2529,28 @@ def run_joern_sweep(
         max_call_depth=_depth,
     )
 
-    if flows:
-        matches = [f.to_dict() for f in flows]
+    if result.flows:
+        matches = [f.to_dict() for f in result.flows]
         return SweepResult(
             tool="joern",
             file_path=file_path,
             function_name=function_name,
             outcome="confirmed",
             matches=matches,
+            rule_id=f"joern:taint:{function_name}->{sink_call}",
+        )
+
+    # No flows AND errors = the query failed (timeout, server crash,
+    # validation reject) — the tool never analysed the code, so this
+    # is an error, never a refutation (same failure-vs-refutation doctrine, mirrored
+    # from the semgrep/coccinelle paths).
+    if result.errors:
+        return SweepResult(
+            tool="joern",
+            file_path=file_path,
+            function_name=function_name,
+            outcome="error",
+            errors=list(result.errors),
             rule_id=f"joern:taint:{function_name}->{sink_call}",
         )
 

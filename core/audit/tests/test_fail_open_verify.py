@@ -53,6 +53,7 @@ from core.audit.fail_open_verify import (
     RULE_HANDLER_OUTCOME,
     RULE_IGNORED_RETURN,
     RULE_RECOVER_CONTINUE,
+    RULE_RETURN_DOMAIN,
     RULE_TRISTATE,
     fail_open_applicable,
     is_detection_rule_id,
@@ -2127,6 +2128,126 @@ class TestDispatchWiring:
         fb = get_fallback("tree-sitter")
         assert fb is not None
         assert "fail_open" in fb.impact
+
+
+class TestReturnDomainLeg:
+    """Sentinel-vs-domain mismatch leg of the C channel: an uncaptured
+    `callee(...) == -1` decision edge where the callee's derived
+    return domain provably contains another negative error value."""
+
+    CALLER_VULN = (
+        "int session_open(int fd) {\n"
+        "    if (verify_peer(fd) == -1)\n"
+        "        return -1;\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    CALLEE_WIDE = (
+        "int verify_peer(int fd) {\n"
+        "    if (fd < 0)\n"
+        "        return -2;\n"
+        "    if (fd == 0)\n"
+        "        return -1;\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    CALLEE_BINARY = (
+        "int verify_peer(int fd) {\n"
+        "    if (fd < 0)\n"
+        "        return -1;\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    HYP = (
+        "verify_peer() can fail with an error code other than -1 and "
+        "the `== -1` check treats it as success"
+    )
+
+    @staticmethod
+    def _clear():
+        from core.audit.return_domain import clear_cache
+        clear_cache()
+
+    def _ctx(self, tmp_path):
+        return RoleContext(target_roots=(tmp_path,))
+
+    @requires_ts("c")
+    def test_wide_domain_confirms_with_constructive_receipt(
+        self, tmp_path,
+    ):
+        self._clear()
+        _write(tmp_path, "src/session.c", self.CALLER_VULN)
+        _write(tmp_path, "src/peer.c", self.CALLEE_WIDE)
+        res = run_fail_open_check(
+            tmp_path, "src/session.c", "session_open", self.HYP,
+            role_context=self._ctx(tmp_path),
+        )
+        assert res.outcome == "confirmed"
+        assert res.rule_id.startswith(RULE_RETURN_DOMAIN)
+        assert res.fallible is not None
+        assert res.fallible["evidence"].startswith("return-domain:")
+        assert "-2" in res.reason
+        assert res.handler is not None
+        assert res.handler["outcome_kind"] == "sentinel_domain_mismatch"
+        assert res.sites and res.sites[0].verdict == "unguarded"
+
+    @requires_ts("c")
+    def test_naming_grade_role_selects_detection_variant(
+        self, tmp_path,
+    ):
+        self._clear()
+        _write(tmp_path, "src/session.c", self.CALLER_VULN)
+        _write(tmp_path, "src/peer.c", self.CALLEE_WIDE)
+        res = run_fail_open_check(
+            tmp_path, "src/session.c", "session_open", self.HYP,
+            role_context=self._ctx(tmp_path),
+        )
+        # A naming-only role keeps the channel doctrine: the receipt
+        # confirms, the detection variant cannot promote alone.
+        assert res.rule_id == RULE_RETURN_DOMAIN + "-naming"
+
+    @requires_ts("c")
+    def test_binary_domain_falls_through_unchanged(self, tmp_path):
+        self._clear()
+        _write(tmp_path, "src/session.c", self.CALLER_VULN)
+        _write(tmp_path, "src/peer.c", self.CALLEE_BINARY)
+        res = run_fail_open_check(
+            tmp_path, "src/session.c", "session_open", self.HYP,
+            role_context=self._ctx(tmp_path),
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_FALLIBILITY_UNRESOLVED in res.reason
+
+    @requires_ts("c")
+    def test_without_target_roots_leg_is_silent(self, tmp_path):
+        self._clear()
+        _write(tmp_path, "src/session.c", self.CALLER_VULN)
+        _write(tmp_path, "src/peer.c", self.CALLEE_WIDE)
+        res = run_fail_open_check(
+            tmp_path, "src/session.c", "session_open", self.HYP,
+        )
+        assert res.outcome == "inconclusive"
+        assert REASON_FALLIBILITY_UNRESOLVED in res.reason
+
+    @requires_ts("c")
+    def test_captured_comparison_is_not_claimed(self, tmp_path):
+        self._clear()
+        captured = (
+            "int session_open(int fd) {\n"
+            "    int r = verify_peer(fd);\n"
+            "    if (r == -1)\n"
+            "        return -1;\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        _write(tmp_path, "src/session.c", captured)
+        _write(tmp_path, "src/peer.c", self.CALLEE_WIDE)
+        res = run_fail_open_check(
+            tmp_path, "src/session.c", "session_open", self.HYP,
+            role_context=self._ctx(tmp_path),
+        )
+        assert res.outcome != "confirmed" or not \
+            res.rule_id.startswith(RULE_RETURN_DOMAIN)
 
 
 if __name__ == "__main__":  # pragma: no cover

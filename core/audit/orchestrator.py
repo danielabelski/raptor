@@ -14556,12 +14556,16 @@ def _run_tool_chain(
                 from .fail_open_roles import RoleContext
                 from .fail_open_verify import run_fail_open_check
 
+                _fo_roots: tuple = (Path(effective_target),)
+                if getattr(config, "study_root", None):
+                    _fo_roots += (Path(config.study_root),)
                 fo_ctx = RoleContext(
                     out_dir=config.out_dir,
                     annotations_dir=getattr(
                         config, "annotations_dir", None,
                     ),
                     inventory=getattr(config, "inventory", None),
+                    target_roots=_fo_roots,
                 )
                 # Leg-3 flow escalator: live server + the same
                 # remaining-run-budget clamp as the joern_guard /

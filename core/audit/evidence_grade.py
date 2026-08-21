@@ -313,6 +313,14 @@ _RECEIPT_MAP: dict[str, tuple] = {
             "by the comparison shape"
         ),
     ),
+    "fail_open:return-domain": (
+        EvidenceSource.TREE_SITTER,
+        (
+            "a security-role call's result is compared against "
+            "exactly -1 while its derived return domain provably "
+            "contains another negative error value"
+        ),
+    ),
     "fail_open:recover-continue": (
         EvidenceSource.TREE_SITTER,
         (

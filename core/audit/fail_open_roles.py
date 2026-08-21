@@ -366,6 +366,9 @@ class RoleContext:
     conventions: list[Any] = field(default_factory=list)
     context_map: dict[str, Any] | None = None
     wur_functions: frozenset[str] = frozenset()
+    # Definition-search roots for body-derived evidence (the audited
+    # tree first, then any wider source root the run knows about).
+    target_roots: tuple[Path, ...] = ()
 
 
 # ── registry budget lint ────────────────────────────────────────────

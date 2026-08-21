@@ -106,6 +106,7 @@ logger = logging.getLogger(__name__)
 RULE_HANDLER_OUTCOME = "fail_open:handler-outcome"
 RULE_IGNORED_RETURN = "fail_open:ignored-return"
 RULE_TRISTATE = "fail_open:tristate"
+RULE_RETURN_DOMAIN = "fail_open:return-domain"
 RULE_RECOVER_CONTINUE = "fail_open:recover-continue"   # phase 2 (Go)
 RULE_UNAWAITED = "fail_open:unawaited"                 # phase 3 (JS/TS)
 # Phase 3: JS/TS handler outcomes reuse RULE_HANDLER_OUTCOME; Rust
@@ -815,6 +816,106 @@ def _c_fallibility(
     return None
 
 
+def _c_return_domain_leg(
+    source: str,
+    file_path: str,
+    function_name: str,
+    span: tuple[int, int],
+    callee: str,
+    role: RoleEvidence,
+    role_context: RoleContext,
+    language: str,
+    inventory: dict[str, Any] | None,
+) -> FailOpenResult | None:
+    """Sentinel-vs-domain mismatch: the function compares *callee*'s
+    result against exactly ``-1`` (uncaptured, on an ``if`` decision
+    edge) while the callee's derived return domain provably contains
+    another negative error value — those errors take the fall-through
+    path. Constructive proof or ``None``; the leg never weakens the
+    legs that run after it.
+    """
+    tail = _function_tail(callee)
+    roots = [Path(r) for r in (role_context.target_roots or ()) if r]
+    if not roots:
+        return None
+    try:
+        from .return_domain import (
+            derive_return_domain,
+            sentinel_comparison_sites,
+        )
+    except ImportError:
+        return None
+    try:
+        rd_sites = sentinel_comparison_sites(
+            source, file_path, language=language,
+            function_span=span, callee=tail,
+        )
+    except Exception:
+        logger.debug("return-domain site scan failed", exc_info=True)
+        return None
+    if not rd_sites:
+        return None
+    try:
+        domain = derive_return_domain(tail, roots)
+    except Exception:
+        logger.debug("return-domain derivation failed", exc_info=True)
+        return None
+    if domain is None or not domain.proven_wider:
+        return None
+    wider = ", ".join(str(v) for v in domain.wider_values)
+    chain = "; ".join(
+        p.chain for p in domain.proofs if p.value < -1
+    )
+    first = rd_sites[0]
+    sites = [
+        CallSiteOutcome(
+            file=s.file, line=s.line, code=s.code,
+            verdict="unguarded",
+            evidence=(
+                f"comparison `{s.shape}` misses the callee's proven "
+                f"error values {{{wider}}}"
+            ),
+            shape=s.shape, parser="tree-sitter",
+        )
+        for s in rd_sites
+    ]
+    result = FailOpenResult(
+        outcome="confirmed",
+        reason=(
+            f"{first.code} at {file_path}:{first.line} — the decision "
+            f"tests exactly `{first.shape}` but {tail} provably also "
+            f"returns {{{wider}}} ({chain}); error returns outside "
+            f"the sentinel take the fall-through path "
+            f"({role.kind}-role callee {callee})"
+        ),
+        rule_id=_apply_role_grade(RULE_RETURN_DOMAIN, role),
+        language=language,
+        role=role.to_dict(),
+        handler={
+            "idiom": "return_domain_mismatch",
+            "line": first.line,
+            "caught": [callee],
+            "broad": False,
+            "outcome_kind": "sentinel_domain_mismatch",
+            "permissive_value": first.shape,
+            "code": first.code,
+            "parser": "tree-sitter",
+        },
+        fallible={
+            "callee": callee,
+            "evidence": (
+                f"return-domain:{tail} provably returns {{{wider}}}"
+            ),
+            "types": [],
+        },
+        sites=sites,
+    )
+    result.reachability = _entry_reachability(
+        role_context, inventory, file_path, function_name,
+    )
+    return result
+
+
 def _run_c_check(
     source: str,
     file_path: str,
@@ -885,6 +986,18 @@ def _run_c_check(
         )
     tristate = role.contract.startswith("tristate")
     base_rule = RULE_TRISTATE if tristate else RULE_IGNORED_RETURN
+
+    # Return-domain sentinel-mismatch leg first: it carries its own
+    # fallibility witness (the callee's proven error returns), so it
+    # runs before the contract/wur fallibility gate. Constructive
+    # proof or fall-through — the legs below are unchanged when it
+    # does not fire.
+    rd_result = _c_return_domain_leg(
+        source, file_path, function_name, span, callee, role,
+        role_context, language, inventory,
+    )
+    if rd_result is not None:
+        return rd_result
 
     fallible = _c_fallibility(callee, role, role_context, source)
     if fallible is None:

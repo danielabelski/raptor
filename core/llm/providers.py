@@ -2924,10 +2924,16 @@ class AnthropicProvider(LLMProvider):
                 delay = (backoff_factor ** attempt) * (0.5 + random.random())
                 from core.security.log_sanitisation import escape_nonprintable
                 from core.security.redaction import redact_secrets
-                logger.info(
+                # WARNING with cumulative elapsed, not INFO: during an
+                # upstream brownout each attempt burns a full read
+                # timeout, and at INFO the operator sees a silent stall
+                # (observed: a 50-minute review-loop hang diagnosable
+                # only by SIGTERM). Same level the OpenAI loop uses.
+                logger.warning(
                     "AnthropicProvider.turn: transient error attempt "
-                    "%d, retrying in %.1fs: %s",
-                    attempt + 1, delay,
+                    "%d/%d (%.0fs elapsed), retrying in %.1fs: %s",
+                    attempt + 1, max_retries + 1,
+                    time.monotonic() - t_start, delay,
                     escape_nonprintable(redact_secrets(_redact_endpoint(
                         str(exc), self.config.api_base,
                     )))[:512],

@@ -240,6 +240,40 @@ class TestRunSandboxedSmokeTest(unittest.TestCase):
         )
         self.assertIn("HELPER-CONTENT", r.stdout)
 
+    def test_tmp_resident_target_is_read_only(self):
+        """A target under /tmp must NOT be writable through its bind.
+
+        Host /tmp is typically mounted nosuid,nodev; the read-only
+        remount used to drop those locked flags, the kernel refused it
+        with EPERM in the user namespace, and the fallback "relying on
+        Landlock" was no backstop for /tmp-resident targets (the
+        Landlock writable baseline covers /tmp — the per-sandbox-tmpfs
+        rationale). Net effect: scanned-tree self-modification through
+        a supposedly read-only bind. The remount now repeats the
+        source mount's flags; the write must fail with EROFS."""
+        from core.sandbox._spawn import run_sandboxed
+        tgt = tempfile.TemporaryDirectory(prefix="raptor-rotgt-", dir="/tmp")
+        self.addCleanup(tgt.cleanup)
+        atk = Path(tgt.name) / "ATK-marker"
+        r = run_sandboxed(
+            ["sh", "-c", f"echo pwn > {atk} && echo WROTE"],
+            target=tgt.name, output=self.tmp.name,
+            block_network=True,
+            nproc_limit=1024,
+            limits={"memory_mb": 0, "max_file_mb": 10240, "cpu_seconds": 300},
+            writable_paths=[self.tmp.name, "/tmp"],
+            readable_paths=None,
+            allowed_tcp_ports=None,
+            seccomp_profile=None, seccomp_block_udp=False,
+            env=None, cwd=None, timeout=15,
+            capture_output=True, text=True,
+        )
+        self.assertNotIn("WROTE", r.stdout or "",
+                         "write into the read-only target bind succeeded")
+        self.assertFalse(atk.exists(),
+                         "host file materialised through the read-only "
+                         "target bind — locked-flag remount regressed")
+
     def test_stub_dir_cleaned_up_after_run(self):
         """The parent-created tempfile.mkdtemp stub must be removed
         after the child exits. Without cleanup, /tmp accumulates

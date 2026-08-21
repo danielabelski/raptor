@@ -68,6 +68,12 @@ MS_REC         = 0x4000
 # Captured as a module constant (not `import errno` in the post-fork
 # path) — same fork-safety convention as the other constants here.
 _EINVAL        = 22
+MS_NOSUID      = 0x2
+MS_NODEV       = 0x4
+MS_NOEXEC      = 0x8
+MS_NOATIME     = 0x400
+MS_NODIRATIME  = 0x800
+MS_RELATIME    = 0x200000  # 1<<21
 MS_UNBINDABLE  = 0x20000  # 1<<17
 MS_PRIVATE     = 0x40000  # 1<<18
 MS_SLAVE       = 0x80000  # 1<<19
@@ -250,6 +256,41 @@ def _copy_etc_tree(src: str, dst: str) -> None:
                 pass  # skip unreadable entries (shadow, etc.)
 
 
+def _ro_remount_flags(path: str) -> int:
+    """MS_* flags for a read-only bind remount of *path* that PRESERVE
+    the source mount's locked attributes.
+
+    In a user namespace, mount(2) refuses (EPERM) a MS_REMOUNT|MS_BIND
+    that would CLEAR flags the original (init-ns) mount carried —
+    nosuid/nodev/noexec/atime attributes are "locked". Host /tmp is
+    typically mounted nosuid,nodev, so the plain
+    MS_REMOUNT|MS_BIND|MS_RDONLY used here failed EPERM for any
+    /tmp-resident bind and the code fell back to "relying on Landlock"
+    — which is no backstop at all for targets UNDER /tmp, because /tmp
+    is in the Landlock writable baseline (the per-sandbox-tmpfs
+    rationale). Net effect: a target repo under /tmp was writable
+    through its supposedly read-only bind. Read the live flags via
+    statvfs and repeat them in the remount so the kernel accepts it.
+    """
+    flags = MS_REMOUNT | MS_BIND | MS_RDONLY
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return flags
+    f_flag = st.f_flag
+    for st_bit, ms_bit in (
+        (getattr(os, "ST_NOSUID", 0), MS_NOSUID),
+        (getattr(os, "ST_NODEV", 0), MS_NODEV),
+        (getattr(os, "ST_NOEXEC", 0), MS_NOEXEC),
+        (getattr(os, "ST_NOATIME", 0), MS_NOATIME),
+        (getattr(os, "ST_NODIRATIME", 0), MS_NODIRATIME),
+        (getattr(os, "ST_RELATIME", 0), MS_RELATIME),
+    ):
+        if st_bit and (f_flag & st_bit):
+            flags |= ms_bit
+    return flags
+
+
 def setup_mount_ns(target: str | None, output: str | None,
                    extra_ro_paths: Iterable[str] | None = None,
                    root_path: str | None = None,
@@ -430,8 +471,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                    MS_REMOUNT | MS_BIND | MS_RDONLY)
         else:
             _mount(host_dir, inside, None, MS_BIND)
-            _mount(host_dir, inside, None,
-                   MS_REMOUNT | MS_BIND | MS_RDONLY)
+            _mount(host_dir, inside, None, _ro_remount_flags(inside))
 
     # 5. /dev and /sys: recursive bind from host. A minimal /dev would
     # be more conservative but real tools (ASAN, glibc, curl) need
@@ -513,7 +553,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         # rather than the primary control.
         if output != target:
             try:
-                _mount(target, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
+                _mount(target, inside, None, _ro_remount_flags(inside))
             except OSError as exc:
                 warn_post_fork(
                     b"mount_ns: target remount-ro failed (errno=%d); "
@@ -707,7 +747,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                         b" Landlock\n"
                     )
                 try:
-                    _mount(path, inside, None, MS_REMOUNT | MS_BIND | MS_RDONLY)
+                    _mount(path, inside, None, _ro_remount_flags(inside))
                 except OSError as exc:
                     # bytes(path) keeps the message fork-safe (no f-string
                     # allocation pulling locks); fallback to a placeholder

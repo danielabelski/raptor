@@ -51,7 +51,7 @@ full flag table.
 | `--max-cost <USD>` | Stop after spending this many dollars on LLM calls |
 | `--deepen-reserve <fraction>` | Slice of `--max-cost` held back for the deepen phase so announced re-reviews can execute (default 0.15; 0 disables) |
 | `--max-time <seconds>` | Wall-clock time limit |
-| `--no-supervisor-bound` | Do not default a wall budget under a capped Claude subagent shell (see [long-runs.md](long-runs.md)) |
+| `--no-supervisor-bound` | Do not default a wall budget under a capped Claude subagent shell (see [Running long audits](#running-long-audits)) |
 | `--review-passes <N>` | Independent review passes per function for self-consistency (default: 1) |
 | `--subsystem-depth <N>` | Directory grouping depth for subsystem-ordered review (default: 0) |
 | `--max-propagation-depth <N>` | Override adaptive constraint propagation depth (default: auto-calibrated p90+2, floor 5, cap 15) |
@@ -255,7 +255,36 @@ the audit pack schemas are documented in `core/audit/vocab_packs.py` and
 checkers then run on seeds + learned vocabulary alone.
 
 
-## Post-run Workflows
+## Running long audits
+
+Long audit runs can outlive the environment that launched them.  The
+one supervisor RAPTOR detects and defends against automatically is the
+Claude Code **subagent** background-shell cap
+(`CLAUDE_SUBAGENT_BG_SHELL_MAX_MS`, harness default 1 hour): a shell
+backgrounded inside a subagent is killed at the cap regardless of what
+it is doing, with a `[killed]` marker in the task output.  Main-thread
+background shells are uncapped.
+
+In order of preference when a run may exceed an hour:
+
+1. **Launch from the main thread**, not from a subagent.
+2. **Raise the cap**: export a larger `CLAUDE_SUBAGENT_BG_SHELL_MAX_MS`
+   before launching the harness.
+3. **Let self-bounding handle it** (the default): when the run detects
+   it is under a capped subagent shell and no explicit `--max-time` is
+   set, it defaults its wall budget to the cap minus a 300 s drain
+   margin and concludes **gracefully** inside it — in-flight reviews
+   harvested, journal and report written, lifecycle `completed` with a
+   note stating how many gaps remain.  Continue in a new run: cross-run
+   verdict reuse imports the completed verdicts at $0 and reviews only
+   the remainder.  `--no-supervisor-bound` opts out; misdetection is
+   safe in both directions (a false positive self-bounds gracefully; a
+   false negative dies at the cap and `resume` recovers it).
+
+When a supervisor stops the run with SIGTERM, the first TERM concludes
+the run in bounded time (in-flight completions harvested, everything
+flushed, report written, lifecycle `interrupted` with a resume hint,
+exit 130); a second TERM exits immediately after a best-effort flush.
 
 ### Resuming an interrupted run
 
@@ -270,10 +299,18 @@ libexec/raptor-audit resume "$OUTPUT_DIR" [--allow-drift] [--max-time <s>] [--no
 Prior verdicts are re-imported at $0 (hash-verified), the remaining
 gaps are recomputed against the original checklist/scope/pins, the
 remaining budget is the original cap minus booked spend, and one final
-report covers all segments. Completed runs are refused — continue those
-in a new run (cross-run verdict reuse imports the verdicts at $0). See
-[long-runs.md](long-runs.md) for the supervisor caps, self-bounding,
-and SIGTERM semantics.
+report covers all segments (segment provenance noted in the report and
+run metadata).
+
+Guards: a **completed** run is refused — continue those in a new run
+(cross-run verdict reuse imports the verdicts at $0); a run whose
+recorded worker is still alive is refused (it is actually in flight);
+and the **staleness gate** re-verifies every hashed journal verdict
+against the target tree — any drift refuses the resume with the drifted
+functions named, or `--allow-drift` proceeds and re-reviews those
+functions instead of reusing them.
+
+## Post-run Workflows
 
 ### Feedback loop
 

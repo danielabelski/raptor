@@ -62,8 +62,7 @@ overview:
 | [CodeQL](codeql.md) | CodeQL integration and autonomous analysis |
 | [Fuzzing](fuzzing.md) | AFL++ and libFuzzer |
 | [Crash Analysis](crash-analysis.md) | Autonomous crash root-cause analysis |
-| [Audit](audit.md) | Systematic code review: hypotheses, tools, strategies, gates |
-| [Long Runs](long-runs.md) | External supervisors: shell caps, self-bounding, SIGTERM, `raptor-audit resume` |
+| [Audit](audit.md) | Systematic code review: hypotheses, tools, strategies, gates, long runs and resume |
 | [Validation](validation.md) | Exploitability validation pipeline (stages 0, A--F, 1) |
 | [Recall](recall.md) | Detector-recall measurement against public benchmark corpora |
 | [Binary Analysis](binary-analysis.md) | Binary oracle, `/binary`, exploit feasibility |

@@ -297,10 +297,13 @@ class TestSandboxedCampaign:
             assert cmd[v_idx + 1] == "0"
             assert kwargs["timeout"] >= 300
 
-        main_cmd = calls[0][0]
-        secondary_cmd = calls[1][0]
-        assert "-M" in main_cmd and "main" in main_cmd
-        assert "-S" in secondary_cmd and "secondary1" in secondary_cmd
+        # Instances start on supervising threads, so the mock's append
+        # order is nondeterministic — identify each command by its role
+        # flag instead of by position.
+        main_cmds = [c for c, _ in calls if "-M" in c]
+        secondary_cmds = [c for c, _ in calls if "-S" in c]
+        assert len(main_cmds) == 1 and "main" in main_cmds[0]
+        assert len(secondary_cmds) == 1 and "secondary1" in secondary_cmds[0]
 
     def test_sandbox_setup_error_fails_loud(self, tmp_path, monkeypatch):
         from core.sandbox import SandboxSetupError

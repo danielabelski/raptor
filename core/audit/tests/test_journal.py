@@ -406,3 +406,91 @@ class TestMechanicalEchoRows:
         # suspicious line.
         assert "clean" in out
         assert "suspicious" not in out
+
+
+class TestReviewDiffLive:
+    """/review diff + live drive the journal layers end-to-end."""
+
+    @staticmethod
+    def _cli():
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        from pathlib import Path as _P
+        cli_path = str(
+            _P(__file__).resolve().parents[3] / "libexec" / "raptor-review",
+        )
+        loader = SourceFileLoader("raptor_review_cli_dl", cli_path)
+        spec = importlib.util.spec_from_loader("raptor_review_cli_dl", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
+
+    @staticmethod
+    def _run_dir(project, name, entries, status="completed", mtime=None):
+        import json as _json
+        import os as _os
+
+        from core.coverage.journal import ReviewJournalEntry, append_entry
+        run = project / name
+        run.mkdir(parents=True, exist_ok=True)
+        (run / ".raptor-run.json").write_text(
+            _json.dumps({"status": status}), encoding="utf-8")
+        for i, (file, fn, verdict) in enumerate(entries):
+            append_entry(run, ReviewJournalEntry(
+                ts=f"2026-08-21T00:00:0{i}.000000Z", run_id=name,
+                file=file, function=fn, verdict=verdict,
+                source_hash="abc123",
+            ))
+        if mtime is not None:
+            _os.utime(run, (mtime, mtime))
+        return run
+
+    def test_diff_reports_changed_and_new(self, tmp_path, capsys):
+        project = tmp_path
+        self._run_dir(project, "audit-1", [
+            ("a.c", "f1", "clean"), ("a.c", "f2", "clean")], mtime=1_000)
+        self._run_dir(project, "audit-2", [
+            ("a.c", "f1", "finding"), ("b.c", "f3", "clean")], mtime=2_000)
+        mod = self._cli()
+
+        class _Args:
+            out = None
+            project = str(tmp_path)
+            raw = True
+            runs = []
+        mod.cmd_diff(_Args())
+        import json as _json
+        payload = _json.loads(capsys.readouterr().out)
+        assert payload["run_a"] == "audit-1"
+        assert payload["run_b"] == "audit-2"
+        assert {"file": "a.c", "function": "f1", "from": "clean",
+                "to": "finding", "model": None} in payload["changed"]
+        assert any(n["function"] == "f3" for n in payload["new"])
+
+    def test_diff_needs_two_runs(self, tmp_path, capsys):
+        self._run_dir(tmp_path, "audit-1", [("a.c", "f1", "clean")])
+        mod = self._cli()
+
+        class _Args:
+            out = None
+            project = str(tmp_path)
+            raw = False
+            runs = []
+        mod.cmd_diff(_Args())
+        assert "Need two runs" in capsys.readouterr().out
+
+    def test_live_prints_entries_and_exits_on_terminal(self, tmp_path, capsys):
+        run = self._run_dir(
+            tmp_path, "audit-1", [("a.c", "f1", "clean")],
+            status="completed")
+        mod = self._cli()
+
+        class _Args:
+            out = str(run)
+            project = None
+            raw = False
+        mod.cmd_live(_Args())
+        out = capsys.readouterr().out
+        assert "a.c:f1" in out
+        assert "clean" in out
+        assert "run completed." in out

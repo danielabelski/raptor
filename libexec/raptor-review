@@ -18,6 +18,8 @@ Usage:
   raptor-review notes                      # list all operator notes
   raptor-review history <file> <fn>        # all reviews over time
   raptor-review stats                      # entry counts, costs, coverage %
+  raptor-review diff [run1 run2]           # verdict changes between two runs
+  raptor-review live                       # tail-follow a running audit's journal
   raptor-review compact                    # compact project journal index
 
 Common options:
@@ -626,6 +628,149 @@ def _stale_journal(args):
         )
 
 
+def _resolve_diff_runs(args, project_dir):
+    """Resolve the two run dirs to diff: explicit names/paths, else the
+    two most recent runs in the project (older first)."""
+    named = list(getattr(args, "runs", None) or [])
+    resolved = []
+    for name in named[:2]:
+        p = Path(name)
+        if p.is_dir():
+            resolved.append(p)
+        elif project_dir and (project_dir / name).is_dir():
+            resolved.append(project_dir / name)
+        else:
+            print(f"Run not found: {name}", file=sys.stderr)
+            return None, None
+    if len(resolved) == 2:
+        return resolved[0], resolved[1]
+    if not project_dir:
+        return None, None
+    runs = sorted(
+        [d for d in project_dir.iterdir()
+         if d.is_dir() and (d / ".raptor-run.json").is_file()
+         and (d / "review-journal.jsonl").is_file()],
+        key=lambda d: d.stat().st_mtime,
+    )
+    if len(resolved) == 1:
+        others = [r for r in runs if r != resolved[0]]
+        return (others[-1], resolved[0]) if others else (None, None)
+    if len(runs) < 2:
+        return None, None
+    return runs[-2], runs[-1]
+
+
+def cmd_diff(args):
+    """Verdict changes between two runs' journals."""
+    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    run_a, run_b = _resolve_diff_runs(args, project_dir)
+    if run_a is None or run_b is None:
+        print("Need two runs with journals to diff (pass two run "
+              "dir names/paths, or have >=2 journalled runs in the "
+              "active project).")
+        return
+    try:
+        from core.audit.journal import latest_entries
+        a = latest_entries(run_a)
+        b = latest_entries(run_b)
+    except Exception:  # noqa: BLE001 — degrade like the other layer loaders
+        a, b = {}, {}
+    changed = []
+    new_reviews = []
+    for key, entry in sorted(b.items()):
+        prior = a.get(key)
+        if prior is None:
+            new_reviews.append(entry)
+        elif prior.verdict != entry.verdict:
+            changed.append((prior, entry))
+    if getattr(args, "raw", False):
+        print(json.dumps({
+            "run_a": run_a.name, "run_b": run_b.name,
+            "changed": [
+                {"file": e.file, "function": e.function,
+                 "from": p_.verdict, "to": e.verdict, "model": e.model}
+                for p_, e in changed
+            ],
+            "new": [
+                {"file": e.file, "function": e.function,
+                 "verdict": e.verdict, "model": e.model}
+                for e in new_reviews
+            ],
+        }, indent=2))
+        return
+    print(f"─── {_line(run_a.name, 60)} → "
+          f"{_line(run_b.name, 60)} ───")
+    print("\n  Changed verdicts:")
+    if not changed:
+        print("    (none)")
+    for prior, entry in changed:
+        loc = _line(f"{entry.file}:{entry.function}", 60)
+        print(f"    {loc:60}  {_line(prior.verdict, 12)} → "
+              f"{_line(entry.verdict, 12)}")
+    print("\n  New reviews:")
+    if not new_reviews:
+        print("    (none)")
+    for entry in new_reviews:
+        loc = _line(f"{entry.file}:{entry.function}", 60)
+        print(f"    {loc:60}  {_line(entry.verdict, 12)}  "
+              f"{_line(entry.model or '', 24)}")
+
+
+def cmd_live(args):
+    """Tail-follow a running audit's journal; exits when the run
+    reaches a terminal status."""
+    import time
+    out_dir = _resolve_out_dir(args)
+    if not out_dir:
+        print("No run directory found (pass --out or activate a project).")
+        return
+    journal = out_dir / "review-journal.jsonl"
+    meta = out_dir / ".raptor-run.json"
+
+    def _status() -> str:
+        try:
+            return json.loads(
+                meta.read_text(encoding="utf-8")).get("status", "unknown")
+        except (OSError, ValueError):
+            return "unknown"
+
+    print(f"{_line(out_dir.name, 80)} — {_line(_status(), 20)}")
+    pos = 0
+    try:
+        while True:
+            if journal.is_file():
+                with open(journal, encoding="utf-8") as fh:
+                    fh.seek(pos)
+                    chunk = fh.read()
+                # Only consume complete lines — a writer may be
+                # mid-append; the partial tail is re-read next poll.
+                if chunk and not chunk.endswith("\n"):
+                    chunk = chunk[:chunk.rfind("\n") + 1]
+                pos += len(chunk.encode("utf-8"))
+                for line in chunk.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    loc = _line(
+                        f"{e.get('file', '')}:{e.get('function', '')}", 60)
+                    cost = e.get("cost_usd")
+                    cost_s = f"${cost:.2f}" if isinstance(
+                        cost, (int, float)) else ""
+                    print(f"  {_line(e.get('ts', ''), 27):27}  {loc:60}  "
+                          f"{_line(e.get('verdict', ''), 12):12}  {cost_s}")
+            status = _status()
+            if status != "running":
+                print(f"  run {_line(status, 20)}.")
+                return
+            time.sleep(2.0)
+    except KeyboardInterrupt:
+        return
+
+
 def cmd_coverage(args):
     """Show mechanical tool coverage for a project run."""
     project_dir = _resolve_project_dir(getattr(args, "project", None))
@@ -761,6 +906,15 @@ def main():
         help="Which store to check for staleness (default: annotation)",
     )
 
+    p_diff = sub.add_parser(
+        "diff", parents=[common],
+        help="Verdict changes between two runs (default: two most recent)")
+    p_diff.add_argument("runs", nargs="*", default=[])
+
+    sub.add_parser(
+        "live", parents=[common],
+        help="Tail-follow a running audit's journal")
+
     sub.add_parser("compact", parents=[common], help="Compact project journal index")
 
     p_cov = sub.add_parser("coverage", parents=[common], help="Mechanical tool coverage")
@@ -768,7 +922,7 @@ def main():
 
     known_commands = {
         "show", "findings", "gaps", "history", "stats", "notes",
-        "note", "edit", "stale", "compact", "coverage",
+        "note", "edit", "stale", "compact", "coverage", "diff", "live",
     }
     argv_rest = sys.argv[1:]
     first_positional = _first_positional(argv_rest)
@@ -793,6 +947,8 @@ def main():
         "stale": cmd_stale,
         "compact": cmd_compact,
         "coverage": cmd_coverage,
+        "diff": cmd_diff,
+        "live": cmd_live,
     }
 
     handler = dispatch.get(args.command)

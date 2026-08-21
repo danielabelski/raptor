@@ -1607,3 +1607,101 @@ def test_both_hooks_compose() -> None:
     )
     assert nudge_count == 1
     assert warn_count == 1
+
+
+# ---------------------------------------------------------------------------
+# x-source: non-string carriers (container recursion)
+# ---------------------------------------------------------------------------
+
+
+def test_xsource_blocks_list_wrapped_value() -> None:
+    """The confirmed-live bypass: a list-wrapped undiscovered URL
+    dispatched while the identical string was blocked. Containers must
+    be recursed before the known_values check."""
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup",
+                             {"slug": ["hallucinated/repo"]})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Analyze CVE-2024-1234")
+
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert len(blocked) == 1
+    assert "slug" in blocked[0].blocked_fields
+    assert "hallucinated/repo" in blocked[0].blocked_fields["slug"]
+
+
+@pytest.mark.parametrize("carrier", [
+    {"nested": "hallucinated/repo"},                    # dict value
+    {"hallucinated/repo": "x"},                         # dict KEY
+    [["hallucinated/repo"]],                            # nested list
+    {"deep": [{"deeper": ["hallucinated/repo"]}]},      # mixed nesting
+])
+def test_xsource_blocks_container_carriers(carrier) -> None:
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup", {"slug": carrier})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Analyze CVE-2024-1234")
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert len(blocked) == 1, carrier
+
+
+def test_xsource_blocks_undiscovered_number() -> None:
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup", {"slug": 2130706433})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Analyze CVE-2024-1234")
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert len(blocked) == 1
+
+
+def test_xsource_passes_container_of_discovered_values() -> None:
+    """Containers whose every string was discovered still dispatch —
+    the recursion tightens carriers, not legitimate use."""
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup",
+                             {"slug": ["openssl/openssl"]})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Check openssl/openssl for CVE-2024-1234")
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert blocked == []
+
+
+def test_xsource_passes_none_and_bools() -> None:
+    """Structural scalars (None, booleans) are not value carriers."""
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup",
+                             {"slug": None, "flag": True})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Analyze CVE-2024-1234")
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert blocked == []
+
+
+def test_xsource_absurd_nesting_fails_closed() -> None:
+    payload: object = "hallucinated/repo"
+    for _ in range(30):
+        payload = [payload]
+    fp = _FakeProvider([
+        _tool_call_response(("c1", "lookup", {"slug": payload})),
+        _text_response("done"),
+    ])
+    events: list[LoopEvent] = []
+    loop = ToolUseLoop(fp, [_discovered_tool()], events=events.append)
+    loop.run("Analyze CVE-2024-1234")
+    blocked = [e for e in events if isinstance(e, ToolCallBlocked)]
+    assert len(blocked) == 1

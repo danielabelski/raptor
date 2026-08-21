@@ -676,8 +676,11 @@ class ToolUseLoop:
                 blocked: dict[str, str] = {}
                 for field in discovered:
                     val = call.input.get(field)
-                    if isinstance(val, str) and val not in known_values:
-                        blocked[field] = val
+                    offending = list(_iter_undiscovered_values(
+                        val, known_values,
+                    ))
+                    if offending:
+                        blocked[field] = "; ".join(offending[:3])
 
                 if blocked:
                     self._emit(ToolCallBlocked(
@@ -690,7 +693,7 @@ class ToolUseLoop:
                         content=(
                             "x-source validation: "
                             + ", ".join(
-                                f"{f}={v!r}" for f, v in sorted(blocked.items())
+                                f"{f}={v}" for f, v in sorted(blocked.items())
                             )
                             + " not found in prompt or prior tool outputs. "
                             "Discover these values first."
@@ -1371,3 +1374,55 @@ def _get_discovered_fields(tool: ToolDef | None) -> set[str]:
         for name, schema in props.items()
         if isinstance(schema, dict) and schema.get("x-source") == "discovered"
     }
+
+
+# Depth bound for the x-source container walk — model-authored JSON
+# has no legitimate use for deeper nesting in a discovered field.
+_GATE_MAX_DEPTH = 20
+
+
+def _iter_undiscovered_values(val: Any, known_values: set[str],
+                              depth: int = 0):
+    """Yield the undiscovered value carriers inside *val*.
+
+    The pre-dispatch gate used to check ``isinstance(val, str)`` only —
+    any non-string carrier (a list-wrapped URL, a dict, an int) holding
+    an undiscovered value dispatched unchecked, violating the ToolDef
+    contract that discovered fields are "validated against known_values
+    before dispatch" (PoC: list-wrapped URL dispatched while the
+    identical string was blocked). Recurse into containers — including
+    dict KEYS, which carry data just as well as values — and treat
+    every string by the same membership rule as the top level.
+    Non-string scalars: bool/None are structural and pass; numbers must
+    have been discovered in string form (a discovered field has no
+    legitimate use for a never-seen number). Unknown carrier types fail
+    closed.
+
+    Yields display strings for the block message; empty iteration means
+    the value passes.
+    """
+    if depth > _GATE_MAX_DEPTH:
+        yield f"<nesting deeper than {_GATE_MAX_DEPTH} levels>"
+        return
+    if val is None or isinstance(val, bool):
+        return
+    if isinstance(val, str):
+        if val not in known_values:
+            yield val
+        return
+    if isinstance(val, (int, float)):
+        if str(val) not in known_values:
+            yield str(val)
+        return
+    if isinstance(val, dict):
+        for k, v in val.items():
+            yield from _iter_undiscovered_values(k, known_values, depth + 1)
+            yield from _iter_undiscovered_values(v, known_values, depth + 1)
+        return
+    if isinstance(val, (list, tuple, set, frozenset)):
+        for item in val:
+            yield from _iter_undiscovered_values(item, known_values,
+                                                 depth + 1)
+        return
+    # Unrecognised carrier — fail closed rather than dispatch it.
+    yield f"<unsupported value type {type(val).__name__}>"

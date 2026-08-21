@@ -444,3 +444,73 @@ class TestSeedPolicy:
         assert not lr._STEM_LOCK_RE.match("unlock")
         # Bare "lock" yields an empty stem — the scanner skips it.
         assert lr._STEM_LOCK_RE.match("lock").group(1) == ""
+
+
+class TestSanitizedScan:
+    POC = """
+void register_cb(struct obj *o, void (*fn)(struct obj *)) { o->cb = fn; }
+void run(struct obj *obj) {
+    pthread_mutex_lock(&m);
+    /* pthread_mutex_unlock(&m) is done below */
+    obj->cb(obj);
+    pthread_mutex_unlock(&m);
+}
+"""
+
+    def test_release_comment_does_not_truncate_region(self):
+        # Regression PoC: the comment naming the paired unlock became
+        # the region end, the cb invocation fell outside, and the
+        # channel minted 'release precedes every callback-shaped
+        # invocation' for a genuine callback-under-lock.
+        res = run_lock_region_check(
+            Path("/nonexistent"), "a.c", "run",
+            "callback invoked under lock",
+            source_texts={"a.c": self.POC},
+        )
+        assert res.outcome == "confirmed", res.to_dict()
+        assert res.callback and res.callback["expr"] == "obj->cb"
+
+    def test_genuine_early_release_still_refutes(self):
+        src = """
+void run(struct obj *obj) {
+    pthread_mutex_lock(&m);
+    counter++;
+    pthread_mutex_unlock(&m);
+    obj->cb(obj);
+}
+"""
+        res = run_lock_region_check(
+            Path("/nonexistent"), "a.c", "run",
+            "callback invoked under lock",
+            source_texts={"a.c": src},
+        )
+        assert res.outcome == "refuted", res.to_dict()
+
+    def test_registered_names_ignore_comment_registrations(self):
+        # A comment naming a register verb must not plant a callback
+        # name (false 'confirmed' direction).
+        class Vocab:
+            callback_registers = ("register_handler",)
+
+        src = "/* register_handler(on_event) */\nint x;\n"
+        assert lr._registered_callback_names(src, Vocab()) == set()
+
+    def test_setter_witness_ignores_comment_assignment(self):
+        # '/* o->cb = fn; */' in another function must not mint the
+        # exported-setter escalator.
+        src = """
+void note(void) { /* o->cb = fn; */ }
+void run(struct obj *obj) {
+    pthread_mutex_lock(&m);
+    obj->cb(obj);
+    pthread_mutex_unlock(&m);
+}
+"""
+        res = run_lock_region_check(
+            Path("/nonexistent"), "a.c", "run",
+            "callback invoked under lock",
+            source_texts={"a.c": src},
+        )
+        assert res.outcome == "confirmed"
+        assert not res.callback.get("registered_by")
+        assert not res.callback.get("setter_exported")

@@ -193,6 +193,18 @@ def _lines_cached(source: str) -> tuple[str, ...]:
     return tuple(source.splitlines())
 
 
+@lru_cache(maxsize=128)
+def _scan_lines_cached(source: str) -> tuple[str, ...]:
+    """Sanitized-view lines (comments/string literals blanked) — the
+    ONLY text the Tier-1 scan may match against. A planted comment
+    naming the paired release (``/* pthread_mutex_unlock(&m) done
+    below */``) otherwise closes the region at the comment line and
+    mints a 'release precedes every callback-shaped invocation'
+    refutation for a genuine callback-under-lock."""
+    from .source_view import sanitized_view
+    return tuple(sanitized_view(source, language="c").splitlines())
+
+
 def _normalize_lock_var(arg: str) -> str:
     return re.sub(r"[\s&()]", "", arg)
 
@@ -346,12 +358,15 @@ def _find_regions(
 
 def _registered_callback_names(source: str, vocab: Any) -> set[str]:
     """Identifier arguments of ``callback_registers`` verb calls —
-    the names an in-region direct call may invoke as a callback."""
+    the names an in-region direct call may invoke as a callback.
+    Scans the sanitized view: a comment naming a register verb must
+    not plant a callback name (false 'confirmed' direction)."""
     registers = set(getattr(vocab, "callback_registers", None) or ())
     names: set[str] = set()
+    view = "\n".join(_scan_lines_cached(source))
     for verb in registers:
         for m in re.finditer(
-            rf"\b{re.escape(verb)}\s*\(([^;]*)\)", source,
+            rf"\b{re.escape(verb)}\s*\(([^;]*)\)", view,
         ):
             for arg in m.group(1).split(","):
                 arg = arg.strip()
@@ -379,14 +394,24 @@ def _in_region_invocations(
     region: _Region,
     registered: set[str],
     vocab: Any,
+    raw_segment: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(callback invocations, cancel-verb invocations) between the
-    region's acquire and release lines."""
+    region's acquire and release lines.
+
+    ``segment`` must be sanitized-view lines (matching runs there);
+    ``raw_segment`` supplies the original text for the receipt's
+    ``code`` field."""
     invocations: list[dict[str, Any]] = []
     cancels: list[dict[str, Any]] = []
     cancel_set = set(_cancel_names(vocab))
     lo = region.acquire_line - start_line + 1
     hi = region.release_line - start_line
+
+    def _code(offset: int) -> str:
+        show = raw_segment if raw_segment is not None else segment
+        return show[offset].strip()[:200]
+
     for offset in range(max(lo, 0), min(hi, len(segment))):
         text = segment[offset]
         for m in _INDIRECT_CALL_RE.finditer(text):
@@ -400,7 +425,7 @@ def _in_region_invocations(
                 "base": base,
                 "member": member,
                 "line": start_line + offset,
-                "code": text.strip()[:200],
+                "code": _code(offset),
             })
         for m in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", text):
             name = m.group(1)
@@ -409,7 +434,7 @@ def _in_region_invocations(
                     "shape": "cancel",
                     "expr": name,
                     "line": start_line + offset,
-                    "code": text.strip()[:200],
+                    "code": _code(offset),
                 })
             elif name in registered:
                 invocations.append({
@@ -417,7 +442,7 @@ def _in_region_invocations(
                     "expr": name,
                     "member": name,
                     "line": start_line + offset,
-                    "code": text.strip()[:200],
+                    "code": _code(offset),
                 })
     return invocations, cancels
 
@@ -435,7 +460,9 @@ def _setter_witness(
     )
     for file_path, source in sorted(source_texts.items()):
         spans = _spans_cached(source, file_path)
-        lines = _lines_cached(source)
+        # Sanitized view: a comment spelling the assignment must not
+        # forge the exported-setter escalator.
+        lines = _scan_lines_cached(source)
         for span in spans:
             if span.name == invoking_function:
                 continue
@@ -519,7 +546,11 @@ def _adjudicate_function(
     lock shape at all (prepass skip)."""
     source = source_texts.get(file_path, "")
     lines = source.splitlines()
-    segment = lines[span.start - 1:span.end]
+    raw_segment = lines[span.start - 1:span.end]
+    # Matching runs on the sanitized view only (comments/strings
+    # blanked); raw lines feed the human-facing receipt fields.
+    scan_lines = list(_scan_lines_cached(source))
+    segment = scan_lines[span.start - 1:span.end]
     regions, unresolved = _find_regions(segment, span.start, vocab)
     if not regions and not unresolved:
         return None
@@ -529,6 +560,7 @@ def _adjudicate_function(
     for region in regions:
         invocations, cancels = _in_region_invocations(
             segment, span.start, region, registered, vocab,
+            raw_segment,
         )
         if not invocations:
             if cancels:
@@ -587,7 +619,7 @@ def _adjudicate_function(
                 "registered_by": setter,
                 "setter_exported": exported,
             },
-            comment=_region_comment(segment, span.start, region),
+            comment=_region_comment(raw_segment, span.start, region),
         )
         result.reachability = _entry_reachability(
             inventory, context, file_path, span.name,

@@ -39,9 +39,23 @@ def _capture_run(captured):
     return fake_run
 
 
+def _hermetic_preflight(monkeypatch):
+    """Pin the userns preflight so the wrapper-contract tests assert
+    kwarg forwarding on every host. ``run_untrusted*()`` calls
+    ``_require_userns_or_optin`` BEFORE the (stubbed) ``run`` — on a
+    host without unprivileged userns the real preflight raises
+    SandboxSetupError and the forwarding contract never gets
+    exercised. The preflight's own behaviour has its own tests; here
+    it is scenery."""
+    monkeypatch.setattr(
+        _ctx, "_require_userns_or_optin", lambda *a, **k: False,
+    )
+
+
 def test_run_untrusted_forwards_strip_trust_markers(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _hermetic_preflight(monkeypatch)
     _ctx.run_untrusted(
         ["echo", "ok"],
         target=str(tmp_path / "target"),
@@ -56,6 +70,7 @@ def test_run_untrusted_forwards_strip_trust_markers(monkeypatch, tmp_path):
 def test_run_untrusted_networked_forwards_strip_trust_markers(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _hermetic_preflight(monkeypatch)
     _ctx.run_untrusted_networked(
         ["echo", "ok"],
         target=str(tmp_path / "target"),
@@ -68,10 +83,11 @@ def test_run_untrusted_networked_forwards_strip_trust_markers(monkeypatch, tmp_p
     )
 
 
-def test_run_untrusted_rejects_caller_strip_trust_markers(tmp_path):
+def test_run_untrusted_rejects_caller_strip_trust_markers(monkeypatch, tmp_path):
     """The flag is wrapper policy, not caller policy — parity with the
     strict_env guard: a caller trying to disable it gets the clean
     forbidden-kwarg TypeError, not a silent bypass."""
+    _hermetic_preflight(monkeypatch)
     with pytest.raises(TypeError, match="strip_trust_markers"):
         _ctx.run_untrusted(
             ["echo", "ok"],
@@ -81,7 +97,10 @@ def test_run_untrusted_rejects_caller_strip_trust_markers(tmp_path):
         )
 
 
-def test_run_untrusted_networked_rejects_caller_strip_trust_markers(tmp_path):
+def test_run_untrusted_networked_rejects_caller_strip_trust_markers(
+    monkeypatch, tmp_path,
+):
+    _hermetic_preflight(monkeypatch)
     with pytest.raises(TypeError, match="strip_trust_markers"):
         _ctx.run_untrusted_networked(
             ["echo", "ok"],
@@ -174,6 +193,7 @@ def test_networked_keep_trust_markers_disables_strip(monkeypatch, tmp_path):
     run() receives strip_trust_markers=False and the shim keep flag."""
     captured = {}
     monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _hermetic_preflight(monkeypatch)
     _ctx.run_untrusted_networked(
         ["claude", "-p"],
         target=str(tmp_path / "target"),
@@ -197,6 +217,7 @@ def test_networked_keep_from_untrusted_parent_propagates_nothing(
     nothing, so the child still hits the libexec refusal path."""
     captured = {}
     monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _hermetic_preflight(monkeypatch)
     _ctx.run_untrusted_networked(
         ["claude", "-p"],
         target=str(tmp_path / "target"),
@@ -215,6 +236,7 @@ def test_networked_default_keeps_strip_and_no_keep_flag(
 ):
     captured = {}
     monkeypatch.setattr(_ctx, "run", _capture_run(captured))
+    _hermetic_preflight(monkeypatch)
     _ctx.run_untrusted_networked(
         ["echo", "ok"],
         target=str(tmp_path / "target"),
@@ -227,9 +249,10 @@ def test_networked_default_keeps_strip_and_no_keep_flag(
     assert "_RAPTOR_KEEP_TRUST_MARKERS" not in kwargs.get("env", {})
 
 
-def test_run_untrusted_has_no_keep_opt_out(tmp_path):
+def test_run_untrusted_has_no_keep_opt_out(monkeypatch, tmp_path):
     """run_untrusted() (target-derived code) deliberately offers no
     keep_trust_markers escape hatch."""
+    _hermetic_preflight(monkeypatch)
     with pytest.raises(TypeError, match="keep_trust_markers"):
         _ctx.run_untrusted(
             ["echo", "ok"],

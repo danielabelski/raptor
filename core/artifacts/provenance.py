@@ -75,8 +75,23 @@ STATUS_INVALID = "invalid"
 
 
 def sanitise_artifact_text(s: str) -> str:
-    """Standard output sanitiser, parameterised for artifact storage."""
-    return sanitise_string(s, max_chars=ARTIFACT_TEXT_MAX_CHARS)
+    """Standard output sanitiser, parameterised for artifact storage.
+
+    Artifact free text is re-read by later pipeline stages and
+    assembled into /validate prompts, so beyond the standard output
+    sanitiser it also gets the prompt-structure defang
+    (``neutralize_tag_forgery``): envelope-close tags
+    (``</untrusted-...>``) and setext heading underlines survived the
+    line-leading-markdown strip and rode the understand→validate
+    artifact path into trusted prompt regions. The composition is
+    sanitiser-idempotent (the gate's requirement): the autofetch
+    strip removes the neutraliser's ZWSPs before the neutraliser
+    deterministically re-inserts them.
+    """
+    from core.security.prompt_envelope import neutralize_tag_forgery
+    return neutralize_tag_forgery(
+        sanitise_string(s, max_chars=ARTIFACT_TEXT_MAX_CHARS)
+    )
 
 
 def build_provenance(

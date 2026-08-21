@@ -339,7 +339,12 @@ def _strip_string_literal(raw: str) -> str:
 # Rejecting any alphabetic backslash escape sidesteps the whole class
 # of bugs.  Callers that want to model ``[\\d]`` properly will need a
 # richer extractor — Tier 2 takes those cases for now.
-_ALPHA_BACKSLASH_ESCAPE = _re.compile(r"\\[A-Za-z]")
+#
+# Digits are rejected for the same reason: inside a char class Python
+# reads ``\\1`` as an OCTAL escape (chr(1)), which our literal-char
+# extractor would misread as the character ``'1'`` — a modeled
+# language disjoint from the real one.
+_ALPHA_BACKSLASH_ESCAPE = _re.compile(r"\\[A-Za-z0-9]")
 
 
 def _charset_body_is_safe(body: str) -> bool:
@@ -1405,24 +1410,66 @@ def _lexical_substitution_dominates(
 # SMT: regex-intersection emptiness.
 # --------------------------------------------------------------------------
 
+def _iter_charclass_atoms(body: str):
+    """Tokenize a Python `[...]` char-class body into literal chars and
+    ascending ``(lo, hi)`` ranges, interpreting a backslash escape on
+    EITHER range endpoint.
+
+    Yields ``("lit", ch)`` and ``("range", lo, hi)`` tuples.  This is
+    the single range/escape interpreter shared by :func:`_charclass_to_re`
+    (allowlist Z3 model) and :func:`_expand_charset_body` (forbidden-set
+    expansion) — pre-fix each had its own parse and BOTH misread an
+    escaped range endpoint as literals: for body ``\\--z`` the escape
+    branch consumed ``\\-`` and the remaining ``-z`` read as two
+    literals, so the modeled language was ``{'-','z'}`` while Python's
+    real semantics for ``[\\--z]`` are the RANGE 0x2D..0x7A (which
+    includes ``/ . ; < > =`` — every pathtrav/cmdi/xss danger char).
+    Z3 then proved the under-approximated language disjoint from the
+    danger set and returned SOUND for a validator that in reality
+    accepts the danger chars — attacker-controlled self-suppression
+    of live findings via an innocuous-looking guard.
+
+    A DESCENDING range (``z-a``) is a compile-time ``re.error`` in
+    Python — the guard would never run; treat it as three literals
+    (same doctrine both consumers already used).
+
+    Alphabetic/digit escapes (``\\d``, ``\\2``…) never reach this
+    tokenizer: :func:`_charset_body_is_safe` rejects those bodies.
+    """
+    i, n = 0, len(body)
+
+    def _atom(j: int) -> tuple[str, int]:
+        if body[j] == "\\" and j + 1 < n:
+            return body[j + 1], j + 2
+        return body[j], j + 1
+
+    while i < n:
+        first, after = _atom(i)
+        if after < n and body[after] == "-" and after + 1 < n:
+            second, after2 = _atom(after + 1)
+            if ord(first) <= ord(second):
+                yield ("range", first, second)
+            else:
+                yield ("lit", first)
+                yield ("lit", "-")
+                yield ("lit", second)
+            i = after2
+            continue
+        yield ("lit", first)
+        i = after
+
+
 def _charclass_to_re(chars: str):
     """Build a Z3 regex matching ONE char from a Python `[...]` body
-    (literal chars and `a-z` ranges).  Limited to the syntax our extractor
-    captures — escapes and `\\d`-style metachars are out of scope for the
-    first cut."""
+    (literal chars and `a-z` ranges, escapes allowed on either range
+    endpoint via the shared tokenizer).  ``\\d``-style metachars are
+    out of scope — the body-safety gate rejects them upstream."""
     alts = []
-    i, n = 0, len(chars)
-    while i < n:
-        if chars[i] == "\\" and i + 1 < n:
-            alts.append(z3.Re(z3.StringVal(chars[i + 1])))
-            i += 2
-        elif (i + 2 < n and chars[i + 1] == "-"
-              and chars[i + 2] != "\\"):
-            alts.append(z3.Range(chars[i], chars[i + 2]))
-            i += 3
+    for tok in _iter_charclass_atoms(chars):
+        if tok[0] == "range":
+            alts.append(z3.Range(tok[1], tok[2]))
         else:
-            alts.append(z3.Re(z3.StringVal(chars[i])))
-            i += 1
+            alts.append(z3.Re(z3.StringVal(tok[1])))
     if not alts:
         return None
     return z3.Union(*alts) if len(alts) > 1 else alts[0]
@@ -1460,28 +1507,22 @@ def _expand_charset_body(body: str) -> set:
     finite set of characters it matches.
 
     Handles ``X-Y`` ranges with ``ord(X) <= ord(Y)`` (spanning at most
-    :data:`_RANGE_EXPANSION_CAP` code points) and literal chars;
-    everything else (including ``X-Y`` where ``X`` and ``Y`` aren't in
-    range-ascending order — would silently drop chars under a naive
-    ``range(ord(X), ord(Y)+1)`` — and over-cap ranges) is treated as
-    three separate literals.
+    :data:`_RANGE_EXPANSION_CAP` code points, escapes allowed on either
+    endpoint via the shared tokenizer) and literal chars; everything
+    else (descending ranges — a compile-time ``re.error`` in Python —
+    and over-cap ranges) is treated as three separate literals.
     """
     out: set = set()
-    i, n = 0, len(body)
-    while i < n:
-        if body[i] == "\\" and i + 1 < n:
-            out.add(body[i + 1])
-            i += 2
-        elif (i + 2 < n and body[i + 1] == "-"
-                and body[i + 2] != "\\"
-                and ord(body[i]) <= ord(body[i + 2])
-                and ord(body[i + 2]) - ord(body[i]) <= _RANGE_EXPANSION_CAP):
-            for cp in range(ord(body[i]), ord(body[i + 2]) + 1):
-                out.add(chr(cp))
-            i += 3
+    for tok in _iter_charclass_atoms(body):
+        if tok[0] == "range":
+            lo, hi = tok[1], tok[2]
+            if ord(hi) - ord(lo) <= _RANGE_EXPANSION_CAP:
+                for cp in range(ord(lo), ord(hi) + 1):
+                    out.add(chr(cp))
+            else:
+                out.update((lo, "-", hi))
         else:
-            out.add(body[i])
-            i += 1
+            out.add(tok[1])
     return out
 
 

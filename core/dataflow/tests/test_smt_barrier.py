@@ -1487,3 +1487,90 @@ def test_value_bound_gate_passes_inter_proc_bindings(monkeypatch):
     )
     assert out is True
     assert captured["extra_bindings"] == sentinel_bindings
+
+
+# ---------------------------------------------------------------------------
+# Escaped range endpoints (shared charclass tokenizer).
+# ---------------------------------------------------------------------------
+
+def test_charclass_escaped_left_endpoint_is_a_range():
+    """``[\\--z]`` is the RANGE 0x2D..0x7A in Python — pre-fix the
+    escape branch consumed ``\\-`` as a literal and the trailing
+    ``-z`` read as two more literals, so the modeled language was
+    ``{'-','z'}`` and Z3 proved a permissive guard SOUND for
+    pathtrav/cmdi/xss while the real validator accepted
+    ``../../etc/passwd`` (attacker-controlled self-suppression)."""
+    assert sb._expand_charset_body("\\--z") == {
+        chr(c) for c in range(0x2D, 0x7B)
+    }
+
+
+def test_charclass_escaped_right_endpoint_is_a_range():
+    """Symmetric misparse: ``[a-\\}]`` is the range 0x61..0x7D."""
+    assert sb._expand_charset_body("a-\\}") == {
+        chr(c) for c in range(0x61, 0x7E)
+    }
+
+
+def test_charclass_both_endpoints_escaped():
+    assert sb._expand_charset_body("\\--\\}") == {
+        chr(c) for c in range(0x2D, 0x7E)
+    }
+
+
+def test_charclass_escaped_hyphen_is_not_a_range_operator():
+    """``[a\\-z]`` is three literals — the escaped hyphen never acts
+    as the range operator."""
+    assert sb._expand_charset_body("a\\-z") == {"a", "-", "z"}
+
+
+def test_charclass_descending_escaped_range_degrades_to_literals():
+    """``[a-\\-]`` is descending (0x61 > 0x2D): a compile-time
+    ``re.error`` in Python; treated as three literals."""
+    assert sb._expand_charset_body("a-\\-") == {"a", "-"}
+
+
+def test_prove_charset_escaped_left_endpoint_not_sound():
+    """The F301 PoC guard: ``^[\\--z]+$`` accepts every pathtrav /
+    cmdi / xss danger char (``/ ; <`` are all inside 0x2D..0x7A) —
+    the proof must never read SOUND."""
+    spec = sb.ValidatorSpec(kind="charset", var_name="name", charset="\\--z")
+    for sink_class, danger in (
+        ("pathtrav", ["/", "\\", "."]),
+        ("cmdi", [";", "|", "&", "$", "`"]),
+        ("xss", ["<", ">", '"', "'"]),
+    ):
+        verdict = sb._prove_charset(spec, sink_class, danger)
+        assert not verdict.sound, sink_class
+
+
+def test_try_tier0_escaped_left_endpoint_guard_not_sound(tmp_path: Path):
+    """End-to-end: the innocuous-looking hostile guard from the F301
+    failure scenario must not earn a Tier 0 SOUND verdict."""
+    (tmp_path / "app.py").write_text(
+        "def f(name):\n"                                            # 1
+        "    if not re.match(r'^[\\--z]+$', name):\n"               # 2
+        "        return error()\n"                                   # 3
+        "    return os.system('cat ' + name)\n"                      # 4
+    )
+    diff = (
+        "@@ -1,2 +1,4 @@\n"
+        " def f(name):\n"
+        "+    if not re.match(r'^[\\--z]+$', name):\n"
+        "+        return error()\n"
+        "     return os.system('cat ' + name)\n"
+    )
+    r = sb.try_tier0(
+        fix_diff=diff, repo_root=tmp_path,
+        sink_uri="app.py", sink_line=4, sink_class="cmdi",
+    )
+    assert r.status is not sb.Tier0Status.SOUND
+
+
+def test_charset_body_rejects_octal_escapes():
+    """``\\2`` inside a class is an OCTAL escape (chr(2)) in Python —
+    the literal-char extractor would misread it as the character '2',
+    so the body-safety gate refuses it (same doctrine as ``\\d``)."""
+    assert not sb._charset_body_is_safe("\\2-z")
+    assert not sb._charset_body_is_safe("a\\1b")
+    assert sb._charset_body_is_safe("a-z0-9\\-\\]")

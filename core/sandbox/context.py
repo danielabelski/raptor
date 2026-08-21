@@ -1411,6 +1411,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # the canonical / extra distinction explicit.
     extra_writable_paths = list(writable_paths or [])
     writable_paths = None
+    _private_scratch_dir: str | None = None
     if target or output or allowed_tcp_ports or extra_writable_paths:
         # ``/tmp`` is in the writable baseline so Python's pyc cache
         # and the C compiler's intermediate files survive. Callers that
@@ -1423,8 +1424,33 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # ``python3 -S`` exploits don't write pyc cache, but a normal
         # ``python3`` import will.
         import tempfile as _tempfile
+        # Private scratch dir for the RESTRICTED Landlock-only posture.
+        # In mount-ns mode /tmp and /dev/shm are per-sandbox tmpfs, so
+        # granting them wholesale is private by construction. Without
+        # the mount namespace they are the HOST-SHARED directories:
+        # granting all of /tmp made a target repo living under /tmp
+        # writable (scanned-tree self-modification despite a read-only
+        # profile), and granting host /dev/shm handed the child a
+        # cross-process plant/poison surface. When the caller asked for
+        # the restricted posture (restrict_reads — the strict/untrusted
+        # signal) on a host without mount-ns, swap the blanket grants
+        # for a fresh 0700 per-context scratch dir and steer tools to
+        # it via TMPDIR/TEMP/TMP (see the env staging in run()). Cost:
+        # tools that write literal /tmp paths (ignoring TMPDIR) and
+        # multiprocessing SemLock (needs /dev/shm) fail closed in this
+        # posture — acceptable for untrusted/strict work, and the
+        # mount-ns path keeps full /tmp semantics.
+        _use_private_scratch = (
+            sys.platform == "linux" and not use_seatbelt
+            and restrict_reads and not use_mount
+            and not effectively_disabled
+        )
         if exclude_tmp_baseline:
             writable_paths = []
+        elif _use_private_scratch:
+            _private_scratch_dir = _tempfile.mkdtemp(
+                prefix=".raptor-scratch-")
+            writable_paths = [_private_scratch_dir]
         else:
             writable_paths = [_tempfile.gettempdir()]
             # /dev/shm rides the scratch baseline for the same reason
@@ -2000,6 +2026,20 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # HOME=/home/user would silently defeat the feature).
         if fake_home_env:
             kwargs["env"] = {**kwargs["env"], **fake_home_env}
+
+        # Private-scratch steering (restricted Landlock-only posture,
+        # see the writable-baseline construction): Landlock denies the
+        # host-shared /tmp, so TMPDIR must name the one scratch dir
+        # that IS writable or every tempfile-using tool fails at
+        # startup. Overlays caller env= too — the grant and the
+        # steering must not diverge.
+        if _private_scratch_dir:
+            kwargs["env"] = {
+                **kwargs["env"],
+                "TMPDIR": _private_scratch_dir,
+                "TEMP": _private_scratch_dir,
+                "TMP": _private_scratch_dir,
+            }
 
         # Degraded-mode daemon nudge. The Landlock TCP-connect deny hits
         # loopback too, and several build tools default to a client/
@@ -3491,6 +3531,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # the bind tree + Landlock, skip_mount_ns and Landlock-only via
         # the Landlock read allowlist alone.
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
+        if _private_scratch_dir:
+            # Restricted Landlock-only posture: the host-shared /tmp
+            # and /dev/shm grants were replaced by a per-context 0700
+            # scratch dir (TMPDIR-steered).
+            result.sandbox_info["private_scratch"] = True
         if _degraded_tcp_deny:
             result.sandbox_info["degraded_net_deny"] = True
         if _use_proxy_netns:
@@ -3831,6 +3876,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 logger.debug(
                     "persona tmpdir cleanup failed for %s",
                     _persona_tmpdir, exc_info=True,
+                )
+        # Private scratch dir (restricted Landlock-only posture) —
+        # per-context, so it goes with the context.
+        if _private_scratch_dir is not None:
+            import shutil as _shutil
+            try:
+                _shutil.rmtree(_private_scratch_dir, ignore_errors=True)
+            except Exception:
+                logger.debug(
+                    "private scratch cleanup failed for %s",
+                    _private_scratch_dir, exc_info=True,
                 )
 
 

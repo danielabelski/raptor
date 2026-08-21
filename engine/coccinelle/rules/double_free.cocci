@@ -5,8 +5,10 @@
 // vfree(E) is called again on the same expression, with no intervening
 // reassignment of E. Classic CWE-415: double-free.
 //
-// The `when != E = ...` clause is critical — without it, the rule
-// would FP on cleanup loops that reassign between iterations.
+// The `when != E = E2` clause is critical — without it, the rule
+// would FP on cleanup loops that reassign between iterations. ANY
+// reassignment kills the path (not just allocator calls / NULL):
+// `free(p); p = q; free(p);` frees two different objects.
 //
 // Complements the source-intel rule at
 // engine/coccinelle/source_intel/allocation/double_free.cocci
@@ -16,14 +18,13 @@
 
 // Kernel: kfree/kvfree/vfree double-free
 @kfree_double@
-expression E;
+expression E, E2;
 position p1, p2;
 @@
 
 // @vocab: deallocators
 \(kfree\|kvfree\|vfree\|kfree_sensitive\)(E@p1);
-// @vocab: allocators
-... when != E = \(\(kmalloc\|kzalloc\|kcalloc\|kvmalloc\|vzalloc\|vmalloc\)(...)\|NULL\)
+... when != E = E2
     when != kfree_rcu(E, ...)
     when != return ...;
 // @vocab: deallocators
@@ -50,14 +51,14 @@ for _p1, _p2 in zip(p1, p2):
 // no CFG path connecting the two frees, which is the canonical
 // error-cleanup idiom, not a double free.
 @kfree_err_double@
-expression E;
+expression E, E2;
 position p1, p2;
 @@
 
 if (...) { ... kfree(E@p1); ... when != return ...;
-                                when != E = NULL
+                                when != E = E2
 }
-... when != E = \(\(kmalloc\|kzalloc\|kcalloc\|kvmalloc\)(...)\|NULL\)
+... when != E = E2
     when != return ...;
 * kfree(E@p2);
 
@@ -78,12 +79,12 @@ for _p1, _p2 in zip(p1, p2):
 
 // Userspace: free double-free
 @free_double@
-expression E;
+expression E, E2;
 position p1, p2;
 @@
 
 free(E@p1);
-... when != E = \(\(malloc\|calloc\|realloc\)(...)\|NULL\)
+... when != E = E2
     when != return ...;
 * free(E@p2);
 

@@ -9,21 +9,24 @@
 // via lock release) — this rule catches direct sequential UAF where
 // the free and use are in the same execution path.
 //
-// The `when != E = ...` clause prevents false positives where the
-// pointer is reassigned after the free (common in cleanup loops).
+// The `when != E = E2` clause prevents false positives where the
+// pointer is reassigned after the free (common in cleanup loops):
+// ANY reassignment kills the path, not just allocator calls / NULL —
+// the canonical safe list-free loop (`nxt = cur->next; free(cur);
+// cur = nxt;`) reassigns from a plain expression via the loop back
+// edge, and `p = q;` after a free is equally a fresh value.
 // @role: verification
 
 // kfree variant — field dereference after free
 @kfree_then_deref@
-expression E;
+expression E, E2;
 identifier fld;
 position p_use;
 @@
 
 // @vocab: deallocators
 \(kfree\|kvfree\|vfree\|kfree_sensitive\)(E);
-// @vocab: allocators
-... when != E = \(\(kmalloc\|kzalloc\|kcalloc\|kvmalloc\|vzalloc\|vmalloc\)(...)\|NULL\)
+... when != E = E2
 * E->fld@p_use
 
 @script:python@
@@ -42,15 +45,14 @@ for _pu in p_use:
 
 // kfree variant — passed as argument after free (may deref internally)
 @kfree_then_arg@
-expression E;
+expression E, E2;
 identifier fn;
 position p_use;
 @@
 
 // @vocab: deallocators
 \(kfree\|kvfree\|vfree\|kfree_sensitive\)(E);
-// @vocab: allocators
-... when != E = \(\(kmalloc\|kzalloc\|kcalloc\|kvmalloc\|vzalloc\|vmalloc\)(...)\|NULL\)
+... when != E = E2
 * fn(E@p_use, ...)
 
 @script:python@
@@ -74,13 +76,13 @@ if str(fn) not in _safe:
 
 // Userspace free variant — field dereference after free
 @free_then_deref@
-expression E;
+expression E, E2;
 identifier fld;
 position p_use;
 @@
 
 free(E);
-... when != E = \(\(malloc\|calloc\|realloc\)(...)\|NULL\)
+... when != E = E2
 * E->fld@p_use
 
 @script:python@

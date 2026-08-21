@@ -622,6 +622,9 @@
   "dead:dead_method:packages/web/client.py:WebClient.set_bearer_token": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
+  "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.get_findings": {
+   "note": "public accessor on the alpha WebFuzzer API, kept as deliberate surface; previously kept alive only by a stale doc line about the unrelated core.sarif get_findings, removed in the docs curation pass"
+  },
   "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },

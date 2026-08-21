@@ -104,7 +104,7 @@ class TestSmtChildTwoTreeLayout:
         shape — child exits nonzero)."""
         import json
 
-        from core.audit.subproc_json import _CHILD_SCRIPT
+        from core.audit.subproc_json import _CHILD_SCRIPT_PATH
 
         poisoned = _make_poisoned_tree(tmp_path / "tree-b")
         payload = json.dumps({
@@ -114,7 +114,7 @@ class TestSmtChildTwoTreeLayout:
         }).encode("utf-8")
         proc = subprocess.run(
             [
-                sys.executable, "-c", _CHILD_SCRIPT,
+                sys.executable, _CHILD_SCRIPT_PATH,
                 "core.audit.sweep:_run_smt_verb_inner_json",
             ],
             input=payload, capture_output=True, timeout=30,

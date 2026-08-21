@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from core.audit.subproc_json import _CHILD_SCRIPT, run_json_child
+from pathlib import Path
+
+from core.audit.subproc_json import _CHILD_SCRIPT_PATH, run_json_child
 from core.audit.sweep import SweepResult, smt_child_env
 
 
@@ -12,8 +14,24 @@ class TestChildScript:
     def test_no_pickle_in_protocol(self) -> None:
         """The child protocol must never unpickle — a compromised or
         crashed child hands back at worst malformed JSON."""
-        assert "pickle" not in _CHILD_SCRIPT
-        assert "json" in _CHILD_SCRIPT
+        src = Path(_CHILD_SCRIPT_PATH).read_text(encoding="utf-8")
+        assert "pickle" not in src
+        assert "json" in src
+
+    def test_child_is_a_named_in_tree_script(self) -> None:
+        """EDR coexistence: the child must be an on-disk script inside
+        the RAPTOR tree executed by path — never a ``python -c`` blob
+        (loader-shaped to endpoint-security heuristics)."""
+        child = Path(_CHILD_SCRIPT_PATH)
+        assert child.is_file()
+        assert child.name == "_json_child.py"
+        repo_root = Path(__file__).resolve().parents[3]
+        assert repo_root in child.parents
+        import inspect
+
+        from core.audit import subproc_json
+        src = inspect.getsource(subproc_json)
+        assert '"-c"' not in src
 
 
 class TestRunJsonChild:

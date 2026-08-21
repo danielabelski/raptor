@@ -21,24 +21,20 @@ import json
 import logging
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Generic child bootstrap. ``argv[1]`` names the dispatch entry as
-#: ``module:function``; the request arrives as JSON on stdin and the
-#: JSON-encoded result leaves on stdout. ``default=str`` coerces any
-#: non-JSON-native leaf (a stray solver term in a witness dict) to its
-#: string form instead of crashing the child — the verdict fields the
-#: parents read are all JSON-native.
-_CHILD_SCRIPT = (
-    "import sys,os,json,importlib\n"
-    "sys.path.insert(0,os.environ['RAPTOR_DIR'])\n"
-    "mod,_,func=sys.argv[1].rpartition(':')\n"
-    "fn=getattr(importlib.import_module(mod),func)\n"
-    "r=fn(json.loads(sys.stdin.buffer.read().decode('utf-8')))\n"
-    "sys.stdout.write(json.dumps(r,default=str))\n"
-)
+#: Generic child bootstrap — a NAMED sibling script executed by path
+#: (see :mod:`core.audit._json_child` for the protocol). Deliberately
+#: not ``python -c`` with an inline blob: endpoint-security heuristics
+#: cannot tell an inline importlib-dispatch one-liner from a malware
+#: loader, and this child fires once per SMT/Z3 verification. The
+#: path is resolved from THIS module's location so parent and child
+#: always come from the same tree (the child then re-pins its imports
+#: to the ``RAPTOR_DIR`` the caller's env carries).
+_CHILD_SCRIPT_PATH = str(Path(__file__).resolve().with_name("_json_child.py"))
 
 
 def run_json_child(
@@ -70,7 +66,7 @@ def run_json_child(
         return None
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", _CHILD_SCRIPT, entry],
+            [sys.executable, _CHILD_SCRIPT_PATH, entry],
             input=request_bytes,
             capture_output=True,
             timeout=timeout,

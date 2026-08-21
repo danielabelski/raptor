@@ -247,21 +247,44 @@ def _empty_state() -> TaintState:
 
 
 def _merge_states(a: TaintState, b: TaintState) -> TaintState:
-    """Element-wise union; atoms with the same param_idx merge
-    their effect-chain sets together (over-approximation — Phase
-    14 only checks set membership, so unioning is sound)."""
+    """Element-wise union. Non-empty effect chains of atoms sharing a
+    param_idx merge into one union chain (over-approximation — Phase
+    14 requires EVERY chain callable to be a catalog sanitizer, so a
+    larger union can only make the consumer refuse, never suppress).
+
+    The EMPTY chain is different: it is the direct-return sentinel
+    ("this param reached here without passing through any callable"),
+    and the consumer's soundness rests on it. Unioning it into a
+    non-empty chain destroys it — ``return escape(x) + x`` would
+    collapse the raw pass-through atom ``(0, {})`` into the sanitized
+    atom ``(0, {(escape, 0)})``, minting a false clean-sanitizer
+    wrapper that the enforced sanitizer-cut then consumes to suppress
+    real findings. The empty chain is therefore ABSORBING: whenever
+    any contributing atom for a param has an empty chain, the merged
+    state keeps a distinct empty-chain atom for that param alongside
+    the unioned non-empty chain.
+    """
     if not a:
         return b
     if not b:
         return a
     by_param: dict[int, set[tuple[str, int]]] = {}
+    direct: set[int] = set()
     for atom in a:
-        by_param.setdefault(atom[0], set()).update(atom[1])
+        if atom[1]:
+            by_param.setdefault(atom[0], set()).update(atom[1])
+        else:
+            direct.add(atom[0])
     for atom in b:
-        by_param.setdefault(atom[0], set()).update(atom[1])
-    return frozenset(
+        if atom[1]:
+            by_param.setdefault(atom[0], set()).update(atom[1])
+        else:
+            direct.add(atom[0])
+    merged: set[TaintAtom] = {
         (pi, frozenset(effects)) for pi, effects in by_param.items()
-    )
+    }
+    merged.update((pi, frozenset()) for pi in direct)
+    return frozenset(merged)
 
 
 def _add_effect(state: TaintState, callable_name: str, arg_idx: int) -> TaintState:

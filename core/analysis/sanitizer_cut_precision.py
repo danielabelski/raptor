@@ -470,6 +470,19 @@ def _java_wrapper_fixtures() -> List[CutFixture]:
             "        out.println(y);\n"),
         6, 8, language="java", suffix=".java"))
     j.append(_fx(
+        # U09-F21 twin: the SAME parameter both sanitized and raw in
+        # one return expression — the wrapper must never read clean.
+        "java_wrap_mixed_same_param", "xss", "CWE-79",
+        "wrapper_mixed_sanitized_and_raw_same_param",
+        LABEL_MUST_NOT_SUPPRESS,
+        imp + cls(
+            "    private static String h(String a) {\n"
+            "        return Encode.forHtml(a) + a;\n"
+            "    }\n",
+            "        String y = h(x);\n"
+            "        out.println(y);\n"),
+        6, 8, language="java", suffix=".java"))
+    j.append(_fx(
         "java_wrap_direct", "xss", "CWE-79",
         "wrapper_direct_sanitizer", LABEL_MAY_SUPPRESS,
         imp + cls(
@@ -1197,6 +1210,33 @@ def build_corpus() -> List[CutFixture]:
         "def handle(x):\n"
         "    y = _clean(x)\n"
         "    render(y)\n", 3, 5))
+    # Same-param mixed-expression battery (U09-F21 regression): a
+    # helper whose return mixes the sanitized and the RAW value of the
+    # SAME parameter in one expression, plus the branch-join variant of
+    # the same collapse. The taint-summary merge used to union the raw
+    # pass-through atom into the sanitized chain, destroying the
+    # direct-return sentinel and minting a clean-sanitizer wrapper
+    # from a helper that provably passes the raw value through.
+    fixtures.append(_fx(
+        "xss_helper_mixed_same_param", "xss", "CWE-79",
+        "wrapper_mixed_sanitized_and_raw_same_param",
+        LABEL_MUST_NOT_SUPPRESS,
+        "def _mix(s):\n"
+        "    return html.escape(s) + s\n"
+        "def handle(x):\n"
+        "    y = _mix(x)\n"
+        "    render(y)\n", 3, 5))
+    fixtures.append(_fx(
+        "xss_helper_branch_join_bypass", "xss", "CWE-79",
+        "wrapper_sanitizes_one_branch_same_var",
+        LABEL_MUST_NOT_SUPPRESS,
+        "def _maybe(s):\n"
+        "    if len(s) > 3:\n"
+        "        s = html.escape(s)\n"
+        "    return s\n"
+        "def handle(x):\n"
+        "    y = _maybe(x)\n"
+        "    render(y)\n", 5, 7))
     # Catalog-empty class: python has no sqli sanitizer entries, so
     # nothing may EVER suppress a CWE-89 python finding — including a
     # plausible-looking wrong-class escape.

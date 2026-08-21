@@ -82,6 +82,76 @@ class TestPrimitives:
 
 
 # ---------------------------------------------------------------------------
+# Merge soundness — the direct-return sentinel is absorbing (U09-F21)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeSentinelAbsorbing:
+    """The per-param effect-chain union must never absorb the empty
+    chain: it is the "reached here unsanitized" sentinel Phase 14's
+    clean-sanitizer check keys on. Pre-fix, ``escape(x) + x`` merged
+    the raw pass-through atom into the sanitized chain and the helper
+    read as a clean sanitizer wrapper — the ENFORCED sanitizer-cut
+    then suppressed real findings routed through it."""
+
+    def test_mixed_same_param_expression_keeps_direct_sentinel(self):
+        _, summaries = _summaries(
+            "def h(x):\n"
+            "    return html.escape(x) + x\n"
+        )
+        s = summaries["h"]
+        assert s.param_taints_return(0)
+        # Both the sanitized chain AND the direct pass-through must
+        # be recorded — the sentinel is ("", -1).
+        assert (0, "", -1) in s.return_effects
+        assert ("html.escape", 0) in s.return_sanitizers_for_param(0)
+
+    def test_branch_join_single_return_keeps_direct_sentinel(self):
+        # Same collapse class at the reaching-defs join: sanitize on
+        # one branch, return the joined variable. Unlike the
+        # two-return variant (collected per return), this joins
+        # states through _merge_states before collection.
+        _, summaries = _summaries(
+            "def h(s):\n"
+            "    if len(s) > 3:\n"
+            "        s = html.escape(s)\n"
+            "    return s\n"
+        )
+        s = summaries["h"]
+        assert (0, "", -1) in s.return_effects
+        assert ("html.escape", 0) in s.return_sanitizers_for_param(0)
+
+    def test_downstream_call_stamps_all_merged_atoms(self):
+        # After the mixed expression flows through a further callable,
+        # the direct path is no longer direct: every surviving chain
+        # carries the downstream callable, and the sentinel is gone.
+        _, summaries = _summaries(
+            "def h(x):\n"
+            "    t = html.escape(x) + x\n"
+            "    return clean(t)\n"
+        )
+        s = summaries["h"]
+        assert (0, "", -1) not in s.return_effects
+        assert ("clean", 0) in s.return_sanitizers_for_param(0)
+
+    def test_merge_states_unit(self):
+        from core.analysis.taint_summaries import _merge_states
+        chain = frozenset([("html.escape", 0)])
+        a = frozenset([(0, chain)])
+        b = frozenset([(0, frozenset())])
+        merged = _merge_states(a, b)
+        assert (0, frozenset()) in merged
+        assert (0, chain) in merged
+        # Non-empty chains for the same param still union (the
+        # over-approximation the consumer's all()-check tolerates).
+        c = frozenset([(0, frozenset([("other", 1)]))])
+        merged2 = _merge_states(a, c)
+        assert merged2 == frozenset(
+            [(0, chain | frozenset([("other", 1)]))]
+        )
+
+
+# ---------------------------------------------------------------------------
 # call_arg_taint — flows into call arguments
 # ---------------------------------------------------------------------------
 

@@ -108,6 +108,37 @@ class TestBindingGeneration:
         _, bindings = _bindings_for(src, "handle")
         assert bindings == frozenset()
 
+    def test_mixed_same_param_expression_no_binding(self):
+        # U09-F21: the SAME parameter both sanitized and raw in one
+        # return expression. The merge used to absorb the raw
+        # pass-through atom into the sanitized chain, so this helper
+        # minted a clean-sanitizer binding and the enforced
+        # sanitizer-cut suppressed findings routed through it.
+        src = (
+            "def _mix(s):\n"
+            "    return html.escape(s) + s\n"
+            "def handle(x):\n"
+            "    y = _mix(x)\n"
+            "    render(y)\n"
+        )
+        _, bindings = _bindings_for(src, "handle")
+        assert bindings == frozenset()
+
+    def test_branch_join_single_return_no_binding(self):
+        # Same collapse at the reaching-defs join: sanitize on one
+        # branch, single return of the joined variable.
+        src = (
+            "def _maybe(s):\n"
+            "    if len(s) > 3:\n"
+            "        s = html.escape(s)\n"
+            "    return s\n"
+            "def handle(x):\n"
+            "    y = _maybe(x)\n"
+            "    render(y)\n"
+        )
+        _, bindings = _bindings_for(src, "handle")
+        assert bindings == frozenset()
+
     def test_non_sanitizer_callable_in_chain_no_binding(self):
         # Helper wraps the escaped value in an unknown callable —
         # can't prove the wrapper preserves sanitization.

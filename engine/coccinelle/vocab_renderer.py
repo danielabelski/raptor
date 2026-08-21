@@ -16,10 +16,13 @@ Supported constructs (auto-detected from the line after the marker):
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 from pathlib import Path
 from typing import Any, FrozenSet
+
+logger = logging.getLogger(__name__)
 
 
 _MARKER_RE = re.compile(r"^//\s*@vocab:\s*(\w+)\s*$")
@@ -32,11 +35,54 @@ _BUCKET_MAP = {
     "lock_releases": "lock_releases",
     "refcount_gets": "refcount_gets",
     "refcount_puts": "refcount_puts",
+    "callback_cancels": "callback_cancels",
+    # teardown_lifetime.cocci also marks ``callback_cancels_async``
+    # slots; DomainVocabulary carries no async/sync split, so those
+    # markers stay seed-only — _get_bucket warns instead of silently
+    # yielding the empty set (U12-F265).
 }
+
+# Strict identifier grammar for spliced names — same expression as
+# api_pack_renderer._IDENT_RE and condition_smt._VOCAB_IDENT_RE.
+# Vocabulary originates from LLM study output over the untrusted
+# scanned repo; the rendered rule runs under allow_scripting=True, so
+# any name that could carry SmPL/Python syntax (quotes, braces, ``@``,
+# newlines) must be rejected here even if an upstream gate already
+# validated it (defense in depth for U12-F260).
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# Scripting-block header matcher — keep in sync with the canonical
+# copy in packages.coccinelle.runner._SCRIPT_BLOCK_RE (engine/ does
+# not import packages/).
+_SCRIPT_BLOCK_RE = re.compile(
+    r"^[ \t]*@[ \t]*(?:script|initialize|finalize)[ \t]*:",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def _get_bucket(vocab: Any, bucket_name: str) -> FrozenSet[str]:
-    return getattr(vocab, _BUCKET_MAP.get(bucket_name, ""), frozenset())
+    bucket_attr = _BUCKET_MAP.get(bucket_name)
+    if bucket_attr is None:
+        logger.warning(
+            "unknown @vocab bucket %r — no vocabulary spliced for "
+            "this marker", bucket_name,
+        )
+        return frozenset()
+    names = getattr(vocab, bucket_attr, frozenset())
+    safe = frozenset(
+        n for n in names if isinstance(n, str) and _IDENT_RE.match(n)
+    )
+    rejected = set(names) - set(safe)
+    if rejected:
+        logger.warning(
+            "rejected %d vocabulary name(s) for bucket %s that fail "
+            "the identifier grammar (splice refused): %s",
+            len(rejected), bucket_name,
+            ", ".join(repr(str(r))[:60] for r in sorted(
+                rejected, key=str,
+            )[:3]),
+        )
+    return safe
 
 
 def _extend_alternation(line: str, names: FrozenSet[str]) -> str:
@@ -188,10 +234,28 @@ def render(rule_path: Path, vocab: Any) -> Path | None:
     if not modified:
         return None
 
+    rendered = "".join(out)
+
+    # Belt-and-braces on top of the per-name identifier gate: the
+    # rendered rule must not have grown any scripting block relative
+    # to the source rule. The identifier grammar makes this
+    # unreachable via vocabulary content by construction; if it ever
+    # fires, splicing is refused for the whole rule (seed rule runs
+    # unextended) and the event is loud.
+    if len(_SCRIPT_BLOCK_RE.findall(rendered)) != len(
+        _SCRIPT_BLOCK_RE.findall(text)
+    ):
+        logger.error(
+            "vocab rendering of %s introduced a scripting block — "
+            "splice refused, running the un-extended rule",
+            rule_path.name,
+        )
+        return None
+
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".cocci", prefix=rule_path.stem + "_vocab_",
         delete=False,
     )
-    tmp.write("".join(out))
+    tmp.write(rendered)
     tmp.close()
     return Path(tmp.name)

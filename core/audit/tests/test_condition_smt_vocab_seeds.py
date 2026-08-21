@@ -264,3 +264,52 @@ class TestFixtureVocabCoverageGain:
         assert r.bypass_found
         assert r.bypassed_checks == ["domain:acme_may_write(req)"]
         assert not check_auth_bypass(src).bypass_found
+
+
+class TestVocabIdentifierGate:
+    """DomainVocabulary construction rejects names that fail the strict
+    identifier grammar (U12-F260): study output over the untrusted repo
+    is spliced into generated .cocci run with allow_scripting=True, so
+    non-identifier names are injection payloads, never vocabulary."""
+
+    def test_hostile_release_name_rejected_pair_dropped(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        hostile = '};\n@script:python@\n@@\nimport os\nos.system("id")'
+        vocab = DomainVocabulary._from_domain_model_only({
+            "paired_operations": [
+                {"acquire": "my_alloc(n)", "release": hostile,
+                 "kind": "alloc"},
+                {"acquire": "good_get(x)", "release": "good_put(x)",
+                 "kind": "refcount"},
+            ],
+        })
+        assert vocab.allocators == frozenset()
+        assert vocab.deallocators == frozenset()
+        assert vocab.refcount_gets == frozenset({"good_get"})
+        assert vocab.refcount_puts == frozenset({"good_put"})
+
+    def test_quote_breakout_rejected_everywhere(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        breakout = 'ok_name", "memcpy'
+        vocab = DomainVocabulary._from_domain_model_only({
+            "nullable_returns": [breakout, "acme_find(x)"],
+            "auth_predicates": [breakout, "acme_may(x)"],
+            "security_fields": [breakout, "uid"],
+        })
+        assert vocab.nullable_returns == frozenset({"acme_find"})
+        assert vocab.auth_predicates == frozenset({("acme_may", "domain")})
+        assert vocab.security_fields == frozenset({"uid"})
+
+    def test_signature_suffix_still_stripped(self):
+        from core.audit.condition_smt import DomainVocabulary
+
+        vocab = DomainVocabulary._from_domain_model_only({
+            "paired_operations": [
+                {"acquire": "spin_lock(&dev->lock)",
+                 "release": "spin_unlock(&dev->lock)", "kind": "spinlock"},
+            ],
+        })
+        assert vocab.lock_acquires == frozenset({"spin_lock"})
+        assert vocab.lock_releases == frozenset({"spin_unlock"})

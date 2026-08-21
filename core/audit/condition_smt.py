@@ -122,6 +122,17 @@ class DomainVocabulary:
     def _from_domain_model_only(
         cls, domain_model: dict[str, Any] | None,
     ) -> DomainVocabulary:
+        """Build the vocabulary from domain-model.json content.
+
+        Every name is gated through :func:`_vocab_name` — a strict
+        C-identifier grammar (mirroring api_pack_renderer._IDENT_RE).
+        Domain models are LLM study output over the UNTRUSTED scanned
+        repo, and vocabulary names get spliced into generated .cocci
+        rules that spatch executes with allow_scripting=True; a name
+        carrying SmPL/Python syntax is a code-injection payload
+        (U12-F260), so anything that is not a plain identifier is
+        rejected at construction, never spliced.
+        """
         if not domain_model:
             return cls()
         pairs = domain_model.get("paired_operations", [])
@@ -167,8 +178,10 @@ class DomainVocabulary:
             if not acquire or not release:
                 continue
 
-            acq_name = acquire.split("(")[0].strip()
-            rel_name = release.split("(")[0].strip()
+            acq_name = _vocab_name(acquire)
+            rel_name = _vocab_name(release)
+            if acq_name is None or rel_name is None:
+                continue
 
             buckets = _KIND_MAP.get(kind)
             if buckets:
@@ -184,27 +197,31 @@ class DomainVocabulary:
         ):
             for entry in domain_model.get(key, []):
                 name = _entry_name(entry)
+                name = _vocab_name(name) if name else None
                 if name:
                     sec_fields.add(name)
 
         nullable: set[str] = set()
         for entry in domain_model.get("nullable_returns", []):
             name = _entry_name(entry)
+            name = _vocab_name(name) if name else None
             if name:
-                nullable.add(name.split("(")[0].strip())
+                nullable.add(name)
 
         auth: set[tuple[str, str]] = set()
         for entry in domain_model.get("auth_predicates", []):
             if isinstance(entry, str):
-                auth.add((entry.split("(")[0].strip(), "domain"))
+                name = _vocab_name(entry)
+                if name:
+                    auth.add((name, "domain"))
             elif (
                 isinstance(entry, dict) and entry.get("name")
                 and _entry_actionable(entry)
             ):
-                auth.add((
-                    str(entry["name"]).split("(")[0].strip(),
-                    str(entry.get("kind", "domain")),
-                ))
+                name = _vocab_name(str(entry["name"]))
+                kind_label = str(entry.get("kind", "domain"))
+                if name and _VOCAB_IDENT_RE.match(kind_label):
+                    auth.add((name, kind_label))
 
         return cls(
             allocators=frozenset(alloc),
@@ -255,6 +272,36 @@ def _entry_name(entry: Any) -> str:
             return ""
         return str(entry["name"])
     return ""
+
+
+# Strict identifier grammar for vocabulary names — mirrors
+# engine/coccinelle/api_pack_renderer._IDENT_RE. Vocabulary names are
+# LLM study output over the UNTRUSTED scanned repo and get spliced
+# into generated .cocci text that spatch executes with
+# allow_scripting=True (sweep renders shipped rules through
+# engine/coccinelle/vocab_renderer); anything beyond a plain C
+# identifier is a potential SmPL/Python injection payload (U12-F260:
+# a crafted deallocator name PoC'd an attacker @script:python block).
+_VOCAB_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _vocab_name(raw: str) -> str | None:
+    """Normalise + validate one vocabulary name.
+
+    Strips a trailing ``(...)`` signature (study output convention),
+    then requires the strict identifier grammar. Returns None —
+    reject, never splice — for anything else.
+    """
+    name = str(raw).split("(")[0].strip()
+    if not name:
+        return None
+    if not _VOCAB_IDENT_RE.match(name):
+        logger.warning(
+            "domain-model vocabulary name rejected (not a plain "
+            "identifier): %r", str(raw)[:80],
+        )
+        return None
+    return name
 
 
 _EMPTY_VOCAB = DomainVocabulary()

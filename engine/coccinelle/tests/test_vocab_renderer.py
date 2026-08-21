@@ -18,6 +18,7 @@ class FakeVocab:
     lock_releases: frozenset = field(default_factory=frozenset)
     refcount_gets: frozenset = field(default_factory=frozenset)
     refcount_puts: frozenset = field(default_factory=frozenset)
+    callback_cancels: frozenset = field(default_factory=frozenset)
 
 
 class TestAlternationExtension:
@@ -137,6 +138,111 @@ class TestWhenClauseExtension:
         assert "when != kfree(ptr)" in text
         assert "when != kvfree(ptr)" in text
         Path(result).unlink()
+
+
+class TestIdentifierGate:
+    """Vocabulary names are LLM study output over the untrusted repo
+    and get spliced into .cocci that spatch runs with
+    allow_scripting=True — anything beyond a plain identifier is
+    rejected, never spliced (U12-F260)."""
+
+    # The PoC payload: a hostile 'deallocator' name that would close
+    # the SmPL construct and open an attacker @script:python block.
+    HOSTILE = '};\n@script:python@\n@@\nimport os\nos.system("id")\n'
+
+    def test_hostile_name_never_spliced_into_alternation(self, tmp_path):
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: deallocators\n"
+            r"\(kfree\|kvfree\)(E);" + "\n"
+        )
+        vocab = FakeVocab(deallocators=frozenset({self.HOSTILE}))
+        result = render(rule, vocab)
+        # Only the hostile name existed — nothing splice-worthy left.
+        assert result is None
+
+    def test_hostile_name_dropped_benign_kept(self, tmp_path):
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: deallocators\n"
+            r"\(kfree\|kvfree\)(E);" + "\n"
+        )
+        vocab = FakeVocab(
+            deallocators=frozenset({self.HOSTILE, "rxrpc_free_skb"}),
+        )
+        result = render(rule, vocab)
+        assert result is not None
+        text = result.read_text()
+        assert "rxrpc_free_skb" in text
+        assert "@script" not in text
+        assert "os.system" not in text
+        Path(result).unlink()
+
+    def test_python_set_quote_breakout_rejected(self, tmp_path):
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: deallocators\n"
+            '_safe = {"kfree", "vfree"}\n'
+        )
+        vocab = FakeVocab(
+            deallocators=frozenset({'ok_name", "memcpy'}),
+        )
+        result = render(rule, vocab)
+        assert result is None
+
+    @pytest.mark.parametrize("payload", [
+        "a(b)",           # parens (call syntax)
+        "a b",            # whitespace
+        "a\\|kfree",      # alternation injection
+        "a\nb",           # newline
+        'a"b',            # quote
+        "a@p",            # position-metavariable syntax
+        "",               # empty
+        "0abc",           # leading digit
+        "x" * 200,        # over-long
+    ])
+    def test_non_identifier_shapes_rejected(self, tmp_path, payload):
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: deallocators\n"
+            r"\(kfree\|kvfree\)(E);" + "\n"
+        )
+        vocab = FakeVocab(deallocators=frozenset({payload}))
+        result = render(rule, vocab)
+        assert result is None, f"non-identifier {payload!r} was spliced"
+
+    def test_callback_cancels_bucket_now_mapped(self, tmp_path):
+        # U12-F265: _BUCKET_MAP lacked callback_cancels — the
+        # teardown_lifetime extension slots were silently dead.
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: callback_cancels\n"
+            r"\(del_timer\|cancel_work\)(E);" + "\n"
+        )
+        vocab = FakeVocab(callback_cancels=frozenset({"my_cancel"}))
+        result = render(rule, vocab)
+        assert result is not None
+        assert r"\|my_cancel" in result.read_text()
+        Path(result).unlink()
+
+    def test_unknown_bucket_warns_and_splices_nothing(
+        self, tmp_path, caplog,
+    ):
+        import logging as _logging
+
+        rule = tmp_path / "test.cocci"
+        rule.write_text(
+            "// @vocab: callback_cancels_async\n"
+            r"\(del_timer\|cancel_work\)(E);" + "\n"
+        )
+        vocab = FakeVocab(callback_cancels=frozenset({"my_cancel"}))
+        with caplog.at_level(
+            _logging.WARNING, logger="engine.coccinelle.vocab_renderer",
+        ):
+            result = render(rule, vocab)
+        assert result is None
+        assert any("unknown @vocab bucket" in r.message
+                   for r in caplog.records)
 
 
 class TestNoneVocab:

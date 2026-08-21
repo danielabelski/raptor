@@ -1632,7 +1632,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"error: {out_dir} is not a directory", file=sys.stderr)
         return 1
 
-    err = resume_ineligibility(out_dir)
+    err = resume_ineligibility(out_dir, reopen=getattr(args, "reopen", False))
     if err:
         print(f"error: {err}", file=sys.stderr)
         return 1
@@ -2310,6 +2310,13 @@ def main() -> int:
              "recorded per-function hashes — drifted functions are "
              "re-verified (loudly, per function) and re-reviewed "
              "instead of reused",
+    )
+    p_resume.add_argument(
+        "--reopen", action="store_true",
+        help="When the run says 'completed' but has no "
+             "audit-report.json (a step that didn't own the run "
+             "stamped it), flip it back to 'interrupted' and resume. "
+             "A completed run WITH a report stays final regardless.",
     )
     p_resume.add_argument(
         "--max-time", type=float, default=None,

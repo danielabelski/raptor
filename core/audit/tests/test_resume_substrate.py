@@ -72,6 +72,10 @@ class TestEligibility(unittest.TestCase):
         with TemporaryDirectory() as d:
             out = Path(d) / "run"
             start_run(out, "audit")
+            # A genuine completion carries the pipeline tail's report;
+            # completed WITHOUT one is the contradicted-completion case
+            # covered by test_resume_reopen.py.
+            (out / "audit-report.json").write_text("{}")
             complete_run(out)
             msg = resume_ineligibility(out)
             self.assertIsNotNone(msg)

@@ -90,7 +90,7 @@ def load_run_config(out_dir: Path) -> dict[str, Any] | None:
 
 # ── Eligibility ──────────────────────────────────────────────────────
 
-def resume_ineligibility(out_dir: Path) -> str | None:
+def resume_ineligibility(out_dir: Path, reopen: bool = False) -> str | None:
     """Why *out_dir* may NOT be resumed. ``None`` when eligible.
 
     Refusals:
@@ -99,12 +99,23 @@ def resume_ineligibility(out_dir: Path) -> str | None:
       fresh run (verdict reuse re-imports the priors at $0 there);
     * status ``running`` with the recorded worker still alive — the
       run is actually in flight, resuming would double-drive it.
+
+    ``reopen`` handles the contradicted-completion case: a genuinely
+    completed audit always has an ``audit-report.json`` (the pipeline
+    tail writes it before the lifecycle completes), so ``completed``
+    WITHOUT a report means the status was stamped by a step that did
+    not own the run (observed: a mapping-phase lifecycle complete on
+    the audit dir). With ``reopen=True`` that contradiction — and only
+    that contradiction — flips the run back to ``interrupted`` and the
+    resume proceeds; a completed run WITH a report stays final
+    regardless of the flag.
     """
     from core.run.metadata import (
         RESUMABLE_STATUSES,
         STATUS_RUNNING,
         _tool_pid_alive,
         load_run_metadata,
+        reopen_run,
     )
 
     meta = load_run_metadata(Path(out_dir))
@@ -112,6 +123,23 @@ def resume_ineligibility(out_dir: Path) -> str | None:
         return f"no .raptor-run.json in {out_dir} — not a run directory"
     status = meta.get("status")
     if status == "completed":
+        contradicted = not (Path(out_dir) / "audit-report.json").is_file()
+        if contradicted and reopen:
+            reopen_run(
+                Path(out_dir),
+                note="resume --reopen: completed status contradicted "
+                     "by missing audit-report.json",
+            )
+            return None
+        if contradicted:
+            return (
+                "run status is 'completed' but there is no "
+                "audit-report.json — the completion was probably "
+                "stamped by a step that did not own this run (e.g. a "
+                "mapping-phase lifecycle complete on the audit dir). "
+                "Pass --reopen to flip it back to 'interrupted' and "
+                "resume."
+            )
         return (
             "run is completed — completed runs are never resumed. "
             "Start a new run on the same project instead: cross-run "

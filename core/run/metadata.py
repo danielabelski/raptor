@@ -1321,6 +1321,57 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     return segment
 
 
+def reopen_run(output_dir: Path, note: str | None = None) -> None:
+    """Flip a spuriously ``completed`` run back to ``interrupted``.
+
+    The one sanctioned completed→interrupted transition, for
+    contradiction recovery: a step that did not own the run stamped it
+    completed (e.g. a mapping-phase ``raptor-run-lifecycle complete``
+    on an /audit dir), leaving the real workflow's completion refused
+    by the terminal-status guard and resume refusing the "completed"
+    run. Callers (``raptor-audit resume --reopen``) are responsible
+    for verifying the contradiction — this helper only requires that
+    the current status IS ``completed`` and records the reopen with a
+    timestamped note so the status history stays auditable.
+
+    Raises FileNotFoundError when there is no metadata file and
+    ValueError when the current status is not ``completed``.
+    """
+    path = Path(output_dir) / RUN_METADATA_FILE
+    with _metadata_lock(path):
+        metadata = load_json(path)
+        if metadata is None:
+            raise FileNotFoundError(
+                f"No {RUN_METADATA_FILE} in {output_dir}")
+        if not isinstance(metadata, dict):
+            raise ValueError(  # noqa: TRY004 — malformed on-disk data
+                f"Malformed {RUN_METADATA_FILE} in {output_dir} — "
+                "expected JSON object")
+        current = metadata.get("status")
+        if current != STATUS_COMPLETED:
+            raise ValueError(
+                f"reopen_run: expected status 'completed', got {current!r}")
+        extra = metadata.get("extra") or {}
+        reopens = extra.get("reopens")
+        if not isinstance(reopens, list):
+            reopens = []
+        row: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "prior_status": current,
+        }
+        if note:
+            row["note"] = note
+        reopens.append(row)
+        extra["reopens"] = reopens
+        metadata["extra"] = extra
+        metadata["status"] = STATUS_INTERRUPTED
+        save_json(path, metadata)
+    logger.warning(
+        "reopen_run: %s flipped completed → interrupted (%s)",
+        output_dir, note or "no note",
+    )
+
+
 @contextlib.contextmanager
 def tracked_run(output_dir: Path, command: str,
                 extra: dict[str, Any] | None = None,

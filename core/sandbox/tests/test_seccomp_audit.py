@@ -112,7 +112,8 @@ class TestAuditHardDenySet:
         overlap = extras & seccomp._AUDIT_HARD_DENY_SYSCALLS
         assert overlap == set()
 
-    def _run_syscall_in_audit_child(self, syscall_name, *args):
+    def _run_syscall_in_audit_child(self, syscall_name, *args,
+                                    block_udp=False):
         """Fork a child, install the audit-mode filter (NO tracer),
         invoke *syscall_name* via raw syscall(2), report
         ``(returncode_or_signal, result, errno)``.
@@ -133,7 +134,9 @@ class TestAuditHardDenySet:
 
         if not check_seccomp_available():
             pytest.skip("libseccomp unavailable")
-        pre = seccomp._make_seccomp_preexec("full", audit_mode=True)
+        pre = seccomp._make_seccomp_preexec(
+            "full", block_udp=block_udp, audit_mode=True,
+        )
         assert pre is not None
 
         lib = state._libseccomp_cache
@@ -188,6 +191,67 @@ class TestAuditHardDenySet:
         assert err == _errno.EPERM, (
             f"keyctl under audit mode returned errno {err}; expected "
             f"EPERM — the escape primitive was allow-and-logged")
+
+    @pytest.mark.skipif(_sys.platform != "linux", reason="Linux-only")
+    def test_af_unix_socket_denied_with_eperm_under_audit(self):
+        # The socket-family argument rules are boundary rules, not
+        # observational ones: under audit mode they must keep ERRNO.
+        # Pre-fix they carried the generic TRACE action and the tracer
+        # resumed unconditionally — socket(AF_UNIX) + connect() to
+        # /var/run/docker.sock became allow-and-log for the whole
+        # audit run on Landlock-only hosts. ENOSYS here would mean the
+        # rule is TRACE again (no tracer attached in this harness).
+        import errno as _errno
+        _AF_UNIX, _SOCK_STREAM = 1, 1
+        rc, res, err = self._run_syscall_in_audit_child(
+            "socket", _AF_UNIX, _SOCK_STREAM, 0)
+        assert rc == 0, f"child died by signal {-rc}"
+        assert res == -1, (
+            f"socket(AF_UNIX) SUCCEEDED under audit mode (fd={res}) — "
+            f"the family block is void")
+        assert err == _errno.EPERM, (
+            f"socket(AF_UNIX) under audit mode returned errno {err}; "
+            f"expected EPERM — TRACE means the deny downgraded to "
+            f"allow-and-log")
+
+    @pytest.mark.skipif(_sys.platform != "linux", reason="Linux-only")
+    def test_sock_raw_denied_with_eperm_under_audit(self):
+        import errno as _errno
+        _AF_INET, _SOCK_RAW = 2, 3
+        rc, res, err = self._run_syscall_in_audit_child(
+            "socket", _AF_INET, _SOCK_RAW, 0)
+        assert rc == 0, f"child died by signal {-rc}"
+        assert res == -1
+        assert err == _errno.EPERM, (
+            f"socket(SOCK_RAW) under audit mode returned errno {err}; "
+            f"expected EPERM")
+
+    @pytest.mark.skipif(_sys.platform != "linux", reason="Linux-only")
+    def test_af_inet_stream_socket_allowed_under_audit(self):
+        # Control: AF_INET/SOCK_STREAM has no rule — it must still
+        # succeed under audit mode, proving the EPERMs above come from
+        # the argument rules and not a blanket socket() deny.
+        _AF_INET, _SOCK_STREAM = 2, 1
+        rc, res, err = self._run_syscall_in_audit_child(
+            "socket", _AF_INET, _SOCK_STREAM, 0)
+        assert rc == 0, f"child died by signal {-rc}"
+        assert res >= 0, (
+            f"socket(AF_INET, SOCK_STREAM) failed (errno {err}) under "
+            f"audit mode — blanket socket deny installed by mistake")
+
+    @pytest.mark.skipif(_sys.platform != "linux", reason="Linux-only")
+    def test_udp_block_denied_with_eperm_under_audit(self):
+        # The proxy-mode UDP block is an operator-selected exfil
+        # control; it must not void under audit mode either.
+        import errno as _errno
+        _AF_INET, _SOCK_DGRAM = 2, 2
+        rc, res, err = self._run_syscall_in_audit_child(
+            "socket", _AF_INET, _SOCK_DGRAM, 0, block_udp=True)
+        assert rc == 0, f"child died by signal {-rc}"
+        assert res == -1
+        assert err == _errno.EPERM, (
+            f"socket(AF_INET, SOCK_DGRAM) with block_udp under audit "
+            f"mode returned errno {err}; expected EPERM")
 
     @pytest.mark.skipif(_sys.platform != "linux", reason="Linux-only")
     def test_openat_stays_trace_action_under_audit(self):

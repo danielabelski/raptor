@@ -191,14 +191,26 @@ _SECCOMP_BLOCK_UNLESS_DEBUG = (
 # keyring, bpf/userfaultfd are classic container-escape primitives,
 # and io_uring_* bypasses Landlock's file hooks on pre-6.3 kernels.
 # None of these has observational value that justifies granting it —
-# unlike open/connect/stat (the _AUDIT_EXTRA/_OBSERVE_EXTRA sets) and
-# the socket-family/UDP argument rules, which stay trace-allow so the
-# tracer can report what the workload wanted.
+# unlike open/connect/stat (the _AUDIT_EXTRA/_OBSERVE_EXTRA sets),
+# which stay trace-allow so the tracer can report what the workload
+# wanted.
 #
 # The blocked tty ioctls (TIOCSTI et al) get the same treatment via
 # an unconditional ERRNO action on the ioctl rules — TIOCSTI injects
 # keystrokes into the operator's shell, which is not observable-then-
 # harmless either.
+#
+# The socket()-argument rules (AF_UNIX/AF_NETLINK/AF_PACKET, SOCK_RAW,
+# and the proxy-mode UDP block) are escape primitives too and keep the
+# ERRNO action under audit mode: socket(AF_UNIX)+connect() reaches
+# /var/run/docker.sock (root-equivalent when the operator is in the
+# docker group) on Landlock-only hosts where the mount-ns cannot mask
+# /run, AF_PACKET/SOCK_RAW sniff host traffic, and the UDP block is an
+# operator-selected exfil control. Converting those denials into
+# allow-and-log would hand an audited child the capability for the
+# duration of the run — the same rationale as this set. The cost is
+# the same logging residual described below (the child sees EPERM
+# instead of the tracer seeing an event).
 #
 # Logging residual: SCMP_ACT_ERRNO does not notify the tracer, so an
 # attempt on this set surfaces to the child as EPERM (picked up by
@@ -401,10 +413,13 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     the syscall. Also adds open/openat/connect to the trace set for b3
     filesystem + network audit coverage. EXCEPTION: the escape-primitive
     subset (_AUDIT_HARD_DENY_SYSCALLS — ptrace/process_vm_*, keyring,
-    bpf/userfaultfd, io_uring_*) and the blocked tty ioctls keep the
-    ERRNO action under audit too; converting THOSE denials into
-    allow-and-log would grant an audited child the very capabilities
-    the sandbox exists to deny. CRITICAL: TRACE rules require a ptrace
+    bpf/userfaultfd, io_uring_*), the blocked tty ioctls, AND the
+    socket()-argument rules (blocked families, SOCK_RAW, the UDP block)
+    keep the ERRNO action under audit too; converting THOSE denials
+    into allow-and-log would grant an audited child the very
+    capabilities the sandbox exists to deny (e.g. socket(AF_UNIX) →
+    connect("/var/run/docker.sock") on a Landlock-only host where /run
+    is not masked). CRITICAL: TRACE rules require a ptrace
     tracer to be attached for the target's lifetime; without it, the
     kernel default action for unhandled TRACE is SIGSYS-kill the
     process. The caller (_spawn.py) is responsible for ensuring tracer
@@ -636,13 +651,19 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                 # MASKED_EQ on the low 32 bits, not EQ: the kernel
                 # truncates the family to int, so EQ misses
                 # `fam | 1<<32` while the kernel still sees `fam`.
+                # hard_deny (not deny): the socket-argument rules are
+                # escape primitives (docker.sock via AF_UNIX on
+                # Landlock-only hosts, host-traffic sniffing via
+                # AF_PACKET/SOCK_RAW) and must NOT downgrade to
+                # allow-and-log under audit mode — see the
+                # _AUDIT_HARD_DENY_SYSCALLS rationale.
                 if socket_num >= 0:
                     for fam in socket_family_blocks:
                         arg = _ScmpArgCmp(arg=0, op=_SCMP_CMP_MASKED_EQ,
                                           datum_a=_ARG32_MASK, datum_b=fam)
                         arg_arr = (_ScmpArgCmp * 1)(arg)
                         ret = lib.seccomp_rule_add_array(
-                            ctx, deny, socket_num, 1, arg_arr,
+                            ctx, hard_deny, socket_num, 1, arg_arr,
                         )
                         if ret < 0:
                             _os_write(2, b"RAPTOR: seccomp socket family rule failed"
@@ -664,7 +685,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                       datum_b=socket_type_block)
                     arg_arr = (_ScmpArgCmp * 1)(arg)
                     ret = lib.seccomp_rule_add_array(
-                        ctx, deny, socket_num, 1, arg_arr,
+                        ctx, hard_deny, socket_num, 1, arg_arr,
                     )
                     if ret < 0:
                         _os_write(2, b"RAPTOR: seccomp SOCK_RAW rule failed -- "
@@ -706,8 +727,11 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                         datum_a=_SOCK_TYPE_MASK,
                                         datum_b=_SOCK_DGRAM),
                         )
+                        # hard_deny: the UDP block is an operator-
+                        # selected exfil control (proxy mode) — it
+                        # must not void under audit mode either.
                         ret = lib.seccomp_rule_add_array(
-                            ctx, deny, socket_num, 2, args,
+                            ctx, hard_deny, socket_num, 2, args,
                         )
                         if ret < 0:
                             _os_write(2, b"RAPTOR: seccomp UDP block rule failed"

@@ -1693,10 +1693,15 @@ def _handle_waitpid_event(
                 # signal is exactly what the operator wants. Note the
                 # escape-primitive subset (ptrace, process_vm_*,
                 # keyring, bpf, userfaultfd, io_uring_* — see
-                # seccomp._AUDIT_HARD_DENY_SYSCALLS) never arrives
-                # here: those keep SCMP_ACT_ERRNO even in audit mode,
-                # so the child sees EPERM instead of the tracer
-                # seeing an event.
+                # seccomp._AUDIT_HARD_DENY_SYSCALLS), the blocked tty
+                # ioctls, AND the socket()-argument rules (blocked
+                # families, SOCK_RAW, the proxy-mode UDP block) never
+                # arrive here: those keep SCMP_ACT_ERRNO even in
+                # audit mode, so the child sees EPERM instead of the
+                # tracer seeing an event. This resume-unconditionally
+                # path therefore only ever grants observe-class
+                # syscalls (open/connect/stat trace extras), never a
+                # boundary rule.
 
             if should_log:
                 # socket()/ioctl() are blocked on specific argument
@@ -1704,7 +1709,12 @@ def _handle_waitpid_event(
                 # AF_PACKET / SOCK_RAW) escalates — a plain AF_UNIX
                 # denial is ordinary tool noise. The decoded label
                 # (e.g. "ioctl(TIOCSTI)") doubles as the dedup key so
-                # each primitive announces once per run.
+                # each primitive announces once per run. (Since the
+                # socket/ioctl argument rules moved to hard-deny under
+                # audit mode, these events no longer reach the tracer
+                # from our own filter; the branch is kept for
+                # robustness against filters built by older versions
+                # of this module within the same run layout.)
                 _esc_name = (
                     escalation_signatures.hostile_arg_label(name, args)
                     if name in ("socket", "ioctl")

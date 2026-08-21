@@ -10,10 +10,12 @@ import errno
 import logging
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -191,6 +193,55 @@ def _audit_degrade_reason(b_fallback_reason, b_fallback_instr,
 # process: two writers counting the same file then appending would
 # mint duplicate sequence numbers and read as tampering at triage.
 _PROXY_PERSIST_LOCK = threading.Lock()
+
+
+def _sweep_marked_processes(token: str) -> list:
+    """SIGKILL every process whose environment carries this run's
+    marker (`_RAPTOR_SBX_RUN=<token>`).
+
+    Backstop teardown for the no-namespace path: the in-line subreaper
+    sweeper (preexec._reaper_split) catches orphans while it lives,
+    but a subprocess timeout kills the sweeper itself (Popen.pid) —
+    this parent-side pass then reaps the marked survivors. Two passes,
+    because a dying daemon can fork once more between scan and kill.
+    Only same-uid processes are readable in /proc, and the token is a
+    per-run random UUID, so a false-positive kill requires the exact
+    128-bit value in a foreign process env. Returns the pids killed.
+    """
+    needle = f"_RAPTOR_SBX_RUN={token}".encode()
+    me = os.getpid()
+    killed: list = []
+    for _pass in range(2):
+        found = False
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return killed
+        for name in names:
+            if not name.isdigit() or int(name) == me:
+                continue
+            try:
+                with open(f"/proc/{name}/environ", "rb") as f:
+                    env_blob = f.read(1024 * 1024)
+            except OSError:
+                continue
+            if needle not in env_blob:
+                continue
+            found = True
+            try:
+                os.kill(int(name), signal.SIGKILL)
+                killed.append(int(name))
+            except OSError:
+                continue
+        if not found:
+            break
+        time.sleep(0.05)
+    if killed:
+        logger.warning(
+            "Sandbox: teardown backstop killed %d marked survivor(s) "
+            "on the no-namespace path: %s", len(killed), killed,
+        )
+    return killed
 
 
 def _count_lines_bounded(path) -> int:
@@ -1657,10 +1708,19 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # nproc headroom. Growth is capped at the same budget the
     # namespace paths grant, without starving concurrent RAPTOR work.
     _host_nproc_cap = None
+    # Teardown-sweep cell for the same no-namespace posture: the
+    # composed preexec forks a PR_SET_CHILD_SUBREAPER sweeper that
+    # SIGKILLs every surviving descendant (setsid daemons, SIGSTOP-
+    # parked children, delayed writers) when the payload exits or the
+    # per-run death pipe (cell["death_fd"], populated by run()) hits
+    # EOF. Namespace paths don't need it — the pid-ns cascade kill is
+    # stronger. See preexec._reaper_split.
+    _reaper_cell: dict | None = None
     if (sys.platform == "linux" and not use_seatbelt
             and not effectively_disabled
             and not (use_sandbox
                      and (block_network or use_mount or restrict_reads))):
+        _reaper_cell = {"death_fd": None}
         _nproc_budget = int(effective_limits.get("nproc", 0) or 0)
         if _nproc_budget > 0:
             try:
@@ -1670,9 +1730,21 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     if not _d.isdigit():
                         continue
                     try:
-                        if os.stat(f"/proc/{_d}").st_uid == _uid:
-                            _count += 1
-                    except OSError:
+                        if os.stat(f"/proc/{_d}").st_uid != _uid:
+                            continue
+                        # RLIMIT_NPROC counts TASKS (threads), not
+                        # processes — counting tgids alone would set a
+                        # ceiling BELOW the current usage on any
+                        # thread-heavy host and make every fork in the
+                        # sandbox fail EAGAIN.
+                        with open(f"/proc/{_d}/status", "rb") as _f:
+                            for _line in _f.read(4096).splitlines():
+                                if _line.startswith(b"Threads:"):
+                                    _count += int(_line.split()[1])
+                                    break
+                            else:
+                                _count += 1
+                    except (OSError, ValueError, IndexError):
                         continue
                 _host_nproc_cap = _count + _nproc_budget
             except OSError:
@@ -1684,7 +1756,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                seccomp_block_udp=seccomp_block_udp,
                                readable_paths=_preexec_readable,
                                deny_all_tcp_connect=_degraded_tcp_deny,
-                               host_nproc_cap=_host_nproc_cap)
+                               host_nproc_cap=_host_nproc_cap,
+                               reaper_cell=_reaper_cell)
 
     # Host-fingerprint persona — opt-in. Built once per sandbox() context
     # and reused across every run() call inside it. Cleanup happens in
@@ -3517,12 +3590,33 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 except OSError:
                                     pass
                     else:
+                        # No shim, no pid namespace on this path —
+                        # teardown containment comes from the preexec
+                        # sweeper (reaper cell) plus a parent-side
+                        # marked-process sweep. The env marker is a
+                        # per-run random token every descendant
+                        # inherits; after the run (normal return,
+                        # timeout, or exception) any /proc process
+                        # still carrying it is SIGKILLed — the
+                        # backstop for the paths that kill the sweeper
+                        # itself (subprocess timeout kills Popen.pid,
+                        # which IS the sweeper).
+                        _reap_token = None
+                        _death_r = _death_w = None
+                        _penv = _env_for_target
+                        if not effectively_disabled:
+                            import uuid as _uuid
+                            _reap_token = _uuid.uuid4().hex
+                            _penv = dict(_env_for_target)
+                            _penv["_RAPTOR_SBX_RUN"] = _reap_token
+                        if _reaper_cell is not None:
+                            _death_r, _death_w = os.pipe()
+                            _reaper_cell["death_fd"] = _death_r
                         try:
-                            # No shim on this path — full_cmd IS the
-                            # target, so it gets the marker-stripped
-                            # env view.
+                            # full_cmd IS the target, so it gets the
+                            # marker-stripped env view.
                             _pk = dict(kwargs)
-                            _pk["env"] = _env_for_target
+                            _pk["env"] = _penv
                             result = subprocess.run(
                                 full_cmd,
                                 start_new_session=_start_new_session,
@@ -3535,6 +3629,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             result = subprocess.CompletedProcess(
                                 full_cmd, returncode=-9,
                             )
+                        finally:
+                            if _reaper_cell is not None:
+                                _reaper_cell["death_fd"] = None
+                            for _dfd in (_death_w, _death_r):
+                                if _dfd is not None:
+                                    try:
+                                        os.close(_dfd)
+                                    except OSError:
+                                        pass
+                            if _reap_token is not None:
+                                _sweep_marked_processes(_reap_token)
         finally:
             events = (
                 proxy_instance.unregister_sandbox(proxy_token)
@@ -3571,6 +3676,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # and /dev/shm grants were replaced by a per-context 0700
             # scratch dir (TMPDIR-steered).
             result.sandbox_info["private_scratch"] = True
+        if _reaper_cell is not None:
+            # No-namespace posture: teardown containment came from the
+            # subreaper sweeper + marked-process backstop rather than
+            # a pid-namespace cascade.
+            result.sandbox_info["teardown_sweep"] = True
         # Landlock metadata gap (kernel limitation, stamped honestly):
         # Landlock has no access right for metadata-only operations —
         # chmod/chown/utimensat/setxattr on any same-UID file OUTSIDE

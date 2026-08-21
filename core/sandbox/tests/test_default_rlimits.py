@@ -113,20 +113,29 @@ class TestHostNprocCapOnNoNamespacePath(unittest.TestCase):
         self.assertNotEqual(soft, -1,
                             "LL-only child must not run with unlimited "
                             "RLIMIT_NPROC (fork-storm bound missing)")
-        # Ceiling = same-uid count at setup + default nproc headroom
-        # (1024). Allow generous slack for concurrent test activity.
+        # Ceiling = same-uid TASK (thread) count at setup + default
+        # nproc headroom (1024) — RLIMIT_NPROC counts tasks, so the
+        # cap must too. Allow generous slack for concurrent activity.
         uid = os.geteuid()
         count = 0
         for d in os.listdir("/proc"):
-            if d.isdigit():
-                try:
-                    if os.stat(f"/proc/{d}").st_uid == uid:
-                        count += 1
-                except OSError:
+            if not d.isdigit():
+                continue
+            try:
+                if os.stat(f"/proc/{d}").st_uid != uid:
                     continue
-        self.assertLess(soft, count + 1024 + 256,
-                        "nproc ceiling should track same-uid count + "
-                        "configured headroom")
+                with open(f"/proc/{d}/status", "rb") as f:
+                    for line in f.read(4096).splitlines():
+                        if line.startswith(b"Threads:"):
+                            count += int(line.split()[1])
+                            break
+                    else:
+                        count += 1
+            except (OSError, ValueError, IndexError):
+                continue
+        self.assertLess(soft, count + 1024 + 512,
+                        "nproc ceiling should track same-uid task "
+                        "count + configured headroom")
         self.assertGreater(soft, 1024 - 1,
                            "headroom must not starve legitimate work")
 

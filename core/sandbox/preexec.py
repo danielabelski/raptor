@@ -17,8 +17,11 @@ import json
 import logging
 import os
 import resource
+import select
 import signal
 import sys
+import time
+import warnings
 from pathlib import Path
 
 from . import state
@@ -187,7 +190,8 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
                      seccomp_block_udp: bool = False,
                      readable_paths: list | None = None,
                      deny_all_tcp_connect: bool = False,
-                     host_nproc_cap: int | None = None):
+                     host_nproc_cap: int | None = None,
+                     reaper_cell: dict | None = None):
     """Create a preexec_fn that sets resource limits, Landlock, and seccomp.
 
     Resource limits (rlimit) apply for memory / CPU / file-size.
@@ -210,6 +214,24 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
     no allow rules (degraded-mode network fallback — see context.py);
     it engages Landlock even when no writable paths are set, as a
     net-only ruleset that leaves filesystem semantics untouched.
+
+    `reaper_cell` engages the NO-NAMESPACE TEARDOWN SWEEP: on the
+    Landlock-only path there is no pid namespace, so a payload that
+    setsid()s a daemon, SIGSTOP-parks a child, or leaves stragglers
+    behind used to survive run() teardown outright. When a cell is
+    passed, the composed preexec splits after rlimits: it forks, the
+    fork-PARENT becomes a PR_SET_CHILD_SUBREAPER sweeper that never
+    execs (subprocess sees IT as the child), and the fork-CHILD
+    applies Landlock+seccomp and execs the payload. Every orphaned
+    descendant of the payload — setsid daemons included — reparents
+    to the sweeper, which SIGKILL-sweeps them when the payload exits
+    or when the per-run death pipe (``reaper_cell["death_fd"]``,
+    populated by context.run() before each spawn) reaches EOF. The
+    sweeper mirrors the payload's exit status (128+N for signals) and
+    stays OUTSIDE the Landlock domain, so on scoping-capable kernels
+    (ABI >= 6) the payload cannot signal it. The payload re-arms
+    PR_SET_PDEATHSIG against the sweeper, so a kill aimed at the
+    direct child (subprocess timeout) still takes the payload down.
 
     `host_nproc_cap` is the no-user-namespace substitute for the
     prlimit/unshare NPROC containment: on the Landlock-only path the
@@ -306,21 +328,6 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
                     b"preexec: RLIMIT_NOFILE setrlimit failed (errno=%d); "
                     b"fd-exhaustion bound not applied\n" % _errno
                 )
-        if host_nproc_cap and host_nproc_cap > 0:
-            try:
-                _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-                eff = (host_nproc_cap
-                       if hard == resource.RLIM_INFINITY
-                       else min(host_nproc_cap, hard))
-                resource.setrlimit(resource.RLIMIT_NPROC, (eff, eff))
-            except (ValueError, OSError) as exc:
-                _errno = getattr(exc, "errno", 0) or 0
-                warn_post_fork(
-                    b"preexec: RLIMIT_NPROC setrlimit failed (errno=%d); "
-                    b"fork-bomb bound not applied on the no-namespace "
-                    b"path\n" % _errno
-                )
-
         # Core dumps off. A sandboxed process can read anywhere in the
         # filesystem (Landlock's read-everywhere default covers ~/.ssh,
         # ~/.aws/credentials, API-key files); if the process then crashes
@@ -355,6 +362,32 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
             os._exit(SANDBOX_EXIT_RLIMIT_CORE_FAIL)
 
 
+        # No-namespace teardown sweep (see the reaper_cell docstring):
+        # split BEFORE Landlock/seccomp so the sweeper stays outside
+        # the restriction domain (payload cannot signal it on Landlock
+        # scoping kernels) while the payload gets the full stack.
+        if reaper_cell is not None and sys.platform == "linux":
+            _reaper_split(reaper_cell)
+
+        # RLIMIT_NPROC ceiling for the no-namespace path — applied
+        # AFTER the reaper split so it binds the PAYLOAD only: the
+        # sweeper's own fork and kill work must never fail against the
+        # cap it is meant to enforce on the payload's tree.
+        if host_nproc_cap and host_nproc_cap > 0:
+            try:
+                _, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+                eff = (host_nproc_cap
+                       if hard == resource.RLIM_INFINITY
+                       else min(host_nproc_cap, hard))
+                resource.setrlimit(resource.RLIMIT_NPROC, (eff, eff))
+            except (ValueError, OSError) as exc:
+                _errno = getattr(exc, "errno", 0) or 0
+                warn_post_fork(
+                    b"preexec: RLIMIT_NPROC setrlimit failed (errno=%d); "
+                    b"fork-bomb bound not applied on the no-namespace "
+                    b"path\n" % _errno
+                )
+
         # Apply Landlock filesystem restrictions after resource limits
         # and ns setup. Seccomp filter is installed LAST so it inherits
         # PR_SET_NO_NEW_PRIVS from Landlock's restrict_self (seccomp
@@ -365,6 +398,183 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
             seccomp_fn()
 
     return _set_limits
+
+
+# ── No-namespace teardown sweeper ───────────────────────────────────
+#
+# On the Landlock-only path there is no pid namespace to cascade-kill
+# the payload's process tree at teardown. The battery-proven escapes:
+# a setsid double-fork daemon, a SIGSTOP-parked child, a delayed
+# writer surviving a timeout — all outlived run() and kept host access
+# (a post-teardown host write included). The sweeper is the pid-
+# tracking substitute: PR_SET_CHILD_SUBREAPER makes every orphaned
+# descendant reparent to it, so at payload exit (or death-pipe EOF)
+# it can enumerate /proc/self/task/<pid>/children and SIGKILL the
+# stragglers — stopped processes included (SIGKILL resumes-and-kills).
+
+_PR_SET_CHILD_SUBREAPER = 36
+# Grace budget for the kill loop: re-enumerate and re-kill until no
+# children remain (a dying daemon may orphan ITS children onto us).
+_SWEEP_DEADLINE_S = 3.0
+_DEATH_TEARDOWN_EXIT = 137  # parity with the pid1 shim convention
+
+
+def _reaper_split(reaper_cell: dict) -> None:
+    """Fork inside the preexec: parent becomes the sweeper (never
+    returns), child continues to Landlock/seccomp/exec. Post-fork
+    safe: os.* + captured module refs only."""
+    libc = _get_libc()
+    if libc is None:
+        return  # no prctl — keep the historic single-process shape
+    death_fd = reaper_cell.get("death_fd")
+    # Subreaper BEFORE the fork so no orphan can slip through the
+    # window; the payload clears its inherited copy so mid-run
+    # orphans reparent to the sweeper, not to the payload.
+    libc.prctl(_PR_SET_CHILD_SUBREAPER, 1)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", category=DeprecationWarning,
+            message=r".*fork.*may lead to deadlocks.*",
+        )
+        pid = os.fork()
+    if pid == 0:
+        # Payload branch. Re-arm PDEATHSIG against the sweeper (the
+        # new parent): a kill aimed at the direct child — subprocess
+        # timeout kills Popen.pid, which is the sweeper — must take
+        # the payload down with it.
+        libc.prctl(_PR_SET_CHILD_SUBREAPER, 0)
+        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+        return
+    _sweeper_main(pid, death_fd)  # never returns
+
+
+def _sweeper_main(payload_pid: int, death_fd) -> None:
+    # Detach from the parent's stdio pipes so communicate() EOF is
+    # governed by the payload tree alone; keep fd 2 for warnings.
+    for _fd in (0, 1):
+        try:
+            os.close(_fd)
+        except OSError:
+            pass
+    # Close everything else we inherited (subprocess errpipe included
+    # — holding it would block Popen's exec-status read until the
+    # sweeper exits) except the death pipe.
+    try:
+        _max = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ValueError, OSError):
+        _max = 4096
+    for _fd in range(3, min(int(_max), 65536)):
+        if death_fd is not None and _fd == death_fd:
+            continue
+        try:
+            os.close(_fd)
+        except OSError:
+            pass
+
+    poller = None
+    if death_fd is not None:
+        try:
+            poller = select.poll()
+            poller.register(death_fd, select.POLLIN)
+        except OSError:
+            poller = None
+
+    payload_status = None
+    teardown = False
+    while True:
+        # Reap anything that exited — the payload itself or orphans
+        # reparented to us (their statuses are discarded; we only
+        # track the payload's for exit-code mirroring).
+        while True:
+            try:
+                wpid, wstatus = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                wpid = 0
+            except OSError:
+                wpid = 0
+            if wpid == 0:
+                break
+            if wpid == payload_pid:
+                payload_status = wstatus
+        if payload_status is not None:
+            break
+        if poller is not None:
+            try:
+                events = poller.poll(50)
+            except OSError:
+                events = []
+            if events:
+                # Parent (orchestrator) closed the pipe — teardown or
+                # death. Kill the payload and sweep everything.
+                teardown = True
+                try:
+                    os.kill(payload_pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                break
+        else:
+            time.sleep(0.05)
+
+    # Sweep: SIGKILL every remaining child until none are left or the
+    # deadline passes (a dying daemon may orphan its own children
+    # onto us — loop, don't single-pass).
+    deadline = time.monotonic() + _SWEEP_DEADLINE_S
+    swept_any = False
+    while time.monotonic() < deadline:
+        kids = _reaper_children()
+        if not kids:
+            break
+        for kid in kids:
+            swept_any = True
+            try:
+                os.kill(kid, signal.SIGKILL)
+            except OSError:
+                pass
+        while True:
+            try:
+                if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                    break
+            except (ChildProcessError, OSError):
+                break
+        time.sleep(0.02)
+    if swept_any:
+        try:
+            os.write(2, b"RAPTOR sandbox: teardown sweep killed "
+                        b"surviving descendants (no-namespace path)\n")
+        except OSError:
+            pass
+
+    if teardown or payload_status is None:
+        os._exit(_DEATH_TEARDOWN_EXIT)
+    if os.WIFSIGNALED(payload_status):
+        os._exit(128 + os.WTERMSIG(payload_status))
+    os._exit(os.WEXITSTATUS(payload_status))
+
+
+def _reaper_children() -> list:
+    """Live children of this process (post-fork safe: /proc reads)."""
+    me = os.getpid()
+    try:
+        with open(f"/proc/{me}/task/{me}/children", "rb") as f:
+            data = f.read()
+        return [int(x) for x in data.split()]
+    except (OSError, ValueError):
+        # CONFIG_PROC_CHILDREN missing — fall back to a /proc scan.
+        kids = []
+        try:
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{name}/stat", "rb") as f:
+                        fields = f.read().rsplit(b") ", 1)[-1].split()
+                    if int(fields[1]) == me:
+                        kids.append(int(name))
+                except (OSError, ValueError, IndexError):
+                    continue
+        except OSError:
+            pass
+        return kids
 
 
 # ── PR_SET_PDEATHSIG ────────────────────────────────────────────────

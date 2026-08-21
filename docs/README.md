@@ -77,3 +77,7 @@ overview:
 | [Dependencies](dependencies.md) | Tool requirements and licensing |
 | [Troubleshooting](troubleshooting.md) | Common failures and fixes by subsystem |
 | [Python CLI](python-cli.md) | Direct `raptor.py` usage for CI and scripting |
+
+Working on RAPTOR itself? [developers.md](developers.md) is the
+developer-facing entry point; every other page here documents the
+operator surface.

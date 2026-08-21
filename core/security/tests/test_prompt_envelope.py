@@ -1149,6 +1149,59 @@ class TestAutofetchReferenceLinks:
         assert self._strip(code) == code
 
 
+# --- Autofetch strip: HTML fetching-construct cousins ---
+# Verified surviving both the prompt-side strip and the report-side
+# sanitise_string: parser aliases, alternative attribute delimiters,
+# tags absent from the alternation, and style-ATTRIBUTE fetches.
+
+class TestAutofetchHtmlCousins:
+
+    def _strip(self, text):
+        from core.security.prompt_envelope import _strip_autofetch_markup
+        return _strip_autofetch_markup(text)
+
+    @pytest.mark.parametrize("construct", [
+        '<image src="//evil.example/p.png">',      # parser alias for <img>
+        '<a/href="javascript:alert(1)">',          # / delimits attrs too
+        '<input type="image" src="//evil.example/p">',
+        '<frame src="//evil.example/f">',
+        '<track src="//evil.example/t.vtt">',
+        '<bgsound src="//evil.example/s">',
+        '<applet code="//evil.example/a">',
+        '<portal src="//evil.example/p">',
+        "[click](<javascript:fetch('//evil.example/x')>)",
+        "![x](<//evil.example/i>)",
+        "data:,payload",                            # empty mediatype
+        "<im⁠g src=//evil.example/x>",         # word-joiner split
+    ])
+    def test_fetching_construct_neutralised(self, construct):
+        out = self._strip(construct)
+        assert out != construct, construct
+        assert "[REDACTED-AUTOFETCH-MARKUP]" in out
+
+    def test_style_attribute_url_neutralised(self):
+        out = self._strip('<div style="background:url(//evil.example/c)">')
+        # The fetching construct (style attr reaching url() ) is broken
+        # even though the tag itself is not in the alternation.
+        assert 'style="background:url(' not in out
+        assert "[REDACTED-AUTOFETCH-MARKUP]" in out
+
+    def test_oversized_alias_tags_defanged_by_fallback(self):
+        for tag in ("image", "input", "frame", "track"):
+            text = f'<{tag} src="//evil.example/x" ' + "z" * 9000 + ">"
+            out = self._strip(text)
+            assert f"<{tag}" not in out, tag
+
+    @pytest.mark.parametrize("benign", [
+        "an <apple> a day",
+        "x < a and b > y",
+        "the style = clean approach",
+        "if (a<b) c();",
+    ])
+    def test_benign_text_untouched(self, benign):
+        assert self._strip(benign) == benign
+
+
 # --- Autofetch strip: over-long URL fallback (regression: >8KB evasion) ---
 
 class TestAutofetchOverlongFallback:

@@ -170,10 +170,28 @@ _AUTOFETCH_MARKUP_RE = re.compile(
     # in any context where the rendered output flows back to a browser.
     r'|\[[^\]]{0,8192}\]\((?:https?|ht%74ps?|data|javascript|vbscript|file|ftp)?:[^)]{1,8192}\)'
     r'|\[[^\]]{0,8192}\]\(//[^)]{1,8192}\)'
-    r'|<(?:img|iframe|object|embed|video|audio|source|link|script|base|form|use)\b[^>]{0,8192}>'
-    r'|<a\s[^>]{0,8192}>'
+    # Inline link/image with an angle-bracket destination —
+    # `[click](<javascript:...>)` / `![x](<//evil>)`. The `\(scheme:`
+    # arms above never see the `<`, and angle destinations may contain
+    # spaces, so strip the form regardless of the scheme spelling.
+    r'|!?\[[^\]]{0,8192}\]\(\s{0,8}<[^>\n]{0,8192}>'
+    # `<image>` is the HTML parser's alias for `<img>` (auto-fetches);
+    # `<input type=image>` fetches its src; `<frame>`/`<track>` fetch;
+    # `<bgsound>`/`<applet>`/`<portal>` are legacy/experimental
+    # fetchers cheap to include.
+    r'|<(?:img|image|iframe|object|embed|video|audio|source|track'
+    r'|input|frame|link|script|base|form|use|bgsound|applet|portal)'
+    r'\b[^>]{0,8192}>'
+    # `<a/href=...>`: `/` also delimits attributes in HTML, so `<a\s`
+    # alone missed it.
+    r'|<a[\s/][^>]{0,8192}>'
     r'|<svg\b[^>]{0,8192}>'
     r'|<meta\b[^>]{0,8192}>'
+    # style ATTRIBUTE fetch — `style="background:url(//evil)"` on any
+    # tag (only the `<style>` element and `@import url()` were
+    # covered). Redacting through `url(` breaks the fetch; the tail
+    # stays behind as inert text.
+    r'|style\s*=\s*[^>]{0,8192}?url\s*\('
     # `<style>` with body OR a self-contained tag. The original pattern
     # required `</style>`, so a malformed `<style>...` (no close tag) or
     # a self-closing variant slipped through. `\b[^>]*>` matches either,
@@ -218,7 +236,9 @@ _AUTOFETCH_MARKUP_RE = re.compile(
     # Real autofetch defang only cares that the URI EXISTS and gets
     # neutered; capping the mediatype at 256 chars and the payload at
     # 64 KB still recognises every realistic case.
-    r'|data:[a-zA-Z0-9+./;-]{1,256},[^\s)]{0,65536}'
+    # Mediatype may legally be EMPTY (`data:,payload` defaults to
+    # text/plain) — the cap starts at 0.
+    r'|data:[a-zA-Z0-9+./;-]{0,256},[^\s)]{0,65536}'
     # Over-long fallbacks. Each bounded arm above requires its closing
     # delimiter within the 8 KB cap, so a URL or attribute run longer
     # than the cap made the whole construct invisible to the strip
@@ -233,8 +253,10 @@ _AUTOFETCH_MARKUP_RE = re.compile(
     r'|!\[[^\]]{0,8192}\]\((?=[^)]{8192})'
     r'|\[[^\]]{0,8192}\]\((?:https?|ht%74ps?|data|javascript|vbscript|file|ftp)?:(?=[^)]{8192})'
     r'|\[[^\]]{0,8192}\]\(//(?=[^)]{8192})'
-    r'|<(?:img|iframe|object|embed|video|audio|source|link|script|base|form|use|svg|meta)\b(?=[^>]{8192})'
-    r'|<a\s(?=[^>]{8192})',
+    r'|<(?:img|image|iframe|object|embed|video|audio|source|track'
+    r'|input|frame|link|script|base|form|use|bgsound|applet|portal'
+    r'|svg|meta)\b(?=[^>]{8192})'
+    r'|<a[\s/](?=[^>]{8192})',
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -376,6 +398,8 @@ def nonce_leaked_in(nonce: str, text: str) -> bool:
 # Coverage:
 #   U+0000          — null (browsers ignore inside attribute values + tag names)
 #   U+200B-U+200D   — zero-width space / non-joiner / joiner
+#   U+200E-U+200F   — LRM / RLM directional marks (invisible)
+#   U+2060          — word joiner (zero-width, splits tag names)
 #   U+FEFF          — zero-width no-break space (also BOM)
 #   U+00AD          — soft hyphen
 #   U+202A-U+202E   — bidi embedding / override controls
@@ -385,7 +409,7 @@ def nonce_leaked_in(nonce: str, text: str) -> bool:
 # \uXXXX escapes so the source file itself carries no raw control
 # characters (linters and diff viewers stay readable).
 _BYPASS_CHAR_RE = re.compile(
-    '[\x00\u00ad\u200b\u200c\u200d\ufeff'
+    '[\x00\u00ad\u200b\u200c\u200d\u200e\u200f\u2060\ufeff'
     '\u202a\u202b\u202c\u202d\u202e'
     '\u2066\u2067\u2068\u2069]'
 )

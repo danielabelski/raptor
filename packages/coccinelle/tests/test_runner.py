@@ -603,6 +603,63 @@ class TestRunRules:
         assert results[0].rule == "a"
         assert results[1].rule == "b"
 
+    def test_on_rule_progress_callback_fires_per_rule_in_order(
+        self, tmp_path,
+    ):
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        for name in ["a.cocci", "b.cocci", "c.cocci"]:
+            (rules_dir / name).write_text(
+                "@r@\nposition p;\n@@\nmalloc@p(...)\n",
+            )
+        target = tmp_path / "test.c"
+        target.write_text("void f() {}\n")
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        seen = []
+        with patch("packages.coccinelle.runner.is_available",
+                   return_value=True), \
+             patch("packages.coccinelle.runner._sandboxed_run",
+                   return_value=mock_proc):
+            results = run_rules(
+                target, rules_dir, env=dict(os.environ),
+                on_rule=lambda i, n, name: seen.append((i, n, name)),
+            )
+
+        assert len(results) == 3
+        assert seen == [(0, 3, "a"), (1, 3, "b"), (2, 3, "c")]
+
+    def test_on_rule_callback_failure_never_costs_the_scan(self, tmp_path):
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "a.cocci").write_text(
+            "@r@\nposition p;\n@@\nmalloc@p(...)\n",
+        )
+        target = tmp_path / "test.c"
+        target.write_text("void f() {}\n")
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_proc.returncode = 0
+
+        def boom(*_a):
+            raise RuntimeError("progress stream gone")
+
+        with patch("packages.coccinelle.runner.is_available",
+                   return_value=True), \
+             patch("packages.coccinelle.runner._sandboxed_run",
+                   return_value=mock_proc):
+            results = run_rules(
+                target, rules_dir, env=dict(os.environ), on_rule=boom,
+            )
+
+        assert len(results) == 1
+
 
 class TestRunRulesBatched:
     def test_empty_list(self):

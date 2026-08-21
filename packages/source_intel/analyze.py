@@ -878,6 +878,7 @@ def analyze(
     rules_dir: Path | None = None,
     timeout_per_rule: int = 180,
     checklist: dict[str, Any] | None = None,
+    progress: Any | None = None,
 ) -> SourceIntelResult:
     """Run shipped source_intel cocci rules against ``target``.
 
@@ -885,6 +886,13 @@ def analyze(
       * spatch not on PATH → ``skipped_reason="spatch_not_available"``
       * target has no C/C++ source → ``skipped_reason="no_c_cpp_source"``
       * shipped rules dir missing → ``skipped_reason="rules_dir_missing"``
+
+    ``progress`` is an optional callback invoked as each rule STARTS:
+    ``progress(done, total, rule_name)`` where ``done`` counts rules
+    already started across ALL axes and ``total`` is the run's full
+    rule count. Each spatch invocation can take minutes on a large C
+    target — without the callback the whole analyze() run is silent.
+    Callback failures are swallowed by the runner.
 
     Returns a :class:`SourceIntelResult` with parsed evidence. Never
     raises — failures collapse to per-rule entries in ``rules_failed``
@@ -961,11 +969,24 @@ def analyze(
     lock_site_observations: list[LockSiteEvidence] = []
     crypto_call_observations: list[CryptoCallEvidence] = []
 
+    # Global rule count across all axes so the progress callback can
+    # report ``done/total`` for the whole run, not per-directory.
+    total_rules = sum(len(list(d.glob("*.cocci"))) for d in rule_dirs)
+    rules_started = 0
+
     # spatch invocation per axis. ``no_includes=True`` matches the
     # existing PR-3 scan + PR-4 prereqs untrusted-target posture;
     # trusted-mode opt-in is a future operator flag.
     for axis_dir in rule_dirs:
         effective_dir, _rules_tmp = _materialize_rules_dir(axis_dir)
+
+        on_rule = None
+        if progress is not None:
+            axis_base = rules_started
+
+            def on_rule(idx, _dir_total, rule_name, _base=axis_base):
+                progress(_base + idx, total_rules, rule_name)
+
         try:
             spatch_results = spatch_run_rules(
                 target=target,
@@ -975,10 +996,12 @@ def analyze(
                 # In-repo shipped source_intel rules (code trust) — their
                 # @script:python reporting blocks are trusted.
                 allow_scripting=True,
+                on_rule=on_rule,
             )
         finally:
             if _rules_tmp is not None:
                 _rules_tmp.cleanup()
+        rules_started += len(list(axis_dir.glob("*.cocci")))
         for result in spatch_results:
             rules_executed.append(result.rule)
             if result.errors:

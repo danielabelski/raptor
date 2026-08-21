@@ -14,7 +14,9 @@ Summary outputs:
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import shutil
 import signal
 import tempfile
@@ -35,6 +37,17 @@ from cve_diff.report import osv_schema
 
 _PER_CVE_TIMEOUT_S = 300  # 5 min. Any upstream-slice clone finishes well under.
 _PACKAGE_DATA_DIR = Path(__file__).resolve().parents[2] / "data"  # packages/cve_diff/data/
+
+# Strict CVE id shape. Sample files are operator-supplied JSON, but the
+# id is interpolated into filenames and a tempdir prefix — a crafted
+# entry must not be able to smuggle path separators or `..` segments.
+_CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
+
+
+def _valid_cve_id(raw: str) -> str | None:
+    """Uppercased id when *raw* is a well-formed CVE id, else None."""
+    candidate = raw.strip().upper()
+    return candidate if _CVE_ID_RE.match(candidate) else None
 
 
 class _PerCveTimeout(Exception):
@@ -512,6 +525,21 @@ def _render_bench_markdown(summary: _BenchSummary) -> str:
     )
 
 
+def _esc(value: str) -> str:
+    """HTML-escape + control-byte-escape one tracker/advisory-influenced
+    string for the HTML report. ``html.escape(quote=True)`` alone still
+    lets raw ANSI escape sequences into the written file (harmless in a
+    browser, terminal-injection when the operator ``cat``s the report —
+    battery variant error-ansi); ``escape_nonprintable`` renders them
+    inert while keeping newlines readable."""
+    from core.security.log_sanitisation import escape_nonprintable
+
+    return html.escape(
+        escape_nonprintable(str(value), preserve_newlines=True),
+        quote=True,
+    )
+
+
 def _render_html(summary: _BenchSummary) -> str:
     pct = 100.0 * summary.passed / summary.total if summary.total else 0.0
     source_hits = sum(1 for r in summary.results if r.ok and r.shape == "source")
@@ -522,11 +550,22 @@ def _render_html(summary: _BenchSummary) -> str:
     for r in summary.results:
         status_cls = "pass" if r.ok else "fail"
         status_text = "PASS" if r.ok else "FAIL"
-        shape_cell = f'<span class="shape-{r.shape}">{r.shape}</span>' if r.shape else ""
+        # Escape EVERY tracker/advisory-influenced string before it
+        # reaches the document. ``r.error`` embeds exception text that
+        # carries the submitted repository_url (hostile OSV/NVD data
+        # passes on an http(s) prefix alone) and LLM surrender
+        # rationale derived from advisory text; ``shape`` also lands
+        # inside a class attribute — quote=True keeps a quoted
+        # attribute unescapable.
+        shape_esc = _esc(r.shape)
+        shape_cell = (
+            f'<span class="shape-{shape_esc}">{shape_esc}</span>'
+            if r.shape else ""
+        )
         detail = (
             f"{r.files_changed} files · {r.diff_bytes:,} B"
             if r.ok
-            else f'<span class="err">{r.error}</span>'
+            else f'<span class="err">{_esc(r.error)}</span>'
         )
         # Pointer consensus + extraction-agreement cells. Both empty
         # for FAIL rows (no bundle to integrity-check).
@@ -543,26 +582,30 @@ def _render_html(summary: _BenchSummary) -> str:
                 "agree": "agree", "partial": "partial",
                 "disagree": "err", "single_source": "partial",
             }.get(r.extraction_agree, "")
+            # Class comes from the fixed lookup table above; only the
+            # text is raw and needs escaping.
             extract_cell = (
-                f'<span class="{extract_cell_cls}">{r.extraction_agree}</span>'
+                f'<span class="{extract_cell_cls}">'
+                f'{_esc(r.extraction_agree)}</span>'
                 if r.extraction_agree else "—"
             )
         else:
             cons_cell = ""
             extract_cell = ""
         rows.append(
-            f'<tr class="{status_cls}"><td>{r.cve_id}</td>'
+            f'<tr class="{status_cls}"><td>{_esc(r.cve_id)}</td>'
             f'<td>{status_text}</td><td>{shape_cell}</td>'
             f'<td>{cons_cell}</td><td>{extract_cell}</td>'
             f'<td>{r.elapsed_s:.1f}s</td><td>{detail}</td></tr>'
         )
     table_rows = "\n".join(rows)
+    sample_esc = _esc(summary.sample)
 
     return f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>cve-diff bench — {summary.sample}</title>
+<title>cve-diff bench — {sample_esc}</title>
 <style>
  body {{ font-family: -apple-system, system-ui, sans-serif; margin: 2rem; }}
  h1 {{ margin-bottom: .2rem; }}
@@ -581,7 +624,7 @@ def _render_html(summary: _BenchSummary) -> str:
 <body>
 <h1>cve-diff bench</h1>
 <div class="meta">
-  sample: <code>{summary.sample}</code><br>
+  sample: <code>{sample_esc}</code><br>
   <strong>{summary.passed}/{summary.total} passed ({pct:.1f}%)</strong> —
   {source_hits} real source fixes,
   {non_source} packaging/notes-only,
@@ -694,7 +737,20 @@ def bench(
                 err=True,
             )
             continue
-        cves.append(c["cve_id"])
+        # The id flows into filenames ({cve_id}.osv.json, {cve_id}.md,
+        # the per-CVE tempdir prefix) — enforce the strict CVE shape
+        # so a crafted sample entry ("../evil", separators, control
+        # bytes) can never traverse out of the output directory.
+        cve_id = _valid_cve_id(c["cve_id"])
+        if cve_id is None:
+            rejected = repr(c["cve_id"])[:60]
+            typer.echo(
+                f"bench: sample {sample} has a malformed cve_id "
+                f"{rejected} — skipping (expected CVE-YYYY-NNNN...)",
+                err=True,
+            )
+            continue
+        cves.append(cve_id)
     if limit > 0:
         cves = cves[:limit]
 

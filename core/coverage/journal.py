@@ -803,3 +803,53 @@ def load_domain_model(
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def domain_model_context(out_dir: Path) -> dict[str, Any] | None:
+    """Current-domain-model view for the context-staleness gate.
+
+    Returns ``{"hash", "canonical", "concepts": {id: [strategies]},
+    "invariant_concept": {inv_id: concept_id}}``, or ``None`` when no
+    domain model exists (or the file is unreadable — no comparison
+    basis either way).
+
+    Resolution order is amendment §3: project-canonical first
+    (``<project>/concepts/``, then legacy ``<project>/``), per-run
+    file last with ``canonical=False``. A per-run hash has no
+    cross-run comparison semantics — the gate must not treat hash
+    equality against it as freshness (safe over-review).
+    """
+    import hashlib
+    candidates = [
+        (out_dir.parent / "concepts" / "domain-model.json", True),
+        (out_dir.parent / "domain-model.json", True),
+        (out_dir / "domain-model.json", False),
+    ]
+    for path, canonical in candidates:
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_bytes()
+            raw = json.loads(content.decode("utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        concepts: dict[str, list[str]] = {}
+        for c in raw.get("concepts") or []:
+            if isinstance(c, dict) and c.get("id"):
+                concepts[c["id"]] = [
+                    s for s in (c.get("related_strategies") or [])
+                    if isinstance(s, str)
+                ]
+        invariant_concept: dict[str, str] = {}
+        for inv in raw.get("invariants") or []:
+            if isinstance(inv, dict) and inv.get("id"):
+                invariant_concept[inv["id"]] = inv.get("concept") or ""
+        return {
+            "hash": hashlib.sha256(content).hexdigest()[:8],
+            "canonical": canonical,
+            "concepts": concepts,
+            "invariant_concept": invariant_concept,
+        }
+    return None

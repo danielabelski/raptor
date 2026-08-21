@@ -8,6 +8,7 @@ from core.coverage.journal import (  # noqa: F401
     ReviewJournalEntry,
     append_entry,
     compute_domain_model_hash,
+    domain_model_context,
     encode_key_file,
     entry_producer,
     flush_journal,

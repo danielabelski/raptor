@@ -483,3 +483,126 @@ class TestFoldDriftFailClosed:
             reuse_sink=sink, current_model="model-a",
         )
         assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+
+def _write_domain_model(project, concepts=None, invariants=None):
+    import json
+    cdir = project / "concepts"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "domain-model.json").write_text(json.dumps({
+        "concepts": concepts or [],
+        "invariants": invariants or [],
+    }), encoding="utf-8")
+
+
+_AUTH_CONCEPT = {
+    "id": "cred_cache_rules",
+    "description": "credential cache invalidation rules",
+    "related_strategies": ["auth"],
+}
+
+
+class TestContextStaleness:
+    """AR-7 domain-model context gate on fold eligibility.
+
+    check_pw's current strategies include ``auth`` (path signal), so a
+    new concept stamped ``related_strategies=["auth"]`` is relevant to
+    it and one stamped ``["aliasing"]`` is not.
+    """
+
+    def _gaps(self, target, project, sink):
+        return compute_gaps(
+            _checklist(target), [], project_dir=project,
+            out_dir=project / "run2",
+            reuse_sink=sink, current_model="model-a",
+        )
+
+    def test_relevant_new_concept_resurfaces(self, tmp_path):
+        target = _write_target(tmp_path)
+        project = _project_with(
+            tmp_path, _entry(target, domain_model_hash="00000000"))
+        _write_domain_model(project, concepts=[_AUTH_CONCEPT])
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+
+    def test_irrelevant_new_concept_stays_reused(self, tmp_path):
+        target = _write_target(tmp_path)
+        project = _project_with(
+            tmp_path, _entry(target, domain_model_hash="00000000"))
+        _write_domain_model(project, concepts=[{
+            "id": "sg_page_ownership",
+            "description": "scatterlist page ownership",
+            "related_strategies": ["aliasing"],
+        }])
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_matching_hash_stays_reused(self, tmp_path):
+        from core.coverage.journal import domain_model_context
+        target = _write_target(tmp_path)
+        project = tmp_path / "project"
+        _write_domain_model(project, concepts=[_AUTH_CONCEPT])
+        current = domain_model_context(project / "run2")["hash"]
+        _project_with(
+            tmp_path, _entry(target, domain_model_hash=current))
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_legacy_entry_without_dm_hash_stays_reused(self, tmp_path):
+        # No knowledge-state evidence → keep historical suppression
+        # (same precedent as source_hash) — no storm on upgrade.
+        target = _write_target(tmp_path)
+        project = _project_with(tmp_path, _entry(target))
+        _write_domain_model(project, concepts=[_AUTH_CONCEPT])
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_concept_already_available_stays_reused(self, tmp_path):
+        target = _write_target(tmp_path)
+        project = _project_with(tmp_path, _entry(
+            target, domain_model_hash="00000000",
+            domain_concepts_available=["cred_cache_rules"],
+        ))
+        _write_domain_model(project, concepts=[_AUTH_CONCEPT])
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_new_invariant_on_known_concept_resurfaces(self, tmp_path):
+        # CopyFail shape: the concept was known at review time, but
+        # the study loop later resolved a NEW invariant under it.
+        target = _write_target(tmp_path)
+        project = _project_with(tmp_path, _entry(
+            target, domain_model_hash="00000000",
+            domain_concepts_available=["cred_cache_rules"],
+            invariants_available=[],
+        ))
+        _write_domain_model(
+            project, concepts=[_AUTH_CONCEPT],
+            invariants=[{"id": "inv_cred_ttl", "concept": "cred_cache_rules"}],
+        )
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+
+    def test_unstamped_concept_is_storm_safe(self, tmp_path):
+        target = _write_target(tmp_path)
+        project = _project_with(
+            tmp_path, _entry(target, domain_model_hash="00000000"))
+        _write_domain_model(project, concepts=[{
+            "id": "legacy_concept", "description": "unstamped",
+        }])
+        sink: dict = {}
+        gaps = self._gaps(target, project, sink)
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)

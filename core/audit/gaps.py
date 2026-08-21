@@ -230,6 +230,17 @@ def compute_gaps(
             logger.debug("strategy inference failed for %s", key, exc_info=True)
             return None
 
+    # Current-domain-model view for the AR-7 context-staleness gate.
+    # Best-effort: absence (no domain model yet, unreadable file)
+    # simply disables the gate for this run.
+    domain_ctx = None
+    if out_dir is not None:
+        try:
+            from .journal import domain_model_context
+            domain_ctx = domain_model_context(Path(out_dir))
+        except Exception:
+            logger.debug("domain-model context load failed", exc_info=True)
+
     _fold_journal_into_covered(
         covered_functions,
         out_dir,
@@ -241,6 +252,7 @@ def compute_gaps(
         current_strategies_fn=_current_strategies,
         current_model=current_model,
         own_run_reuse=own_run_reuse,
+        domain_ctx=domain_ctx,
     )
     file_tool_coverage = _build_file_tool_coverage(coverage_records)
     entry_point_set = extract_context_map_set(context_map, "entry_points")
@@ -1379,6 +1391,7 @@ def _fold_journal_into_covered(
     current_strategies_fn=None,
     current_model: str | None = None,
     own_run_reuse: bool = False,
+    domain_ctx: dict | None = None,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -1449,6 +1462,7 @@ def _fold_journal_into_covered(
                     credits=credits,
                     current_strategies_fn=current_strategies_fn,
                     current_model=current_model,
+                    domain_ctx=domain_ctx,
                     source_label="same-run",
                 )
             else:
@@ -1473,6 +1487,7 @@ def _fold_journal_into_covered(
                 credits=credits,
                 current_strategies_fn=current_strategies_fn,
                 current_model=current_model,
+                domain_ctx=domain_ctx,
             )
         except Exception:
             logger.warning(
@@ -1482,12 +1497,73 @@ def _fold_journal_into_covered(
             )
 
 
+def _context_staleness(
+    entry,
+    key: str,
+    domain_ctx: dict,
+    current_strategies_fn,
+) -> str | None:
+    """AR-7 context-staleness: has the domain model gained knowledge
+    this review lacked AND that is relevant to this function?
+
+    Gate order:
+
+    * legacy entry (no ``domain_model_hash``) — never stale. Absence
+      of evidence keeps the historical suppression, same as the
+      source-hash precedent: resurfacing every pre-gate review at
+      once would be a re-review storm on upgrade.
+    * canonical current model with matching hash — knowledge state
+      unchanged, not stale. A per-run (non-canonical) model's hash
+      has no cross-run semantics (amendment §3), so hash equality
+      against it never counts as fresh and the relevance diff runs.
+    * relevance diff — concepts absent from the entry's
+      ``domain_concepts_available`` (and invariants absent from
+      ``invariants_available``, via their parent concept) whose
+      ``related_strategies`` intersect the function's CURRENT
+      strategies mark the entry stale. Unstamped concepts (empty
+      ``related_strategies``) intersect nothing — storm-safe: the
+      source-hash and strategy-set gates still catch real drift.
+    """
+    entry_hash = getattr(entry, "domain_model_hash", None)
+    if not entry_hash:
+        return None
+    cur_hash = domain_ctx["hash"]
+    if domain_ctx["canonical"] and (
+            cur_hash[:len(entry_hash)] == entry_hash[:len(cur_hash)]):
+        return None
+    current = (
+        current_strategies_fn(key) if current_strategies_fn is not None
+        else None
+    )
+    if not current:
+        return None                      # can't assess relevance
+    cur_set = set(current)
+    concepts_available = set(
+        getattr(entry, "domain_concepts_available", None) or [])
+    relevant = [
+        cid for cid, related in domain_ctx["concepts"].items()
+        if cid not in concepts_available and cur_set & set(related)
+    ]
+    invariants_available = set(
+        getattr(entry, "invariants_available", None) or [])
+    for inv_id, concept_id in domain_ctx["invariant_concept"].items():
+        if inv_id in invariants_available:
+            continue
+        if cur_set & set(domain_ctx["concepts"].get(concept_id, [])):
+            relevant.append(inv_id)
+    if relevant:
+        sample = ", ".join(sorted(relevant)[:3])
+        return f"domain model gained relevant knowledge ({sample})"
+    return None
+
+
 def _reuse_ineligibility(
     entry,
     key: str,
     *,
     current_strategies_fn,
     current_model: str | None,
+    domain_ctx: dict | None = None,
 ) -> str | None:
     """Why a hash-verified prior entry may NOT be imported as a
     reused verdict. ``None`` when it is eligible.
@@ -1510,6 +1586,10 @@ def _reuse_ineligibility(
       strategy landing), the review context materially changed and
       the entry is re-reviewed. Entries without recorded strategies
       (non-gap review paths) only match a currently-empty set.
+    * domain-model context — when the domain model changed since the
+      review AND gained concepts/invariants relevant to this
+      function's current strategies (:func:`_context_staleness`),
+      the review lacked knowledge that could overturn its verdict.
     """
     if getattr(entry, "context_reduced", None):
         return "context_reduced verdict"
@@ -1520,6 +1600,11 @@ def _reuse_ineligibility(
         current = current_strategies_fn(key)
         if current is not None and sorted(entry.strategies or []) != sorted(current):
             return "strategy set changed"
+    if domain_ctx is not None:
+        stale = _context_staleness(
+            entry, key, domain_ctx, current_strategies_fn)
+        if stale is not None:
+            return stale
     return None
 
 
@@ -1533,6 +1618,7 @@ def _fold_project_index(
     credits: dict | None = None,
     current_strategies_fn=None,
     current_model: str | None = None,
+    domain_ctx: dict | None = None,
 ) -> None:
     """Fold the project journal index into ``covered``, hash-aware.
 
@@ -1566,8 +1652,9 @@ def _fold_project_index(
     Eligible entries are both folded into ``covered`` AND placed in
     ``reuse_sink`` (key → entry) so the orchestrator imports the
     prior verdict as a $0 outcome for this run. Ineligible-but-
-    verified entries (reduced-context verdict, model or strategy
-    change) are NOT covered — they resurface for a real re-review.
+    verified entries (reduced-context verdict, model / strategy /
+    domain-model context change) are NOT covered — they resurface
+    for a real re-review.
     With ``reuse_sink=None`` (reuse disabled) verified entries keep
     the plain fold behaviour: suppressed, nothing imported.
     Unverifiable entries are never placed in the sink — reuse
@@ -1591,6 +1678,7 @@ def _fold_project_index(
         credits=credits,
         current_strategies_fn=current_strategies_fn,
         current_model=current_model,
+        domain_ctx=domain_ctx,
         source_label="prior-run",
     )
 
@@ -1606,6 +1694,7 @@ def _verify_entries_fold(
     current_strategies_fn,
     current_model: str | None,
     source_label: str,
+    domain_ctx: dict | None = None,
 ) -> None:
     """Hash-verify journal *entries* and fold them into ``covered``.
 
@@ -1719,6 +1808,7 @@ def _verify_entries_fold(
                     entry, key,
                     current_strategies_fn=current_strategies_fn,
                     current_model=current_model,
+                    domain_ctx=domain_ctx,
                 )
                 if reason is not None:
                     reuse_blocked += 1
@@ -1740,8 +1830,8 @@ def _verify_entries_fold(
     if reuse_blocked:
         logger.info(
             "journal-fold: %d hash-verified %s review(s) not "
-            "reusable (reduced-context / model / strategy change) — "
-            "resurfacing for re-review",
+            "reusable (reduced-context / model / strategy / "
+            "domain-model context change) — resurfacing for re-review",
             reuse_blocked, source_label,
         )
 

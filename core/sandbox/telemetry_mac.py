@@ -312,7 +312,8 @@ def triage_report_fields(report_sha256: str, run: str) -> dict:
 
 def summary_fields(total_denials: int, denials_sha256: str, run: str,
                    corrupt_lines: int = 0,
-                   inode_mismatch: bool = False) -> dict:
+                   inode_mismatch: bool = False,
+                   planted_object: str = "") -> dict:
     """MAC fields for sandbox-summary.json: the denial payload is
     covered by its content hash, so a planted or edited summary fails
     verification even when the headline counters are preserved.
@@ -332,4 +333,6 @@ def summary_fields(total_denials: int, denials_sha256: str, run: str,
         fields["corrupt_lines"] = int(corrupt_lines)
     if inode_mismatch:
         fields["inode_mismatch"] = True
+    if planted_object:
+        fields["planted_object"] = str(planted_object)
     return fields

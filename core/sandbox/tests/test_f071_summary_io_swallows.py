@@ -100,17 +100,19 @@ def test_f071_l349_summarize_read_failure_logs_warning(
     jsonl = tmp_path / ".sandbox-denials.jsonl"
     jsonl.write_text('{"type": "network", "host": "x"}\n', encoding="utf-8")
 
-    # Patch builtins.open inside summary_mod to raise OSError when
-    # reading the renamed tmp.
-    real_open = open
+    # Patch os.open (the F071 fd-based read path) to raise OSError
+    # when opening the renamed tmp. A generic OSError (not ELOOP) is
+    # the host-I/O branch — warn + return None, never tamper-flag.
+    import os as _os
+    real_os_open = _os.open
 
-    def fake_open(path, *args, **kwargs):
+    def fake_os_open(path, *args, **kwargs):
         spath = str(path)
         if ".sandbox-denials.jsonl.summarising" in spath:
             raise OSError("EIO read failed")
-        return real_open(path, *args, **kwargs)
+        return real_os_open(path, *args, **kwargs)
 
-    monkeypatch.setattr("builtins.open", fake_open)
+    monkeypatch.setattr(_os, "open", fake_os_open)
 
     with caplog.at_level(logging.DEBUG, logger="core.sandbox.summary"):
         result = summary_mod.summarize_and_write(tmp_path)

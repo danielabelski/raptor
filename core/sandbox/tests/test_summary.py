@@ -291,6 +291,58 @@ class TestSummarizeAndWrite:
         assert result is not None
         assert result["inode_mismatch"] is True
 
+    def test_planted_fifo_does_not_hang_and_flags_summary(self, tmp_path):
+        """The legacy denials location is target-writable; a planted
+        FIFO used to block summarize_and_write's plain open() forever
+        inside complete_run/fail_run (no writer ever arrives). The
+        O_NONBLOCK+S_ISREG read must return promptly, remove the
+        object, and flag the summary as tampered."""
+        fifo = tmp_path / summary_mod.DENIALS_FILE
+        os.mkfifo(fifo)
+        done = []
+
+        def _run():
+            done.append(summary_mod.summarize_and_write(tmp_path))
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive(), (
+            "summarize_and_write hung on a planted FIFO at the legacy "
+            "denials path"
+        )
+        result = done[0]
+        assert result is not None
+        assert "non-regular" in result["planted_object"]
+        assert result["total_denials"] == 0
+        assert not fifo.exists()
+
+    def test_planted_symlink_not_followed_and_flags_summary(self, tmp_path):
+        """A symlink at the legacy location must not be followed (a
+        /dev/zero target would drive unbounded reads); it reads as a
+        planted object and flags the summary."""
+        target = tmp_path / "attacker-target"
+        target.write_text(
+            json.dumps({"ts": "x", "type": "network", "cmd": "c",
+                        "returncode": 1}) + "\n")
+        link = tmp_path / summary_mod.DENIALS_FILE
+        os.symlink(target, link)
+        result = summary_mod.summarize_and_write(tmp_path)
+        assert result is not None
+        assert result["planted_object"] == "symlink"
+        assert result["total_denials"] == 0  # content never read
+
+    def test_planted_oversized_file_bounded_and_flagged(self, tmp_path,
+                                                        monkeypatch):
+        """Oversized planted JSONL must not be slurped unboundedly."""
+        monkeypatch.setattr(summary_mod, "_MAX_DENIALS_BYTES", 4096)
+        jsonl = tmp_path / summary_mod.DENIALS_FILE
+        jsonl.write_bytes(b"x" * 8192)
+        result = summary_mod.summarize_and_write(tmp_path)
+        assert result is not None
+        assert result["planted_object"].startswith("oversized")
+        assert result["total_denials"] == 0
+
     def test_empty_jsonl_returns_none_and_removes_jsonl(self, tmp_path):
         jsonl = tmp_path / summary_mod.DENIALS_FILE
         jsonl.write_text("")

@@ -56,10 +56,12 @@ provided.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
 import os
+import stat as _stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +111,12 @@ MAX_DENIALS_PER_RUN = 10000
 MAX_CMD_LEN = 2048
 
 _denial_count: int = 0  # reset by set_active_run_dir per run
+
+# Read bound for the denials JSONL. An honest file is capped at
+# MAX_DENIALS_PER_RUN records of well-under-PIPE_BUF lines (~40 MB
+# absolute ceiling, KBs in practice); anything bigger at the
+# target-writable legacy location is a planted object.
+_MAX_DENIALS_BYTES = 64 * 1024 * 1024
 
 
 def set_active_run_dir(run_dir: Path | None) -> None:
@@ -489,47 +497,110 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
 
     records = []
     corrupt_lines = 0
+    planted_object = ""
+    # The legacy fallback location (<run_dir>/.sandbox-denials.jsonl)
+    # is target-writable on every backend, and the rename above moved
+    # whatever OBJECT sat there verbatim — a plain open() on a planted
+    # FIFO blocks complete_run/fail_run forever (no writer ever
+    # arrives), a symlink points the read at attacker-chosen content
+    # (/dev/zero drives unbounded readline growth), an oversized file
+    # exhausts memory. Open O_NOFOLLOW|O_NONBLOCK and require a
+    # regular file within the size bound — the same discipline
+    # triage._read_bounded documents as mandatory for files in this
+    # directory. Object-shape violations are tamper evidence and flag
+    # the summary (never silence); host-I/O read failures keep the
+    # conservative warn-and-return-None path.
+    raw = b""
+    fd = None
     try:
-        with open(tmp, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    # Honest writers emit exactly one JSON object per
-                    # line — a blank/whitespace-only line is what an
-                    # in-place overwrite with spaces (same length,
-                    # same inode, invisible to the inode check) reads
-                    # back as. Count it as corruption, don't skip it
-                    # silently.
-                    corrupt_lines += 1
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    corrupt_lines += 1
-                    continue
-                if not isinstance(record, dict):
-                    corrupt_lines += 1
-                    continue
-                records.append(record)
-    except OSError:
-        # WARNING (F071 W21 promote): we successfully renamed the
-        # JSONL into our private tmp, then failed to read it. This
-        # silently drops the whole summary for the run. Operators
-        # must see it. Mirrors c5a4505 / 8edf0f6 family.
-        logger.warning(
-            "summarize_and_write: failed to read renamed JSONL",
-            exc_info=True,
+        fd = os.open(
+            str(tmp),
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            planted_object = "symlink"
+        else:
+            # WARNING (F071 W21 promote): we successfully renamed the
+            # JSONL into our private tmp, then failed to open it. This
+            # silently drops the whole summary for the run. Operators
+            # must see it. Mirrors c5a4505 / 8edf0f6 family.
+            logger.warning(
+                "summarize_and_write: failed to open renamed JSONL "
+                "for reading",
+                exc_info=True,
+            )
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+    if fd is not None:
         try:
-            tmp.unlink(missing_ok=True)
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode):
+                planted_object = (
+                    f"non-regular file (mode {_stat.S_IFMT(st.st_mode):#o})"
+                )
+            elif st.st_size > _MAX_DENIALS_BYTES:
+                planted_object = f"oversized ({st.st_size} bytes)"
+            else:
+                chunks = []
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if sum(len(c) for c in chunks) > _MAX_DENIALS_BYTES:
+                        planted_object = "grew past the size bound mid-read"
+                        chunks = []
+                        break
+                raw = b"".join(chunks)
         except OSError:
-            # KEEP-SILENT (F071 per-site triage W21): cleanup of a
-            # tmp we may already have lost; missing_ok=True already
-            # suppresses ENOENT.
-            pass
-        return None
+            # See the open() failure branch above.
+            logger.warning(
+                "summarize_and_write: failed to read renamed JSONL",
+                exc_info=True,
+            )
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
-    # tmp file's data is now in memory; remove it.
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            # Honest writers emit exactly one JSON object per line —
+            # a blank/whitespace-only line is what an in-place
+            # overwrite with spaces (same length, same inode,
+            # invisible to the inode check) reads back as. Count it
+            # as corruption, don't skip it silently.
+            corrupt_lines += 1
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            corrupt_lines += 1
+            continue
+        if not isinstance(record, dict):
+            corrupt_lines += 1
+            continue
+        records.append(record)
+
+    # tmp object's data (if any) is now in memory; remove it. Also
+    # removes a planted FIFO/symlink so the run dir finalises clean.
     try:
         tmp.unlink(missing_ok=True)
     except OSError:
@@ -538,7 +609,8 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         # leaves a leftover file but doesn't affect summary output.
         pass
 
-    if not records and not corrupt_lines and not inode_mismatch:
+    if (not records and not corrupt_lines and not inode_mismatch
+            and not planted_object):
         return None
 
     # Verdict split. macOS audit mode records ALLOWED operations too —
@@ -584,7 +656,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         "by_type": by_type,
         "denials": denials,
     }
-    if corrupt_lines or inode_mismatch:
+    if corrupt_lines or inode_mismatch or planted_object:
         # Tamper flags. Corrupt lines mean someone rewrote evidence in
         # place (the inode check cannot see that on the Landlock-only
         # tier, where the run dir is a writable grant and .audit/
@@ -604,19 +676,27 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
             summary["corrupt_lines"] = corrupt_lines
         if inode_mismatch:
             summary["inode_mismatch"] = True
+        if planted_object:
+            summary["planted_object"] = planted_object
+        _details = []
+        if corrupt_lines:
+            _details.append(f"{corrupt_lines} corrupt line(s)")
+        if inode_mismatch:
+            _details.append("evidence-file inode mismatch")
+        if planted_object:
+            _details.append(f"planted object: {planted_object}")
         logger.warning(
-            "SANDBOX EVIDENCE TAMPER SUSPECTED in %s: %d corrupt "
-            "line(s)%s in the denials JSONL — the run's denial "
-            "evidence is untrusted as a whole and the summary is "
-            "flagged for triage.",
-            run_dir, corrupt_lines,
-            " + evidence-file inode mismatch" if inode_mismatch else "",
+            "SANDBOX EVIDENCE TAMPER SUSPECTED in %s: %s — the run's "
+            "denial evidence is untrusted as a whole and the summary "
+            "is flagged for triage.",
+            run_dir, "; ".join(_details),
         )
         _log_security_event(
             "sandbox_evidence_corrupt",
             f"denials evidence corrupt under {run_dir}",
             corrupt_lines=corrupt_lines,
             inode_mismatch=inode_mismatch,
+            planted_object=planted_object,
             surviving_records=len(records),
         )
     if allowed_reports:
@@ -645,7 +725,8 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     ).hexdigest()
     _token = _tmac.mint(_tmac.summary_fields(
         len(denials), _denials_sha, run=_tmac.run_binding(run_dir),
-        corrupt_lines=corrupt_lines, inode_mismatch=inode_mismatch))
+        corrupt_lines=corrupt_lines, inode_mismatch=inode_mismatch,
+        planted_object=planted_object))
     if _token:
         summary["mac"] = _token
 

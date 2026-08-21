@@ -197,7 +197,9 @@ def _verify_summary(
         return None, _INTEGRITY_VERIFIED
     corrupt_lines = summary.get("corrupt_lines", 0)
     inode_mismatch = bool(summary.get("inode_mismatch"))
-    writer_flagged = bool(corrupt_lines) or inode_mismatch
+    planted_object = str(summary.get("planted_object") or "")
+    writer_flagged = (bool(corrupt_lines) or inode_mismatch
+                      or bool(planted_object))
     token = summary.get("mac")
     if not token:
         if not allow_legacy:
@@ -211,6 +213,7 @@ def _verify_summary(
         run=run,
         corrupt_lines=corrupt_lines,
         inode_mismatch=inode_mismatch,
+        planted_object=planted_object,
     )
     if telemetry_mac.verify(fields, token):
         if writer_flagged:

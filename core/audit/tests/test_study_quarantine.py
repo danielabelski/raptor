@@ -209,6 +209,99 @@ class TestReReviewQuarantineAndThreading:
         )
         assert not flips
 
+    def test_each_candidate_gets_its_own_answers(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Regression: with >1 reading-list candidate, every prepared
+        context used to receive the LAST-iterated function's study
+        answers (stale bindings from the candidate-collection loop) —
+        wrong sourced answers shown to the reviewer and wrong receipts
+        threaded into study_receipts. Two consecutive candidates must
+        each get their own."""
+        import core.audit.orchestrator as _orch
+
+        answer_a = _answer()
+        answer_a["question"] = "Does `alpha_dep` validate?"
+        answer_a["source_file"] = "a.py"
+        answer_a["source_function"] = "alpha"
+        answer_a["receipt"]["sha256"] = "aaaa1111"
+
+        answer_b = _answer()
+        answer_b["question"] = "Does `beta_dep` validate?"
+        answer_b["source_file"] = "b.py"
+        answer_b["source_function"] = "beta"
+        answer_b["receipt"]["sha256"] = "bbbb2222"
+
+        (tmp_path / "study-answers.json").write_text(
+            json.dumps({"answers": [answer_a, answer_b]}),
+        )
+        outcomes = [
+            ReviewOutcome(file="a.py", function="alpha",
+                          status="suspicious", body="prior a"),
+            ReviewOutcome(file="b.py", function="beta",
+                          status="suspicious", body="prior b"),
+        ]
+        checklist = {"files": [
+            {"path": "a.py",
+             "functions": [{"name": "alpha", "line_start": 1}]},
+            {"path": "b.py",
+             "functions": [{"name": "beta", "line_start": 1}]},
+        ]}
+        config = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path,
+            sweep_validate_findings=False,
+            enable_session_context=False,
+        )
+        monkeypatch.setattr(
+            _orch, "_build_context",
+            lambda cfg, gap, *a, **kw: {
+                "file": gap["file"], "function": gap["name"],
+            },
+        )
+        monkeypatch.setattr(
+            _orch, "_commit_outcome", lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            _orch, "_record_study_flip", lambda cfg, outcome: None,
+        )
+
+        seen_ctx: list[dict] = []
+
+        def review_fn(ctx, cfg):
+            seen_ctx.append(copy.deepcopy(ctx))
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="",
+                review_result={"status": "clean"},
+            )
+
+        result = OrchestratorResult(outcomes=list(outcomes), suspicious=2)
+        result = _re_review_study_enriched(
+            result, config, review_fn, checklist, None, {},
+            None, set(), {"a.py:alpha", "b.py:beta"}, time.time(), None,
+            max_workers=1,
+        )
+
+        # Each prepared context carries the answers keyed by ITS gap.
+        assert len(seen_ctx) == 2
+        by_fn = {c["function"]: c for c in seen_ctx}
+        assert by_fn["alpha"]["study_answers"][0]["question"] == (
+            "Does `alpha_dep` validate?"
+        )
+        assert by_fn["beta"]["study_answers"][0]["question"] == (
+            "Does `beta_dep` validate?"
+        )
+
+        # And each re-reviewed verdict threads ITS OWN receipts.
+        shas = {
+            o.function: [
+                r["sha256"]
+                for r in o.review_result["study_receipts"]
+            ]
+            for o in result.outcomes
+        }
+        assert shas == {"alpha": ["aaaa1111"], "beta": ["bbbb2222"]}
+
 
 class TestJournalCarriesReceipts:
     def test_entry_field_round_trip(self, tmp_path) -> None:

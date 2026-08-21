@@ -22318,20 +22318,26 @@ def _re_review_study_enriched(
         # Contradiction quarantine: the re-review sees BOTH the
         # original assumption and the sourced study answer (with its
         # receipt and tier) — never a silent substitution.
+        # Keyed by THIS candidate's gap (the stale
+        # file_path/func_name bindings from the candidate-collection
+        # loop above handed every prepared context the LAST-iterated
+        # function's answers — wrong sourced answers shown to the
+        # reviewer, wrong receipts threaded into study_receipts,
+        # _record_study_flip fired off another function's answers).
         if config.out_dir is not None:
             try:
                 from core.concepts.study_answers import (
                     answers_for_function,
                 )
                 sa = answers_for_function(
-                    config.out_dir, file_path, func_name,
+                    config.out_dir, gap["file"], gap["name"],
                 )
                 if sa:
                     ctx["study_answers"] = sa
             except Exception:
                 logger.debug(
                     "study answers load failed for %s:%s",
-                    file_path, func_name, exc_info=True,
+                    gap["file"], gap["name"], exc_info=True,
                 )
         prior_hyps = _prior_hypotheses_for(prior_outcome)
         if prior_hyps:

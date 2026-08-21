@@ -304,3 +304,70 @@ class TestGuardBypassResult:
         r = GuardBypassResult()
         assert not r.is_bypassed()
         assert r.confidence == "structural"
+
+
+class TestPathCapTruncationIsNotCoverage:
+    def test_truncated_with_paths_all_guarded_is_not_coverage(self):
+        """When the path cap truncates enumeration, the first _MAX_PATHS
+        paths all carrying the guard proves nothing about the paths the
+        DFS never enumerated. Pre-fix this returned True ('covered on
+        every path') and lifecycle_checker dropped a missing-guard
+        finding on any function with more than _MAX_PATHS entry-to-read
+        paths — easy to reach in large real code, trivial in crafted
+        code."""
+        from core.analysis.guard_bypass import (
+            _MAX_PATHS,
+            _enumerate_paths,
+        )
+
+        # entry -> guard -> diamond chain (2^k paths) -> read, with a
+        # guard-BYPASSING edge entry -> read that the truncated DFS
+        # (LIFO pops the guarded side first) never reports.
+        n_entry = _FakeNode(1, "entry")
+        n_guard = _FakeNode(2, "If (task->mm != NULL)")
+        adjacency = {}
+        diamonds = []
+        prev = n_guard
+        line = 3
+        for k in range(12):  # 2^12 paths >> _MAX_PATHS
+            a = _FakeNode(line, f"a{k}")
+            b = _FakeNode(line + 1, f"b{k}")
+            join = _FakeNode(line + 2, f"j{k}")
+            adjacency[id(prev)] = [a, b]
+            adjacency[id(a)] = [join]
+            adjacency[id(b)] = [join]
+            diamonds += [a, b, join]
+            prev = join
+            line += 3
+        n_read = _FakeNode(1000, "dumpable = get_dumpable(task)")
+        adjacency[id(prev)] = [n_read]
+        # The bypass edge — placed LAST in entry's successor list so
+        # the stack pops the guarded branch first and the cap hits
+        # before the bypass path is ever enumerated.
+        adjacency[id(n_entry)] = [n_read, n_guard]
+        cfg = _FakeCFG([n_entry, n_guard, *diamonds, n_read], adjacency)
+
+        paths, complete = _enumerate_paths(cfg, n_entry, n_read)
+        # Non-vacuity: the cap really truncated, every enumerated path
+        # carries the guard, and a bypass path exists but was missed.
+        assert not complete
+        assert len(paths) == _MAX_PATHS
+        assert all(2 in p for p in paths)
+
+        assert not check_guard_coverage(cfg, 1000, "task->mm != NULL")
+
+    def test_complete_enumeration_still_reports_coverage(self):
+        n_entry = _FakeNode(1, "entry")
+        n_guard = _FakeNode(2, "If (task->mm != NULL)")
+        n_body = _FakeNode(3, "body")
+        n_exit = _FakeNode(9, "exit")
+        n_read = _FakeNode(4, "dumpable = get_dumpable(task)")
+        cfg = _FakeCFG(
+            [n_entry, n_guard, n_body, n_exit, n_read],
+            {
+                id(n_entry): [n_guard],
+                id(n_guard): [n_body, n_exit],
+                id(n_body): [n_read],
+            },
+        )
+        assert check_guard_coverage(cfg, 4, "task->mm != NULL")

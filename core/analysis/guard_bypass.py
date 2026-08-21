@@ -267,4 +267,12 @@ def check_guard_coverage(
         if not any(line in guard_lines for line in path):
             return False
 
-    return True
+    # Every ENUMERATED path carries the guard — but when the DFS was
+    # truncated (path cap or depth bound), unenumerated or deeper
+    # paths may bypass it. "Covered on every path" is a universal
+    # claim; an incomplete enumeration cannot support it, and the
+    # consumer (lifecycle_checker) DROPS a missing-guard finding on
+    # True. Answer "not covered" so it falls back to its weaker
+    # textual check. Mirrors query()'s confidence degradation and the
+    # truncated-with-zero-paths branch above.
+    return complete

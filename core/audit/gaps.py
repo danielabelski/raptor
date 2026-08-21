@@ -153,6 +153,12 @@ def compute_gaps(
           is_stale, old_annotation (if stale)
     """
     covered_functions = _build_covered_set(coverage_records)
+    # Per-key multiplicity from the hash-verified journal fold: N
+    # verified per-site entries for one file:function key allow N
+    # same-named occurrences to be suppressed (see
+    # _consume_covered_key). Coverage records stay at the historical
+    # one-per-key floor.
+    covered_credits: dict[str, int] = {}
     # Fold LLM review journal into covered_functions. See amendment
     # §7: the coverage store's journal import only fires at run
     # completion, so within a single run compute_gaps has no visibility
@@ -231,6 +237,7 @@ def compute_gaps(
         target_path=Path(target_path_str) if target_path_str else None,
         current_spans=current_spans,
         reuse_sink=reuse_sink,
+        credits=covered_credits,
         current_strategies_fn=_current_strategies,
         current_model=current_model,
         own_run_reuse=own_run_reuse,
@@ -325,7 +332,8 @@ def compute_gaps(
             func_key = make_function_key(file_path, name)
 
             if _consume_covered_key(
-                    covered_functions, consumed_covered, func_key):
+                    covered_functions, consumed_covered, func_key,
+                    credits=covered_credits):
                 continue
 
             # ``checked_by`` on the checklist item was removed under
@@ -1328,7 +1336,12 @@ def _build_covered_set(
     return covered
 
 
-def _consume_covered_key(covered: set, consumed: dict, func_key: str) -> bool:
+def _consume_covered_key(
+    covered: set,
+    consumed: dict,
+    func_key: str,
+    credits: dict | None = None,
+) -> bool:
     """True when ``func_key`` should be suppressed as already covered.
 
     One journal/coverage record used to suppress EVERY same-named
@@ -1337,12 +1350,21 @@ def _consume_covered_key(covered: set, consumed: dict, func_key: str) -> bool:
     was reviewed, so suppress exactly one occurrence per covered key
     and let the rest surface as gaps — over-reviewing an overload
     beats never reviewing it.
+
+    ``credits`` (from the hash-verified journal fold) lifts that
+    one-per-key floor when the journal proves N distinct sites of the
+    same name were reviewed: N verified per-site entries suppress N
+    occurrences. Without it, a resumed run re-buys every same-named
+    sibling (macro redefinitions reviewed 8+ times) on every fold.
     """
     if func_key not in covered:
         return False
+    allowed = 1
+    if credits is not None:
+        allowed = max(1, credits.get(func_key, 1))
     seen = consumed.get(func_key, 0)
     consumed[func_key] = seen + 1
-    return seen == 0
+    return seen < allowed
 
 
 def _fold_journal_into_covered(
@@ -1353,6 +1375,7 @@ def _fold_journal_into_covered(
     target_path: Path | None = None,
     current_spans: dict[str, tuple] | None = None,
     reuse_sink: dict | None = None,
+    credits: dict | None = None,
     current_strategies_fn=None,
     current_model: str | None = None,
     own_run_reuse: bool = False,
@@ -1403,13 +1426,27 @@ def _fold_journal_into_covered(
                 # eligibility screen as the project index. Verified
                 # entries become $0 re-import candidates; drifted
                 # entries resurface for a real re-review.
-                from .journal import latest_entries
+                # Per-SITE latest, not per-key latest: same-named
+                # items (macro redefinitions, C++ overloads) journal
+                # one entry per line span under a shared
+                # file:function key. latest_entries() would collapse
+                # them to one arbitrary site, dropping the coverage
+                # credit for its siblings and re-buying their reviews
+                # on every resume.
+                from .journal import load_entries
+                per_site: dict[tuple, Any] = {}
+                for _e in load_entries(out_dir):
+                    _k = (_e.file, _e.function, _e.line_start)
+                    _prev = per_site.get(_k)
+                    if _prev is None or _e.ts > _prev.ts:
+                        per_site[_k] = _e
                 _verify_entries_fold(
                     covered,
-                    list(latest_entries(out_dir).values()),
+                    list(per_site.values()),
                     target_path=target_path,
                     current_spans=current_spans or {},
                     reuse_sink=reuse_sink,
+                    credits=credits,
                     current_strategies_fn=current_strategies_fn,
                     current_model=current_model,
                     source_label="same-run",
@@ -1433,6 +1470,7 @@ def _fold_journal_into_covered(
                 target_path=target_path,
                 current_spans=current_spans or {},
                 reuse_sink=reuse_sink,
+                credits=credits,
                 current_strategies_fn=current_strategies_fn,
                 current_model=current_model,
             )
@@ -1492,6 +1530,7 @@ def _fold_project_index(
     target_path: Path | None,
     current_spans: dict[str, tuple],
     reuse_sink: dict | None = None,
+    credits: dict | None = None,
     current_strategies_fn=None,
     current_model: str | None = None,
 ) -> None:
@@ -1549,6 +1588,7 @@ def _fold_project_index(
         target_path=target_path,
         current_spans=current_spans,
         reuse_sink=reuse_sink,
+        credits=credits,
         current_strategies_fn=current_strategies_fn,
         current_model=current_model,
         source_label="prior-run",
@@ -1562,6 +1602,7 @@ def _verify_entries_fold(
     target_path: Path | None,
     current_spans: dict[str, tuple],
     reuse_sink: dict | None,
+    credits: dict | None = None,
     current_strategies_fn,
     current_model: str | None,
     source_label: str,
@@ -1586,16 +1627,35 @@ def _verify_entries_fold(
     """
     from .journal import is_function_grade
 
+    def _credit(key: str) -> None:
+        covered.add(key)
+        if credits is not None:
+            credits[key] = credits.get(key, 0) + 1
+
     to_verify: dict[str, list] = {}
     for entry in entries:
         if entry.verdict == "error" or not is_function_grade(entry):
             continue
         key = f"{entry.file}:{entry.function}"
-        span = current_spans.get(key)
-        if not entry.source_hash or target_path is None or span is None:
-            covered.add(key)
+        # Candidate spans, tried in order — a match on ANY verifies:
+        # * the entry's OWN recorded span: same-named items (macro
+        #   redefinitions, C++ overloads) live at different spans
+        #   under one file:function key, and checking only a
+        #   sibling's span from current_spans reads as permanent
+        #   false staleness that re-buys the same reviews every fold;
+        # * the checklist's CURRENT span: an unchanged function that
+        #   merely moved down the file verifies there.
+        spans = []
+        if getattr(entry, "line_start", None):
+            spans.append(
+                (entry.line_start, entry.line_end or entry.line_start))
+        cur = current_spans.get(key)
+        if cur is not None and cur not in spans:
+            spans.append(cur)
+        if not entry.source_hash or target_path is None or not spans:
+            _credit(key)
             continue
-        to_verify.setdefault(entry.file, []).append((entry, key, span))
+        to_verify.setdefault(entry.file, []).append((entry, key, spans))
 
     if not to_verify:
         return
@@ -1620,15 +1680,24 @@ def _verify_entries_fold(
                     key, source_label,
                 )
             continue
-        hashes = hash_spans(resolved, [span for _, _, span in items])
-        for (entry, key, _span), current in zip(items, hashes):
+        flat_spans: list[tuple] = []
+        span_counts: list[int] = []
+        for _entry, _key, entry_spans in items:
+            span_counts.append(len(entry_spans))
+            flat_spans.extend(entry_spans)
+        all_hashes = hash_spans(resolved, flat_spans)
+        hash_idx = 0
+        for (entry, key, entry_spans), n_spans in zip(items, span_counts):
+            candidates = all_hashes[hash_idx:hash_idx + n_spans]
+            hash_idx += n_spans
             stored = entry.source_hash
-            if not current:
-                # Empty current hash = the recorded span no longer
-                # exists in the file (out of range) or the file is
-                # unreadable. Pre-fix the falsy hash slipped the
-                # prefix-compare and the stale verdict was reused as
-                # hash-verified at $0. Treat as drift.
+            computable = [h for h in candidates if h]
+            if not computable:
+                # Every candidate span unverifiable: the recorded span
+                # no longer exists in the file (out of range) or the
+                # file is unreadable. Pre-fix the falsy hash slipped
+                # the prefix-compare and the stale verdict was reused
+                # as hash-verified at $0. Treat as drift.
                 stale += 1
                 logger.debug(
                     "journal-fold: %s span unverifiable since %s "
@@ -1636,12 +1705,13 @@ def _verify_entries_fold(
                     key, source_label, stored,
                 )
                 continue
-            if current[:len(stored)] != stored[:len(current)]:
+            if not any(
+                    h[:len(stored)] == stored[:len(h)] for h in computable):
                 stale += 1
                 logger.debug(
                     "journal-fold: %s changed since %s review "
                     "(hash %s → %s) — resurfacing as gap",
-                    key, source_label, stored, current,
+                    key, source_label, stored, computable[0],
                 )
                 continue
             if reuse_sink is not None:
@@ -1659,7 +1729,7 @@ def _verify_entries_fold(
                     )
                     continue
                 reuse_sink.setdefault(key, entry)
-            covered.add(key)
+            _credit(key)
 
     if stale:
         logger.info(

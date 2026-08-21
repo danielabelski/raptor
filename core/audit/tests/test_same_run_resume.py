@@ -249,3 +249,95 @@ class TestPriorSegmentLedger:
         ledger = PhaseCostLedger()
         ledger.record_call("review", cost_usd=1.0)
         assert "segments" not in ledger.to_dict()
+
+
+_MACRO_SOURCE = """\
+#define SSHINT(x) ((x) + 1)
+int a;
+#define SSHINT(x) ((x) + 2)
+int b;
+"""
+
+_SITE_1 = {"name": "SSHINT", "kind": "macro", "line_start": 1, "line_end": 1}
+_SITE_2 = {"name": "SSHINT", "kind": "macro", "line_start": 3, "line_end": 3}
+
+
+def _macro_target(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+    (target / "conf.c").write_text(_MACRO_SOURCE, encoding="utf-8")
+    return target
+
+
+def _macro_checklist(target):
+    return {
+        "target_path": str(target),
+        "files": [{
+            "path": "conf.c",
+            "language": "c",
+            "items": [dict(_SITE_1), dict(_SITE_2)],
+        }],
+    }
+
+
+def _site_entry(target, site, strategies):
+    return ReviewJournalEntry(
+        ts=now_iso(),
+        run_id="run1",
+        file="conf.c",
+        function="SSHINT",
+        verdict="clean",
+        source_hash=hash_span(
+            target / "conf.c", site["line_start"], site["line_end"]),
+        line_start=site["line_start"],
+        line_end=site["line_end"],
+        strategies=strategies,
+        model="model-a",
+        body="segment-1 review body",
+    )
+
+
+class TestSameNamedSitesFold:
+    """Same-named items at different spans (macro redefinitions, C++
+    overloads) share one file:function key. The resume fold must
+    credit each hash-verified SITE, or every sibling beyond the first
+    is re-bought on every resume — the infinite re-review cycle."""
+
+    def _strategies(self):
+        return sorted(strategies_from_item(dict(_SITE_1), "conf.c"))
+
+    def test_all_journaled_sites_stay_covered(self, tmp_path):
+        target = _macro_target(tmp_path)
+        strategies = self._strategies()
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir(exist_ok=True)
+        for site in (_SITE_1, _SITE_2):
+            append_entry(run_dir, _site_entry(target, site, strategies))
+
+        sink: dict = {}
+        gaps = compute_gaps(
+            _macro_checklist(target), [], out_dir=run_dir,
+            reuse_sink=sink, own_run_reuse=True,
+        )
+        leftover = [g for g in gaps if g["name"] == "SSHINT"]
+        assert leftover == [], (
+            "both sites carry hash-verified reviews at their own spans "
+            "— resurfacing either re-buys an already-paid review"
+        )
+
+    def test_unreviewed_same_named_site_still_surfaces(self, tmp_path):
+        target = _macro_target(tmp_path)
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir(exist_ok=True)
+        append_entry(
+            run_dir, _site_entry(target, _SITE_1, self._strategies()))
+
+        gaps = compute_gaps(
+            _macro_checklist(target), [], out_dir=run_dir,
+            reuse_sink={}, own_run_reuse=True,
+        )
+        leftover = [g for g in gaps if g["name"] == "SSHINT"]
+        assert len(leftover) == 1, (
+            "one verified review must suppress exactly one same-named "
+            "site; the unreviewed sibling stays a gap"
+        )

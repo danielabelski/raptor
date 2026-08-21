@@ -1531,6 +1531,16 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
                 # Bedrock host leaves it credential-starved otherwise.
                 env=cc_subprocess_env(mint_aws_credentials=True),
                 use_egress_proxy=True,
+                # The CC child reads the UNTRUSTED repo (add_dirs +
+                # Read/Grep/Glob) and its prompt embeds untrusted
+                # compiler stderr — repo content can steer what the
+                # child does, so this is repo-influenced egress and
+                # must use the netns tier (00015 doctrine, same as
+                # the sca agent's CC dispatches). On a netns-less
+                # host the SandboxSetupError is swallowed by this
+                # method's except handler and flag inference is
+                # skipped rather than run through the weaker tier.
+                require_proxy_netns=True,
                 proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
                 caller_label="codeql-build-detect",
                 input=prompt, capture_output=True, text=True, timeout=180,

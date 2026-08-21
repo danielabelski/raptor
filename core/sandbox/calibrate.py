@@ -291,6 +291,15 @@ def _spawn_probe(
         # binary should ever actually reach. The placeholder isn't
         # an allowlist for the probe — audit_log_only sees through
         # it — but it satisfies the API contract.
+        # require_proxy_netns is deliberately NOT set here: the
+        # probe binary is operator-designated and trusted (codeql,
+        # claude, ...), and nothing from a scanned repo reaches this
+        # execution. Calibration is MEASUREMENT, not containment —
+        # audit_log_only already lets every CONNECT through by
+        # design, so the netns tier adds no enforcement here and
+        # requiring it would only make calibration fail on
+        # netns-less hosts (00015 requires the netns tier only for
+        # repo-influenced egress).
         result = sandbox_run(
             [str(bin_path)] + list(probe_args),
             target=str(scratch_path),

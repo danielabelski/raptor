@@ -552,6 +552,22 @@ class QueryRunner:
                         return sandbox_run(
                             [self.codeql_cli, "pack", "download", pack_name],
                             use_egress_proxy=True,
+                            # The pack name is parsed out of `codeql
+                            # analyze` stderr over a database built
+                            # from the UNTRUSTED repo (in-repo query
+                            # packs included), so the child's argv is
+                            # repo-influenced. Require the netns
+                            # egress tier: on a host where only the
+                            # port-scoped Landlock fallback is
+                            # available, a direct connect on the
+                            # proxy port would bypass the hostname
+                            # allowlist (00015 doctrine — untrusted
+                            # egress must use the netns tier).
+                            # SandboxSetupError is caught by this
+                            # method's handler; the analysis then
+                            # fails with a clear reason instead of
+                            # downloading through the weaker tier.
+                            require_proxy_netns=True,
                             # Hostname allowlist auto-discovered from
                             # the calibrated profile when present
                             # (catches enterprise GHE redirect to
@@ -1117,6 +1133,16 @@ class QueryRunner:
                 from packages.codeql.codeql_proxy_hosts import (
                     proxy_hosts_for_codeql,
                 )
+                # require_proxy_netns is deliberately NOT set here:
+                # the child is the trusted codeql binary and its argv
+                # / fetch set are RAPTOR-pinned (pack_dir is the
+                # RAPTOR-shipped pack root; the dependency list comes
+                # from our committed codeql-pack.lock.yml, not from
+                # the scanned repo). Nothing the target repo controls
+                # reaches this execution, so the port-scoped Landlock
+                # fallback tier is an acceptable degradation for the
+                # first-run dep fetch (00015 requires the netns tier
+                # only for repo-influenced egress).
                 install_proc = sandbox_run(
                     [self.codeql_cli, "pack", "install", str(pack_dir)],
                     use_egress_proxy=True,

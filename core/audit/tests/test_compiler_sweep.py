@@ -515,3 +515,100 @@ class TestIntegration:
     def test_tier_counters_have_compiler(self):
         from core.audit.orchestrator import _make_tier_counters
         assert "compiler" in _make_tier_counters()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic-suppression forgery (refutation is repo-steerable)
+# ---------------------------------------------------------------------------
+
+
+class TestSuppressionWitness:
+    def test_pragma_ignored_detected(self):
+        assert compiler_sweep._suppression_witness(
+            '#pragma GCC diagnostic ignored "-Wanalyzer-use-after-free"\n'
+            "int f(void) { return 0; }\n",
+        )
+
+    def test_clang_pragma_detected(self):
+        assert compiler_sweep._suppression_witness(
+            '#pragma clang diagnostic ignored "-Wall"\nint x;\n',
+        )
+
+    def test_system_header_pragma_detected(self):
+        assert compiler_sweep._suppression_witness(
+            "#pragma GCC system_header\nint x;\n",
+        )
+
+    def test_underscore_pragma_operator_detected(self):
+        # The payload lives in a string literal (blanked by the
+        # sanitized view) — the operator token alone is the witness.
+        assert compiler_sweep._suppression_witness(
+            '_Pragma("GCC diagnostic ignored \\"-Wall\\"")\nint x;\n',
+        )
+
+    def test_analyzer_detection_macro_detected(self):
+        assert compiler_sweep._suppression_witness(
+            "#ifndef __clang_analyzer__\nvoid evil(void);\n#endif\n",
+        )
+
+    def test_prose_mentions_are_inert(self):
+        # Comments and string literals must NOT disqualify: honest
+        # code often documents pragmas.
+        assert not compiler_sweep._suppression_witness(
+            "/* #pragma GCC diagnostic ignored would be wrong */\n"
+            'const char *s = "#pragma clang diagnostic ignored";\n'
+            "// __clang_analyzer__ is defined under clang --analyze\n"
+            "int f(void) { return 0; }\n",
+        )
+
+
+@needs_compiler
+class TestSuppressionForgery:
+    def test_pragma_suppressed_silence_cannot_refute(
+        self, tmp_path, sandbox_spy,
+    ):
+        # Regression PoC: a real UAF preceded by the family-suppressing
+        # pragma compiles clean (rc 0, zero family diagnostics) — the
+        # old code minted a mechanical 'refuted' receipt for a live
+        # bug. Suppression in the TU must fail toward unknown.
+        target = tmp_path / "repo"
+        target.mkdir()
+        (target / "poc.c").write_text(
+            '#pragma GCC diagnostic ignored '
+            '"-Wanalyzer-use-after-free"\n'
+            "#include <stdlib.h>\n"
+            "int f(void){char *p=malloc(8); if(!p) return 0; "
+            "free(p); return p[0];}\n",
+        )
+        result = run_compiler_analyzer_sweep(
+            target_path=target,
+            file_path="poc.c",
+            function_name="f",
+            hypothesis="use-after-free of `p` in f",
+            cwe="CWE-416",
+            out_dir=tmp_path / "out",
+        )
+        assert result.outcome != "refuted", result.to_dict()
+        if result.outcome == "inconclusive":
+            assert result.details.get("suppression_witness")
+
+    def test_clean_tu_with_prose_mentions_still_refutes(
+        self, tmp_path, sandbox_spy,
+    ):
+        # Genuine refutations survive: comment prose naming pragmas
+        # is blanked by the sanitized view.
+        target = tmp_path / "repo"
+        target.mkdir()
+        (target / "ok.c").write_text(
+            "/* never add #pragma GCC diagnostic ignored here */\n"
+            "int f(int y){ return y + 1; }\n",
+        )
+        result = run_compiler_analyzer_sweep(
+            target_path=target,
+            file_path="ok.c",
+            function_name="f",
+            hypothesis="use-after-free of `y` in f",
+            cwe="CWE-416",
+            out_dir=tmp_path / "out",
+        )
+        assert result.outcome == "refuted", result.to_dict()

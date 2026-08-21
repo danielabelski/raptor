@@ -355,6 +355,27 @@ def _derive_include_dirs(target_path: Path, file_dir: Path) -> list[str]:
 # Hypothesis identifier extraction (negative control)
 # ---------------------------------------------------------------------------
 
+# Diagnostic-suppression witness: any of these in the analysed TU
+# means analyzer silence is repo-steerable, so it cannot refute. The
+# scan runs on the sanitized view (a pragma spelled inside a comment
+# or string literal is inert and must not disqualify) — except
+# ``_Pragma``, whose payload lives in a string literal by definition,
+# so the operator token alone is the witness.
+_DIAG_SUPPRESSION_RE = re.compile(
+    r"#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored"
+    r"|#\s*pragma\s+GCC\s+system_header"
+    r"|\b_Pragma\s*\("
+    r"|\b__clang_analyzer__\b",
+)
+
+
+def _suppression_witness(source_text: str) -> str:
+    """First diagnostic-suppression construct in the TU, or ''."""
+    from .source_view import sanitized_view
+    m = _DIAG_SUPPRESSION_RE.search(sanitized_view(source_text, "tu.c"))
+    return m.group(0).strip() if m else ""
+
+
 _MARKED_ID_RE = re.compile(r"[`'\"]([A-Za-z_]\w*)[`'\"]")
 _WORD_RE = re.compile(r"[A-Za-z_]\w*")
 
@@ -816,6 +837,25 @@ def run_compiler_analyzer_sweep(
             return result
 
         if spec.reliable:
+            # Refutation = analyzer silence on an ATTACKER-AUTHORED
+            # TU. Silence is forgeable: '#pragma GCC diagnostic
+            # ignored "-Wanalyzer-use-after-free"' suppresses the
+            # family diagnostic with rc 0, and '#ifndef
+            # __clang_analyzer__' compiles a clean variant under
+            # clang --analyze. Any suppression construct in the TU
+            # fails toward "unknown" — never toward refuted.
+            suppression = _suppression_witness(source_text)
+            if suppression:
+                details["suppression_witness"] = suppression
+                result = _inconclusive(
+                    file_path, function_name,
+                    f"diagnostic-suppression construct in the TU "
+                    f"({suppression}) — analyzer silence is not "
+                    f"evidence; cannot refute",
+                    details=details,
+                )
+                result.raw_output = raw
+                return result
             return SweepResult(
                 tool="compiler",
                 file_path=file_path,

@@ -1457,7 +1457,34 @@ VERDICT_MAP = {
 }
 
 
+def _derive_verdict_from_source(feasibility):
+    """Mechanical source-analysis verdict derivation — mirrors
+    ``ValidationPipeline._derive_verdict_from_source`` in
+    packages/exploitability_validation/orchestrator.py."""
+    chain_breaks = feasibility.get("chain_breaks", [])
+    what_would_help = feasibility.get("what_would_help", [])
+    preconditions = feasibility.get("preconditions", [])
+    if chain_breaks and what_would_help:
+        verdict = "difficult"
+    elif chain_breaks and not what_would_help:
+        verdict = "unlikely"
+    elif not chain_breaks and what_would_help:
+        verdict = "difficult"
+    else:
+        verdict = "likely_exploitable"
+    if preconditions and verdict == "likely_exploitable":
+        verdict = "difficult"
+    return verdict
+
+
 def prepare_F(workdir, target=None):
+    from core.witness.provenance import (
+        FEASIBILITY_TIER_STATUSES,
+        sanitise_findings_evidence,
+        stamp_feasibility,
+        verify_feasibility,
+    )
+
     merged_e = _apply_stage_file(workdir, "E")
     # Stage E may have been skipped (no memory-corruption findings).
     # Merge stage-d.json here so the ruling data is not lost.
@@ -1465,6 +1492,41 @@ def prepare_F(workdir, target=None):
         print("  (Stage E skipped — merged stage-d.json directly)")
 
     data = _findings(workdir)
+
+    # --- Evidence-tier chokepoint (witness/verdict provenance) ---
+    # The stage files merged above are LLM-authored: a forged
+    # witness_execution record or a pre-set {status:"analyzed",
+    # verdict:"exploitable"} feasibility would ride the VERDICT_MAP
+    # below straight into final_status + is_exploitable (and from
+    # there into the report and the scorecard back-prop). Only records
+    # stamped by a mechanical stage (raptor-run-feasibility, the
+    # orchestrator's Stage E, the witness stage) keep mechanical
+    # weight; everything else is demoted, then RE-DERIVED here,
+    # mechanically, from the source-analysis fields.
+    stats = sanitise_findings_evidence(data, workdir)
+    if any(stats.values()):
+        print(
+            f"  provenance: demoted unverified evidence claims "
+            f"(witness {stats['witness_stripped']}, feasibility "
+            f"{stats['feasibility_demoted']}, final_status "
+            f"{stats['final_status_demoted']})"
+        )
+    for finding in data.get("findings", []):
+        feas = finding.get("feasibility")
+        if not isinstance(feas, dict) or feas.get("verdict"):
+            continue
+        if feas.get("status") not in ("", "pending"):
+            continue
+        if not (feas.get("chain_breaks") or feas.get("what_would_help")):
+            continue
+        ruling = finding.get("ruling") or {}
+        if ruling.get("status") not in ("confirmed", "exploitable"):
+            continue
+        verdict = _derive_verdict_from_source(feas)
+        feas["status"] = "analyzed"
+        feas["verdict"] = verdict
+        stamp_feasibility(finding, feas, workdir)
+        print(f"  {finding.get('id', '?')}: source-derived verdict {verdict}")
 
     # --- Verdict-to-status mapping ---
     for finding in data.get("findings", []):
@@ -1488,7 +1550,16 @@ def prepare_F(workdir, target=None):
         fs = finding.get("final_status", "")
         status = finding.get("status", "")
         if status and (not fs or fs in PRE_RULING_STATUSES):
-            finding["final_status"] = status
+            # The status→final_status fallback must not launder a
+            # pre-set exploitable-family `status`: those tiers are
+            # only reachable through a verified feasibility verdict
+            # (the mapping loop above already set final_status for
+            # every such finding).
+            if status in FEASIBILITY_TIER_STATUSES and not verify_feasibility(
+                    finding, workdir):
+                finding["final_status"] = "confirmed_unverified"
+            else:
+                finding["final_status"] = status
 
     # --- Derive is_exploitable from final_status ---
     # likely_exploitable counts as exploitable for downstream

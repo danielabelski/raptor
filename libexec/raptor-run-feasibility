@@ -146,6 +146,7 @@ def main():
 
             # Update findings with feasibility data
             by_id = {f.get("id"): f for f in findings_data.get("findings", []) if f.get("id")}
+            from core.witness.provenance import stamp_feasibility
             for assessment in mapped:
                 finding = by_id.get(assessment.finding_id)
                 if finding:
@@ -164,6 +165,12 @@ def main():
                             for p in (assessment.exploitation_paths or [])
                         ],
                     }
+                    # Mechanical-provenance stamp: consumers (prepare_F,
+                    # the report chokepoint) verify this before mapping
+                    # the verdict into final_status — an unstamped
+                    # "analyzed" record is demoted as LLM-authored.
+                    stamp_feasibility(
+                        finding, finding["feasibility"], findings_path.parent)
                     finding["stage_e_summary"] = {
                         "verdict": assessment.verdict,
                         "binary_path": binary_path,

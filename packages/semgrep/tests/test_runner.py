@@ -452,6 +452,103 @@ class TestConfigToName:
 #     narrower allowlist.
 #   * 6-second wall per test (real semgrep invocation) is integration
 #     territory, not unit-test cadence.
+class TestErrorTruth:
+    """Engine failure must never read as verified silence (U14-F3).
+
+    Pre-fix, run_rule hardcoded errors=[] on every completed run —
+    an rc=7 invalid rule or an rc=2 crash was indistinguishable from
+    a clean no-match scan, so every fail-closed consumer branch
+    (sweep error outcome, synthesis dual/fix-mutant controls) was
+    dead code for semgrep.
+    """
+
+    def _run_with(self, tmp_path, returncode, stderr="", json_errors=None):
+        target = tmp_path / "src"
+        target.mkdir(exist_ok=True)
+        json_output = _make_json_output(errors=json_errors or [])
+
+        def runner(cmd, **kwargs):
+            if "--json-output" in cmd:
+                idx = cmd.index("--json-output")
+                Path(cmd[idx + 1]).write_text(json_output)
+            return MagicMock(stdout="", stderr=stderr, returncode=returncode)
+
+        with patch("packages.semgrep.runner.is_available", return_value=True):
+            return run_rule(target, "rules.yaml", subprocess_runner=runner)
+
+    def test_rc7_invalid_rule_populates_errors(self, tmp_path):
+        result = self._run_with(tmp_path, returncode=7)
+        assert result.errors
+        assert "code 7" in result.errors[0]
+        assert not result.ok
+
+    def test_rc_error_includes_stderr_tail(self, tmp_path):
+        result = self._run_with(
+            tmp_path, returncode=2, stderr="fatal: semgrep-core crashed\n",
+        )
+        assert any("semgrep-core crashed" in e for e in result.errors)
+        assert not result.ok
+
+    @pytest.mark.parametrize("rc", [2, 3, 4, 7, 13, 128])
+    def test_every_nonzero_rc_outside_findings_contract_errors(
+        self, tmp_path, rc,
+    ):
+        # 0 = clean, 1 = findings (with --error). Everything else is a
+        # real failure and must surface a non-empty errors list.
+        result = self._run_with(tmp_path, returncode=rc)
+        assert result.errors, f"rc={rc} read as verified silence"
+        assert not result.ok
+
+    def test_real_error_array_parsed_into_errors(self, tmp_path):
+        result = self._run_with(
+            tmp_path, returncode=7,
+            json_errors=[
+                {"code": 4, "level": "error",
+                 "type": "InvalidRuleSchemaError",
+                 "short_msg": "Invalid rule schema"},
+            ],
+        )
+        assert any("InvalidRuleSchemaError" in e for e in result.errors)
+        assert not result.ok
+
+    def test_clean_run_keeps_errors_empty(self, tmp_path):
+        result = self._run_with(tmp_path, returncode=0)
+        assert result.errors == []
+        assert result.ok
+
+    def test_findings_rc1_keeps_errors_empty(self, tmp_path):
+        result = self._run_with(tmp_path, returncode=1)
+        assert result.errors == []
+        assert result.ok
+
+
+@pytest.mark.skipif(not is_available(), reason="semgrep not installed")
+class TestErrorTruthLive:
+    """Real-semgrep regression for the errors=[] hardcode: a
+    deliberately-invalid rule must produce an error result, never
+    verified silence. Runs the real binary (trusted local fixtures,
+    hence unsandboxed=True)."""
+
+    def test_invalid_rule_reports_error_not_silence(self, tmp_path):
+        rule = tmp_path / "invalid.yaml"
+        rule.write_text(
+            "rules:\n"
+            "  - id: deliberately.invalid\n"
+            "    message: x\n"
+            "    languages: [python]\n"
+            "    severity: ERROR\n"
+            "    patterns-oops: [x]\n",
+            encoding="utf-8",
+        )
+        target = tmp_path / "t.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        result = run_rule(target, str(rule), timeout=120, unsandboxed=True)
+        assert result.returncode not in (0, 1)
+        assert result.errors, "invalid rule read as verified silence"
+        assert not result.ok
+        assert result.findings == []
+
+
 # Opt-in with ``pytest -m integration``.
 @pytest.mark.integration
 @pytest.mark.skipif(not is_available(), reason="semgrep not installed")

@@ -209,3 +209,50 @@ class TestParseJsonOutput:
     def test_non_dict_root(self):
         out = parse_json_output("[]")
         assert out["files_examined"] == []
+
+    def test_error_level_entries_rendered_into_errors(self):
+        # Real payload shape from `semgrep scan --config <invalid rule>`
+        # (rc=7): rule-schema entries carry long_msg/short_msg, the
+        # summary entry carries message.
+        text = json.dumps({
+            "errors": [
+                {"code": 4, "level": "error",
+                 "type": "InvalidRuleSchemaError",
+                 "long_msg": "'patterns-oops' is not valid",
+                 "short_msg": "Invalid rule schema"},
+                {"code": 7, "level": "error", "type": "SemgrepError",
+                 "message": "invalid configuration file found "
+                            "(1 configs were invalid)"},
+            ],
+        })
+        out = parse_json_output(text)
+        assert len(out["errors"]) == 2
+        assert "InvalidRuleSchemaError: 'patterns-oops' is not valid" \
+            in out["errors"][0]
+        assert "SemgrepError: invalid configuration file found" \
+            in out["errors"][1]
+
+    def test_warn_level_entries_stay_out_of_errors(self):
+        # Per-file parse warnings must not read as engine failure —
+        # they land in files_failed (when path-bearing) only.
+        text = json.dumps({
+            "errors": [
+                {"level": "warn", "type": "PartialParsing",
+                 "path": "broken.py", "message": "parse skip"},
+            ],
+        })
+        out = parse_json_output(text)
+        assert out["errors"] == []
+        assert out["files_failed"] == [
+            {"path": "broken.py", "reason": "parse skip"},
+        ]
+
+    def test_entry_without_level_defaults_to_error(self):
+        # Fail-closed default: an errors[] entry with no level field
+        # is treated as error-grade.
+        text = json.dumps({"errors": [{"message": "boom"}]})
+        out = parse_json_output(text)
+        assert out["errors"] == ["error: boom"]
+
+    def test_empty_input_has_errors_key(self):
+        assert parse_json_output("")["errors"] == []

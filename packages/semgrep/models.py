@@ -154,8 +154,15 @@ def parse_sarif(text: str) -> List[SemgrepFinding]:
 def parse_json_output(text: str) -> Dict[str, Any]:
     """Parse Semgrep's --json-output content for paths.scanned, errors, version.
 
-    Returns a dict with keys: files_examined, files_failed, semgrep_version.
-    Empty/malformed input returns empty values rather than raising.
+    Returns a dict with keys: files_examined, files_failed,
+    semgrep_version, errors. Empty/malformed input returns empty values
+    rather than raising.
+
+    ``errors`` carries the rendered error-level entries of semgrep's
+    real ``errors`` array (InvalidRuleSchemaError, SemgrepError, fatal
+    per-file failures). Warn-level entries stay out of ``errors`` —
+    they land in ``files_failed`` (when path-bearing) so a large scan
+    with a few unparseable files is not reported as an engine failure.
     """
     import json
 
@@ -163,6 +170,7 @@ def parse_json_output(text: str) -> Dict[str, Any]:
         "files_examined": [],
         "files_failed": [],
         "semgrep_version": "",
+        "errors": [],
     }
     if not text or not text.strip():
         return out
@@ -183,6 +191,28 @@ def parse_json_output(text: str) -> Dict[str, Any]:
         for e in errors
         if isinstance(e, dict) and e.get("path")
     ]
+    out["errors"] = [
+        _render_error(e)
+        for e in errors
+        if isinstance(e, dict)
+        and str(e.get("level", "error")).lower() in ("error", "fatal")
+    ]
 
     out["semgrep_version"] = str(data.get("version", ""))
     return out
+
+
+def _render_error(entry: Dict[str, Any]) -> str:
+    """One-line rendering of a semgrep errors[] entry.
+
+    Semgrep's error objects vary by type: rule-schema errors carry
+    ``long_msg``/``short_msg``; runtime errors carry ``message``.
+    """
+    msg = (
+        entry.get("message")
+        or entry.get("long_msg")
+        or entry.get("short_msg")
+        or "semgrep error"
+    )
+    etype = entry.get("type") or "error"
+    return f"{etype}: {msg}"[:500]

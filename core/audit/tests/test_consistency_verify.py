@@ -240,6 +240,65 @@ class TestRefutationsAndDemotions:
         assert res.outcome == "refuted"
         assert res.reason.startswith(REFUTED_VOID_CALLEE)
 
+    def test_registry_contract_beats_stuffed_discard_majority(self):
+        """Regression: a >=80% discard-majority used to refute BEFORE the
+        contract was bound — a hostile repo's decoy discard sites
+        suppressed every deviant of a WUR-annotated callee. The
+        documented rule is contract-is-the-premise: the registry-grade
+        witness confirms; the majority is only corroboration."""
+        texts = _fixture(0, 6, callee="verify_sig")
+        texts["include/api.h"] = (
+            "__attribute__((warn_unused_result)) int verify_sig(void);\n"
+        )
+        ctx = RoleContext(wur_functions=frozenset({"verify_sig"}))
+        res = _verdict(texts, "verify_sig", ctx=ctx)
+        assert res.outcome == "confirmed"
+        assert res.contract["grade"] == "registry"
+        assert not res.reason.startswith(REFUTED_DISCARD_OK)
+
+    def test_discard_majority_still_refutes_without_contract(self):
+        # The refutation lane is preserved: no contract witness → the
+        # discard convention is real information.
+        res = _verdict(_fixture(0, 5, callee="log_line"), "log_line")
+        assert res.outcome == "refuted"
+        assert res.reason.startswith(REFUTED_DISCARD_OK)
+
+    def test_void_receipt_not_forgeable_from_comment(self):
+        """Regression: '/* legacy: void check_perm( ) removed in v2 */' in
+        ANY scanned file used to refute every deviant of the non-void
+        callee with a definitive void-return receipt."""
+        texts = _fixture(9, 1, callee="check_perm")
+        texts["notes.c"] = (
+            "/* legacy: void check_perm( ) removed in v2 */\n"
+            "int unrelated(void) { return 0; }\n"
+        )
+        res = _verdict(texts, "check_perm")
+        assert not res.reason.startswith(REFUTED_VOID_CALLEE)
+        assert res.outcome == "confirmed"
+
+    def test_void_receipt_not_forgeable_from_string_literal(self):
+        texts = _fixture(9, 1, callee="check_perm")
+        texts["log.c"] = (
+            'void log_it(void) { puts("void check_perm( removed"); }\n'
+        )
+        res = _verdict(texts, "check_perm")
+        assert not res.reason.startswith(REFUTED_VOID_CALLEE)
+
+    def test_inventory_nonvoid_witness_beats_text_scan(self):
+        # A typed inventory witness that the callee returns int
+        # outranks a void-looking declaration in the text scan.
+        texts = _fixture(9, 1, callee="check_perm")
+        texts["include/legacy.h"] = "void check_perm(int);\n"
+        inventory = {"files": [{
+            "path": "src/perm.c",
+            "items": [{
+                "name": "check_perm", "kind": "function",
+                "metadata": {"return_type": "int"},
+            }],
+        }]}
+        res = _verdict(texts, "check_perm", inventory=inventory)
+        assert not res.reason.startswith(REFUTED_VOID_CALLEE)
+
     def test_deviant_on_error_path_is_inconclusive(self, parser_tier):
         tier = _tier(parser_tier, "python")
         parts = []

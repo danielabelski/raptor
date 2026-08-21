@@ -260,7 +260,15 @@ def _callee_returns_void(
     source_texts: dict[str, str] | None,
     inventory: dict[str, Any] | None,
 ) -> bool:
-    """FP control (§2.3): a void-return callee has nothing to check."""
+    """FP control (§2.3): a void-return callee has nothing to check.
+
+    Hardened against forged receipts: a typed inventory
+    witness outranks the text scan in BOTH directions (a non-void
+    declared return type short-circuits to False), and the text scan
+    runs on the sanitized view — a comment or string anywhere in the
+    scanned sources that merely MENTIONS ``void <callee>(`` must not
+    refute every deviant of a non-void security callee.
+    """
     tail = callee.rsplit(".", 1)[-1]
     if inventory:
         for frec in inventory.get("files", []) or []:
@@ -275,12 +283,18 @@ def _callee_returns_void(
                     ).strip()
                     if ret == "void":
                         return True
+                    if ret and ret != "void":
+                        # Typed witness: the callee returns something —
+                        # never let a text-scan hit override it.
+                        return False
     if source_texts:
+        from .source_view import sanitized_view
+
         pattern = re.compile(_VOID_DECL_TMPL.format(name=re.escape(tail)))
-        for source in source_texts.values():
+        for file_path, source in source_texts.items():
             if tail not in source:
                 continue
-            for m in pattern.finditer(source):
+            for m in pattern.finditer(sanitized_view(source, file_path)):
                 # `void *name(` returns a pointer, not void.
                 if "*" not in m.group(0):
                     return True
@@ -465,28 +479,6 @@ def census_verdict(
             callee=callee,
         )
 
-    if _callee_returns_void(callee, source_texts, inventory):
-        return ConsistencyResult(
-            outcome="refuted",
-            reason=(
-                f"{REFUTED_VOID_CALLEE}: {callee} returns void — "
-                f"nothing to check"
-            ),
-            callee=callee,
-        )
-
-    if entry.majority_says_discard_ok:
-        return ConsistencyResult(
-            outcome="refuted",
-            reason=(
-                f"{REFUTED_DISCARD_OK}: "
-                f"{entry.n - len(entry.conforming)}/{entry.n} sites "
-                f"discard {callee}'s return — the project convention "
-                f"is discard-ok"
-            ),
-            callee=callee,
-        )
-
     if deviant.on_error_path:
         return _inconclusive(
             REASON_DEVIANT_ON_ERROR_PATH,
@@ -495,9 +487,43 @@ def census_verdict(
             callee=callee,
         )
 
+    # Contract binding comes BEFORE the census refutations: the
+    # documented rule is "the contract is the premise, the
+    # majority exhibit is corroboration". Firing the discard-majority
+    # or void-callee refutation first inverted that — a stuffed
+    # discard-majority (>=80% decoy sites) or a forged void receipt
+    # manufactured a definitive refutation even when a registry-grade
+    # contract witness (e.g. the project's own warn_unused_result
+    # declaration) said the return must be checked, suppressing every
+    # genuine deviant of that callee. Site-local facts (acknowledged
+    # discard, tested value, error-path) stay ahead of the contract —
+    # they are observations about THIS site, not census statistics.
     contract = bind_return_contract(
         callee, language=language, context=ctx, census_entry=entry,
     )
+
+    if contract is None or not contract.registry_grade:
+        if _callee_returns_void(callee, source_texts, inventory):
+            return ConsistencyResult(
+                outcome="refuted",
+                reason=(
+                    f"{REFUTED_VOID_CALLEE}: {callee} returns void — "
+                    f"nothing to check"
+                ),
+                callee=callee,
+            )
+
+        if entry.majority_says_discard_ok:
+            return ConsistencyResult(
+                outcome="refuted",
+                reason=(
+                    f"{REFUTED_DISCARD_OK}: "
+                    f"{entry.n - len(entry.conforming)}/{entry.n} sites "
+                    f"discard {callee}'s return — the project convention "
+                    f"is discard-ok"
+                ),
+                callee=callee,
+            )
 
     if contract is not None and contract.registry_grade:
         pe = _build_peer_evidence(

@@ -526,21 +526,66 @@ def cmd_task(client, args):
               file=sys.stderr)
         return 1
 
-    domain = args.domain or "general"
     try:
         from sage_sdk.models import MemoryType
         embedding = client.embed(content)
-        client.propose(
+        # No --domain: pass domain_tag=None so the server routes the
+        # task to the caller's owned home domain (app-v23) — the same
+        # mapping the MCP layer uses. The old hardcoded "general"
+        # default committed tasks into a domain this identity often
+        # cannot read back: the CLI printed success while the row was
+        # unreachable from every read surface (backlog/list/get 403).
+        resp = client.propose(
             content=content,
             memory_type=MemoryType.task,
-            domain_tag=domain,
+            domain_tag=args.domain,
             confidence=0.8,
             embedding=embedding,
         )
-        print(f"Task created in {_strip_domain_prefix(domain)}.")
     except Exception as e:
         print(f"Task creation failed: {_safe(str(e))}", file=sys.stderr)
         return 1
+    memory_id = str(getattr(resp, "memory_id", "") or "")
+    return _report_task_created(client, memory_id, args.domain)
+
+
+def _print_readable_domains(client) -> None:
+    """Best-effort list of domains this identity can read, to stderr."""
+    try:
+        sample = client.domain_access_sample()
+        readable = list(getattr(sample, "readable_domains", []) or [])
+    except Exception:
+        readable = []
+    if readable:
+        names = ", ".join(sorted(_safe(d) for d in readable))
+        print(f"  Readable domains: {names}", file=sys.stderr)
+    else:
+        print("  (could not list readable domains)", file=sys.stderr)
+
+
+def _report_task_created(client, memory_id: str, requested_domain) -> int:
+    """Read a just-committed task back before reporting success.
+
+    Success is only claimed once the row is fetched with this same
+    identity. If the read-back is refused (task committed into a
+    domain the caller cannot read), fail loudly with the full memory
+    id, the target domain, and the caller's readable-domain list so
+    the operator can recover the row instead of losing it.
+    """
+    try:
+        m = client.get_memory(memory_id)
+    except Exception as e:
+        target = requested_domain if requested_domain else "<home domain>"
+        print(
+            f"Task {_safe(memory_id)} committed to {_safe(target)} but "
+            f"cannot be read back by this identity: {_safe(str(e))}",
+            file=sys.stderr,
+        )
+        _print_readable_domains(client)
+        print("  Re-run with --domain <readable-domain>.", file=sys.stderr)
+        return 1
+    domain = _strip_domain_prefix(str(getattr(m, "domain_tag", "") or ""))
+    print(f"Task {_safe(memory_id)} created in {_safe(domain)}.")
     return 0
 
 
@@ -706,7 +751,8 @@ def main(argv=None) -> int:
         print("  domains                Per-domain breakdown")
         print("  timeline               Time-bucketed activity (--domain, --bucket, --from, --to)")
         print("  backlog                Open tasks (--domain)")
-        print("  task <text>            Create/update a task (--domain, --id, --status)")
+        print("  task <text>            Create/update a task (--domain, --id, --status;")
+        print("                         no --domain = your home domain)")
         print("  link <src> <dst>       Link two memories (--type)")
         print("  corroborate <id>       Independently back a memory (--evidence)")
         print("  get <id>               Show a single memory in full")

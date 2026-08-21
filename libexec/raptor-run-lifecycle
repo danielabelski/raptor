@@ -5,10 +5,10 @@
 
 Usage:
   raptor-run-lifecycle start <command> --target <path> [--out <dir>]
-  raptor-run-lifecycle complete <output_dir>
-  raptor-run-lifecycle fail <output_dir> [message]
-  raptor-run-lifecycle cancel <output_dir>
-  raptor-run-lifecycle interrupt <output_dir> [message]
+  raptor-run-lifecycle complete <output_dir> [--model <id>] [--command <name>]
+  raptor-run-lifecycle fail <output_dir> [message] [--command <name>]
+  raptor-run-lifecycle cancel <output_dir> [--command <name>]
+  raptor-run-lifecycle interrupt <output_dir> [message] [--command <name>]
 
 start: resolves output directory, writes .raptor-run.json with status=running
 complete: updates status=completed
@@ -16,6 +16,16 @@ fail: updates status=failed with optional error message
 cancel: updates status=cancelled
 interrupt: updates status=interrupted (supervisor stop; resumable —
   e.g. `raptor-audit resume <output_dir>` for audit runs)
+
+--command on the terminal actions asserts ownership: the value is the
+command the CALLER believes it is finalising. When it does not match
+the run's recorded command, the transition is refused (exit 1) and the
+run's status is left untouched. This is the mechanical guard against a
+sub-step finalising a run it does not own — e.g. an in-session
+/understand --map running with --out pointed at an /audit-owned dir
+must pass `--command understand`, which refuses against the audit run
+instead of stamping it completed hours before the audit finishes.
+Omitting --command preserves the legacy unchecked surface.
 
 This script only writes metadata. Coverage, cleanup, and reporting
 are handled by their respective tools.
@@ -115,6 +125,24 @@ def _merge_journal_index(out_dir: Path) -> None:
                   file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 — merge is best-effort
         print(f"  journal merge skipped: {exc}", file=sys.stderr)
+
+
+def _pop_flag(rest: list, name: str):
+    """Extract ``<name> <value>`` from *rest* in place; None if absent.
+
+    Shared by the terminal actions, whose surfaces mix a positional
+    message with optional flags — argparse would reject the free-form
+    message text the callers already pass.
+    """
+    if name not in rest:
+        return None
+    i = rest.index(name)
+    if i + 1 < len(rest):
+        value = rest[i + 1]
+        del rest[i:i + 2]
+        return value
+    del rest[i:i + 1]  # dangling flag — treat as absent
+    return None
 
 
 def main():
@@ -224,16 +252,22 @@ def main():
 
     elif action == "complete":
         if len(sys.argv) < 3:
-            print("Usage: raptor-run-lifecycle complete <output_dir> [--model <id>]",
+            print("Usage: raptor-run-lifecycle complete <output_dir> "
+                  "[--model <id>] [--command <name>]",
                   file=sys.stderr)
             sys.exit(1)
         # Optional --model: the ambient harness model only the agent knows
         # (RAPTOR's Python can't read /model — no env var). The /understand
         # skill instructs the agent to pass its own model id here.
-        rest = sys.argv[3:]
-        model = rest[rest.index("--model") + 1] if (
-            "--model" in rest and rest.index("--model") + 1 < len(rest)) else None
+        # Optional --command: ownership claim (see module docstring).
+        rest = list(sys.argv[3:])
+        claim = _pop_flag(rest, "--command")
+        model = _pop_flag(rest, "--model")
         try:
+            # Ownership gate FIRST — before the journal merge below
+            # touches the (possibly foreign) run's project index.
+            from core.run.metadata import ensure_run_command
+            ensure_run_command(Path(sys.argv[2]), claim)
             manifest = None
             if model:
                 from core.run.provenance import harness_model_entry
@@ -247,47 +281,61 @@ def main():
             # complete_run, so the coverage-store snapshot missed
             # every fresh /audit entry from the just-finished run.
             _merge_journal_index(Path(sys.argv[2]))
-            complete_run(Path(sys.argv[2]), manifest=manifest)
+            complete_run(Path(sys.argv[2]), manifest=manifest,
+                         expected_command=claim)
         except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "fail":
         if len(sys.argv) < 3:
-            print("Usage: raptor-run-lifecycle fail <output_dir> [message]", file=sys.stderr)
+            print("Usage: raptor-run-lifecycle fail <output_dir> [message] "
+                  "[--command <name>]", file=sys.stderr)
             sys.exit(1)
-        message = sys.argv[3] if len(sys.argv) > 3 else "unknown error"
+        rest = list(sys.argv[3:])
+        claim = _pop_flag(rest, "--command")
+        message = rest[0] if rest else "unknown error"
         try:
-            fail_run(Path(sys.argv[2]), message)
+            fail_run(Path(sys.argv[2]), message, expected_command=claim)
         except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "cancel":
         if len(sys.argv) < 3:
-            print("Usage: raptor-run-lifecycle cancel <output_dir>", file=sys.stderr)
+            print("Usage: raptor-run-lifecycle cancel <output_dir> "
+                  "[--command <name>]", file=sys.stderr)
             sys.exit(1)
+        rest = list(sys.argv[3:])
+        claim = _pop_flag(rest, "--command")
         try:
             from core.run.metadata import cancel_run
-            cancel_run(Path(sys.argv[2]))
+            cancel_run(Path(sys.argv[2]), expected_command=claim)
         except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "interrupt":
         if len(sys.argv) < 3:
-            print("Usage: raptor-run-lifecycle interrupt <output_dir> [message]",
+            print("Usage: raptor-run-lifecycle interrupt <output_dir> "
+                  "[message] [--command <name>]",
                   file=sys.stderr)
             sys.exit(1)
-        message = sys.argv[3] if len(sys.argv) > 3 else None
+        rest = list(sys.argv[3:])
+        claim = _pop_flag(rest, "--command")
+        message = rest[0] if rest else None
         try:
+            # Ownership gate FIRST — same rationale as `complete`.
+            from core.run.metadata import ensure_run_command
+            ensure_run_command(Path(sys.argv[2]), claim)
             # Merge the journal into the project index FIRST (same
             # ordering rationale as `complete`): an interrupted run's
             # verdicts are real reviews and must reach the project
             # index so sibling runs (and the eventual resume) see them.
             _merge_journal_index(Path(sys.argv[2]))
             from core.run.metadata import interrupt_run
-            interrupt_run(Path(sys.argv[2]), message)
+            interrupt_run(Path(sys.argv[2]), message,
+                          expected_command=claim)
         except Exception as e:  # noqa: BLE001 — CLI boundary: report and exit
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)

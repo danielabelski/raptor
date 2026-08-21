@@ -9,8 +9,10 @@ Public API:
 
 from .metadata import (
     RUN_METADATA_FILE,
+    RunOwnershipError,
     cancel_run,
     complete_run,
+    ensure_run_command,
     fail_run,
     generate_run_metadata,
     infer_command_type,
@@ -26,9 +28,11 @@ from .output import TargetMismatchError, get_output_dir
 
 __all__ = [
     "RUN_METADATA_FILE",
+    "RunOwnershipError",
     "TargetMismatchError",
     "cancel_run",
     "complete_run",
+    "ensure_run_command",
     "fail_run",
     "generate_run_metadata",
     "get_output_dir",

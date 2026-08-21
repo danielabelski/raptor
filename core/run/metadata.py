@@ -25,6 +25,31 @@ logger = logging.getLogger(__name__)
 
 RUN_METADATA_FILE = ".raptor-run.json"
 
+
+class RunOwnershipError(ValueError):
+    """A lifecycle finaliser declared a command that does not match the
+    run's recorded owner.
+
+    Raised when ``complete_run`` / ``fail_run`` / ``cancel_run`` /
+    ``interrupt_run`` is called with ``expected_command`` and the run
+    directory's ``.raptor-run.json`` records a DIFFERENT command. Only
+    the flow that started a run owns its terminal transition — a
+    sub-step that writes into another command's run directory (the
+    observed case: the in-session ``/understand --map`` mapping phase
+    running with ``--out`` pointed at an ``/audit``-owned dir) must not
+    finalise it. Pre-fix, that mapping step stamped the audit run
+    ``completed`` minutes in, so the later SIGTERM drain hit the
+    double-finalisation refusal and ``raptor-audit resume`` refused a
+    run that was in fact interrupted mid-flight.
+
+    PID-based enforcement is deliberately NOT used here: the offending
+    finaliser runs in the SAME session (same ``session_pid``) as the
+    legitimate one, and ``tool_pid`` is a fresh shell per stub
+    invocation even for the legitimate flow — the discriminator that
+    actually separates owner from trespasser is the command name.
+    """
+
+
 # Status enum
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
@@ -938,8 +963,41 @@ def _finalize_sandbox_triage(output_dir: Path) -> str | None:
 # Triage runs strictly after summary within each finalize call — it reads
 # sandbox-summary.json, which the summary finalize step just wrote.
 
+def ensure_run_command(output_dir: Path,
+                       expected_command: str | None) -> None:
+    """Refuse a terminal transition on a run another command owns.
+
+    ``expected_command`` is the command the FINALISER believes it is
+    finishing. ``None`` (caller made no claim) checks nothing — the
+    legacy surface stays valid. When a claim is made and the run's
+    recorded ``command`` differs, raises :class:`RunOwnershipError`
+    BEFORE any finalisation side effect (sandbox summary/triage
+    flush, journal merge, status flip) touches the foreign run.
+
+    Missing or malformed metadata is not an ownership violation —
+    those cases keep their existing handling in ``_update_status``
+    (FileNotFoundError / ValueError there).
+    """
+    if expected_command is None:
+        return
+    metadata = load_json(Path(output_dir) / RUN_METADATA_FILE)
+    if not isinstance(metadata, dict):
+        return
+    owner = metadata.get("command")
+    if owner and owner != expected_command:
+        raise RunOwnershipError(
+            f"run {output_dir} is owned by command {owner!r} — refusing "
+            f"the terminal transition claimed by {expected_command!r}. "
+            f"Only the flow that started a run may finalise it; a "
+            f"sub-step writing into another command's run directory "
+            f"(e.g. /understand --map with --out pointed at an /audit "
+            f"dir) must leave the owner's lifecycle alone."
+        )
+
+
 def complete_run(output_dir: Path, extra: dict[str, Any] | None = None,
-                 manifest: dict[str, Any] | None = None) -> None:
+                 manifest: dict[str, Any] | None = None,
+                 expected_command: str | None = None) -> None:
     """Update .raptor-run.json to status=completed.
 
     ``manifest`` merges end-of-run provenance into the manifest sealed at
@@ -951,7 +1009,13 @@ def complete_run(output_dir: Path, extra: dict[str, Any] | None = None,
     the command) — is filled automatically for EVERY completion path, so a
     caller only needs to pass the facts unique to it (the models that fired).
     Callers still win on conflict: an explicitly-passed key is never clobbered.
+
+    ``expected_command`` (optional) asserts ownership: see
+    :func:`ensure_run_command`. Checked before the sandbox summary /
+    triage finalisers so a refused completion leaves no side effects
+    in the foreign run directory.
     """
+    ensure_run_command(output_dir, expected_command)
     _finalize_sandbox_summary(output_dir)
     _triage_verdict = _finalize_sandbox_triage(output_dir)
     if _triage_verdict is not None:
@@ -1107,8 +1171,16 @@ def _append_coverage_progress(proj: Path, run_dir: Path, store,
 
 def fail_run(output_dir: Path, error: str | None = None,
              extra: dict[str, Any] | None = None,
-             record_timing: bool = True) -> None:
-    """Update .raptor-run.json to status=failed."""
+             record_timing: bool = True,
+             expected_command: str | None = None) -> None:
+    """Update .raptor-run.json to status=failed.
+
+    ``expected_command`` (optional) asserts ownership — see
+    :func:`ensure_run_command`. Sweep/cleanup callers that legitimately
+    fail runs they did not start (dead-session abandons, lifecycle
+    hooks) simply make no claim.
+    """
+    ensure_run_command(output_dir, expected_command)
     extra = extra or {}
     if error:
         extra["error"] = error
@@ -1127,8 +1199,14 @@ def fail_run(output_dir: Path, error: str | None = None,
     _convert_reads_manifest(output_dir)
 
 
-def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
-    """Update .raptor-run.json to status=cancelled."""
+def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None,
+               expected_command: str | None = None) -> None:
+    """Update .raptor-run.json to status=cancelled.
+
+    ``expected_command`` (optional) asserts ownership — see
+    :func:`ensure_run_command`.
+    """
+    ensure_run_command(output_dir, expected_command)
     _finalize_sandbox_summary(output_dir)
     _triage_verdict = _finalize_sandbox_triage(output_dir)
     if _triage_verdict is not None:
@@ -1139,7 +1217,8 @@ def cancel_run(output_dir: Path, extra: dict[str, Any] | None = None) -> None:
 
 
 def interrupt_run(output_dir: Path, reason: str | None = None,
-                  extra: dict[str, Any] | None = None) -> None:
+                  extra: dict[str, Any] | None = None,
+                  expected_command: str | None = None) -> None:
     """Update .raptor-run.json to status=interrupted.
 
     For runs stopped by an external supervisor (SIGTERM drain, harness
@@ -1147,7 +1226,11 @@ def interrupt_run(output_dir: Path, reason: str | None = None,
     :func:`resume_run` may re-enter. Unlike ``fail_run`` the run is
     not an error: journal/ledger state on disk is coherent up to the
     interruption point.
+
+    ``expected_command`` (optional) asserts ownership — see
+    :func:`ensure_run_command`.
     """
+    ensure_run_command(output_dir, expected_command)
     extra = dict(extra or {})
     if reason:
         extra["interrupt_reason"] = reason

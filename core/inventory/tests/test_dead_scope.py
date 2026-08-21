@@ -715,3 +715,78 @@ def test_ruby_hash_in_string_not_treated_as_comment():
     )
     ranges = detect_dead_scopes("ruby", src)
     assert (3, 3) in ranges
+
+
+# ---------------------------------------------------------------------------
+# Lexer-divergence regressions (U09-F28): live code must never fall
+# inside a reported dead range — lexical_dead is a hard-suppress witness.
+# ---------------------------------------------------------------------------
+
+
+def test_js_line_comment_marker_inside_string_does_not_eat_close():
+    # `//` inside the string used to start a "comment" that blanked
+    # the dead-if's real closing brace; the regex literal's quote
+    # then resynced string state and _match_brace closed the block
+    # inside live code — function live() read as dead.
+    src = (
+        'if (false) { var s = "//"; }\n'
+        "function live() {\n"
+        "  steal();\n"
+        '  var q = /"/;\n'
+        "}\n"
+    )
+    assert detect_dead_scopes("javascript", src) == [(1, 1)]
+
+
+def test_js_regex_literal_braces_do_not_move_depth():
+    src = (
+        "if (false) {\n"
+        "  var m = /}}/;\n"
+        "  dead();\n"
+        "}\n"
+        "function live() { steal(); }\n"
+    )
+    ranges = detect_dead_scopes("javascript", src)
+    assert ranges == [(1, 4)]
+
+
+def test_js_division_is_not_a_regex_literal():
+    src = (
+        "var a = b / 2 / c;\n"
+        "if (false) {\n"
+        "  dead();\n"
+        "}\n"
+    )
+    assert detect_dead_scopes("javascript", src) == [(2, 4)]
+
+
+def test_js_regex_after_return_keyword():
+    src = (
+        "function f() { return /\"{/; }\n"
+        "if (false) {\n"
+        "  dead();\n"
+        "}\n"
+    )
+    assert detect_dead_scopes("javascript", src) == [(2, 4)]
+
+
+def test_ruby_one_liner_if_false_does_not_range_following_code():
+    # `if false then nil end` is self-contained; the scan for an
+    # indentation-matched `end` on FOLLOWING lines used to range the
+    # next live def as dead.
+    src = (
+        "if false then nil end\n"
+        "def live_method\n"
+        "  steal\n"
+        "end\n"
+    )
+    assert detect_dead_scopes("ruby", src) == []
+
+
+def test_ruby_then_with_multiline_body_still_detected():
+    src = (
+        "if false then\n"
+        "  dead\n"
+        "end\n"
+    )
+    assert detect_dead_scopes("ruby", src) == [(2, 2)]

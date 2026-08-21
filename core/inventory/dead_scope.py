@@ -135,16 +135,23 @@ def _py_end_line(stmt: ast.stmt) -> int:
 # JavaScript / TypeScript — brace-tracked ``if (false) {…}`` blocks.
 # Regex finds the guard header; manual brace matching finds the block
 # extent (no stdlib JS AST; tree-sitter would be heavier than needed).
+# Non-code text is blanked by the shared single-pass lexer
+# (:func:`core.inventory.js_lexer.blank_js_noncode`) — the previous
+# two-phase comments-then-strings regex strip diverged from a real JS
+# lexer (a ``//`` inside a string ate the dead-if's closing brace; a
+# regex literal containing a quote resynced string state), letting a
+# hostile repo range live code as lexical_dead, a hard-suppress
+# witness.
 # ---------------------------------------------------------------------------
 
 
-_JS_LINE_COMMENT = re.compile(r"//[^\n]*")
-_JS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _JS_DEAD_IF = re.compile(r"\bif\s*\(\s*(?:false|0)\s*\)\s*\{")
 
 
 def _detect_javascript(content: str) -> List[DeadRange]:
-    stripped = _js_strip_comments_and_strings(content)
+    from core.inventory.js_lexer import blank_js_noncode
+
+    stripped = blank_js_noncode(content)
     ranges: List[DeadRange] = []
     for m in _JS_DEAD_IF.finditer(stripped):
         brace_pos = m.end() - 1
@@ -155,71 +162,6 @@ def _detect_javascript(content: str) -> List[DeadRange]:
         end_line = stripped.count("\n", 0, close) + 1
         ranges.append((start_line, end_line))
     return ranges
-
-
-def _js_strip_comments(content: str) -> str:
-    def _spaces(m: "re.Match[str]") -> str:
-        return re.sub(r"[^\n]", " ", m.group(0))
-    out = _JS_BLOCK_COMMENT.sub(_spaces, content)
-    out = _JS_LINE_COMMENT.sub(_spaces, out)
-    return out
-
-
-def _js_strip_comments_and_strings(content: str) -> str:
-    """Strip comments AND string literals, preserving newlines so
-    line numbers remain valid.  After this, only braces, keywords,
-    and whitespace remain — the brace matcher never sees quote chars.
-    """
-    out = list(_js_strip_comments(content))
-    i = 0
-    n = len(out)
-    while i < n:
-        c = out[i]
-        if c not in "\"'`":
-            i += 1
-            continue
-        quote = c
-        out[i] = " "
-        j = i + 1
-        while j < n:
-            ch = out[j]
-            if ch == "\\":
-                out[j] = " "
-                if j + 1 < n:
-                    if out[j + 1] != "\n":
-                        out[j + 1] = " "
-                    j += 2
-                else:
-                    j += 1
-                continue
-            if quote == "`" and ch == "$" and j + 1 < n and out[j + 1] == "{":
-                out[j] = " "
-                out[j + 1] = " "
-                j += 2
-                depth = 1
-                while j < n and depth > 0:
-                    ic = out[j]
-                    if ic == "{":
-                        depth += 1
-                    elif ic == "}":
-                        depth -= 1
-                        if depth == 0:
-                            out[j] = " "
-                            j += 1
-                            break
-                    if ic != "\n":
-                        out[j] = " "
-                    j += 1
-                continue
-            if ch == quote:
-                out[j] = " "
-                j += 1
-                break
-            if ch != "\n":
-                out[j] = " "
-            j += 1
-        i = j
-    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +675,16 @@ def _detect_ruby(content: str) -> List[DeadRange]:
     for i, line in enumerate(lines):
         m = _RB_DEAD_IF.match(line)
         if not m:
+            continue
+        # Self-contained one-liner (``if false then nil end``): the
+        # opener's own ``end`` sits on the same line, so scanning the
+        # FOLLOWING lines for an indentation-matched ``end`` would
+        # latch onto an unrelated later block and range live code
+        # (e.g. the next ``def``) as dead. The whole construct lives
+        # on one line — nothing below it is dead; skip (under-detect,
+        # sound). Checked on the comment-stripped line; an ``end``
+        # inside a string also skips — same cheap FN direction.
+        if re.search(r"\bend\b", line[m.end(1):]):
             continue
         ind = m.group(1)
         for j in range(i + 1, len(lines)):

@@ -1096,6 +1096,7 @@ pre-patch (vulnerable) version.  See the
 | Flag | Description |
 |------|-------------|
 | `--product <P>` / `--version <V>` | Hints when the CVE record is ambiguous |
+| `--prefill auto\|off` / `--prefill-from <dir>` | Seed the agent with a prior `/cve-diff` discovery (repo, fix commit, pre-patch commit); the RAPTOR dispatch defaults to `auto`, `bin/cve-env` to off |
 | `--max-turns <N>` / `--max-cost-usd <F>` | Agent budgets (soft cost cap has a bounded productive-progress extension) |
 | `--audit-root <dir>` | Where the audit JSONL + outcome sidecar land |
 | `--silent` | Suppress the human summary (JSON on stdout is the result) |

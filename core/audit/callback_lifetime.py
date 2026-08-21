@@ -200,13 +200,21 @@ def check_safe_teardown(
       waiting variants are excluded by suffix so ``timer_delete_sync``
       never counts as async);
     * else a waiting teardown (``*_sync`` / shutdown / flush / kill)
-      or an RCU-deferred reclamation present → safe;
+      or an RCU-deferred reclamation present AND ordered before every
+      free → safe (a waiting cancel AFTER the free is the
+      free-then-cancel UAF this witness exists to catch — presence
+      alone must not certify it);
     * else no free-family call at all in the source (nothing's
       lifetime ends here) → safe;
     * else → not safe (a bare free with no visible teardown ordering
       is exactly what the gate should keep flooring).
+
+    The scan runs on the sanitized view (comments/string literals
+    blanked): an inline comment naming a waiting verb must not flip
+    the witness.
     """
     from .safety_contract import assert_boost_only
+    from .source_view import sanitized_view
     assert_boost_only("callback_lifetime")
 
     async_re = re.compile(
@@ -223,14 +231,17 @@ def check_safe_teardown(
     )
     free_re = _call_re(_free_names(vocab))
 
-    lines = source.split("\n")
+    lines = sanitized_view(source, language="c").split("\n")
     async_lines: list[int] = []
     free_lines: list[int] = []
+    # (line, column) call positions: C statements on one line execute
+    # left to right, so lexicographic order = execution order — the
+    # one-line ``kfree(d); cancel_work_sync(&d->work);`` PoC needs
+    # column resolution.
+    free_pos: list[tuple[int, int]] = []
+    barrier_pos: list[tuple[int, int]] = []   # waiting or RCU calls
     waiting = rcu = False
     for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(("//", "/*", "*")):
-            continue
         m = async_re.search(line)
         # A waiting variant (timer_delete_sync) contains the async
         # spelling as a prefix — only count a true async call.
@@ -238,12 +249,15 @@ def check_safe_teardown(
             re.escape(m.group(1)) + r"_sync\s*\(", line,
         ):
             async_lines.append(i)
-        if free_re.search(line):
+        for fm in free_re.finditer(line):
             free_lines.append(i)
-        if waiting_re.search(line):
+            free_pos.append((i, fm.start()))
+        for wm in waiting_re.finditer(line):
             waiting = True
-        if rcu_re.search(line):
+            barrier_pos.append((i, wm.start()))
+        for rm in rcu_re.finditer(line):
             rcu = True
+            barrier_pos.append((i, rm.start()))
 
     # Self-handler: the container was derived via container_of() — in
     # the dominant kernel idiom the function IS the callback handler,
@@ -272,11 +286,31 @@ def check_safe_teardown(
                 "non-reentrancy of the executing item)"
             ),
         )
-    if waiting:
-        return SafeTeardownResult(
-            safe=True, reason="waiting teardown (sync/shutdown) present",
-        )
-    if rcu:
+    if waiting or rcu:
+        # Order-sensitive: every free must be PRECEDED by a waiting/
+        # RCU barrier on the path above it. ``kfree(dev);
+        # cancel_work_sync(&dev->work);`` is the free-then-cancel UAF
+        # this witness adjudicates — the mere presence of the sync
+        # cancel must not read as safe. (kfree_rcu counts as its own
+        # barrier: same line qualifies.)
+        unordered = [
+            f for f in free_pos
+            if not any(b <= f for b in barrier_pos)
+        ]
+        if unordered:
+            return SafeTeardownResult(
+                safe=False,
+                reason=(
+                    f"free at line {unordered[0][0] + 1} precedes "
+                    f"every waiting/RCU teardown — free-then-cancel "
+                    f"order"
+                ),
+            )
+        if waiting:
+            return SafeTeardownResult(
+                safe=True,
+                reason="waiting teardown (sync/shutdown) present",
+            )
         return SafeTeardownResult(
             safe=True, reason="RCU-deferred reclamation present",
         )

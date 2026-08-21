@@ -484,3 +484,54 @@ class TestCrossCancelQueryError:
         assert r.violation_found is True
         assert len(r.violations) == 1
         assert r.violations[0].free_func == "release_b"
+
+
+class TestSafeTeardownOrdering:
+    def test_free_then_sync_cancel_is_not_safe(self):
+        # Regression PoC: the free-then-cancel UAF — exactly the shape
+        # this witness adjudicates — was certified safe because the
+        # waiting arm only checked PRESENCE of the sync verb.
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown(
+            "void teardown(struct dev *d){ kfree(d); "
+            "cancel_work_sync(&d->work); }",
+        )
+        assert r.safe is False
+        assert "precedes" in r.reason
+
+    def test_free_then_cancel_multiline_is_not_safe(self):
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown(
+            "void t(struct dev *d)\n{\n  kfree(d);\n"
+            "  cancel_work_sync(&d->work);\n}\n",
+        )
+        assert r.safe is False
+
+    def test_cancel_then_free_stays_safe(self):
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown(
+            "void t(struct dev *d)\n{\n  cancel_work_sync(&d->work);\n"
+            "  kfree(d);\n}\n",
+        )
+        assert r.safe is True
+
+    def test_kfree_rcu_is_its_own_barrier(self):
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown(
+            "void t(struct dev *d){ kfree_rcu(d, rcu); }",
+        )
+        assert r.safe is True
+
+    def test_waiting_verb_in_comment_does_not_certify(self):
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown(
+            "void t(struct dev *d){ kfree(d); "
+            "/* cancel_work_sync happens elsewhere */ }",
+        )
+        assert r.safe is False
+
+    def test_no_dealloc_stays_safe(self):
+        from core.audit.callback_lifetime import check_safe_teardown
+        r = check_safe_teardown("void t(void){ flush_workqueue(wq); }")
+        assert r.safe is True
+        assert r.no_dealloc is True

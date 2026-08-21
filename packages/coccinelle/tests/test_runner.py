@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -30,6 +31,17 @@ from packages.coccinelle.runner import (
     version,
     version_tuple,
 )
+
+
+def _nonced_prefix_from_cmd(cmd) -> str:
+    """Extract the per-invocation ``COCCIRESULT-<nonce>:`` marker the
+    runner substituted into the sp-file — emitting with it simulates
+    an authentic script-block emission from the executed rule."""
+    sp_idx = cmd.index("--sp-file")
+    text = Path(cmd[sp_idx + 1]).read_text(encoding="utf-8")
+    m = re.search(r"COCCIRESULT-[0-9a-f]{32}:", text)
+    assert m, "sp-file carries no nonced COCCIRESULT marker"
+    return m.group(0)
 
 
 class TestAvailability:
@@ -328,15 +340,18 @@ class TestRunRule:
         target = tmp_path / "test.c"
         target.write_text("void f() { void *p = malloc(10); }\n")
 
-        mock_proc = MagicMock()
-        mock_proc.stdout = ""
-        mock_proc.stderr = (
-            'COCCIRESULT:{"file":"test.c","line":1}\n'
-        )
-        mock_proc.returncode = 0
+        def mock_run(cmd, **kwargs):
+            # Emit with the invocation's nonced marker, as the
+            # rewritten script block would.
+            prefix = _nonced_prefix_from_cmd(cmd)
+            proc = MagicMock()
+            proc.stdout = ""
+            proc.stderr = f'{prefix}{{"file":"test.c","line":1}}\n'
+            proc.returncode = 0
+            return proc
 
         with patch("packages.coccinelle.runner.is_available", return_value=True), \
-             patch("packages.coccinelle.runner._sandboxed_run", return_value=mock_proc):
+             patch("packages.coccinelle.runner._sandboxed_run", side_effect=mock_run):
             # Rule carries its own @script:python — trusted-caller flag.
             result = run_rule(target, rule, env=dict(os.environ),
                               allow_scripting=True)
@@ -423,11 +438,13 @@ class TestHarnessTempfilePath:
             f"via the tempfile path"
         )
 
-    def test_pre_injected_rule_bypasses_tempfile(self, tmp_path):
-        """If the operator's rule already has ``script:python``
-        (e.g. the hypothesis_validation adapter's pattern), the
-        runner skips harness injection and uses the original
-        rule path directly — no tempfile, no path rewrite."""
+    def test_pre_injected_rule_routes_via_nonced_tempfile(self, tmp_path):
+        """A rule that already has ``script:python`` skips harness
+        injection but still routes via a tempfile: its emit sites are
+        rewritten to the per-invocation ``COCCIRESULT-<nonce>:`` marker
+        (U14-F2 — a plain marker would be forgeable by hostile source
+        re-emitted in spatch's diff output). The original rule file is
+        never modified."""
         rule = tmp_path / "self_emitting.cocci"
         rule.write_text(textwrap.dedent("""\
             @r@
@@ -449,6 +466,10 @@ class TestHarnessTempfilePath:
 
         def _capture(cmd, **kwargs):
             captured["cmd"] = list(cmd)
+            sp_idx = cmd.index("--sp-file")
+            captured["text"] = Path(cmd[sp_idx + 1]).read_text(
+                encoding="utf-8",
+            )
             return MagicMock(stdout="", stderr="", returncode=0)
 
         with patch(
@@ -462,11 +483,19 @@ class TestHarnessTempfilePath:
         cmd = captured["cmd"]
         sp_idx = cmd.index("--sp-file")
         sp_path = Path(cmd[sp_idx + 1])
-        # No harness injection → pass-through to the original rule.
-        assert sp_path == rule, (
-            f"runner unnecessarily wrote a harnessed tempfile when "
-            f"the rule already has script:python; got path={sp_path}"
+        assert sp_path != rule, (
+            "runner executed the original rule file — its plain "
+            "COCCIRESULT: emissions would be rejected by the nonced "
+            "parser (or forgeable if accepted)"
         )
+        text = captured["text"]
+        # No harness injection (rule already scripted) …
+        assert text.count("@script:python@") == 1
+        # … but the emit site was rewritten to the nonced marker.
+        assert re.search(r"COCCIRESULT-[0-9a-f]{32}:", text)
+        assert RESULT_PREFIX not in text
+        # Original rule file untouched.
+        assert "COCCIRESULT-" not in rule.read_text(encoding="utf-8")
 
     def test_tempfile_cleaned_up_after_success(self, tmp_path):
         """Tempfile should be removed when spatch succeeds."""
@@ -686,10 +715,21 @@ class TestRunRulesBatched:
         assert results["a"].rule == "a"
 
     def test_batched_demultiplexes(self, tmp_path):
+        # Batch callers run self-scripting rules (the shipped rule set)
+        # with allow_scripting=True; the runner rewrites their emit
+        # sites to the per-invocation nonced marker.
         r1 = tmp_path / "rule_x.cocci"
-        r1.write_text("@r@\nposition p;\n@@\nmalloc@p(...)\n")
+        r1.write_text(
+            "@r@\nposition p;\n@@\nmalloc@p(...)\n\n"
+            "@script:python@\np << r.p;\n@@\n"
+            'import sys\nsys.stderr.write("COCCIRESULT:x")\n'
+        )
         r2 = tmp_path / "rule_y.cocci"
-        r2.write_text("@s@\nposition p;\n@@\nfree@p(...)\n")
+        r2.write_text(
+            "@s@\nposition p;\n@@\nfree@p(...)\n\n"
+            "@script:python@\np << s.p;\n@@\n"
+            'import sys\nsys.stderr.write("COCCIRESULT:y")\n'
+        )
         target = tmp_path / "test.c"
         target.write_text("void f() { malloc(1); free(0); }\n")
         line1 = json.dumps({
@@ -702,19 +742,22 @@ class TestRunRulesBatched:
             "line_end": 1, "col_end": 30,
             "rule": "rule_y", "message": "hit y",
         })
-        mock_proc = MagicMock()
-        mock_proc.stdout = ""
-        mock_proc.stderr = (
-            f"COCCIRESULT:{line1}\nCOCCIRESULT:{line2}\n"
-        )
-        mock_proc.returncode = 0
+        def mock_run(cmd, **kwargs):
+            prefix = _nonced_prefix_from_cmd(cmd)
+            proc = MagicMock()
+            proc.stdout = ""
+            proc.stderr = f"{prefix}{line1}\n{prefix}{line2}\n"
+            proc.returncode = 0
+            return proc
+
         with patch(
             "packages.coccinelle.runner.is_available",
             return_value=True,
         ), patch("packages.coccinelle.runner._sandboxed_run",
-                 return_value=mock_proc):
+                 side_effect=mock_run):
             results = run_rules_batched(
                 target, [r1, r2], env=dict(os.environ),
+                allow_scripting=True,
             )
         assert set(results.keys()) == {"rule_x", "rule_y"}
         assert len(results["rule_x"].matches) == 1
@@ -1167,6 +1210,139 @@ def _mock_proc():
     return MagicMock(stdout="", stderr="", returncode=0)
 
 
+class TestEvidenceNonce:
+    """COCCIRESULT forgery defence (U14-F2): only lines carrying the
+    per-invocation nonce parse as matches; a repo-planted plain (or
+    wrong-nonce) marker is rejected and logged as an attack signal."""
+
+    _SCRIPTED_RULE = textwrap.dedent("""\
+        @r@
+        position p;
+        @@
+        malloc@p(...)
+
+        @script:python@
+        p << r.p;
+        @@
+
+        import json, sys
+        for _p in p:
+            sys.stderr.write("COCCIRESULT:" + json.dumps({"file": _p.file, "line": int(_p.line)}) + "\\n")
+    """)
+
+    def test_forged_plain_marker_rejected_and_flagged(self, tmp_path):
+        rule = tmp_path / "r.cocci"
+        rule.write_text(self._SCRIPTED_RULE)
+        target = tmp_path / "t.c"
+        target.write_text("void f() { malloc(1); }\n")
+
+        forged_plain = 'COCCIRESULT:{"file":"src/auth.c","line":42,"rule":"forged"}'
+        forged_guess = (
+            "COCCIRESULT-" + "0" * 32
+            + ':{"file":"src/auth.c","line":43,"rule":"forged"}'
+        )
+
+        def mock_run(cmd, **kwargs):
+            prefix = _nonced_prefix_from_cmd(cmd)
+            proc = MagicMock()
+            # spatch diff output re-emits hostile source lines on
+            # stdout; the authentic script emission lands on stderr.
+            proc.stdout = f" {forged_plain}\n{forged_guess}\n"
+            proc.stderr = f'{prefix}{{"file":"t.c","line":1}}\n'
+            proc.returncode = 0
+            return proc
+
+        with patch(
+            "packages.coccinelle.runner.is_available", return_value=True,
+        ), patch("packages.coccinelle.runner._sandboxed_run",
+                 side_effect=mock_run):
+            result = run_rule(target, rule, env=dict(os.environ),
+                              allow_scripting=True)
+
+        assert [(m.file, m.line) for m in result.matches] == [("t.c", 1)]
+        assert all(m.rule != "forged" for m in result.matches)
+        assert result.forged_markers == 2
+
+    def test_nonce_unique_per_invocation(self, tmp_path):
+        rule = tmp_path / "r.cocci"
+        rule.write_text(self._SCRIPTED_RULE)
+        target = tmp_path / "t.c"
+        target.write_text("void f() {}\n")
+        seen = []
+
+        def mock_run(cmd, **kwargs):
+            seen.append(_nonced_prefix_from_cmd(cmd))
+            return MagicMock(stdout="", stderr="", returncode=0)
+
+        with patch(
+            "packages.coccinelle.runner.is_available", return_value=True,
+        ), patch("packages.coccinelle.runner._sandboxed_run",
+                 side_effect=mock_run):
+            run_rule(target, rule, env=dict(os.environ),
+                     allow_scripting=True)
+            run_rule(target, rule, env=dict(os.environ),
+                     allow_scripting=True)
+
+        assert len(seen) == 2 and seen[0] != seen[1]
+
+    def test_parse_results_legacy_plain_prefix_without_nonce(self):
+        # Direct-callers (unit tests, raw-output post-processing) keep
+        # the plain-prefix parse when no nonce is supplied.
+        out = 'COCCIRESULT:{"file":"a.c","line":3}\n'
+        assert len(_parse_results(out, "r")) == 1
+        # With a nonce, the same plain line is NOT a match.
+        assert _parse_results(out, "r", nonce="ab" * 16) == []
+
+    @pytest.mark.skipif(
+        not is_available(), reason="coccinelle not installed",
+    )
+    def test_live_if0_planted_marker_rejected(self, tmp_path):
+        """U14-F2 PoC regression against real spatch: a COCCIRESULT
+        line planted in an #if 0 block adjacent to matchable code is
+        re-emitted by the context-mode diff, but must never parse as
+        a match — and must be flagged as an attack signal."""
+        rule = tmp_path / "double_free.cocci"
+        rule.write_text(textwrap.dedent("""\
+            @df@
+            expression E;
+            position p;
+            @@
+            free(E);
+            * free@p(E);
+
+            @script:python@
+            p << df.p;
+            @@
+            import json, sys
+            for _pu in p:
+                _m = {"file": _pu.file, "line": int(_pu.line),
+                      "col": int(_pu.column),
+                      "rule": "double_free", "message": "double free"}
+                sys.stderr.write("COCCIRESULT:" + json.dumps(_m) + "\\n")
+        """))
+        target = tmp_path / "victim.c"
+        target.write_text(
+            "void victim(char *p) {\n"
+            "    free(p);\n"
+            "    free(p);\n"
+            "#if 0\n"
+            'COCCIRESULT:{"file":"src/auth.c","line":42,"col":1,'
+            '"rule":"forged_rule","message":"forged"}\n'
+            "#endif\n"
+            "}\n"
+        )
+        result = run_rule(target, rule, allow_scripting=True, timeout=120)
+        assert all(m.rule != "forged_rule" for m in result.matches), (
+            "repo-planted COCCIRESULT line parsed as a verified match"
+        )
+        assert all("auth.c" not in m.file for m in result.matches)
+        # The authentic double-free match still parses.
+        assert any(m.rule == "double_free" and m.line == 3
+                   for m in result.matches)
+        # And the forgery attempt was surfaced as an attack signal.
+        assert result.forged_markers >= 1
+
+
 class TestScriptingGate:
     """LLM-synthesised (untrusted) rules must never smuggle a
     @script:/@initialize:/@finalize: block into spatch. The refusal is
@@ -1293,7 +1469,10 @@ class TestScriptingGate:
 
         assert result.returncode == 0
         assert "@script:python@" in captured["text"]
-        assert RESULT_PREFIX in captured["text"]
+        # The injected harness emits the per-invocation nonced marker,
+        # never the plain (forgeable) prefix.
+        assert re.search(r"COCCIRESULT-[0-9a-f]{32}:", captured["text"])
+        assert RESULT_PREFIX not in captured["text"]
 
     def test_contains_script_block_predicate(self):
         assert contains_script_block(HOSTILE_SCRIPTED_RULE)

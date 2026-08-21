@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -36,6 +37,27 @@ logger = logging.getLogger(__name__)
 RESULT_PREFIX = "COCCIRESULT:"
 _SPATCH_BIN = "spatch"
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _make_nonce() -> str:
+    """Per-invocation evidence nonce for the COCCIRESULT marker.
+
+    spatch's transform/context diff output re-emits UNMODIFIED source
+    lines from the scanned file, and hostile source can therefore plant
+    a literal ``COCCIRESULT:{...}`` line that reaches our stdout parse
+    (U14-F2: attacker-chosen file/line/rule minted as a verified
+    SpatchMatch, PoC'd through an ``#if 0`` block). Every invocation
+    now rewrites the rule's emit sites to ``COCCIRESULT-<nonce>:`` and
+    the parser accepts ONLY that marker. The nonce is generated after
+    the scanned repo was authored, so no repo content can carry it;
+    a bare or wrong-nonce marker line is rejected and logged as an
+    attack signal.
+    """
+    return secrets.token_hex(16)
+
+
+def _nonced_prefix(nonce: str) -> str:
+    return f"COCCIRESULT-{nonce}:"
 
 # Position-metavariable names that we refuse to inject into the
 # @script:python@ harness — they'd shadow Python builtins / keywords
@@ -310,42 +332,55 @@ def run_rule(
 
     needs_harness = RESULT_PREFIX not in rule_text and "script:python" not in rule_text
 
-    # If the rule needs harness injection, the modified text has to
-    # reach spatch via a real file path. Pre-fix this routed via
-    # ``--sp-file -`` (stdin), but spatch 1.3 (the build on every
-    # host we ship to) doesn't accept ``-`` / ``--sp-file=-`` /
-    # ``--sp-file /dev/stdin`` — each errors with either
+    # Per-invocation evidence nonce (see _make_nonce): every emit site
+    # — the rule's own scripting blocks and our injected harness — is
+    # rewritten from ``COCCIRESULT:`` to ``COCCIRESULT-<nonce>:``; the
+    # parser accepts only the nonced marker.
+    nonce = _make_nonce()
+    exec_text = rule_text
+    if needs_harness:
+        exec_text = _inject_harness(rule_text, rule_name)
+    exec_text = exec_text.replace(RESULT_PREFIX, _nonced_prefix(nonce))
+
+    # Any modified text (harness injection and/or nonce substitution)
+    # has to reach spatch via a real file path. ``--sp-file -``
+    # (stdin) does not work on spatch 1.3 (the build on every host we
+    # ship to) — each spelling errors with either
     # ``Sys_error("-: No such file or directory")`` or "unexpected
     # code before the first rule". The only reliable invocation is
-    # a real path. Write the harnessed text to a tempfile and pass
+    # a real path. Write the modified text to a tempfile and pass
     # its path; cleanup in ``finally`` covers timeout / error paths.
     harnessed_rule_path: Path | None = None
-    if needs_harness:
-        injected = _inject_harness(rule_text, rule_name)
-        if injected != rule_text:
-            # Tempfile in the system tempdir — works under the
-            # default sandbox allowlist (``/tmp`` is reachable).
-            # delete=False so we control cleanup; without it the
-            # NamedTemporaryFile context manager would unlink on
-            # exit before spatch could read it through the
-            # subprocess_runner.
-            fd, tmp_name = tempfile.mkstemp(suffix=".cocci", prefix="raptor-cocci-")
+    if exec_text != rule_text:
+        # Tempfile in the system tempdir — works under the
+        # default sandbox allowlist (``/tmp`` is reachable).
+        # delete=False so we control cleanup; without it the
+        # NamedTemporaryFile context manager would unlink on
+        # exit before spatch could read it through the
+        # subprocess_runner.
+        fd, tmp_name = tempfile.mkstemp(suffix=".cocci", prefix="raptor-cocci-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(exec_text)
+            harnessed_rule_path = Path(tmp_name)
+        except OSError as e:
+            # Fail closed: running the ORIGINAL file would emit
+            # plain (un-nonced) markers that the parser must reject,
+            # so the run could only ever report false silence.
+            # Pre-nonce this fell back to the un-harnessed rule; now
+            # an unwritable tempdir is a structured error instead.
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(injected)
-                harnessed_rule_path = Path(tmp_name)
+                Path(tmp_name).unlink()
             except OSError:
-                # If we can't write, fall back to the un-harnessed
-                # rule path. The caller still gets spatch results,
-                # just without our structured COCCIRESULT lines —
-                # which is the same UX as a multi-rule file
-                # (handled below in _inject_harness's existing
-                # "return rule_text unchanged" path).
-                try:
-                    Path(tmp_name).unlink()
-                except OSError:
-                    pass
-                harnessed_rule_path = None
+                pass
+            return SpatchResult(
+                rule=rule_name, rule_path=str(rule),
+                errors=[
+                    "failed to materialise nonce-marked rule file: "
+                    f"{e}",
+                ],
+                returncode=-1,
+            )
 
     sp_file_path = harnessed_rule_path if harnessed_rule_path else rule
     cmd = [_spatch_path() or _SPATCH_BIN, "--sp-file", str(sp_file_path)]
@@ -424,14 +459,18 @@ def run_rule(
                     exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
                 )
                 partial_matches = _dedup_matches(
-                    _parse_results(partial_stdout, rule_name)
-                    + _parse_results(partial_stderr, rule_name)
+                    _parse_results(partial_stdout, rule_name, nonce=nonce)
+                    + _parse_results(partial_stderr, rule_name, nonce=nonce)
                 )
                 return SpatchResult(
                     rule=rule_name, rule_path=str(rule),
                     matches=partial_matches,
                     errors=[f"Timeout after {timeout}s (partial output captured)"],
                     returncode=-1,
+                    forged_markers=_warn_forged_markers(
+                        partial_stdout, partial_stderr,
+                        nonce=nonce, rule_name=rule_name, target=target,
+                    ),
                 )
             except OSError as e:
                 return SpatchResult(
@@ -442,7 +481,8 @@ def run_rule(
             elapsed = int((time.monotonic() - start) * 1000)
 
             matches = _dedup_matches(
-                _parse_results(proc.stdout, rule_name) + _parse_results(proc.stderr, rule_name)
+                _parse_results(proc.stdout, rule_name, nonce=nonce)
+                + _parse_results(proc.stderr, rule_name, nonce=nonce)
             )
             errors = _parse_errors(proc.stderr)
 
@@ -456,6 +496,10 @@ def run_rule(
                 errors=errors,
                 elapsed_ms=elapsed,
                 returncode=proc.returncode,
+                forged_markers=_warn_forged_markers(
+                    proc.stdout, proc.stderr,
+                    nonce=nonce, rule_name=rule_name, target=target,
+                ),
             )
         finally:
             # Clean up the harnessed-rule tempfile. Covers timeout
@@ -604,7 +648,10 @@ def run_rules_batched(
     if not rule_stems:
         return refused
 
-    combined = "\n".join(parts)
+    # Same per-invocation evidence nonce as run_rule (see _make_nonce):
+    # one nonce covers the whole batch invocation.
+    nonce = _make_nonce()
+    combined = "\n".join(parts).replace(RESULT_PREFIX, _nonced_prefix(nonce))
 
     fd, tmp_name = tempfile.mkstemp(
         suffix=".cocci", prefix="raptor-cocci-batch-",
@@ -670,8 +717,12 @@ def run_rules_batched(
                     if exc.stderr else ""
                 )
                 all_matches = _dedup_matches(
-                    _parse_results(partial_stdout, "batch")
-                    + _parse_results(partial_stderr, "batch"),
+                    _parse_results(partial_stdout, "batch", nonce=nonce)
+                    + _parse_results(partial_stderr, "batch", nonce=nonce),
+                )
+                forged = _warn_forged_markers(
+                    partial_stdout, partial_stderr,
+                    nonce=nonce, rule_name="batch", target=target,
                 )
                 by_rule: dict[str, list[SpatchMatch]] = {
                     s: [] for s in rule_stems
@@ -684,6 +735,7 @@ def run_rules_batched(
                         rule=s, matches=by_rule.get(s, []),
                         errors=[f"Batch timeout after {timeout}s"],
                         returncode=-1,
+                        forged_markers=forged,
                     )
                     for s in rule_stems
                 }
@@ -701,10 +753,14 @@ def run_rules_batched(
 
             elapsed = int((time.monotonic() - start) * 1000)
             all_matches = _dedup_matches(
-                _parse_results(proc.stdout, "batch")
-                + _parse_results(proc.stderr, "batch"),
+                _parse_results(proc.stdout, "batch", nonce=nonce)
+                + _parse_results(proc.stderr, "batch", nonce=nonce),
             )
             errors = _parse_errors(proc.stderr)
+            forged = _warn_forged_markers(
+                proc.stdout, proc.stderr,
+                nonce=nonce, rule_name="batch", target=target,
+            )
 
             by_rule = {s: [] for s in rule_stems}
             for m in all_matches:
@@ -718,6 +774,7 @@ def run_rules_batched(
                     errors=errors,
                     elapsed_ms=elapsed,
                     returncode=proc.returncode,
+                    forged_markers=forged,
                 )
                 for s, r in zip(rule_stems, batched_rules)
             }
@@ -882,13 +939,25 @@ for _p in {pos_var}:
     return rule_text + harness
 
 
-def _parse_results(output: str, rule_name: str) -> list[SpatchMatch]:
-    """Parse COCCIRESULT lines from spatch stdout or stderr."""
+def _parse_results(
+    output: str, rule_name: str, nonce: str | None = None,
+) -> list[SpatchMatch]:
+    """Parse COCCIRESULT lines from spatch stdout or stderr.
+
+    When ``nonce`` is given (every runner invocation passes one), only
+    lines carrying the per-invocation ``COCCIRESULT-<nonce>:`` marker
+    are accepted — a bare ``COCCIRESULT:`` line (or one with a guessed
+    nonce) planted in hostile source and re-emitted by spatch's diff
+    output is NOT parseable evidence (U14-F2). ``nonce=None`` keeps
+    the legacy plain-prefix parse for callers that post-process raw
+    spatch output outside a runner invocation (unit tests).
+    """
+    prefix = _nonced_prefix(nonce) if nonce else RESULT_PREFIX
     matches = []
     for line in output.splitlines():
         line = line.strip()
-        if line.startswith(RESULT_PREFIX):
-            json_str = line[len(RESULT_PREFIX):]
+        if line.startswith(prefix):
+            json_str = line[len(prefix):]
             try:
                 d = json.loads(json_str)
             except (json.JSONDecodeError, ValueError):
@@ -909,6 +978,45 @@ def _parse_results(output: str, rule_name: str) -> list[SpatchMatch]:
     return matches
 
 
+def _forged_marker_lines(output: str, nonce: str) -> list[str]:
+    """COCCIRESULT-shaped lines that do NOT carry the invocation nonce.
+
+    These are exactly the lines the pre-nonce parser would have
+    accepted as verified matches: a repo-planted ``COCCIRESULT:{...}``
+    surviving in an ``#if 0`` block, a #define continuation, or any
+    context line spatch's diff output re-emits. Rejected from the
+    match set by _parse_results; surfaced here as an attack signal.
+    """
+    prefix = _nonced_prefix(nonce)
+    forged = []
+    for line in output.splitlines():
+        s = line.strip()
+        if not s.startswith("COCCIRESULT"):
+            continue
+        if s.startswith(prefix):
+            continue
+        forged.append(s[:200])
+    return forged
+
+
+def _warn_forged_markers(
+    stdout: str, stderr: str, *, nonce: str, rule_name: str, target: Path,
+) -> int:
+    """Count + log forged COCCIRESULT markers across both streams."""
+    forged = (
+        _forged_marker_lines(stdout or "", nonce)
+        + _forged_marker_lines(stderr or "", nonce)
+    )
+    if forged:
+        logger.warning(
+            "COCCIRESULT forgery signal: %d marker line(s) without the "
+            "per-invocation nonce rejected (rule %s, target %s) — "
+            "likely hostile-source evidence-forgery attempt; first: %s",
+            len(forged), rule_name, target, forged[0],
+        )
+    return len(forged)
+
+
 _ERROR_PATTERNS = (
     "parse error", "semantic error", "fatal error", "syntax error",
     "unbound metavariable", "already tagged token", "metavariable not used",
@@ -922,7 +1030,9 @@ def _parse_errors(stderr: str) -> list[str]:
         line = line.strip()
         if not line:
             continue
-        if line.startswith(RESULT_PREFIX):
+        if line.startswith("COCCIRESULT"):
+            # Covers both the plain prefix and the per-invocation
+            # nonced marker (COCCIRESULT-<nonce>:).
             continue
         if line.startswith("init_defs_builtins:"):
             continue

@@ -56,6 +56,11 @@ class SpatchResult:
     errors: List[str] = field(default_factory=list)
     elapsed_ms: int = 0
     returncode: int = 0
+    # COCCIRESULT-shaped output lines that did NOT carry the runner's
+    # per-invocation nonce — rejected from ``matches`` and counted here
+    # as an attack signal (hostile source planting forged evidence
+    # lines that spatch's diff output re-emits).
+    forged_markers: int = 0
 
     @property
     def ok(self) -> bool:
@@ -74,4 +79,5 @@ class SpatchResult:
             "errors": self.errors,
             "elapsed_ms": self.elapsed_ms,
             "returncode": self.returncode,
+            "forged_markers": self.forged_markers,
         }

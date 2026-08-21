@@ -18520,22 +18520,20 @@ def _is_detection_only(tool_id: str) -> bool:
         from core.audit.sweep import get_rule_role
         return get_rule_role(rule_path) == "detection"
 
-    if tool_id in ("joern:live", "joern:pre_sweep"):
-        # Bare taint reachability: proves a source→sink dataflow
-        # EXISTS, and nothing about the hypothesis mechanism — the
-        # live query returns flows for a correctly clamped memcpy
-        # wrapper (guards/clamps on the path are invisible to
-        # reachableByFlows).  As sole promote-evidence it minted
-        # suspicious verdicts on guarded code whenever the reviewer
-        # had ALSO refuted the hypothesis (the joern trap flap: the
-        # LLM's chain routing sometimes included joern, the confirm
-        # was then deterministic, and the guarded-sink veto could not
-        # counter it).  Hypothesis-bound reachability keeps its
-        # verification role via the joern:flow channel (joern_verify
-        # matches the hypothesis's own endpoints, with vacuity
-        # guards); the generic channels corroborate via aggregation,
-        # never convict alone.
-        return True
+    if tool_id.startswith("joern:"):
+        # Bare taint reachability (joern:live / joern:pre_sweep)
+        # proves a source→sink dataflow EXISTS, and nothing about the
+        # hypothesis mechanism — the live query returns flows for a
+        # correctly clamped memcpy wrapper (guards/clamps on the path
+        # are invisible to reachableByFlows), so it corroborates via
+        # aggregation and never convicts alone. Hypothesis-bound
+        # reachability (joern:flow / joern:guard-dominance /
+        # joern:taint:*) keeps verification role. The joern channel
+        # module is the single authority for the split — the
+        # evidence-grade firewall (is_tool_evidence) consults the
+        # same classifier via _DETECTION_CLASSIFIER_MODULES.
+        from core.audit.joern_verify import is_detection_rule_id
+        return is_detection_rule_id(tool_id)
 
     if tool_id.startswith("smt:"):
         verb = tool_id.split("smt:", 1)[1]

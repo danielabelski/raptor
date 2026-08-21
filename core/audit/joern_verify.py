@@ -47,6 +47,29 @@ logger = logging.getLogger(__name__)
 GUARD_DOMINANCE_STAMP = "joern:guard-dominance"
 FLOW_STAMP = "joern:flow"
 
+# Detection-grade joern stamps: bare taint reachability (``joern:live``
+# from the orchestrator's live-query corroboration, ``joern:pre_sweep``
+# from the batch pre-sweep) proves a source→sink dataflow EXISTS and
+# nothing about the hypothesis mechanism — ``reachableByFlows`` is
+# guard-blind, so a correctly clamped copy still "flows". Such
+# receipts corroborate through multi-channel aggregation and never
+# convict or sustain alone. The hypothesis-endpoint-bound stamps
+# (``joern:flow``, ``joern:guard-dominance``, ``joern:taint:*``) keep
+# verification role.
+DETECTION_STAMPS = frozenset({"joern:live", "joern:pre_sweep"})
+
+
+def is_detection_rule_id(rule_id: str) -> bool:
+    """Joern-channel detection-grade stamp classification.
+
+    The single authority for which joern stamps may not promote or
+    sustain a verdict alone — consulted by the orchestrator's
+    promote-role check (``_is_detection_only``) and by the
+    evidence-grade firewall (``is_tool_evidence`` via
+    ``_DETECTION_CLASSIFIER_MODULES``), so the two can never drift.
+    """
+    return rule_id in DETECTION_STAMPS
+
 # CWE families dispatched to each channel (wired via
 # orchestrator._cwe_fallback_chain).
 GUARD_DOMINANCE_CWES = frozenset({

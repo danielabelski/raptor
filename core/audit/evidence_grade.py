@@ -122,6 +122,12 @@ _DETECTION_CLASSIFIER_MODULES: dict[str, str] = {
     "release_order": "core.audit.release_order",
     "resource_bounds": "core.audit.resource_bounds",
     "protocol_state": "core.audit.protocol_state",
+    # Bare joern reachability (joern:live / joern:pre_sweep) is
+    # guard-blind and detection-role at the promotion sites — grading
+    # it as sustain-capable tool evidence here let the same receipt
+    # hold an LLM-authored claim against demotion. joern:flow /
+    # joern:guard-dominance / joern:taint:* keep verification role.
+    "joern": "core.audit.joern_verify",
 }
 
 
@@ -161,6 +167,8 @@ def _is_detection_variant(part: str) -> bool:
     # String-heuristic fallback for hosts where a channel module is
     # unavailable — mirrors each channel's DETECTION_VARIANT_SUFFIX
     # contract.
+    if part in ("joern:live", "joern:pre_sweep"):
+        return True
     if part.startswith("consistency:") and part.endswith("-majority"):
         return True
     if part.startswith((

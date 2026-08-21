@@ -418,6 +418,50 @@ class TestDetectionVariantFirewall:
         assert is_tool_evidence("smt+ptr_lifecycle:stale-alias-naming")
         assert is_tool_evidence("fail_open:handler-outcome-naming+coccinelle")
 
+    def test_bare_joern_reachability_is_not_tool_evidence(self):
+        # joern:live / joern:pre_sweep are guard-blind reachability —
+        # detection-role at the promotion sites; grading them as
+        # sustain-capable evidence here let the same receipt hold an
+        # LLM-authored claim against demotion (the trap-flap shape
+        # survived only through re-review dice).
+        assert not is_tool_evidence("joern:live")
+        assert not is_tool_evidence("joern:pre_sweep")
+
+    def test_joern_verification_stamps_still_qualify(self):
+        for stamp in (
+            "joern",
+            "joern:flow",
+            "joern:guard-dominance",
+            "joern:taint:parse_header->memcpy",
+        ):
+            assert is_tool_evidence(stamp), stamp
+
+    def test_joern_live_riding_a_receipt_composite_qualifies(self):
+        assert is_tool_evidence("semgrep:rule-1+joern:live")
+        assert not is_tool_evidence("joern:live+joern:pre_sweep")
+
+    def test_joern_firewall_matches_channel_classifier(self):
+        from core.audit.evidence_grade import _is_detection_variant
+        from core.audit.joern_verify import (
+            DETECTION_STAMPS,
+            is_detection_rule_id,
+        )
+
+        for stamp in sorted(DETECTION_STAMPS) + ["joern:flow", "joern"]:
+            assert _is_detection_variant(stamp) == \
+                is_detection_rule_id(stamp), stamp
+
+    def test_referee_does_not_sustain_on_bare_joern_live(self):
+        # The verdict-weight consumer: a prior journal entry whose only
+        # receipt is bare reachability must not be graded tool-evidenced
+        # (an LLM-only /validate ruling can then demote it).
+        from core.audit.feedback import _prior_has_tool_evidence
+
+        class _Entry:
+            evidence_tools = ["joern:live"]
+
+        assert _prior_has_tool_evidence(_Entry()) is False
+
     def test_matches_each_channel_classifier(self):
         """The firewall must agree with every channel's own contract."""
         import importlib

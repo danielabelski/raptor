@@ -2303,15 +2303,35 @@ class LLMClient:
                         )
                         _safe_e = _esc_np(_redact(str(e)))[:1024]
                         last_safe_e = _safe_e
-                        # DEBUG: intermediate attempts are noise — a
-                        # 429 storm printed ~370 near-identical retry
-                        # WARNINGs. The terminal per-model WARNING
-                        # below carries the attempt count and last
-                        # error; a recovery logs one INFO.
-                        logger.debug(
-                            "Attempt %d/%d failed for %s/%s: %s",
+                        # Timeout-class failures log at WARNING: each
+                        # one already burned the FULL per-request read
+                        # budget (600s on the bedrock/claudecode
+                        # transports), so during an upstream brownout
+                        # the review loop stalls for tens of minutes
+                        # (observed 50 min: client attempts plus the
+                        # orchestrator's reduced-context retry, each
+                        # re-buying the read budget) with nothing
+                        # operator-visible until the terminal line.
+                        # Unlike 429s, timeouts cannot storm — the
+                        # read budget itself throttles them to a
+                        # handful per hour per worker.
+                        # Everything else stays DEBUG: intermediate
+                        # attempts are noise — a 429 storm printed
+                        # ~370 near-identical retry WARNINGs. The
+                        # terminal per-model WARNING below carries the
+                        # attempt count and last error; a recovery
+                        # logs one INFO.
+                        _attempt_log = (
+                            logger.warning if is_timeout_error(e)
+                            else logger.debug
+                        )
+                        _attempt_log(
+                            "Attempt %d/%d failed for %s/%s after "
+                            "%.0fs: %s",
                             attempt + 1, self.config.max_retries,
-                            model.provider, model.model_name, _safe_e,
+                            _esc_np(model.provider),
+                            _esc_np(model.model_name),
+                            time.monotonic() - attempt_start, _safe_e,
                         )
 
                         from core.llm.telemetry import emit as _t_emit

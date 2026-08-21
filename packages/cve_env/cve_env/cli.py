@@ -69,6 +69,35 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
         constraints = probe_for_constraints()
 
+        # /cve-diff pre-fill: verified discovery facts seed the agent's
+        # research (hints with provenance, never gates — the verify DAG
+        # stays the only oracle). Lazy import keeps facade startup
+        # unchanged when pre-fill is off.
+        prefill = None
+        prefill_mode = getattr(args, "prefill", "off")
+        prefill_from = getattr(args, "prefill_from", None)
+        if prefill_from or prefill_mode == "auto":
+            from core.orchestration.cvediff_bridge import find_fix_pointer
+
+            pointer = find_fix_pointer(
+                cve.cve_id,
+                out_dir=prefill_from,
+            )
+            if pointer is not None:
+                prefill = pointer.to_dict()
+                print(
+                    f"prefill: using /cve-diff discovery from "
+                    f"{pointer.source_run}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"prefill: no /cve-diff discovery found for "
+                    f"{cve.cve_id} — run `/cve-diff run {cve.cve_id}` "
+                    f"first to enable pre-fill",
+                    file=sys.stderr,
+                )
+
         # Use getattr with config defaults so test fixtures that build a
         # minimal Args object don't have to know about every CLI flag.
         # argparse always populates these attrs at real CLI invocation.
@@ -88,6 +117,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
                 args, "turn_extension_pct", TURN_EXTENSION_PCT
             ),
             constraints=constraints,
+            prefill=prefill,
         )
         # Manual allowlist — must be updated when Outcome fields change.
         # Consider dataclasses.asdict() with exclusions.
@@ -118,6 +148,9 @@ def _cmd_build(args: argparse.Namespace) -> int:
             "stage_costs": outcome.stage_costs,
             "stage_calls": outcome.stage_calls,
             "over_budget_stages_list": outcome.over_budget_stages_list,
+            # /cve-diff pre-fill provenance (None when pre-fill was off or
+            # found nothing) — additive outcome key, facade-contract safe.
+            "prefill": prefill,
         }
         # Write sidecar before stdout so the result survives a SIGKILL that
         # fires after build() returns but before the stdout pipe flushes.
@@ -832,6 +865,18 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="e.g. CVE-2018-7600 (format: CVE-YYYY-NNNN+)",
     )
     b.add_argument("--product", default=None, help="product name hint")
+    b.add_argument(
+        "--prefill", choices=("auto", "off"), default=None,
+        help="auto: search prior /cve-diff runs (active project, then "
+             "global out/) for a verified fix pointer and seed the agent "
+             "with it; off: original behaviour. Default: off for this "
+             "facade (unset lets the RAPTOR dispatch default to auto)",
+    )
+    b.add_argument(
+        "--prefill-from", default=None, metavar="DIR",
+        help="read the /cve-diff discovery artifact for this CVE from an "
+             "explicit run directory (implies pre-fill)",
+    )
     b.add_argument("--version", default=None, help="vulnerable version")
     b.add_argument("--description", default=None, help="short description")
     # Composition flows (source-build + dockerfile_gen + multiple verify

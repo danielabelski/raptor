@@ -142,6 +142,7 @@ def build_core(
     constraints: list[Any] | None = None,
     max_turn_extensions: int | None = None,  # accepted; extensions are
     turn_extension_pct: float | None = None,  # not replicated in v1
+    prefill: dict | None = None,
 ) -> Outcome:
     """Drive one agent session for ``cve`` on the core backend.
 
@@ -183,7 +184,8 @@ def build_core(
         max_extensions=0,
         extension_pct=0.0,
     )
-    user_prompt = render_user_prompt(cve, host, run_id=run_id)
+    user_prompt = render_user_prompt(cve, host, run_id=run_id,
+                                     prefill=prefill)
 
     def _on_event(event: LoopEvent) -> None:
         if isinstance(event, ToolCallDispatched):

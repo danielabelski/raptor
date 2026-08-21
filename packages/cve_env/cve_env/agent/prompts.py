@@ -1342,7 +1342,8 @@ def render_runtime_caps_block(
     )
 
 
-def render_user_prompt(cve: CveRecord, host: HostInfo, run_id: str = "") -> str:
+def render_user_prompt(cve: CveRecord, host: HostInfo, run_id: str = "",
+                       prefill: dict | None = None) -> str:
     """Package a CVE + host into the opening user message.
 
     The CVE record is intentionally minimal -- often just the id. The agent \
@@ -1388,6 +1389,7 @@ def render_user_prompt(cve: CveRecord, host: HostInfo, run_id: str = "") -> str:
         if run_id
         else ""
     )
+    prefill_block = _render_prefill_block(prefill)
     return f"""\
 # CVE
 - id: {cve.cve_id}
@@ -1403,7 +1405,52 @@ References (if any; otherwise nvd_lookup will return them):
 - os: {host.os}
 - docker_backend: {host.docker_backend or "(auto-detect)"}
 - rosetta_available: {host.rosetta_available}
-{run_id_block}
+{run_id_block}{prefill_block}
 Build a reproducible Docker environment for this CVE and verify it end-to-end. Return \
 when `verify.passed == True`, or call `give_up(reason, detail)` if stuck.
 """
+
+
+def _render_prefill_block(prefill: dict | None) -> str:
+    """Render the /cve-diff pre-fill section of the opening message.
+
+    ``prefill`` is a ``FixPointer.to_dict()`` from
+    ``core.orchestration.cvediff_bridge`` — verified discovery facts.
+    They are presented as trusted-over-re-research HINTS: the agent may
+    override them when runtime evidence contradicts, and the verify DAG
+    stays the only oracle. A non-"source" diff shape carries the
+    mirror warning verbatim rather than being suppressed.
+    """
+    if not prefill:
+        return ""
+    repo = prefill.get("repository_url") or ""
+    fix = prefill.get("fix_commit") or ""
+    before = prefill.get("commit_before") or ""
+    if not (repo and fix and before):
+        return ""
+    consensus = prefill.get("consensus_verdict") or ""
+    verified_how = "fix commit resolved in an actual clone"
+    if consensus == "agree":
+        verified_how += "; 2-method pointer consensus: agree"
+    shape = prefill.get("diff_shape") or ""
+    mirror_note = (
+        f"- WARNING: the discovery diff shape is {shape!r} — the repo is "
+        f"likely a downstream mirror; treat repository/commit as weak "
+        f"hints and re-verify via nvd_lookup.\n"
+        if shape and shape != "source" else ""
+    )
+    return (
+        f"\n# Verified discovery (from /cve-diff)\n"
+        f"A prior /cve-diff run verified these facts ({verified_how}). "
+        f"Trust them over re-research; if runtime evidence contradicts "
+        f"them, follow the evidence.\n"
+        f"- repository: {repo}\n"
+        f"- fix commit: {fix}\n"
+        f"- pre-patch commit (the vulnerable boundary): {before}\n"
+        f"{mirror_note}"
+        f"For a source build, clone the repository and build at the "
+        f"pre-patch commit (or the release tag immediately preceding the "
+        f"fix). You still pin and assert the concrete version literal "
+        f"yourself.\n"
+        f"- provenance: {prefill.get('source_run') or '(unknown run)'}\n"
+    )

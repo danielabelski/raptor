@@ -341,12 +341,31 @@ class TestProvenanceTiering:
         assert patterns[0].origin == "operator"
 
     def test_legacy_human_without_stamp_is_operator(self, tmp_path: Path):
+        # Only behind the date fence: the file must predate the
+        # stamp era (see STAMP_ERA_START).
+        import os
+
+        from core.annotations import STAMP_ERA_START
+
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        self._write(ann_dir, "source=human status=clean cwe=CWE-89")
+        pre_era = STAMP_ERA_START - 86400.0
+        for md in ann_dir.rglob("*.md"):
+            os.utime(md, (pre_era, pre_era))
+        patterns = scan_fp_patterns(ann_dir)
+        assert len(patterns) == 1
+        assert patterns[0].origin == "operator"
+
+    def test_fresh_stamp_less_human_is_machine_tier(self, tmp_path: Path):
+        # Same bytes, post-stamp-era mtime: bypass-by-omission
+        # laundering shape — demoted to machine tier.
         ann_dir = tmp_path / "annotations"
         ann_dir.mkdir()
         self._write(ann_dir, "source=human status=clean cwe=CWE-89")
         patterns = scan_fp_patterns(ann_dir)
         assert len(patterns) == 1
-        assert patterns[0].origin == "operator"
+        assert patterns[0].origin == "machine"
 
     def test_agent_note_is_machine_tier_not_dropped(self, tmp_path: Path):
         ann_dir = tmp_path / "annotations"

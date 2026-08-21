@@ -282,6 +282,65 @@ def _guard_import_output_dir(output_base: Path, project_name: str) -> Path:
     return output_dir
 
 
+def _demote_stampless_imported_annotations(output_dir: Path) -> None:
+    """Stamp ``provenance=imported`` onto every restored annotation
+    that arrived without an invocation-context stamp.
+
+    A hostile export can ship ``source=human`` notes with NO
+    tty/provenance keys — bytes indistinguishable from pre-stamp-era
+    operator notes — to mass-mark vulnerable functions clean with
+    operator authority after import. The zip severed
+    whatever provenance the notes ever had, so the import stamps the
+    channel they came through: ``provenance=imported`` classifies as
+    hint tier and never earns human grade (see
+    :mod:`core.annotations.provenance`). Stamped notes (interactive
+    / non-tty) are restored byte-faithfully — their stamp already
+    grades them.
+
+    Fail-closed per note: a restored section the write path refuses
+    to re-serialise (values that would corrupt the on-disk format)
+    is REMOVED rather than left stamp-less.
+    """
+    from core.annotations.models import Annotation
+    from core.annotations.provenance import LEGACY, classify_provenance
+    from core.annotations.provenance import IMPORTED as _IMPORTED
+    from core.annotations.provenance import PROVENANCE_KEY as _PROV_KEY
+    from core.annotations.storage import (
+        iter_all_annotations,
+        remove_annotation,
+        write_annotation,
+    )
+
+    for ann_base in sorted(Path(output_dir).rglob("annotations")):
+        if not ann_base.is_dir() or ann_base.is_symlink():
+            continue
+        for ann in list(iter_all_annotations(ann_base)):
+            if classify_provenance(ann.metadata) != LEGACY:
+                continue
+            meta = dict(ann.metadata)
+            meta[_PROV_KEY] = _IMPORTED
+            try:
+                write_annotation(
+                    ann_base,
+                    Annotation(file=ann.file, function=ann.function,
+                               body=ann.body, metadata=meta),
+                )
+            except ValueError:
+                logger.warning(
+                    "import: dropping restored annotation %s:%s — "
+                    "cannot re-serialise it with the imported "
+                    "provenance stamp",
+                    ann.file, ann.function,
+                )
+                try:
+                    remove_annotation(ann_base, ann.file, ann.function)
+                except (ValueError, OSError):
+                    logger.warning(
+                        "import: could not remove unstampable "
+                        "annotation %s:%s", ann.file, ann.function,
+                    )
+
+
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
                    output_base: Path = None) -> Dict[str, str]:
@@ -535,6 +594,19 @@ def import_project(zip_path: Path, projects_dir: Path,
 
     except zipfile.BadZipFile:
         raise ValueError("Invalid zip file") from None
+
+    # Demote restored stamp-less annotations to hint tier BEFORE the
+    # project registers (readers must never see un-stamped imports).
+    # A failure here fails the import closed: remove the extracted
+    # tree rather than register a project carrying notes that would
+    # read as pre-stamp operator authority.
+    try:
+        _demote_stampless_imported_annotations(output_dir)
+    except Exception as e:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise ValueError(
+            f"Import failed while stamping restored annotations: {e}"
+        ) from e
 
     # Register the project
     target = embedded_meta.get("target", "(imported)") if embedded_meta else "(imported)"

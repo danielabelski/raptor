@@ -44,8 +44,10 @@ class Annotation:
         CLI records on every add/edit — which std fds were TTYs,
         and the derived ``interactive-tty`` / ``non-tty`` tag (see
         :mod:`core.annotations.provenance`). Annotations without
-        the stamp are legacy (pre-stamp); readers give
-        ``source=human`` ones benefit-of-doubt.
+        the stamp are legacy only when their file predates the
+        stamp era (date-fenced — see ``STAMP_ERA_START``); readers
+        give ``source=human`` ones benefit-of-doubt behind that
+        fence and demote later stamp-less notes to hint tier.
       * ``hash``: short sha256 prefix of the function's source lines,
         captured at annotation time so callers can detect a stale
         annotation when the source edits later. Use

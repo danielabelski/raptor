@@ -221,7 +221,7 @@ def import_validation_results(
     # with a conclusion status can veto Reflexion — but no annotation
     # is ever written back (see amendment §1 D3 + A5).
     from core.annotations import is_human_grade
-    from core.annotations.storage import read_annotation
+    from core.annotations.storage import annotation_file_mtime, read_annotation
 
     from .journal import (
         VALID_VERDICTS,
@@ -304,16 +304,21 @@ def import_validation_results(
         # Human notes with a conclusion-status veto Reflexion — the
         # operator's judgement stands. The veto requires human GRADE
         # (source=human plus an interactive-TTY provenance stamp, or
-        # a legacy pre-stamp note), not just the caller-asserted
-        # source string — a non-interactive add claiming human is
-        # the laundering shape and gets machine tier below instead.
+        # a legacy note whose file mtime predates the stamp era —
+        # the date fence), not just the caller-asserted source
+        # string — a non-interactive add claiming human, or a bare
+        # stamp-less note written after the era began, is the
+        # laundering shape and gets machine tier below instead.
         # Amendment A5: only annotations whose status matches the
         # LLM's verdict vocabulary (``VALID_VERDICTS``) veto;
         # non-conclusion statuses (``todo``, ``investigating``,
         # free-form) don't block Reflexion because the operator
         # hasn't asserted anything.
         human_ann = read_annotation(annotations_dir, file_path, function_name)
-        if human_ann and is_human_grade(human_ann.metadata):
+        human_ann_mtime = annotation_file_mtime(annotations_dir, file_path)
+        if human_ann and is_human_grade(
+            human_ann.metadata, note_mtime=human_ann_mtime,
+        ):
             hstatus = (human_ann.metadata.get("status") or "").strip().lower()
             if hstatus in VALID_VERDICTS:
                 logger.info(
@@ -338,7 +343,7 @@ def import_validation_results(
         # back to the annotation) — annotations remain human-only
         # for new writes.
         if not audit_status and human_ann and not is_human_grade(
-            human_ann.metadata,
+            human_ann.metadata, note_mtime=human_ann_mtime,
         ):
             audit_status = human_ann.metadata.get("status", "")
             prior_body = human_ann.body

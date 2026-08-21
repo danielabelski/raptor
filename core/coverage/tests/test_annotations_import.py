@@ -25,10 +25,17 @@ def _store(tmp_path):
 
 
 def _ann(base, file, function, status, source="human"):
+    # Human notes carry the interactive-TTY stamp the CLI records on
+    # every real operator add — stamp-less human notes are the
+    # laundering shape and demote (see the provenance-grade tests
+    # below and the provenance date fence).
+    meta = {"status": status, "source": source}
+    if source == "human":
+        meta.update({"provenance": "interactive-tty", "tty": "stdin"})
     write_annotation(
         base,
         Annotation(file=file, function=function, body="note",
-                   metadata={"status": status, "source": source}),
+                   metadata=meta),
     )
 
 
@@ -64,7 +71,9 @@ def test_lines_metadata_fallback(tmp_path):
     write_annotation(
         base,
         Annotation(file="c.c", function="h", body="",
-                   metadata={"status": "clean", "source": "human", "lines": "5-9"}),
+                   metadata={"status": "clean", "source": "human",
+                             "provenance": "interactive-tty",
+                             "tty": "stdin", "lines": "5-9"}),
     )
     s = _store(tmp_path)
     assert import_annotations(s, base, _CHECKLIST) == 1
@@ -174,9 +183,29 @@ def test_forged_human_non_tty_demotes_to_machine_tier(tmp_path):
 
 
 def test_legacy_human_no_stamp_keeps_operator_grade(tmp_path):
+    # Only behind the date fence: the annotation file must predate
+    # the stamp era (see STAMP_ERA_START).
+    import os
+
+    from core.annotations import STAMP_ERA_START
+
     base = tmp_path / "annotations"
     _ann_meta(base, "a.c", "f2", "suspicious", {"source": "human"})
+    pre_era = STAMP_ERA_START - 86400.0
+    os.utime(base / "a.c.md", (pre_era, pre_era))
     s = _store(tmp_path)
     assert import_annotations(s, base, _CHECKLIST) == 1
     assert "annotations" in s.tool_coverage_of_range("a.c", 30, 60)
     assert s.function_verdict("a.c", 30, 60) == "open"
+
+
+def test_fresh_stamp_less_human_demotes_to_machine_tier(tmp_path):
+    # Same bytes with a post-stamp-era mtime: bypass-by-omission
+    # laundering shape — machine tier, no operator authority.
+    base = tmp_path / "annotations"
+    _ann_meta(base, "a.c", "f2", "suspicious", {"source": "human"})
+    s = _store(tmp_path)
+    assert import_annotations(s, base, _CHECKLIST) == 1
+    tools = s.tool_coverage_of_range("a.c", 30, 60)
+    assert "annotations:machine" in tools
+    assert "annotations" not in tools

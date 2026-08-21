@@ -138,7 +138,10 @@ def scan_fp_patterns(
         return []
 
     try:
-        from core.annotations.storage import iter_all_annotations
+        from core.annotations.storage import (
+            annotation_file_mtime,
+            iter_all_annotations,
+        )
     except ImportError:
         logger.debug("core.annotations not available; falling back to no FP patterns")
         return []
@@ -158,10 +161,21 @@ def scan_fp_patterns(
             clean_overrides[key].append(ann)
 
     raw_patterns: list[FPPattern] = []
+    # Per-file mtime cache for the legacy date fence (see
+    # is_human_grade): annotations in one .md share a timestamp.
+    mtimes: dict[str, float | None] = {}
     for key, anns in clean_overrides.items():
         for ann in anns:
+            if ann.file not in mtimes:
+                mtimes[ann.file] = annotation_file_mtime(
+                    annotations_dir, ann.file,
+                )
             origin = (
-                "operator" if is_human_grade(ann.metadata) else "machine"
+                "operator"
+                if is_human_grade(
+                    ann.metadata, note_mtime=mtimes[ann.file],
+                )
+                else "machine"
             )
             pattern = _detect_fp(ann, journal_index.get(key), origin=origin)
             if pattern is not None:

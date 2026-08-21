@@ -313,6 +313,7 @@ class TestSanitizeSinkGroundTruth:
             function="db_exec",
             body="Raw SQL executor — callers must escape first.",
             metadata={"status": "sink", "source": "human",
+                      "provenance": "interactive-tty", "tty": "stdin",
                       "cwe": "CWE-89"},
         ))
         save_specs(out, [TaintSpec(

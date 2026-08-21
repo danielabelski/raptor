@@ -530,10 +530,12 @@ class TestImportValidationResults:
         ann_dir.mkdir()
         _write_annotation(ann_dir, "src/vuln.c", "vuln_fn",
                           "finding", "Manually verified by operator")
-        # Set source=human in the annotation
+        # Set source=human with an interactive-TTY stamp (the shape
+        # the CLI writes for a real operator add — human GRADE).
         ann_path = ann_dir / "src" / "vuln.c.md"
         content = ann_path.read_text().replace(
-            "source=llm", "source=human",
+            "source=llm",
+            "source=human provenance=interactive-tty tty=stdin",
         )
         ann_path.write_text(content)
 
@@ -955,8 +957,13 @@ class TestProvenanceGatedVeto:
         assert result["updated"] == 0
 
     def test_legacy_human_without_stamp_vetoes(self, tmp_path: Path):
-        # Pre-stamp corpus keeps benefit-of-doubt: the write-path
-        # audit found zero mechanical writers at HEAD.
+        # Pre-stamp corpus keeps benefit-of-doubt — but only behind
+        # the date fence: the annotation file's mtime must predate
+        # the stamp era (see STAMP_ERA_START).
+        import os
+
+        from core.annotations import STAMP_ERA_START
+
         ann_dir = tmp_path / "annotations"
         ann_dir.mkdir()
         _write_annotation_meta(
@@ -964,12 +971,32 @@ class TestProvenanceGatedVeto:
             "status=finding source=human",
             "Old operator note",
         )
+        pre_era = STAMP_ERA_START - 86400.0
+        os.utime(ann_dir / "src" / "vuln.c.md", (pre_era, pre_era))
         result = import_validation_results(
             validation_report=self._report(tmp_path),
             annotations_dir=ann_dir,
         )
         assert result["skipped"] == 1
         assert result["updated"] == 0
+
+    def test_fresh_stamp_less_human_does_not_veto(self, tmp_path: Path):
+        # The same bytes with a post-stamp-era mtime are the
+        # bypass-by-omission laundering shape: no veto —
+        # the note demotes to prior-claim duty like non-tty.
+        ann_dir = tmp_path / "annotations"
+        ann_dir.mkdir()
+        _write_annotation_meta(
+            ann_dir, "src/vuln.c", "vuln_fn",
+            "status=finding source=human",
+            "Planted note",
+        )
+        result = import_validation_results(
+            validation_report=self._report(tmp_path),
+            annotations_dir=ann_dir,
+        )
+        assert result["skipped"] == 0
+        assert result["updated"] == 1
 
     def test_forged_human_non_tty_does_not_veto(self, tmp_path: Path):
         # source=human with a non-tty stamp is the laundering shape:

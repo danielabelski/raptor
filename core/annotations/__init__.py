@@ -54,15 +54,18 @@ from __future__ import annotations
 
 from .models import Annotation
 from .provenance import (
+    IMPORTED,
     INTERACTIVE_TTY,
     LEGACY,
     NON_TTY,
     PROVENANCE_KEYS,
+    STAMP_ERA_START,
     classify_provenance,
     detect_invocation_context,
     is_human_grade,
 )
 from .storage import (
+    annotation_file_mtime,
     annotation_path,
     compute_function_hash,
     iter_all_annotations,
@@ -73,11 +76,14 @@ from .storage import (
 )
 
 __all__ = [
+    "IMPORTED",
     "INTERACTIVE_TTY",
     "LEGACY",
     "NON_TTY",
     "PROVENANCE_KEYS",
+    "STAMP_ERA_START",
     "Annotation",
+    "annotation_file_mtime",
     "annotation_path",
     "classify_provenance",
     "compute_function_hash",

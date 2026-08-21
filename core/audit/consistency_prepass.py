@@ -120,8 +120,12 @@ def _collect_sink_vocabulary(
     if ann_base is not None:
         try:
             from core.annotations.provenance import is_human_grade
-            from core.annotations.storage import read_file_annotations
+            from core.annotations.storage import (
+                annotation_file_mtime,
+                read_file_annotations,
+            )
             for fp in source_texts:
+                ann_mtime = annotation_file_mtime(Path(ann_base), fp)
                 for ann in read_file_annotations(Path(ann_base), fp):
                     meta = ann.metadata or {}
                     if meta.get("status") != "sink":
@@ -129,7 +133,9 @@ def _collect_sink_vocabulary(
                     sinks[ann.function] = {
                         "source": "annotation",
                         "cwe": _sink_cwe(meta),
-                        "registry": is_human_grade(meta),
+                        "registry": is_human_grade(
+                            meta, note_mtime=ann_mtime,
+                        ),
                     }
         except Exception:
             logger.debug("sanitize-sink: annotation sink read failed",

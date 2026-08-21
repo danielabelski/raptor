@@ -398,13 +398,24 @@ def import_annotations(
     if not base_dir.exists():
         return 0
     from core.annotations import is_human_grade
-    from core.annotations.storage import iter_all_annotations
+    from core.annotations.storage import (
+        annotation_file_mtime,
+        iter_all_annotations,
+    )
 
     ranges = _function_ranges(checklist)
 
+    # Per-source-file mtime cache: is_human_grade's legacy date fence
+    # needs the annotation file's mtime; annotations in one file share
+    # a timestamp, so stat each .md once.
+    mtimes: dict[str, float | None] = {}
     imported = 0
     for ann in iter_all_annotations(base_dir):
-        human_grade = is_human_grade(ann.metadata)
+        if ann.file not in mtimes:
+            mtimes[ann.file] = annotation_file_mtime(base_dir, ann.file)
+        human_grade = is_human_grade(
+            ann.metadata, note_mtime=mtimes[ann.file],
+        )
         if not human_grade and ann.metadata.get("source") not in (
             "human", "agent",
         ):

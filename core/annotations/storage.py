@@ -52,6 +52,7 @@ import logging
 
 from .models import Annotation
 from .provenance import (
+    IMPORTED,
     INTERACTIVE_TTY,
     NON_TTY,
     PROVENANCE_KEY,
@@ -216,10 +217,12 @@ def _validate_metadata(metadata) -> None:
                 f"invalid annotation source {v_str!r}; expected one of "
                 f"{sorted(_VALID_ANNOTATION_SOURCES)}"
             )
-        if k == PROVENANCE_KEY and v_str not in (INTERACTIVE_TTY, NON_TTY):
+        if k == PROVENANCE_KEY and v_str not in (
+            INTERACTIVE_TTY, NON_TTY, IMPORTED,
+        ):
             raise ValueError(
                 f"invalid provenance tag {v_str!r}; expected "
-                f"{INTERACTIVE_TTY!r} or {NON_TTY!r}"
+                f"{INTERACTIVE_TTY!r}, {NON_TTY!r} or {IMPORTED!r}"
             )
         if k == TTY_KEY and not valid_tty_value(v_str):
             raise ValueError(
@@ -294,6 +297,21 @@ def annotation_path(base_dir: Path, source_file: str) -> Path:
             f"{base_resolved})"
         )
     return path
+
+
+def annotation_file_mtime(base_dir: Path, source_file: str) -> float | None:
+    """The annotation .md file's mtime for one source file, or None
+    when the file (or its path) doesn't resolve.
+
+    This is the ``note_mtime`` input to
+    :func:`core.annotations.provenance.is_human_grade` — the date
+    fence on the legacy stamp-less grandfather clause. Kept here so
+    every human-grade reader derives the timestamp the same way.
+    """
+    try:
+        return annotation_path(Path(base_dir), source_file).stat().st_mtime
+    except (OSError, ValueError):
+        return None
 
 
 @contextmanager

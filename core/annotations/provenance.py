@@ -31,11 +31,25 @@ Grading (what readers do with the stamp):
     FP primers, coverage evidence, IRIS spec promotion) require
     this grade.
   * **legacy** — no stamp at all: written before provenance was
-    recorded. Treated as human-grade when ``source=human``: the
-    write-path audit found zero mechanical writers at HEAD, so the
-    pre-stamp corpus is operator-authored, and demoting it would
-    erase real operator review. New CLI writes always carry the
-    stamp, so "legacy" also identifies notes that bypassed the CLI.
+    recorded. Treated as human-grade when ``source=human`` AND the
+    note demonstrably predates the stamp era (the caller passes the
+    annotation file's mtime and it is older than
+    :data:`STAMP_ERA_START`). The write-path audit found zero
+    mechanical writers at the stamp-era cut, so the pre-stamp corpus
+    is operator-authored, and demoting it would erase real operator
+    review. New CLI writes always carry the stamp, so a stamp-less
+    note in a file modified AFTER the era began identifies a writer
+    that bypassed the CLI — it demotes to hint tier instead of
+    inheriting the grandfather clause. Without a caller-supplied
+    mtime the fence cannot be established, so stamp-less notes
+    demote (fail toward the lower tier).
+
+    The fence is an mtime check, not proof: an attacker who can run
+    ``utime`` can backdate a planted file. That is accepted — the
+    module's guarantee has always been *detectable, not impossible*
+    (see above), and the fence closes the trivial bypass-by-omission
+    channel (writing a bare markdown file), forcing forgery through
+    a deliberate extra timestamp-tampering step.
   * everything else — machine / hint tier. ``source=agent``,
     ``source=llm``, and human-claimed-but-non-tty all demote; the
     annotation stays useful at the reader's lower tier, it just
@@ -55,9 +69,22 @@ from collections.abc import Mapping
 # Context tags carried in ``metadata.provenance``.
 INTERACTIVE_TTY = "interactive-tty"
 NON_TTY = "non-tty"
+# Written by the zip-import path onto restored notes that arrived
+# stamp-less: the archive severed any provenance the note ever had,
+# so the import stamps the channel it came through. Classifies as
+# its own tag; never human-grade (hint tier).
+IMPORTED = "imported"
 # Classification (never written to disk) for annotations that predate
 # the stamp.
 LEGACY = "legacy"
+
+# When the invocation-context stamp began being recorded (the commit
+# that introduced this module landed 2026-08-17T23:55:36Z). The
+# LEGACY grandfather clause in :func:`is_human_grade` only applies to
+# notes whose annotation file predates this instant — everything
+# stamp-less written after it is a CLI bypass, not a pre-stamp note.
+# Unix epoch seconds, UTC.
+STAMP_ERA_START = 1787010936.0
 
 # Metadata keys the CLI records. Reserved: callers may not set them
 # via ``--meta`` (the CLI computes them from the live fds).
@@ -119,7 +146,8 @@ def valid_tty_value(value: str) -> bool:
 def classify_provenance(metadata: Mapping[str, str] | None) -> str:
     """Classify a stored annotation's invocation context.
 
-    Returns ``interactive-tty``, ``non-tty``, or ``legacy``:
+    Returns ``interactive-tty``, ``non-tty``, ``imported``, or
+    ``legacy``:
 
       * a recognised ``provenance`` tag wins;
       * otherwise a well-formed ``tty`` key is interpreted directly
@@ -131,7 +159,7 @@ def classify_provenance(metadata: Mapping[str, str] | None) -> str:
     if not metadata:
         return LEGACY
     tag = metadata.get(PROVENANCE_KEY)
-    if tag in (INTERACTIVE_TTY, NON_TTY):
+    if tag in (INTERACTIVE_TTY, NON_TTY, IMPORTED):
         return tag
     tty = metadata.get(TTY_KEY)
     if tty is not None and valid_tty_value(tty):
@@ -143,14 +171,34 @@ def classify_provenance(metadata: Mapping[str, str] | None) -> str:
     return LEGACY
 
 
-def is_human_grade(metadata: Mapping[str, str] | None) -> bool:
+def is_human_grade(
+    metadata: Mapping[str, str] | None,
+    *,
+    note_mtime: float | None = None,
+) -> bool:
     """Whether an annotation earns human-grade weight.
 
     Requires ``source=human`` AND an interactive-TTY stamp — or no
-    stamp at all (legacy benefit-of-doubt, see the module docstring).
-    ``source=agent`` / ``source=llm``, and ``source=human`` with a
-    ``non-tty`` stamp (the laundering shape), do not qualify.
+    stamp at all on a note that demonstrably predates the stamp era
+    (legacy benefit-of-doubt, date-fenced: callers pass the
+    annotation file's mtime as ``note_mtime``, and the grandfather
+    clause applies only when it is older than
+    :data:`STAMP_ERA_START`; see the module docstring). Use
+    :func:`core.annotations.storage.annotation_file_mtime` to obtain
+    it. Without ``note_mtime`` a stamp-less note demotes — the fence
+    cannot be established, so fail toward the lower tier.
+
+    ``source=agent`` / ``source=llm``, ``source=human`` with a
+    ``non-tty`` stamp (the laundering shape), and ``provenance=
+    imported`` (zip-restored, provenance severed) do not qualify.
     """
     if not metadata or metadata.get("source") != "human":
         return False
-    return classify_provenance(metadata) in (INTERACTIVE_TTY, LEGACY)
+    tag = classify_provenance(metadata)
+    if tag == INTERACTIVE_TTY:
+        return True
+    return (
+        tag == LEGACY
+        and note_mtime is not None
+        and note_mtime < STAMP_ERA_START
+    )

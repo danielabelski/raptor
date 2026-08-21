@@ -13,10 +13,13 @@ import sys
 import pytest
 
 from core.annotations import (
+    IMPORTED,
     INTERACTIVE_TTY,
     LEGACY,
     NON_TTY,
+    STAMP_ERA_START,
     Annotation,
+    annotation_file_mtime,
     classify_provenance,
     detect_invocation_context,
     is_human_grade,
@@ -127,6 +130,9 @@ class TestClassifyProvenance:
         assert classify_provenance({"provenance": "trusted"}) == NON_TTY
         assert classify_provenance({"tty": "definitely-a-tty"}) == NON_TTY
 
+    def test_imported_stamp_classifies_imported(self):
+        assert classify_provenance({"provenance": IMPORTED}) == IMPORTED
+
     def test_recognised_tag_wins_over_tty_key(self):
         meta = {"provenance": NON_TTY, "tty": "stdin"}
         assert classify_provenance(meta) == NON_TTY
@@ -138,8 +144,33 @@ class TestIsHumanGrade:
             {"source": "human", "provenance": INTERACTIVE_TTY, "tty": "stdin"},
         )
 
-    def test_legacy_human_gets_benefit_of_doubt(self):
-        assert is_human_grade({"source": "human"})
+    def test_legacy_human_benefit_of_doubt_is_date_fenced(self):
+        # Stamp-less source=human earns human grade ONLY when the
+        # caller proves the note predates the stamp era.
+        pre_era = STAMP_ERA_START - 86400.0
+        post_era = STAMP_ERA_START + 86400.0
+        assert is_human_grade({"source": "human"}, note_mtime=pre_era)
+        assert not is_human_grade({"source": "human"}, note_mtime=post_era)
+        assert not is_human_grade(
+            {"source": "human"}, note_mtime=STAMP_ERA_START,
+        )
+
+    def test_legacy_without_mtime_demotes(self):
+        # No mtime → the fence cannot be established → fail toward
+        # the lower tier. This is the bypass-by-omission closure:
+        # a bare '<!-- meta: source=human -->' written directly to
+        # disk no longer inherits operator authority.
+        assert not is_human_grade({"source": "human"})
+
+    def test_imported_never_human_grade(self):
+        # Zip-restored notes carry provenance=imported; the archive
+        # severed any provenance, so no tier upgrade — even with a
+        # pre-era mtime (archives can carry any mtime story).
+        meta = {"source": "human", "provenance": IMPORTED}
+        assert not is_human_grade(meta)
+        assert not is_human_grade(
+            meta, note_mtime=STAMP_ERA_START - 86400.0,
+        )
 
     def test_forged_human_non_tty_demoted(self):
         assert not is_human_grade(
@@ -199,10 +230,15 @@ class TestWriteTimeEnumRejection:
 class TestLegacyFilesStayReadable:
     def test_pre_stamp_file_parses_and_grades_legacy(self, tmp_path):
         # Hand-written legacy layout: version marker, no provenance
-        # keys — exactly what pre-stamp CLI writes produced.
+        # keys — exactly what pre-stamp CLI writes produced. The
+        # date fence keys on the file's mtime: backdate it to the
+        # pre-stamp era, the way a genuinely old file presents.
+        import os
+
         d = tmp_path / "src"
         d.mkdir()
-        (d / "a.py.md").write_text(
+        md = d / "a.py.md"
+        md.write_text(
             "<!-- annotations-version: 1 -->\n"
             "# src/a.py\n\n"
             "## f\n"
@@ -210,10 +246,34 @@ class TestLegacyFilesStayReadable:
             "Reviewed by hand long ago.\n",
             encoding="utf-8",
         )
+        pre_era = STAMP_ERA_START - 86400.0
+        os.utime(md, (pre_era, pre_era))
         ann = read_annotation(tmp_path, "src/a.py", "f")
         assert ann is not None
         assert classify_provenance(ann.metadata) == LEGACY
-        assert is_human_grade(ann.metadata)
+        mtime = annotation_file_mtime(tmp_path, "src/a.py")
+        assert mtime is not None
+        assert is_human_grade(ann.metadata, note_mtime=mtime)
+
+    def test_fresh_stamp_less_file_demotes(self, tmp_path):
+        # The same bytes written TODAY (post-stamp-era mtime) do not
+        # earn human grade — the bypass-by-omission laundering shape.
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "a.py.md").write_text(
+            "# src/a.py\n\n"
+            "## f\n"
+            "<!-- meta: status=clean source=human -->\n",
+            encoding="utf-8",
+        )
+        ann = read_annotation(tmp_path, "src/a.py", "f")
+        assert ann is not None
+        assert classify_provenance(ann.metadata) == LEGACY
+        mtime = annotation_file_mtime(tmp_path, "src/a.py")
+        assert not is_human_grade(ann.metadata, note_mtime=mtime)
+
+    def test_missing_file_mtime_is_none(self, tmp_path):
+        assert annotation_file_mtime(tmp_path, "src/nope.py") is None
 
     def test_unknown_source_still_readable_not_human_grade(self, tmp_path):
         d = tmp_path / "src"

@@ -197,6 +197,7 @@ class TestPrepassIntegration:
             function="db_exec",
             body="Executes raw SQL — every caller must escape first.",
             metadata={"status": "sink", "source": "human",
+                      "provenance": "interactive-tty", "tty": "stdin",
                       "cwe": "CWE-89"},
         ))
         save_specs(out, [TaintSpec(

@@ -2,9 +2,12 @@
 annotation tree fidelity.
 
 Annotations live under ``<project_output_dir>/annotations/`` and
-under each run's ``<run_dir>/annotations/``. Both should survive
-the zip round-trip exactly — same content, same metadata, same
-on-disk layout.
+under each run's ``<run_dir>/annotations/``. Provenance-STAMPED
+annotations survive the zip round-trip exactly — same content, same
+metadata, same on-disk layout. Stamp-less notes are the one
+exception: import stamps them ``provenance=imported`` so a hostile
+archive can't ship notes that read as pre-stamp operator authority
+(see TestImportDemotesStamplessNotes).
 """
 
 from __future__ import annotations
@@ -28,17 +31,22 @@ def _build_project_with_annotations(out_root: Path) -> Path:
     project_out = out_root / "myproj"
     project_out.mkdir()
 
-    # Project-level annotations (operator notes).
+    # Project-level annotations (operator notes). Carry the
+    # interactive-TTY stamp a real CLI add records — STAMPED notes
+    # round-trip byte-faithfully; stamp-less ones get the imported-
+    # provenance demotion (see TestImportDemotesStamplessNotes).
     write_annotation(project_out / "annotations", Annotation(
         file="src/auth.py", function="check_pw",
         body="Operator: reviewed clean, constant-time compare.",
-        metadata={"source": "human", "status": "clean", "cwe": "—"},
+        metadata={"source": "human", "status": "clean", "cwe": "—",
+                  "provenance": "interactive-tty", "tty": "stdin"},
     ))
     write_annotation(project_out / "annotations", Annotation(
         file="src/auth.py", function="login",
         body="Operator: deferred review, see ticket BUG-42.",
         metadata={"source": "human", "status": "suspicious",
-                  "ticket": "BUG-42"},
+                  "ticket": "BUG-42",
+                  "provenance": "interactive-tty", "tty": "stdin"},
     ))
 
     # Two run dirs, each with their own annotations.
@@ -50,7 +58,8 @@ def _build_project_with_annotations(out_root: Path) -> Path:
             file="src/auth.py", function=f"f_{ts}",
             body=f"LLM analysis from run {ts}",
             metadata={"source": "llm", "status": "finding",
-                      "rule_id": "py/sql-injection"},
+                      "rule_id": "py/sql-injection",
+                      "provenance": "non-tty", "tty": "none"},
         ))
 
     return project_out
@@ -246,6 +255,116 @@ class TestExportImportRoundTrip(unittest.TestCase):
             assert tmp_in_zip == [], (
                 f"export must filter orphan tempfiles; got {tmp_in_zip}"
             )
+
+
+class TestImportDemotesStamplessNotes(unittest.TestCase):
+    """A hostile archive ships ``source=human`` notes with
+    NO tty/provenance stamp — bytes indistinguishable from pre-stamp
+    operator notes. Import must stamp them ``provenance=imported`` so
+    readers refuse human grade; stamped notes stay byte-faithful."""
+
+    def _import(self, d: Path, src: Path):
+        zip_path = d / "myproj.zip"
+        project_json = d / "myproj.json"
+        project_json.write_text(json.dumps({
+            "name": "myproj",
+            "target": str(d / "fake-target"),
+            "output_dir": str(src),
+        }))
+        export_project(src, zip_path, project_json_path=project_json)
+        projects_dir = d / "projects"
+        output_base = d / "imported_out"
+        projects_dir.mkdir()
+        output_base.mkdir()
+        result = import_project(zip_path, projects_dir,
+                                output_base=output_base)
+        return Path(result["output_dir"])
+
+    def test_stampless_human_note_demoted_to_imported(self):
+        from core.annotations import (
+            IMPORTED,
+            classify_provenance,
+            is_human_grade,
+            read_annotation,
+        )
+
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            src = d / "src" / "myproj"
+            src.mkdir(parents=True)
+            # The laundering shape: stamp-less source=human.
+            write_annotation(src / "annotations", Annotation(
+                file="src/auth.py", function="check_pw",
+                body="Mass-marked clean by hostile archive.",
+                metadata={"source": "human", "status": "clean"},
+            ))
+            imported_root = self._import(d, src)
+            ann = read_annotation(
+                imported_root / "annotations", "src/auth.py", "check_pw",
+            )
+            assert ann is not None
+            assert classify_provenance(ann.metadata) == IMPORTED
+            assert ann.metadata["provenance"] == "imported"
+            # No human grade — not even with a pre-era mtime story.
+            from core.annotations import STAMP_ERA_START
+            assert not is_human_grade(ann.metadata)
+            assert not is_human_grade(
+                ann.metadata, note_mtime=STAMP_ERA_START - 86400.0,
+            )
+            # Body and the rest of the metadata survive.
+            assert ann.body == "Mass-marked clean by hostile archive."
+            assert ann.metadata["status"] == "clean"
+            assert ann.metadata["source"] == "human"
+
+    def test_stampless_run_dir_note_also_demoted(self):
+        from core.annotations import IMPORTED, classify_provenance, read_annotation
+
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            src = d / "src" / "myproj"
+            src.mkdir(parents=True)
+            run_dir = src / "20260507_120000"
+            run_dir.mkdir()
+            (run_dir / ".raptor-run.json").write_text("{}")
+            write_annotation(run_dir / "annotations", Annotation(
+                file="src/auth.py", function="login",
+                body="note", metadata={"source": "human",
+                                       "status": "clean"},
+            ))
+            imported_root = self._import(d, src)
+            ann = read_annotation(
+                imported_root / "20260507_120000" / "annotations",
+                "src/auth.py", "login",
+            )
+            assert ann is not None
+            assert classify_provenance(ann.metadata) == IMPORTED
+
+    def test_stamped_notes_untouched(self):
+        from core.annotations import is_human_grade, read_annotation
+
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            src = d / "src" / "myproj"
+            src.mkdir(parents=True)
+            write_annotation(src / "annotations", Annotation(
+                file="src/auth.py", function="check_pw",
+                body="Real operator note.",
+                metadata={"source": "human", "status": "clean",
+                          "provenance": "interactive-tty",
+                          "tty": "stdin"},
+            ))
+            before = (
+                src / "annotations" / "src" / "auth.py.md"
+            ).read_bytes()
+            imported_root = self._import(d, src)
+            after = (
+                imported_root / "annotations" / "src" / "auth.py.md"
+            ).read_bytes()
+            assert after == before
+            ann = read_annotation(
+                imported_root / "annotations", "src/auth.py", "check_pw",
+            )
+            assert is_human_grade(ann.metadata)
 
 
 if __name__ == "__main__":

@@ -514,25 +514,6 @@ class TestProxyNetnsContextWiring:
         assert (self._enforcement_with(abi=3, net=True, mount=False)
                 == "landlock_tcp")
 
-    def _egress_with(self, *, abi, net, mount, require_proxy_netns):
-        """Like _enforcement_with but lets the caller set
-        require_proxy_netns; returns the chosen proxy_enforcement."""
-        from core.sandbox import sandbox
-        with mock.patch(
-            "core.sandbox.context._get_landlock_abi", return_value=abi,
-        ), mock.patch(
-            "core.sandbox.context.check_landlock_available", return_value=True,
-        ), mock.patch(
-            "core.sandbox.context.check_net_available", return_value=net,
-        ), mock.patch(
-            "core.sandbox.context.check_mount_available", return_value=mount,
-        ), sandbox(
-            target=self.out, output=self.out, use_egress_proxy=True,
-            proxy_hosts=["example.com"], require_proxy_netns=require_proxy_netns,
-        ) as run:
-            result = run(["echo", "x"], capture_output=True, text=True, timeout=15)
-            return result.sandbox_info.get("proxy_enforcement")
-
     def _enter_egress(self, *, platform, net, mount, require, env=None, monkeypatch=None):
         """Enter sandbox() with the probe/platform surface pinned and exit
         WITHOUT running a child — exercises the 00015 setup-time guard,

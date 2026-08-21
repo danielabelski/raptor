@@ -2100,7 +2100,17 @@ def review_one_function(
             evidence_index,
         )
         if block_ctx:
-            ctx["block_analysis"] = block_ctx
+            # Block analysis embeds repo-derived labels, variable
+            # names, and source snippets and lands in the review
+            # prompt as a priority-0 section — route it through the
+            # same prompt-defence chokepoint as every other
+            # repo-derived context block (sanitise + injection scan
+            # feeding ctx['injection_warnings']).
+            from .context import defend_repo_text
+            ctx["block_analysis"] = defend_repo_text(
+                ctx, block_ctx,
+                location=f"{gap['file']}:{gap['name']} (block analysis)",
+            )
     except Exception:
         logger.debug(
             "block-level analysis failed for %s:%s",

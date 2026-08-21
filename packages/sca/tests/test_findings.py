@@ -51,6 +51,7 @@ def _adv(
     fixed: list[str] | None = None,
     severity_score: float = 9.8,
     severity_label: str = "critical",
+    summary: str = "Test advisory",
 ) -> Advisory:
     cvss = CVSSScore(
         score=severity_score,
@@ -60,7 +61,7 @@ def _adv(
     return Advisory(
         osv_id=osv_id,
         aliases=aliases or ["CVE-2099-9999"],
-        summary="Test advisory",
+        summary=summary,
         details="Details.",
         affected=[AffectedRange(
             type="ECOSYSTEM",
@@ -151,6 +152,63 @@ def test_related_findings_cross_reference() -> None:
     assert f1.finding_id in f2.related_findings
     # No self-reference.
     assert f1.finding_id not in f1.related_findings
+
+
+def test_crafted_alias_advisory_cannot_defang_real_finding() -> None:
+    """Regression: a crafted GHSA record sharing the real CVE
+    alias (severity none, understated fix, benign summary) must not
+    shape the merged finding — severity, fix version, and summary all
+    come from the genuine record; the crafted one only rides along."""
+    d = _dep(name="pkg", version="1.2.0", ecosystem="PyPI")
+    real = _adv(
+        osv_id="PYSEC-2024-1", aliases=["CVE-2024-0001"],
+        fixed=["2.0.1"], severity_score=9.8, severity_label="critical",
+        summary="Genuine critical advisory",
+    )
+    crafted = _adv(
+        osv_id="GHSA-aaaa-bbbb-cccc", aliases=["CVE-2024-0001"],
+        fixed=["1.0.0"], severity_score=0.0, severity_label="none",
+        summary="Nothing to see here",
+    )
+    osv = [OsvResult(dep_key=d.key(), advisories=[real, crafted])]
+    findings = build_vuln_findings([d], osv)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.severity == "critical"
+    assert f.fixed_version == "2.0.1"
+    # The genuine record is the face of the finding.
+    assert "PYSEC-2024-1" in f.finding_id
+    assert f.advisories[0].osv_id == "PYSEC-2024-1"
+    assert f.advisories[0].summary == "Genuine critical advisory"
+    # The crafted record is kept for transparency, never dropped.
+    assert {a.osv_id for a in f.advisories} == {
+        "PYSEC-2024-1", "GHSA-aaaa-bbbb-cccc",
+    }
+
+
+def test_alias_merge_prefers_ghsa_on_severity_tie() -> None:
+    """Honest GHSA + PYSEC records for the same CVE at the same
+    severity: GHSA stays the representative (the pre-fix preference,
+    now applied only among equal-severity records)."""
+    d = _dep()
+    pysec = _adv(osv_id="PYSEC-2024-2", aliases=["CVE-2024-0002"])
+    ghsa = _adv(osv_id="GHSA-dddd-eeee-ffff", aliases=["CVE-2024-0002"])
+    osv = [OsvResult(dep_key=d.key(), advisories=[pysec, ghsa])]
+    findings = build_vuln_findings([d], osv)
+    assert len(findings) == 1
+    assert findings[0].advisories[0].osv_id == "GHSA-dddd-eeee-ffff"
+    assert len(findings[0].advisories) == 2
+
+
+def test_differing_cve_alias_sets_do_not_merge() -> None:
+    """Records whose CVE-alias sets differ emit separate findings —
+    over-reporting is the safe direction under a hostile feed."""
+    d = _dep()
+    one = _adv(osv_id="GHSA-1", aliases=["CVE-A"])
+    both = _adv(osv_id="GHSA-2", aliases=["CVE-A", "CVE-B"])
+    osv = [OsvResult(dep_key=d.key(), advisories=[one, both])]
+    findings = build_vuln_findings([d], osv)
+    assert len(findings) == 2
 
 
 def test_severity_falls_back_to_medium_without_cvss() -> None:

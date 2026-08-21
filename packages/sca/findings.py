@@ -106,24 +106,26 @@ def build_vuln_findings(
     # carry the cross-references in one shot.
     related_by_dep: dict[str, list[str]] = {}
     for d in deps:
-        advisories = deduped_results.get(d.key())
-        if advisories is None:
+        groups = deduped_results.get(d.key())
+        if groups is None:
             continue
         related_by_dep[d.key()] = [
-            _vuln_finding_id(d, a) for a in advisories
+            _vuln_finding_id(d, _group_representative(g)) for g in groups
         ]
 
     for d in deps:
-        advisories = deduped_results.get(d.key())
-        if not advisories:
+        groups = deduped_results.get(d.key())
+        if not groups:
             continue
         sibling_ids = related_by_dep.get(d.key(), [])
-        for adv in advisories:
-            this_id = _vuln_finding_id(d, adv)
+        for group in groups:
+            rep = _group_representative(group)
+            this_id = _vuln_finding_id(d, rep)
             related = [i for i in sibling_ids if i != this_id]
             out.append(_assemble_finding(
                 dep=d,
-                advisory=adv,
+                group=group,
+                advisory=rep,
                 this_id=this_id,
                 related_ids=related,
                 kev=kev,
@@ -134,28 +136,57 @@ def build_vuln_findings(
     return out
 
 
-def _dedup_alias_advisories(advisories: list[Advisory]) -> list[Advisory]:
-    """Collapse advisories pointing at the same underlying CVE.
+def _dedup_alias_advisories(advisories: list[Advisory]) -> list[list[Advisory]]:
+    """Group advisories pointing at the same underlying CVE.
 
-    Keys on the first ``CVE-*`` alias when present (the canonical name);
-    falls back to the OSV id otherwise. Preference order when multiple
-    OSV records share a CVE: GHSA-* > CVE-* > PYSEC-* > everything else
-    (GHSA records are usually the most complete).
+    Keys on the sorted tuple of ALL ``CVE-*`` aliases when any exist
+    (the canonical name set); falls back to the OSV id otherwise.
+    Records whose CVE-alias sets differ do NOT merge — emitting two
+    findings over-reports, which is the safe direction under a hostile
+    advisory feed.
+
+    Every member of a group is KEPT (returned as a list), and the
+    assembly stage combines them conservatively: a merged group can
+    only add scrutiny, never remove it. Pre-fix, one survivor was
+    picked by osv-id prefix (GHSA-* first) and alone drove severity /
+    fix version / summary — so a crafted GHSA record sharing a real
+    CVE alias defanged the genuine finding (severity=none, understated
+    fix version, benign summary). See ``_group_representative`` and
+    ``_assemble_finding`` for the conservative combination rules.
     """
-    by_key: dict[str, Advisory] = {}
-    order: list[str] = []
+    by_key: dict[tuple | str, list[Advisory]] = {}
+    order: list[tuple | str] = []
     for a in advisories:
-        cve = next((x for x in a.aliases
-                    if isinstance(x, str) and x.upper().startswith("CVE-")),
-                   None)
-        key = cve.upper() if cve else a.osv_id
+        cves = sorted({
+            x.upper() for x in a.aliases
+            if isinstance(x, str) and x.upper().startswith("CVE-")
+        })
+        key: tuple | str = tuple(cves) if cves else a.osv_id
         if key not in by_key:
-            by_key[key] = a
+            by_key[key] = []
             order.append(key)
-            continue
-        if _advisory_priority(a) < _advisory_priority(by_key[key]):
-            by_key[key] = a
+        by_key[key].append(a)
     return [by_key[k] for k in order]
+
+
+def _group_representative(group: list[Advisory]) -> Advisory:
+    """The advisory whose identity and text face the operator.
+
+    Chosen AMONG the advisories achieving the group's maximum severity
+    (so a crafted low-severity record sharing the real CVE alias can
+    never become the face of the finding), tie-broken by
+    ``_advisory_priority`` (GHSA records are usually the most
+    complete) and then first-seen order.
+    """
+    top = max(
+        _SEVERITY_RANK[_severity_for_advisory(a)] for a in group
+    )
+    contenders = [
+        a for a in group
+        if _SEVERITY_RANK[_severity_for_advisory(a)] == top
+    ]
+    # ``min`` is stable: first-seen wins among equal priorities.
+    return min(contenders, key=_advisory_priority)
 
 
 def _advisory_priority(a: Advisory) -> int:
@@ -173,6 +204,7 @@ def _advisory_priority(a: Advisory) -> int:
 def _assemble_finding(
     *,
     dep: Dependency,
+    group: list[Advisory],
     advisory: Advisory,
     this_id: str,
     related_ids: list[str],
@@ -181,7 +213,27 @@ def _assemble_finding(
     reachability: dict[str, Reachability] | None,
     vulnrichment: VulnrichmentClient | None = None,
 ) -> VulnFinding:
-    cve_aliases = [a for a in advisory.aliases if a.upper().startswith("CVE-")]
+    """Assemble one finding from an alias-merged advisory ``group``.
+
+    ``advisory`` is the group representative (see
+    ``_group_representative``) — it supplies the finding id, summary,
+    and CVSS vector. Severity and fix version are combined
+    CONSERVATIVELY across the whole group: severity is the group
+    maximum, and the fix version is the highest of each member's own
+    smallest-applicable fix. A crafted advisory sharing a real CVE
+    alias can therefore add scrutiny but never defang the genuine
+    record's severity, fix version, or summary.
+    """
+    # Union of CVE aliases across the group, first-seen order. With
+    # the sorted-alias-tuple grouping key the members' CVE sets are
+    # identical, so this normally equals the representative's — kept
+    # as a union so KEV / EPSS / SSVC enrichment stays complete if the
+    # grouping key ever loosens.
+    cve_aliases: list[str] = []
+    for a in group:
+        for alias in a.aliases:
+            if alias.upper().startswith("CVE-") and alias not in cve_aliases:
+                cve_aliases.append(alias)
     in_kev = bool(kev and any(kev.contains(c) for c in cve_aliases))
     epss_score: float | None = None
     if epss and cve_aliases:
@@ -221,10 +273,28 @@ def _assemble_finding(
         elif any((d.automatable or "").lower() == "no" for d in decisions):
             ssvc_automatable = "no"
 
-    fixed = _smallest_applicable_fix(
-        dep.ecosystem, dep.version, advisory.fixed_versions,
+    # Highest of each member's own smallest-applicable fix: upgrading
+    # further than one record suggests is safe; an attacker-lowered
+    # fix version (crafted record claiming fix=1.0.0) is not.
+    fix_candidates = [
+        f for f in (
+            _smallest_applicable_fix(
+                dep.ecosystem, dep.version, a.fixed_versions,
+            )
+            for a in group
+        ) if f
+    ]
+    fixed = (
+        max(fix_candidates, key=_VersionKey(dep.ecosystem))
+        if fix_candidates else None
     )
-    severity_str = _severity_for_advisory(advisory)
+    # Group-maximum severity — the representative achieves it by
+    # construction, but compute it explicitly so the conservative rule
+    # holds even if representative selection changes.
+    severity_str = max(
+        (_severity_for_advisory(a) for a in group),
+        key=lambda s: _SEVERITY_RANK[s],
+    )
     if dep.commented_out:
         # Commented-out lines (`# pkg==X` in requirements.txt) are
         # documentation, not active deps. Downgrade to ``info`` so the
@@ -249,7 +319,10 @@ def _assemble_finding(
     f = VulnFinding(
         finding_id=this_id,
         dependency=dep,
-        advisories=[advisory],
+        # Representative first — consumers reading ``advisories[0]``
+        # get the record that drove severity / summary / CVSS; the
+        # rest of the merged group rides along for transparency.
+        advisories=[advisory, *(a for a in group if a is not advisory)],
         in_kev=in_kev,
         epss=epss_score,
         fixed_version=fixed,

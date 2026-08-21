@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # libseccomp action constants (from include/seccomp.h)
 _SCMP_ACT_ALLOW = 0x7fff0000
+# SCMP_ACT_NOTIFY: route the syscall to a userspace supervisor over
+# the filter's notification fd (include/uapi/linux/seccomp.h
+# SECCOMP_RET_USER_NOTIF, libseccomp >= 2.5). Used by the AF_UNIX
+# connect-scoping path only.
+_SCMP_ACT_NOTIFY = 0x7FC00000
 _SCMP_ACT_KILL_PROCESS = 0x80000000
 
 # Filter attribute numbers (from include/seccomp.h, enum scmp_filter_attr).
@@ -392,7 +397,8 @@ def check_seccomp_available() -> bool:
 def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                           audit_mode: bool = False,
                           observe_mode: bool = False,
-                          allow_unix_sockets: bool = False):
+                          allow_unix_sockets: bool = False,
+                          unix_scope_export_sock=None):
     """Create a preexec_fn that installs the seccomp filter for `profile`.
 
     Runs POST-fork in the child. Same fork-safety rules as Landlock: capture
@@ -448,6 +454,19 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     audit_mode (TRACE action, tracer attached); enforcement-shape
     audits should leave it off.
 
+    `unix_scope_export_sock` (a connected AF_UNIX socket object, the
+    child end of a parent-created socketpair) engages CONNECT SCOPING
+    alongside `allow_unix_sockets=True` in enforcement mode: connect(2)
+    gets the SCMP_ACT_NOTIFY action, the resulting notify fd is shipped
+    to the parent over the socketpair (SCM_RIGHTS) for the
+    core/sandbox/_unix_scope.py supervisor, and socket(AF_UNIX,
+    SOCK_DGRAM) is denied (datagram sendto-with-address would bypass
+    the connect chokepoint; nothing sandboxed needs unix datagrams).
+    Fail-closed: if the notify fd cannot be created or exported the
+    child exits 126 — an unsupervised NOTIFY filter would leave every
+    connect(2) blocking forever. Mutually exclusive with audit_mode
+    (audit routes connect through the ptrace tracer instead).
+
     Returns None if libseccomp is unavailable or the profile
     indicates "no seccomp" — both falsy values (None, "") and the
     literal string "none" are accepted as disable triggers, matching
@@ -475,12 +494,23 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     lib.seccomp_release.argtypes = [ctypes.c_void_p]
     lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
     lib.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]
+    if unix_scope_export_sock is not None:
+        # Present on libseccomp >= 2.5; probed by _unix_scope before
+        # any caller passes an export sock.
+        lib.seccomp_notify_fd.restype = ctypes.c_int
+        lib.seccomp_notify_fd.argtypes = [ctypes.c_void_p]
 
     # Resolve syscall names to numbers in the PARENT so the child doesn't
     # need to call back into libseccomp's name tables post-fork.
     def _resolve(name: str) -> int:
         num = lib.seccomp_syscall_resolve_name(name.encode("ascii"))
         return num  # negative means unknown on this arch; caller checks
+
+    if unix_scope_export_sock is not None and audit_mode:
+        # The tracer owns connect observability under audit; a NOTIFY
+        # rule would fight the TRACE rule for the same syscall.
+        raise ValueError(
+            "unix_scope_export_sock is incompatible with audit_mode")
 
     blocked_syscalls = list(_SECCOMP_BLOCK_ALWAYS)
     if profile not in ("debug", "frida"):
@@ -504,6 +534,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     resolved_blocks = [(name, _resolve(name)) for name in blocked_syscalls]
     # Sockets: filter by argument (family). Same syscall number, multiple rules.
     socket_num = _resolve("socket")
+    connect_num = (_resolve("connect")
+                   if unix_scope_export_sock is not None else -1)
     # ioctl — filter only specific cmd numbers (TIOCSTI for tty injection).
     # Most ioctls are legitimate (FIONBIO, TIOCGWINSZ, etc.); we only
     # reject the known-dangerous ones.
@@ -692,6 +724,48 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                      b"refusing to exec without filter\n")
                         os._exit(126)
 
+                # AF_UNIX connect scoping (enforcement only): route
+                # every connect(2) to the parent-side supervisor via
+                # SCMP_ACT_NOTIFY. The supervisor executes the connect
+                # on the child's behalf (see _unix_scope.py), so no
+                # TOCTOU-prone CONTINUE is ever issued. Also deny
+                # socket(AF_UNIX, SOCK_DGRAM): datagram
+                # sendto-with-address would bypass the connect
+                # chokepoint entirely, and nothing sandboxed needs
+                # unix datagrams (forkserver and Rust's spawn plumbing
+                # are SOCK_STREAM / socketpair).
+                if unix_scope_export_sock is not None:
+                    if connect_num < 0:
+                        _os_write(2, b"RAPTOR: seccomp connect scoping "
+                                     b"requested but connect() is "
+                                     b"unresolved -- refusing to exec\n")
+                        os._exit(126)
+                    null_args = ctypes.POINTER(_ScmpArgCmp)()
+                    ret = lib.seccomp_rule_add_array(
+                        ctx, _SCMP_ACT_NOTIFY, connect_num, 0, null_args,
+                    )
+                    if ret < 0:
+                        _os_write(2, b"RAPTOR: seccomp connect NOTIFY "
+                                     b"rule failed -- refusing to exec\n")
+                        os._exit(126)
+                    if socket_num >= 0:
+                        args = (_ScmpArgCmp * 2)(
+                            _ScmpArgCmp(arg=0, op=_SCMP_CMP_MASKED_EQ,
+                                        datum_a=_ARG32_MASK,
+                                        datum_b=_AF_UNIX),
+                            _ScmpArgCmp(arg=1, op=_SCMP_CMP_MASKED_EQ,
+                                        datum_a=_SOCK_TYPE_MASK,
+                                        datum_b=_SOCK_DGRAM),
+                        )
+                        ret = lib.seccomp_rule_add_array(
+                            ctx, deny, socket_num, 2, args,
+                        )
+                        if ret < 0:
+                            _os_write(2, b"RAPTOR: seccomp AF_UNIX DGRAM"
+                                         b" rule failed -- refusing to "
+                                         b"exec\n")
+                            os._exit(126)
+
                 # UDP block — only when proxy mode is active. We can't
                 # filter on (family, type) simultaneously in a single
                 # rule (libseccomp's scmp_rule_add takes multiple arg
@@ -780,6 +854,31 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             os._exit(126)
 
                 ret = lib.seccomp_load(ctx)
+                if ret >= 0 and unix_scope_export_sock is not None:
+                    # Ship the notify fd to the parent supervisor.
+                    # From this instant every connect(2) in this
+                    # process blocks until supervised — fail-closed if
+                    # the export cannot happen (an unsupervised NOTIFY
+                    # filter would hang the child forever instead).
+                    _nfd = lib.seccomp_notify_fd(ctx)
+                    if _nfd < 0:
+                        _os_write(2, b"RAPTOR: seccomp_notify_fd failed"
+                                     b" -- refusing to exec\n")
+                        os._exit(126)
+                    try:
+                        import array as _array
+                        import socket as _socket
+                        unix_scope_export_sock.sendmsg(
+                            [b"F"],
+                            [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS,
+                              _array.array("i", [_nfd]))],
+                        )
+                        unix_scope_export_sock.close()
+                        os.close(_nfd)
+                    except OSError:
+                        _os_write(2, b"RAPTOR: seccomp notify fd export "
+                                     b"failed -- refusing to exec\n")
+                        os._exit(126)
                 if ret < 0:
                     # Fail-closed (was: write to stderr + continue,
                     # which silently fails OPEN — child execs without

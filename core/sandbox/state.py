@@ -43,6 +43,10 @@ _mount_ns_available_cache = None
 _unshare_engage_cache = {}
 # Landlock cache uses -1 for "unavailable", >0 for ABI version, None for unchecked.
 _landlock_cache = None
+# _unix_scope_cache: True when the AF_UNIX connect-scoping supervisor
+# can run on this host (seccomp user-notify + pidfd_getfd + openat2 —
+# see core/sandbox/_unix_scope.py). None = not probed.
+_unix_scope_cache = None
 # Seccomp cache: None = unchecked, 0 = unavailable, CDLL handle = available.
 _libseccomp_cache = None
 # ptrace cache: None = unchecked, True/False = probed result. Used by
@@ -120,6 +124,9 @@ _landlock_warned_abi_v4 = False
 _landlock_warned_abi_v3 = False  # TRUNCATE coverage missing (kernel <6.2)
 _landlock_warned_abi_v2 = False  # REFER coverage missing (kernel <5.19)
 _sandbox_unavailable_warned = False
+# AF_UNIX connect scoping unavailable (seccomp user-notify /
+# pidfd_getfd / openat2 missing) — allow_unix downgraded fail-closed.
+_unix_scope_unavailable_warned = False
 # Mount-ns unavailable but Landlock did engage — see THREAT_MODEL.md I2-(a).
 # Distinguished from `_mount_unavailable_warned` (which is set by the lower-
 # level mount probe); this flag is for the user-facing warning emitted from

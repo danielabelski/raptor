@@ -114,6 +114,10 @@ def _sandbox_state_guard():
         "_gidmap_allow_cache", "_gidmap_allow_warned_missing",
         "_unshare_path_cache", "_prlimit_path_cache",
         "_mount_path_cache", "_mkdir_path_cache",
+        # AF_UNIX connect-scoping probe result + warn-once flag —
+        # test_unix_connect_scope.py patches probe_unix_scope and must
+        # not leak a poisoned availability verdict into sibling tests.
+        "_unix_scope_cache", "_unix_scope_unavailable_warned",
     ]
     saved = {name: getattr(mod, name) for name in state_names}
     # Snapshot+restore the speculative-failure cache as a deep copy

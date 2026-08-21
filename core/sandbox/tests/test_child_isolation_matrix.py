@@ -55,12 +55,14 @@ class TestSeccompUnixAllowancePlumbing:
         original = seccomp._make_seccomp_preexec
 
         def spy(profile, block_udp=False, audit_mode=False,
-                observe_mode=False, allow_unix_sockets=False):
+                observe_mode=False, allow_unix_sockets=False,
+                **kw):
             captured.append(allow_unix_sockets)
             return original(profile, block_udp=block_udp,
                             audit_mode=audit_mode,
                             observe_mode=observe_mode,
-                            allow_unix_sockets=allow_unix_sockets)
+                            allow_unix_sockets=allow_unix_sockets,
+                            **kw)
         monkeypatch.setattr(
             "core.sandbox._spawn._make_seccomp_preexec", spy)
         try:

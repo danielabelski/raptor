@@ -54,6 +54,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable, Iterable, Sequence
@@ -1192,11 +1193,47 @@ def run_sandboxed(
         # stays blocked. Needed for Python >= 3.14 multiprocessing
         # (forkserver listener) inside sandboxed tools.
         _allow_unix = bool((target or output) and not skip_mount_ns)
+        # CONNECT SCOPING for the allowed AF_UNIX sockets (enforcement
+        # mode). allow_unix's harmlessness rationale has one hole: the
+        # OUTPUT dir is a READ-WRITE bind, so a host-side (or sibling-
+        # sandbox) process can bind a pathname socket inside it and the
+        # child can connect(2) — a live channel out of the sandbox.
+        # Route connect(2) through a parent-side seccomp-user-notify
+        # supervisor (core/sandbox/_unix_scope.py) that executes each
+        # connect on the child's behalf: pathname targets are allowed
+        # only on the sandbox's private tmpfs or the instance's own
+        # lane sockets. Fail-closed: when the host cannot run the
+        # supervisor (no user-notify / pidfd_getfd / openat2), AF_UNIX
+        # stays in the seccomp blocklist — the pre-allow_unix
+        # behaviour, trading Python 3.14 forkserver compatibility for
+        # containment. Audit mode keeps the tracer's connect TRACE
+        # path instead (mutually exclusive by construction).
+        _unix_scope_parent_sock = None
+        _unix_scope_child_sock = None
+        if _allow_unix and seccomp_profile and not _audit_engaged:
+            from ._unix_scope import probe_unix_scope
+            if probe_unix_scope():
+                import socket as _socket_mod
+                (_unix_scope_parent_sock,
+                 _unix_scope_child_sock) = _socket_mod.socketpair()
+            else:
+                _allow_unix = False
+                if state.warn_once("_unix_scope_unavailable_warned"):
+                    logger.warning(
+                        "Sandbox: AF_UNIX connect scoping unavailable "
+                        "(needs seccomp user-notify + pidfd_getfd + "
+                        "openat2, Linux >= 5.9 / libseccomp >= 2.5) — "
+                        "socket(AF_UNIX) stays blocked for sandboxed "
+                        "children (fail-closed; Python >= 3.14 "
+                        "multiprocessing forkserver will not work "
+                        "inside the sandbox on this host)."
+                    )
         seccomp_fn = _make_seccomp_preexec(
             seccomp_profile, block_udp=seccomp_block_udp,
             audit_mode=_audit_engaged,
             observe_mode=bool(observe_mode) and _audit_engaged,
             allow_unix_sockets=_allow_unix,
+            unix_scope_export_sock=_unix_scope_child_sock,
         ) if seccomp_profile else None
 
         # Tracer-ready pipe: the tracer subprocess writes a byte once
@@ -1278,6 +1315,11 @@ def run_sandboxed(
         if _evidence_file is not None:
             _evidence_file.close(verify=False)
             _evidence_file = None
+        for _sk in (locals().get("_unix_scope_parent_sock"),
+                    locals().get("_unix_scope_child_sock")):
+            if _sk is not None:
+                with contextlib.suppress(OSError):
+                    _sk.close()
         _cleanup_stub(_root_dir)
         raise
     if child_pid == 0:
@@ -1296,6 +1338,12 @@ def run_sandboxed(
         # intermediate after the grandchild fork); close the read end.
         if pid_r is not None:
             os.close(pid_r)
+        # Unix-scope socketpair: the child only SENDS on the child end
+        # (inside the seccomp preexec); close the parent end so the
+        # parent's recvmsg sees EOF if the child dies before the
+        # export.
+        if _unix_scope_parent_sock is not None:
+            _unix_scope_parent_sock.close()
         # Which setup step we're about to attempt — the BaseException
         # catch-all below writes this category to status_w so the parent
         # knows whether to degrade (mount) or fail loud (Landlock/seccomp/
@@ -1866,6 +1914,59 @@ def run_sandboxed(
             os._exit(126)
 
     # ================ PARENT ================
+    # Unix-scope supervisor: the parent owns the parent end of the
+    # socketpair; the child ships the seccomp notify fd over it once
+    # the filter is loaded. Receive + supervise on a daemon thread so
+    # the handshake below is never blocked; the thread exits on EOF
+    # (child died before the export) or when the run's finally closes
+    # the supervisor.
+    _unix_scope_supervisor: list = []
+    if _unix_scope_parent_sock is not None:
+        _unix_scope_child_sock.close()
+
+        def _unix_scope_receiver():
+            import array as _array
+            import socket as _socket_mod2
+            sp = _unix_scope_parent_sock
+            try:
+                sp.settimeout(120)
+                fds = _array.array("i")
+                try:
+                    msg, ancdata, _fl, _ad = sp.recvmsg(
+                        1, _socket_mod2.CMSG_SPACE(fds.itemsize))
+                except (OSError, TimeoutError):
+                    return
+                if not msg:
+                    return
+                for _lvl, _typ, _data in ancdata:
+                    if (_lvl == _socket_mod2.SOL_SOCKET
+                            and _typ == _socket_mod2.SCM_RIGHTS):
+                        fds.frombytes(
+                            _data[:len(_data)
+                                  - (len(_data) % fds.itemsize)])
+                if not fds:
+                    return
+                notify_fd = fds[0]
+                os.set_inheritable(notify_fd, False)
+                from ._unix_scope import UnixScopeSupervisor
+                _allowed = [p for p in ([proxy_unix_socket]
+                                        + [b[1] for b in
+                                           (extra_unix_bridges or [])])
+                            if p]
+                sup = UnixScopeSupervisor(
+                    notify_fd, allowed_socket_paths=_allowed,
+                    label=f"spawn-{child_pid}")
+                _unix_scope_supervisor.append(sup)
+                sup.serve_forever()
+            except Exception:  # noqa: BLE001 — supervisor thread must never propagate
+                logger.debug("unix-scope receiver failed", exc_info=True)
+            finally:
+                with contextlib.suppress(OSError):
+                    sp.close()
+
+        threading.Thread(target=_unix_scope_receiver,
+                         name=f"unix-scope-recv-{child_pid}",
+                         daemon=True).start()
     if child_pid_callback is not None:
         try:
             child_pid_callback(child_pid)
@@ -2403,6 +2504,19 @@ def run_sandboxed(
             except OSError:
                 pass
             _parent_fds.discard(death_w)
+        # Unix-scope supervisor: the run is over — close the notify fd
+        # so any straggler's connect(2) gets ENOSYS from the kernel
+        # (fail-closed) and the receiver thread exits.
+        for _sup in _unix_scope_supervisor:
+            _sup.close()
+        if _unix_scope_parent_sock is not None:
+            # shutdown() BEFORE close(): it wakes a receiver thread
+            # still blocked in recvmsg (close alone does not).
+            import socket as _socket_mod3
+            with contextlib.suppress(OSError):
+                _unix_scope_parent_sock.shutdown(_socket_mod3.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                _unix_scope_parent_sock.close()
         # Audit-mode tracer cleanup: target has exited (or been killed
         # via timeout), so the tracer's traced set will become empty
         # and it'll exit naturally. Wait for it to reap; if it doesn't

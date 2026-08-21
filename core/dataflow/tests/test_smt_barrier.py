@@ -1574,3 +1574,83 @@ def test_charset_body_rejects_octal_escapes():
     assert not sb._charset_body_is_safe("\\2-z")
     assert not sb._charset_body_is_safe("a\\1b")
     assert sb._charset_body_is_safe("a-z0-9\\-\\]")
+
+
+# ---------------------------------------------------------------------------
+# Extractor suffix blindness (flags / extra arguments).
+# ---------------------------------------------------------------------------
+
+def test_extract_refuses_re_match_with_flags_argument():
+    """``re.match(p, var, re.MULTILINE)`` makes ``$`` a LINE anchor —
+    the real validator passes ``'abc\\n; rm -rf /'`` while the Z3
+    model still proves a whole-string charset.  Pre-fix the extractor
+    matched an open prefix and silently accepted the third argument;
+    any suffix after the var must refuse the spec-lift."""
+    for flags in ("re.MULTILINE", "re.M", "re.IGNORECASE", "re.X", "0"):
+        diff = (
+            f"+    if not re.match(r'^[a-z0-9]+$', name, {flags}): return\n"
+        )
+        assert sb.extract_validator(diff) is None, flags
+
+
+def test_extract_refuses_fullmatch_with_flags_argument():
+    diff = "+    if not re.fullmatch(r'[a-z]+', x, re.I): raise X\n"
+    assert sb.extract_validator(diff) is None
+
+
+def test_extract_refuses_re_match_on_method_call_suffix():
+    """``re.match(p, name.strip())`` validates a DIFFERENT value than
+    the one the chain check tracks to the sink — refuse."""
+    diff = "+    if not re.match(r'^[a-z]+$', name.strip()): return\n"
+    assert sb.extract_validator(diff) is None
+
+
+def test_extract_plain_re_match_still_lifts():
+    """The closing-paren requirement must not cost the standard form."""
+    diff = '+    if not re.match(r"^[A-Za-z0-9_]+$", name): return error()\n'
+    spec = sb.extract_validator(diff)
+    assert spec is not None
+    assert spec.kind == "charset"
+    assert spec.var_name == "name"
+
+
+def test_extract_re_match_whitespace_before_close_still_lifts():
+    diff = '+    if not re.match(r"^[a-z]+$", name ): return\n'
+    spec = sb.extract_validator(diff)
+    assert spec is not None
+    assert spec.var_name == "name"
+
+
+def test_extract_refuses_re_sub_with_count_argument():
+    """``re.sub(p, '', x, 1)`` strips only the FIRST occurrence — the
+    'every forbidden char removed' claim breaks.  Pre-fix the rebind
+    extractor ignored everything after the input argument."""
+    diff = "+    x = re.sub('[/\\\\]+', '', x, 1)\n"
+    assert sb.extract_validator(diff) is None
+
+
+def test_extract_refuses_re_sub_with_flags_argument():
+    diff = "+    x = re.sub('[a-z]+', '', x, flags=re.I)\n"
+    assert sb.extract_validator(diff) is None
+
+
+def test_extract_plain_re_sub_rebind_still_lifts():
+    diff = "+    x = re.sub('[/\\\\]+', '', x)\n"
+    spec = sb.extract_validator(diff)
+    assert spec is not None
+    assert spec.kind == "charset_sub"
+
+
+def test_extract_refuses_ruby_guard_with_regex_flags():
+    """``/\\A[a-z]+\\z/i`` accepts uppercase — outside the modeled
+    set; flagged Ruby literals decline the lift."""
+    lifted = sb.extract_validator(
+        '+    raise ArgumentError unless name =~ /\\A[a-z0-9]+\\z/\n',
+        language="ruby",
+    )
+    assert lifted is not None            # flagless form still lifts
+    for flag in ("i", "x", "m", "o"):
+        diff = (
+            f'+    raise ArgumentError unless name =~ /\\A[a-z0-9]+\\z/{flag}\n'
+        )
+        assert sb.extract_validator(diff, language="ruby") is None, flag

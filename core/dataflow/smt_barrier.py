@@ -202,11 +202,26 @@ _STR_LITERAL = (
 # `re.match(pattern, var)` or `re.fullmatch(pattern, var)`.  Captures the
 # string literal verbatim (with its quotes/prefix) so the anchor analysis
 # can be exact.
+#
+# The call must CLOSE right after the var (`\s*\)`).  Pre-fix the match
+# was an open prefix, so a third ``flags`` argument was silently
+# accepted: with ``re.MULTILINE``, ``$`` in ``^[chars]+$`` becomes a
+# LINE anchor and the real validator passes any string whose FIRST line
+# conforms while smuggling arbitrary danger content after a newline
+# (``'abc\n; rm -rf /'``) — yet the Z3 model still treated the pattern
+# as a whole-string charset and proved SOUND.  Other flags mis-model
+# too (``re.IGNORECASE`` widens the accepted set, ``re.VERBOSE``
+# changes the parse), and a method-call suffix (``var.strip()``)
+# validates a DIFFERENT value than the one the chain check tracks to
+# the sink.  No supported flag is modeled, so any suffix refuses the
+# spec-lift (Tier 2 takes the case).  The Ruby extractor refuses
+# line-anchored guards for exactly this hazard.
 _RE_MATCH_CALL = _re.compile(
     r"re\.(?:match|fullmatch)\s*\(\s*"
     rf"(?P<pat>{_STR_LITERAL})"
     r"\s*,\s*"
     r"(?P<var>[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*\)"
 )
 
 # `^[chars]+$` / `^[chars]*$` inside a captured string literal.  The body
@@ -232,6 +247,12 @@ _FULLMATCH_CHARSET = _re.compile(r"^\[((?:[^\]\\]|\\.)+)\][+*]$")
 #      different danger char.
 #   3. Pattern body is a single `[...]+` or `[...]*` character class
 #      (same shape as the allowlist case, just used inversely).
+#   4. The call CLOSES right after the input argument.  ``re.sub``
+#      takes optional ``count`` and ``flags`` — a trailing
+#      ``count=1`` strips only the FIRST occurrence (the "every
+#      forbidden char removed" claim breaks), and flags change the
+#      pattern semantics.  Same suffix-blindness hazard as
+#      _RE_MATCH_CALL above.
 _RE_SUB_REBIND = _re.compile(
     r"(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"re\.sub\s*\(\s*"
@@ -240,6 +261,7 @@ _RE_SUB_REBIND = _re.compile(
     r"(?:''|\"\")"                    # empty replacement, strictly
     r"\s*,\s*"
     r"(?P=var)"                       # same identifier on the RHS
+    r"\s*\)"
 )
 
 # Body of the `[...]` charset inside a re.sub pattern.  Quantifier optional
@@ -300,14 +322,19 @@ _JAVA_GUARD = _re.compile(
 # line. Only \A...\z proves whole-string membership (\Z would readmit
 # the trailing-newline hazard). Line-anchored Ruby guards therefore
 # never lift; the fix author must use \A\z for the proof to hold.
+# The trailing ``(?![a-zA-Z])`` refuses regex-literal FLAGS after the
+# closing ``/`` — ``/\A[a-z]+\z/i`` (IGNORECASE) accepts characters
+# outside the modeled set; none of Onigmo's flags are modeled, so any
+# flagged literal declines the spec-lift (same suffix-blindness
+# doctrine as _RE_MATCH_CALL).
 _RUBY_GUARD_UNLESS = _re.compile(
     r"(?:return|raise)\b[^\n]*?\s+unless\s+(?P<var>[a-z_][a-z_0-9]*)\s*=~\s*"
-    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/"
+    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/(?![a-zA-Z])"
 )
 # Ruby — `return|raise … if <var> !~ /\A[chars]+\z/`
 _RUBY_GUARD_IF_NOT_MATCH = _re.compile(
     r"(?:return|raise)\b[^\n]*?\s+if\s+(?P<var>[a-z_][a-z_0-9]*)\s*!~\s*"
-    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/"
+    r"/\\A\[(?P<chars>[^\]]+)\][+*]\\z/(?![a-zA-Z])"
 )
 
 

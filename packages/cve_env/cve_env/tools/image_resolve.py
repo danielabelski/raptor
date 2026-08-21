@@ -32,7 +32,6 @@ from core.container.registry import (
     pick_digest_for_host,
     pin_digest_ref,
     probe_manifest,
-    probe_manifest_once,
     worst_inspect_class,
 )
 
@@ -156,13 +155,6 @@ def _filter_denied_registries(candidates: list[str]) -> list[str]:
 
 # Mechanics aliases — the module-level names remain the test/patch seams.
 _worst_inspect_class = worst_inspect_class
-
-
-def _inspect_ref_once(
-    image_ref: str, *, timeout_seconds: int
-) -> tuple[tuple[list[str], dict[str, str]] | None, InspectClass, str]:
-    """Single inspect attempt — see core.container.registry.probe_manifest_once."""
-    return probe_manifest_once(image_ref, timeout_seconds=timeout_seconds)
 
 
 def _inspect_ref(

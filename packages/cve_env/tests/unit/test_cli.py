@@ -1057,16 +1057,3 @@ def test_cmd_build_sidecar_written_on_failure_too(tmp_path: Path) -> None:
     assert sidecar.exists(), "sidecar not written for failed run"
     data = json.loads(sidecar.read_text())
     assert data["verify_passed"] is False
-
-
-# ─── helpers ─────────────────────────────────────────────────────────────
-
-
-def _async_outcome(outcome: Outcome) -> Any:
-    """Wrap an Outcome in an awaitable so `asyncio.run(build(...))` works
-    when `build` is replaced by a synchronous callable that returns this."""
-
-    async def _coro() -> Outcome:
-        return outcome
-
-    return _coro()

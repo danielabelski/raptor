@@ -189,18 +189,6 @@ class _StreamState:
     last_verify_result: dict[str, Any] | None = None
     give_up_reason: str = ""
     give_up_detail: str = ""
-    # force-resolve-before-giveup: set once a force-resolve continuation has been
-    # spent on this CVE, so it never re-fires.
-    force_resolve_attempted: bool = False
-    # proprietary-verify continuation: one-shot guard so an
-    # unprobed give_up(proprietary) gets at most ONE verify probe.
-    proprietary_verify_attempted: bool = False
-    # Live session id captured from streaming messages (AssistantMessage carries
-    # it). The SDK's terminal ResultMessage — the only thing that sets
-    # run.session_id — arrives at query END, AFTER a mid-stream give_up raises,
-    # so run.session_id is empty for a give_up run. This lets the force-resolve
-    # continuation resume the same session anyway.
-    last_session_id: str = ""
     final_text: str = ""
     turn: int = 0
     result_received: bool = False  # True after the SDK emits a ResultMessage
@@ -252,14 +240,11 @@ class _StreamState:
     # pessimistic and labels recovered runs as incomplete.
     refusal_stop_reason_turn: int | None = None
     verify_passed_turn: int | None = None
-    # The SDK's ResultMessage may arrive (with cost + turn count) and THEN
-    # run_agent may throw. Without this, the exception-path Outcome constructor
-    # would default num_turns/total_cost_usd to 0/0.0 because only the happy
-    # path's `run` object carries those fields. We track the max across all
-    # ResultMessages (the SDK may emit multiple) so the exception-path Outcome
-    # can read them.
+    # Running cost accumulator, tracked outside the loop result so the
+    # exception-path Outcome constructor still sees real spend when the
+    # engine throws before the terminal result lands (which is the only
+    # other carrier of total_cost_usd).
     last_cost_usd: float = 0.0
-    last_num_turns: int = 0
     # Token accumulator. Used to estimate cost when the SDK reports
     # total_cost_usd=0 despite real LLM rounds (observed on max_turns_reached
     # and certain end_turn-after-give_up paths). Outcome uses
@@ -298,18 +283,6 @@ class _StreamState:
     )
     stage_calls: dict[str, int] = field(default_factory=lambda: {s: 0 for s in STAGES})
     last_tool_stage: str = "OTHER"
-    # Per-segment cost-attribution accounting. A "segment" is the sequence of
-    # AssistantMessages culminating in a ResultMessage.
-    # ``current_segment_id`` increments after each ResultMessage.
-    # ``am_credited_per_segment[seg_id]`` tracks dollars already attributed
-    # to stages via the AssistantMessage token-estimate path for that
-    # segment. The ResultMessage path uses this to compute a RESIDUAL
-    # (``rm_cost - am_credited``) so per-segment credit equals
-    # ``max(AM_token_estimate, RM_reported_cost)`` — not a strict either-or.
-    # A boolean ``attributed_segments`` dedup would over-skip RM cost when AM
-    # credited a tiny amount, so the residual approach is used instead.
-    current_segment_id: int = 0
-    am_credited_per_segment: dict[int, float] = field(default_factory=dict)
     # Adaptive cost-cap extension state. Mirrors B-20's `extension_count` +
     # `effective_max_turns` for cost. `effective_max_cost_usd` starts at
     # `max_cost_usd` (set in build()) and is bumped on each granted extension.

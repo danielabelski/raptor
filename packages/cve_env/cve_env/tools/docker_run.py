@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from core.container.containers import (
@@ -74,23 +73,6 @@ def reset_failed_attempts() -> None:
     """Clear the sticky-retry memory. The agent loop calls this at the start of
     each ``build(cve_id)`` so one CVE's failed attempts don't bleed into the next."""
     _FAILED_ATTEMPTS.clear()
-
-
-@dataclass
-class RunningContainer:
-    """Running container handle."""
-
-    container_id: str
-    host_port: int
-    container_port: int
-    host_ip: str = "127.0.0.1"
-    image: str = ""
-    platform: str | None = None
-    compose_project: str | None = None
-    compose_file_path: Path | None = None
-
-    def get_url(self) -> str:
-        return f"http://{self.host_ip}:{self.host_port}"
 
 
 @dataclass

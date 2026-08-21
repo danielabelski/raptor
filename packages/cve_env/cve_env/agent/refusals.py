@@ -113,7 +113,6 @@ class RefusalEvent:
     recovery_worked: bool | None = None
     time_to_recovery_turns: int = -1
     final_outcome_status: str = ""
-    system_prompt_ref: str = ""
     user_prompt: str = ""
     tool_call: dict[str, Any] | None = None
     model: str = ""

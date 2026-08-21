@@ -226,15 +226,25 @@ def generate_asm(gen: PerlasmGenerator, flavour: str, target: Path,
     from core.sandbox.context import run_untrusted
     from core.sandbox.errors import SandboxSetupError
 
-    fd, tmp_name = tempfile.mkstemp(suffix=".S", dir=cache_dir)
-    os.close(fd)
-    tmp_path = Path(tmp_name)
+    # Write scope: a PRIVATE per-invocation directory, never the shared
+    # cache root. The cache is global across targets and runs, and keys
+    # are pure content hashes an attacker can compute from public
+    # upstream content — a repo's generator given write scope over the
+    # whole cache dir could plant `<key(stock-generator, flavour)>.S`
+    # entries that a LATER scan of a genuine tree would consume as its
+    # own generated kernels without ever executing (cross-target cache
+    # poisoning, with the trusted target's provenance fields on the
+    # poisoned record). The generator writes only its own output file;
+    # the move into the keyed cache slot is done HERE, by trusted code,
+    # after the run is validated.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="gen-", dir=cache_dir))
+    tmp_path = tmp_dir / "out.S"
     try:
         try:
             proc = run_untrusted(
                 ["perl", str(gen.path), flavour, str(tmp_path)],
                 target=str(target),
-                output=str(cache_dir),
+                output=str(tmp_dir),
                 profile="strict",
                 caller_label="perlasm_generate",
                 capture_output=True,
@@ -264,7 +274,7 @@ def generate_asm(gen: PerlasmGenerator, flavour: str, target: Path,
         os.replace(tmp_path, cached)
         return cached, None
     finally:
-        tmp_path.unlink(missing_ok=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _sloc(text: str) -> int:

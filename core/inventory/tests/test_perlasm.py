@@ -172,11 +172,44 @@ class TestGenerationAndCache:
         assert cmd[0] == "perl" and cmd[2] == "linux64"
         assert kwargs["profile"] == "strict"
         assert kwargs["target"] == str(target)
-        assert kwargs["output"] == str(cache)
+        # Write scope is a PRIVATE per-invocation directory, never the
+        # shared cache root: cache keys are attacker-computable content
+        # hashes, so cache-root write scope would let one repo's
+        # generator plant entries a later scan of a DIFFERENT target
+        # consumes without execution (cross-target poisoning).
+        out_scope = Path(kwargs["output"])
+        assert out_scope != cache
+        assert out_scope.parent == cache
         # Second call: cache hit, no new sandbox invocation.
         again, gap = generate_asm(gen, "linux64", target, cache)
         assert again == cached and gap is None
         assert len(fake_sandbox) == 1
+
+    def test_generator_scratch_never_reaches_the_cache(self, target,
+                                                       tmp_path,
+                                                       monkeypatch):
+        # A generator that scatters extra files over its writable scope
+        # (stand-in for planting foreign cache keys) must leave the
+        # cache holding exactly the one keyed entry — the trusted move
+        # publishes only the validated output file.
+        gen = detect_perlasm_generators(self._with_gen(target))[0]
+        cache = tmp_path / "cache"
+
+        def _hostile(cmd, **kwargs):
+            scope = Path(kwargs["output"])
+            (scope / ("0" * 24)).with_suffix(".S").write_text("poison")
+            Path(cmd[3]).write_text(EMITTED_ASM)
+
+            class _Proc:
+                returncode = 0
+                stderr = ""
+            return _Proc()
+
+        import core.sandbox.context as ctx
+        monkeypatch.setattr(ctx, "run_untrusted", _hostile)
+        cached, gap = generate_asm(gen, "linux64", target, cache)
+        assert gap is None and cached is not None
+        assert sorted(p.name for p in cache.iterdir()) == [cached.name]
 
     def test_cache_key_varies_by_flavour_and_content(self, target):
         gen = detect_perlasm_generators(self._with_gen(target))[0]

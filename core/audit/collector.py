@@ -200,6 +200,32 @@ def append_journal_for_outcome(
         verdict_rationale = review_result.get("verdict_rationale") or None
         counter_hypothesis = review_result.get("counter_hypothesis") or None
 
+    # Tier-2 folded edge verdicts: persisted ONLY for edges the gap
+    # actually listed (the model must never invent edges), with the
+    # verdict vocabulary clamped. Absent section -> absent field.
+    edge_verdicts: list[dict] | None = None
+    listed = {
+        str(e.get("callee"))
+        for e in (gap.get("edge_contracts") or [])
+        if isinstance(e, dict)
+    }
+    if listed and review_result:
+        cleaned: list[dict] = []
+        for ev in review_result.get("edge_verdicts") or []:
+            if not isinstance(ev, dict):
+                continue
+            callee = str(ev.get("callee") or "")
+            verdict = str(ev.get("verdict") or "")
+            if callee in listed and verdict in (
+                    "clean", "suspicious", "finding"):
+                row = {"callee": callee, "verdict": verdict}
+                if isinstance(ev.get("call_line"), int):
+                    row["call_line"] = ev["call_line"]
+                if ev.get("note"):
+                    row["note"] = str(ev["note"])[:500]
+                cleaned.append(row)
+        edge_verdicts = cleaned or None
+
     # Reduced-context and reused verdicts are journaled with their
     # provenance so cross-run verdict reuse can (a) refuse to treat a
     # reduced-context verdict as durable coverage and (b) keep a
@@ -233,6 +259,7 @@ def append_journal_for_outcome(
         verdict=outcome.status,
         source_hash=source_hash,
         edge_callee=edge_callee,
+        edge_verdicts=edge_verdicts,
         line_start=gap.get("line_start", 0),
         line_end=gap.get("line_end"),
         cwe=review_result.get("cwe") if review_result else None,

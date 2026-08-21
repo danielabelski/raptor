@@ -3758,12 +3758,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             )
             logger.info(
                 "edge pass: %d/%d tier-1 reviewed (%d finding(s), "
-                "%d suspicious, %d budget-skipped); %d tier-2 folded; "
-                "%d blind spot(s)",
+                "%d budget-skipped); %d tier-2 folded; %d blind spot(s)",
                 edge_summary.get("reviewed", 0),
                 edge_summary.get("tier1_total", 0),
                 edge_summary.get("findings", 0),
-                edge_summary.get("suspicious", 0),
                 edge_summary.get("skipped_budget", 0),
                 edge_summary.get("tier2_total", 0),
                 edge_summary.get("blind_spots", 0),
@@ -9120,6 +9118,34 @@ def _build_context(
                     if existing
                     else f"### Mid-loop tool discoveries\n{disc_text}"
                 )
+
+    if gap.get("edge_contracts"):
+        # Tier-2 edge obligations for THIS caller (stamped by the
+        # --edges pass): rendered as an "edge contracts" prompt
+        # section; per-edge verdicts come back as edge_verdicts and
+        # land on the caller's journal entry. Callee contracts from
+        # the domain model ride along when one names the callee.
+        contracts_by_fn: dict[str, str] = {}
+        try:
+            from core.concepts.audit_bridge import _find_domain_model
+            dm = _find_domain_model(config.out_dir)
+            for c in (dm or {}).get("contracts", []) or []:
+                fn = c.get("function")
+                text = c.get("input_semantics") or c.get("implication") or ""
+                if fn and text:
+                    contracts_by_fn.setdefault(str(fn), str(text))
+        except Exception:
+            logger.debug("edge-contract domain lookup failed", exc_info=True)
+        ctx["edge_contracts"] = [
+            {
+                "callee": e.get("callee"),
+                "callee_file": e.get("callee_file"),
+                "call_line": e.get("call_line"),
+                "contract": contracts_by_fn.get(str(e.get("callee"))),
+            }
+            for e in gap["edge_contracts"]
+            if isinstance(e, dict)
+        ]
 
     if gap.get("injected_hypotheses"):
         # Mechanically derived hypotheses (IRIS bypass detection,

@@ -246,6 +246,34 @@ REVIEW_SCHEMA = {
                 "Findings without tool-grounded evidence are demoted."
             ),
         },
+        "edge_verdicts": {
+            "type": "array",
+            "description": (
+                "ONLY when the prompt contains an 'Edge contracts to "
+                "verdict' section: one entry per listed edge with your "
+                "verdict on that edge's trust contract. Omit entirely "
+                "otherwise; never invent edges that were not listed."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "callee": {"type": "string"},
+                    "call_line": {"type": "integer"},
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["clean", "suspicious", "finding"],
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "One sentence: the assumption that holds "
+                            "or is violated."
+                        ),
+                    },
+                },
+                "required": ["callee", "verdict"],
+            },
+        },
         "body": {"type": "string"},
         "cwe": {
             "type": "string",

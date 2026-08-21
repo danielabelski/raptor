@@ -719,6 +719,30 @@ def format_context_for_prompt(
         sections.append(PromptSection(
             "role", "\n### Role & reachability\n" + rc["reachability_note"], 1))
 
+    if ctx.get("edge_contracts"):
+        ec = [
+            "\n### Edge contracts to verdict",
+            ("This function's calls below are on an attack path "
+             "(source\u2192sink). For EACH edge, decide whether the "
+             "trust contract holds: what this caller assumes about "
+             "the callee's return/side-effects, and what the callee "
+             "assumes about its inputs. Return one edge_verdicts "
+             "entry per edge (clean / suspicious / finding)."),
+        ]
+        for e in ctx["edge_contracts"][:20]:
+            line = e.get("call_line", "?")
+            row = (f"- `{e.get('callee')}` "
+                   f"({e.get('callee_file')}) called at line {line}")
+            if e.get("contract"):
+                row += f"\n  contract: {e['contract']}"
+            ec.append(row)
+        extra = len(ctx["edge_contracts"]) - 20
+        if extra > 0:
+            ec.append(
+                f"- (+{extra} more edges on this caller \u2014 verdict "
+                "the 20 listed; the rest stay pending)")
+        sections.append(PromptSection("edge_contracts", "\n".join(ec), 1))
+
     if ctx.get("callers"):
         cp = ["\n### Callers (1-hop)"]
         for c in ctx["callers"][:10]:

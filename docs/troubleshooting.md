@@ -65,6 +65,80 @@ Tools installed outside the mount-namespace bind tree (`~/.local/bin/`,
 sandbox call, or install the tool to a standard system path.
 
 
+## Running under endpoint security (EDR)
+
+RAPTOR is an offensive-security tool: parts of what it does are, by
+design, the same actions endpoint-security products watch for. On a host
+with an EDR agent you should expect alerts during normal operation, and
+you should NOT silence all of them — some are the product working as
+intended on code RAPTOR deliberately executes under containment.
+
+### What RAPTOR legitimately does that EDRs flag
+
+| Behavior | Where it comes from | Expected during |
+|---|---|---|
+| Unprivileged user/mount/network namespaces (`unshare`-family), tmpfs over `/tmp`, Landlock rulesets, seccomp filters | the sandbox (`core/sandbox/`) — this IS the containment layer | any sandboxed tool run |
+| ptrace attach to child processes | sandbox syscall observation (`observe`, tracer) and crash analysis (rr, gdb) | `/crash-analysis`, sandbox audit modes |
+| Anonymous in-memory file (`memfd`) handed to a child | sandbox audit-config channel — deliberately not an on-disk file | sandboxed runs |
+| Compile-then-execute of small C/Go/script programs | dark-verify witnesses, dynamic-sweep harnesses, PoC compile/execute verification, toolchain probes (`%n`, sanitizer support) | `/audit`, `/agentic`, `/validate`, `/exploit`, `/fuzz` setup |
+| Fork-server + shared-memory fuzzing, instrumented targets crashing on purpose | AFL++ / libFuzzer | `/fuzz` |
+| Dynamic instrumentation / injection | Frida (opt-in) | `/frida` |
+| Running the TARGET's own build scripts and binaries | build detection, binary-oracle enrichment, exploit feasibility probes | most analysis commands |
+
+Sandboxed TARGET code is intentionally left visible to the EDR: if a
+scanned repository's build script or a generated PoC does something
+hostile-shaped, that is signal, not noise — for both RAPTOR and the EDR.
+
+### One workspace prefix for RAPTOR's own artifacts
+
+Everything RAPTOR itself writes-then-executes (witnesses, harnesses,
+probe binaries, PoC stubs) is consolidated under a single family:
+
+```
+<base>/raptor-<uid>/session-<pid>-<rand>/
+```
+
+`<base>` is `RAPTOR_WORK_DIR` if set, else `TMPDIR`, else `/tmp` (see
+docs/environment.md). The `bin/raptor` launcher points the per-session
+`TMPDIR` there; processes started outside the launcher consolidate to the
+same family via `core.run.workdir`. Setting `RAPTOR_WORK_DIR` to a
+dedicated directory (e.g. `/opt/raptor-work`) gives your endpoint team
+one stable, documentable path prefix.
+
+What a path-scoped exclusion on that prefix does: stops the generic
+"executed a file from a temp directory" heuristic from firing on
+RAPTOR's own verification machinery — the persistent false-positive
+flood. What it does NOT do: hide process behavior (namespace creation,
+ptrace, network calls), silence behavioral detections on anything the
+sandbox runs, or cover the scanned repository's own tree, output
+directories, or the sandbox's private tmpfs views. An exclusion scoped
+to file-origin heuristics on this prefix is narrow by construction.
+
+### What NOT to exclude
+
+Do not blanket-suppress RAPTOR's process tree or the sandbox's
+execution surface. The sandbox exists because RAPTOR runs untrusted,
+attacker-shaped code (target build scripts, LLM-generated harnesses,
+PoCs); your EDR is a second, independent detection layer over exactly
+that code. Full-tree suppression would turn a compromised scan target
+into an invisible one. Keep behavioral monitoring on; scope exclusions
+to file-path heuristics on the workspace prefix above.
+
+### Expected-alert quick reference
+
+| Alert shape (generic) | Verdict |
+|---|---|
+| "Execution from temp directory" on `raptor-<uid>/session-*` paths | Expected — RAPTOR verification artifact; candidate for the path-scoped exclusion |
+| "Container/namespace escape technique" (unshare, setns, pivot/mount) from RAPTOR processes | Expected — sandbox construction, not escape |
+| "Debugger/ptrace activity" during crash analysis or sandbox audit | Expected |
+| "Suspicious script interpreter" on files under the scanned repo or sandbox view | Investigate — this is target code; treat as real until triaged |
+| Anything network-shaped not going through the configured egress proxy | Investigate — RAPTOR's sandboxed children are network-denied by default |
+
+If your EDR supports it, prefer alert *annotation* (mark as expected,
+keep recording) over suppression for everything except the temp-path
+heuristic on the workspace prefix.
+
+
 ## Coccinelle
 
 ### Version too old (need >= 1.3)

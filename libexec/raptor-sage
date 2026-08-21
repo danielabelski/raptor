@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
 
 import argparse  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from typing import Any, Dict  # noqa: E402
@@ -345,13 +346,42 @@ def cmd_list(client, args):
         return 1
 
     memories = response.memories if hasattr(response, "memories") else []
+
+    if getattr(args, "json", False):
+        # Machine-readable path: full (untruncated) IDs and content so
+        # downstream commands (get/forget/task --id) can consume the
+        # output. json.dumps with the default ensure_ascii=True renders
+        # every non-ASCII and control byte as an inert \uXXXX escape,
+        # so hostile store content cannot reach the terminal raw.
+        records = []
+        for m in memories:
+            st = getattr(m, "status", "")
+            mt = getattr(m, "memory_type", "")
+            created = getattr(m, "created_at", None)
+            records.append({
+                "memory_id": str(getattr(m, "memory_id", "")),
+                "domain_tag": str(getattr(m, "domain_tag", "")),
+                "memory_type": mt.value if hasattr(mt, "value") else str(mt),
+                "status": st.value if hasattr(st, "value") else str(st),
+                "task_status": getattr(m, "task_status", None),
+                "confidence_score": getattr(m, "confidence_score", None),
+                "content": str(getattr(m, "content", "")),
+                "tags": [str(t) for t in (getattr(m, "tags", []) or [])],
+                "created_at": str(created) if created is not None else None,
+            })
+        print(json.dumps(records, indent=2))
+        return 0
+
     if not memories:
         print("No memories found.")
         return 0
 
+    full_ids = getattr(args, "full", False)
     rows = []
     for m in memories:
-        mid = getattr(m, "memory_id", "")[:12]
+        mid = getattr(m, "memory_id", "")
+        if not full_ids:
+            mid = mid[:12]
         domain = _strip_domain_prefix(getattr(m, "domain_tag", ""))
         st = getattr(m, "status", "")
         status = st.value if hasattr(st, "value") else str(st)
@@ -676,6 +706,10 @@ def build_parser():
     p.add_argument("--status", "-s")
     p.add_argument("--sort", choices=["newest", "oldest", "confidence"])
     p.add_argument("--limit", "-n", type=int, default=25)
+    p.add_argument("--full", action="store_true",
+                   help="Show full memory IDs (table view)")
+    p.add_argument("--json", action="store_true",
+                   help="Emit full records as JSON (machine use)")
 
     # remember
     p = sub.add_parser("remember", help="Store a new memory")
@@ -745,7 +779,7 @@ def main(argv=None) -> int:
         print("SAGE persistent memory\n")
         print("  status                 Show memory store status")
         print("  recall <query>         Semantic recall (--domain, --top, --min-confidence)")
-        print("  list                   List memories (--domain, --tag, --status, --limit)")
+        print("  list                   List memories (--domain, --tag, --status, --limit, --full, --json)")
         print("  remember <text>        Store a memory (--domain, --type, --confidence, --tags)")
         print("  forget <id>            Deprecate a memory (--reason)")
         print("  domains                Per-domain breakdown")

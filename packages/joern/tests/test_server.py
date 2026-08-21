@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import gc
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -66,6 +68,35 @@ class TestJoernServerInit:
         srv = JoernServer.from_tunables()
         assert srv._heap_mb is None
         assert srv._query_timeout_s == 300
+
+
+class TestTeardownWithoutInit:
+    """``__del__`` → ``stop()`` must be safe on instances whose
+    ``__init__`` never ran (or never reached the ``_proc``
+    assignment): pre-fix, garbage-collecting such an instance raised
+    ``AttributeError: 'JoernServer' object has no attribute '_proc'``
+    as a PytestUnraisableExceptionWarning at teardown."""
+
+    def test_del_is_noop_on_bare_new_instance(self):
+        srv = JoernServer.__new__(JoernServer)
+        srv.__del__()  # must not raise
+
+    def test_failed_init_leaves_no_unraisable_on_del(self):
+        # A bad-signature TypeError fires before __init__'s body runs,
+        # so the collected instance has no instance attributes at all.
+        # CPython drops the half-built object at the raise; capture the
+        # unraisable hook so the __del__ outcome is asserted, not just
+        # warned about.
+        seen: list[object] = []
+        prev_hook = sys.unraisablehook
+        sys.unraisablehook = seen.append
+        try:
+            with pytest.raises(TypeError):
+                JoernServer(nonexistent_kwarg=1)
+            gc.collect()
+        finally:
+            sys.unraisablehook = prev_hook
+        assert not seen, f"unraisable during teardown: {seen}"
 
 
 class TestJoernServerProperties:

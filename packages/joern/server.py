@@ -236,6 +236,14 @@ class JoernServer:
     subprocess-per-query runner.
     """
 
+    # Class-level default so ``__del__`` → ``stop()`` never raises
+    # AttributeError on an instance whose ``__init__`` did not run to
+    # the ``_proc`` assignment: a bad-signature ``TypeError`` fires
+    # before the body executes at all, and tests build bare instances
+    # via ``__new__``. ``stop()`` early-returns on None, so teardown
+    # of such an instance is a no-op instead of an unraisable.
+    _proc: subprocess.Popen | None = None
+
     def __init__(
         self,
         *,

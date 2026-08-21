@@ -649,6 +649,9 @@
   "imports:import_missing_symbol:packages/sca/osv.py:cvss:CVSS4": {
    "note": "deliberate optional dependency: 'from cvss import CVSS4' targets the third-party cvss PyPI package (CVSS v4.0 reference scorer), not the in-repo packages/cvss module the resolver maps it to; the import is ImportError-guarded and degrades to the database-provided severity label when the package is absent"
   },
+  "kwargs:unknown_kwarg:packages/joern/tests/test_server.py:packages.joern.server:JoernServer.__init__:nonexistent_kwarg": {
+   "note": "deliberate bad kwarg: TestTeardownWithoutInit regression test constructs a JoernServer whose __init__ raises TypeError before its body runs, pinning that __del__ -> stop() stays quiet on a never-initialised instance"
+  },
   "plumbing:orphan_config_field:core/audit/fail_open_roles.py:SecurityFlag.safe_when": {
    "note": "pending wiring: safe_when is the fail-open channel's planned per-flag suppression predicate"
   },

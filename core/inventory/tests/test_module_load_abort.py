@@ -627,3 +627,90 @@ def test_js_for_throw_not_detected():
     code = "for (let i = 0; i < 1; i++) throw new Error('for abort')"
     result = detect_module_load_abort("javascript", code)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Lexer-divergence regressions (U09-F29): a live file must never read
+# as aborted — module_aborts is a hard-suppress whole-file witness.
+# ---------------------------------------------------------------------------
+
+
+def test_ruby_inline_rescue_modifier_not_an_abort():
+    # `raise "boom" rescue nil` is caught on the same line; the file
+    # loads and every def below binds.
+    code = 'raise "boom" rescue nil\ndef live\n  1\nend\n'
+    assert detect_module_load_abort("ruby", code) is None
+
+
+def test_ruby_plain_raise_still_detected():
+    code = 'raise "boom"\ndef live\n  1\nend\n'
+    result = detect_module_load_abort("ruby", code)
+    assert result is not None
+    assert result.line == 1
+
+
+def test_php_prose_outside_tags_is_output_not_code():
+    # Text outside <?php ?> is echoed HTML; `die` in prose after a `;`
+    # boundary used to fabricate the whole-file abort gate.
+    code = (
+        "<html>x; die hard fan page</html>\n"
+        "<?php\n"
+        "function live() { return 1; }\n"
+    )
+    assert detect_module_load_abort("php", code) is None
+
+
+def test_php_abort_in_second_region_still_detected():
+    code = (
+        "<?php $x = 1; ?>\n"
+        "prose with exit words;\n"
+        "<?php\n"
+        "exit;\n"
+    )
+    result = detect_module_load_abort("php", code)
+    assert result is not None
+    assert result.line == 4
+    assert result.summary == "exit"
+
+
+def test_php_close_tag_inside_string_stays_in_php_mode():
+    # A `?>` inside a string does not leave PHP mode — the `die` that
+    # follows in real code must still be seen.
+    code = "<?php\n$s = 'not a close ?> tag';\ndie('nope');\n"
+    result = detect_module_load_abort("php", code)
+    assert result is not None
+    assert result.line == 3
+
+
+def test_js_regex_literal_brace_does_not_fake_module_scope():
+    # `/}}/ ` inside a function body used to decrement brace depth to
+    # zero, so the throw inside the never-called function read as a
+    # module-scope abort.
+    code = (
+        "function never() {\n"
+        "  var r = /}}/;\n"
+        '  throw new Error("x");\n'
+        "}\n"
+    )
+    assert detect_module_load_abort("javascript", code) is None
+
+
+def test_js_string_unbalanced_brace_does_not_fake_module_scope():
+    code = (
+        "function f() {\n"
+        '  const s = "}";\n'
+        '  throw new Error("x");\n'
+        "}\n"
+    )
+    assert detect_module_load_abort("javascript", code) is None
+
+
+def test_js_module_scope_throw_after_regex_still_detected():
+    code = (
+        "var r = /}{/;\n"
+        'throw new Error("nope");\n'
+        "function f() {}\n"
+    )
+    result = detect_module_load_abort("javascript", code)
+    assert result is not None
+    assert result.line == 2

@@ -186,8 +186,6 @@ def _py_summarise_raise(node: ast.Raise) -> str:
 # ---------------------------------------------------------------------------
 
 
-_JS_LINE_COMMENT = re.compile(r"//[^\n]*")
-_JS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 # Any ``throw new <Capitalized>`` at module scope aborts load — the
 # class need not be named ``*Error`` (``throw new Disabled()`` counts).
 # Capitalised initial keeps us off ``throw new lowerCaseFactory()``
@@ -200,21 +198,21 @@ _JS_STMT_BOUNDARY = frozenset({";", "{", "}"})
 
 
 def _detect_javascript(content: str) -> Optional[ModuleLoadAbort]:
-    # Strip comments first so commented-out throw text doesn't trip
-    # the regex. Replace with whitespace of equal length to preserve
-    # line/offset arithmetic for the line-number report.
-    def _spaces(m: re.Match[str]) -> str:
-        return re.sub(r"[^\n]", " ", m.group(0))
-    stripped = _JS_BLOCK_COMMENT.sub(_spaces, content)
-    stripped = _JS_LINE_COMMENT.sub(_spaces, stripped)
+    # Blank ALL non-code text (comments, strings, template literals,
+    # regex literals) in one shared-lexer pass, preserving newlines so
+    # the line-number report stays valid. Comment-only or string-only
+    # stripping is not enough: braces inside a REGEX literal
+    # (``var r = /}}/;``) corrupted the depth counter, so a throw
+    # inside a never-called function read as depth-zero — a
+    # false-positive whole-file abort gate that silenced every finding
+    # below it. Same class for a string with an unbalanced brace
+    # (``const s = "}";``).
+    from core.inventory.js_lexer import blank_js_noncode
+
+    stripped = blank_js_noncode(content)
     # Walk character-by-character tracking brace and paren depth.
     # An unconditional module-level throw is one at depth zero
-    # before any function body opens it. String / template / char
-    # literals are skipped wholesale — without this a function body
-    # containing a string with an unbalanced brace (``const s =
-    # "}";``) corrupts the depth counter and a throw INSIDE the
-    # function reads as depth-zero, a false-positive module-abort
-    # that would silence every finding below it.
+    # before any function body opens it.
     depth = 0
     paren = 0
     last_significant = None
@@ -222,13 +220,6 @@ def _detect_javascript(content: str) -> Optional[ModuleLoadAbort]:
     n = len(stripped)
     while i < n:
         c = stripped[i]
-        if c in "\"'`":
-            j = _js_skip_string(stripped, i)
-            if j is None:
-                break
-            last_significant = stripped[j - 1] if j > 0 else c
-            i = j
-            continue
         if c == "{":
             depth += 1
         elif c == "}":
@@ -515,6 +506,60 @@ def _detect_rust(content: str) -> Optional[ModuleLoadAbort]:
 _PHP_LINE_COMMENT = re.compile(r"(//|#)[^\n]*")
 _PHP_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _PHP_TAG = re.compile(r"<\?php|<\?=|<\?|\?>")
+
+
+def _php_blank_outside_php(content: str) -> str:
+    """Blank everything OUTSIDE ``<?php … ?>`` regions to spaces,
+    preserving newlines. Text outside the tags is template OUTPUT the
+    interpreter echoes, not code — the word ``die`` in HTML prose used
+    to match _PHP_ABORT and fabricate a whole-file abort gate on a
+    fully live file.
+
+    In-region scanning is quote/comment-aware when looking for the
+    closing ``?>``: a ``?>`` inside a string or ``/* */`` block
+    comment does not leave PHP mode, while one inside a ``//`` / ``#``
+    line comment DOES (matching the real interpreter). Heredocs are
+    not modelled — a ``?>`` inside a heredoc mis-reads as region end
+    and blanks the remainder as HTML, which only under-detects (the
+    module-wide cheap failure direction)."""
+    out = list(content)
+    n = len(out)
+    i = 0
+    in_php = False
+    while i < n:
+        if not in_php:
+            if content.startswith("<?", i):
+                in_php = True
+                i += 2
+                continue
+            if out[i] != "\n":
+                out[i] = " "
+            i += 1
+            continue
+        c = content[i]
+        if content.startswith("?>", i):
+            in_php = False
+            i += 2
+            continue
+        if c == "/" and i + 1 < n and content[i + 1] == "*":
+            end = content.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if (c == "#" or (c == "/" and i + 1 < n and content[i + 1] == "/")):
+            # Line comment: ends at newline OR at a closing tag.
+            while i < n and content[i] != "\n":
+                if content.startswith("?>", i):
+                    break
+                i += 1
+            continue
+        if c in "\"'":
+            j = _js_skip_string(content, i)
+            if j is None:
+                break  # unterminated string — rest is string data
+            i = j
+            continue
+        i += 1
+    return "".join(out)
 _PHP_ABORT = re.compile(r"throw\s+new\s+([A-Za-z_\\][\w\\]*)|die\b|exit\b")
 # A statement-initial abort is preceded (ignoring whitespace) by one of
 # these — i.e. it begins a statement, so it is not a branch/modifier body.
@@ -526,7 +571,11 @@ _PHP_STMT_BOUNDARY = frozenset({";", "{", "}"})
 def _detect_php(content: str) -> Optional[ModuleLoadAbort]:
     def _spaces(m: "re.Match[str]") -> str:
         return re.sub(r"[^\n]", " ", m.group(0))
-    stripped = _PHP_BLOCK_COMMENT.sub(_spaces, content)
+    # HTML/text outside the PHP tags is output, not code — blank it
+    # before any matching so prose containing ``die`` / ``exit`` can
+    # never fabricate the whole-file abort gate.
+    stripped = _php_blank_outside_php(content)
+    stripped = _PHP_BLOCK_COMMENT.sub(_spaces, stripped)
     stripped = _PHP_LINE_COMMENT.sub(_spaces, stripped)
     # Blank the PHP open/close tags so the first statement after ``<?php``
     # is statement-initial and ``->`` / ``?>`` ``>`` chars never read as a
@@ -588,7 +637,12 @@ _RB_ONELINER = re.compile(r"\bend\s*$")
 # would otherwise always take the ``exit\b`` prefix match, leaving the
 # ``exit!`` alternative dead.
 _RB_ABORT = re.compile(r"^(raise\s+\S|abort\b|exit!|exit\b|fail\s+\S|Kernel\.(abort|exit))")
-_RB_MODIFIER = re.compile(r"\b(if|unless|while|until)\b")
+# Modifier forms that make the abort conditional or CAUGHT on the same
+# line. ``rescue`` matters as much as the conditionals: an inline
+# ``raise "boom" rescue nil`` is caught immediately — execution
+# continues, the file loads, and flagging it fabricates the whole-file
+# dead gate on a live file.
+_RB_MODIFIER = re.compile(r"\b(if|unless|while|until|rescue)\b")
 
 
 def _detect_ruby(content: str) -> Optional[ModuleLoadAbort]:

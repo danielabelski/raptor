@@ -571,3 +571,17 @@ class TestLearnedVocabStrategies:
             domain_vocab=self._vocab(),
         )
         assert STRATEGY_MEMORY in result
+
+
+class TestStrategiesForText:
+    def test_maps_concept_text_to_strategies(self):
+        from core.audit.strategy import strategies_for_text
+        got = strategies_for_text(
+            "sg_page_ownership: scatterlist pages alias plaintext "
+            "buffers during in-place AEAD")
+        assert "aliasing" in got
+        assert "memory" in got
+
+    def test_no_signal_returns_empty(self):
+        from core.audit.strategy import strategies_for_text
+        assert strategies_for_text("colour naming conventions") == []

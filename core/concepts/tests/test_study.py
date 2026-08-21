@@ -1923,3 +1923,28 @@ class TestQuarantineStalePrior:
         prior = self._model_with_hash(src, "verbatim")
         _quarantine_stale_prior(prior, None, tmp_path)
         assert prior.concepts[0].state == "validated"
+
+
+class TestStampRelatedStrategies:
+    def test_stamps_unstamped_concepts_from_text(self):
+        from core.concepts.model import Concept, DomainModel, Evidence
+        from core.concepts.study import _stamp_related_strategies
+        model = DomainModel(concepts=[Concept(
+            id="sg_page_ownership",
+            description="scatterlist pages alias plaintext during AEAD",
+            evidence=[Evidence(
+                type="code_path", file="af_alg.c",
+                observation="tx sgl and rx sgl share pages")],
+        )])
+        _stamp_related_strategies(model)
+        assert "aliasing" in model.concepts[0].related_strategies
+
+    def test_existing_stamp_untouched(self):
+        from core.concepts.model import Concept, DomainModel
+        from core.concepts.study import _stamp_related_strategies
+        model = DomainModel(concepts=[Concept(
+            id="x", description="scatterlist aliasing",
+            related_strategies=["auth"],
+        )])
+        _stamp_related_strategies(model)
+        assert model.concepts[0].related_strategies == ["auth"]

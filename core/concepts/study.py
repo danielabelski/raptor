@@ -197,6 +197,27 @@ def _merge_domain_models(prior: DomainModel, new: DomainModel) -> DomainModel:
     )
 
 
+def _stamp_related_strategies(model: DomainModel) -> None:
+    """Stamp ``related_strategies`` on concepts that lack it, from the
+    concept's own text (id + description + evidence observations) via
+    the shared strategy keyword vocabulary.
+
+    Mechanical, not LLM-provided: the stamp must be deterministic and
+    use exactly the vocabulary gap computation infers for functions,
+    or the AR-7 intersection never fires. Runs at the save chokepoint
+    so merged-in prior concepts from pre-stamp models get stamped too.
+    Concepts already carrying the field are left untouched.
+    """
+    from core.audit.strategy import strategies_for_text
+
+    for concept in model.concepts:
+        if concept.related_strategies:
+            continue
+        parts = [concept.id, concept.description]
+        parts.extend(e.observation or "" for e in concept.evidence)
+        concept.related_strategies = strategies_for_text(" ".join(parts))
+
+
 # ------------------------------------------------------------------
 # Project-level promotion
 # ------------------------------------------------------------------
@@ -3530,6 +3551,7 @@ def run_study(
             reading_list=reading_list,
         )
         model = _merge_domain_models(prior, model)
+    _stamp_related_strategies(model)
     model.save(out_path)
 
     if struct_annots:

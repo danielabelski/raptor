@@ -469,6 +469,26 @@ def infer_strategies(
     return frozenset(strategies)
 
 
+def strategies_for_text(text: str) -> list[str]:
+    """Map free text (a domain-model concept's id + description) to the
+    strategies it informs, by the same keyword vocabulary
+    ``strategies_from_item`` uses for path/name signals.
+
+    Used to stamp ``related_strategies`` on domain-model concepts at
+    save time so the context-staleness gate can intersect a new
+    concept against a function's current strategies (AR-7). Advisory
+    tagging: a false positive costs one extra re-review, a false
+    negative costs one missed re-review — neither is load-bearing for
+    correctness.
+    """
+    lowered = text.lower()
+    return sorted(
+        strategy
+        for strategy, keywords in _PATH_SIGNALS.items()
+        if any(kw in lowered for kw in keywords)
+    )
+
+
 def strategies_from_item(
     item: dict[str, Any],
     file_path: str,

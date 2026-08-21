@@ -68,6 +68,13 @@ class Concept:
     # treated as non-actionable by tier-gated consumers.
     provenance: str = ""
     receipt: dict[str, Any] | None = None
+    # Audit strategies this concept informs (values from
+    # core.audit.strategy.ALL_STRATEGIES). Stamped mechanically at
+    # domain-model save time; consumed by the context-staleness gate
+    # in gap computation (a new concept only re-queues functions
+    # whose current strategies intersect it — AR-7). Empty = unstamped
+    # legacy concept, treated as relevant to nothing (storm-safe).
+    related_strategies: list[str] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------

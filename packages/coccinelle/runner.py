@@ -630,6 +630,7 @@ def run_rules_batched(
     rule_stems = []
     batched_rules = []
     refused: dict[str, SpatchResult] = {}
+    alias_of: dict[str, str] = {}
     for r in rules:
         text = r.read_text(encoding="utf-8")
         # Scripting gate — same policy as run_rule, applied before the
@@ -644,6 +645,21 @@ def run_rules_batched(
         parts.append(f"// --- begin {r.stem} ---\n{text}\n")
         rule_stems.append(r.stem)
         batched_rules.append(r)
+        # Alias map for the demux: several shipped rule files emit
+        # 'rule' ids that differ from their file stem (e.g.
+        # va_arg_mismatch.cocci emits only va_arg_promoted_type*,
+        # double_close.cocci's second leg emits double_fclose).
+        # Pre-fix the demux keyed on stems only and silently dropped
+        # every alias emission — 100% of some rules' output.
+        for emitted in _emitted_rule_ids(text):
+            prior = alias_of.setdefault(emitted, r.stem)
+            if prior != r.stem:
+                logger.warning(
+                    "batched rules %s and %s both emit rule id %r — "
+                    "matches will be attributed to %s",
+                    prior, r.stem, emitted, prior,
+                )
+        alias_of.setdefault(r.stem, r.stem)
 
     if not rule_stems:
         return refused
@@ -724,12 +740,9 @@ def run_rules_batched(
                     partial_stdout, partial_stderr,
                     nonce=nonce, rule_name="batch", target=target,
                 )
-                by_rule: dict[str, list[SpatchMatch]] = {
-                    s: [] for s in rule_stems
-                }
-                for m in all_matches:
-                    if m.rule in by_rule:
-                        by_rule[m.rule].append(m)
+                by_rule = _demux_batch_matches(
+                    all_matches, rule_stems, alias_of,
+                )
                 out = {
                     s: SpatchResult(
                         rule=s, matches=by_rule.get(s, []),
@@ -762,10 +775,7 @@ def run_rules_batched(
                 nonce=nonce, rule_name="batch", target=target,
             )
 
-            by_rule = {s: [] for s in rule_stems}
-            for m in all_matches:
-                if m.rule in by_rule:
-                    by_rule[m.rule].append(m)
+            by_rule = _demux_batch_matches(all_matches, rule_stems, alias_of)
 
             out = {
                 s: SpatchResult(
@@ -785,6 +795,50 @@ def run_rules_batched(
                 Path(tmp_name).unlink()
             except OSError:
                 pass
+
+
+# Emitted-rule-id extraction for the batch demux. Matches the JSON /
+# Python-dict literal shape every shipped rule's scripting block uses
+# to stamp its COCCIRESULT payload: `"rule": "<id>"` (single or double
+# quotes, arbitrary spacing).
+_EMITTED_RULE_ID_RE = re.compile(
+    r"""["']rule["']\s*:\s*["']([A-Za-z0-9_.:-]+)["']""",
+)
+
+
+def _emitted_rule_ids(rule_text: str) -> set[str]:
+    """Rule ids a .cocci file's scripting blocks stamp into their
+    COCCIRESULT payloads. Used to build the batch demux alias map."""
+    return set(_EMITTED_RULE_ID_RE.findall(rule_text))
+
+
+def _demux_batch_matches(
+    all_matches: list[SpatchMatch],
+    rule_stems: list[str],
+    alias_of: dict[str, str],
+) -> dict[str, list[SpatchMatch]]:
+    """Attribute batch matches to their emitting rule file.
+
+    ``alias_of`` maps every emitted rule id (scanned from the rule
+    text) plus each file stem to the owning stem. An id that maps to
+    no batched rule is logged loudly — never silently dropped: with
+    the evidence nonce in place any parsed match came from a batched
+    rule's own scripting, so an unattributable id means the alias
+    scan missed an emission shape and needs fixing.
+    """
+    by_rule: dict[str, list[SpatchMatch]] = {s: [] for s in rule_stems}
+    for m in all_matches:
+        stem = alias_of.get(m.rule)
+        if stem is None or stem not in by_rule:
+            logger.warning(
+                "batched COCCIRESULT rule id %r not attributable to "
+                "any batched rule file (stems: %s) — match at %s:%s "
+                "dropped from per-rule results",
+                m.rule, ", ".join(sorted(by_rule)), m.file, m.line,
+            )
+            continue
+        by_rule[stem].append(m)
+    return by_rule
 
 
 def _dedup_matches(matches: list[SpatchMatch]) -> list[SpatchMatch]:

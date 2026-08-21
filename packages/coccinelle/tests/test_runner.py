@@ -694,6 +694,97 @@ class TestRunRulesBatched:
     def test_empty_list(self):
         assert run_rules_batched(Path("/tmp"), []) == {}
 
+    def test_batched_alias_rule_ids_demux_to_owning_stem(self, tmp_path):
+        """Rules whose scripting emits ids that differ from the file
+        stem (12 shipped rules: va_arg_mismatch -> va_arg_promoted_type*,
+        double_close -> double_fclose, ...) must have their matches
+        attributed to the owning file, not silently dropped (U12-F210).
+        """
+        r1 = tmp_path / "va_arg_mismatch.cocci"
+        r1.write_text(
+            "@r@\nposition p;\n@@\nva_arg@p(...)\n\n"
+            "@script:python@\np << r.p;\n@@\n"
+            'import json, sys\n'
+            'msg = {"rule":  "va_arg_promoted_type", "file": "t.c", "line": 1}\n'
+            'sys.stderr.write("COCCIRESULT:" + json.dumps(msg))\n'
+        )
+        r2 = tmp_path / "double_close.cocci"
+        r2.write_text(
+            "@s@\nposition p;\n@@\nclose@p(...)\n\n"
+            "@script:python@\np << s.p;\n@@\n"
+            'import json, sys\n'
+            'msg = {"rule": "double_fclose", "file": "t.c", "line": 2}\n'
+            'sys.stderr.write("COCCIRESULT:" + json.dumps(msg))\n'
+        )
+        target = tmp_path / "t.c"
+        target.write_text("void f() {}\n")
+
+        alias_line = json.dumps(
+            {"file": "t.c", "line": 1, "rule": "va_arg_promoted_type"},
+        )
+        alias_line2 = json.dumps(
+            {"file": "t.c", "line": 2, "rule": "double_fclose"},
+        )
+        stray_line = json.dumps(
+            {"file": "t.c", "line": 9, "rule": "never_declared_anywhere"},
+        )
+
+        def mock_run(cmd, **kwargs):
+            prefix = _nonced_prefix_from_cmd(cmd)
+            proc = MagicMock()
+            proc.stdout = ""
+            proc.stderr = (
+                f"{prefix}{alias_line}\n"
+                f"{prefix}{alias_line2}\n"
+                f"{prefix}{stray_line}\n"
+            )
+            proc.returncode = 0
+            return proc
+
+        with patch(
+            "packages.coccinelle.runner.is_available", return_value=True,
+        ), patch("packages.coccinelle.runner._sandboxed_run",
+                 side_effect=mock_run):
+            results = run_rules_batched(
+                target, [r1, r2], env=dict(os.environ),
+                allow_scripting=True,
+            )
+
+        assert len(results["va_arg_mismatch"].matches) == 1
+        assert results["va_arg_mismatch"].matches[0].rule == \
+            "va_arg_promoted_type"
+        assert len(results["double_close"].matches) == 1
+        # The unattributable id is dropped from per-rule results (and
+        # warned about) — never misattributed.
+        all_attributed = [
+            m.rule for r in results.values() for m in r.matches
+        ]
+        assert "never_declared_anywhere" not in all_attributed
+
+    def test_shipped_alias_rules_all_extractable(self):
+        """Every shipped script-bearing rule's emitted ids are visible
+        to the demux alias scan — a new emission shape that the scan
+        misses would silently drop that rule's batched output."""
+        from packages.coccinelle.runner import _emitted_rule_ids
+
+        rules_dir = (
+            Path(__file__).resolve().parents[3]
+            / "engine" / "coccinelle" / "rules"
+        )
+        if not rules_dir.is_dir():
+            pytest.skip("engine rules dir not present")
+        missing = []
+        for rule in sorted(rules_dir.glob("*.cocci")):
+            text = rule.read_text(encoding="utf-8")
+            if "script:python" not in text:
+                continue
+            if not _emitted_rule_ids(text):
+                missing.append(rule.stem)
+        assert missing == [], (
+            f"script-bearing rules with no demux-extractable rule id: "
+            f"{missing}"
+        )
+
     def test_single_rule_delegates(self, tmp_path):
         rule = tmp_path / "a.cocci"
         rule.write_text("@r@\nposition p;\n@@\nmalloc@p(...)\n")

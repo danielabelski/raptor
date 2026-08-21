@@ -124,6 +124,47 @@ def test_relay_exception_propagates_and_relay_is_reaped():
     asyncio.run(scenario())
 
 
+def test_torn_down_supervisor_retrieves_cancelled_relay_outcome():
+    """Cancelling the supervisor (proxy stop / loop shutdown cancels
+    the CONNECT handler task) must not abandon the relay gather with
+    an unretrieved exception: a cancel-requested _GatheringFuture
+    finishes with CancelledError set as its *exception* (not the
+    cancelled state), and an unretrieved one makes the event-loop
+    finalizer log '_GatheringFuture exception was never retrieved'
+    after the loop — under pytest, after capture is closed ('I/O
+    operation on closed file' teardown noise)."""
+    p = _supervisor_only_proxy(total=30.0, idle=0.05)
+
+    async def scenario():
+        relay = asyncio.gather(asyncio.sleep(30), asyncio.sleep(30))
+        sup = asyncio.ensure_future(
+            p._supervise_relay(relay, {"c2u": 0, "u2c": 0})
+        )
+        await asyncio.sleep(0.02)   # supervisor parked awaiting the relay
+        sup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sup
+        # Give the gather's children ticks to process their
+        # cancellation and the retrieval callback a tick to run.
+        for _ in range(50):
+            if relay.done():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
+        return relay
+
+    relay = asyncio.run(scenario())
+    assert relay.done(), "relay pair must be torn down with the supervisor"
+    # _log_traceback is the exact flag Future.__del__ keys on to decide
+    # whether to hand the finalizer an 'exception was never retrieved'
+    # report — False means the outcome was retrieved. Private but
+    # stable across CPython (both the C and pure-Python futures expose
+    # it; asyncio's own test suite asserts through it).
+    assert relay._log_traceback is False, (
+        "torn-down supervisor abandoned the relay gather's outcome"
+    )
+
+
 def test_mid_tunnel_idle_widening_applies():
     """update_idle_timeout's max-semantics widening must reach tunnels
     already in flight: with the cap elapsed and progress stopped, a

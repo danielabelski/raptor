@@ -2779,6 +2779,17 @@ class EgressProxy:
             # or a relay exception propagating via result() — take the
             # relay pair down with us so no orphan task lingers.
             relay.cancel()
+            # The gather's outcome must still be RETRIEVED: a
+            # cancel-requested _GatheringFuture completes with
+            # CancelledError set as its *exception* (not the cancelled
+            # state), which arms the future's log-on-del flag. We are
+            # unwinding on our own CancelledError here, so we cannot
+            # await it — consume the outcome via done-callback instead.
+            # Pre-fix, every tunnel alive at proxy stop() left one such
+            # future behind, and its finalizer logged "_GatheringFuture
+            # exception was never retrieved" through a logging stream
+            # that was already closed ("I/O operation on closed file").
+            relay.add_done_callback(_consume_abandoned_relay)
             raise
 
     async def _write_error(self, writer: asyncio.StreamWriter,
@@ -2789,6 +2800,16 @@ class EgressProxy:
         with contextlib.suppress(OSError, RuntimeError):
             writer.write(body.encode("ascii"))
             await writer.drain()
+
+
+def _consume_abandoned_relay(fut: asyncio.Future) -> None:
+    """Retrieve a torn-down relay gather's outcome so nothing is left
+    for the event-loop finalizer to log after the loop (and, under
+    pytest, the capture stream) is gone. Runs as a done-callback:
+    ``exception()`` is the retrieval; the value is deliberately
+    dropped — the tunnel is already being dismantled."""
+    if not fut.cancelled():
+        fut.exception()
 
 
 async def _read_line(reader: asyncio.StreamReader, max_len: int) -> str | None:

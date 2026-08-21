@@ -496,6 +496,8 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         lesson=raw.get("lesson"),
         validate_verdict=raw.get("validate_verdict"),
         validate_reason=raw.get("validate_reason"),
+        verdict_rationale=raw.get("verdict_rationale"),
+        counter_hypothesis=raw.get("counter_hypothesis"),
         source_drifted=raw.get("source_drifted"),
         context_reduced=raw.get("context_reduced"),
         reused=raw.get("reused"),

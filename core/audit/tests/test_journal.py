@@ -494,3 +494,38 @@ class TestReviewDiffLive:
         assert "a.c:f1" in out
         assert "clean" in out
         assert "run completed." in out
+
+
+def test_entry_round_trips_every_dataclass_field(tmp_path):
+    # The loader constructs entries field-by-field; a field added to the
+    # dataclass but not to _entry_from_dict silently reads back as its
+    # default (verdict_rationale and counter_hypothesis did exactly
+    # that). Drive one entry with every field populated through
+    # append + load and compare the full dict.
+    import dataclasses
+
+    from core.coverage.journal import (
+        ReviewJournalEntry,
+        append_entry,
+        load_entries,
+    )
+    values = {}
+    for f in dataclasses.fields(ReviewJournalEntry):
+        if f.type in ("str", "str | None"):
+            values[f.name] = f"v-{f.name}"
+        elif f.type in ("int", "int | None"):
+            values[f.name] = 7
+        elif f.type == "float | None":
+            values[f.name] = 1.5
+        elif f.type == "bool | None":
+            values[f.name] = True
+        elif f.type.startswith("list[dict"):
+            values[f.name] = [{"k": f.name}]
+        elif f.type.startswith("list"):
+            values[f.name] = [f"item-{f.name}"]
+    values["verdict"] = "clean"
+    values["schema_version"] = 1
+    entry = ReviewJournalEntry(**values)
+    append_entry(tmp_path, entry)
+    (loaded,) = load_entries(tmp_path)
+    assert dataclasses.asdict(loaded) == dataclasses.asdict(entry)

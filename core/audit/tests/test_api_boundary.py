@@ -103,7 +103,12 @@ HYP_NULL = (
 
 
 class TestVerdicts:
-    def test_all_sites_guarded_refutes_with_receipts(self, tmp_path):
+    def test_window_guard_receipts_hint_but_cannot_refute(self, tmp_path):
+        # The per-site 'guarded' verdict for site a comes from a
+        # regex over a text window above the call — no dominance/
+        # branch proof (a check in a sibling branch matches just the
+        # same). A lexical receipt may HINT, never refute: the
+        # all-guarded outcome downgrades to inconclusive.
         target = _write_target(tmp_path, """
 int a(const char *name) {
     if (name == NULL)
@@ -117,12 +122,61 @@ int b(void) {
         res = run_api_boundary_check(
             target, "lookup.c", "bio_lookup_ex", HYP_NULL,
         )
-        assert res.outcome == "refuted", res.to_dict()
+        assert res.outcome == "inconclusive", res.to_dict()
+        assert "lexical" in res.reason
         assert len(res.sites) == 2
         assert all(s.verdict == "guarded" for s in res.sites)
         assert all(s.evidence for s in res.sites), (
-            "refutation must carry per-site guard receipts"
+            "the hint must still carry per-site guard receipts"
         )
+        assert {s.grade for s in res.sites} == {"lexical", "structural"}
+
+    def test_all_sites_structurally_guarded_still_refutes(self, tmp_path):
+        # Argument-shape receipts are sound (a string literal / an
+        # address-of expression cannot be NULL) — structural-only
+        # guard sets keep the refutation.
+        target = _write_target(tmp_path, """
+int b(void) {
+    return bio_lookup_ex("localhost", 80, 0);
+}
+int c(struct addr *r) {
+    return bio_lookup_ex(&r->name[0], 80, 0);
+}
+""")
+        res = run_api_boundary_check(
+            target, "lookup.c", "bio_lookup_ex", HYP_NULL,
+        )
+        assert res.outcome == "refuted", res.to_dict()
+        assert all(s.grade == "structural" for s in res.sites)
+
+    def test_comment_guard_text_is_not_a_guard(self, tmp_path):
+        # Regression PoC: '/* if (!host) never happens */' above the
+        # call matched the NULL-guard regex and forged the receipt.
+        target = _write_target(tmp_path, """
+int a(const char *host) {
+    /* if (!host) callers handled elsewhere */
+    return bio_lookup_ex(host, 80, 0);
+}
+""")
+        res = run_api_boundary_check(
+            target, "lookup.c", "bio_lookup_ex", HYP_NULL,
+        )
+        assert res.outcome == "inconclusive", res.to_dict()
+        undecided = [s for s in res.sites if s.verdict == "undecided"]
+        assert undecided, "comment text must not read as a guard"
+
+    def test_call_in_comment_is_not_a_call_site(self, tmp_path):
+        target = _write_target(tmp_path, """
+/* legacy: bio_lookup_ex(NULL, 0, 0) was removed in v2 */
+int b(void) {
+    return bio_lookup_ex("localhost", 80, 0);
+}
+""")
+        res = run_api_boundary_check(
+            target, "lookup.c", "bio_lookup_ex", HYP_NULL,
+        )
+        assert len(res.sites) == 1, [s.to_dict() for s in res.sites]
+        assert res.outcome == "refuted", res.to_dict()
 
     def test_concrete_unguarded_site_confirms(self, tmp_path):
         target = _write_target(tmp_path, """
@@ -184,7 +238,12 @@ int unsigned_source(void) {
             target, "lookup.c", "bio_lookup_ex",
             "callers must never pass negative port",
         )
-        assert res.outcome == "refuted", res.to_dict()
+        # The sign check for `checked` is a window-regex hit (lexical
+        # grade) — it hints, so the outcome is inconclusive rather
+        # than refuted; the sites still carry guarded receipts.
+        assert res.outcome == "inconclusive", res.to_dict()
+        assert all(s.verdict == "guarded" for s in res.sites)
+        assert any(s.grade == "lexical" for s in res.sites)
 
     def test_definition_span_not_counted_as_call_site(self, tmp_path):
         (tmp_path / "lookup.c").write_text(DEFINITION)

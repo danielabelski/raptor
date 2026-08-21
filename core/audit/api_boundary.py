@@ -104,7 +104,14 @@ class Contract:
 
 @dataclass
 class CallSiteCheck:
-    """Per-call-site receipt."""
+    """Per-call-site receipt.
+
+    ``grade`` records how the verdict was earned: ``structural`` =
+    decidable from the argument expression itself (literal NULL,
+    address-of, unsigned cast — sound); ``lexical`` = a regex hit in
+    the raw-text window above the call (no dominance/branch proof —
+    may HINT, never refute).
+    """
 
     file: str
     caller: str
@@ -113,6 +120,7 @@ class CallSiteCheck:
     verdict: str       # guarded | unguarded | undecided
     evidence: str = ""
     argument: str = ""
+    grade: str = "structural"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +131,7 @@ class CallSiteCheck:
             "verdict": self.verdict,
             "evidence": self.evidence,
             "argument": self.argument,
+            "grade": self.grade,
         }
 
 
@@ -347,32 +356,41 @@ def _scan_file_for_calls(
         return []
     if function_name not in text:
         return []
+    # Matching, argument extraction and the guard window all run on
+    # the sanitized view (comments/string literals blanked, offsets
+    # preserved): a comment mentioning the callee is not a call site,
+    # and comment text in the window must not read as a guard. Raw
+    # lines feed only the human-facing ``code`` receipt field.
+    from .source_view import sanitized_view
+    view = sanitized_view(text, str(path))
     sites: list[dict[str, Any]] = []
     lines = text.splitlines()
+    view_lines = view.splitlines()
     call_re = re.compile(rf"(?<![\w.>]){re.escape(function_name)}\s*\(")
     offset = 0
     line_starts: list[int] = []
-    for ln in lines:
+    for ln in view_lines:
         line_starts.append(offset)
         offset += len(ln) + 1
-    for m in call_re.finditer(text):
+    for m in call_re.finditer(view):
         # Line number via binary search over line starts.
         line_no = bisect.bisect_right(line_starts, m.start())
         if skip_span and skip_span[0] <= line_no <= skip_span[1]:
             continue
-        line_text = lines[line_no - 1]
+        line_text = view_lines[line_no - 1]
         if _looks_like_decl_or_def(line_text, function_name):
             continue
-        open_pos = text.index("(", m.start())
-        args_text, _end = _balanced_span(text, open_pos)
+        open_pos = view.index("(", m.start())
+        args_text, _end = _balanced_span(view, open_pos)
         if args_text is None:
             continue
         window_start = max(0, line_no - 1 - _GUARD_WINDOW_LINES)
-        window = "\n".join(lines[window_start:line_no - 1])
+        window = "\n".join(view_lines[window_start:line_no - 1])
         sites.append({
             "file": rel,
             "line": line_no,
-            "code": line_text.strip(),
+            "code": (lines[line_no - 1].strip()
+                     if line_no <= len(lines) else line_text.strip()),
             "args": _split_top_level(args_text),
             "window": window,
         })
@@ -488,8 +506,10 @@ def _check_site(contract: Contract, site: dict[str, Any]) -> CallSiteCheck:
             )
             if guard:
                 check.verdict = "guarded"
+                check.grade = "lexical"
                 check.evidence = (
-                    f"dominating NULL check: {guard.group(0).strip()}"
+                    f"NULL check in the window (lexical — no "
+                    f"dominance proof): {guard.group(0).strip()}"
                 )
                 return check
         check.evidence = "no structural NULL guard found in the window"
@@ -520,8 +540,10 @@ def _check_site(contract: Contract, site: dict[str, Any]) -> CallSiteCheck:
             )
             if guard:
                 check.verdict = "guarded"
+                check.grade = "lexical"
                 check.evidence = (
-                    f"dominating sign check: {guard.group(0).strip()}"
+                    f"sign check in the window (lexical — no "
+                    f"dominance proof): {guard.group(0).strip()}"
                 )
                 return check
         check.evidence = "no structural sign guard found in the window"
@@ -600,6 +622,10 @@ def run_api_boundary_check(
     checks = [_check_site(contract, s) for s in sites]
     unguarded = [c for c in checks if c.verdict == "unguarded"]
     undecided = [c for c in checks if c.verdict == "undecided"]
+    lexical = [
+        c for c in checks
+        if c.verdict == "guarded" and c.grade == "lexical"
+    ]
 
     if unguarded:
         first = unguarded[0]
@@ -613,11 +639,26 @@ def run_api_boundary_check(
             sites=checks,
         )
     if not undecided:
+        if lexical:
+            # A window-regex guard hit carries no dominance/branch
+            # proof (an if(!p) in a sibling branch that does not
+            # dominate the call matches just the same) — a lexical
+            # receipt may HINT, never refute.
+            return ApiBoundaryResult(
+                outcome="inconclusive",
+                reason=(
+                    f"{len(lexical)} of {len(checks)} guard receipt(s) "
+                    "are lexical-grade (window regex, no dominance "
+                    "proof) — cannot refute; sites need review"
+                ),
+                contract=contract.describe(),
+                sites=checks,
+            )
         return ApiBoundaryResult(
             outcome="refuted",
             reason=(
                 f"all {len(checks)} in-repo call site(s) honour the "
-                "contract (guard receipts per site)"
+                "contract (structural guard receipts per site)"
             ),
             contract=contract.describe(),
             sites=checks,

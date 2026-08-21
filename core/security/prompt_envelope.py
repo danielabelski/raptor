@@ -408,7 +408,30 @@ def _datamark(content: str) -> str:
     return re.sub(r'\s', lambda m: m.group(0) + _DATAMARK_SENTINEL, content)
 
 
-_MARKDOWN_HEADING_RE = re.compile(r'(?m)^(#+)')
+# ATX headings: markdown recognises up to THREE leading spaces before
+# the `#` run — an anchor on column-0 `#` alone left `  # INJECTED`
+# rendering as a heading. The indent is preserved; the escape lands on
+# the `#` run itself.
+_MARKDOWN_HEADING_RE = re.compile(r'(?m)^( {0,3})(#+)')
+
+# Setext headings: a text line "underlined" by a run of `=` or `-`
+# (0-3 leading spaces, trailing blanks only) renders the PRECEDING
+# line as a heading — a forgery channel the ATX escape never sees.
+# Only fires when the underline directly follows a non-blank line
+# (after a blank line, `---` is a thematic break / `===` plain text,
+# so ordinary horizontal rules in prose are left alone).
+_SETEXT_UNDERLINE_RE = re.compile(
+    r'(?m)(?<=\S\n)^( {0,3})(=+|-+)([ \t]*)$'
+)
+
+
+def _break_setext_underline(m: re.Match) -> str:
+    # Insert a ZWSP after the first underline char: the line is no
+    # longer exclusively =/- so no renderer treats it as a setext
+    # underline, while the visual appearance is unchanged (same
+    # approach as the envelope-tag neutralisation above).
+    run = m.group(2)
+    return m.group(1) + run[0] + '\u200b' + run[1:] + m.group(3)
 
 
 def neutralize_tag_forgery(content: str) -> str:
@@ -437,10 +460,16 @@ def neutralize_tag_forgery(content: str) -> str:
        ``## Bug-class lenses``).  An attacker who controls a field that
        echoes into the trusted region — like ``finding["file_path"] =
        "src/foo.py\\n## INJECTED"`` — can forge a heading the model
-       parses as a peer of the real ones.  Each line-start ``#`` run is
-       prefixed with ``\\`` so visual heading recognition fails while the
-       semantic content (Python ``# comment``, shebang ``#!/...``, C
-       ``#include`` etc.) remains readable.
+       parses as a peer of the real ones.  Each line-start ``#`` run
+       (markdown allows up to three leading spaces) is prefixed with
+       ``\\`` so visual heading recognition fails while the semantic
+       content (Python ``# comment``, shebang ``#!/...``, C
+       ``#include`` etc.) remains readable.  Setext headings — a text
+       line "underlined" by ``===``/``---`` — are the same forgery in
+       a shape the ``#`` escape never sees; the underline run gets a
+       ZWSP inserted so it stops being a heading underline while
+       looking unchanged (thematic breaks after a blank line are left
+       alone).
 
     The replacement is narrow enough to leave normal source-code
     comparisons (``a < b``) and inline ``#`` characters untouched.
@@ -472,7 +501,8 @@ def neutralize_tag_forgery(content: str) -> str:
         return s
 
     content = _ENVELOPE_TAG_RE.sub(_escape_match, content)
-    content = _MARKDOWN_HEADING_RE.sub(r'\\\1', content)
+    content = _MARKDOWN_HEADING_RE.sub(r'\1\\\2', content)
+    content = _SETEXT_UNDERLINE_RE.sub(_break_setext_underline, content)
     return content
 
 
@@ -664,9 +694,16 @@ def _render_slots(slots: dict[str, TaintedString], profile: ModelDefenseProfile)
         # and prefix each line with a trust label.
         parts = []
         for name, ts in sorted(slots.items()):
+            # The slot NAME gets the same newline-flattening as the
+            # value: names are usually caller-chosen keys, but a
+            # caller passing an attacker-influenced name would
+            # otherwise hand over a raw newline that forges the exact
+            # `<name> (trusted): <value>` grammar the priming teaches
+            # (values are flattened; pre-fix names were not).
+            safe_name = escape_nonprintable(str(name))
             if ts.trust == 'trusted':
                 val = escape_nonprintable(ts.value)
-                parts.append(f"{name} (trusted): {val}")
+                parts.append(f"{safe_name} (trusted): {val}")
             else:
                 val = _content_for_envelope(ts.value, profile)
                 # Slots are identifiers, not prose: flatten newlines so
@@ -676,7 +713,7 @@ def _render_slots(slots: dict[str, TaintedString], profile: ModelDefenseProfile)
                 # newlines by design for prose blocks — a slot value
                 # has no legitimate use for them.)
                 val = escape_nonprintable(val)
-                parts.append(f"{name} (untrusted): {val}")
+                parts.append(f"{safe_name} (untrusted): {val}")
         return '\n'.join(parts)
     parts = '\n'.join(_render_slot(k, v, profile) for k, v in slots.items())
     return f'<slots>\n{parts}\n</slots>'

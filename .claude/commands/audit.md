@@ -20,7 +20,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 /audit <target_path> [--strategy <name>] [--budget <N>] [--scope <dir>] [--out <dir>]
        [--codeql-db <path>] [--max-cost <USD>] [--deepen-reserve <fraction>] [--max-time <seconds>]
        [--review-passes <N>] [--subsystem-depth <N>] [--batch-sloc-threshold <N>]
-       [--include-kinds <list>] [--max-propagation-depth <N>] [--adversarial]
+       [--include-kinds <list>] [--max-propagation-depth <N>] [--adversarial] [--edges]
        [--no-verdict-reuse] [--schedule {cost,priority}] [--prior-journal <run-dir>]
        [--prior-claims <N>]
        [--dynamic | --no-dynamic]
@@ -54,6 +54,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--no-validate` — skip the /validate post-pass (not recommended)
 - `--model <name>` — model ID (repeatable for multi-model consensus; first model used for lifecycle)
 - `--adversarial` — enable adversarial reviewer that challenges positive verdicts (requires `--model` x2+)
+- `--edges` — review cross-function edge obligations: tier-1 boundary edges as dedicated contract units, tier-2 on-path edges folded into caller reviews (flag-gated beta)
 - `--max-propagation-depth <N>` — override adaptive constraint propagation depth (default: auto-calibrated p90+2, floor 5, cap 15)
 
 ## Instructions
@@ -100,7 +101,7 @@ If the operator passed `--scope`, still map the full target (the map covers the 
 libexec/raptor-audit run "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--pin`, `--scope-floor`, `--no-scope-floor`, `--pre-scan`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--deepen-reserve`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--prior-journal`, `--prior-claims`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`, `--no-vendored-triage`).
+Pass through any operator flags (`--strategy`, `--budget`, `--scope`, `--pin`, `--scope-floor`, `--no-scope-floor`, `--pre-scan`, `--annotations-dir`, `--no-validate`, `--model`, `--adversarial`, `--edges`, `--max-propagation-depth`, `--codeql-db`, `--max-cost`, `--deepen-reserve`, `--max-time`, `--review-passes`, `--subsystem-depth`, `--batch-sloc-threshold`, `--include-kinds`, `--no-verdict-reuse`, `--schedule`, `--prior-journal`, `--prior-claims`, `--dynamic`, `--no-dynamic`, `--binary`, `--binary-auto`, `--no-binary-oracle`, `--no-vendored-triage`).
 
 The orchestrator handles everything from here: gap computation, context assembly, LLM review, tool chain dispatch, Joern background build, sweep validation, constraint propagation, Mode 2 checker synthesis, /validate post-pass, report generation, and lifecycle completion.
 

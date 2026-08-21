@@ -500,6 +500,13 @@ class OrchestratorConfig:
     # unchanged reviewed functions are suppressed, nothing imported.
     # ``force=True`` bypasses both (everything re-reviews).
     verdict_reuse: bool = True
+    # Cross-function edge obligations (--edges, flag-gated until the
+    # CopyFail/DirtyFrag validation bar passes): scope tier-1/tier-2
+    # edge obligations from the checklist adjacency + context-map,
+    # review tier-1 edges as dedicated contract units before the
+    # function loop, and fold tier-2 edge contracts into caller
+    # reviews. Default off.
+    edges: bool = False
     # Set by the end-of-run corrective passes: once final statuses are
     # re-journaled/re-logged, any straggler commit (an abandoned study
     # re-review finishing after the drain gave up on it) must not

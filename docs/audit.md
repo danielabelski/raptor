@@ -57,6 +57,7 @@ full flag table.
 | `--max-propagation-depth <N>` | Override adaptive constraint propagation depth (default: auto-calibrated p90+2, floor 5, cap 15) |
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |
 | `--adversarial` | Adversarial reviewer that challenges positive verdicts (requires `--model` x2+) |
+| `--edges` | Cross-function edge obligations (beta): tier-1 boundary edges reviewed as dedicated contract units before the function loop; tier-2 on-path edges folded into caller reviews as `edge_verdicts` |
 | `--no-validate` | Skip the /validate post-pass |
 | `--include-kinds <list>` | Item kinds beyond functions/methods (default: `top_level`, `macro`, `global`). Positive list overrides the defaults; `-kind` opts one out; `none` restricts to functions/methods |
 | `--batch-sloc-threshold <N>` | Batch functions at or under this SLOC per file into combined reviews (default: 15; 0 disables) |

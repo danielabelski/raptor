@@ -102,6 +102,9 @@ class AuditPipelineOpts:
     # prior-run verdicts for functions whose source hash is unchanged
     # instead of silently suppressing them.
     verdict_reuse: bool = True
+    # Cross-function edge obligations (--edges): flag-gated review of
+    # tier-1 edge contracts + tier-2 folded edge verdicts.
+    edges: bool = False
     # Ignore all prior review state — coverage records, the per-run
     # review journal, the project journal index, and recall caches —
     # so every scheduled function is re-reviewed. The corpus runner
@@ -319,6 +322,7 @@ def _build_orchestrator_config(
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
         verdict_reuse=opts.verdict_reuse,
+        edges=opts.edges,
         force=opts.force,
         prefilter_skip=opts.prefilter_skip,
         triage=opts.triage,

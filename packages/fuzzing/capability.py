@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from core.config import RaptorConfig
+from core.run.workdir import exec_workdir
 from packages.binary_analysis.radare2_understand import probe_capability as _probe_radare2_capability
 
 logger = logging.getLogger(__name__)
@@ -349,11 +350,15 @@ def _probe_clang_sanitiser(clang: str, sanitizer: str) -> bool:
 
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".c", delete=False
+            mode="w", prefix="raptor-fuzz-probe-", suffix=".c",
+            delete=False, dir=exec_workdir(),
         ) as src:
             src.write(test_src)
             src_path = src.name
-        with tempfile.NamedTemporaryFile(suffix=".out", delete=False) as out:
+        with tempfile.NamedTemporaryFile(
+            prefix="raptor-fuzz-probe-", suffix=".out",
+            delete=False, dir=exec_workdir(),
+        ) as out:
             out_path = out.name
 
         result = subprocess.run(
@@ -387,7 +392,9 @@ def _check_macos_afl_shmem(afl_fuzz: str) -> bool:
     if not Path(cat).exists():
         return True
     try:
-        with tempfile.TemporaryDirectory(prefix="raptor-afl-probe-") as tmp:
+        with tempfile.TemporaryDirectory(
+                prefix="raptor-afl-probe-", dir=exec_workdir(),
+        ) as tmp:
             tmp_path = Path(tmp)
             seeds = tmp_path / "in"
             out = tmp_path / "out"

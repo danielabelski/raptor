@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.run.workdir import exec_workdir
+
 logger = logging.getLogger(__name__)
 
 _HARNESS_TIMEOUT_S = 10
@@ -251,7 +253,8 @@ def _run_c_harness(
     # executing LLM-generated code on the bare host.
     from core.sandbox import SandboxSetupError, run_untrusted
 
-    with tempfile.TemporaryDirectory(prefix="raptor_dyn_") as tmpdir:
+    with tempfile.TemporaryDirectory(
+            prefix="raptor_dyn_", dir=exec_workdir()) as tmpdir:
         harness_path = Path(tmpdir) / "harness.c"
         binary_path = Path(tmpdir) / "harness"
         harness_path.write_text(harness_code)
@@ -365,7 +368,8 @@ def _run_python_harness(
     # behaviour without weakening that contract.
     from core.sandbox import SandboxSetupError, run_untrusted
 
-    with tempfile.TemporaryDirectory(prefix="raptor_dyn_") as tmpdir:
+    with tempfile.TemporaryDirectory(
+            prefix="raptor_dyn_", dir=exec_workdir()) as tmpdir:
         harness_path = Path(tmpdir) / "harness.py"
         harness_path.write_text(
             f"import sys\nsys.path.insert(0, {str(target_path)!r})\n"

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import OrderedDict, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -233,6 +234,10 @@ class CalleeCensus:
     sites: list[CallSite] = field(default_factory=list)
     security_relevant: bool = False
     contract: dict[str, Any] | None = None
+    # True when the census build hit its site cap / deadline: the
+    # majority statistics are computed over PARTIAL data and must not
+    # mint definitive verdicts (census_verdict gates on this).
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         if not self.security_relevant:
@@ -329,6 +334,8 @@ class CalleeCensus:
         }
         if self.contract is not None:
             d["contract"] = self.contract
+        if self.truncated:
+            d["truncated"] = True
         return d
 
 
@@ -732,8 +739,40 @@ def _parse_file(source: str, file_path: str):
     return parse_source_cached(file_path, source)
 
 
+# Self-limits for the census build: per-site usage classification
+# walks the enclosing scope, so a hostile file of module-level
+# assignments is O(sites x file) — and the census runs BEFORE the
+# prepass budget's first check. On cap/deadline the build STOPS and
+# every produced entry is stamped ``truncated`` (partial majority
+# statistics may hint, never mint definitive verdicts).
+_CENSUS_BUDGET_S = 30.0
+_CENSUS_MAX_SITES_PER_FILE = 2000
+
+
+class _CensusLimiter:
+    """Site cap + wall-clock deadline for one census build."""
+
+    def __init__(self, deadline: float | None,
+                 max_sites_per_file: int) -> None:
+        self.deadline = deadline
+        self.max_sites_per_file = max_sites_per_file
+        self.hit: str = ""
+
+    def file_exhausted(self, sites_in_file: int) -> bool:
+        if sites_in_file >= self.max_sites_per_file:
+            self.hit = (
+                f"site cap ({self.max_sites_per_file}/file) reached"
+            )
+            return True
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            self.hit = "census deadline exceeded"
+            return True
+        return False
+
+
 def _extract_callsites_ts(
     file_path: str, source: str,
+    limiter: _CensusLimiter | None = None,
 ) -> list[CallSite] | None:
     """Extract call sites via tree-sitter. Returns None if unavailable."""
     tree, lang = _parse_file(source, file_path)
@@ -756,6 +795,13 @@ def _extract_callsites_ts(
             continue
         if len(callee) < 2:
             continue
+
+        if limiter is not None and limiter.file_exhausted(len(sites)):
+            logger.warning(
+                "callsite_consistency: census truncated in %s (%s)",
+                file_path, limiter.hit,
+            )
+            break
 
         enclosing = _find_enclosing_function(node, lang)
         func_name = _get_func_name(enclosing, lang, src) if enclosing else "<module>"
@@ -925,16 +971,41 @@ def build_return_census(
     source_texts: dict[str, str],
     *,
     joern_server=None,
+    budget_s: float | None = _CENSUS_BUDGET_S,
+    max_sites_per_file: int = _CENSUS_MAX_SITES_PER_FILE,
 ) -> dict[str, CalleeCensus]:
     """One parse per file → per-callee usage census (§2.1).
 
     The artifact behind ``return-census.json``; also the site index
     the deviation detector and the flag/mode comparator share.
+
+    Self-limiting: ``budget_s`` (wall-clock, None = unlimited) and
+    ``max_sites_per_file`` bound the per-site scope walks so a
+    hostile file cannot stall prep for hours. When either trips, the
+    remaining extraction is skipped and every produced entry is
+    stamped ``truncated`` — partial statistics never read as a
+    complete census downstream.
     """
     all_sites: list[CallSite] = []
+    limiter = _CensusLimiter(
+        (time.monotonic() + budget_s) if budget_s is not None else None,
+        max_sites_per_file,
+    )
+    truncated = False
 
     for file_path, source in source_texts.items():
-        ts_sites = _extract_callsites_ts(file_path, source)
+        if limiter.deadline is not None \
+                and time.monotonic() > limiter.deadline:
+            limiter.hit = "census deadline exceeded"
+            truncated = True
+            logger.warning(
+                "callsite_consistency: census deadline hit before %s; "
+                "remaining files skipped", file_path,
+            )
+            break
+        ts_sites = _extract_callsites_ts(file_path, source, limiter)
+        if limiter.hit:
+            truncated = True
         if ts_sites is not None:
             all_sites.extend(ts_sites)
         else:
@@ -969,7 +1040,9 @@ def build_return_census(
     for site in all_sites:
         grouped[site.callee].append(site)
     for callee, sites in sorted(grouped.items()):
-        by_callee[callee] = CalleeCensus(callee=callee, sites=sites)
+        by_callee[callee] = CalleeCensus(
+            callee=callee, sites=sites, truncated=truncated,
+        )
     return by_callee
 
 

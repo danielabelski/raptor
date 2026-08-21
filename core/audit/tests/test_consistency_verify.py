@@ -400,3 +400,60 @@ class TestHypothesisAdjudication:
         assert res.outcome == "confirmed"
         assert res.peer_evidence.n == 10
         assert res.peer_evidence.conforming == 9
+
+
+class TestTruncatedCensus:
+    """Regression: a census truncated by its site cap /
+    deadline carries partial majority statistics — definitive
+    verdicts (discard-majority refutation, majority-leg confirmation)
+    must gate to inconclusive."""
+
+    def _truncated_verdict(self, checked, unchecked, callee):
+        texts = _fixture(checked, unchecked, callee=callee)
+        census = build_return_census(texts)
+        entry = census[callee]
+        entry.truncated = True
+        deviant = entry.deviants[0]
+        return census_verdict(
+            entry, deviant, context=RoleContext(), source_texts=texts,
+        )
+
+    def test_truncated_discard_majority_cannot_refute(self):
+        res = self._truncated_verdict(0, 5, "log_line")
+        assert res.outcome == "inconclusive", res.to_dict()
+        assert res.reason.startswith("census-truncated")
+
+    def test_truncated_majority_leg_cannot_confirm(self):
+        res = self._truncated_verdict(9, 1, "do_auth")
+        assert res.outcome == "inconclusive", res.to_dict()
+        assert res.reason.startswith("census-truncated")
+
+    def test_registry_contract_confirms_despite_truncation(self):
+        # The WUR witness is census-independent — it still confirms.
+        texts = _fixture(0, 6, callee="verify_sig")
+        texts["include/api.h"] = (
+            "__attribute__((warn_unused_result)) int verify_sig(void);\n"
+        )
+        census = build_return_census(texts)
+        entry = census["verify_sig"]
+        entry.truncated = True
+        ctx = RoleContext(wur_functions=frozenset({"verify_sig"}))
+        res = census_verdict(
+            entry, entry.deviants[0], context=ctx, source_texts=texts,
+        )
+        assert res.outcome == "confirmed"
+        assert res.contract["grade"] == "registry"
+
+    def test_site_local_facts_survive_truncation(self):
+        # Acknowledged discard is an observation about THIS site, not
+        # census statistics — it still refutes.
+        texts = _fixture(9, 0, ack=1, callee="frobnicate")
+        census = build_return_census(texts)
+        entry = census["frobnicate"]
+        entry.truncated = True
+        res = census_verdict(
+            entry, entry.acknowledged_sites[0], context=RoleContext(),
+            source_texts=texts,
+        )
+        assert res.outcome == "refuted"
+        assert res.reason.startswith(REFUTED_ACKNOWLEDGED)

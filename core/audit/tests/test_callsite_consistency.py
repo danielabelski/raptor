@@ -506,3 +506,35 @@ class TestFormatForPrompt:
         text = format_callsite_deviations_for_prompt(devs)
         assert "captured" in text
         assert "CHECK" not in text
+
+
+class TestCensusSelfLimits:
+    """Regression: build_return_census walked ALL descendants of the
+    enclosing scope per captured site (whole file tree for module
+    scope) with no cap and no deadline — pre-budget hang. The build
+    self-limits and stamps every entry ``truncated``."""
+
+    def test_site_cap_truncates_and_stamps(self):
+        from core.audit.callsite_consistency import build_return_census
+        src = "\n".join(f"z{i} = hh(a)" for i in range(300))
+        census = build_return_census(
+            {"b.py": src}, max_sites_per_file=100,
+        )
+        entry = census["hh"]
+        assert entry.n == 100
+        assert entry.truncated is True
+        assert entry.to_dict()["truncated"] is True
+
+    def test_deadline_truncates_and_stamps(self):
+        from core.audit.callsite_consistency import build_return_census
+        src = "\n".join(f"z{i} = hh(a)" for i in range(2000))
+        census = build_return_census({"b.py": src}, budget_s=0.0)
+        for entry in census.values():
+            assert entry.truncated is True
+
+    def test_complete_census_is_not_stamped(self):
+        from core.audit.callsite_consistency import build_return_census
+        src = "\n".join(f"y{i} = gg(a)" for i in range(20))
+        census = build_return_census({"ok.py": src})
+        assert census["gg"].truncated is False
+        assert "truncated" not in census["gg"].to_dict()

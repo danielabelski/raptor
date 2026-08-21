@@ -79,6 +79,7 @@ REASON_EXTRACTOR_UNAVAILABLE = "extractor-unavailable"
 REASON_HYPOTHESIS_UNBINDABLE = "hypothesis-unbindable"
 REASON_OWNERSHIP_UNRESOLVED = "ownership-unresolved"
 REASON_GUARD_ELSEWHERE = "guard-elsewhere"
+REASON_CENSUS_TRUNCATED = "census-truncated"
 
 INCONCLUSIVE_REASONS = frozenset({
     REASON_CONTRACT_UNRESOLVED,
@@ -90,6 +91,7 @@ INCONCLUSIVE_REASONS = frozenset({
     REASON_HYPOTHESIS_UNBINDABLE,
     REASON_OWNERSHIP_UNRESOLVED,
     REASON_GUARD_ELSEWHERE,
+    REASON_CENSUS_TRUNCATED,
 })
 
 # Enumerated refutation reasons.
@@ -514,6 +516,17 @@ def census_verdict(
             )
 
         if entry.majority_says_discard_ok:
+            if entry.truncated:
+                # Partial census (site cap / deadline hit): the
+                # discard majority is computed over incomplete data
+                # and may not mint a definitive refutation.
+                return _inconclusive(
+                    REASON_CENSUS_TRUNCATED,
+                    f"census truncated — discard majority "
+                    f"({entry.n - len(entry.conforming)}/{entry.n}) "
+                    f"is over partial data",
+                    callee=callee,
+                )
             return ConsistencyResult(
                 outcome="refuted",
                 reason=(
@@ -554,6 +567,14 @@ def census_verdict(
         return result
 
     # Majority leg (detection-grade), stricter thresholds (§2.3).
+    if entry.truncated:
+        # Partial census: majority statistics are hint-tier at best.
+        return _inconclusive(
+            REASON_CENSUS_TRUNCATED,
+            "census truncated (site cap / deadline) — majority "
+            "statistics computed over partial data",
+            callee=callee,
+        )
     if entry.considered < VERDICT_MIN_SITES:
         return _inconclusive(
             REASON_GROUP_TOO_SMALL,

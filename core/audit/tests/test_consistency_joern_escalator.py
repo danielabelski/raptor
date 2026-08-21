@@ -187,7 +187,8 @@ class TestPrepassBudget:
         # we observe is the escalator's.
         monkeypatch.setattr(
             cp, "build_return_census",
-            lambda texts, joern_server=None: build_return_census(texts),
+            lambda texts, joern_server=None, **kw:
+                build_return_census(texts, **kw),
         )
         res = cp.run_consistency_prepass(
             {"src/callers.c": "\n".join(parts)},

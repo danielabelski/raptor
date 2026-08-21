@@ -339,8 +339,13 @@ def run_consistency_prepass(
 
     census: dict[str, CalleeCensus] = {}
     try:
+        # The census self-limits to half the prepass budget: it runs
+        # BEFORE the first _over_budget() check, so without its own
+        # deadline one hostile file of module-level assignments
+        # stalls prep for hours (per-site scope walks are O(file)).
         census = build_return_census(
             source_texts, joern_server=joern_server,
+            budget_s=budget_s / 2,
         )
     except Exception:
         _dim_failed("census")

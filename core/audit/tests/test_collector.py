@@ -247,6 +247,70 @@ class TestCollectorJournalDualWrite:
         assert entries[0].verdict == "error"
 
 
+class TestEvidenceToolsSeparation:
+    """Regression: journal evidence_tools must carry only the CONFIRMING
+    receipt — never the tools_dispatched union. A dispatched-but-
+    silent tool reading as a confirming receipt made false positives
+    permanently undemotable via feedback's referee and corrupted
+    per-channel survival/attribution telemetry."""
+
+    def _submit(self, tmp_path, outcome):
+        from core.coverage.journal import load_entries
+        c = Collector(out_dir=tmp_path, target_path=tmp_path)
+        c.submit(outcome, _make_gap())
+        entries = load_entries(tmp_path)
+        assert len(entries) == 1
+        return entries[0]
+
+    def test_dispatched_but_silent_tools_are_not_evidence(self, tmp_path):
+        # The verifier PoC: semgrep dispatched, found nothing
+        # (confirmed=set(), ran={'semgrep'}) — the journal row used to
+        # show evidence_tools=['semgrep'] while outcome.evidence_tool
+        # was empty.
+        outcome = _FakeOutcome(
+            status="suspicious", evidence_tool="",
+        )
+        outcome.tools_dispatched = {"semgrep", "joern"}
+        entry = self._submit(tmp_path, outcome)
+        assert entry.evidence_tools == []
+        assert entry.tools_dispatched == ["joern", "semgrep"]
+
+    def test_confirming_receipt_is_evidence(self, tmp_path):
+        outcome = _FakeOutcome(
+            status="finding", evidence_tool="smt:check-overflow",
+        )
+        outcome.tools_dispatched = {"smt", "semgrep"}
+        entry = self._submit(tmp_path, outcome)
+        assert entry.evidence_tools == ["smt:check-overflow"]
+        assert entry.tools_dispatched == ["semgrep", "smt"]
+
+    def test_referee_does_not_grade_dispatched_as_tool_evidence(
+        self, tmp_path,
+    ):
+        # The verdict-affecting consumer from the PoC: feedback's
+        # _prior_has_tool_evidence must come back False for a
+        # dispatched-but-silent journal entry, so an LLM-only
+        # /validate 'disproven' ruling can demote the claim.
+        from core.audit.feedback import _prior_has_tool_evidence
+
+        outcome = _FakeOutcome(status="suspicious", evidence_tool="")
+        outcome.tools_dispatched = {"semgrep"}
+        entry = self._submit(tmp_path, outcome)
+        assert _prior_has_tool_evidence(entry) is False
+
+    def test_round_trip_preserves_tools_dispatched(self, tmp_path):
+        from core.coverage.journal import _entry_from_dict
+
+        outcome = _FakeOutcome(status="suspicious", evidence_tool="")
+        outcome.tools_dispatched = {"coccinelle"}
+        entry = self._submit(tmp_path, outcome)
+        raw = entry.to_dict()
+        assert raw["tools_dispatched"] == ["coccinelle"]
+        assert "evidence_tools" not in raw or raw["evidence_tools"] == []
+        rebuilt = _entry_from_dict(raw)
+        assert rebuilt.tools_dispatched == ["coccinelle"]
+
+
 class TestCollectorSageHypothesis:
     """Test SAGE hypothesis store wiring in Collector.submit()."""
 

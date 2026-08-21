@@ -103,12 +103,20 @@ def append_journal_for_outcome(
             {"mechanism": outcome.hypothesis, "confidence": "unknown"},
         ]
 
+    # ``evidence_tools`` is the CONFIRMING receipt only. The old union
+    # with ``tools_dispatched`` blurred exactly the distinction
+    # promotion_alarm documents as never-blur: a tool that
+    # ran and came back refuted/inconclusive journaled as evidence, so
+    # feedback's referee treated the claim as tool-evidenced (an
+    # LLM-only /validate ruling could then never demote it), and
+    # survival/attribution telemetry credited channels that merely
+    # dispatched. Dispatched-tool provenance keeps its own field.
     evidence_tools: list[str] = []
     if getattr(outcome, "evidence_tool", ""):
         evidence_tools = [outcome.evidence_tool]
-    dispatched = getattr(outcome, "tools_dispatched", None)
-    if dispatched:
-        evidence_tools = sorted(set(evidence_tools) | dispatched)
+    tools_dispatched = sorted(
+        str(t) for t in (getattr(outcome, "tools_dispatched", None) or ())
+    )
 
     reading_list_items: list[str] = []
     review_result = getattr(outcome, "review_result", None)
@@ -219,6 +227,7 @@ def append_journal_for_outcome(
         study_receipts=study_receipts,
         model=getattr(outcome, "model", None) or None,
         evidence_tools=evidence_tools,
+        tools_dispatched=tools_dispatched,
         cost_usd=getattr(outcome, "cost_usd", None) or None,
         duration_s=getattr(outcome, "duration_s", None) or None,
         verdict_rationale=verdict_rationale,

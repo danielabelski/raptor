@@ -140,7 +140,18 @@ class ReviewJournalEntry:
     # study answer's blast radius traceable from the journal.
     study_receipts: list[dict] = field(default_factory=list)
     model: str | None = None
+    # Tools whose OUTPUT the verdict carries (the confirming receipt
+    # stamp) — never the dispatched union. Downstream verdict-weight
+    # consumers (Reflexion referee, survival telemetry, verdict reuse,
+    # corpus attribution) read this field; a dispatched-but-silent tool
+    # is not evidence (see core.audit.promotion_alarm).
     evidence_tools: list[str] = field(default_factory=list)
+    # Tools that RAN for this review regardless of what they concluded
+    # (refuted/inconclusive/confirmed). Provenance/coverage signal
+    # only — kept separate so evidence_tools stays outcome-bearing
+    # (the old union let dispatched-but-unconfirming runs read
+    # as confirming receipts in the durable journal).
+    tools_dispatched: list[str] = field(default_factory=list)
     token_budget: int | None = None
     cost_usd: float | None = None
     duration_s: float | None = None
@@ -450,6 +461,7 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         study_receipts=raw.get("study_receipts", []),
         model=raw.get("model"),
         evidence_tools=raw.get("evidence_tools", []),
+        tools_dispatched=raw.get("tools_dispatched", []),
         token_budget=raw.get("token_budget"),
         cost_usd=raw.get("cost_usd"),
         duration_s=raw.get("duration_s"),

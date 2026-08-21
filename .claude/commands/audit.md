@@ -88,7 +88,7 @@ Check whether `context-map.json` exists in `$OUTPUT_DIR`. If missing, run `/unde
 /understand --map "$TARGET_PATH" --out "$OUTPUT_DIR"
 ```
 
-Note: for a source-tree target this is the **in-session** `/understand` workflow (you perform the map following `.claude/skills/code-understanding/map.md`) — `libexec/raptor-understand --map` only accepts compiled artefacts. Since `--out` is already resolved, skip the understand lifecycle start and write into `$OUTPUT_DIR` directly.
+Note: for a source-tree target this is the **in-session** `/understand` workflow (you perform the map following `.claude/skills/code-understanding/map.md`) — `libexec/raptor-understand --map` only accepts compiled artefacts. Since `--out` is already resolved, skip the understand lifecycle start and write into `$OUTPUT_DIR` directly. **Skip the understand lifecycle `complete`/`fail` steps too** — `$OUTPUT_DIR` is the AUDIT run and only the audit flow finalises it (Step 3's orchestrator does; completing it here stamps the audit run `completed` before the review even starts, which breaks SIGTERM drain and `raptor-audit resume`). The stub refuses `--command understand` against an audit-owned dir as the mechanical backstop.
 
 If the operator passed `--scope`, still map the full target (the map covers the whole codebase; the scope only filters gap selection).
 

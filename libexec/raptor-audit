@@ -1470,7 +1470,8 @@ def _finalize_run(
         subprocess.run(
             [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
              "interrupt", str(out_dir),
-             "SIGTERM — salvage report written"],
+             "SIGTERM — salvage report written",
+             "--command", "audit"],
             capture_output=True, check=False,
         )
         print(
@@ -1483,6 +1484,9 @@ def _finalize_run(
     lifecycle_args = [
         str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
         "complete", str(out_dir),
+        # Ownership claim: refuse if this dir is somehow another
+        # command's run (see raptor-run-lifecycle --command).
+        "--command", "audit",
     ]
     if model_id:
         lifecycle_args.extend(["--model", model_id])

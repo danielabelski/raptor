@@ -160,14 +160,16 @@ libexec/raptor-coverage-summary "$OUTPUT_DIR" --mark-file "$OUTPUT_DIR/reviewed-
 libexec/raptor-render-diagrams "$OUTPUT_DIR"
 ```
 
-**Step 5: Complete the run.** Replace `<your-model-id>` with your exact model ID from your system prompt (e.g. `claude-opus-4-7`) — it records which model performed the analysis, which only you (the harness) know (RAPTOR's Python can't read `/model`). If you don't know your model ID, drop the `--model` flag entirely; the run still completes, the model is just left unrecorded.
+**Step 5: Complete the run.** Skip this step entirely if you skipped Step 1 because `--out` was already resolved by another command's lifecycle (e.g. the `/audit` mapping phase) — that command owns the run and finalises it itself; completing it here stamps the owner's run `completed` while its real work hasn't started. `--command understand` makes the stub refuse mechanically in that case.
+
+Replace `<your-model-id>` with your exact model ID from your system prompt (e.g. `claude-opus-4-7`) — it records which model performed the analysis, which only you (the harness) know (RAPTOR's Python can't read `/model`). If you don't know your model ID, drop the `--model` flag entirely; the run still completes, the model is just left unrecorded.
 ```bash
-libexec/raptor-run-lifecycle complete "$OUTPUT_DIR" --model <your-model-id>
+libexec/raptor-run-lifecycle complete "$OUTPUT_DIR" --command understand --model <your-model-id>
 ```
 
-**On failure** (at any point):
+**On failure** (at any point — same ownership rule: skip if you skipped Step 1):
 ```bash
-libexec/raptor-run-lifecycle fail "$OUTPUT_DIR" "error description"
+libexec/raptor-run-lifecycle fail "$OUTPUT_DIR" "error description" --command understand
 ```
 
 ## Modes

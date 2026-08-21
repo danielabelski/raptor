@@ -22,34 +22,12 @@ analysis workflow is affected.
 
 ## Architecture
 
-RAPTOR uses a **hybrid integration** approach:
-
-1. **SDK Layer** (Python runtime): the `core/sage/` module wraps the
-   `sage-agent-sdk` to provide persistent memory for Python pipelines
-   (fuzzing memory, audit hooks, SCA short-circuits, CodeQL build recall)
-
-2. **MCP Layer** (Claude Code agents): all 16 RAPTOR agents connect to SAGE
-   via MCP (stdio transport) for persistent memory across sessions
-
-```
-RAPTOR
-├── Claude Code Agents (16)
-│   └── SAGE MCP (stdio) ─────────┐
-├── Python Packages                │
-│   ├── Fuzzing Memory (SDK) ──────┤
-│   ├── Audit / SCA hooks ─────────┤
-│   └── LLM Analysis ─────────────┤
-│                                  ▼
-│                           ┌─────────────┐
-│                           │  SAGE Node  │
-│                           │  (Docker)   │
-│                           └──────┬──────┘
-│                                  │
-│                           ┌──────┴──────┐
-│                           │   Ollama    │
-│                           │ (embeddings)│
-│                           └─────────────┘
-```
+RAPTOR uses a **hybrid integration**: the Python pipelines talk to SAGE
+through the `sage-agent-sdk` (fuzzing memory, audit hooks, SCA
+short-circuits, CodeQL build recall), and the Claude Code agents
+connect via MCP (stdio transport) for persistent memory across
+sessions. Both paths land on the same SAGE node, a Docker sidecar with
+an Ollama container providing embeddings.
 
 
 ## Quick Start
@@ -255,7 +233,7 @@ mechanical status as new outcomes are stored.  Memories decay anyway, so
 key loss is a graceful reset, not an incident.  Setup never touches an
 existing key, and uninstall never removes it.  **When moving hosts, the
 key must travel with the SAGE data volumes** -- see *Moving to a new
-host* below.  See [security.md](security.md) for the full rationale.
+host* below.
 
 
 ## CPU vs GPU
@@ -510,21 +488,6 @@ servers are preserved.  Uninstall removes only the SAGE entry.
 
 
 ## How It Works
-
-### Fuzzing Memory (SDK)
-
-The `SageFuzzingMemory` class extends `FuzzingMemory` to store knowledge
-in SAGE while keeping JSON as a local cache:
-
-```python
-from core.sage.memory import SageFuzzingMemory
-
-memory = SageFuzzingMemory()  # Drop-in replacement
-
-# Same API as FuzzingMemory
-memory.record_strategy_success("AFL_CMPLOG", binary_hash, 5, 2)
-best = memory.get_best_strategy(binary_hash)
-```
 
 ### Claude Code Agents (MCP)
 

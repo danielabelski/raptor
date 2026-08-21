@@ -357,6 +357,10 @@ hygiene, supply-chain, and licence rows are preserved when re-rendering.
 
 ## Limitations
 
+- **Dependency resolution is metadata-only by design** -- resolving
+  versions never executes a package's build backend. Sdist-only
+  manifests fail the dry-run loudly; `--allow-sdist-builds` is the
+  explicit per-run risk acceptance.
 - **Library-mode floor-raise unsupported on some ecosystems** --
   `harden` refuses to corridor-pin a library's deps and emits
   `library_floor_raise_unsupported` for inline-install (Dockerfile

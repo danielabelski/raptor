@@ -51,7 +51,11 @@ class _Holder:
     """Context manager running a lock holder in a child process."""
 
     def __init__(self, project_dir: Path, hold_s: float = 30.0):
-        ctx = multiprocessing.get_context("fork")
+        # spawn, not fork: pytest is multi-threaded by the time these
+        # run, and fork-after-threads is a DeprecationWarning on 3.14+
+        # (and a real deadlock hazard). _hold_lock is module-level
+        # precisely so the holder pickles under spawn.
+        ctx = multiprocessing.get_context("spawn")
         self.acquired = ctx.Event()
         self.release = ctx.Event()
         self.proc = ctx.Process(

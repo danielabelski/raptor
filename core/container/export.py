@@ -54,10 +54,7 @@ class ImageRuntimeConfig:
 @dataclass
 class ExportOutcome:
     ok: bool
-    rootfs_dir: str = ""
     config: ImageRuntimeConfig | None = None
-    members_extracted: int = 0
-    members_skipped: int = 0
     reason: str = ""  # "" | create_failed | export_failed | inspect_failed |
     #                   extract_failed
     reason_class: str = "ok"
@@ -200,7 +197,7 @@ def export_rootfs(
             )
 
         try:
-            extracted, skipped = extract_rootfs_tar(tar_path, dest_dir)
+            extract_rootfs_tar(tar_path, dest_dir)
         except (tarfile.TarError, OSError) as exc:
             return ExportOutcome(
                 ok=False,
@@ -208,13 +205,7 @@ def export_rootfs(
                 reason_class="unknown",
                 stderr=str(exc)[:400],
             )
-        return ExportOutcome(
-            ok=True,
-            rootfs_dir=str(Path(dest_dir)),
-            config=config,
-            members_extracted=extracted,
-            members_skipped=skipped,
-        )
+        return ExportOutcome(ok=True, config=config)
     finally:
         run_cli(["docker", "rm", "-f", cid], timeout=30)
         if tar_path is not None:

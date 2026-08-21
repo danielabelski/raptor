@@ -98,7 +98,24 @@ class ConsistencyVerifier:
             return verifier(observation)
         except Exception as e:
             if getattr(observation, "is_deleted", False):
-                return VerificationResult(is_valid=True, errors=[])  # Expected - item is marked as deleted
+                # Fail CLOSED. ``is_deleted`` is a freely settable schema
+                # field, so "the fetch failed and the record says it's
+                # deleted" must never self-verify — a fabricated deleted
+                # issue attributed to a repo that 404s would otherwise
+                # pass verification with attacker-chosen title/body.
+                # Genuinely recovered deleted content comes from the
+                # GH Archive collector with source=GHARCHIVE and a
+                # bigquery_table, and is verified independently by
+                # _verify_gharchive_observation.
+                return VerificationResult(
+                    is_valid=False,
+                    errors=[
+                        "unverifiable: source fetch failed for deleted-marked "
+                        f"observation ({e}); deletion claims must be verified "
+                        "via GH Archive recovery (source=gharchive with a "
+                        "bigquery_table), not by fetch failure"
+                    ],
+                )
             return VerificationResult(is_valid=False, errors=[f"Verification failed: {e}"])
 
     def _get_repo_info(self, obs: Observation) -> tuple[str, str] | None:

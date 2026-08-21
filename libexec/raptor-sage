@@ -556,8 +556,16 @@ def cmd_task(client, args):
               file=sys.stderr)
         return 1
 
+    # sage_sdk is an optional dependency: an injected client (tests,
+    # shims) accepts the plain string, so its absence must not abort
+    # the command before the client is even consulted.
     try:
         from sage_sdk.models import MemoryType
+        task_type = MemoryType.task
+    except ImportError:
+        task_type = "task"
+
+    try:
         embedding = client.embed(content)
         # No --domain: pass domain_tag=None so the server routes the
         # task to the caller's owned home domain (app-v23) — the same
@@ -567,7 +575,7 @@ def cmd_task(client, args):
         # unreachable from every read surface (backlog/list/get 403).
         resp = client.propose(
             content=content,
-            memory_type=MemoryType.task,
+            memory_type=task_type,
             domain_tag=args.domain,
             confidence=0.8,
             embedding=embedding,

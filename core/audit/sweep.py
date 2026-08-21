@@ -21,6 +21,7 @@ import re as _re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2490,6 +2491,76 @@ def run_joern_sweep(
     )
 
 
+# Interruption-class pre-sweep errors: the query did not fail on its
+# own merits — the shared single-threaded server was restarted (stuck
+# query recovery, possibly triggered by ANOTHER worker's query), died,
+# or the transport was cut. These are re-queueable once the server is
+# back; script/compile errors are not.
+_PRE_SWEEP_INTERRUPTION_MARKERS = (
+    "restarting",            # _RESTARTING_ERROR fail-fast
+    "server process exited",
+    "timed out",             # sync post timeout (restart already fired)
+    "timeout (async poll)",  # async poll timeout (restart already fired)
+    "cancelled",
+    "connection failed",
+    "connection refused",
+    "server did not respond",
+    "no cpg loaded",         # restart gap / failed reload
+)
+
+#: Bounded re-queue attempts for an interrupted pre-sweep window.
+_PRE_SWEEP_MAX_REQUEUES = 2
+#: How long to wait for the restarted server before each re-queue.
+#: Covers a JVM boot + CPG reload (~1-2 min on big targets).
+_PRE_SWEEP_RECOVERY_WAIT_S = 300
+_PRE_SWEEP_RECOVERY_POLL_S = 5
+
+
+def _presweep_interrupted(errors: list[str] | None) -> bool:
+    """True when the pre-sweep result carries an interruption-class
+    error (re-queueable) rather than a query/script failure."""
+    for err in errors or []:
+        low = str(err).lower()
+        if any(marker in low for marker in _PRE_SWEEP_INTERRUPTION_MARKERS):
+            return True
+    return False
+
+
+def _wait_for_presweep_server(
+    server,
+    *,
+    deadline_s: float,
+    poll_s: float,
+    on_progress: Callable | None = None,
+) -> bool:
+    """Wait for a restarting/dead Joern server to come back with a CPG.
+
+    Feeds ``on_progress`` each poll so the orchestrator's stall
+    detector sees activity while the re-queue is pending. Returns True
+    when the server is alive with a loaded CPG, False on deadline.
+    """
+    start = time.monotonic()
+    while time.monotonic() - start < deadline_s:
+        try:
+            if not getattr(server, "restarting", False):
+                alive = True
+                ensure = getattr(server, "ensure_alive", None)
+                if callable(ensure):
+                    alive = bool(ensure())
+                if alive and getattr(server, "_cpg_loaded", False):
+                    return True
+        except Exception:  # noqa: BLE001 — probe must not kill the sweep thread
+            logger.debug("pre-sweep recovery probe failed", exc_info=True)
+        if on_progress:
+            waited = int(time.monotonic() - start)
+            on_progress(
+                f"Joern pre-sweep interrupted — waiting for server "
+                f"recovery to re-queue ({waited}s)"
+            )
+        time.sleep(poll_s)
+    return False
+
+
 def run_joern_pre_sweep(
     target_path: Path,
     checklist: dict,
@@ -2499,6 +2570,7 @@ def run_joern_pre_sweep(
     query_timeout: int = 300,
     heap_mb: int | None = None,
     server=None,
+    status_out: dict | None = None,
 ) -> dict[str, list]:
     """Run standard taint queries before the LLM loop.
 
@@ -2506,6 +2578,14 @@ def run_joern_pre_sweep(
     Returns per-function flows keyed by "file:function".
     When cache_dir is set, reuses a cached CPG if fresh.
     When server is provided, uses the already-running JoernServer.
+
+    Server mode shares the single-threaded REPL with the review loop's
+    verification queries: a stuck query ANYWHERE restarts the server,
+    which interrupts an in-flight pre-sweep window. Interruption-class
+    failures are re-queued (bounded) against the restarted server
+    instead of dropped; ``status_out`` (when provided) records
+    ``interrupted`` / ``requeued`` / ``recovered`` / ``errors`` so the
+    run summary and critique can surface what happened.
 
     Returns {} when joern is unavailable.
     """
@@ -2547,8 +2627,59 @@ def run_joern_pre_sweep(
         result = server.query_script(
             sinks_script, timeout=query_timeout, substitutions=sink_subst,
         )
+        requeued = 0
+        interrupted = 1 if _presweep_interrupted(result.errors) else 0
+        while (
+            _presweep_interrupted(result.errors)
+            and requeued < _PRE_SWEEP_MAX_REQUEUES
+        ):
+            logger.warning(
+                "joern pre-sweep window interrupted (%s) — re-queueing "
+                "against the restarted server (attempt %d/%d)",
+                "; ".join(str(e) for e in result.errors)[:300],
+                requeued + 1, _PRE_SWEEP_MAX_REQUEUES,
+            )
+            if not _wait_for_presweep_server(
+                server,
+                deadline_s=_PRE_SWEEP_RECOVERY_WAIT_S,
+                poll_s=_PRE_SWEEP_RECOVERY_POLL_S,
+                on_progress=on_progress,
+            ):
+                logger.warning(
+                    "joern pre-sweep re-queue abandoned — server did "
+                    "not recover within %ds", _PRE_SWEEP_RECOVERY_WAIT_S,
+                )
+                break
+            requeued += 1
+            result = server.query_script(
+                sinks_script, timeout=query_timeout,
+                substitutions=sink_subst,
+            )
+            if _presweep_interrupted(result.errors):
+                interrupted += 1
+
+        recovered = interrupted > 0 and not _presweep_interrupted(
+            result.errors,
+        )
+        if status_out is not None:
+            status_out["interrupted"] = interrupted
+            status_out["requeued"] = requeued
+            status_out["recovered"] = recovered
+            status_out["errors"] = [str(e) for e in (result.errors or [])]
         if result.errors:
-            logger.warning("joern pre-sweep errors: %s", result.errors)
+            if _presweep_interrupted(result.errors):
+                logger.warning(
+                    "joern pre-sweep window LOST after %d re-queue "
+                    "attempt(s): %s — taint flows for this run are "
+                    "incomplete", requeued, result.errors,
+                )
+            else:
+                logger.warning("joern pre-sweep errors: %s", result.errors)
+        elif recovered:
+            logger.info(
+                "joern pre-sweep recovered after %d re-queue attempt(s)",
+                requeued,
+            )
 
         flows_by_key: dict[str, list] = {}
         for flow in result.flows:

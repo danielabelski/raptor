@@ -167,6 +167,20 @@ def generate_report(
         except Exception as e:  # noqa: BLE001 — reporting must not fail the run
             logger.warning("failed to load evaluation results from %s: %s", eval_path, e)
 
+    # Interrupted Joern pre-sweep window (server restart mid-query):
+    # whether the window was re-queued and recovered or lost outright
+    # must reach the operator — a lost window means the run's taint
+    # evidence is incomplete, which reads as "no flows" everywhere
+    # downstream unless stated.
+    try:
+        from .joern_backend import load_presweep_status
+        presweep = load_presweep_status(out_dir)
+    except Exception:  # noqa: BLE001 — reporting must not fail the run
+        logger.debug("pre-sweep status load failed", exc_info=True)
+        presweep = None
+    if presweep:
+        report["joern_presweep"] = presweep
+
     report["summary"] = _format_summary(report)
     return report
 
@@ -882,6 +896,31 @@ def _format_summary(report: dict[str, Any]) -> str:
         lines.append("")
         lines.append("### Finding survival (/validate feedback)")
         lines.extend(format_survival(survival)[1:])
+
+    presweep = report.get("joern_presweep")
+    if presweep:
+        lines.append("")
+        interrupted = presweep.get("interrupted", 0)
+        requeued = presweep.get("requeued", 0)
+        if presweep.get("recovered"):
+            lines.append(
+                f"Joern pre-sweep: interrupted by a server restart "
+                f"({interrupted}x), re-queued and recovered after "
+                f"{requeued} attempt(s) — "
+                f"{presweep.get('flows_recovered', 0)} flow group(s) "
+                f"recovered"
+            )
+        else:
+            lines.append(
+                f"### ⚠️ Joern pre-sweep window lost"
+            )
+            lines.append(
+                f"Interrupted by a server restart and NOT recovered "
+                f"after {requeued} re-queue attempt(s) — this run's "
+                f"taint-flow evidence is incomplete (functions read as "
+                f"'no flows' rather than 'not swept'). Re-run /audit "
+                f"or /agentic to regenerate the sweep."
+            )
 
     promotion_alarms = report.get("promotion_alarms")
     if promotion_alarms:

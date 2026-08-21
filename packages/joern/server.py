@@ -82,6 +82,34 @@ _RESTARTING_ERROR = (
 _RELAUNCH_COOLDOWN_S = 300.0
 
 
+def _reap_in_background(proc) -> None:
+    """Reap a SIGKILLed child whose exit outlived the foreground grace.
+
+    A killed multi-GB JVM can spend >5s in kernel-side address-space
+    teardown before it becomes reapable; ``stop()`` must not block a
+    restart on that, but abandoning the handle leaks a zombie for the
+    rest of the run. A daemon thread holds the ``wait()`` instead.
+    """
+    pid = getattr(proc, "pid", None)
+    started = time.monotonic()
+
+    def _wait() -> None:
+        try:
+            proc.wait()
+        except Exception:  # noqa: BLE001 — reaper must never raise
+            logger.debug("background reap failed for pid %s", pid,
+                         exc_info=True)
+            return
+        logger.info(
+            "Joern server (pid %s) reaped %.1fs after SIGKILL",
+            pid, time.monotonic() - started,
+        )
+
+    threading.Thread(
+        target=_wait, name=f"joern-reaper-{pid}", daemon=True,
+    ).start()
+
+
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
@@ -441,20 +469,29 @@ class JoernServer:
             try:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                # SIGKILL is delivered but a huge-heap JVM's kernel-side
-                # teardown can outlive this grace. The process cannot
-                # execute further — proceed to cleanup regardless.
-                # Pre-fix this second TimeoutExpired escaped stop():
-                # ``_proc`` stayed set on a dead process, the workdir
-                # leaked, and a restart() that hit it aborted mid-way,
-                # leaving the server permanently in the
-                # "server process exited" fail-fast state for the rest
-                # of the run.
+                # SIGKILL is delivered but the process may legitimately
+                # take longer than 5s to reach the zombie state: a
+                # multi-GB JVM's exit path tears down its whole address
+                # space (page tables + anonymous heap pages) BEFORE the
+                # parent can reap it, and uninterruptible (D-state)
+                # I/O — e.g. CPG pages being written back — pins it
+                # further. The process cannot execute anything after
+                # SIGKILL, so cleanup proceeds; blocking a restart on
+                # kernel teardown would just serialise the recovery
+                # behind memory unmapping.
+                #
+                # But the child must still be wait()ed eventually:
+                # pre-fix nothing ever reaped it, so every slow-exit
+                # kill leaked a zombie (and its pid) until interpreter
+                # exit. Hand the handle to a background reaper.
                 logger.warning(
                     "Joern server (pid %d) did not reap within 5s of "
-                    "SIGKILL — proceeding with cleanup",
+                    "SIGKILL — proceeding with cleanup (multi-GB JVM "
+                    "address-space teardown can exceed the grace); "
+                    "background reaper attached",
                     pid,
                 )
+                _reap_in_background(self._proc)
         except OSError:
             pass
 

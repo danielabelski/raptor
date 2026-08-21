@@ -348,12 +348,54 @@ def enrich_joern_evidence(
             rec.joern_sink_args = deduped
 
 
+#: Run-dir artifact recording an interrupted/re-queued pre-sweep.
+#: Written by :func:`build_joern_evidence`; read by the report
+#: summary and the critique pass so a lost taint window is surfaced
+#: instead of living only in a log WARNING.
+PRESWEEP_STATUS_FILENAME = "joern-presweep-status.json"
+
+
+def _write_presweep_status(out_dir, status: dict) -> None:
+    """Persist the pre-sweep interruption record. Best-effort."""
+    if not out_dir:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from core.json import save_json
+        record = dict(status)
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        save_json(Path(out_dir) / PRESWEEP_STATUS_FILENAME, record)
+    except Exception:  # noqa: BLE001 — bookkeeping must not cost the sweep
+        logger.debug("pre-sweep status write failed", exc_info=True)
+
+
+def load_presweep_status(out_dir) -> dict | None:
+    """Read the pre-sweep interruption record, or None when absent."""
+    if not out_dir:
+        return None
+    path = Path(out_dir) / PRESWEEP_STATUS_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def build_joern_evidence(
     target_path, out_dir, joern_overrides=None,
     on_progress: Callable | None = None,
     joern_server=None,
 ) -> dict[str, list] | None:
-    """Run Joern pre-sweep (standard_sinks.sc) if available."""
+    """Run Joern pre-sweep (standard_sinks.sc) if available.
+
+    When the pre-sweep window was interrupted by a server restart, the
+    outcome (re-queued and recovered, or lost) is persisted to
+    ``joern-presweep-status.json`` in the run dir for the summary and
+    critique — a lost taint window must not be a log-only event.
+    """
     try:
         from .sweep import run_joern_pre_sweep
     except ImportError:
@@ -363,6 +405,7 @@ def build_joern_evidence(
     if tunables is None:
         return None
     cache_dir = resolve_cpg_cache_dir(out_dir)
+    status: dict = {}
     flows = run_joern_pre_sweep(
         target_path, {},
         cache_dir=cache_dir,
@@ -371,7 +414,13 @@ def build_joern_evidence(
         query_timeout=tunables.query_timeout_s,
         heap_mb=tunables.heap_mb,
         server=joern_server,
+        status_out=status,
     )
+    if status.get("interrupted"):
+        status["flows_recovered"] = sum(
+            len(v) for v in (flows or {}).values()
+        )
+        _write_presweep_status(out_dir, status)
     return flows or None
 
 

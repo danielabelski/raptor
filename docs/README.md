@@ -64,7 +64,6 @@ overview:
 | [Crash Analysis](crash-analysis.md) | Autonomous crash root-cause analysis |
 | [Audit](audit.md) | Systematic code review: hypotheses, tools, strategies, gates, long runs and resume |
 | [Validation](validation.md) | Exploitability validation pipeline (stages 0, A--F, 1) |
-| [Recall](recall.md) | Detector-recall measurement against public benchmark corpora |
 | [Binary Analysis](binary-analysis.md) | Binary oracle, `/binary`, exploit feasibility |
 | [SCA](sca.md) | Software composition analysis |
 | [Frida](frida.md) | Dynamic instrumentation |

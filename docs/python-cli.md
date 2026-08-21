@@ -150,6 +150,8 @@ python3 raptor.py sca --repo . --fail-on-severity high --fail-on-kev
 
 For other modes, parse the output files (`findings.json`, SARIF) rather than
 relying on the exit code.
+
+
 ## Output
 
 All results are written to `out/` (or the active project directory). The

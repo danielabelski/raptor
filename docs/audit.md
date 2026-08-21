@@ -13,7 +13,7 @@ records that accumulate across runs, and a findings file compatible with
 **Related documentation:**
 [commands](commands.md#audit) |
 [validation](validation.md) |
-[understand](concepts.md#understand) |
+[understand](commands.md#understand) |
 [annotations](commands.md#annotate) |
 [coverage](commands.md#review)
 
@@ -109,10 +109,9 @@ go through:
 3. **Verdict** -- tool output confirms or refutes.  If refuted, the
    hypothesis is discarded with no "but I still think..."
 
-This achieves substantially higher precision than self-critique loops.
-The IEEE-ISTAS 2025 result: 37.6% MORE false positives after 5 iterations
-of LLM self-refinement without tool feedback.  Tool grounding eliminates
-the regression.
+This achieves substantially higher precision than self-critique loops:
+LLM self-refinement without tool feedback is known to *increase* false
+positives, which is why gate G3 below prohibits it.
 
 
 ## Strategies
@@ -247,12 +246,9 @@ never the code.
 | Crypto API packs | `engine/coccinelle/source_intel/crypto/packs/` (`openssl.json`, `kernel-crypto.json`, `libsodium.json`) | The `crypto_calls` Coccinelle rule and `/understand --map`'s crypto inventory |
 
 Adding a library is a data change: drop a new JSON pack in the family's
-directory (crypto packs are picked up automatically; a new checker-vocab
-target kind additionally needs a `pack_for_target()` branch).  The parser
-and crypto pack directories carry a `README.md` documenting their schema;
-the audit pack schemas are documented in `core/audit/vocab_packs.py` and
-`core/audit/strategy.py`.  Malformed packs are skipped with a warning --
-checkers then run on seeds + learned vocabulary alone.
+directory.  Each pack directory carries (or points at) its schema
+documentation.  Malformed packs are skipped with a warning -- checkers
+then run on seeds + learned vocabulary alone.
 
 
 ## Running long audits

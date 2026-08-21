@@ -205,12 +205,11 @@ manual analysis.
 
 ### Persona injection
 
-The methodology loader (`core/llm/methodology.py`) automatically injects
-expert persona content from `tiers/personas/` into analysis system
-prompts.  The crash agent gets the crash analyst and binary exploitation
-specialist personas; the autonomous analyser gets the security researcher
-for analysis and the exploit developer for exploit generation.  This
-happens transparently -- no flags needed.
+Expert persona content from `tiers/personas/` is injected into analysis
+system prompts automatically.  The crash agent gets the crash analyst
+and binary exploitation specialist personas; the autonomous analyser
+gets the security researcher for analysis and the exploit developer for
+exploit generation.  This happens transparently -- no flags needed.
 
 
 ## Multi-model analysis

@@ -281,9 +281,8 @@ defaults to `human` only for interactive invocations (`agent`
 otherwise); readers grant human-grade weight only to `source=human`
 notes with an interactive stamp (or legacy pre-stamp notes).  LLM
 review outcomes go to the review journal (`review-journal.jsonl`)
-instead -- the annotation → journal migration removed the LLM writer
-path, and the storage layer's `overwrite="respect-manual"` mode keeps
-any programmatic writer from clobbering operator notes.
+instead, and the storage layer keeps any programmatic writer from
+clobbering operator notes.
 
 Each annotation carries a status:
 

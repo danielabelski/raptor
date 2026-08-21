@@ -69,14 +69,13 @@ disposition lands in `llm-telemetry.jsonl` with its `call_class`.
 The transport pins children to the backend-resolved model identity
 from the pre-flight probe cache, passing it as `--model` explicitly.
 This makes the transport deterministic (a mid-run `settings.json`
-edit can no longer switch models silently), gives the scorecard and
-cost tracking a real model name, and lets worker derivation resolve
-actual capacity limits — the old `session-default` sentinel resolved
-to 0 RPM and serialised every review loop to one worker. Pinning is
-backend-safe because the id comes from the backend's own result
-envelope. Resolution order: `RAPTOR_CC_MODEL` (explicit operator
-pin) → cached probe result → sentinel (probe cache cold, `--model`
-omitted). `RAPTOR_CC_PIN_MODEL=0` disables probe pinning.
+edit cannot switch models silently), gives the scorecard and cost
+tracking a real model name, and lets worker derivation resolve actual
+capacity limits. Pinning is backend-safe because the id comes from the
+backend's own result envelope. Resolution order: `RAPTOR_CC_MODEL`
+(explicit operator pin) → cached probe result → the session default
+(probe cache cold, `--model` omitted). `RAPTOR_CC_PIN_MODEL=0`
+disables probe pinning.
 
 #### Concurrency
 
@@ -90,15 +89,13 @@ and N−1 reading. `tuning.json`'s `max_llm_workers` still beats both.
 #### Prompt caching
 
 Server-side prompt caching works ACROSS separate `claude -p`
-children: measured on a Bedrock-backed install, the second call with
-an identical prefix read all ~19k boot-prompt tokens from cache
-(~13x cheaper; a same-system-prompt call with a different user
-prompt measured ~4x cheaper). Dispatches pass
-`--exclude-dynamic-system-prompt-sections` so the CLI's default
-system prompt is byte-stable across working directories and
-machines, maximising those hits. Practical implication: batches of
-similar calls (audit review loops) should share one system prompt
-verbatim and run temporally clustered (the cache TTL is minutes).
+children: a second call with an identical prefix reads the shared
+boot-prompt tokens from cache at a fraction of the cost. Dispatches
+keep the CLI's default system prompt byte-stable across working
+directories and machines, maximising those hits. Practical
+implication: batches of similar calls (audit review loops) should
+share one system prompt verbatim and run temporally clustered (the
+cache TTL is minutes).
 
 #### Operator knobs (env)
 

@@ -28,6 +28,56 @@ from cve_env.tools.arch import detect_host_arch
 _CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
 
 
+def _attempt_replay(cve: "CveRecord", prefill_from: str | None):
+    """Provision + verify a previously recorded replay spec, or None.
+
+    Returns a success ``Outcome`` only when the verify DAG passed on the
+    replayed environment; every other result (no spec recorded, source
+    kind the provisioner can't consume, build/launch/verify failure)
+    reports to stderr and returns None so the agent build proceeds.
+    """
+    from cve_env.models import Outcome
+
+    try:
+        from cve_env.infra.spec_record import find_replayable_spec
+
+        spec = find_replayable_spec(cve.cve_id, out_dir=prefill_from)
+        if spec is None:
+            return None
+        source_run = (spec.markers.get("origin") or {}).get(
+            "source_run", "(unknown run)")
+        print(
+            f"replay: found verified spec from {source_run} — "
+            f"provisioning without the agent",
+            file=sys.stderr,
+        )
+        from core.env.provision import provision
+
+        result = provision(spec, verify=True, fail_on_verify=True)
+    except Exception as exc:  # noqa: BLE001 — replay must never kill a build
+        print(f"replay: attempt errored ({type(exc).__name__}) — "
+              f"falling through to the agent build", file=sys.stderr)
+        return None
+    env = result.environment
+    if result.ok and env is not None and env.verified():
+        print("replay: verify passed — agent build skipped ($0)",
+              file=sys.stderr)
+        return Outcome(
+            cve_id=cve.cve_id,
+            status="success",
+            reason=f"replayed verified spec from {source_run}",
+            stop_reason="replay",
+            verify_passed=True,
+            verify_result=env.verify_result,
+        )
+    print(
+        f"replay: {result.reason or 'verify failed'} — falling through "
+        f"to the agent build",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _validate_cve_id(value: str) -> str:
     """argparse ``type=`` validator for the build subcommand cve_id arg."""
     if not _CVE_ID_RE.fullmatch(value):
@@ -98,12 +148,21 @@ def _cmd_build(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
 
+        # Replay ordering (settled in the S5.1 design): a verified spec a
+        # prior successful build recorded beats re-running the agent —
+        # provision + verify DAG at $0. Rides the same opt-in as
+        # pre-fill; a failed or unsupported replay falls through to the
+        # normal (pre-filled) agent build, which is always correct.
+        outcome = None
+        if prefill_from or prefill_mode == "auto":
+            outcome = _attempt_replay(cve, prefill_from)
+
         # Use getattr with config defaults so test fixtures that build a
         # minimal Args object don't have to know about every CLI flag.
         # argparse always populates these attrs at real CLI invocation.
         from cve_env.config import MAX_TURN_EXTENSIONS, TURN_EXTENSION_PCT
 
-        outcome = build_core(
+        outcome = outcome or build_core(
             cve,
             host,
             run_id=run_id,

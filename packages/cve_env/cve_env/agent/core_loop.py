@@ -462,4 +462,14 @@ def build_core(
             reason=f"{status}: {reason}"[:400],
         ),
     )
+    if outcome.status == "success":
+        # Record the proven environment as a core.env replay spec next
+        # to the outcome sidecar — the next build of this CVE can then
+        # provision + verify it at $0 instead of re-running the agent.
+        # Best-effort by contract; only replayable methods record.
+        from cve_env.infra.spec_record import record_run_spec
+        record_run_spec(
+            cve.cve_id, cve.version, state.tool_uses_seen,
+            audit_root or AGENTIC_AUDIT_ROOT,
+        )
     return outcome

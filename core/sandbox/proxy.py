@@ -146,7 +146,16 @@ def _stderr_write(message: str) -> None:
 # Connection bounds — per-tunnel and aggregate. Tunable via EgressProxy
 # constructor kwargs but the defaults are deliberately conservative.
 _DEFAULT_IDLE_TIMEOUT = 300.0        # seconds of silence before forced close
-_DEFAULT_TOTAL_TIMEOUT = 3600.0      # absolute cap on a single tunnel
+# Progress-aware cap on a single tunnel. NOT a wall-clock kill switch:
+# a tunnel that is still relaying bytes when the cap elapses keeps
+# running — pooled LLM connections legitimately live for many hours
+# and carry tens of MB, and severing them mid-request forces a full
+# retry at wall-clock + token cost. The cap fires only once BOTH
+# conditions hold: the cap has elapsed AND the tunnel made no relay
+# progress within the last idle window. See
+# ``EgressProxy._supervise_relay`` for the security rationale (the cap
+# is a DoS bound on hostile no-progress tunnels, which it remains).
+_DEFAULT_TOTAL_TIMEOUT = 3600.0
 # Concurrent CONNECT tunnels. The history of this knob:
 #
 #   64  — original conservative default. SCA stress harness on
@@ -2465,30 +2474,35 @@ class EgressProxy:
         total = {"c2u": 0, "u2c": 0}  # byte counters
         result = "allowed"
         reason: str | None = None
-        # `asyncio.wait_for` is the correct primitive for "cap this block
-        # at N seconds": it raises `asyncio.TimeoutError` when the deadline
-        # fires AND cancels the inner coroutine cleanly. The previous
-        # `_TunnelGuard(loop.call_later(t, task.cancel))` design raised
-        # `asyncio.CancelledError` on timeout, not TimeoutError — so the
-        # explicit `except asyncio.TimeoutError` branch below never fired,
-        # and on Python 3.11+ the CancelledError (a BaseException) escaped
-        # `except Exception` entirely, leaving the timeout completely
-        # unaccounted for in the proxy event ring buffer.
+        # The relay pair runs under `_supervise_relay` rather than a
+        # bare `asyncio.wait_for(..., timeout=self._total_timeout)`.
+        # The historical wait_for severed EVERY tunnel at the absolute
+        # cap regardless of activity — pooled LLM connections (healthy,
+        # tens of MB relayed) died mid-request hourly during long audit
+        # runs. The supervisor keeps the cap as a DoS bound but makes
+        # it progress-aware: sever only when the cap has elapsed AND
+        # the byte counters show no progress within the last idle
+        # window. Timeout-accounting note carried over from the
+        # wait_for era: the supervisor CANCELS the relay pair itself
+        # and returns a reason string (it never lets a CancelledError
+        # escape as the timeout signal), so the timed-out outcome is
+        # recorded in the proxy event ring buffer on every code path —
+        # the pre-wait_for `_TunnelGuard(loop.call_later(t,
+        # task.cancel))` design raised CancelledError, escaped `except
+        # Exception` on Python 3.11+, and left timeouts unaccounted.
+        relay = asyncio.gather(
+            self._relay(reader, up_writer, "c2u", total),
+            self._relay(up_reader, writer, "u2c", total),
+        )
         try:
-            await asyncio.wait_for(
-                asyncio.gather(
-                    self._relay(reader, up_writer, "c2u", total),
-                    self._relay(up_reader, writer, "u2c", total),
-                ),
-                timeout=self._total_timeout,
-            )
-        except asyncio.TimeoutError:
-            result = "timed_out"
-            reason = f"exceeded total_timeout={self._total_timeout}s"
-            logger.warning(
-                f"egress proxy: TIMEOUT {host}:{port} "
-                f"(c2u={total['c2u']} u2c={total['u2c']})"
-            )
+            sever_reason = await self._supervise_relay(relay, total)
+            if sever_reason is not None:
+                result = "timed_out"
+                reason = sever_reason
+                logger.warning(
+                    f"egress proxy: TIMEOUT {host}:{port} "
+                    f"({sever_reason}; c2u={total['c2u']} u2c={total['u2c']})"
+                )
         except Exception as e:  # noqa: BLE001
             reason = f"relay ended: {e.__class__.__name__}"
             logger.debug(
@@ -2549,6 +2563,93 @@ class EgressProxy:
             except (ConnectionResetError, BrokenPipeError):
                 return
             counters[counter_key] += len(chunk)
+
+    async def _supervise_relay(self, relay: asyncio.Future,
+                               counters: dict) -> str | None:
+        """Progress-aware absolute cap on an established tunnel.
+
+        Waits for *relay* (the gathered ``_relay`` pair) to finish on
+        its own (EOF, peer reset, per-direction idle) and returns
+        ``None``; a relay exception propagates to the caller unchanged.
+        When the cap condition fires — ``total_timeout`` elapsed AND no
+        relay progress within the last idle window — the relay pair is
+        cancelled and the reason string is returned.
+
+        Security posture — why the cap exists and why progress-aware
+        is consistent with it:
+
+        * The absolute cap is a DoS bound on hostile tunnels, not a
+          lifetime policy for healthy ones. The per-direction idle
+          timeout in :meth:`_relay` already reaps tunnels that go
+          silent, but its read-side timer cannot see a stuck
+          ``dst.drain()`` — a peer that accepts a chunk into the
+          kernel buffer and then never reads parks the writing
+          direction forever with zero progress and no idle read to
+          trip. Without the cap such a tunnel holds two sockets plus
+          relay state indefinitely. That hard ceiling remains: a
+          no-progress tunnel dies once the cap elapses, and a tunnel
+          that stalls after the cap dies within about two idle windows
+          of its last progress (sampling granularity below).
+        * A tunnel still making progress past the cap is, by
+          definition, live traffic to a gate-1/gate-2-vetted upstream
+          (allowlisted hostname, resolved-IP checked at CONNECT).
+          Severing it buys no containment — the client simply
+          reconnects and the transferred-bytes budget resets — while
+          it reliably breaks the legitimate long-lived case: pooled
+          LLM connections carry multi-hour request streams (observed
+          35-48MB per tunnel over a 12h audit) and a mid-request sever
+          forces a full retry at wall-clock and token cost. Operators
+          tune client-side stream timeouts on the assumption the
+          proxy is not the binding constraint on active transfers.
+        * The resource-exhaustion bound is therefore unchanged in
+          shape: to survive past the cap a tunnel must keep relaying
+          bytes at least once per idle window, i.e. keep behaving like
+          traffic. Idle-parked and drain-stuck tunnels cannot.
+
+        Progress is sampled from the shared byte-counter dict at least
+        once per idle window, so "no progress within the last idle
+        window" is judged conservatively in the tunnel's favour — a
+        byte relayed at any point between two samples credits the
+        later sample's time. The idle width is re-read under
+        ``_idle_timeout_lock`` each wake so ``update_idle_timeout``'s
+        max-semantics widening applies to tunnels already in flight.
+        """
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + self._total_timeout
+        last_seen = -1          # forces the first sample to set the baseline
+        last_progress = started
+        try:
+            while True:
+                now = loop.time()
+                seen = counters["c2u"] + counters["u2c"]
+                if seen != last_seen:
+                    last_seen = seen
+                    last_progress = now
+                with self._idle_timeout_lock:
+                    idle = self._idle_timeout
+                if now >= deadline and now - last_progress >= idle:
+                    relay.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await relay
+                    return (
+                        f"exceeded total_timeout={self._total_timeout:g}s "
+                        f"with no relay progress in the last {idle:g}s"
+                    )
+                # Sleep to the next decision point: sample at least
+                # once per idle window, and never oversleep the cap
+                # deadline while it is still ahead.
+                wait = idle if now >= deadline else min(idle, deadline - now)
+                done, _ = await asyncio.wait({relay}, timeout=wait)
+                if done:
+                    relay.result()   # propagate relay exceptions
+                    return None
+        except BaseException:
+            # Supervisor torn down (loop shutdown / handler cancelled)
+            # or a relay exception propagating via result() — take the
+            # relay pair down with us so no orphan task lingers.
+            relay.cancel()
+            raise
 
     async def _write_error(self, writer: asyncio.StreamWriter,
                            code: int, reason: str) -> None:

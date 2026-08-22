@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
+from ..models import classify_pin_style as _classify_pin_style
 from . import register
 
 logger = logging.getLogger(__name__)
@@ -58,12 +59,6 @@ logger = logging.getLogger(__name__)
 
 ECOSYSTEM = "OCI"
 _PURL_TYPE = "oci"
-
-_FLOATING_TAGS = frozenset({
-    "latest", "stable", "edge", "nightly", "dev",
-    "beta", "alpha", "rc", "canary",
-    "main", "master",
-})
 
 
 # Compose v2 / v3 / current — top-level ``services:`` map.
@@ -220,17 +215,6 @@ def _build_dep(
         source_kind="compose",
         source_extra={"service": service_name, "image_ref": image},
     )
-
-
-def _classify_pin_style(version: str | None) -> PinStyle:
-    """Classify an OCI tag's pin style."""
-    if not version:
-        return PinStyle.WILDCARD
-    if version.startswith("sha256:"):
-        return PinStyle.EXACT
-    if version.lower() in _FLOATING_TAGS:
-        return PinStyle.WILDCARD
-    return PinStyle.EXACT
 
 
 def _split_image_ref(ref: str) -> tuple:

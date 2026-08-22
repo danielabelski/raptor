@@ -70,6 +70,33 @@ class PinStyle(str, Enum):
     UNKNOWN = "unknown"      # parser couldn't classify
 
 
+# OCI tags that float to a moving target — pulling them twice can
+# yield different images, so they classify as WILDCARD, not EXACT.
+FLOATING_TAGS = frozenset({
+    "latest", "stable", "edge", "nightly", "dev",
+    "beta", "alpha", "rc", "canary",
+    "main", "master",
+})
+
+
+def classify_pin_style(version: str | None) -> PinStyle:
+    """Classify an OCI image tag's pin style.
+
+    ``sha256:`` digests are EXACT; missing tags and well-known
+    floating tags are WILDCARD; every other tag is treated as EXACT.
+    Shared by the container-manifest parsers (compose, kubernetes,
+    gitlab-ci). The gomod parser keeps its own Go-specific variant
+    (pseudo-versions, path replacements).
+    """
+    if not version:
+        return PinStyle.WILDCARD
+    if version.startswith("sha256:"):
+        return PinStyle.EXACT
+    if version.lower() in FLOATING_TAGS:
+        return PinStyle.WILDCARD
+    return PinStyle.EXACT
+
+
 # ---------------------------------------------------------------------------
 # Dependency — one row per dep (direct or transitive)
 # ---------------------------------------------------------------------------

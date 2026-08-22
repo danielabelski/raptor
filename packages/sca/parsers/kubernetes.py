@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 
 from ..models import Confidence, Dependency, PinStyle
+from ..models import classify_pin_style as _classify_pin_style
 from . import register
 from typing import TYPE_CHECKING
 
@@ -51,12 +52,6 @@ logger = logging.getLogger(__name__)
 
 ECOSYSTEM = "OCI"
 _PURL_TYPE = "oci"
-
-_FLOATING_TAGS = frozenset({
-    "latest", "stable", "edge", "nightly", "dev",
-    "beta", "alpha", "rc", "canary",
-    "main", "master",
-})
 
 
 # Workload kinds that carry images via ``spec.containers[]`` (or
@@ -259,17 +254,6 @@ def _build_dep(
         source_kind="k8s",
         source_extra=extra,
     )
-
-
-def _classify_pin_style(version: str | None) -> PinStyle:
-    """Classify an OCI tag's pin style."""
-    if not version:
-        return PinStyle.WILDCARD
-    if version.startswith("sha256:"):
-        return PinStyle.EXACT
-    if version.lower() in _FLOATING_TAGS:
-        return PinStyle.WILDCARD
-    return PinStyle.EXACT
 
 
 def _split_image_ref(ref: str) -> tuple:

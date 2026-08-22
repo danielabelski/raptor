@@ -47,7 +47,8 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
 
-from ..models import Confidence, Dependency, PinStyle
+from ..models import Confidence, Dependency
+from ..models import classify_pin_style as _classify_pin_style
 from . import register
 
 logger = logging.getLogger(__name__)
@@ -213,19 +214,6 @@ def _build_dep(
         source_kind="gitlab_ci",
         source_extra={"context": context, "image_ref": image_ref},
     )
-
-
-_FLOATING_TAGS = frozenset({"latest", "stable", "edge", "nightly", "dev", "beta", "alpha", "rc", "canary", "main", "master"})
-
-
-def _classify_pin_style(version: str | None) -> PinStyle:
-    if not version:
-        return PinStyle.WILDCARD
-    if version.startswith("sha256:"):
-        return PinStyle.EXACT
-    if version.lower() in _FLOATING_TAGS:
-        return PinStyle.WILDCARD
-    return PinStyle.EXACT
 
 
 def _split_image_ref(ref: str) -> tuple:

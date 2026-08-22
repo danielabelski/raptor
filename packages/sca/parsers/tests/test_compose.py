@@ -230,12 +230,12 @@ def test_fragment_file_skipped_quietly(tmp_path, caplog):
 
 
 def test_floating_tags_consistent_across_parsers():
-    from packages.sca.parsers.compose import _FLOATING_TAGS as compose_tags
-    from packages.sca.parsers.kubernetes import _FLOATING_TAGS as k8s_tags
-    from packages.sca.parsers.gitlab_ci import _FLOATING_TAGS as gitlab_tags
-    assert compose_tags == k8s_tags, (
-        f"compose vs kubernetes: {compose_tags.symmetric_difference(k8s_tags)}"
-    )
-    assert compose_tags == gitlab_tags, (
-        f"compose vs gitlab_ci: {compose_tags.symmetric_difference(gitlab_tags)}"
-    )
+    # Historically each parser carried its own _FLOATING_TAGS copy and
+    # this test guarded against drift. The classifier now lives once in
+    # models; guard that no parser grows a private variant again.
+    from packages.sca.models import classify_pin_style
+    from packages.sca.parsers import compose, gitlab_ci, kubernetes
+
+    for mod in (compose, kubernetes, gitlab_ci):
+        assert mod._classify_pin_style is classify_pin_style, mod.__name__
+        assert not hasattr(mod, "_FLOATING_TAGS"), mod.__name__

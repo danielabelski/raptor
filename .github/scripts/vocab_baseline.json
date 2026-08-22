@@ -2084,20 +2084,17 @@
     "count": 33,
     "kind": "literal"
   },
+  "packages/sca/models.py::FLOATING_TAGS": {
+    "count": 11,
+    "kind": "literal",
+    "note": "OCI floating-tag release-channel names (latest/stable/nightly/...), not target API names; single shared copy after the container-parser dedup (previously baselined 3x under packages/sca/parsers/*)."
+  },
   "packages/sca/osv_offline.py::_BUCKET_NAME": {
     "count": 11,
     "kind": "literal"
   },
   "packages/sca/parsers/cmake_fetchcontent.py::KEYS": {
     "count": 19,
-    "kind": "literal"
-  },
-  "packages/sca/parsers/compose.py::_FLOATING_TAGS": {
-    "count": 11,
-    "kind": "literal"
-  },
-  "packages/sca/parsers/gitlab_ci.py::_FLOATING_TAGS": {
-    "count": 11,
     "kind": "literal"
   },
   "packages/sca/parsers/gitlab_ci.py::_RESERVED_KEYS": {
@@ -2114,10 +2111,6 @@
   },
   "packages/sca/parsers/inline_installs/_arg_version_pins.py::_BUILTIN_ARG_MAP": {
     "count": 27,
-    "kind": "literal"
-  },
-  "packages/sca/parsers/kubernetes.py::_FLOATING_TAGS": {
-    "count": 11,
     "kind": "literal"
   },
   "packages/sca/reachability/nodejs.py::_BUILTINS": {

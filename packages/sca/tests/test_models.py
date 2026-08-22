@@ -58,3 +58,29 @@ def test_lockfile_parser_emits_lockfile_source_kind(tmp_path: Path) -> None:
     assert deps, "fixture should parse"
     assert all(d.is_lockfile for d in deps)
     assert all(d.source_kind == "lockfile" for d in deps)
+
+
+class TestClassifyPinStyle:
+    """Contract for the shared OCI-tag pin-style classifier."""
+
+    def test_none_and_empty_are_wildcard(self):
+        from packages.sca.models import PinStyle, classify_pin_style
+        assert classify_pin_style(None) is PinStyle.WILDCARD
+        assert classify_pin_style("") is PinStyle.WILDCARD
+
+    def test_digest_is_exact(self):
+        from packages.sca.models import PinStyle, classify_pin_style
+        assert classify_pin_style("sha256:" + "a" * 64) is PinStyle.EXACT
+
+    def test_floating_tags_are_wildcard_case_insensitive(self):
+        from packages.sca.models import (
+            FLOATING_TAGS, PinStyle, classify_pin_style,
+        )
+        for tag in FLOATING_TAGS:
+            assert classify_pin_style(tag) is PinStyle.WILDCARD, tag
+            assert classify_pin_style(tag.upper()) is PinStyle.WILDCARD, tag
+
+    def test_ordinary_tag_is_exact(self):
+        from packages.sca.models import PinStyle, classify_pin_style
+        assert classify_pin_style("16.3") is PinStyle.EXACT
+        assert classify_pin_style("3.11-slim") is PinStyle.EXACT

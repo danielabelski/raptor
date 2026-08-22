@@ -36,7 +36,14 @@ logger = logging.getLogger(__name__)
 
 #: Toolchain image for containerized builds: the official gcc image
 #: carries gcc/g++/make. Callers override per call; no env knob.
-DEFAULT_BUILD_IMAGE = "gcc:13"
+#: Digest-pinned (tag kept for readability; the daemon resolves by
+#: digest): a mutable tag can be force-repointed upstream, and the
+#: build RUN step executes with the repo's code in context — the
+#: supply-chain window is not worth the convenience.
+DEFAULT_BUILD_IMAGE = (
+    "gcc:13@sha256:"
+    "056fa682471704249f619f65ccec87d671ad5f1b20878da54d60b0b863486621"
+)
 
 #: Ownership label for build-scoped images (mirrors provision()'s
 #: exact-scope cleanup convention).
@@ -59,7 +66,10 @@ SOFT_TOOLCHAIN = ToolchainSpec(
 #: build-on-demand). Pinned release tag: the SAME image supplies the
 #: run-time afl-fuzz (its exported rootfs is the campaign substrate),
 #: so compile-time and run-time AFL versions agree by construction.
-AFL_BUILD_IMAGE = "aflplusplus/aflplusplus:v5.02c"
+AFL_BUILD_IMAGE = (
+    "aflplusplus/aflplusplus:v5.02c@sha256:"
+    "7c3c05e8471ac174327c303a3249c77bbe046d4fe2a458918704190fff64f52f"
+)
 
 #: Toolchain for AFL-instrumented builds: afl-clang-fast wraps the
 #: image's clang and injects coverage instrumentation via CC/CXX —

@@ -68,6 +68,7 @@ import json
 import os
 import re
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -347,6 +348,44 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
 # --------------------------------------------------------------------
 
 
+def _spawn_request_target(argv: list) -> subprocess.Popen:
+    """Start a request target as the leader of its own session.
+
+    ``start_new_session=True`` gives every request a dedicated
+    process group (pgid == the direct child's pid), so
+    ``_kill_request_group`` can sweep double-fork descendants when
+    the request ends. Without it the target shares the daemon's
+    group and only the direct pid could be killed — a detached
+    descendant survived into later RPCs inside the persistent
+    sandbox, retaining pipes and mutating shared state.
+    """
+    return subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _kill_request_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the request's whole process group; reap the leader.
+
+    Runs on EVERY exit path (success, timeout, exception) of the
+    spawn/probe/conversation handlers. ESRCH — the group already
+    fully exited — is the common case and is suppressed.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as e:
+        _log(f"killpg({proc.pid}) failed: {e}")
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _log(f"request target {proc.pid} unreaped after SIGKILL")
+
+
 def _handle_ping(payload: dict) -> dict:
     # ``dumpable`` lets the parent (and the hardening tests) verify
     # the /proc-reopen defence engaged without needing to read the
@@ -369,29 +408,36 @@ def _handle_spawn(payload: dict) -> dict:
         return {"ok": False, "error": str(e)}
     t0 = time.monotonic()
     try:
-        result = subprocess.run(
-            argv, input=stdin_bytes, capture_output=True, timeout=timeout,
-            check=False,
-        )
+        proc = _spawn_request_target(argv)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    try:
+        try:
+            stdout, stderr = proc.communicate(stdin_bytes, timeout=timeout)
+            returncode: int | None = proc.returncode
+            timed_out = False
+        except subprocess.TimeoutExpired as e:
+            # Kill the whole request group first so pipe-holding
+            # descendants can't keep the drain below blocked.
+            _kill_request_group(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=1)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
+                stdout, stderr = e.stdout, e.stderr
+            returncode = None
+            timed_out = True
         return {
             "ok": True,
-            "stdout_hex": (result.stdout or b"").hex(),
-            "stderr_hex": (result.stderr or b"").hex(),
-            "returncode": result.returncode,
-            "timed_out": False,
-            "wall_seconds": round(time.monotonic() - t0, 3),
-        }
-    except subprocess.TimeoutExpired as e:
-        return {
-            "ok": True,
-            "stdout_hex": (e.stdout or b"").hex(),
-            "stderr_hex": (e.stderr or b"").hex(),
-            "returncode": None,
-            "timed_out": True,
+            "stdout_hex": (stdout or b"").hex(),
+            "stderr_hex": (stderr or b"").hex(),
+            "returncode": returncode,
+            "timed_out": timed_out,
             "wall_seconds": round(time.monotonic() - t0, 3),
         }
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        _kill_request_group(proc)
 
 
 def _handle_probe(payload: dict) -> dict:
@@ -418,10 +464,7 @@ def _handle_probe(payload: dict) -> dict:
     stdout_buf = b""
     steps_completed = 0
     exit_class = "unknown"
-    proc = subprocess.Popen(
-        target_argv,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    proc = _spawn_request_target(target_argv)
     t0 = time.monotonic()
     try:
         for i, step in enumerate(steps):
@@ -521,7 +564,7 @@ def _handle_probe(payload: dict) -> dict:
             else:
                 exit_class = f"exit:{rc}"
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_request_group(proc)
             try:
                 tail_stdout, target_stderr = proc.communicate(timeout=1)
                 stdout_buf += tail_stdout or b""
@@ -529,12 +572,7 @@ def _handle_probe(payload: dict) -> dict:
                 target_stderr = b""
             exit_class = "timeout"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
+        _kill_request_group(proc)
 
     wall = round(time.monotonic() - t0, 3)
     stderr_text = (target_stderr or b"").decode("utf-8", errors="replace")
@@ -578,8 +616,6 @@ def _handle_conversation(payload: dict) -> dict:
     per-call handler emits so the parent-side fast-path wrapper is
     a drop-in.
     """
-    import signal as _signal
-
     target_argv = payload.get("target_argv")
     if not isinstance(target_argv, list) or not target_argv:
         return {"ok": False, "error": "target_argv must be a non-empty list"}
@@ -636,10 +672,7 @@ def _handle_conversation(payload: dict) -> dict:
     stdout_buf = b""
     exit_class = "unknown"
     target_stderr = b""
-    proc = subprocess.Popen(
-        target_argv,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    proc = _spawn_request_target(target_argv)
     t0 = time.monotonic()
     try:
         for i, (send_spec, terminator) in enumerate(steps):
@@ -683,14 +716,14 @@ def _handle_conversation(payload: dict) -> dict:
                 exit_class = "clean"
             elif rc is not None and rc < 0:
                 try:
-                    name = _signal.Signals(-rc).name
+                    name = signal.Signals(-rc).name
                 except (ValueError, AttributeError):
                     name = f"UNKNOWN({-rc})"
                 exit_class = f"signal:{name}"
             else:
                 exit_class = f"exit:{rc}"
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_request_group(proc)
             try:
                 tail_stdout, target_stderr = proc.communicate(timeout=1)
                 stdout_buf += tail_stdout or b""
@@ -700,12 +733,7 @@ def _handle_conversation(payload: dict) -> dict:
         if _CANARY_ABORT_SIGNAL in (target_stderr or b""):
             exit_class = "stack_smashing"
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
+        _kill_request_group(proc)
 
     wall = round(time.monotonic() - t0, 3)
     stderr_text = (target_stderr or b"").decode("utf-8", errors="replace")

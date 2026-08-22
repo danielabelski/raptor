@@ -139,6 +139,61 @@ def find_fix_pointer(
     return best.pointer
 
 
+def write_fix_pointer_artifact(pointer: FixPointer,
+                               out_dir: Path | str) -> Path:
+    """Write ``{CVE}.osv.json`` in the exact shape ``find_fix_pointer``
+    reads — the bridge owns its artifact format from both sides.
+
+    For producers that hold verified pointer facts WITHOUT a /cve-diff
+    run (the cvefix corpus: entries carry a public repo + fix commit by
+    the provenance hard gate, and the parent commit resolves
+    mechanically). The record is minimal-but-valid: readers get the
+    same fields a /cve-diff-rendered artifact carries, with
+    ``database_specific.synthesized_by`` naming the producer so a
+    forensic reader can tell it from a discovery run's output.
+    """
+    if not _CVE_RE.fullmatch(pointer.cve_id or ""):
+        raise ValueError(f"not a CVE id: {pointer.cve_id!r}")
+    if not (pointer.repository_url and pointer.fix_commit
+            and pointer.commit_before):
+        raise ValueError(
+            "write_fix_pointer_artifact needs repository_url, "
+            "fix_commit, and commit_before")
+    base = pointer.repository_url.removesuffix(".git").rstrip("/")
+    dbs: dict = {
+        "files_changed": pointer.files_changed,
+        "diff_against": pointer.commit_before,
+        "diff_shape": pointer.diff_shape or "source",
+        "synthesized_by": pointer.source_run or "cvediff_bridge",
+    }
+    if pointer.consensus_verdict:
+        dbs["consensus"] = {"verdict": pointer.consensus_verdict}
+    record = {
+        "schema_version": "1.6.0",
+        "id": pointer.cve_id,
+        "modified": "",
+        "references": [
+            {"type": "FIX", "url": f"{base}/commit/{pointer.fix_commit}"},
+        ],
+        "affected": [{
+            "ranges": [{
+                "type": "GIT",
+                "repo": pointer.repository_url,
+                "events": [
+                    {"introduced": pointer.commit_before},
+                    {"fixed": pointer.fix_commit},
+                ],
+            }],
+        }],
+        "database_specific": dbs,
+    }
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{pointer.cve_id}.osv.json"
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def _resolve_project_dir(project_dir: Path | str | None) -> Path | None:
     if project_dir:
         p = Path(project_dir)

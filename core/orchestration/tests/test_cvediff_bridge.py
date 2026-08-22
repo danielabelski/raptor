@@ -182,3 +182,56 @@ class TestLayering:
                 imported.add(node.module)
         assert not any(m.split(".")[0] in ("cve_diff", "cve_env", "packages")
                        for m in imported), imported
+
+
+class TestWriterRoundTrip:
+    def test_writer_output_reads_back_identically(self, tmp_path):
+        from core.orchestration.cvediff_bridge import (
+            write_fix_pointer_artifact,
+        )
+
+        original = FixPointer(
+            cve_id=CVE,
+            repository_url="https://github.com/apache/httpd",
+            fix_commit="a" * 40,
+            commit_before="b" * 40,
+            diff_shape="source",
+            consensus_verdict="agree",
+            files_changed=3,
+        )
+        path = write_fix_pointer_artifact(original, tmp_path)
+        assert path.name == f"{CVE}.osv.json"
+        ptr = find_fix_pointer(CVE, out_dir=tmp_path)
+        assert ptr is not None
+        for field in ("cve_id", "repository_url", "fix_commit",
+                      "commit_before", "diff_shape",
+                      "consensus_verdict", "files_changed"):
+            assert getattr(ptr, field) == getattr(original, field), field
+
+    def test_writer_refuses_incomplete_pointer(self, tmp_path):
+        import pytest as _pytest
+
+        from core.orchestration.cvediff_bridge import (
+            write_fix_pointer_artifact,
+        )
+
+        with _pytest.raises(ValueError):
+            write_fix_pointer_artifact(
+                FixPointer(cve_id=CVE, repository_url="",
+                           fix_commit="a" * 40, commit_before="b" * 40),
+                tmp_path)
+
+    def test_synthesized_marker_present(self, tmp_path):
+        import json as _json
+
+        from core.orchestration.cvediff_bridge import (
+            write_fix_pointer_artifact,
+        )
+
+        path = write_fix_pointer_artifact(
+            FixPointer(cve_id=CVE, repository_url="https://github.com/x/y",
+                       fix_commit="a" * 40, commit_before="b" * 40,
+                       source_run="cvefix-spec"),
+            tmp_path)
+        data = _json.loads(path.read_text())
+        assert data["database_specific"]["synthesized_by"] == "cvefix-spec"

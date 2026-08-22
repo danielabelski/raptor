@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from packages.web.ffuf import FfufConfig, FfufRunner
+from packages.web.ffuf import FfufConfig, FfufRunner, parse_wordlist_args
 
 
 def test_build_command_anchors_relative_template_to_base_url(tmp_path: Path):
@@ -487,6 +487,203 @@ def test_scanner_cli_wires_ffuf_recursion(tmp_path: Path):
     assert config.recursion_depth == 3
     assert config.recursion_strategy == "greedy"
     assert config.max_runtime_job == 90
+
+
+def test_build_command_multi_wordlist_emits_keyed_lists_and_mode(tmp_path: Path):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=words,
+            path_template="FUZZ?W2=1",
+            extra_wordlists=((params, "W2"),),
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-w") + 1] == str(words)
+    assert f"{params}:W2" in cmd
+    # Explicit mode even when defaulted, so the argv self-describes.
+    assert cmd[cmd.index("-mode") + 1] == "clusterbomb"
+    # Clusterbomb multiplies request counts: guarded default rate.
+    assert cmd[cmd.index("-rate") + 1] == "50"
+
+
+def test_build_command_pitchfork_mode_skips_rate_guard(tmp_path: Path):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=words,
+            path_template="FUZZ?W2=1",
+            extra_wordlists=((params, "W2"),),
+            mode="pitchfork",
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-mode") + 1] == "pitchfork"
+    assert "-rate" not in cmd
+
+
+def test_build_command_rejects_unused_extra_keyword(tmp_path: Path):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="never used: W2"):
+        runner.build_command(
+            FfufConfig(wordlist=words, extra_wordlists=((params, "W2"),)),
+            tmp_path / "out.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("extra_keyword", "mode", "message"),
+    [
+        ("w2", None, "must be uppercase alphanumeric"),
+        ("FUZZ", None, "keywords must be unique"),
+        ("FUZZ2", None, "must not contain each other"),
+        ("W2", "shotgun", "mode must be one of"),
+    ],
+)
+def test_build_command_rejects_invalid_multi_wordlist_options(
+    tmp_path: Path,
+    extra_keyword: str,
+    mode: str | None,
+    message: str,
+):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(
+            FfufConfig(
+                wordlist=words,
+                path_template=f"FUZZ?{extra_keyword}=1",
+                extra_wordlists=((params, extra_keyword),),
+                mode=mode,
+            ),
+            tmp_path / "out.json",
+        )
+
+
+def test_build_command_rejects_mode_without_extra_wordlists(tmp_path: Path):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="mode requires additional wordlists"):
+        runner.build_command(
+            FfufConfig(wordlist=words, mode="pitchfork"),
+            tmp_path / "out.json",
+        )
+
+
+def test_run_grants_read_scope_to_all_wordlist_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    words = tmp_path / "primary" / "words.txt"
+    words.parent.mkdir()
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "extra" / "params.txt"
+    params.parent.mkdir()
+    params.write_text("id\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(
+        FfufConfig(
+            wordlist=words,
+            path_template="FUZZ?W2=1",
+            extra_wordlists=((params, "W2"),),
+        )
+    )
+
+    assert captured["kwargs"]["readable_paths"] == [
+        str(words.parent),
+        str(params.parent),
+    ]
+
+
+def test_parse_wordlist_args_splits_primary_and_keyed_extras(tmp_path: Path):
+    primary, extras = parse_wordlist_args(
+        ["/lists/dirs.txt", "/lists/params.txt:W2", "/lists/values.txt:VAL3"]
+    )
+
+    assert primary == Path("/lists/dirs.txt")
+    assert extras == (
+        (Path("/lists/params.txt"), "W2"),
+        (Path("/lists/values.txt"), "VAL3"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ([], "at least one ffuf wordlist"),
+        (["/lists/dirs.txt:W2"], "implicit FUZZ keyword"),
+        (["/lists/dirs.txt", "/lists/params.txt"], "need a :KEYWORD suffix"),
+        (["/lists/dirs.txt", "/lists/params.txt:w2"], "need a :KEYWORD suffix"),
+    ],
+)
+def test_parse_wordlist_args_rejects_bad_shapes(raw: list[str], message: str):
+    with pytest.raises(ValueError, match=message):
+        parse_wordlist_args(raw)
+
+
+def test_scanner_cli_wires_multi_wordlists(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(words),
+            "--ffuf-wordlist",
+            f"{params}:W2",
+            "--ffuf-mode",
+            "pitchfork",
+            "--ffuf-path",
+            "FUZZ?W2=1",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.wordlist == words
+    assert config.extra_wordlists == ((params, "W2"),)
+    assert config.mode == "pitchfork"
 
 
 def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

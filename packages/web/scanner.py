@@ -27,7 +27,7 @@ from core.run.safe_io import safe_run_mkdir
 from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 from packages.web.client import WebClient
 from packages.web.crawler import WebCrawler
-from packages.web.ffuf import FfufConfig, FfufRunner
+from packages.web.ffuf import FfufConfig, FfufRunner, parse_wordlist_args
 from packages.web.fuzzer import WebFuzzer
 from typing import TYPE_CHECKING
 
@@ -330,8 +330,24 @@ Examples:
     parser.add_argument("--insecure", action="store_true", help="Skip SSL/TLS certificate verification (INSECURE but you know what you are doing, right?)")
     parser.add_argument(
         "--ffuf-wordlist",
-        type=Path,
-        help="Opt-in ffuf content discovery wordlist. ffuf is only run when this is set.",
+        action="append",
+        default=[],
+        help=(
+            "Opt-in ffuf content discovery wordlist; ffuf is only run when "
+            "this is set. Repeatable: the first wordlist uses the implicit "
+            "FUZZ keyword, additional ones take a path:KEYWORD suffix "
+            "(e.g. params.txt:W2) for multi-wordlist fuzzing."
+        ),
+    )
+    parser.add_argument(
+        "--ffuf-mode",
+        choices=("clusterbomb", "pitchfork"),
+        help=(
+            "Multi-wordlist combination mode for -mode; only valid with "
+            "more than one --ffuf-wordlist (default: clusterbomb). "
+            "Clusterbomb applies a default -rate of 50 req/s unless "
+            "--ffuf-rate is set."
+        ),
     )
     parser.add_argument(
         "--ffuf-path",
@@ -497,8 +513,11 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
     """Convert parsed CLI args into an optional ffuf configuration."""
     if not args.ffuf_wordlist:
         return None
+    wordlist, extra_wordlists = parse_wordlist_args(args.ffuf_wordlist)
     return FfufConfig(
-        wordlist=args.ffuf_wordlist,
+        wordlist=wordlist,
+        extra_wordlists=extra_wordlists,
+        mode=args.ffuf_mode,
         path_template=args.ffuf_path,
         threads=args.ffuf_threads,
         rate=args.ffuf_rate,

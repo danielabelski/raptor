@@ -40,6 +40,51 @@ DEFAULT_GUARDED_RATE = 50
 # whether a run may use them at all.
 ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 
+# Keyword shape for additional wordlists (-w path:KEYWORD).
+WORDLIST_KEYWORD_RE = re.compile(r"^[A-Z][A-Z0-9]*$")
+
+ALLOWED_MODES = ("clusterbomb", "pitchfork")
+
+
+def parse_wordlist_args(
+    raw: tuple[str, ...] | list[str],
+) -> tuple[Path, tuple[tuple[Path, str], ...]]:
+    """Split repeatable ``--ffuf-wordlist`` values into primary + extras.
+
+    The first entry is the primary wordlist and uses ffuf's implicit
+    ``FUZZ`` keyword; every additional entry must carry a
+    ``path:KEYWORD`` suffix naming its substitution keyword.
+    """
+    if not raw:
+        msg = "at least one ffuf wordlist is required"
+        raise ValueError(msg)
+
+    def split(entry: str) -> tuple[str, str | None]:
+        path, sep, suffix = entry.rpartition(":")
+        if sep and WORDLIST_KEYWORD_RE.match(suffix):
+            return path, suffix
+        return entry, None
+
+    primary_path, primary_keyword = split(raw[0])
+    if primary_keyword is not None:
+        msg = (
+            "the first ffuf wordlist uses the implicit FUZZ keyword; "
+            "only additional wordlists take a :KEYWORD suffix"
+        )
+        raise ValueError(msg)
+
+    extras: list[tuple[Path, str]] = []
+    for entry in raw[1:]:
+        path, keyword = split(entry)
+        if keyword is None:
+            msg = (
+                f"additional ffuf wordlists need a :KEYWORD suffix "
+                f"(got {entry!r}); keywords look like W2 or PARAM"
+            )
+            raise ValueError(msg)
+        extras.append((Path(path), keyword))
+    return Path(primary_path), tuple(extras)
+
 
 @dataclass(frozen=True)
 class FfufConfig:
@@ -61,6 +106,8 @@ class FfufConfig:
     cookies: tuple[str, ...] = ()
     method: str = "GET"
     data: str | None = None
+    extra_wordlists: tuple[tuple[Path, str], ...] = ()
+    mode: str | None = None
     stop_on_403: bool = False
     stop_on_spurious: bool = False
     stop_on_all_errors: bool = False
@@ -208,17 +255,29 @@ class FfufRunner:
     @staticmethod
     def _fuzz_keywords(config: FfufConfig) -> tuple[str, ...]:
         """Keywords ffuf will substitute for this configuration."""
-        return ("FUZZ",)
+        return ("FUZZ", *(keyword for _path, keyword in config.extra_wordlists))
 
     @classmethod
     def _require_fuzz_keyword(cls, config: FfufConfig, url_template: str) -> None:
-        """Every run needs at least one substitution point somewhere."""
+        """Every keyword needs a substitution point; a dead wordlist is a
+        config error, not a silent no-op."""
         keywords = cls._fuzz_keywords(config)
         haystacks = [url_template, config.data or "", *config.headers]
-        if not any(kw in haystack for kw in keywords for haystack in haystacks):
+        missing = [
+            kw for kw in keywords
+            if not any(kw in haystack for haystack in haystacks)
+        ]
+        if len(missing) == len(keywords):
             msg = (
                 "ffuf configuration has no substitution point: put FUZZ in "
                 "the URL template, request body, or a header value"
+            )
+            raise ValueError(msg)
+        if missing:
+            msg = (
+                f"ffuf wordlist keyword(s) never used: {', '.join(missing)}; "
+                "place each keyword in the URL template, request body, or a "
+                "header value"
             )
             raise ValueError(msg)
 
@@ -251,6 +310,37 @@ class FfufRunner:
         if config.method.upper() not in ALLOWED_METHODS:
             msg = f"ffuf method must be one of {', '.join(ALLOWED_METHODS)}"
             raise ValueError(msg)
+        if config.mode is not None and config.mode not in ALLOWED_MODES:
+            msg = f"ffuf mode must be one of {', '.join(ALLOWED_MODES)}"
+            raise ValueError(msg)
+        if config.mode is not None and not config.extra_wordlists:
+            msg = "ffuf mode requires additional wordlists (-w path:KEYWORD)"
+            raise ValueError(msg)
+        keywords = ["FUZZ"]
+        for path, keyword in config.extra_wordlists:
+            if not path.is_file():
+                msg = f"ffuf wordlist not found: {path}"
+                raise FileNotFoundError(msg)
+            if not WORDLIST_KEYWORD_RE.match(keyword):
+                msg = (
+                    f"ffuf wordlist keyword {keyword!r} must be uppercase "
+                    "alphanumeric starting with a letter (e.g. W2, PARAM)"
+                )
+                raise ValueError(msg)
+            keywords.append(keyword)
+        if len(set(keywords)) != len(keywords):
+            msg = "ffuf wordlist keywords must be unique (FUZZ is reserved for the primary)"
+            raise ValueError(msg)
+        for kw in keywords:
+            for other in keywords:
+                if kw != other and kw in other:
+                    # ffuf substitutes keywords as raw strings; FUZZ inside
+                    # FUZZ2 would corrupt the other keyword's placeholder.
+                    msg = (
+                        f"ffuf wordlist keyword {kw!r} is a substring of "
+                        f"{other!r}; keywords must not contain each other"
+                    )
+                    raise ValueError(msg)
         if config.recursion_depth < 1:
             msg = "ffuf recursion depth must be >= 1"
             raise ValueError(msg)
@@ -379,6 +469,12 @@ class FfufRunner:
             cmd.extend(["-H", header])
         for cookie in config.cookies:
             cmd.extend(["-b", cookie])
+        for extra_path, keyword in config.extra_wordlists:
+            cmd.extend(["-w", f"{extra_path}:{keyword}"])
+        if config.extra_wordlists:
+            # Emit the mode explicitly (ffuf would default to clusterbomb)
+            # so the argv in logs and audit trails is self-describing.
+            cmd.extend(["-mode", config.mode or "clusterbomb"])
         if config.recursion:
             cmd.append("-recursion")
             cmd.extend(["-recursion-depth", str(config.recursion_depth)])
@@ -390,13 +486,23 @@ class FfufRunner:
         if max_runtime_job is not None:
             cmd.extend(["-maxtime-job", str(max_runtime_job)])
         rate = config.rate
-        if rate is None and config.recursion:
-            rate = DEFAULT_GUARDED_RATE
-            logger.info(
-                "ffuf recursion enabled with no explicit rate limit; "
-                "applying default -rate %d req/s (pass --ffuf-rate to override)",
-                rate,
-            )
+        if rate is None:
+            # Pitchfork iterates wordlists in lockstep and does not
+            # multiply request counts; clusterbomb and recursion do.
+            if config.recursion:
+                guard_reason = "recursion"
+            elif config.extra_wordlists and (config.mode or "clusterbomb") == "clusterbomb":
+                guard_reason = "clusterbomb multi-wordlist mode"
+            else:
+                guard_reason = None
+            if guard_reason is not None:
+                rate = DEFAULT_GUARDED_RATE
+                logger.info(
+                    "ffuf %s enabled with no explicit rate limit; applying "
+                    "default -rate %d req/s (pass --ffuf-rate to override)",
+                    guard_reason,
+                    rate,
+                )
         if rate is not None:
             cmd.extend(["-rate", str(rate)])
         return cmd
@@ -446,11 +552,15 @@ class FfufRunner:
         returncode: int | None = None
         stderr_text = ""
         try:
+            wordlist_dirs = list(dict.fromkeys(
+                [str(config.wordlist.parent)]
+                + [str(path.parent) for path, _keyword in config.extra_wordlists]
+            ))
             completed = run_untrusted_networked(
                 cmd,
                 target=str(config.wordlist.parent),
                 output=str(self.out_dir),
-                readable_paths=[str(config.wordlist.parent)],
+                readable_paths=wordlist_dirs,
                 proxy_hosts=[target_host],
                 fake_home=True,
                 tool_paths=[str(Path(binary_path).parent)],

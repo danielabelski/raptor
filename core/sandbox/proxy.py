@@ -975,22 +975,15 @@ class EgressProxy:
         # lane bucket below so one run hitting the cap cannot silence another.
         self._live_resolved_ip_escalated: set[str] = set()
         self._live_resolved_ip_cap_announced = False
-        # Atomic snapshot of the buffer-list refs for the hot path.
-        # `_record` is called once per CONNECT and used to acquire
-        # `_buffer_lock` to iterate `_sandbox_buffers.values()`. Under
-        # bursty traffic that single lock serialises every recorder.
-        # The snapshot is a tuple — re-bound (atomic ref-write under
-        # CPython's GIL) by register/unregister inside the lock; the
-        # hot path reads the tuple ref without the lock and iterates
-        # to append. Race window: between snapshot read and append, a
-        # concurrent unregister may have popped a buffer; the append
-        # still lands on that orphaned list. The unregistered caller's
-        # returned events are a defensive copy taken at unregister
-        # time, so the late append is silently dropped from the
-        # caller's view — same end-state as the previous design where
-        # the late event would have been recorded into a buffer the
-        # caller had already left behind.
-        # Snapshot entries are (buffer, lane_subscription) pairs.
+        # Pre-built (buffer, lane_subscription) tuple, re-bound by
+        # register/unregister inside `_buffer_lock`. A previous design
+        # had `_record` read this snapshot WITHOUT the lock as a
+        # throughput optimisation; that opened a lost-event window
+        # against unregister_sandbox's pop+copy (see _record's
+        # docstring), so `_record` now iterates it under the lock —
+        # recording is per-CONNECT, not per-byte, and one short
+        # critical section per CONNECT is noise. The tuple survives
+        # as a cheap pre-computed view (and for introspection/tests).
         self._sandbox_buffers_snapshot: tuple = ()
 
         # Synchronise startup: the thread runs the asyncio loop and signals
@@ -1531,8 +1524,10 @@ class EgressProxy:
             # `_serve_tunnel`'s finally — goes through
             # `_finalize_tunnel_event`, which also takes
             # `_buffer_lock`, so the spread happens with the mutator
-            # serialised out. (`_record` itself stays lock-free — it
-            # only APPENDS references; it never mutates event fields.)
+            # serialised out. (`_record` appends under this lock too,
+            # so an event either lands before this pop+copy — and is
+            # returned — or not at all; it can no longer land on the
+            # orphaned post-pop list and vanish.)
             # Cost: a few extra microseconds per event in unregister;
             # benefit: consistent snapshots in the audit trail.
             if label is not None:
@@ -1581,16 +1576,27 @@ class EgressProxy:
         processing a CONNECT that happened outside any register /
         unregister window, e.g. during proxy shutdown).
 
-        Lock-free hot path: reads `_sandbox_buffers_snapshot` (atomic
-        ref-read under the GIL) and iterates without acquiring
-        `_buffer_lock`. Append to a Python list is atomic per the GIL.
-        Under bursty traffic this avoids serialising every recorder on
-        a single mutex shared with register/unregister.
+        Serialised on ``_buffer_lock``: ``unregister_sandbox`` pops
+        the buffer and takes its defensive copy under that lock, so
+        appending under the same lock means an event either lands
+        BEFORE the pop (delivered in the returned copy) or the
+        recorder observes the post-unregister snapshot (the buffer is
+        gone; nothing to deliver). The previous lock-free snapshot
+        read left a window where a recorder holding the pre-pop
+        snapshot appended AFTER the copy — the sandbox's final audit
+        event (e.g. a denied CONNECT racing context exit) landed on
+        the orphaned list and silently vanished from the persisted
+        evidence. _record runs once per CONNECT (never per relayed
+        byte), so this is a cold path and the lock cost is noise;
+        the snapshot tuple is still maintained by register/unregister
+        for cheap introspection, but the fan-out no longer trusts it
+        outside the lock.
         """
         lane_id = event.get("lane_id")
-        for buf, sub in self._sandbox_buffers_snapshot:
-            if sub is None or (lane_id is not None and sub == lane_id):
-                buf.append(event)
+        with self._buffer_lock:
+            for buf, sub in self._sandbox_buffers_snapshot:
+                if sub is None or (lane_id is not None and sub == lane_id):
+                    buf.append(event)
         self._live_escalate(event)
 
     def _live_bucket_states(self, event: dict) -> list[dict]:
@@ -1615,8 +1621,9 @@ class EgressProxy:
         change to the CONNECT decision already made by gates 1/2 above.
 
         Called from `_record()` on the proxy's single event-loop
-        thread — no lock taken for the dedup-state mutations below,
-        same reasoning as `_record`'s own lock-free hot path. The
+        thread, AFTER `_record` has released `_buffer_lock` — no lock
+        taken for the dedup-state mutations below (stderr writes must
+        not run under the buffer lock). The
         recon buckets ARE created/torn down by register/unregister on
         other threads (under `_buffer_lock`), but this path only
         `.get()`s a bucket ref and mutates its contents — GIL-atomic

@@ -405,9 +405,11 @@ class TestBufferSnapshot:
         finally:
             proxy.stop()
 
-    def test_record_fans_out_lock_free(self, reset_proxy):
-        """_record appends to every registered sandbox's buffer
-        without acquiring the buffer lock."""
+    def test_record_fans_out_to_all_buffers(self, reset_proxy):
+        """_record appends to every registered sandbox's buffer.
+        (It serialises on _buffer_lock — once per CONNECT, cold path
+        — so a concurrent unregister can never drop the event; see
+        test_proxy_record_unregister_race.py.)"""
         proxy = proxy_mod.EgressProxy(allowed_hosts={"x"})
         try:
             t1 = proxy.register_sandbox()

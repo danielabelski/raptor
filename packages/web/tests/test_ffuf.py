@@ -92,6 +92,102 @@ def test_build_command_rejects_invalid_numeric_options(
 
 
 
+def test_build_command_always_caps_runtime_with_maxtime(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, max_runtime=120), tmp_path / "out.json"
+    )
+
+    assert cmd[cmd.index("-maxtime") + 1] == "120"
+
+
+def test_build_command_emits_stop_conditions_only_when_enabled(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+    output = tmp_path / "out.json"
+
+    default_cmd = runner.build_command(FfufConfig(wordlist=wordlist), output)
+    assert "-sf" not in default_cmd
+    assert "-se" not in default_cmd
+    assert "-sa" not in default_cmd
+
+    full_cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            stop_on_403=True,
+            stop_on_spurious=True,
+            stop_on_all_errors=True,
+        ),
+        output,
+    )
+    assert "-sf" in full_cmd
+    assert "-se" in full_cmd
+    assert "-sa" in full_cmd
+
+
+def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The subprocess timeout must exceed -maxtime so ffuf's own clean
+    shutdown (which flushes the JSON report) always wins the race."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist, max_runtime=200))
+
+    assert captured["cmd"][captured["cmd"].index("-maxtime") + 1] == "200"
+    # grace = min(30, max(5, 200 // 10)) = 20
+    assert captured["kwargs"]["timeout"] == 220
+    assert result["timed_out"] is False
+    assert result["returncode"] == 0
+
+
+def test_run_survives_backstop_timeout_and_keeps_partial_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A wedged ffuf killed by the backstop must degrade to a partial
+    summary instead of aborting the whole scan with TimeoutExpired."""
+    import subprocess
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(
+            json.dumps({"results": [{"url": "https://example.test/admin", "status": 200}]}),
+            encoding="utf-8",
+        )
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"], stderr=b"wedged")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist))
+
+    assert result["timed_out"] is True
+    assert result["returncode"] is None
+    assert result["result_count"] == 1
+    assert result["stderr"] == "wedged"
+
+
 def test_build_command_threads_authenticated_ffuf_options(tmp_path: Path):
     wordlist = tmp_path / "words.txt"
     wordlist.write_text("admin\n", encoding="utf-8")
@@ -370,6 +466,41 @@ def test_scanner_cli_wires_all_ffuf_options(tmp_path: Path):
     assert config.filter_size == 1234
     assert config.headers == (auth_header, "X-Tenant: test")
     assert config.cookies == (session_cookie, "pref=dark")
+
+
+def test_scanner_cli_wires_ffuf_stop_conditions(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-stop-on-403",
+            "--ffuf-stop-on-spurious-errors",
+            "--ffuf-stop-on-all-errors",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.stop_on_403 is True
+    assert config.stop_on_spurious is True
+    assert config.stop_on_all_errors is True
+
+    defaults = build_ffuf_config(
+        build_arg_parser().parse_args(
+            ["--url", "https://example.test", "--ffuf-wordlist", str(wordlist)]
+        )
+    )
+    assert defaults is not None
+    assert defaults.stop_on_403 is False
+    assert defaults.stop_on_spurious is False
+    assert defaults.stop_on_all_errors is False
 
 
 def test_scanner_cli_can_omit_optional_ffuf_match_and_filter_status(tmp_path: Path):

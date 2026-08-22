@@ -375,6 +375,21 @@ Examples:
         help="Optional ffuf response size filter for -fs",
     )
     parser.add_argument(
+        "--ffuf-stop-on-403",
+        action="store_true",
+        help="Stop ffuf when >95%% of responses return 403 (-sf); typical WAF signal",
+    )
+    parser.add_argument(
+        "--ffuf-stop-on-spurious-errors",
+        action="store_true",
+        help="Stop ffuf on spurious errors (-se)",
+    )
+    parser.add_argument(
+        "--ffuf-stop-on-all-errors",
+        action="store_true",
+        help="Stop ffuf on all error cases (-sa)",
+    )
+    parser.add_argument(
         "--ffuf-header",
         action="append",
         default=[],
@@ -424,6 +439,9 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         filter_size=args.ffuf_filter_size,
         headers=tuple(args.ffuf_header or ()),
         cookies=tuple(args.ffuf_cookie or ()),
+        stop_on_403=bool(args.ffuf_stop_on_403),
+        stop_on_spurious=bool(args.ffuf_stop_on_spurious_errors),
+        stop_on_all_errors=bool(args.ffuf_stop_on_all_errors),
     )
 
 

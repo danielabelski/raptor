@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,9 @@ class FfufConfig:
     filter_size: int | None = None
     headers: tuple[str, ...] = ()
     cookies: tuple[str, ...] = ()
+    stop_on_403: bool = False
+    stop_on_spurious: bool = False
+    stop_on_all_errors: bool = False
 
 
 class FfufRunner:
@@ -201,7 +205,19 @@ class FfufRunner:
             str(config.threads),
             "-timeout",
             str(config.timeout),
+            # ffuf-side runtime cap: ffuf exits cleanly at -maxtime and
+            # flushes its JSON report. The Python-side subprocess timeout
+            # (see run()) is only a backstop with a grace window — if it
+            # fired first, the kill would discard the report.
+            "-maxtime",
+            str(config.max_runtime),
         ]
+        if config.stop_on_403:
+            cmd.append("-sf")
+        if config.stop_on_spurious:
+            cmd.append("-se")
+        if config.stop_on_all_errors:
+            cmd.append("-sa")
         if config.auto_calibration:
             cmd.append("-ac")
         if config.match_status:
@@ -254,19 +270,43 @@ class FfufRunner:
         redacted_cmd = self._redact_command(cmd)
         logger.info("Running sandboxed ffuf: %s", ' '.join(redacted_cmd))
 
-        completed = run_untrusted_networked(
-            cmd,
-            target=str(config.wordlist.parent),
-            output=str(self.out_dir),
-            readable_paths=[str(config.wordlist.parent)],
-            proxy_hosts=[target_host],
-            fake_home=True,
-            tool_paths=[str(Path(binary_path).parent)],
-            caller_label="web-ffuf",
-            timeout=config.max_runtime,
-            capture_output=True,
-            text=True,
-        )
+        # ffuf's own -maxtime (== max_runtime) is the real cap; the
+        # subprocess timeout is a backstop for a wedged process. It gets
+        # a grace window so ffuf can exit cleanly and flush its report —
+        # a backstop kill loses whatever ffuf had not yet written.
+        grace = min(30, max(5, config.max_runtime // 10))
+        timed_out = False
+        returncode: int | None = None
+        stderr_text = ""
+        try:
+            completed = run_untrusted_networked(
+                cmd,
+                target=str(config.wordlist.parent),
+                output=str(self.out_dir),
+                readable_paths=[str(config.wordlist.parent)],
+                proxy_hosts=[target_host],
+                fake_home=True,
+                tool_paths=[str(Path(binary_path).parent)],
+                caller_label="web-ffuf",
+                timeout=config.max_runtime + grace,
+                capture_output=True,
+                text=True,
+            )
+            returncode = completed.returncode
+            stderr_text = completed.stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stderr_raw = exc.stderr
+            if isinstance(stderr_raw, bytes):
+                stderr_text = stderr_raw.decode("utf-8", errors="replace")
+            else:
+                stderr_text = stderr_raw or ""
+            logger.warning(
+                "ffuf did not exit at -maxtime %ds; killed after %ds grace, "
+                "keeping any partial results",
+                config.max_runtime,
+                grace,
+            )
 
         results: list[dict[str, Any]] = []
         if output_file.exists():
@@ -288,13 +328,14 @@ class FfufRunner:
         summarized_results = [self._summarize_result(r) for r in results[: config.report_limit]]
         return {
             "tool": "ffuf",
-            "returncode": completed.returncode,
+            "returncode": returncode,
+            "timed_out": timed_out,
             "output_file": str(output_file),
             "result_count": len(results),
             "reported_result_count": len(summarized_results),
             "omitted_result_count": max(0, len(results) - len(summarized_results)),
             "results": summarized_results,
-            "stderr": self._redact((completed.stderr or "").strip()),
+            "stderr": self._redact(stderr_text.strip()),
         }
 
     def _summarize_result(self, result: dict[str, Any]) -> dict[str, Any]:

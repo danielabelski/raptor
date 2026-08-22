@@ -38,6 +38,15 @@ def _completed(rc: int, stderr: str = "",
     )
 
 
+def _local_ok(cmd, **kwargs) -> subprocess.CompletedProcess:
+    """side_effect for mocked local git steps under fetch_commit: the
+    post-fetch verification resolves FETCH_HEAD via rev-parse, so a
+    successful run must echo the requested OID, not empty stdout."""
+    if "rev-parse" in cmd:
+        return _completed(0, stdout=_VALID_SHA + "\n")
+    return _completed(0)
+
+
 def _clone_materialises(cmd, **kwargs) -> subprocess.CompletedProcess:
     """side_effect for a mocked successful clone: create the destination
     directory (last argv token) like real git would. clone_repository
@@ -168,7 +177,7 @@ def test_fetch_into_fresh_dir_runs_init_then_remote_then_fetch(
     repo = tmp_path / "repo"
     with patch("core.sandbox.run_untrusted") as mock_local, \
          patch("core.sandbox.run_untrusted_networked") as mock_net:
-        mock_local.return_value = _completed(0)
+        mock_local.side_effect = _local_ok
         mock_net.return_value = _completed(0)
         ok = fetch_commit(repo, "https://github.com/foo/bar",
                            _VALID_SHA, depth=5)
@@ -198,7 +207,7 @@ def test_fetch_into_existing_repo_skips_init(tmp_path: Path) -> None:
     (repo / ".git").mkdir(parents=True)
     with patch("core.sandbox.run_untrusted") as mock_local, \
          patch("core.sandbox.run_untrusted_networked") as mock_net:
-        mock_local.return_value = _completed(0)
+        mock_local.side_effect = _local_ok
         mock_net.return_value = _completed(0)
         fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
 
@@ -221,7 +230,7 @@ def test_fetch_existing_origin_remote_falls_back_to_set_url(
     def _side_effect(cmd, **kwargs):
         if _strip_pins(cmd)[3:5] == ["remote", "add"]:
             return _completed(128, stderr="error: remote origin already exists")
-        return _completed(0)
+        return _local_ok(cmd, **kwargs)
 
     with patch("core.sandbox.run_untrusted", side_effect=_side_effect) as mock_local, \
          patch("core.sandbox.run_untrusted_networked") as mock_net:
@@ -342,7 +351,7 @@ def test_fetch_sandbox_writable_dir_is_parent_not_repo(
     repo = tmp_path / "work" / "repo"
     with patch("core.sandbox.run_untrusted") as mock_local, \
          patch("core.sandbox.run_untrusted_networked") as mock_net:
-        mock_local.return_value = _completed(0)
+        mock_local.side_effect = _local_ok
         mock_net.return_value = _completed(0)
         fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
 
@@ -848,7 +857,7 @@ def test_fetch_local_steps_carry_strict_pins(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     with patch("core.sandbox.run_untrusted") as mock_local, \
          patch("core.sandbox.run_untrusted_networked") as mock_net:
-        mock_local.return_value = _completed(0)
+        mock_local.side_effect = _local_ok
         mock_net.return_value = _completed(0)
         fetch_commit(repo, "https://github.com/foo/bar", _VALID_SHA)
 
@@ -998,3 +1007,73 @@ def test_clone_through_real_sandbox_materialises_on_host(
     # The point of the test: host-visible materialisation.
     assert (dst / "f.txt").read_text(encoding="utf-8") == "seed\n"
     assert (dst / ".git").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# fetch_commit post-fetch OID verification
+# ---------------------------------------------------------------------------
+
+def _fetch_with_resolved(tmp_path: Path, requested: str,
+                         resolved_stdout: str,
+                         rev_parse_rc: int = 0) -> bool:
+    """Run fetch_commit with mocked sandbox calls where the post-fetch
+    ``rev-parse FETCH_HEAD^{commit}`` yields ``resolved_stdout``."""
+    def _side_effect(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return _completed(rev_parse_rc, stdout=resolved_stdout)
+        return _completed(0)
+
+    with patch("core.sandbox.run_untrusted", side_effect=_side_effect), \
+         patch("core.sandbox.run_untrusted_networked") as mock_net:
+        mock_net.return_value = _completed(0)
+        return fetch_commit(tmp_path / "repo",
+                            "https://github.com/foo/bar", requested)
+
+
+def test_fetch_full_sha_mismatch_returns_false(tmp_path: Path) -> None:
+    """Transport success is NOT commit success: a remote answering the
+    want with a different object must be refused."""
+    other = "cafebabe" * 5
+    assert _fetch_with_resolved(tmp_path, _VALID_SHA,
+                                other + "\n") is False
+
+
+def test_fetch_full_sha_exact_match_returns_true(tmp_path: Path) -> None:
+    assert _fetch_with_resolved(tmp_path, _VALID_SHA,
+                                _VALID_SHA + "\n") is True
+
+
+def test_fetch_abbreviated_sha_requires_prefix_match(
+    tmp_path: Path,
+) -> None:
+    """An abbreviated SHA is remote-resolved; the returned OID must
+    start with the requested prefix."""
+    assert _fetch_with_resolved(tmp_path, "deadbeef",
+                                _VALID_SHA + "\n") is True
+    assert _fetch_with_resolved(tmp_path, "cafebabe",
+                                _VALID_SHA + "\n") is False
+
+
+def test_fetch_unresolvable_fetch_head_returns_false(
+    tmp_path: Path,
+) -> None:
+    """FETCH_HEAD not resolving to a commit after a zero-exit fetch is
+    a failure, never a success."""
+    assert _fetch_with_resolved(tmp_path, _VALID_SHA, "",
+                                rev_parse_rc=128) is False
+
+
+def test_fetch_garbage_rev_parse_output_returns_false(
+    tmp_path: Path,
+) -> None:
+    assert _fetch_with_resolved(tmp_path, _VALID_SHA,
+                                "not-a-sha\n") is False
+
+
+def test_fetch_uppercase_request_matches_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    """The SHA shape check accepts uppercase hex; verification must
+    compare case-insensitively against git's lowercase output."""
+    assert _fetch_with_resolved(tmp_path, _VALID_SHA.upper(),
+                                _VALID_SHA + "\n") is True

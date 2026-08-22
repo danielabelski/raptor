@@ -561,7 +561,13 @@ def fetch_commit(
         depth: shallow-fetch depth (default 5). The caller should
             cascade — start small, retry deeper on miss.
 
-    Returns ``True`` on success.
+    Returns ``True`` on success — the fetch completed AND
+    ``FETCH_HEAD^{commit}`` resolved to an OID matching the request
+    (exact equality for a full 40-hex SHA, prefix match for an
+    abbreviation). Returns ``False`` when the transport succeeded but
+    the fetched object does not match — an abbreviated SHA is
+    remote-resolved and could be ambiguous or attacker-chosen, so a
+    zero exit alone is not proof the wanted commit arrived.
 
     Raises:
         ValueError: URL fails the allowlist, ``repo_dir`` fails the
@@ -690,6 +696,49 @@ def fetch_commit(
             f"{(proc.stderr or proc.stdout or 'unknown error').strip()}"
         )
         raise RuntimeError(msg)
+
+    # Verify WHAT the remote actually sent. A zero exit only proves
+    # the transport succeeded — the remote controls the object behind
+    # any abbreviated name, and even for a full SHA a hostile or
+    # confused remote could satisfy the want differently. Resolve
+    # FETCH_HEAD to a commit OID (local plumbing — strict read-only
+    # pins) and require it to match the request: exact equality for a
+    # full 40-hex SHA, prefix match for an abbreviation. Anything
+    # else is a failed fetch, not a success.
+    verify = _run(
+        safe_git_readonly_command(
+            "-C", str(repo_dir), "rev-parse", "--verify",
+            "FETCH_HEAD^{commit}",
+        ),
+        network=False,
+    )
+    if verify.returncode != 0:
+        logger.warning(
+            "git fetch reported success but FETCH_HEAD does not "
+            "resolve to a commit: %s",
+            (verify.stderr or verify.stdout or "unknown error").strip(),
+        )
+        return False
+    resolved = (verify.stdout or "").strip().lower()
+    if not _LS_REMOTE_SHA_RE.fullmatch(resolved):
+        logger.warning(
+            "git fetch verification: unexpected rev-parse output %r",
+            resolved[:80],
+        )
+        return False
+    requested = sha.lower()
+    matches = (
+        resolved == requested
+        if len(requested) == 40
+        else resolved.startswith(requested)
+    )
+    if not matches:
+        logger.warning(
+            "git fetch verification: requested %s but FETCH_HEAD "
+            "resolved to %s — refusing the fetched object",
+            sha, resolved,
+        )
+        return False
     return True
 
 

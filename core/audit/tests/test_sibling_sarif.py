@@ -196,6 +196,119 @@ class TestImportSiblingSarif:
         assert import_sibling_sarif(cache, audit_run, target) == 0
 
 
+class TestCoverageHashGate:
+    """Declared coverage (the sarif-clean verdict lane) requires
+    CONTENT-HASH freshness. mtime is forgeable (``touch -d``): a
+    sibling that recorded no per-file sha256 must contribute NO
+    ``scanned_files`` coverage, or a stale "declared coverage + zero
+    alerts" import commits status clean with no LLM review. Alert
+    results (the confirm direction) keep the mtime fallback."""
+
+    @staticmethod
+    def _sarif_with_coverage(uris, results=()):
+        return json.dumps(
+            {
+                "runs": [
+                    {
+                        "tool": {"driver": {"name": "codeql"}},
+                        "artifacts": [
+                            {"location": {"uri": u}} for u in uris
+                        ],
+                        "results": list(results),
+                    }
+                ]
+            }
+        )
+
+    def test_mtime_forged_swap_yields_no_declared_coverage(self, tmp_path):
+        """Attack shape: scan benign v1, swap in a vulnerable helper,
+        ``touch -d <past>`` — the sibling recorded no checklist
+        sha256, so the coverage lane must simply not be fresh."""
+        target, audit_run, siblings = _make_project(tmp_path)
+        sarif = siblings[0] / "scan" / "combined.sarif"
+        sarif.write_text(self._sarif_with_coverage(["src/a.c"]))
+        os.utime(sarif, (2000, 2000))
+        # Attacker swaps in a vulnerable helper, then forges the mtime
+        # back before the scan.
+        (target / "src" / "a.c").write_text(
+            "int f(void){char b[4]; return b[9];}\n"
+        )
+        os.utime(target / "src" / "a.c", (1000, 1000))
+        cache = SarifCache()
+        import_sibling_sarif(cache, audit_run, target, now=3000)
+        assert "src/a.c" not in cache.scanned_files
+
+    def test_unchanged_file_without_recorded_hash_not_covered(
+        self, tmp_path,
+    ):
+        """Even a genuinely unchanged file earns no clean-lane coverage
+        from a sibling that recorded no hash — there is nothing to
+        verify the content against (fail closed → full review)."""
+        target, audit_run, siblings = _make_project(tmp_path)
+        sarif = siblings[0] / "scan" / "combined.sarif"
+        sarif.write_text(self._sarif_with_coverage(["src/a.c"]))
+        os.utime(sarif, (2000, 2000))
+        os.utime(target / "src" / "a.c", (1000, 1000))
+        cache = SarifCache()
+        import_sibling_sarif(cache, audit_run, target, now=3000)
+        assert cache.scanned_files == set()
+
+    def test_recorded_hash_match_keeps_declared_coverage(self, tmp_path):
+        from core.hash import sha256_file
+
+        target, audit_run, siblings = _make_project(tmp_path)
+        sarif = siblings[0] / "scan" / "combined.sarif"
+        sarif.write_text(self._sarif_with_coverage(["src/a.c"]))
+        (siblings[0] / "checklist.json").write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "path": "src/a.c",
+                            "sha256": sha256_file(
+                                target / "src" / "a.c"
+                            ),
+                        }
+                    ]
+                }
+            )
+        )
+        cache = SarifCache()
+        import_sibling_sarif(cache, audit_run, target)
+        assert "src/a.c" in cache.scanned_files
+
+    def test_recorded_hash_mismatch_drops_declared_coverage(
+        self, tmp_path,
+    ):
+        target, audit_run, siblings = _make_project(tmp_path)
+        sarif = siblings[0] / "scan" / "combined.sarif"
+        sarif.write_text(self._sarif_with_coverage(["src/a.c"]))
+        (siblings[0] / "checklist.json").write_text(
+            json.dumps(
+                {"files": [{"path": "src/a.c", "sha256": "0" * 64}]}
+            )
+        )
+        cache = SarifCache()
+        import_sibling_sarif(cache, audit_run, target)
+        assert "src/a.c" not in cache.scanned_files
+
+    def test_alert_results_keep_mtime_freshness(self, tmp_path):
+        """The confirm direction is unchanged: alert results from a
+        hash-less sibling still import under the mtime gate."""
+        target, audit_run, siblings = _make_project(tmp_path)
+        sarif = siblings[0] / "scan" / "combined.sarif"
+        sarif.write_text(
+            self._sarif_with_coverage(["src/a.c"], results=[_result()])
+        )
+        os.utime(sarif, (2000, 2000))
+        os.utime(target / "src" / "a.c", (1000, 1000))
+        cache = SarifCache()
+        assert import_sibling_sarif(cache, audit_run, target, now=3000) == 1
+        assert cache.lookup("src/a.c")
+        # ... while the same file earns no clean-lane coverage.
+        assert "src/a.c" not in cache.scanned_files
+
+
 class TestAnnotation:
     def test_flat_keys_and_message_flattened(self):
         result = _result()

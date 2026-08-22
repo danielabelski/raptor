@@ -194,12 +194,20 @@ def _ingest_sarif_file(
     *,
     run_label: str = "",
     freshness: Callable[[str], bool] | None = None,
+    coverage_freshness: Callable[[str], bool] | None = None,
 ) -> int:
     """Parse one SARIF file into the cache. Returns results ingested.
 
     ``freshness`` (normalized file path → bool) gates each result:
     sibling-run imports drop results for files that changed since the
     producing scan (line drift makes stale SARIF actively harmful).
+
+    ``coverage_freshness`` gates the DECLARED-COVERAGE lane
+    (``runs[].artifacts`` → ``scanned_files``) separately. Coverage
+    feeds the sarif-clean verdict lane ("scanned with zero alerts" →
+    status clean with no LLM review), so it must be held to a stricter
+    freshness standard than alert results (which only steer toward
+    confirmation). When ``None``, ``freshness`` gates both lanes.
     """
     # Canonical bounded loader (100 MiB cap, decode-error handling):
     # a raw read_text()+json.loads here bypassed the size guard, so a
@@ -216,6 +224,9 @@ def _ingest_sarif_file(
         return 0
     ingested = 0
     fresh_memo: dict[str, bool] = {}
+    cov_gate = coverage_freshness if coverage_freshness is not None \
+        else freshness
+    cov_memo: dict[str, bool] = {}
 
     def _fresh(normalized: str) -> bool:
         if freshness is None:
@@ -223,6 +234,13 @@ def _ingest_sarif_file(
         if normalized not in fresh_memo:
             fresh_memo[normalized] = bool(freshness(normalized))
         return fresh_memo[normalized]
+
+    def _coverage_fresh(normalized: str) -> bool:
+        if cov_gate is None:
+            return True
+        if normalized not in cov_memo:
+            cov_memo[normalized] = bool(cov_gate(normalized))
+        return cov_memo[normalized]
 
     for run in data.get("runs", []):
         tool_name = (
@@ -237,7 +255,7 @@ def _ingest_sarif_file(
                 continue
             art_uri = (artifact.get("location") or {}).get("uri", "")
             art_norm = _normalize_sarif_path(art_uri)
-            if art_norm and _fresh(art_norm):
+            if art_norm and _coverage_fresh(art_norm):
                 cache.scanned_files.add(art_norm)
         for result in run.get("results", []):
             locs = result.get("locations") or [{}]
@@ -290,6 +308,8 @@ def _sibling_freshness_gate(
     recorded_hashes: dict[str, str],
     sarif_mtime: float,
     disk_hash_cache: dict[str, str | None],
+    *,
+    require_hash: bool = False,
 ) -> Callable[[str], bool]:
     """Per-file freshness check for one sibling SARIF artifact.
 
@@ -297,6 +317,16 @@ def _sibling_freshness_gate(
     (checklist.json, understand_bridge's pattern); mtime-gated
     otherwise (target file unchanged since the SARIF was written).
     Paths escaping the target are never fresh.
+
+    ``require_hash=True`` is the clean-verdict/coverage direction:
+    freshness means CONTENT-HASH freshness only — the current file's
+    SHA-256 must match a hash the producing run recorded. mtime is
+    forgeable (``touch -d``), so a sibling that recorded no hash for
+    the file is simply NOT fresh in this direction: a stale "declared
+    coverage + zero alerts" import would otherwise commit status clean
+    with no LLM review. The mtime fallback remains available ONLY for
+    the confirm direction (cached alerts steering toward
+    confirmation), never for clean.
     """
     target_resolved = Path(target_path).resolve()
 
@@ -319,6 +349,10 @@ def _sibling_freshness_gate(
                     )
                     disk_hash_cache[normalized] = None
             return disk_hash_cache[normalized] == recorded
+        if require_hash:
+            # No recorded hash to verify against → not fresh for the
+            # clean/coverage lane (fail closed: full review).
+            return False
         try:
             return full.stat().st_mtime <= sarif_mtime
         except OSError:
@@ -389,11 +423,16 @@ def import_sibling_sarif(
                 target_path, recorded_hashes, sarif_mtime,
                 disk_hash_cache,
             )
+            coverage_gate = _sibling_freshness_gate(
+                target_path, recorded_hashes, sarif_mtime,
+                disk_hash_cache, require_hash=True,
+            )
             imported += _ingest_sarif_file(
                 cache,
                 sarif_file,
                 run_label=run_dir.name,
                 freshness=gate,
+                coverage_freshness=coverage_gate,
             )
     return imported
 

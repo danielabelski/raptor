@@ -270,3 +270,134 @@ class TestRecountBound:
             for _ in range(3):
                 f.write(chunk)
         return p
+
+
+class TestDirectionAttribution:
+    def test_crash_window_reads_tampered_with_interrupted_note(
+        self, tmp_path,
+    ):
+        """Events appended but sidecar not yet updated (crash window):
+        still fails the verifier, but the evidence names the
+        interrupted-persist direction, not truncation."""
+        run = _run_dir(tmp_path)
+        _persist(run, "a.example")
+        # Simulate the crash: replay the batch-1 sidecar after a
+        # second batch's events landed.
+        saved = (run / PROXY_EVENTS_COUNT_FILENAME).read_bytes()
+        _persist(run, "b.example")
+        (run / PROXY_EVENTS_COUNT_FILENAME).write_bytes(saved)
+
+        integrity, report = _events_integrity(run)
+        assert integrity == "tampered"
+        notes = [
+            e
+            for s_ in report["signals"]
+            if s_["type"] == "telemetry_tampering"
+            for e in s_["evidence"]
+        ]
+        assert any("interrupted persist" in n or "AHEAD" in n
+                   for n in notes)
+        assert not any("suffix truncation" in n for n in notes)
+
+    def test_truncation_keeps_the_erasure_note(self, tmp_path):
+        run = _run_dir(tmp_path)
+        log = run / PROXY_EVENTS_FILENAME
+        _persist(run, "a.example", "b.example")
+        lines = log.read_text().splitlines()
+        log.write_text("\n".join(lines[:1]) + "\n")
+
+        integrity, report = _events_integrity(run)
+        assert integrity == "tampered"
+        notes = [
+            e
+            for s_ in report["signals"]
+            if s_["type"] == "telemetry_tampering"
+            for e in s_["evidence"]
+        ]
+        assert any("suffix truncation" in n for n in notes)
+
+
+class TestAnchoredOverflow:
+    def test_real_oversize_anchored_stream_verifies_end_to_end(
+        self, tmp_path,
+    ):
+        """An honest anchored stream LARGER than the whole-file triage
+        input bound (64 MiB) must grade clean through the REAL path —
+        no caps monkeypatched. This synthesizes a genuine >64 MiB
+        multi-batch run: the writer side must leave an empty flag set
+        (the recount overflow is anchored), and strict triage must
+        stream-verify every event instead of refusing the file and
+        misreading the refusal as truncation."""
+        run = _run_dir(tmp_path)
+        n_batches, per_batch = 4, 100_000
+        batch_hosts = [
+            f"host-{i:06d}.padpadpadpadpadpadpadpadpadpadpadpadpad"
+            f"padpadpadpadpadpadpadpadpadpadpadpad.example"
+            for i in range(per_batch)
+        ]
+        for b in range(n_batches):
+            ctx._persist_proxy_events(
+                [{"host": h, "result": "allowed",
+                  "resolved_ip": "10.0.0.1"} for h in batch_hosts],
+                output=str(run),
+            )
+        size = (run / PROXY_EVENTS_FILENAME).stat().st_size
+        assert size > 64 * 1024 * 1024, (
+            f"synthesis must exceed the whole-file input bound "
+            f"(got {size} bytes)"
+        )
+        sidecar = json.loads(
+            (run / PROXY_EVENTS_COUNT_FILENAME).read_text())
+        assert sidecar["flags"] == []
+        assert sidecar["count"] == n_batches * per_batch
+
+        integrity, report = _events_integrity(run)
+        assert integrity == "verified"
+        assert report["verdict"] == "clean"
+        assert (report["inputs"]["total_proxy_events"]
+                == n_batches * per_batch)
+
+    def test_stream_past_the_streaming_bound_gets_the_over_bound_note(
+        self, tmp_path, monkeypatch,
+    ):
+        """Past the (much larger) streaming caps a genuine residual
+        remains: the tail is unverified, so the run fails toward
+        suspicious — but with the DISTINCT over-bound note, never the
+        truncation/erasure one. (Caps monkeypatched here; the
+        real-size crossing of the whole-file bound is exercised
+        un-mocked above.)"""
+        run = _run_dir(tmp_path)
+        _persist(run, *(f"h{i}.example" for i in range(8)))
+        monkeypatch.setattr(triage_mod, "_MAX_EVENTS_PARSED", 5)
+
+        integrity, report = _events_integrity(run)
+        assert integrity == "tampered"
+        notes = [
+            e
+            for s_ in report["signals"]
+            if s_["type"] == "telemetry_tampering"
+            for e in s_["evidence"]
+        ]
+        assert any("exceeds the triage streaming bound" in n
+                   for n in notes)
+        assert not any("suffix truncation" in n for n in notes)
+
+    def test_unanchored_oversize_stream_flags(self, tmp_path, monkeypatch):
+        orig = ctx._count_lines_bounded
+
+        def capped(path, max_bytes=64):
+            return orig(path, max_bytes)
+
+        monkeypatch.setattr(ctx, "_count_lines_bounded", capped)
+        run = _run_dir(tmp_path)
+        # Foreign >cap stream with NO sidecar and no parent memory.
+        (run / PROXY_EVENTS_FILENAME).write_text(
+            "".join(json.dumps({"host": f"x{i}"}) + "\n"
+                    for i in range(20)))
+        _persist(run, "a.example")
+
+        sidecar = json.loads(
+            (run / PROXY_EVENTS_COUNT_FILENAME).read_text())
+        assert "recount_overflow" in sidecar["flags"]
+        integrity, _ = _events_integrity(run)
+        assert integrity == "tampered"

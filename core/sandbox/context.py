@@ -367,6 +367,11 @@ def _write_proxy_count_sidecar(output, count, flags, run_binding):
                      | os.O_CLOEXEC, 0o600)
         try:
             os.write(fd, payload.encode("utf-8"))
+            # fsync before the rename: a power loss between replace
+            # and writeback must not surface a zero-length/garbage
+            # sidecar (which reads as count_sidecar_invalid — a
+            # tamper flag — on the next honest batch).
+            os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(tmp, path)
@@ -519,19 +524,29 @@ def _persist_proxy_events(
         # stays un-renumbered (the verifier sees the gap) and the
         # sidecar carries an explicit MAC-bound flag.
         _recount, _overflowed = _count_lines_bounded(_log_path)
-        if _overflowed:
-            _state["flags"].add("recount_overflow")
         _side_count, _side_flags, _side_invalid = (
             _read_proxy_count_sidecar(output, _run_binding))
         _state["flags"] |= _side_flags
         if _side_invalid:
             _state["flags"].add("count_sidecar_invalid")
+        _anchored = (_side_count is not None
+                     or _state["next_seq"] is not None)
+        if _overflowed and not _anchored:
+            # A >cap events file with NO anchor (no parent memory, no
+            # verified sidecar): our writer would have left a sidecar,
+            # so this is a planted/foreign stream — tamper-flagged.
+            # ANCHORED runs never flag here: the seq base comes from
+            # the anchor, the aborted recount is merely unusable for
+            # writer-side truncation detection, and the read-side
+            # count check still catches erasures — an honest, very
+            # chatty (>cap) run stays clean.
+            _state["flags"].add("recount_overflow")
         _seq_start = max(
             _recount,
             _side_count or 0,
             _state["next_seq"] or 0,
         )
-        if _recount < _seq_start:
+        if not _overflowed and _recount < _seq_start:
             _state["flags"].add("stream_truncated")
         with os.fdopen(_log_fd, "a", encoding="utf-8") as _f:
             _fd_owned = False  # fdopen took ownership
@@ -552,6 +567,12 @@ def _persist_proxy_events(
                 _f.write(_json.dumps(line) + "\n")
                 _written += 1
         _state["next_seq"] = _seq_start + _written
+        # Ordering note (inherent two-file window): events append
+        # first, sidecar second. A crash between the two leaves
+        # survivors AHEAD of the sidecar count — the verifier fails
+        # that shape toward suspicious but names it as the
+        # interrupted-persist direction (distinct from truncation,
+        # where survivors fall BEHIND the count).
         _write_proxy_count_sidecar(
             output, _state["next_seq"], _state["flags"], _run_binding)
     except BaseException as _persist_exc:

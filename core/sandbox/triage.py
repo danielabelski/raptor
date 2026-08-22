@@ -147,6 +147,7 @@ def _denials_sha256(denials: list[dict]) -> str:
 def _verify_proxy_events(
         events: list[dict], run: str, *, allow_legacy: bool = True,
         count_record: dict | None = None,
+        over_bound: bool = False,
         ) -> tuple[list[dict], int, str, str | None]:
     """Partition proxy events by provenance. Returns
     ``(usable_events, rejected_count, integrity, count_note)``.
@@ -164,6 +165,20 @@ def _verify_proxy_events(
     def _with_count(usable, rejected, integrity):
         nonlocal count_note
         checked = integrity
+        if over_bound:
+            # The file continued past the streaming caps: the tail is
+            # UNVERIFIED, so completeness cannot be attested — fail
+            # toward suspicious, but with the over-bound attribution
+            # (a count mismatch here is explained by the bound; the
+            # truncation/erasure note would name the wrong cause).
+            count_note = (
+                f"proxy-events file exceeds the triage streaming "
+                f"bound ({_MAX_EVENTS_STREAM_BYTES} bytes / "
+                f"{_MAX_EVENTS_PARSED} events) — {len(usable)} "
+                f"verified event(s) in the parsed prefix; events "
+                f"beyond the bound were not verified"
+            )
+            return usable, rejected, _INTEGRITY_TAMPERED, count_note
         stamped_stream = any("mac" in e for e in events)
         if count_record is None:
             if stamped_stream and not allow_legacy:
@@ -204,12 +219,30 @@ def _verify_proxy_events(
                 pass
         max_seq = max(seqs) if seqs else -1
         if len(usable) != count or max_seq != count - 1 or rejected:
-            count_note = (
-                f"proxy-events stream does not match its written "
-                f"count (sidecar says {count} event(s), "
-                f"{len(usable)} verified surviving) — suffix "
-                f"truncation or whole-file deletion"
-            )
+            # Direction matters for the operator: fewer survivors
+            # than the count is the erasure shape; MORE survivors
+            # than the count is the interrupted-persist shape (crash
+            # between the events append and the sidecar update — an
+            # inherent two-file window) or a stale/replayed sidecar.
+            # Both fail toward suspicious; only the attribution
+            # differs.
+            if (len(usable) > count and max_seq >= count - 1
+                    and not rejected):
+                count_note = (
+                    f"proxy-events stream is AHEAD of its count "
+                    f"sidecar (sidecar says {count} event(s), "
+                    f"{len(usable)} verified surviving) — "
+                    f"interrupted persist (run crashed between the "
+                    f"events append and the sidecar update) or a "
+                    f"stale/replayed sidecar"
+                )
+            else:
+                count_note = (
+                    f"proxy-events stream does not match its written "
+                    f"count (sidecar says {count} event(s), "
+                    f"{len(usable)} verified surviving) — suffix "
+                    f"truncation or whole-file deletion"
+                )
             return usable, rejected, _INTEGRITY_TAMPERED, count_note
         return usable, rejected, checked, count_note
 
@@ -357,7 +390,11 @@ def triage_run(run_dir: Path, *,
     """
     run_dir = Path(run_dir)
     raw_summary = _load_json(run_dir / SUMMARY_FILE)
-    raw_proxy_events = _load_jsonl(run_dir / PROXY_EVENTS_FILENAME)
+    # The events JSONL streams (per-line MACs make incremental
+    # verification safe) so honest chatty runs above the whole-file
+    # input bound still grade on their real content.
+    raw_proxy_events, events_over_bound = _load_jsonl_stream(
+        run_dir / PROXY_EVENTS_FILENAME)
     raw_audit_degraded = _load_json(run_dir / AUDIT_DEGRADED_FILE)
     raw_events_count = _load_json(run_dir / PROXY_EVENTS_COUNT_FILENAME)
 
@@ -411,7 +448,8 @@ def triage_run(run_dir: Path, *,
         _verify_proxy_events(
             raw_proxy_events, _run_binding, allow_legacy=_verify_legacy,
             count_record=(None if provenance_unavailable
-                          else raw_events_count)))
+                          else raw_events_count),
+            over_bound=events_over_bound))
     audit_degraded, degraded_integrity = (
         _verify_audit_degraded(
             raw_audit_degraded, _run_binding, allow_legacy=_verify_legacy))
@@ -746,22 +784,93 @@ def _artifact_present(path: Path) -> bool:
         return False
 
 
-def _load_jsonl(path: Path) -> list[dict]:
-    data = _read_bounded(path)
-    if data is None:
-        return []
+# Streaming bounds for the proxy-events JSONL specifically. The count
+# sidecar defence makes honest very-chatty streams legitimate at sizes
+# the whole-file _read_bounded refuses (its 64 MiB bound buffers the
+# entire input) — per-line MACs make incremental verification safe, so
+# the events file is streamed line-by-line instead: constant memory
+# per line, a per-line cap (an oversize line is skipped exactly like a
+# corrupt one), and generous cumulative caps that bound a hostile
+# planted file without misgrading honest chatty runs. Past the
+# cumulative caps the parsed prefix is still returned and the caller
+# fails toward suspicious with a DISTINCT over-bound note — never the
+# truncation/erasure note.
+_MAX_EVENT_LINE_BYTES = 64 * 1024
+_MAX_EVENTS_STREAM_BYTES = 512 * 1024 * 1024
+_MAX_EVENTS_PARSED = 500_000
+
+
+def _load_jsonl_stream(path: Path) -> tuple[list[dict], bool]:
+    """Stream-parse a JSONL file under the streaming bounds.
+
+    Returns ``(events, over_bound)``. Same open discipline as
+    ``_read_bounded`` (O_NOFOLLOW + O_NONBLOCK at open, fstat
+    regular-file check) but never buffers the whole file.
+    ``over_bound`` is True when input continued past a cumulative cap
+    — the returned events are the verified-parseable prefix."""
+    try:
+        fd = os.open(
+            str(path),
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+        )
+    except OSError:
+        return [], False
     out: list[dict] = []
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            out.append(record)
-    return out
+    over_bound = False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return [], False
+        carry = b""
+        skipping_oversize_line = False
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            carry += chunk
+            while True:
+                nl = carry.find(b"\n")
+                if nl < 0:
+                    break
+                line, carry = carry[:nl], carry[nl + 1:]
+                if skipping_oversize_line:
+                    # Tail of a line that already blew the per-line
+                    # cap — resynchronise at this newline.
+                    skipping_oversize_line = False
+                    continue
+                _parse_jsonl_line(line, out)
+                if len(out) >= _MAX_EVENTS_PARSED:
+                    over_bound = True
+                    return out, over_bound
+            if len(carry) > _MAX_EVENT_LINE_BYTES:
+                # Oversize line: drop what we have and skip to the
+                # next newline (same treatment as a corrupt line).
+                carry = b""
+                skipping_oversize_line = True
+            if total >= _MAX_EVENTS_STREAM_BYTES:
+                over_bound = True
+                return out, over_bound
+        if carry and not skipping_oversize_line:
+            _parse_jsonl_line(carry, out)
+        return out, over_bound
+    except OSError:
+        return out, over_bound
+    finally:
+        os.close(fd)
+
+
+def _parse_jsonl_line(line: bytes, out: list[dict]) -> None:
+    line = line.strip()
+    if not line or len(line) > _MAX_EVENT_LINE_BYTES:
+        return
+    try:
+        record = json.loads(line.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return
+    if isinstance(record, dict):
+        out.append(record)
+
 
 
 def _write(path: Path, report: dict) -> None:

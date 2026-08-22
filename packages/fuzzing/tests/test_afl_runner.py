@@ -616,3 +616,79 @@ class TestCampaignEnvHygiene:
                         "_RAPTOR_TRUSTED", "CLAUDECODE"):
                 assert var not in env
             assert env.get("AFL_SKIP_CPUFREQ") == "1"
+
+
+class TestCampaignEnvHygieneCompletion:
+    """Follow-up leak closure: XDG_* dropped, HOME neutralised, PATH
+    scrubbed of /home components, persona overlay on the campaign."""
+
+    def _campaign_kwargs(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        TestSandboxedCampaign._instrumented(monkeypatch)
+        seen = {}
+
+        def fake_sandbox_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_sandbox_run)
+        monkeypatch.setenv("XDG_CACHE_HOME", "/home/someone/.cache")
+        monkeypatch.setenv("HOME", "/home/someone")
+        monkeypatch.setenv(
+            "PATH", "/home/someone/bin:/usr/local/bin:/usr/bin")
+        runner = TestSandboxedCampaign._make_runner(tmp_path)
+        runner.campaign_failed = False
+        runner.run_fuzzing(duration=0, parallel_jobs=1)
+        return seen
+
+    def test_username_bearing_vars_neutralised(self, tmp_path, monkeypatch):
+        kwargs = self._campaign_kwargs(tmp_path, monkeypatch)
+        env = kwargs["env"]
+        assert not any(k.startswith("XDG_") for k in env)
+        assert env["HOME"] == "/tmp"
+        if "PATH" in env:
+            assert "/home/someone/bin" not in env["PATH"]
+            assert "/usr/local/bin" in env["PATH"]
+
+    def test_campaign_gets_persona_overlay(self, tmp_path, monkeypatch):
+        kwargs = self._campaign_kwargs(tmp_path, monkeypatch)
+        assert kwargs["sanitise_host_fingerprint"] is True
+
+
+class TestScrubIdentityEnv:
+    def test_scrub_function_contract(self, monkeypatch):
+        from packages.fuzzing.afl_runner import scrub_identity_env
+        env = {
+            "USER": "someone", "LOGNAME": "someone", "HOSTNAME": "h",
+            "PWD": "/home/someone/x", "XDG_CACHE_HOME": "/home/someone/.c",
+            "HOME": "/home/someone", "TERM": "xterm",
+            "PATH": "/home/someone/bin:/usr/bin",
+            "RAPTOR_DIR": "/r", "CLAUDECODE": "1",
+        }
+        out = scrub_identity_env(env)
+        assert out is env  # in-place contract
+        assert "someone" not in " ".join(f"{k}={v}" for k, v in env.items())
+        assert env["HOME"] == "/tmp"
+        assert env["PATH"] == "/usr/bin"
+        assert env["TERM"] == "xterm"  # non-identity vars untouched
+
+    def test_showmap_env_is_scrubbed(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        seen = {}
+
+        def fake_sandbox_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_sandbox_run)
+        monkeypatch.setenv("USER", "someone")
+        runner = TestSandboxedCampaign._make_runner(tmp_path)
+        runner.use_showmap = True
+        runner.run_showmap()
+        assert seen, "showmap did not reach the sandbox"
+        assert "USER" not in seen["env"]
+        assert seen["env"]["HOME"] == "/tmp"

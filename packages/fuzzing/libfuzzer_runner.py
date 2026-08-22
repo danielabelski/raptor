@@ -152,7 +152,10 @@ class LibFuzzerRunner:
         cmd = self._build_command()
         logger.info("libFuzzer command: %s", ' '.join(cmd))
 
-        env = RaptorConfig.get_safe_env()
+        # The harness is untrusted target code — same identity scrub
+        # as the AFL campaign env.
+        from packages.fuzzing.afl_runner import scrub_identity_env
+        env = scrub_identity_env(RaptorConfig.get_safe_env())
         env.setdefault(
             "ASAN_OPTIONS",
             "abort_on_error=1:symbolize=1:detect_leaks=1:detect_stack_use_after_return=1",

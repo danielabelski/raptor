@@ -45,6 +45,30 @@ AFL_PATHS_FOUND_KEYS = (
 _AFL_CRASH_EXECS_RE = re.compile(r"(?:^|,)execs:(\d+)(?:,|$)")
 
 
+def scrub_identity_env(env: dict) -> dict:
+    """Strip operator/host identity from an env destined for an
+    UNTRUSTED target execution (fuzz campaign, showmap replay,
+    libFuzzer harness). ``get_safe_env()`` removes credentials but
+    keeps identity the target has no legitimate use for: direct vars,
+    ``XDG_*`` values and ``/home/<user>`` PATH components (username
+    bearing), and RAPTOR-internal markers. HOME gets a neutral value —
+    ``/tmp`` is a fresh per-sandbox tmpfs in every mode. Mutates and
+    returns *env*.
+    """
+    for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
+                  "RAPTOR_DIR", "RAPTOR_OUT_DIR", "_RAPTOR_TRUSTED",
+                  "CLAUDECODE"):
+        env.pop(ident, None)
+    for key in [k for k in env if k.startswith("XDG_")]:
+        env.pop(key, None)
+    env["HOME"] = "/tmp"
+    if "PATH" in env:
+        env["PATH"] = os.pathsep.join(
+            p for p in env["PATH"].split(os.pathsep)
+            if not p.startswith("/home/"))
+    return env
+
+
 class _SandboxedAFLInstance:
     """One afl-fuzz instance: a blocking ``core.sandbox.run`` call on a
     supervising thread.
@@ -124,6 +148,12 @@ class _SandboxedAFLInstance:
                     stderr=stderr_fp,
                     timeout=self.timeout_s,
                     caller_label=f"afl-fuzz-{self.name}",
+                    # The target can read /proc/cpuinfo, /etc/os-release
+                    # etc. — overlay the generic persona so the real
+                    # host fingerprint never reaches attacker code
+                    # (matches the afl-showmap call; smoke-verified in
+                    # image-rootfs mode).
+                    sanitise_host_fingerprint=True,
                     **extra,
                 )
         except BaseException as exc:  # noqa: BLE001 — surfaced by the monitor loop
@@ -732,20 +762,12 @@ class AFLRunner:
                 # LLM_API_KEY_VARS) by default. AFL_* vars get
                 # added explicitly below.
                 from core.config import RaptorConfig
-                afl_env = RaptorConfig.get_safe_env()
                 # The fuzzed binary is untrusted (often attacker-built)
-                # and can getenv() anything here. get_safe_env strips
-                # credentials but keeps operator-identity and
-                # RAPTOR-internal markers the target has no legitimate
-                # use for — drop the direct ones. (Not exhaustive:
-                # HOME/PATH/XDG_* stay because the toolchain needs
-                # them and may still embed the username in non-rootfs
-                # campaigns; OLDPWD is belt-and-braces — the allowlist
-                # already excludes it.)
-                for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD",
-                              "OLDPWD", "RAPTOR_DIR", "RAPTOR_OUT_DIR",
-                              "_RAPTOR_TRUSTED", "CLAUDECODE"):
-                    afl_env.pop(ident, None)
+                # and can getenv() anything here — scrub identity on
+                # top of get_safe_env's credential strip. (/home PATH
+                # components were never usable post-pivot anyway: the
+                # campaign mount-ns binds system dirs only.)
+                afl_env = scrub_identity_env(RaptorConfig.get_safe_env())
                 afl_env.setdefault("AFL_SKIP_CPUFREQ", "1")
                 afl_env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
                 afl_env.setdefault("AFL_FORKSRV_INIT_TMOUT", "10000")
@@ -1282,7 +1304,9 @@ class AFLRunner:
 
         try:
             from core.config import RaptorConfig
-            env = RaptorConfig.get_safe_env()
+            # showmap replays the SAME untrusted target — same
+            # identity scrub as the campaign env.
+            env = scrub_identity_env(RaptorConfig.get_safe_env())
             if self.input_mode == "file" and test_input:
                 env['AFL_INPUT_FILE'] = str(test_input)
 

@@ -47,6 +47,11 @@ class TestLibFuzzerRunner(unittest.TestCase):
             self.assertTrue(captured["kwargs"]["block_network"])
             self.assertTrue(captured["kwargs"]["restrict_reads"])
             self.assertNotIn("LD_PRELOAD", captured["kwargs"]["env"])
+            # identity scrub: the harness is untrusted target code
+            env = captured["kwargs"]["env"]
+            for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD"):
+                self.assertNotIn(ident, env)
+            self.assertEqual(env.get("HOME"), "/tmp")
             self.assertEqual(captured["kwargs"]["output"], str(out_dir.resolve()))
 
     def test_corpus_is_copied_into_output_workspace(self):

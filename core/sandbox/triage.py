@@ -45,7 +45,10 @@ from core.sandbox.escalation_signatures import (
 )
 from core.sandbox.profiles import host_recon_threshold_for_profile
 from core.security.log_sanitisation import sanitise_for_terminal
-from core.sandbox.proxy import PROXY_EVENTS_FILENAME
+from core.sandbox.proxy import (
+    PROXY_EVENTS_COUNT_FILENAME,
+    PROXY_EVENTS_FILENAME,
+)
 from core.sandbox.summary import (
     AUDIT_DEGRADED_FILE,
     MAX_DENIALS_PER_RUN,
@@ -143,15 +146,80 @@ def _denials_sha256(denials: list[dict]) -> str:
 
 def _verify_proxy_events(
         events: list[dict], run: str, *, allow_legacy: bool = True,
-        ) -> tuple[list[dict], int, str]:
+        count_record: dict | None = None,
+        ) -> tuple[list[dict], int, str, str | None]:
     """Partition proxy events by provenance. Returns
-    ``(usable_events, rejected_count, integrity)``."""
+    ``(usable_events, rejected_count, integrity, count_note)``.
+
+    ``count_record`` is the raw ``proxy-events.count.json`` sidecar
+    (or None when absent). The per-line seq MACs catch interior
+    deletion (gaps) but not SUFFIX/whole-file truncation between
+    persist batches — the surviving contiguous-from-0 stream fully
+    verifies. The MAC'd sidecar carries the writer's authoritative
+    count plus its tamper flags; a mismatch or flag marks the stream
+    tampered, and ``count_note`` names the reason for the report's
+    evidence list."""
+    count_note: str | None = None
+
+    def _with_count(usable, rejected, integrity):
+        nonlocal count_note
+        checked = integrity
+        stamped_stream = any("mac" in e for e in events)
+        if count_record is None:
+            if stamped_stream and not allow_legacy:
+                count_note = (
+                    "proxy-events count sidecar missing for a "
+                    "stamped event stream (deleted?)"
+                )
+                checked = _INTEGRITY_TAMPERED
+            return usable, rejected, checked, count_note
+        token = (count_record.get("mac")
+                 if isinstance(count_record, dict) else None)
+        count = (count_record.get("count")
+                 if isinstance(count_record, dict) else None)
+        flags = (count_record.get("flags") or []
+                 if isinstance(count_record, dict) else [])
+        fields = telemetry_mac.proxy_events_count_fields(
+            count, flags, run)
+        if not telemetry_mac.verify(fields, token):
+            count_note = (
+                "proxy-events count sidecar failed provenance "
+                "verification (forged or edited)"
+            )
+            return usable, rejected, _INTEGRITY_TAMPERED, count_note
+        if flags:
+            count_note = (
+                "writer-flagged proxy-events tampering: "
+                + ", ".join(sorted(str(f) for f in flags))
+            )
+            return usable, rejected, _INTEGRITY_TAMPERED, count_note
+        if not isinstance(count, int) or count < 0:
+            count_note = "proxy-events count sidecar malformed"
+            return usable, rejected, _INTEGRITY_TAMPERED, count_note
+        seqs = []
+        for e in usable:
+            try:
+                seqs.append(int(e.get("seq")))
+            except (TypeError, ValueError):
+                pass
+        max_seq = max(seqs) if seqs else -1
+        if len(usable) != count or max_seq != count - 1 or rejected:
+            count_note = (
+                f"proxy-events stream does not match its written "
+                f"count (sidecar says {count} event(s), "
+                f"{len(usable)} verified surviving) — suffix "
+                f"truncation or whole-file deletion"
+            )
+            return usable, rejected, _INTEGRITY_TAMPERED, count_note
+        return usable, rejected, checked, count_note
+
     if not events:
-        return [], 0, _INTEGRITY_VERIFIED
+        return _with_count([], 0, _INTEGRITY_VERIFIED)
     if not any("mac" in e for e in events):
         if not allow_legacy:
-            return [], len(events), _INTEGRITY_TAMPERED
-        return events, 0, _INTEGRITY_LEGACY
+            return _with_count(
+                [], len(events), _INTEGRITY_TAMPERED)
+        return _with_count(events, 0, _INTEGRITY_LEGACY)
     usable = [
         e for e in events
         if telemetry_mac.verify(
@@ -163,11 +231,11 @@ def _verify_proxy_events(
     # Stream continuity: per-line MACs alone let a target DELETE
     # incriminating stamped lines and leave a fully-verifying file.
     # The writer numbers events 0..n-1 inside the MAC; a gap means a
-    # stamped line was removed, a duplicate means the file was
-    # truncated mid-run and later batches re-counted over it. The
-    # verified events themselves stay usable — they are genuine —
-    # but the stream is flagged tampered so the verdict carries the
-    # tampering signal.
+    # stamped line was removed. The verified events themselves stay
+    # usable — they are genuine — but the stream is flagged tampered
+    # so the verdict carries the tampering signal. Suffix/whole-file
+    # truncation leaves no gap; the count sidecar check above covers
+    # that half.
     if usable:
         seqs = []
         for e in usable:
@@ -180,7 +248,7 @@ def _verify_proxy_events(
                                                min(seqs) + len(seqs)))
                      or min(seqs) != 0):
             integrity = _INTEGRITY_TAMPERED
-    return usable, rejected, integrity
+    return _with_count(usable, rejected, integrity)
 
 
 def _verify_summary(
@@ -291,6 +359,7 @@ def triage_run(run_dir: Path, *,
     raw_summary = _load_json(run_dir / SUMMARY_FILE)
     raw_proxy_events = _load_jsonl(run_dir / PROXY_EVENTS_FILENAME)
     raw_audit_degraded = _load_json(run_dir / AUDIT_DEGRADED_FILE)
+    raw_events_count = _load_json(run_dir / PROXY_EVENTS_COUNT_FILENAME)
 
     # Existence check runs on the RAW inputs: even a fully-forged
     # artifact means "something happened" and must produce a report
@@ -301,10 +370,15 @@ def triage_run(run_dir: Path, *,
     # clean by reading as "no telemetry".
     summary_present = _artifact_present(run_dir / SUMMARY_FILE)
     events_present = _artifact_present(run_dir / PROXY_EVENTS_FILENAME)
+    count_present = _artifact_present(run_dir / PROXY_EVENTS_COUNT_FILENAME)
     summary_destroyed = summary_present and raw_summary is None
     events_destroyed = events_present and not raw_proxy_events
     if raw_summary is None and not raw_proxy_events:
-        if not allow_legacy and (summary_destroyed or events_destroyed):
+        # A surviving count sidecar with the events file gone is the
+        # whole-file-deletion shape: events were written, then erased.
+        # It must drive a (tampered) report, never silence.
+        if not allow_legacy and (summary_destroyed or events_destroyed
+                                 or count_present):
             pass  # fall through: unusable artifacts drive a report
         else:
             if not allow_legacy:
@@ -330,9 +404,14 @@ def triage_run(run_dir: Path, *,
     _run_binding = telemetry_mac.run_binding(run_dir)
     summary, summary_integrity = _verify_summary(
         raw_summary, _run_binding, allow_legacy=_verify_legacy)
-    proxy_events, rejected_events, events_integrity = (
+    # With no usable key the sidecar cannot verify for anyone —
+    # operator-side condition, not tampering; the count check is
+    # skipped and the provenance_unavailable signal carries it.
+    proxy_events, rejected_events, events_integrity, count_note = (
         _verify_proxy_events(
-            raw_proxy_events, _run_binding, allow_legacy=_verify_legacy))
+            raw_proxy_events, _run_binding, allow_legacy=_verify_legacy,
+            count_record=(None if provenance_unavailable
+                          else raw_events_count)))
     audit_degraded, degraded_integrity = (
         _verify_audit_degraded(
             raw_audit_degraded, _run_binding, allow_legacy=_verify_legacy))
@@ -391,6 +470,8 @@ def triage_run(run_dir: Path, *,
             evidence.append(
                 f"{rejected_events} proxy event(s) rejected "
                 f"(missing/invalid provenance token)")
+        if count_note:
+            evidence.append(count_note)
         signals.append({
             "type": "telemetry_tampering",
             "severity": SEVERITY_HIGH,

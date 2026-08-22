@@ -281,6 +281,34 @@ def proxy_event_fields(event: Mapping[str, object], run: str) -> dict:
     }
 
 
+def proxy_events_count_fields(
+    count: object, flags: object, run: str,
+) -> dict:
+    """MAC fields for the proxy-events count sidecar
+    (``proxy-events.count.json``).
+
+    The per-line seq MACs make interior deletion detectable (gaps),
+    but a SUFFIX truncation — or whole-file deletion — between
+    persist batches left a contiguous-from-0 stream that fully
+    verified. The writer therefore persists the authoritative
+    written-line count (tracked in parent memory, never renumbered
+    from the target-writable file) plus any writer-side tamper flags
+    (``stream_truncated``, ``persist_open_failure``, ...) after every
+    batch; the verifier cross-checks the surviving stream against it.
+    ``flags`` join the MAC so a target that can rewrite the sidecar
+    cannot strip them without breaking the token."""
+    if isinstance(flags, str):
+        flag_list = [flags] if flags else []
+    else:
+        flag_list = [str(f) for f in (flags or [])]
+    return {
+        "kind": "proxy-events-count",
+        "run": run,
+        "count": str(count),
+        "flags": ",".join(sorted(flag_list)),
+    }
+
+
 def audit_degraded_fields(payload: Mapping[str, object], run: str) -> dict:
     """MAC fields for sandbox-audit-degraded.json. Triage's only use
     of the marker is the reason-bearing low-confidence caveat — but a

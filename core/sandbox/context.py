@@ -245,29 +245,137 @@ def _sweep_marked_processes(token: str) -> list:
     return killed
 
 
-def _count_lines_bounded(path) -> int:
-    """Newline count of the existing event log, same open discipline
-    as the writer (O_NOFOLLOW/O_NONBLOCK + fstat-regular); 0 on any
-    refusal — a refused file also refuses the append below."""
+# Byte ceiling for recounting the (target-writable) event log. A
+# planted multi-GiB file must not serialize the parent's I/O under the
+# persist lock; past the cap the recount aborts with the overflow flag
+# set, which the sidecar carries as tamper evidence.
+_RECOUNT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _count_lines_bounded(path, max_bytes: int = _RECOUNT_MAX_BYTES):
+    """``(newline_count, overflowed)`` of the existing event log, same
+    open discipline as the writer (O_NOFOLLOW/O_NONBLOCK +
+    fstat-regular); ``(0, False)`` on any refusal — a refused file
+    also refuses the append below. ``overflowed`` is True when the
+    file exceeded *max_bytes* and the count stopped early."""
     try:
         fd = os.open(str(path),
                      os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
                      | os.O_CLOEXEC)
     except OSError:
-        return 0
+        return 0, False
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return 0
+            return 0, False
         count = 0
+        seen = 0
         while True:
             chunk = os.read(fd, 1 << 20)
             if not chunk:
-                return count
+                return count, False
+            seen += len(chunk)
             count += chunk.count(b"\n")
+            if seen > max_bytes:
+                return count, True
     except OSError:
-        return 0
+        return 0, False
     finally:
         os.close(fd)
+
+
+# Per-path stream state for the proxy-events writer, guarded by
+# _PROXY_PERSIST_LOCK: the authoritative next sequence number and the
+# accumulated writer-side tamper flags. Parent memory is the
+# out-of-band anchor the target cannot touch — deriving seq purely by
+# recounting the target-writable file let a child truncate the suffix
+# (or delete the whole file) between batches and have the next batch
+# renumber contiguously over the erased history.
+_PROXY_STREAM_STATE: dict = {}
+
+# Cap on the count sidecar read-back (it is a ~200-byte JSON document;
+# anything larger is a planted object).
+_COUNT_SIDECAR_MAX_BYTES = 64 * 1024
+
+
+def _read_proxy_count_sidecar(output, run_binding):
+    """Load + verify the existing count sidecar.
+
+    Returns ``(count, flags, invalid)``: ``count`` is the verified
+    count (None when absent/unverifiable), ``flags`` the verified
+    writer flags, ``invalid`` True when a sidecar file EXISTS but does
+    not verify (tamper evidence in itself)."""
+    from . import proxy as _proxy_mod
+    from . import telemetry_mac as _tmac
+    path = os.path.join(output, _proxy_mod.PROXY_EVENTS_COUNT_FILENAME)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None, set(), False
+    except OSError:
+        return None, set(), True
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, set(), True
+        raw = os.read(fd, _COUNT_SIDECAR_MAX_BYTES + 1)
+    except OSError:
+        return None, set(), True
+    finally:
+        os.close(fd)
+    if len(raw) > _COUNT_SIDECAR_MAX_BYTES:
+        return None, set(), True
+    import json as _json
+    try:
+        data = _json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None, set(), True
+    if not isinstance(data, dict):
+        return None, set(), True
+    count = data.get("count")
+    flags = data.get("flags") or []
+    token = data.get("mac")
+    fields = _tmac.proxy_events_count_fields(count, flags, run_binding)
+    if not (isinstance(count, int) and count >= 0
+            and _tmac.verify(fields, token)):
+        return None, set(), True
+    return count, {str(f) for f in flags}, False
+
+
+def _write_proxy_count_sidecar(output, count, flags, run_binding):
+    """Atomically persist the MAC'd count sidecar (temp + rename).
+
+    Skipped when no token can be minted (no usable key): an unstamped
+    sidecar carries no authority, and its absence is the consistent
+    legacy shape. Never raises — sidecar persistence must not break
+    the caller."""
+    from . import proxy as _proxy_mod
+    from . import telemetry_mac as _tmac
+    token = _tmac.mint(_tmac.proxy_events_count_fields(
+        count, flags, run_binding))
+    if not token:
+        return
+    import json as _json
+    payload = _json.dumps({
+        "count": int(count),
+        "flags": sorted(str(f) for f in flags),
+        "mac": token,
+    })
+    path = os.path.join(output, _proxy_mod.PROXY_EVENTS_COUNT_FILENAME)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(fd, payload.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except OSError:
+        logger.debug("Sandbox: could not write %s", path, exc_info=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _persist_proxy_events(
@@ -333,9 +441,14 @@ def _persist_proxy_events(
             pass
 
     from . import proxy as _proxy_mod
+    from . import telemetry_mac as _tmac
     _log_path = os.path.join(output, _proxy_mod.PROXY_EVENTS_FILENAME)
+    _run_binding = _tmac.run_binding(output)
     _persist_lock = _PROXY_PERSIST_LOCK
     _persist_lock.acquire()
+    _state = _PROXY_STREAM_STATE.setdefault(
+        os.path.realpath(_log_path), {"next_seq": None, "flags": set()},
+    )
     try:
         # Opened with O_NOFOLLOW + O_NONBLOCK so a child-planted
         # symlink (→ ~/.ssh/authorized_keys etc.) can't redirect
@@ -354,6 +467,17 @@ def _persist_proxy_events(
             "Sandbox: could not open %s for proxy-event "
             "persistence: %s", _log_path, _log_err,
         )
+        # A planted symlink/FIFO at the events path used to suppress
+        # evidence with only this DEBUG line. Record it as a
+        # MAC-bound tamper flag in the count sidecar (whose atomic
+        # rename is not affected by the planted object) so triage
+        # fails toward suspicious instead of clean.
+        _state["flags"].add("persist_open_failure")
+        _count = _state["next_seq"]
+        if _count is None:
+            _count = _read_proxy_count_sidecar(output, _run_binding)[0] or 0
+        _write_proxy_count_sidecar(
+            output, _count, _state["flags"], _run_binding)
         _persist_lock.release()
         return
     _fd_owned = True
@@ -367,6 +491,14 @@ def _persist_proxy_events(
             )
             os.close(_log_fd)
             _fd_owned = False
+            # Same tamper class as the open failure above.
+            _state["flags"].add("persist_open_failure")
+            _count = _state["next_seq"]
+            if _count is None:
+                _count = _read_proxy_count_sidecar(
+                    output, _run_binding)[0] or 0
+            _write_proxy_count_sidecar(
+                output, _count, _state["flags"], _run_binding)
             return
         # Clear O_NONBLOCK for the actual append: only needed to
         # stop a FIFO-open hang at the os.open() above; on a
@@ -376,11 +508,34 @@ def _persist_proxy_events(
         _fcntl.fcntl(_log_fd, _fcntl.F_SETFL, _flags & ~os.O_NONBLOCK)
         import json as _json
 
-        from . import telemetry_mac as _tmac
-        _seq_start = _count_lines_bounded(_log_path)
-        _run_binding = _tmac.run_binding(output)
+        # Sequence base: the max of the (bounded) file recount, the
+        # verified count sidecar, and this process's own counter.
+        # Parent memory and the MAC'd sidecar are the out-of-band
+        # anchors: deriving seq from the recount alone let a child
+        # truncate the SUFFIX (or delete the whole file) between
+        # batches and have the next batch renumber contiguously over
+        # the erased history — fully verifying, history silently
+        # gone. When the recount comes up short the erased range
+        # stays un-renumbered (the verifier sees the gap) and the
+        # sidecar carries an explicit MAC-bound flag.
+        _recount, _overflowed = _count_lines_bounded(_log_path)
+        if _overflowed:
+            _state["flags"].add("recount_overflow")
+        _side_count, _side_flags, _side_invalid = (
+            _read_proxy_count_sidecar(output, _run_binding))
+        _state["flags"] |= _side_flags
+        if _side_invalid:
+            _state["flags"].add("count_sidecar_invalid")
+        _seq_start = max(
+            _recount,
+            _side_count or 0,
+            _state["next_seq"] or 0,
+        )
+        if _recount < _seq_start:
+            _state["flags"].add("stream_truncated")
         with os.fdopen(_log_fd, "a", encoding="utf-8") as _f:
             _fd_owned = False  # fdopen took ownership
+            _written = 0
             for _i, e in enumerate(events):
                 # Provenance stamp: triage verifies this token before
                 # letting the event drive a verdict — the target can
@@ -389,13 +544,16 @@ def _persist_proxy_events(
                 # usable key) degrades to the legacy unstamped shape
                 # triage already accepts with a caveat. ``seq`` rides
                 # inside the MAC so deleting stamped lines leaves a
-                # detectable gap (and a mid-run truncation collides
-                # with the next batch's recounted numbering).
+                # detectable gap.
                 stamped = {**e, "seq": _seq_start + _i}
                 token = _tmac.mint(_tmac.proxy_event_fields(
                     stamped, run=_run_binding))
                 line = {**stamped, "mac": token} if token else e
                 _f.write(_json.dumps(line) + "\n")
+                _written += 1
+        _state["next_seq"] = _seq_start + _written
+        _write_proxy_count_sidecar(
+            output, _state["next_seq"], _state["flags"], _run_binding)
     except BaseException as _persist_exc:
         # os.fdopen takes ownership on success; on any pre-fdopen
         # failure we still own the fd and must close.  Post-fdopen

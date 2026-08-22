@@ -244,6 +244,13 @@ _TCP_KEEPALIVE_COUNT = 3
 # rather than the literal string.
 PROXY_EVENTS_FILENAME = "proxy-events.jsonl"
 
+# MAC'd count sidecar next to the events JSONL: authoritative
+# written-line count + writer-side tamper flags, persisted after every
+# batch so suffix/whole-file truncation of the (target-writable) JSONL
+# is detectable at read time. Written by context._persist_proxy_events;
+# verified by triage.
+PROXY_EVENTS_COUNT_FILENAME = "proxy-events.count.json"
+
 # Canonical set of values the `result` field of a proxy event may take.
 # Test consumers (test_proxy_audit, test_e2e_sandbox) filter events by
 # this string — silent drift between proxy emits and consumer

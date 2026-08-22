@@ -219,3 +219,124 @@ class TestSanitiseFindingsEvidence:
         }
         prov.sanitise_findings_evidence({"findings": "nope"}, tmp_path)
         prov.sanitise_findings_evidence({"findings": [42, None]}, tmp_path)
+
+
+class TestVersionedRunBinding:
+    """v2 nonced run binding: same-basename directories no longer
+    verify interchangeably; legacy records keep verifying at the
+    basename grade; moved runs keep verifying."""
+
+    def test_new_records_carry_run_nonce_grade(self, tmp_path):
+        run = tmp_path / "run-a"
+        run.mkdir()
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run)
+        assert record[prov.BINDING_GRADE_KEY] == prov.GRADE_RUN_NONCE
+        assert (run / ".witness-binding").is_file()
+        assert prov.verify_witness_execution_graded(f, run) == (
+            prov.GRADE_RUN_NONCE
+        )
+        assert prov.verify_witness_execution(f, run)
+
+    def test_same_basename_directory_does_not_verify(self, tmp_path):
+        run_a = tmp_path / "site-a" / "run-x"
+        run_b = tmp_path / "site-b" / "run-x"
+        run_a.mkdir(parents=True)
+        run_b.mkdir(parents=True)
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run_a)
+        assert prov.verify_witness_execution(f, run_a)
+        # Same basename, different directory: the per-run nonce
+        # differs (or is absent), so the record must NOT verify.
+        assert not prov.verify_witness_execution(f, run_b)
+        assert prov.verify_witness_execution_graded(f, run_b) is None
+
+    def test_marker_strip_does_not_demote_to_basename(self, tmp_path):
+        run = tmp_path / "run-a"
+        run.mkdir()
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run)
+        del record[prov.BINDING_GRADE_KEY]
+        # A v2 token never verifies against the v1 field set.
+        assert not prov.verify_witness_execution(f, run)
+
+    def test_legacy_record_verifies_at_basename_grade(self, tmp_path):
+        run = tmp_path / "run-a"
+        run.mkdir()
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        # Mint the way pre-nonce writers did: v1 fields, no marker.
+        record[prov.PROVENANCE_KEY] = prov.mint(
+            prov.witness_execution_fields(f, record, run),
+        )
+        assert prov.verify_witness_execution_graded(f, run) == (
+            prov.GRADE_BASENAME
+        )
+        assert prov.verify_witness_execution(f, run)
+
+    def test_moved_run_keeps_verifying(self, tmp_path):
+        import shutil as _shutil
+
+        run = tmp_path / "old-site" / "run-a"
+        run.mkdir(parents=True)
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run)
+        new_parent = tmp_path / "archive"
+        new_parent.mkdir()
+        moved = new_parent / "run-a"
+        _shutil.move(str(run), str(moved))
+        assert prov.verify_witness_execution_graded(f, moved) == (
+            prov.GRADE_RUN_NONCE
+        )
+
+    def test_missing_run_dir_falls_back_to_v1_binding(self, tmp_path):
+        run = tmp_path / "does-not-exist"
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run)
+        assert prov.BINDING_GRADE_KEY not in record
+        assert prov.verify_witness_execution_graded(f, run) == (
+            prov.GRADE_BASENAME
+        )
+
+    def test_feasibility_versioned_binding(self, tmp_path):
+        run = tmp_path / "run-a"
+        run.mkdir()
+        f = _finding()
+        feas = {"status": "analyzed", "verdict": "exploitable",
+                "binary_path": "/bin/app"}
+        f["feasibility"] = feas
+        prov.stamp_feasibility(f, feas, run)
+        assert feas[prov.BINDING_GRADE_KEY] == prov.GRADE_RUN_NONCE
+        assert prov.verify_feasibility_graded(f, run) == (
+            prov.GRADE_RUN_NONCE
+        )
+        other = tmp_path / "elsewhere" / "run-a"
+        other.mkdir(parents=True)
+        assert not prov.verify_feasibility(f, other)
+
+    def test_malformed_binding_file_never_replaced(self, tmp_path):
+        run = tmp_path / "run-a"
+        run.mkdir()
+        binding = run / ".witness-binding"
+        binding.write_text("not-a-nonce")
+        f = _finding()
+        record = {"verdict": "confirmed"}
+        f["witness_execution"] = record
+        prov.stamp_witness_execution(f, record, run)
+        # Refused nonce: v1 fallback, malformed file left untouched.
+        assert binding.read_text() == "not-a-nonce"
+        assert prov.BINDING_GRADE_KEY not in record
+        assert prov.verify_witness_execution_graded(f, run) == (
+            prov.GRADE_BASENAME
+        )

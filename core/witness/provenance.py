@@ -49,6 +49,21 @@ Run binding
     the binding from the directory it is actually reading, so a
     replayed record carries the wrong run's binding and fails
     (cross-run imports re-derive — the safe direction).
+
+    The basename alone is forgeable by layout: any two directories
+    sharing a basename verified interchangeably. The binding is
+    therefore VERSIONED. New records are minted against
+    ``<basename>#<per-run nonce>`` where the nonce lives in a
+    ``.witness-binding`` file inside the run directory (created lazily
+    at first stamp, 0600, O_EXCL) and travels with the directory on
+    archive/move — the documented moved-runs-keep-verifying property
+    holds as long as the directory moves whole. Records minted under
+    the stronger binding carry ``provenance_binding: "run-nonce"``;
+    the marker directs the verifier and cannot be stripped to demote
+    the check (a v2 token never verifies against the v1 field set).
+    Legacy records (no marker) keep verifying under the basename-only
+    rule. The graded verifiers report which binding grade a record
+    verified at so consumers can distinguish.
 """
 
 from __future__ import annotations
@@ -254,10 +269,99 @@ def verify(fields: Mapping[str, object], token: str | None) -> bool:
 
 
 def run_binding(run_dir: Path | str) -> str:
-    """Canonical per-run binding baked into every MAC field set: the
-    resolved basename of the directory holding the findings document.
-    Basename (not full path) so archived/moved runs keep verifying."""
+    """Legacy (v1) per-run binding: the resolved basename of the
+    directory holding the findings document. Basename (not full path)
+    so archived/moved runs keep verifying. Records minted today use
+    the nonced binding when a per-run nonce is available."""
     return Path(run_dir).resolve().name
+
+
+# ── Versioned run binding ────────────────────────────────────────────
+#
+# The v1 basename binding lets any two directories sharing a basename
+# verify each other's records (operator restores, attacker-influenced
+# layouts). v2 adds a per-run random nonce persisted INSIDE the run
+# directory (so archived/moved runs keep verifying) and a record-side
+# marker that directs the verifier.
+
+_BINDING_FILE = ".witness-binding"
+
+#: Record key naming the binding grade the record was minted under.
+BINDING_GRADE_KEY = "provenance_binding"
+
+#: Binding grades, as reported by the graded verifiers.
+GRADE_RUN_NONCE = "run-nonce"
+GRADE_BASENAME = "basename"
+
+_NONCE_HEX_LEN = 32
+
+
+def _valid_nonce(text: str) -> bool:
+    return (
+        len(text) == _NONCE_HEX_LEN
+        and all(c in "0123456789abcdef" for c in text)
+    )
+
+
+def _read_run_nonce(run_dir: Path | str) -> str | None:
+    """The run's persisted binding nonce, or None (absent/malformed)."""
+    try:
+        text = (
+            Path(run_dir) / _BINDING_FILE
+        ).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text if _valid_nonce(text) else None
+
+
+def _load_or_create_run_nonce(run_dir: Path | str) -> str | None:
+    """Read the run nonce, creating it (0600, O_EXCL) when absent.
+
+    Returns None when no nonce can be established (unwritable or
+    missing run dir, or an existing malformed binding file — which is
+    never replaced): stamping then falls back to the v1 binding.
+    """
+    nonce = _read_run_nonce(run_dir)
+    if nonce:
+        return nonce
+    path = Path(run_dir) / _BINDING_FILE
+    if path.exists():
+        return None  # malformed existing file: refuse, never clobber
+    new = secrets.token_hex(_NONCE_HEX_LEN // 2)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _read_run_nonce(run_dir)  # lost the creation race
+    except OSError:
+        return None
+    try:
+        os.write(fd, new.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return new
+
+
+def run_binding_nonced(run_dir: Path | str, nonce: str) -> str:
+    """v2 binding value: basename + per-run nonce."""
+    return f"{run_binding(run_dir)}#{nonce}"
+
+
+def _binding_for_verify(
+    record: Mapping[str, Any], run_dir: Path | str,
+) -> tuple[str | None, str | None]:
+    """(binding value, grade) the record's marker directs verification
+    to, or (None, None) when the required nonce is unavailable.
+
+    The marker cannot be stripped to demote the check: a token minted
+    over the nonced binding never verifies against the basename-only
+    field set, and vice versa.
+    """
+    if record.get(BINDING_GRADE_KEY) == GRADE_RUN_NONCE:
+        nonce = _read_run_nonce(run_dir)
+        if not nonce:
+            return None, None
+        return run_binding_nonced(run_dir, nonce), GRADE_RUN_NONCE
+    return run_binding(run_dir), GRADE_BASENAME
 
 
 # ---------------------------------------------------------------------------
@@ -278,16 +382,19 @@ def witness_execution_fields(
     finding: Mapping[str, Any],
     record: Mapping[str, Any],
     run_dir: Path | str,
+    *,
+    binding: str | None = None,
 ) -> dict:
     """The exact witness_execution fields consumers act on, in MAC form.
 
     ``verdict`` drives the eligibility skip, the ruling upgrade /
     rule-out, and the /audit feedback mechanical-disqualifier — so it
     is authenticated together with the finding coordinates the record
-    claims to be about."""
+    claims to be about. ``binding`` overrides the run-binding value
+    (the v2 nonced binding); default is the legacy basename binding."""
     return {
         "kind": _WITNESS_KIND,
-        "run": run_binding(run_dir),
+        "run": binding if binding is not None else run_binding(run_dir),
         "verdict": str(record.get("verdict") or ""),
         **_finding_coords(finding),
     }
@@ -297,13 +404,15 @@ def feasibility_fields(
     finding: Mapping[str, Any],
     feasibility: Mapping[str, Any],
     run_dir: Path | str,
+    *,
+    binding: str | None = None,
 ) -> dict:
     """The exact feasibility fields consumers act on, in MAC form:
     ``status == "analyzed"`` asserts mechanical provenance and
     ``verdict`` is what maps to final_status / is_exploitable."""
     return {
         "kind": _FEASIBILITY_KIND,
-        "run": run_binding(run_dir),
+        "run": binding if binding is not None else run_binding(run_dir),
         "status": str(feasibility.get("status") or ""),
         "verdict": str(feasibility.get("verdict") or ""),
         "binary_path": str(feasibility.get("binary_path") or ""),
@@ -387,10 +496,39 @@ def stamp_witness_execution(
     run_dir: Path | str,
 ) -> None:
     """Stamp a witness_execution *record* the mechanical stage just
-    produced. No usable key → record stays unstamped (demote-on-read)."""
-    token = mint(witness_execution_fields(finding, record, run_dir))
+    produced. No usable key → record stays unstamped (demote-on-read).
+    Minted under the v2 nonced binding whenever a per-run nonce can be
+    read/created; falls back to the v1 basename binding otherwise."""
+    nonce = _load_or_create_run_nonce(run_dir)
+    binding = run_binding_nonced(run_dir, nonce) if nonce else None
+    token = mint(
+        witness_execution_fields(finding, record, run_dir, binding=binding),
+    )
     if token:
         record[PROVENANCE_KEY] = token
+        if binding is not None:
+            record[BINDING_GRADE_KEY] = GRADE_RUN_NONCE
+
+
+def verify_witness_execution_graded(
+    finding: Mapping[str, Any],
+    run_dir: Path | str,
+) -> str | None:
+    """Binding grade the finding's witness_execution record verifies
+    at (``GRADE_RUN_NONCE`` / ``GRADE_BASENAME``), or None when it
+    does not verify. Consumers that must distinguish layout-forgeable
+    basename bindings from nonce-bound records read the grade."""
+    record = finding.get("witness_execution")
+    if not isinstance(record, Mapping):
+        return None
+    binding, grade = _binding_for_verify(record, run_dir)
+    if binding is None:
+        return None
+    ok = verify(
+        witness_execution_fields(finding, record, run_dir, binding=binding),
+        record.get(PROVENANCE_KEY),
+    )
+    return grade if ok else None
 
 
 def verify_witness_execution(
@@ -399,13 +537,7 @@ def verify_witness_execution(
 ) -> bool:
     """Whether the finding's witness_execution record was produced by
     a mechanical stage of THIS install in THIS run directory."""
-    record = finding.get("witness_execution")
-    if not isinstance(record, Mapping):
-        return False
-    return verify(
-        witness_execution_fields(finding, record, run_dir),
-        record.get(PROVENANCE_KEY),
-    )
+    return verify_witness_execution_graded(finding, run_dir) is not None
 
 
 def stamp_feasibility(
@@ -414,9 +546,34 @@ def stamp_feasibility(
     run_dir: Path | str,
 ) -> None:
     """Stamp a feasibility record the mechanical stage just produced."""
-    token = mint(feasibility_fields(finding, feasibility, run_dir))
+    nonce = _load_or_create_run_nonce(run_dir)
+    binding = run_binding_nonced(run_dir, nonce) if nonce else None
+    token = mint(
+        feasibility_fields(finding, feasibility, run_dir, binding=binding),
+    )
     if token:
         feasibility[PROVENANCE_KEY] = token
+        if binding is not None:
+            feasibility[BINDING_GRADE_KEY] = GRADE_RUN_NONCE
+
+
+def verify_feasibility_graded(
+    finding: Mapping[str, Any],
+    run_dir: Path | str,
+) -> str | None:
+    """Binding grade the finding's feasibility record verifies at,
+    or None when it does not verify."""
+    feasibility = finding.get("feasibility")
+    if not isinstance(feasibility, Mapping):
+        return None
+    binding, grade = _binding_for_verify(feasibility, run_dir)
+    if binding is None:
+        return None
+    ok = verify(
+        feasibility_fields(finding, feasibility, run_dir, binding=binding),
+        feasibility.get(PROVENANCE_KEY),
+    )
+    return grade if ok else None
 
 
 def verify_feasibility(
@@ -425,13 +582,7 @@ def verify_feasibility(
 ) -> bool:
     """Whether the finding's feasibility record was produced by a
     mechanical stage of THIS install in THIS run directory."""
-    feasibility = finding.get("feasibility")
-    if not isinstance(feasibility, Mapping):
-        return False
-    return verify(
-        feasibility_fields(finding, feasibility, run_dir),
-        feasibility.get(PROVENANCE_KEY),
-    )
+    return verify_feasibility_graded(finding, run_dir) is not None
 
 
 def stamp_iris_refutation(row: dict, run_dir: Path | str) -> None:
@@ -625,6 +776,7 @@ def sanitise_findings_evidence(
             feasibility.pop("verdict", None)
             feasibility.pop("binary_analysis", None)
             feasibility.pop(PROVENANCE_KEY, None)
+            feasibility.pop(BINDING_GRADE_KEY, None)
             stats["feasibility_demoted"] += 1
 
         # Verdict-tier clamp: exploitable-family final statuses are
@@ -661,13 +813,17 @@ def sanitise_findings_evidence(
 
 
 __all__ = [
+    "BINDING_GRADE_KEY",
     "FEASIBILITY_TIER_STATUSES",
+    "GRADE_BASENAME",
+    "GRADE_RUN_NONCE",
     "PROVENANCE_KEY",
     "feasibility_fields",
     "iris_refutation_fields",
     "key_usable",
     "mint",
     "run_binding",
+    "run_binding_nonced",
     "sanitise_findings_evidence",
     "smt_conditions_hash",
     "smt_feasibility_fields",
@@ -677,8 +833,10 @@ __all__ = [
     "stamp_witness_execution",
     "verify",
     "verify_feasibility",
+    "verify_feasibility_graded",
     "verify_iris_refutation",
     "verify_smt_feasibility",
     "verify_witness_execution",
+    "verify_witness_execution_graded",
     "witness_execution_fields",
 ]

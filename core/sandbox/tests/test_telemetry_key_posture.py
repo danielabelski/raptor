@@ -298,3 +298,35 @@ class TestMacosSpawnWiring:
         self._run(tmp_path, monkeypatch, restrict_reads=True)
         posture = summary_mod.get_run_posture(tmp_path)
         assert posture["mac_key_hidden"] is True
+
+
+class TestLinuxContextWiring:
+    """The Linux dispatch layer records the per-call posture too —
+    a real sandboxed call with an output dir must land a posture
+    record keyed to that dir."""
+
+    def _mount_usable(self):
+        import shutil as _sh
+        from pathlib import Path as _P
+        if not _sh.which("newuidmap") or not _sh.which("newgidmap"):
+            return False
+        p = _P("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        return not (p.exists() and p.read_text().strip() == "1")
+
+    def test_run_records_posture_for_output_dir(self, tmp_path,
+                                                monkeypatch):
+        if not self._mount_usable():
+            pytest.skip("mount-ns unusable here")
+        from core.sandbox import run as sandbox_run
+        from core.sandbox import summary as summary_mod
+        out = tmp_path / "out"
+        out.mkdir()
+        r = sandbox_run(["/usr/bin/true"], target=str(out),
+                        output=str(out), block_network=True,
+                        capture_output=True, text=True, timeout=30)
+        posture = summary_mod.get_run_posture(out)
+        assert posture is not None, (
+            "Linux run() must record the telemetry-key posture")
+        if (getattr(r, "sandbox_info", None) or {}).get(
+                "mount_ns_active"):
+            assert posture["mac_key_hidden"] is True

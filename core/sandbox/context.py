@@ -4181,6 +4181,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         result.sandbox_info["mount_ns_active"] = bool(
             used_spawn and use_mount and not _skip_mount_ns
         )
+        # Telemetry-key posture (weakest-wins per run dir): without a
+        # mount namespace or a read allowlist the child can read the
+        # telemetry-MAC key and mint valid tokens — triage demotes
+        # token-verified telemetry for such runs. Recorded per call
+        # so multi-call runs take the weakest posture.
+        _posture_dir = audit_run_dir or output
+        if _posture_dir and not effectively_disabled:
+            try:
+                from . import summary as _summary_posture
+                _summary_posture.record_run_posture(
+                    Path(_posture_dir),
+                    mount_ns_active=bool(
+                        result.sandbox_info["mount_ns_active"]),
+                    restrict_reads=bool(restrict_reads),
+                )
+            except Exception:  # noqa: BLE001 — best-effort telemetry posture
+                logger.debug("run posture record failed",
+                             exc_info=True)
         if _mount_ns_degraded:
             result.sandbox_info["mount_ns_degraded"] = _mount_ns_degraded
         # restrict_reads is enforced on every engaged path: mount-ns via

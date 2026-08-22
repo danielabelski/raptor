@@ -70,8 +70,10 @@ Response:
     (then raw bytes in both directions)
 
 Error responses:
-    400 Bad Request       — malformed CONNECT line
+    400 Bad Request       — malformed CONNECT line / header budget exceeded
     403 Forbidden         — host not in allowlist OR resolved to blocked IP
+    408 Request Timeout   — handshake (request line + headers) exceeded
+                            the absolute deadline
     502 Bad Gateway       — backend refused / unreachable
     504 Gateway Timeout   — backend didn't respond within timeout
 """
@@ -225,6 +227,21 @@ _HAPPY_EYEBALLS_DELAY = 0.25
 # happy-eyeballs eat into the window.
 _PROXY_READ_TIMEOUT_S = 10.0
 _PROXY_CONNECT_TIMEOUT_S = 30.0
+
+# CONNECT-handshake budgets. The tunnel slot is charged BEFORE the
+# request is parsed, and the per-line timeout above resets on every
+# header line — without an absolute deadline a client trickling one
+# short header per <30s would hold a slot indefinitely, and the slot
+# pool is process-wide (4096 shared across every concurrent run), so
+# held slots deny egress to sibling runs. Three bounds close that:
+# a single absolute deadline covering the request line AND all
+# headers, an aggregate header byte budget, and a header count cap.
+# All are far above anything a legitimate CONNECT client sends (the
+# whole handshake is one line plus a Host header, well under 1 KiB,
+# sent in one burst).
+_PROXY_HANDSHAKE_DEADLINE_S = 30.0
+_PROXY_HANDSHAKE_MAX_HEADER_BYTES = 16 * 1024
+_PROXY_HANDSHAKE_MAX_HEADERS = 100
 
 # TCP keepalive for established tunnel legs. Corporate proxies, NAT
 # gateways, and stateful firewalls drop connection state for tunnels
@@ -2225,8 +2242,16 @@ class EgressProxy:
         }
 
         # Read CONNECT line + headers. Enforce small header budget to
-        # prevent memory-exhaustion by a client that streams headers.
-        request_line = await _read_line(reader, max_len=4096)
+        # prevent memory-exhaustion by a client that streams headers,
+        # and an ABSOLUTE deadline over the whole handshake (request
+        # line + every header) so a slot charged in _handle_client is
+        # never held open by trickled lines — each _read_line call
+        # below gets only the remaining slice of the deadline, not a
+        # fresh full timeout.
+        handshake_deadline = t_start + _PROXY_HANDSHAKE_DEADLINE_S
+        request_line = await _read_line(
+            reader, max_len=4096,
+            timeout=max(0.0, handshake_deadline - time.monotonic()))
         if request_line is None:
             event.update(result="bad_request", reason="empty/overlong CONNECT line",
                          duration=time.monotonic() - t_start)
@@ -2296,11 +2321,41 @@ class EgressProxy:
         event["port"] = port
 
         # Drain remaining headers (we don't use them, but we must read
-        # past them to honour the protocol).
+        # past them to honour the protocol). Bounded three ways — see
+        # the _PROXY_HANDSHAKE_* constants: the absolute deadline
+        # (408: client too slow overall), the aggregate byte budget
+        # and the header count cap (400: client sent more header
+        # material than any legitimate CONNECT ever carries). A
+        # per-line timeout alone is NOT a bound: both the number of
+        # lines and the pacing are client-controlled. Normal
+        # handshakes (a handful of headers, one burst) never come
+        # near any of these limits.
+        header_bytes = 0
+        header_count = 0
         while True:
-            hdr = await _read_line(reader, max_len=4096)
+            remaining = handshake_deadline - time.monotonic()
+            if remaining <= 0:
+                event.update(result="bad_request",
+                             reason="handshake deadline exceeded",
+                             duration=time.monotonic() - t_start)
+                self._record(event)
+                await self._write_error(writer, 408, "Request Timeout")
+                return
+            hdr = await _read_line(reader, max_len=4096, timeout=remaining)
             if hdr is None or hdr == "":
                 break
+            header_count += 1
+            header_bytes += len(hdr) + 2  # + CRLF
+            if (header_count > _PROXY_HANDSHAKE_MAX_HEADERS
+                    or header_bytes > _PROXY_HANDSHAKE_MAX_HEADER_BYTES):
+                event.update(result="bad_request",
+                             reason=(f"header budget exceeded "
+                                     f"({header_count} headers, "
+                                     f"{header_bytes} bytes)"),
+                             duration=time.monotonic() - t_start)
+                self._record(event)
+                await self._write_error(writer, 400, "Bad Request")
+                return
 
         # Policy gate 1: hostname allowlist. A lane carrying its own
         # allowlist additionally scopes the connection to the hosts
@@ -2815,10 +2870,19 @@ def _consume_abandoned_relay(fut: asyncio.Future) -> None:
         fut.exception()
 
 
-async def _read_line(reader: asyncio.StreamReader, max_len: int) -> str | None:
-    """Read one CRLF-terminated line, max_len bytes. None on error/EOF."""
+async def _read_line(reader: asyncio.StreamReader, max_len: int,
+                     timeout: float | None = None) -> str | None:
+    """Read one CRLF-terminated line, max_len bytes. None on error/EOF.
+
+    *timeout* is the read budget for THIS line; handshake callers pass
+    the remaining slice of their absolute deadline so successive lines
+    share one budget instead of each resetting a fresh window. Default
+    (None) keeps the legacy per-call budget.
+    """
+    if timeout is None:
+        timeout = _PROXY_CONNECT_TIMEOUT_S
     try:
-        data = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=_PROXY_CONNECT_TIMEOUT_S)
+        data = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=timeout)
     except (asyncio.IncompleteReadError, asyncio.LimitOverrunError,
             asyncio.TimeoutError):
         return None

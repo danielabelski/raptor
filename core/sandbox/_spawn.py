@@ -64,6 +64,7 @@ from . import state
 from ._fork_safe_warn import warn_post_fork
 from .landlock import _make_landlock_preexec
 from .mount_ns import setup_mount_ns
+from .probes import _find_sandbox_binary
 from .seccomp import _make_seccomp_preexec
 
 if TYPE_CHECKING:
@@ -186,8 +187,11 @@ def _gidmap_allow_available() -> str | None:
         result: str | bool = False
         try:
             if GIDMAP_ALLOW_PATH.is_file():
-                from .probes import _which_safe
-                getcap = _which_safe("getcap")
+                # Trusted dirs only — getcap runs in the UNSANDBOXED
+                # parent, and its output gates whether we exec the
+                # helper; a PATH-resolved stub could vouch for (or
+                # veto) anything. See probes._find_sandbox_binary.
+                getcap = _find_sandbox_binary("getcap")
                 if getcap:
                     r = subprocess.run(
                         [getcap, str(GIDMAP_ALLOW_PATH)],
@@ -227,9 +231,11 @@ def mount_ns_available() -> bool:
     with state._cache_lock:
         if state._mount_ns_available_cache is not None:
             return state._mount_ns_available_cache
-        from .probes import _which_safe
-        newuidmap = _which_safe("newuidmap")
-        newgidmap = _which_safe("newgidmap")
+        # Trusted-dirs resolution, never the inherited PATH: this is
+        # the binary the parent will EXECUTE (unsandboxed) at step 6.
+        # See probes._find_sandbox_binary.
+        newuidmap = _find_sandbox_binary("newuidmap")
+        newgidmap = _find_sandbox_binary("newgidmap")
         if not newuidmap or not newgidmap:
             state._mount_ns_available_cache = False
             return False
@@ -2277,10 +2283,14 @@ def run_sandboxed(
         # during init can start.  Falls back to newgidmap silently.
         host_uid = os.getuid()
         host_gid = os.getgid()
-        from .probes import _which_safe as _ws
-        newuidmap = _ws("newuidmap")
+        # Trusted-dirs resolution only: these setuid helpers execute
+        # in the UNSANDBOXED parent, before any containment exists —
+        # the one place a PATH-planted stub would run with the
+        # operator's full ambient authority. Mirrors the module's own
+        # _resolve_sandbox_binary doctrine (see probes.py).
+        newuidmap = _find_sandbox_binary("newuidmap")
         gidmap_allow = _gidmap_allow_available()
-        newgidmap = gidmap_allow or _ws("newgidmap")
+        newgidmap = gidmap_allow or _find_sandbox_binary("newgidmap")
         if not newuidmap or not newgidmap:
             _kill_and_reap(child_pid)
             msg = (
@@ -2310,7 +2320,7 @@ def run_sandboxed(
             # contract; a range map must go through plain newgidmap
             # (setuid — no setgroups-deny involved, so setgroups to
             # mapped gids keeps working).
-            _plain_newgidmap = _ws("newgidmap")
+            _plain_newgidmap = _find_sandbox_binary("newgidmap")
             if _urange and _grange and _plain_newgidmap:
                 _ucount = max(1, min(_urange[1], 65535))
                 _gcount = max(1, min(_grange[1], 65535))

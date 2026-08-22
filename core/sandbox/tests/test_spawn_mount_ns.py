@@ -511,7 +511,7 @@ class TestGidmapAllowProbe(unittest.TestCase):
         with patch("core.sandbox._spawn.GIDMAP_ALLOW_PATH") as mock_path:
             mock_path.is_file.return_value = True
             with (
-                patch("core.sandbox.probes._which_safe",
+                patch("core.sandbox._spawn._find_sandbox_binary",
                       return_value="/usr/sbin/getcap"),
                 patch("core.sandbox._spawn.subprocess.run", mock_run),
             ):
@@ -529,7 +529,7 @@ class TestGidmapAllowProbe(unittest.TestCase):
             mock_path.is_file.return_value = True
             mock_path.__str__ = lambda _: "/path/to/raptor-gidmap-allow"
             with (
-                patch("core.sandbox.probes._which_safe",
+                patch("core.sandbox._spawn._find_sandbox_binary",
                       return_value="/usr/sbin/getcap"),
                 patch("core.sandbox._spawn.subprocess.run", mock_run),
             ):

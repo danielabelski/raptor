@@ -13,7 +13,6 @@ subprocess-level.
 import functools
 import logging
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,20 +32,6 @@ def check_sandbox_available() -> bool:
 # have poisoned. If util-linux isn't in one of these standard dirs,
 # the host is too unusual for us to auto-resolve safely.
 _SAFE_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin")
-
-
-def _which_safe(name: str) -> "str | None":
-    """Non-raising twin of ``_resolve_sandbox_binary`` for OPTIONAL
-    privileged bootstrap helpers (newuidmap/newgidmap/getcap).
-
-    These execute in the UNSANDBOXED parent before any containment;
-    resolving them via the inherited PATH let a poisoned PATH entry
-    (malicious .envrc / direnv shell rc, a '.' entry with cwd inside a
-    hostile tree) substitute the binary — contra the doctrine above.
-    Absence means "capability unavailable" for these helpers, so this
-    returns None instead of raising.
-    """
-    return shutil.which(name, path=os.pathsep.join(_SAFE_BIN_DIRS))
 
 
 def _resolve_sandbox_binary(name: str) -> str:
@@ -103,6 +88,27 @@ def _resolve_sandbox_binary(name: str) -> str:
             f"bootstrap."
         )
         raise FileNotFoundError(msg)
+
+
+def _find_sandbox_binary(name: str) -> str | None:
+    """Non-raising ``_resolve_sandbox_binary``: same trusted-dirs-only
+    resolution (never the inherited PATH), returning None when the
+    binary is absent instead of raising.
+
+    Availability probes and optional-helper lookups want a yes/no
+    answer — but they must not derive it from a PATH an attacker-
+    compatible ``.envrc``/direnv could have poisoned: a planted
+    ``newuidmap`` stub would flip the mount-ns availability verdict on
+    a host without uidmap, steering spawn onto a path that then
+    resolves (and EXECUTES, in the unsandboxed parent) the same
+    PATH-controlled stub. Same doctrine as ``_resolve_sandbox_binary``;
+    a host with uidmap outside the standard dirs degrades to
+    Landlock-only, exactly like a missing util-linux does.
+    """
+    try:
+        return _resolve_sandbox_binary(name)
+    except FileNotFoundError:
+        return None
 
 
 # Actionable instruction appended to engagement-failure reasons. Surfaced
@@ -453,8 +459,11 @@ def check_mount_available() -> bool:
         # below then confirms the kernel actually permits
         # unshare(CLONE_NEWNS) — binary presence + the AppArmor
         # sysctl check alone proved necessary but not sufficient.
-        have_newuidmap = _which_safe("newuidmap") is not None
-        have_newgidmap = _which_safe("newgidmap") is not None
+        # Trusted-dirs resolution, NOT the inherited PATH — see
+        # _find_sandbox_binary. A PATH-planted stub must not flip
+        # this availability verdict.
+        have_newuidmap = _find_sandbox_binary("newuidmap") is not None
+        have_newgidmap = _find_sandbox_binary("newgidmap") is not None
         if not (have_newuidmap and have_newgidmap):
             if state.warn_once("_mount_unavailable_warned"):
                 logger.info(
@@ -536,8 +545,11 @@ def mount_unavailable_reason() -> tuple[str, str]:
     except (FileNotFoundError, OSError):
         pass
     # 2. uidmap binaries missing — distinct from the AppArmor case
-    #    because the fix is package install, not sysctl flip.
-    if not (_which_safe("newuidmap") and _which_safe("newgidmap")):
+    #    because the fix is package install, not sysctl flip. Trusted
+    #    dirs only (mirrors check_mount_available): the diagnosis must
+    #    agree with the probe it explains.
+    if not (_find_sandbox_binary("newuidmap")
+            and _find_sandbox_binary("newgidmap")):
         return (
             "mount-ns blocked by host "
             "(uidmap binaries newuidmap/newgidmap not installed)",

@@ -54,7 +54,8 @@ class TestMountUnavailableReason:
         operator-guidance names the uidmap package."""
         from pathlib import Path
         monkeypatch.setattr(Path, "read_text", _no_apparmor_sysctl)
-        monkeypatch.setattr(probes.shutil, "which", lambda _n, **_kw: None)
+        monkeypatch.setattr(probes, "_find_sandbox_binary",
+                            lambda _: None)
         condition, fix = probes.mount_unavailable_reason()
         assert "uidmap" in condition.lower()
         assert ("apt install uidmap" in fix
@@ -74,8 +75,8 @@ class TestMountUnavailableReason:
             raise FileNotFoundError
 
         monkeypatch.setattr(Path, "read_text", _read_text)
-        monkeypatch.setattr(probes.shutil, "which",
-                            lambda b, **_kw: f"/usr/bin/{b}")
+        monkeypatch.setattr(probes, "_find_sandbox_binary",
+                            lambda b: f"/usr/bin/{b}")
         condition, fix = probes.mount_unavailable_reason()
         assert "selinux" in condition.lower()
         assert "setenforce" in fix or "setsebool" in fix, fix
@@ -91,8 +92,8 @@ class TestMountUnavailableReason:
         as plausible causes."""
         from pathlib import Path
         monkeypatch.setattr(Path, "read_text", _no_apparmor_sysctl)
-        monkeypatch.setattr(probes.shutil, "which",
-                            lambda b, **_kw: f"/usr/bin/{b}")
+        monkeypatch.setattr(probes, "_find_sandbox_binary",
+                            lambda b: f"/usr/bin/{b}")
         condition, fix = probes.mount_unavailable_reason()
         text = (condition + " " + fix).lower()
         assert "seccomp" in text or "nested" in text or "lsm" in text
@@ -162,8 +163,8 @@ class TestLandlockOnlyWarningRouting:
             raise FileNotFoundError
 
         monkeypatch.setattr(Path, "read_text", _read_text)
-        monkeypatch.setattr(probes.shutil, "which",
-                            lambda b, **_kw: f"/usr/bin/{b}")
+        monkeypatch.setattr(probes, "_find_sandbox_binary",
+                            lambda b: f"/usr/bin/{b}")
         condition, _ = probes.mount_unavailable_reason()
         warning = (
             f"RAPTOR: sandbox running in Landlock-only mode — "

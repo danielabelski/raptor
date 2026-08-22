@@ -186,8 +186,8 @@ class TestHighFdSweep(unittest.TestCase):
 
 
 class TestPinnedHelperResolution(unittest.TestCase):
-    def test_which_safe_ignores_inherited_path(self):
-        from core.sandbox.probes import _SAFE_BIN_DIRS, _which_safe
+    def test_trusted_resolver_ignores_inherited_path(self):
+        from core.sandbox.probes import _SAFE_BIN_DIRS, _find_sandbox_binary
         with tempfile.TemporaryDirectory(prefix="raptor-path-") as d:
             fake = os.path.join(d, "newuidmap")
             with open(fake, "w") as f:
@@ -196,7 +196,7 @@ class TestPinnedHelperResolution(unittest.TestCase):
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = d
             try:
-                got = _which_safe("newuidmap")
+                got = _find_sandbox_binary("newuidmap")
             finally:
                 os.environ["PATH"] = old_path
             self.assertNotEqual(got, fake,

@@ -87,6 +87,12 @@ _unshare_path_cache = None
 _prlimit_path_cache = None
 _mount_path_cache = None
 _mkdir_path_cache = None
+# newuidmap/newgidmap gate the mount-ns tier and are EXECUTED (setuid)
+# in the unsandboxed parent; getcap vouches for the raptor-gidmap-allow
+# helper. Same trusted-dirs resolution as the util-linux binaries above.
+_newuidmap_path_cache = None
+_newgidmap_path_cache = None
+_getcap_path_cache = None
 
 # CLI overrides — set ONLY from entry-point argparse, never from env vars
 # or config files. A malicious .envrc or target repo must not be able to

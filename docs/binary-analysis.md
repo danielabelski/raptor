@@ -294,13 +294,22 @@ is dropped with a warning rather than driving every source function to
 The `absent` verdict is corpus-validated before it is allowed to
 suppress anything, and the guarantee is conditional on full-DWARF
 evidence -- a stripped binary downgrades to `tier="symbol_only"` and
-the chokepoint refuses to suppress.
+the chokepoint refuses to suppress.  Env-built binaries follow the
+same shape on a second axis: suppression authority tracks who chose
+the build configuration.  A build from the operator's
+`/project set build-command` earns suppression like any declared
+binary; a detector-GUESSED command still enriches (existence proofs
+are safe) but `earns_suppression` downgrades and the inventory
+summary carries `any_env_built_guessed` -- a guessed container
+configuration can compile out features the real build includes, so
+`absent` there says nothing suppression-grade about the operator's
+tree.
 
 ### CLI Flags
 
 | Flag | Purpose |
 |------|---------|
-| (default, no flags) | Auto-detect locally-built binaries; soft hint when nothing found. |
+| (default, no flags) | Auto-detect locally-built binaries; soft hint when nothing found. When auto-detect AND the project binary store both miss and the project `build` trust marker authorises it, the oracle builds a debug binary on demand (operator `build-command` slot first, detector synthesis second; network-isolated container; run-local artifact + `/project binary add` persist hint). |
 | `--binary <path>` | Explicit debug binary. Repeatable for hybrid targets. Bypasses the git-tracked filter (operator asserts trust). Suppresses default auto-detect. |
 | `--binary-auto` | Same auto-detect + git-filter logic as default, with louder "nothing found" message. Honours `--target-kind`. Warns at result cap (8). |
 | `--binary-edges` | Extract direct call edges and vtable resolution via r2 (single-invocation script-file mode; cached per build-id with cross-target collision check). Required for the `binary_call_edge` REACHABLE promote witness. Slow (~10-30s per binary, then cached). |

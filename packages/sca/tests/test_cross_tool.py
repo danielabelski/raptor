@@ -288,3 +288,30 @@ def test_link_idempotent(tmp_path: Path):
     updated = json.loads(findings_path.read_text())
     sarif_refs = [r for r in updated[0]["related_findings"] if r.startswith("sarif:")]
     assert len(sarif_refs) == 1
+
+
+def test_oversized_sarif_is_skipped(tmp_path: Path) -> None:
+    """A *.sarif over load_sarif's cap contributes no refs; siblings
+    still count (the scan continues past the refused file)."""
+    import os
+
+    big = tmp_path / "big.sarif"
+    _write_sarif(big, [{
+        "ruleId": "x",
+        "message": {"text": "see CVE-2021-23337"},
+    }])
+    ok = tmp_path / "ok.sarif"
+    _write_sarif(ok, [{
+        "ruleId": "y",
+        "message": {"text": "see CVE-2024-3094"},
+    }])
+
+    # Both readable: both contribute.
+    refs = _collect_sarif_refs([tmp_path])
+    assert set(refs) == {"CVE-2021-23337", "CVE-2024-3094"}
+
+    # Sparse-extend one past the 100 MiB cap: the stat gate fires
+    # before any read, so no data is materialised.
+    os.truncate(big, 100 * 1024 * 1024 + 1)
+    refs = _collect_sarif_refs([tmp_path])
+    assert set(refs) == {"CVE-2024-3094"}

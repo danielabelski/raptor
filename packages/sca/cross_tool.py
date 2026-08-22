@@ -16,6 +16,8 @@ import re
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
+from core.sarif.parser import load_sarif
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -148,12 +150,14 @@ def _scan_sarif_file(
     path: Path,
     out: dict[str, list[str]],
 ) -> None:
-    try:
-        with Path(path).open(encoding="utf-8") as fh:
-            sarif = json.load(fh)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return
-    if not isinstance(sarif, dict):
+    # The SARIF glob discovers ANY *.sarif under the given dirs —
+    # including files checked into the scanned target tree — so the
+    # read must be bounded. load_sarif is the canonical guarded
+    # loader (100 MiB stat gate before the read, decode + shape
+    # checks); it returns None on any failure, matching the
+    # skip-this-file behaviour here.
+    sarif = load_sarif(path)
+    if sarif is None:
         return
 
     for run in sarif.get("runs", []):

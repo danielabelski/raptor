@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import heapq
 import logging
+import stat
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,15 @@ if TYPE_CHECKING:
     from core.inventory.call_graph import FileCallGraph
 
 logger = logging.getLogger(__name__)
+
+# Byte budgets for the discovery walk over the (target-controlled)
+# source tree. Per-file: source files beyond this are generated code,
+# not worth call-graph extraction. Aggregate: caps the total bytes the
+# walk will ever read so a hostile tree cannot grind discovery — the
+# default context-map enrichment runs this unscoped over the whole
+# target.
+_PER_FILE_CAP = 2_000_000
+_AGGREGATE_CAP = 256 * 1024 * 1024
 
 # ── Source-level dangerous call targets ─────────────────────────────
 # Qualified dotted names matched against the full call chain. Only
@@ -771,6 +781,8 @@ def discover_sinks_for_target(
         if scope_dirs else None
     )
 
+    budget_remaining = _AGGREGATE_CAP
+
     for source_file in _iter_source_files(target):
         if scope_prefixes and not str(
             source_file.resolve()
@@ -788,6 +800,22 @@ def discover_sinks_for_target(
         extractor = extractors.get(lang)
         if not extractor:
             continue
+        # All name/scope/language filters passed — now the lstat-based
+        # byte gates, before any read. lstat also re-refuses symlinks
+        # (the walk already skips them) and special files.
+        try:
+            st = source_file.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _PER_FILE_CAP:
+            continue
+        if st.st_size > budget_remaining:
+            logger.warning(
+                "sink_discovery: aggregate byte budget (%d) exhausted "
+                "at %s; remaining files skipped", _AGGREGATE_CAP, rel,
+            )
+            break
+        budget_remaining -= st.st_size
         try:
             content = source_file.read_text(encoding="utf-8", errors="replace")
             graph = extractor(content)
@@ -861,4 +889,10 @@ def _iter_source_files(target: Path):
         dirs[:] = [d for d in dirs if d not in skip_dirs
                    and not (Path(root) / d).is_symlink()]
         for fname in files:
-            yield Path(root) / fname
+            p = Path(root) / fname
+            # Symlinked DIRS are pruned above, but os.walk lists
+            # symlinked FILES in `files` — a planted link would pull
+            # arbitrary out-of-tree content into discovery. Skip them.
+            if p.is_symlink():
+                continue
+            yield p

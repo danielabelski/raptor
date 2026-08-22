@@ -387,3 +387,59 @@ class TestChainReconstruction:
         result = discover_sinks(graphs)
         assert len(result.transitive_reach) == 0
         assert len(result.direct_sinks) == 1
+
+
+class TestDiscoveryWalkBounds:
+    """Symlink refusal + per-file/aggregate byte budgets on the walk."""
+
+    TAINTED = "import os\n\ndef handler(x):\n    os.system(x)\n"
+
+    def test_symlinked_file_not_read(self, tmp_path):
+        from core.inventory.sink_discovery import discover_sinks_for_target
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "evil.py").write_text(self.TAINTED)
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "m.py").symlink_to(outside / "evil.py")
+        result = discover_sinks_for_target(target)
+        assert len(result.direct_sinks) == 0
+
+    def test_oversize_file_skipped_small_still_processed(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.inventory.sink_discovery as sd
+        monkeypatch.setattr(sd, "_PER_FILE_CAP", 256)
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "small.py").write_text(self.TAINTED)
+        (target / "big.py").write_text(
+            self.TAINTED + "# " + "x" * 512 + "\n")
+        result = sd.discover_sinks_for_target(target)
+        files = {s.file for s in result.direct_sinks}
+        assert files == {"small.py"}
+
+    def test_aggregate_budget_stops_walk(self, tmp_path, monkeypatch):
+        import core.inventory.sink_discovery as sd
+        monkeypatch.setattr(sd, "_AGGREGATE_CAP", 4)
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "a.py").write_text(self.TAINTED)
+        (target / "b.py").write_text(self.TAINTED)
+        result = sd.discover_sinks_for_target(target)
+        assert len(result.direct_sinks) == 0
+
+    def test_within_budget_unchanged(self, tmp_path):
+        from core.inventory.sink_discovery import discover_sinks_for_target
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "m.py").write_text(self.TAINTED)
+        result = discover_sinks_for_target(target)
+        assert {s.target for s in result.direct_sinks} == {"os.system"}
+
+    def test_iter_source_files_skips_symlinked_files(self, tmp_path):
+        from core.inventory.sink_discovery import _iter_source_files
+        (tmp_path / "real.py").write_text("x = 1\n")
+        (tmp_path / "link.py").symlink_to(tmp_path / "real.py")
+        names = {p.name for p in _iter_source_files(tmp_path)}
+        assert names == {"real.py"}

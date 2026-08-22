@@ -102,16 +102,44 @@ class TestSuccess:
         out = client.get_bytes("https://example.com/binary")
         assert out == b"\x01\x02\xff"
 
-    def test_gzip_body_decompressed_as_defence_in_depth(self):
-        """If urllib3's auto-decode misses (some servers send gzip without
-        the header), the magic-byte sniffer in _fetch_once decodes it."""
+    def test_gzip_body_decompressed_when_content_encoding_declared(self):
+        """If urllib3's auto-decode misses on a response that DECLARES
+        Content-Encoding: gzip, the fallback in _fetch_once decodes it."""
         body = gzip.compress(b'{"hello": "world"}')
         # decode_content=True in urllib3 normally decompresses, but to
         # force the fallback path we lie via the stub: stream() returns
         # the raw gzipped bytes as if urllib3 didn't decode.
-        client, _ = _client_with_mock_pool(_stub_response(body))
+        client, _ = _client_with_mock_pool(
+            _stub_response(body, content_encoding="gzip"),
+        )
         result = client.get_json("https://example.com/api")
         assert result == {"hello": "world"}
+
+    def test_gzip_shaped_body_without_content_encoding_untouched(self):
+        """A body that merely IS a gzip stream (no Content-Encoding)
+        must arrive verbatim. OCI layer blobs are gzip files; the
+        pre-fix magic-byte sniff transparently decompressed them,
+        corrupting sha256 verification of the content address and
+        opening decompression amplification."""
+        payload = gzip.compress(b"layer-tar-bytes" * 100)
+        client, _ = _client_with_mock_pool(_stub_response(payload))
+        out = client.get_bytes("https://example.com/blob")
+        assert out == payload
+
+    def test_accept_encoding_identity_disables_transport_decode(self):
+        """Accept-Encoding: identity is the raw-bytes contract: the
+        pool request must run with decode_content=False and the body
+        must come back verbatim even when the server claims gzip."""
+        payload = gzip.compress(b"blob-bytes")
+        client, pool = _client_with_mock_pool(
+            _stub_response(payload, content_encoding="gzip"),
+        )
+        out = client.request(
+            "GET", "https://example.com/blob",
+            headers={"Accept-Encoding": "identity"},
+        ).body
+        assert out == payload
+        assert pool.request.call_args.kwargs["decode_content"] is False
 
     def test_release_conn_called(self):
         """Connection is returned to the pool after every request — this

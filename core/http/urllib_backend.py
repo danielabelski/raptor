@@ -31,8 +31,11 @@ capture-once semantics.
 
 Honours Retry-After on 429/503; exponential backoff on other transient
 errors; bounded total retry duration; size caps on responses; gzip
-decompression of responses that arrive compressed even when not
-requested (some servers do this).
+decompression only when the response DECLARES Content-Encoding: gzip
+(never by sniffing body magic — content-addressed payloads like OCI
+layer blobs legitimately ARE gzip files and must arrive verbatim).
+Callers can pin ``Accept-Encoding: identity`` to disable transport
+decompression entirely and receive raw bytes.
 
 No allowlist — UrllibClient can reach any host on :443. For
 allowlisted egress, use :class:`core.http.egress_backend.EgressClient`.
@@ -120,6 +123,39 @@ if len(_BACKOFF_SECONDS) != DEFAULT_RETRIES + 1:
         f"initial attempt + one per retry; update both together"
     )
     raise RuntimeError(msg)
+
+
+def _caller_header(headers: dict[str, str] | None, name: str) -> str:
+    """Case-insensitive lookup in a caller-supplied header dict."""
+    if not headers:
+        return ""
+    lname = name.lower()
+    for k, v in headers.items():
+        if k.lower() == lname:
+            return v or ""
+    return ""
+
+
+def _wants_identity(headers: dict[str, str] | None) -> bool:
+    """True when the caller pinned ``Accept-Encoding: identity`` —
+    the raw-bytes contract for content-addressed consumers (OCI
+    blobs). Transport decompression is then disabled end to end so
+    the caller hashes exactly the bytes the server stored."""
+    value = _caller_header(headers, "accept-encoding")
+    return value.strip().lower() == "identity"
+
+
+def _declared_gzip(resp) -> bool:
+    """True when the response's ``Content-Encoding`` names gzip."""
+    headers = getattr(resp, "headers", None) or {}
+    get = getattr(headers, "get", None)
+    if get is None:
+        return False
+    ce = get("Content-Encoding") or get("content-encoding") or ""
+    return any(
+        token.strip() in ("gzip", "x-gzip")
+        for token in ce.lower().split(",")
+    )
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -790,12 +826,17 @@ class UrllibClient:
         max_bytes: int,
         wallclock_cap: int | None = None,
     ) -> Iterator[bytes]:
+        # Same raw-bytes contract as _fetch_once: an explicit
+        # ``Accept-Encoding: identity`` disables transport
+        # decompression so content-addressed downloads hash the
+        # bytes the server stored.
+        decode = not _wants_identity(headers)
         resp = self._pool_for(url).request(
             "GET", url,
             headers=headers,
             timeout=urllib3.Timeout(total=float(timeout)),
             preload_content=False,
-            decode_content=True,
+            decode_content=decode,
             redirect=True,
             retries=False,
         )
@@ -831,7 +872,7 @@ class UrllibClient:
                 # redacted — same defang as `_fetch_once`'s 4xx
                 # branch (4xx bodies commonly echo the request
                 # token back).
-                snippet = resp.read(512, decode_content=True) or b""
+                snippet = resp.read(512, decode_content=decode) or b""
                 reason = resp.reason or "?"
                 from core.security.redaction import redact_secrets
                 snippet_text = snippet.decode("utf-8", errors="replace")
@@ -859,7 +900,7 @@ class UrllibClient:
             import time as _time
             _start = _time.monotonic()
             total = 0
-            for chunk in resp.stream(64 * 1024, decode_content=True):
+            for chunk in resp.stream(64 * 1024, decode_content=decode):
                 total += len(chunk)
                 if total > max_bytes:
                     msg = (
@@ -1178,13 +1219,18 @@ class UrllibClient:
         # useful for security scanning patterns that need to see
         # Location headers without chasing them.
         is_head = method.upper() == "HEAD"
+        # ``Accept-Encoding: identity`` from the caller is the
+        # raw-bytes contract (content-addressed consumers hash the
+        # exact stored bytes): disable transport decompression for
+        # the whole request instead of letting urllib3 second-guess.
+        decode = not _wants_identity(headers)
         resp = self._pool_for(url).request(
             method, url,
             body=body,
             headers=headers,
             timeout=urllib3.Timeout(total=float(timeout)),
             preload_content=is_head,   # True for HEAD, False otherwise
-            decode_content=True,
+            decode_content=decode,
             redirect=follow_redirects,
             retries=False,
         )
@@ -1220,7 +1266,7 @@ class UrllibClient:
                 )
             if resp.status >= 400 and raise_on_status:
                 # Drain enough body for the error message — bounded.
-                snippet = resp.read(512, decode_content=True) or b""
+                snippet = resp.read(512, decode_content=decode) or b""
                 reason = resp.reason or "?"
                 # Pre-fix the snippet was interpolated into the
                 # exception message via `repr()` only — no secret
@@ -1252,7 +1298,7 @@ class UrllibClient:
                 raw = b""
             else:
                 buf = bytearray()
-                for chunk in resp.stream(64 * 1024, decode_content=True):
+                for chunk in resp.stream(64 * 1024, decode_content=decode):
                     buf.extend(chunk)
                     if len(buf) > max_bytes:
                         msg = (
@@ -1262,15 +1308,20 @@ class UrllibClient:
                         raise SizeLimitExceeded(msg)
                 raw = bytes(buf)
 
-            # Defence in depth: some servers send Content-Encoding: gzip
-            # but urllib3 may not always auto-decode (depends on
-            # decode_content honouring). If body still looks gzip
-            # (magic bytes 1f 8b), decode here. Fall back to the raw
-            # bytes if gzip.decompress raises — the magic-byte check
-            # has a ~1/65k false-positive rate on arbitrary binary
-            # bodies, and we'd rather hand the caller raw data than
-            # corrupt a payload that wasn't actually gzip.
-            if raw.startswith(b"\x1f\x8b"):
+            # Defence in depth: a server that DECLARES
+            # Content-Encoding: gzip may still hand us compressed
+            # bytes when urllib3's auto-decode misses; decode here.
+            # The declaration gate matters: pre-fix this sniffed the
+            # 1f8b magic alone and gunzipped ANY body that happened
+            # to be a gzip stream — OCI layer blobs ARE gzip files,
+            # so a blob whose decompressed size fit the cap was
+            # transparently mutated, breaking sha256 verification of
+            # the content address and inviting decompression
+            # amplification. Content that merely IS gzip (no
+            # Content-Encoding) now passes through untouched. Fall
+            # back to the raw bytes if decompression raises.
+            if decode and _declared_gzip(resp) \
+                    and raw.startswith(b"\x1f\x8b"):
                 # Pre-fix `gzip.decompress(raw)` had no output cap.
                 # A decompression bomb (gzip ratio >>1000:1, e.g.
                 # 100KB compressed → 10GB decompressed) consumed

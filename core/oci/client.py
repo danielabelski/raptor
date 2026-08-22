@@ -565,8 +565,14 @@ class OciRegistryClient:
                 0, f"malformed blob digest: {digest[:80]!r}",
             )
         url = f"/v2/{ref.repository}/blobs/{digest}"
+        # Blobs are content-addressed: the sha256 below must run over
+        # exactly the bytes the registry stores. ``Accept-Encoding:
+        # identity`` pins the raw-bytes contract in the HTTP backend
+        # (no transport decompression), so a gzip-shaped blob is never
+        # transparently mutated before hashing.
         resp = self._authed_request(
-            "GET", ref.registry, url, stream=True,
+            "GET", ref.registry, url,
+            headers={"Accept-Encoding": "identity"}, stream=True,
         )
         if resp.status_code != 200:
             raise RegistryError(

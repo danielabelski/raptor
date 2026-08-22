@@ -42,7 +42,8 @@ class _StubHttp:
         self.calls: list[dict] = []
 
     def request(self, method: str, url: str, **kwargs):
-        self.calls.append({"method": method, "url": url})
+        self.calls.append({"method": method, "url": url,
+                           "headers": kwargs.get("headers")})
         if url not in self._responses:
             return _StubResponse(404, b'{"errors": []}')
         return self._responses[url]
@@ -262,3 +263,20 @@ def test_blob_error_snippet_redacts_echoed_bearer() -> None:
     msg = str(excinfo.value)
     assert "eyJhbGciOiJSUzI1NiJ9" not in msg
     assert "REDACTED" in msg
+
+
+def test_stream_blob_requests_identity_encoding() -> None:
+    """Blob fetches must pin Accept-Encoding: identity so the HTTP
+    layer hands back the exact stored bytes for hashing (a transport
+    that transparently gunzips a gzip-shaped blob breaks the content
+    address)."""
+    body = b"layer-bytes"
+    good = "sha256:" + hashlib.sha256(body).hexdigest()
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    url = f"https://ghcr.io/v2/acme/app/blobs/{good}"
+    http = _StubHttp({url: _StubResponse(200, body)})
+    client = OciRegistryClient(http)
+    list(client.stream_blob(ref, good))
+    assert http.calls, "no request recorded"
+    headers = http.calls[0].get("headers") or {}
+    assert headers.get("Accept-Encoding") == "identity"

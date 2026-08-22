@@ -56,6 +56,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .evidence import evidence_write_path as _evidence_write_path
 from .evidence import resolve_read_path as _resolve_evidence_path
 
 logger = logging.getLogger(__name__)
@@ -518,6 +519,7 @@ def parse_observe_log(run_dir, *,
                       filename: str = OBSERVE_FILENAME,
                       expected_nonce: str | None = None,
                       sandbox_info: dict | None = None,
+                      current_run: bool = False,
                       ) -> ObserveProfile:
     """Extract an ObserveProfile from a tracer JSONL log.
 
@@ -548,6 +550,23 @@ def parse_observe_log(run_dir, *,
     backward-compat with callers that don't have a nonce, but those
     callers must accept that a hostile binary can spoof their
     profile.
+
+    `current_run`: pass True when parsing the log of a run THIS
+    process just executed (the observe CLI / calibration shape).
+    When the run degraded and produced no nonce
+    (``expected_nonce=None``), a current-run parse (a) refuses the
+    legacy ``<run_dir>/<filename>`` fallback — that location is
+    target-writable, so on a degraded run the probed binary could
+    plant a complete forged log there and have it parsed as the
+    run's profile — and reads only the parent-owned
+    ``<run_dir>/.audit`` location; and (b) marks the resulting
+    profile ``nonce_trusted=False`` so downstream consumers demote
+    it (the records cannot be authenticated without a nonce even
+    when they came from the canonical location). Parses WITH a
+    nonce keep current behaviour — the nonce itself gates every
+    record, so the legacy fallback stays safe there. False
+    (default) preserves the pre-existing behaviour for offline
+    readers of older runs' artifacts.
 
     `sandbox_info`: the run's ``result.sandbox_info`` dict, used as
     a fail-safe backstop on nonce trust. When the run executed on a
@@ -584,7 +603,24 @@ def parse_observe_log(run_dir, *,
                 run_dir, _delivery,
             )
             profile.nonce_trusted = False
-    log_path = _resolve_evidence_path(run_dir, filename)
+    if current_run and expected_nonce is None:
+        # Degraded-audit shape: the run produced no nonce, so no
+        # record can be authenticated AND the legacy run-root
+        # location cannot be distinguished from a forgery planted by
+        # the probed binary. Parse only the parent-owned .audit
+        # location and demote the profile.
+        logger.warning(
+            "parse_observe_log: current-run parse without a nonce "
+            "(audit degraded?) for %s — reading only the parent-owned "
+            ".audit location (legacy run-root fallback refused: it is "
+            "target-writable) and marking the profile unauthenticated "
+            "(nonce_trusted=False).",
+            run_dir,
+        )
+        profile.nonce_trusted = False
+        log_path = _evidence_write_path(run_dir, filename)
+    else:
+        log_path = _resolve_evidence_path(run_dir, filename)
     if not log_path.exists():
         return profile
 

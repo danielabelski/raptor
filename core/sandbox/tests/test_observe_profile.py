@@ -122,6 +122,62 @@ class TestParseEmpty:
         assert profile == ObserveProfile()
 
 
+class TestCurrentRunNonceRefusal:
+    """When audit degrades, the observe
+    CLI parses with expected_nonce=None. A current-run parse must
+    then refuse the target-writable legacy run-root location and
+    demote the profile to nonce_trusted=False; parses with a nonce
+    keep current behaviour."""
+
+    def _audit_log(self, tmp_path, records):
+        d = tmp_path / ".audit"
+        d.mkdir(mode=0o700, exist_ok=True)
+        _write_jsonl(d / OBSERVE_FILENAME, records)
+
+    def test_nonceless_current_run_refuses_legacy_location(
+            self, tmp_path, caplog):
+        # Forged log planted at the target-writable run root only.
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [
+            _open_record("/forged/by/target"),
+        ])
+        with caplog.at_level(logging.WARNING,
+                             logger="core.sandbox.observe_profile"):
+            profile = parse_observe_log(tmp_path, current_run=True)
+        assert profile.paths_read == [], (
+            "a target-writable run-root log must not be parsed on a "
+            "nonce-less current-run parse")
+        assert profile.nonce_trusted is False
+        assert any("legacy" in r.message.lower() for r in caplog.records)
+
+    def test_nonceless_current_run_parses_audit_location_untrusted(
+            self, tmp_path):
+        self._audit_log(tmp_path, [_open_record("/etc/passwd")])
+        profile = parse_observe_log(tmp_path, current_run=True)
+        # Canonical location parses, but without a nonce the records
+        # cannot be authenticated → demoted.
+        assert profile.paths_read == ["/etc/passwd"]
+        assert profile.nonce_trusted is False
+
+    def test_current_run_with_nonce_keeps_legacy_fallback(self, tmp_path):
+        rec = _open_record("/etc/passwd")
+        rec["nonce"] = "n-123"
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [rec])
+        profile = parse_observe_log(tmp_path, current_run=True,
+                                    expected_nonce="n-123")
+        assert profile.paths_read == ["/etc/passwd"]
+        assert profile.nonce_trusted is True
+
+    def test_offline_nonceless_parse_keeps_legacy_fallback(self, tmp_path):
+        # Back-compat: offline readers of older runs' artifacts
+        # (current_run=False, the default) are unchanged.
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [
+            _open_record("/etc/passwd"),
+        ])
+        profile = parse_observe_log(tmp_path)
+        assert profile.paths_read == ["/etc/passwd"]
+        assert profile.nonce_trusted is True
+
+
 class TestBoundedReads:
     """The evidence pathname is child-mutable
     on Landlock-only hosts. _iter_records must never block on a

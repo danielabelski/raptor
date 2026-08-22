@@ -155,6 +155,16 @@ def _format_summary(profile, *, run_dir: Path, kept: bool,
     if kept:
         parts.append(f"audit-run-dir kept at: {run_dir}")
 
+    # Surface authentication state before the content: an
+    # unauthenticated profile (degraded audit, no per-run nonce)
+    # must not be read as trusted ground truth.
+    if not getattr(profile, "nonce_trusted", True):
+        parts.append(
+            "\n⚠️  profile UNAUTHENTICATED — the run produced no "
+            "per-run nonce (audit degraded?), so records cannot be "
+            "verified as tracer-written. Treat as unverified signal."
+        )
+
     # Surface budget truncation FIRST — if the probe hit any cap,
     # the rest of the summary is incomplete and operators need to
     # know before they reason about counts. The drops-by-category
@@ -216,6 +226,9 @@ def _profile_to_json(profile, *, run_dir: Path, kept: bool,
         ],
         "budget_truncated": bool(profile.budget_truncated),
         "dropped_by_category": dict(profile.dropped_by_category),
+        # False when the run produced no per-run nonce (degraded
+        # audit) — downstream consumers must demote such profiles.
+        "nonce_trusted": bool(getattr(profile, "nonce_trusted", True)),
     }
     return json.dumps(payload, indent=2)
 
@@ -319,33 +332,56 @@ def _cli_main(argv: Sequence[str] | None = None) -> int:
         # records landed, surface a clear error rather than silently
         # printing an empty profile. Most likely cause: ptrace blocked
         # (Yama scope 3, container cap-drop) so audit-mode degraded.
+        #
+        # Location trust follows the nonce: with a per-run nonce every
+        # record is authenticated, so the legacy run-root fallback is
+        # acceptable; WITHOUT one (degraded audit) the run-root file
+        # is indistinguishable from a forgery planted by the probed
+        # binary, so only the parent-owned .audit location counts —
+        # both for this existence check and for the parse below
+        # (current_run=True).
+        from .evidence import evidence_write_path as _evidence_write_path
         from .evidence import resolve_read_path as _resolve_evidence_path
-        observe_log = _resolve_evidence_path(
-            run_dir, ".sandbox-observe.jsonl",
-        )
+        _sbx_info = getattr(result, "sandbox_info", None) or {}
+        _nonce = _sbx_info.get("observe_nonce")
+        if _nonce is None:
+            observe_log = _evidence_write_path(
+                run_dir, ".sandbox-observe.jsonl",
+            )
+        else:
+            observe_log = _resolve_evidence_path(
+                run_dir, ".sandbox-observe.jsonl",
+            )
         if not observe_log.exists():
             if timed_out:
                 # The kill explains the missing log — don't pile the
                 # (misleading) degraded-audit diagnostic on top.
                 return _TIMEOUT_EX
+            _legacy = run_dir / ".sandbox-observe.jsonl"
+            _planted = (" A run-root observe log exists but is NOT "
+                        "trusted without a per-run nonce (the probed "
+                        "binary can write that location)."
+                        if _nonce is None and _legacy.exists() else "")
             sys.stderr.write(
-                "raptor-sandbox-observe: observe log not produced — "
-                "audit-mode likely degraded silently. Check that "
-                "libseccomp is installed and ptrace is permitted on "
-                "this host (Yama scope 0 or 1; not running with "
-                "--cap-drop=SYS_PTRACE).\n"
+                f"raptor-sandbox-observe: observe log not produced — "
+                f"audit-mode likely degraded silently. Check that "
+                f"libseccomp is installed and ptrace is permitted on "
+                f"this host (Yama scope 0 or 1; not running with "
+                f"--cap-drop=SYS_PTRACE).{_planted}\n"
             )
             return _SOFTWARE_EX
 
         # Spoof-resistant parse: pin records to the per-run nonce when
         # the sandbox stamped one, and hand over sandbox_info so the
         # parser can refuse nonce trust on runs where the nonce was
-        # not delivered through a protected channel.
-        _sbx_info = getattr(result, "sandbox_info", None) or {}
+        # not delivered through a protected channel. current_run=True:
+        # a nonce-less (degraded) parse refuses the target-writable
+        # legacy location and comes back nonce_trusted=False.
         profile = parse_observe_log(
             run_dir,
-            expected_nonce=_sbx_info.get("observe_nonce"),
+            expected_nonce=_nonce,
             sandbox_info=_sbx_info,
+            current_run=True,
         )
 
         if args.json_output:

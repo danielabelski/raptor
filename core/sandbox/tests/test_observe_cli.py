@@ -29,6 +29,17 @@ from core.sandbox.observe_cli import (
 )
 from core.sandbox.observe_profile import ConnectTarget, ObserveProfile
 
+
+def _materialise_observe_log(run_dir) -> None:
+    """Write a minimal observe log at the CANONICAL parent-owned
+    location (``<run_dir>/.audit/``) — where the real tracer writes.
+    A nonce-less CLI parse (degraded audit) refuses the legacy
+    run-root location, so stubs must materialise the canonical one."""
+    d = Path(run_dir) / ".audit"
+    d.mkdir(mode=0o700, exist_ok=True)
+    (d / ".sandbox-observe.jsonl").write_text("{}\n")
+
+
 # ---------------------------------------------------------------------------
 # Argparse
 # ---------------------------------------------------------------------------
@@ -164,6 +175,99 @@ class TestJsonOutput:
 
 
 # ---------------------------------------------------------------------------
+# Degraded-audit trust
+# ---------------------------------------------------------------------------
+
+
+class TestDegradedAuditTrust:
+    """When audit degrades the run yields no observe nonce; the CLI
+    must not fall back to the target-writable run-root log (a probed
+    binary can plant a forged profile there) and must surface the
+    unauthenticated state on whatever it does parse."""
+
+    def test_planted_legacy_log_refused_without_nonce(self, tmp_path):
+        """The attack shape: audit degraded (no nonce, no .audit log)
+        and the probed binary planted a forged legacy run-root log.
+        Pre-fix the CLI parsed it as the run's profile; now it must
+        report the degraded run (exit 70) and name the untrusted
+        planted file."""
+
+        class _Result:
+            returncode = 0
+            sandbox_info: dict = {}   # degraded — no observe_nonce
+
+        def fake_run(cmd, **kwargs):
+            run_dir = Path(kwargs["output"])
+            # Forged log at the target-writable legacy location ONLY.
+            (run_dir / ".sandbox-observe.jsonl").write_text(
+                json.dumps({"syscall": "openat", "observe": True,
+                            "path": "/forged", "args": [0] * 6}) + "\n"
+            )
+            return _Result()
+
+        buf_out, buf_err = io.StringIO(), io.StringIO()
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch("sys.stdout", buf_out), patch("sys.stderr", buf_err):
+            rc = _cli_main(["--out", str(tmp_path), "--",
+                            "/usr/bin/true"])
+        assert rc == 70, (
+            f"degraded run with only a planted legacy log must exit "
+            f"70, got {rc}; stdout={buf_out.getvalue()!r}")
+        assert "NOT trusted" in buf_err.getvalue()
+        assert "/forged" not in buf_out.getvalue()
+
+    def test_parser_called_with_current_run_flag(self, tmp_path):
+        """The CLI is always a current-run consumer — it must pass
+        current_run=True so nonce-less parses demote and refuse the
+        legacy location inside the parser too."""
+        seen = {}
+
+        class _Result:
+            returncode = 0
+            sandbox_info = {"observe_nonce": "n-42"}
+
+        def fake_run(cmd, **kwargs):
+            _materialise_observe_log(kwargs["output"])
+            return _Result()
+
+        def fake_parse(run_dir, **kwargs):
+            seen.update(kwargs)
+            return ObserveProfile()
+
+        with patch("core.sandbox.run", side_effect=fake_run), \
+             patch("core.sandbox.parse_observe_log",
+                   side_effect=fake_parse), \
+             patch("sys.stdout", io.StringIO()), \
+             patch("sys.stderr", io.StringIO()):
+            rc = _cli_main(["--out", str(tmp_path), "--",
+                            "/usr/bin/true"])
+        assert rc == 0
+        assert seen.get("current_run") is True
+        assert seen.get("expected_nonce") == "n-42"
+
+    def test_unauthenticated_profile_flagged_in_summary(self, tmp_path):
+        prof = ObserveProfile(paths_read=["/x"], nonce_trusted=False)
+        out = _format_summary(prof, run_dir=tmp_path, kept=False,
+                              return_code=0)
+        assert "UNAUTHENTICATED" in out
+
+    def test_authenticated_profile_not_flagged(self, tmp_path):
+        out = _format_summary(_sample_profile(), run_dir=tmp_path,
+                              kept=False, return_code=0)
+        assert "UNAUTHENTICATED" not in out
+
+    def test_json_payload_carries_nonce_trusted(self, tmp_path):
+        prof = ObserveProfile(nonce_trusted=False)
+        payload = json.loads(_profile_to_json(
+            prof, run_dir=tmp_path, kept=False, return_code=0))
+        assert payload["nonce_trusted"] is False
+        payload = json.loads(_profile_to_json(
+            _sample_profile(), run_dir=tmp_path, kept=False,
+            return_code=0))
+        assert payload["nonce_trusted"] is True
+
+
+# ---------------------------------------------------------------------------
 # CLI dispatch — sandbox stubbed out
 # ---------------------------------------------------------------------------
 
@@ -185,9 +289,7 @@ class TestCliDispatch:
             # observe_log_exists).
             run_dir = Path(kwargs["output"])
             if observe_log_exists:
-                (run_dir / ".sandbox-observe.jsonl").write_text(
-                    "{}\n",
-                )
+                _materialise_observe_log(run_dir)
             return _Result(return_code)
 
         with patch("core.sandbox.run", side_effect=fake_run), \
@@ -269,7 +371,7 @@ class TestCliDispatch:
 
         def fake_run(cmd, **kwargs):
             run_dir = Path(kwargs["output"])
-            (run_dir / ".sandbox-observe.jsonl").write_text("{}\n")
+            _materialise_observe_log(run_dir)
             raise subprocess.TimeoutExpired(
                 cmd=list(cmd), timeout=kwargs.get("timeout"),
             )
@@ -337,7 +439,7 @@ class TestCliDispatch:
         def fake_run(cmd, **kwargs):
             seen["capture_output"] = kwargs.get("capture_output")
             run_dir = Path(kwargs["output"])
-            (run_dir / ".sandbox-observe.jsonl").write_text("{}\n")
+            _materialise_observe_log(run_dir)
             return _Result()
 
         with patch("core.sandbox.run", side_effect=fake_run), \
@@ -364,7 +466,7 @@ class TestCliDispatch:
         def fake_run(cmd, **kwargs):
             seen["capture_output"] = kwargs.get("capture_output")
             run_dir = Path(kwargs["output"])
-            (run_dir / ".sandbox-observe.jsonl").write_text("{}\n")
+            _materialise_observe_log(run_dir)
             return _Result()
 
         with patch("core.sandbox.run", side_effect=fake_run), \
@@ -429,9 +531,7 @@ class TestAuditBudgetFlag:
             # The slot must be populated BEFORE the sandbox spawn —
             # the spawn serialises it into the tracer filter config.
             seen_at_spawn.append(state._cli_sandbox_audit_budget)
-            Path(kwargs["output"], ".sandbox-observe.jsonl").write_text(
-                "{}\n",
-            )
+            _materialise_observe_log(kwargs["output"])
             return _Result()
 
         with patch("core.sandbox.run", side_effect=fake_run), \
@@ -453,9 +553,7 @@ class TestAuditBudgetFlag:
             sandbox_info: dict = {}
 
         def fake_run(cmd, **kwargs):
-            Path(kwargs["output"], ".sandbox-observe.jsonl").write_text(
-                "{}\n",
-            )
+            _materialise_observe_log(kwargs["output"])
             return _Result()
 
         with patch("core.sandbox.run", side_effect=fake_run), \

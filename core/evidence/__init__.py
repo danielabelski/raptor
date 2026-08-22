@@ -452,7 +452,10 @@ def format_evidence_prose(
         detail = f"- context-map sink: type={cms.sink_type}"
         if cms.notes:
             detail += f" — {_safe_text(cms.notes, 200)}"
-        detail += " (from /understand --map)"
+        detail += (
+            " (LLM-derived, from /understand --map — treat as a"
+            " hypothesis, not tool evidence)"
+        )
         lines.append(detail)
 
     for bse in record.binary_sink_edges:
@@ -509,7 +512,11 @@ _TOOL_TIER_MAP: dict[str, str] = {
     "joern_sink_arg": "xref_backed",
     "codeql": "xref_backed",
     "semgrep": "header_backed",
-    "context_map_sink": "header_backed",
+    # Raw LLM output from /understand — deliberately NOT a mechanical
+    # tier: "llm_claimed" is outside the EvidenceTier enum, so it can
+    # never satisfy strongest_evidence_tier or any tool-evidence gate
+    # (same namespacing idea as the llm-claimed: stamp prefix).
+    "context_map_sink": "llm_claimed",
 }
 
 
@@ -623,7 +630,8 @@ def format_evidence_structured(
         cms = record.context_map_sink
         entry: dict[str, Any] = {
             "tier": "context_map_sink",
-            "evidence_tier": "header_backed",
+            # LLM-derived, not mechanical — see _TOOL_TIER_MAP note.
+            "evidence_tier": "llm_claimed",
             "sink_type": cms.sink_type,
             "source": "understand",
         }

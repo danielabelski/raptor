@@ -666,9 +666,23 @@ def grade_evidence_record(record: Any) -> list[GradedEvidence]:
         ))
 
     if getattr(record, "context_map_sink", None) is not None:
+        # context-map.json sink_details are raw LLM output from
+        # /understand over the untrusted repo — grading them
+        # CALL_GRAPH/HIGH promoted a hostile-repo-steerable claim to
+        # mechanical evidence (THREAT_MODEL I2(b)). LLM tier: LOW
+        # alone; MEDIUM (corroborated) only when a deterministic tool
+        # produced sink evidence for the SAME function in this record.
+        corroborated = bool(
+            flows or imported or unguarded or sink_args
+            or codeql or semgrep
+            or getattr(record, "binary_sink_edges", None)
+            or getattr(record, "taint_approx", None) is not None
+            or getattr(record, "taint_summary", None) is not None
+        )
         items.append(grade_evidence(
-            EvidenceSource.CALL_GRAPH,
-            "context-map sink match",
+            EvidenceSource.LLM_CORROBORATED if corroborated
+            else EvidenceSource.LLM_INFERRED,
+            "context-map sink match (LLM-derived, /understand --map)",
         ))
 
     if getattr(record, "transitive_taint", None) is not None:

@@ -202,6 +202,27 @@ class TestFoldReuseEligibility:
         assert sink == {}
         assert "auth.c:check_pw" in _gap_keys(gaps)
 
+    def test_strategy_order_and_duplicates_do_not_block(self, tmp_path):
+        # The recorded strategy ORDER (and any duplicate) is
+        # presentation, not review context — the eligibility compare
+        # is a set compare. Pre-fix, order/duplicate wobble at a
+        # segment boundary read as "strategy set changed" and re-bought
+        # the review.
+        target = _write_target(tmp_path)
+        recorded = list(reversed(_current_strategies()))
+        if recorded:
+            recorded.append(recorded[-1])  # duplicate
+        project = _project_with(
+            tmp_path, _entry(target, strategies=recorded),
+        )
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
     def test_reuse_disabled_keeps_plain_fold(self, tmp_path):
         # reuse_sink=None (--no-verdict-reuse): hash-verified entries
         # suppress silently, exactly the pre-reuse behaviour — even
@@ -214,6 +235,81 @@ class TestFoldReuseEligibility:
             _checklist(target), [], project_dir=project,
         )
         assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+
+class TestReuseBlockedStats:
+    """Per-reason refusal map (function key → reason class) for
+    hash-verified entries the eligibility screen refused — the
+    aggregate 'not reusable' figure hid which driver mass-fired
+    (observed live: 1,461 re-reviews at one segment start, reason
+    split unknowable from the logs)."""
+
+    def _stats_for(self, tmp_path, entry_over, current_model="model-a"):
+        target = _write_target(tmp_path)
+        project = _project_with(tmp_path, _entry(target, **entry_over))
+        stats: dict = {}
+        sink: dict = {}
+        compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model=current_model,
+            reuse_stats=stats,
+        )
+        return stats, sink
+
+    def test_context_reduced_counted(self, tmp_path):
+        stats, sink = self._stats_for(tmp_path, {"context_reduced": True})
+        assert stats == {"auth.c:check_pw": "context_reduced"}
+        assert sink == {}
+
+    def test_model_changed_counted(self, tmp_path):
+        stats, sink = self._stats_for(
+            tmp_path, {"model": "model-b"}, current_model="model-a",
+        )
+        assert stats == {"auth.c:check_pw": "model_changed"}
+        assert sink == {}
+
+    def test_strategy_changed_counted(self, tmp_path):
+        stats, sink = self._stats_for(
+            tmp_path, {"strategies": ["some_retired_strategy"]},
+        )
+        assert stats == {"auth.c:check_pw": "strategy_changed"}
+        assert sink == {}
+
+    def test_eligible_entry_counts_nothing(self, tmp_path):
+        stats, sink = self._stats_for(tmp_path, {})
+        assert stats == {}
+        assert "auth.c:check_pw" in sink
+
+    def test_key_refused_in_both_folds_counts_once(self, tmp_path):
+        # A resumed project run screens the same function in its OWN
+        # journal fold AND the project-index fold. Refused twice, it
+        # is re-reviewed ONCE — the stats (and the summary built from
+        # them) must say once.
+        from core.coverage.journal import append_entry, merge_into_index
+
+        target = _write_target(tmp_path)
+        entry = _entry(target, model="model-b")
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir()
+        append_entry(run_dir, entry)
+        project = tmp_path / "project"
+        prior_dir = project / "run0"
+        prior_dir.mkdir(parents=True)
+        append_entry(prior_dir, _entry(target, model="model-b",
+                                       run_id="run0"))
+        merge_into_index(project, prior_dir)
+
+        stats: dict = {}
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], out_dir=run_dir,
+            project_dir=project, reuse_sink=sink,
+            own_run_reuse=True, current_model="model-a",
+            reuse_stats=stats,
+        )
+        assert stats == {"auth.c:check_pw": "model_changed"}
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
 
 
 class TestOutcomeFromEntry:

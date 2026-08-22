@@ -1419,6 +1419,16 @@ def _finalize_run(
         origin = "this run's prior segments" if segment else "prior runs"
         print(f"{reused} reused from {origin} (source unchanged, $0)",
               flush=True)
+    blocked = getattr(result, "reuse_blocked_reasons", None) or {}
+    if blocked:
+        # Per-reason split: context_reduced re-reviews are by design;
+        # a strategy_changed mass-fire points at unstable strategy
+        # inference inputs and deserves investigation, not silence.
+        split = ", ".join(
+            f"{cls}={n}" for cls, n in sorted(blocked.items()))
+        print(f"{sum(blocked.values())} hash-verified prior review(s) "
+              f"not reused ({split}) — re-reviewed at full cost",
+              flush=True)
     vend_skipped = getattr(result, "vendored_skipped", 0)
     vend_glanced = getattr(result, "vendored_glanced", 0)
     if vend_skipped or vend_glanced:

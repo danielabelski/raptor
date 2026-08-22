@@ -96,6 +96,7 @@ def compute_gaps(
     current_model: str | None = None,
     scope_floor: bool = True,
     own_run_reuse: bool = False,
+    reuse_stats: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Compute the list of unreviewed functions.
 
@@ -146,6 +147,12 @@ def compute_gaps(
             instead of the default blanket suppression (which assumes
             source stability within one process lifetime, an
             assumption a resumed run cannot make).
+        reuse_stats: When a dict is passed, hash-verified entries the
+            reuse eligibility screen refused are accumulated into it
+            as ``function key → reason class`` (``context_reduced`` /
+            ``model_changed`` / ``strategy_changed`` /
+            ``domain_model_context``) — unique per function — for the
+            run summary's per-reason split.
 
     Returns:
         List of gap dicts sorted by priority, each containing:
@@ -253,6 +260,7 @@ def compute_gaps(
         current_model=current_model,
         own_run_reuse=own_run_reuse,
         domain_ctx=domain_ctx,
+        reuse_stats=reuse_stats,
     )
     file_tool_coverage = _build_file_tool_coverage(coverage_records)
     entry_point_set = extract_context_map_set(context_map, "entry_points")
@@ -1392,6 +1400,7 @@ def _fold_journal_into_covered(
     current_model: str | None = None,
     own_run_reuse: bool = False,
     domain_ctx: dict | None = None,
+    reuse_stats: dict | None = None,
 ) -> None:
     """Fold review-journal entries into the covered-function set so
     LLM-reviewed functions suppress gaps mid-run.
@@ -1464,6 +1473,7 @@ def _fold_journal_into_covered(
                     current_model=current_model,
                     domain_ctx=domain_ctx,
                     source_label="same-run",
+                    reuse_stats=reuse_stats,
                 )
             else:
                 from .journal import is_function_grade, load_entries
@@ -1488,6 +1498,7 @@ def _fold_journal_into_covered(
                 current_strategies_fn=current_strategies_fn,
                 current_model=current_model,
                 domain_ctx=domain_ctx,
+                reuse_stats=reuse_stats,
             )
         except Exception:
             logger.warning(
@@ -1606,7 +1617,12 @@ def _reuse_ineligibility(
             return f"model changed ({entry_model} → {current_model})"
     if current_strategies_fn is not None:
         current = current_strategies_fn(key)
-        if current is not None and sorted(entry.strategies or []) != sorted(current):
+        if current is not None and (
+                frozenset(entry.strategies or []) != frozenset(current)):
+            # Set compare: the journaled order (and any duplicate) of
+            # the strategy names is presentation, not review context —
+            # only a different SET of strategy classes means the
+            # briefing materially changed.
             return "strategy set changed"
     if domain_ctx is not None:
         stale = _context_staleness(
@@ -1614,6 +1630,19 @@ def _reuse_ineligibility(
         if stale is not None:
             return stale
     return None
+
+
+#: Canonical reuse-block reason classes, from the reason strings
+#: :func:`_reuse_ineligibility` returns. Keys feed per-reason counts in
+#: the fold log line and the run summary (``reuse_stats``).
+def _reuse_block_class(reason: str) -> str:
+    if reason.startswith("context_reduced"):
+        return "context_reduced"
+    if reason.startswith("model changed"):
+        return "model_changed"
+    if reason.startswith("strategy set"):
+        return "strategy_changed"
+    return "domain_model_context"
 
 
 def _fold_project_index(
@@ -1627,6 +1656,7 @@ def _fold_project_index(
     current_strategies_fn=None,
     current_model: str | None = None,
     domain_ctx: dict | None = None,
+    reuse_stats: dict | None = None,
 ) -> None:
     """Fold the project journal index into ``covered``, hash-aware.
 
@@ -1688,6 +1718,7 @@ def _fold_project_index(
         current_model=current_model,
         domain_ctx=domain_ctx,
         source_label="prior-run",
+        reuse_stats=reuse_stats,
     )
 
 
@@ -1703,6 +1734,7 @@ def _verify_entries_fold(
     current_model: str | None,
     source_label: str,
     domain_ctx: dict | None = None,
+    reuse_stats: dict | None = None,
 ) -> None:
     """Hash-verify journal *entries* and fold them into ``covered``.
 
@@ -1717,6 +1749,17 @@ def _verify_entries_fold(
 
     ``source_label`` names the entry source in log lines
     (``same-run`` / ``prior-run``).
+
+    ``reuse_stats`` (optional dict) accumulates ``function key →
+    reason class`` for hash-verified entries the eligibility screen
+    refused (``context_reduced`` / ``model_changed`` /
+    ``strategy_changed`` / ``domain_model_context``) so callers can
+    surface the split — an aggregate "N not reusable" hides which
+    driver mass-fired (observed live: 1,461 re-reviews at one segment
+    start with no way to tell strategy churn from legitimate
+    reduced-context re-reviews). Keyed per function, not per entry:
+    a key refused in both the same-run and the project-index fold is
+    re-reviewed once and must count once.
 
     Finding-grade entries are dropped here as well as at the collapse
     (belt-and-braces): the same-run resume path feeds this fold from
@@ -1767,7 +1810,7 @@ def _verify_entries_fold(
     from core.staleness import hash_spans
 
     stale = 0
-    reuse_blocked = 0
+    reuse_blocked: dict[str, int] = {}
     for file_path, items in to_verify.items():
         resolved = safe_join(Path(target_path), file_path)
         if resolved is None or not resolved.is_file():
@@ -1826,7 +1869,14 @@ def _verify_entries_fold(
                     domain_ctx=domain_ctx,
                 )
                 if reason is not None:
-                    reuse_blocked += 1
+                    cls = _reuse_block_class(reason)
+                    reuse_blocked[cls] = reuse_blocked.get(cls, 0) + 1
+                    if reuse_stats is not None:
+                        # Keyed by function so a key refused in BOTH
+                        # folds (own journal + project index — normal
+                        # for a resumed project run) counts once: it
+                        # is re-reviewed once. First refusal wins.
+                        reuse_stats.setdefault(key, cls)
                     logger.debug(
                         "journal-fold: %s hash-verified but not "
                         "reusable (%s) — resurfacing for re-review",
@@ -1843,11 +1893,16 @@ def _verify_entries_fold(
             stale, source_label,
         )
     if reuse_blocked:
+        # Per-reason split, not an aggregate: the drivers have very
+        # different operator meaning (context_reduced re-reviews are
+        # by design; a strategy_changed mass-fire signals unstable
+        # strategy inference inputs).
+        split = ", ".join(
+            f"{cls}={n}" for cls, n in sorted(reuse_blocked.items()))
         logger.info(
             "journal-fold: %d hash-verified %s review(s) not "
-            "reusable (reduced-context / model / strategy / "
-            "domain-model context change) — resurfacing for re-review",
-            reuse_blocked, source_label,
+            "reusable (%s) — resurfacing for re-review",
+            sum(reuse_blocked.values()), source_label, split,
         )
 
 

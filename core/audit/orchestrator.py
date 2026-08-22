@@ -794,6 +794,12 @@ class OrchestratorResult:
     # hash unchanged). Counted separately from ``reviewed`` — no LLM
     # call happened for them this run.
     reused_from_prior: int = 0
+    # Hash-verified prior verdicts the reuse eligibility screen
+    # refused, counted per reason class (context_reduced /
+    # model_changed / strategy_changed / domain_model_context). The
+    # run summary prints the split so a re-review storm names its
+    # driver.
+    reuse_blocked_reasons: dict[str, int] = field(default_factory=dict)
     # Post-loop mechanical journal entries (taint-spec / negative-space
     # / postcondition checks appended after the review loop). Counted
     # separately from ``reviewed``: no LLM call happened for them, but
@@ -3678,6 +3684,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     # hash-verified, reuse-eligible prior-run journal entries; they
     # are imported as $0 outcomes just before the review loop.
     reuse_candidates: dict[str, Any] = {}
+    # Per-reason counts of hash-verified entries the reuse screen
+    # refused (context_reduced / model_changed / strategy_changed /
+    # domain_model_context) — surfaced in the run summary so a mass
+    # re-review is attributable to its driver.
+    reuse_blocked_stats: dict[str, int] = {}
     _same_run_reuse = (
         getattr(config, "same_run_reuse", False) and not config.force
     )
@@ -3717,6 +3728,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         reuse_sink=reuse_candidates if _reuse_enabled else None,
         current_model=_primary_model,
         own_run_reuse=_same_run_reuse,
+        reuse_stats=reuse_blocked_stats,
     )
 
     _joern_last_activity = [time.monotonic()]
@@ -4711,6 +4723,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "call_edges": call_edges,
         "tool_capabilities": tool_capabilities,
         "reuse_candidates": reuse_candidates,
+        "reuse_blocked_stats": reuse_blocked_stats,
     }
 
 
@@ -5782,6 +5795,13 @@ def _run_audit_body(
     joern_future = _prep["joern_future"]
     _joern_last_activity = _prep["joern_last_activity"]
     reuse_candidates = _prep.get("reuse_candidates") or {}
+    # Collapse the fold's per-function refusal map (key → reason
+    # class, unique per function) into per-class counts for the
+    # summary line.
+    _blocked_counts: dict[str, int] = {}
+    for _cls in (_prep.get("reuse_blocked_stats") or {}).values():
+        _blocked_counts[_cls] = _blocked_counts.get(_cls, 0) + 1
+    result.reuse_blocked_reasons = _blocked_counts
     iris_taint_specs = _prep["iris_taint_specs"]
     prior_constraints = _prep["prior_constraints"]
     gaps = _prep["gaps"]

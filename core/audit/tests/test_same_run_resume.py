@@ -140,6 +140,30 @@ class TestOwnRunReuseFold:
         assert "auth.c:check_pw" not in _gap_keys(gaps)
         assert sink == {}
 
+    def test_two_segment_resume_strategy_set_stable(self, tmp_path):
+        # Simulated multi-segment resume on an unchanged tree: strategy
+        # inference is a pure function of the stable checklist/target
+        # inputs, so a hash-verified segment-1 verdict must stay
+        # reusable at EVERY later segment start — not flip to
+        # "strategy set changed" once derived context wobbles (the
+        # live 1,461-re-review storm's driver, fed by a flapping CPG
+        # cache key).
+        target = _write_target(tmp_path)
+        run_dir = _run_dir(tmp_path, _entry(target))
+        for segment in (2, 3):
+            sink: dict = {}
+            stats: dict = {}
+            gaps = compute_gaps(
+                _checklist(target), [], out_dir=run_dir,
+                reuse_sink=sink, own_run_reuse=True,
+                current_model="model-a", reuse_stats=stats,
+            )
+            assert "auth.c:check_pw" in sink, f"segment {segment}"
+            assert "auth.c:check_pw" not in _gap_keys(gaps), (
+                f"segment {segment}"
+            )
+            assert stats == {}, f"segment {segment}: {stats}"
+
     def test_own_run_candidate_wins_over_project_index(self, tmp_path):
         """The run's own latest verdict beats a prior run's for the
         same function (first fold writes the sink; setdefault)."""

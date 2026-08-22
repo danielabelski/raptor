@@ -666,6 +666,114 @@ class TestHostileArgEscalation:
         assert writes == []
 
 
+class TestSymlinkAwareSuppression:
+    """Filtered audit mode decides should_log from a path string read
+    out of tracee memory. A symlink under an allowlisted/writable
+    prefix that aliases a file OUTSIDE the allowlist
+    (``<writable>/x -> <secrets>``) must NOT have its record
+    suppressed: the kernel resolves the real target while the lexical
+    match would hide the access (and with it the
+    credential_path_touch signal)."""
+
+    def _alias_layout(self, tmp_path):
+        allowed = tmp_path / "writable"
+        allowed.mkdir()
+        secrets = tmp_path / "secrets"
+        secrets.mkdir()
+        (secrets / "id_rsa").write_text("KEY MATERIAL")
+        (allowed / "x").symlink_to(secrets)
+        return allowed, str(allowed / "x" / "id_rsa")
+
+    def test_symlink_alias_out_of_allowlist_not_suppressed(self, tmp_path):
+        allowed, alias = self._alias_layout(tmp_path)
+        allowlist = [str(allowed)]
+        # The lexical layer alone matches — that was the pre-fix
+        # suppression condition.
+        assert tracer._path_in_allowlist(alias, allowlist) is True
+        # The suppression decision must refuse it.
+        assert tracer._suppress_allowlisted_path(alias, allowlist) is False
+
+    def test_real_file_under_allowlist_suppressed(self, tmp_path):
+        allowed = tmp_path / "writable"
+        allowed.mkdir()
+        p = allowed / "scratch.txt"
+        p.write_text("ok")
+        assert tracer._suppress_allowlisted_path(
+            str(p), [str(allowed)]) is True
+
+    def test_symlink_within_allowlist_still_suppressed(self, tmp_path):
+        """A symlink whose REAL target is also allowlisted is the
+        benign case — keep dropping it, or filtered mode regresses to
+        verbose for every in-tree symlink."""
+        allowed = tmp_path / "writable"
+        allowed.mkdir()
+        (allowed / "real.txt").write_text("ok")
+        (allowed / "link.txt").symlink_to(allowed / "real.txt")
+        assert tracer._suppress_allowlisted_path(
+            str(allowed / "link.txt"), [str(allowed)]) is True
+
+    def test_nonexistent_path_under_allowlist_suppressed(self, tmp_path):
+        """O_CREAT of a not-yet-existing file under a writable prefix:
+        realpath is the identity, the drop decision stands."""
+        allowed = tmp_path / "writable"
+        allowed.mkdir()
+        assert tracer._suppress_allowlisted_path(
+            str(allowed / "new-file"), [str(allowed)]) is True
+
+    def _dispatch_openat(self, arch_info, fake_helpers, tmp_path,
+                         abs_path, audit_filter):
+        from core.sandbox import audit_budget
+        budget = audit_budget.AuditBudget()
+        nr_openat = 257 if tracer._ARCH == "x86_64" else 56
+        tracer._handle_waitpid_event(
+            1000, _ptrace_event_status(tracer._PTRACE_EVENT_SECCOMP),
+            {1000}, 1000, arch_info,
+            tmp_path, budget,
+            audit_filter=audit_filter,
+            ptrace_cont=fake_helpers["ptrace_cont"],
+            read_regs=fake_helpers["read_regs"],
+            # openat(dirfd=AT_FDCWD-as-unsigned, path, O_RDONLY, ...)
+            decode_syscall=lambda regs, ai: (
+                nr_openat, [(1 << 64) - 100, 0xcafef00d, 0, 0, 0, 0]
+            ),
+            read_tracee_string=lambda pid, addr, max_bytes=4096: abs_path,
+            get_event_msg=fake_helpers["get_event_msg"],
+            write_record=fake_helpers["write_record"],
+            resolve_path=lambda pid, path, dirfd: abs_path,
+        )
+        return fake_helpers["calls"]["write_record"]
+
+    def test_event_loop_logs_symlink_aliased_read(
+            self, arch_info, fake_helpers, tmp_path):
+        """End-to-end through _handle_waitpid_event: the aliased open
+        must produce a record in filtered mode (pre-fix: dropped)."""
+        allowed, alias = self._alias_layout(tmp_path)
+        audit_filter = {
+            "verbose": False,
+            "read_allowlist": [str(allowed)],
+            "writable_paths": [str(allowed)],
+        }
+        records = self._dispatch_openat(
+            arch_info, fake_helpers, tmp_path, alias, audit_filter)
+        assert len(records) == 1
+        assert records[0]["path"] == alias
+
+    def test_event_loop_still_drops_genuine_allowlisted_read(
+            self, arch_info, fake_helpers, tmp_path):
+        allowed = tmp_path / "writable"
+        allowed.mkdir()
+        genuine = allowed / "notes.txt"
+        genuine.write_text("ok")
+        audit_filter = {
+            "verbose": False,
+            "read_allowlist": [str(allowed)],
+            "writable_paths": [str(allowed)],
+        }
+        records = self._dispatch_openat(
+            arch_info, fake_helpers, tmp_path, str(genuine), audit_filter)
+        assert records == []
+
+
 class TestRecordArgEnrichment:
     def test_write_record_decodes_socket_and_ioctl(self, tmp_path):
         import json as _json

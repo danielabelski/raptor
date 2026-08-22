@@ -915,6 +915,51 @@ def _path_in_allowlist(path: str, allowlist: list) -> bool:
     return False
 
 
+def _suppress_allowlisted_path(abs_path: str, allowlist: list) -> bool:
+    """Decide whether a would-be-allowed open record may be DROPPED in
+    filtered audit mode.
+
+    The lexical allowlist match alone is not sufficient to suppress:
+    ``abs_path`` is the string read from the tracee's memory, only
+    lexically normalised. A symlink under an allowlisted/writable
+    prefix can alias a file OUTSIDE the allowlist
+    (``<writable>/x -> ~/.ssh``): the kernel resolves the real target
+    while the lexical match hides the access — no race needed, and the
+    suppressed record is exactly the credential_path_touch signal
+    triage exists to surface. Only suppress when BOTH the lexical path
+    AND its fully symlink-resolved form fall inside the allowlist; any
+    resolution failure keeps the record. Over-reporting an allowed
+    read is acceptable, a silently suppressed credential read is not.
+
+    Resolution view: ``os.path.realpath`` runs in the TRACER's mount
+    view. That matches the tracee's for RAPTOR's layouts — audit mode
+    either runs without pivot_root, or the mount-ns backend binds
+    target/output at their ORIGINAL absolute paths — the same
+    assumption ``_resolve_tracee_path`` documents above. A layout that
+    moves paths inside the sandbox would make resolution fail toward
+    keeping the record (the alias simply won't match), never toward
+    suppressing it.
+
+    Accepted residual (TOCTOU): a sibling tracee thread can rewrite
+    the path buffer between our process_vm_readv and PTRACE_CONT, so
+    the kernel may consume a different path than the one this decision
+    (and the record) saw. Audit mode is log-and-allow; pinning the
+    argument the kernel consumes needs a different mechanism
+    (seccomp user-notify with argument capture), which this tracer
+    deliberately does not attempt. The symlink alias above — reachable
+    without any race — is what this helper closes.
+    """
+    if not _path_in_allowlist(abs_path, allowlist):
+        return False
+    try:
+        real = os.path.realpath(abs_path)
+    except OSError:
+        return False
+    if real != abs_path and not _path_in_allowlist(real, allowlist):
+        return False
+    return True
+
+
 def _decode_sockaddr(pid: int, addr: int,
                     addrlen: int) -> tuple | None:
     """Decode a sockaddr struct from the tracee's address space.
@@ -1837,7 +1882,11 @@ def _handle_waitpid_event(
                             if write_intent
                             else audit_filter.get("read_allowlist") or []
                         )
-                        if _path_in_allowlist(abs_path, allowlist):
+                        # Symlink-aware: a lexical match alone must
+                        # not drop the record — see
+                        # _suppress_allowlisted_path.
+                        if _suppress_allowlisted_path(abs_path,
+                                                      allowlist):
                             should_log = False
                 elif name == "connect" and sock is not None:
                     family, port, ip = sock

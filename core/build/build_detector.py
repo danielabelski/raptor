@@ -1586,7 +1586,10 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             # which silently broke Bedrock / Vertex / Azure /
             # custom-endpoint setups. The downstream client is
             # ``claude`` either way, so the policy is identical.
-            from core.llm.cc_proxy_hosts import proxy_hosts_for_cc_dispatch
+            from core.llm.cc_proxy_hosts import (
+                proxy_hosts_for_cc_dispatch,
+                readable_paths_for_cc_dispatch,
+            )
             # env: backend overlay (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) so a
             # Bedrock/Vertex-backed CLI child can authenticate; the
             # sandbox's proxy env still overrides HTTPS_PROXY.
@@ -1609,6 +1612,15 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
                 # skipped rather than run through the weaker tier.
                 require_proxy_netns=True,
                 proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
+                # Read confinement, same posture as the other CC
+                # dispatch sites (skill_dispatch, the sub-agent
+                # dispatcher): the child carries backend credentials
+                # in env and reads hostile repo content + compiler
+                # stderr, so on Landlock-only hosts restrict_reads is
+                # what keeps prompt-steered Read/Grep/Glob away from
+                # $HOME and /proc beyond the calibrated CLI floor.
+                restrict_reads=True,
+                readable_paths=readable_paths_for_cc_dispatch(claude_bin),
                 caller_label="codeql-build-detect",
                 input=prompt, capture_output=True, text=True, timeout=180,
             )

@@ -86,3 +86,46 @@ def test_dry_run_passes_read_confinement(tmp_path):
     ):
         BuildDetector(tmp_path)._dry_run(tmp_path / "script.py")
     assert captured.get("restrict_reads") is True
+
+
+def test_cc_suggest_flags_passes_read_confinement(tmp_path, monkeypatch):
+    """The flag-inference CC child carries backend credentials in its
+    env and reads hostile repo content — the sandbox call must thread
+    restrict_reads + the calibrated CC readable-paths floor, same as
+    the other CC dispatch sites."""
+    import shutil as shutil_mod
+
+    import core.llm.cc_adapter as cc_adapter
+    import core.llm.cc_proxy_hosts as cc_proxy_hosts
+    import core.security.cc_trust as cc_trust
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"includes": [], "defines": []}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(shutil_mod, "which",
+                        lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cc_trust, "check_repo_claude_trust",
+                        lambda p: False)
+    monkeypatch.setattr(cc_adapter, "cc_subprocess_env",
+                        lambda **k: {"PATH": "/usr/bin"})
+    monkeypatch.setattr(cc_proxy_hosts, "proxy_hosts_for_cc_dispatch",
+                        lambda b, **k: ["api.anthropic.com"])
+    monkeypatch.setattr(cc_proxy_hosts, "readable_paths_for_cc_dispatch",
+                        lambda b: ["/opt/cc-floor"])
+
+    with mock.patch(
+        "core.build.build_detector._sandbox_run", side_effect=fake_run,
+    ):
+        BuildDetector(tmp_path)._cc_suggest_flags(
+            [{"file": "a.c", "error": "missing header"}], "cpp",
+        )
+
+    assert captured.get("restrict_reads") is True
+    assert captured.get("readable_paths") == ["/opt/cc-floor"]

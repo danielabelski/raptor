@@ -18,6 +18,7 @@ predicate edge cases.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from .image_ref import ImageRef, parse_image_ref
@@ -25,6 +26,83 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+# RFC-1123 hostname label: alnum, optional interior hyphens, 63 max.
+_HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_registry_host(registry: str) -> None:
+    """Refuse registry hosts that would point egress at non-global
+    addresses, plus malformed hostnames. Raises :class:`ValueError`.
+
+    Registry names outside the well-known families are
+    target-derived (Dockerfile FROM lines, compose/Helm/CI files in
+    a scanned repo) — attacker-influenced. Without this gate they
+    pass through as their own host, join the sandbox proxy
+    allowlist, and drive HTTPS GETs at loopback / RFC1918 /
+    link-local endpoints (including 169.254.169.254 cloud metadata).
+
+    Rules:
+      * IP-literal hosts must be globally routable
+        (``ipaddress.is_global`` — refuses loopback, private,
+        link-local, shared 100.64/10, reserved, unspecified).
+      * ``localhost`` / ``*.localhost`` refused by name.
+      * Hostnames must be valid RFC-1123 shapes (refuses
+        underscores, empty labels, over-length names) so malformed
+        names can't smuggle odd syntax into allowlists or URLs.
+      * An optional ``:port`` must be a sane numeric port.
+    """
+    host = registry
+    port: str | None = None
+    if host.startswith("["):
+        # Bracketed IPv6, optionally with :port.
+        end = host.find("]")
+        if end < 0:
+            raise ValueError(f"malformed registry host {registry!r}")
+        rest = host[end + 1:]
+        host = host[1:end]
+        if rest:
+            if not rest.startswith(":"):
+                raise ValueError(
+                    f"malformed registry host {registry!r}")
+            port = rest[1:]
+        try:
+            ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = \
+                ipaddress.ip_address(host)
+        except ValueError:
+            raise ValueError(
+                f"malformed registry host {registry!r}: bracketed "
+                f"authority is not an IP literal") from None
+    else:
+        if host.count(":") == 1:
+            host, port = host.split(":", 1)
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+    if port is not None:
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            raise ValueError(
+                f"malformed registry port in {registry!r}")
+    if ip is not None:
+        if not ip.is_global:
+            raise ValueError(
+                f"refusing registry host {registry!r}: {ip} is not "
+                f"globally routable (loopback/private/link-local "
+                f"registries from target-derived references are "
+                f"refused; SSRF defence)")
+        return
+    name = host.lower().rstrip(".")
+    if name == "localhost" or name.endswith(".localhost"):
+        raise ValueError(
+            f"refusing registry host {registry!r}: localhost "
+            f"registries from target-derived references are refused "
+            f"(SSRF defence)")
+    if not name or len(name) > 253 or not all(
+        _HOSTNAME_LABEL_RE.match(label) for label in name.split(".")
+    ):
+        raise ValueError(f"malformed registry hostname {registry!r}")
 
 
 # Each entry is (predicate, hosts). The predicate takes the image's
@@ -121,7 +199,10 @@ def registry_hosts_for(image: str | ImageRef) -> list[str]:
         # itself. Operators with self-hosted / corporate registries
         # always satisfy this (their registry IS its own host); the
         # failure mode for genuinely-bogus references is later, when
-        # the auth or manifest call fails clearly.
+        # the auth or manifest call fails clearly. Unknown names are
+        # target-derived, so they must pass the address / hostname
+        # policy BEFORE joining any egress allowlist.
+        _validate_registry_host(registry)
         out.append(registry)
 
     # Dedup, preserve order.
@@ -174,6 +255,13 @@ def api_endpoint_for(registry: str) -> str:
     """
     if registry == "docker.io":
         return "registry-1.docker.io"
+    # Same address / hostname policy as the allowlist path — the
+    # client resolves every request URL through here, so a
+    # target-derived registry naming a loopback / private /
+    # metadata endpoint is refused even when the caller skipped
+    # registry_hosts_for. Well-known family hosts all satisfy the
+    # policy trivially.
+    _validate_registry_host(registry)
     return registry
 
 

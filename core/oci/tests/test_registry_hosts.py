@@ -9,6 +9,8 @@ additions don't shift behaviour silently.
 
 from __future__ import annotations
 
+import pytest
+
 from core.oci.image_ref import parse_image_ref
 from core.oci.registry_hosts import registry_hosts_for
 
@@ -159,9 +161,11 @@ def test_unknown_registry_returns_self():
     assert hosts == ["my-registry.corp.example"]
 
 
-def test_localhost_registry():
-    hosts = registry_hosts_for("localhost:5000/img:tag")
-    assert hosts == ["localhost:5000"]
+def test_localhost_registry_refused():
+    """Target-derived references naming loopback registries are an
+    SSRF vector (they would join the egress allowlist); refused."""
+    with pytest.raises(ValueError, match="localhost"):
+        registry_hosts_for("localhost:5000/img:tag")
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +212,58 @@ def test_api_endpoint_for_self_hosted_passthrough():
 def test_api_endpoint_for_quay_passthrough():
     from core.oci.registry_hosts import api_endpoint_for
     assert api_endpoint_for("quay.io") == "quay.io"
+
+
+# ---------------------------------------------------------------------------
+# Address / hostname policy for target-derived registries
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("image", [
+    "169.254.169.254/latest/meta-data:x",       # cloud metadata
+    "127.0.0.1:8443/img:tag",                   # loopback IP
+    "10.0.0.8:5000/img:tag",                    # RFC1918
+    "172.16.3.4/img:tag",                       # RFC1918
+    "192.168.1.1:5000/img:tag",                 # RFC1918
+    "100.64.0.1:5000/img:tag",                  # shared address space
+    "0.0.0.0:5000/img:tag",                     # unspecified
+    "[::1]:5000/img:tag",                       # IPv6 loopback
+    "[fe80::1]:5000/img:tag",                   # IPv6 link-local
+])
+def test_non_global_ip_literal_registry_refused(image):
+    """Target-derived references must not point egress at internal
+    or metadata endpoints via IP-literal registries."""
+    with pytest.raises(ValueError, match="SSRF|not\\b.*routable"):
+        registry_hosts_for(image)
+
+
+@pytest.mark.parametrize("image", [
+    "evil_host.com/img:tag",                    # underscore label
+    "bad..name.com/img:tag",                    # empty label
+    "-leadingdash.com/img:tag",                 # bad label shape
+    "host.example:99999/img:tag",               # bogus port
+    "host.example:0/img:tag",                   # bogus port
+])
+def test_malformed_registry_hostnames_refused(image):
+    with pytest.raises(ValueError, match="malformed"):
+        registry_hosts_for(image)
+
+
+def test_global_ip_literal_registry_allowed():
+    """A globally-routable IP literal is unusual but legitimate."""
+    assert registry_hosts_for("8.8.8.8:5000/img:tag") == ["8.8.8.8:5000"]
+
+
+def test_corporate_hostname_registry_still_allowed():
+    assert registry_hosts_for("registry.corp.example/img:tag") \
+        == ["registry.corp.example"]
+
+
+def test_api_endpoint_refuses_non_global_registry():
+    """The client resolves every request URL through
+    api_endpoint_for — the same policy applies there so callers that
+    skip registry_hosts_for get no weaker gate."""
+    from core.oci.registry_hosts import api_endpoint_for
+    with pytest.raises(ValueError, match="SSRF|not\\b.*routable"):
+        api_endpoint_for("169.254.169.254")
+    with pytest.raises(ValueError, match="localhost"):
+        api_endpoint_for("localhost:5000")

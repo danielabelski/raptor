@@ -135,6 +135,16 @@ _MAX_INFLIGHT = 32
 # already produce.
 _CONNECT_DEADLINE_S = 120.0
 
+# Watchdog deadline for everything BEFORE a worker legitimately enters
+# the bounded EINPROGRESS wait: sockaddr read, policy checks, and the
+# connect(2) entry itself — all sub-millisecond for every legitimate
+# shape even on a loaded host (a nonblocking connect returns
+# immediately; the only way to spend real time here is the OFD flag
+# race parking a worker in a blocking connect), so 3 s is a >1000x
+# margin. Workers that reach the EINPROGRESS poll extend their
+# deadline to the full connect budget before waiting.
+_PRE_CONNECT_DEADLINE_S = 3.0
+
 _libc = None
 
 
@@ -323,6 +333,21 @@ class UnixScopeSupervisor:
         self._label = label
         self._closed = threading.Event()
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
+        # Per-notification deadlines, swept by serve_forever's poll
+        # tick. O_NONBLOCK lives on the OPEN FILE DESCRIPTION shared
+        # with the child, so a sibling child thread can clear it
+        # between the worker's F_SETFL and its connect(2) — parking
+        # the worker in a fully BLOCKING connect that the EINPROGRESS
+        # poll path never bounds. The watchdog answers the
+        # notification (ETIMEDOUT) at deadline REGARDLESS of worker
+        # state, so the CHILD's syscall — and with it the run's
+        # walltime — is bounded even when the worker stays parked.
+        # Parked workers keep their inflight slot (never recycled
+        # while parked): at most _MAX_INFLIGHT threads + socket dups
+        # park, further connects fail EAGAIN (closed, not open), and
+        # the dups release at teardown.
+        self._notif_lock = threading.Lock()
+        self._notif_deadlines: dict[int, float] = {}
         # The run's declared TCP policy. Landlock CONNECT_TCP rules are
         # task-scoped and never evaluate for a connect WE execute, so
         # the supervisor is the enforcement point on this path. None
@@ -394,6 +419,7 @@ class UnixScopeSupervisor:
                     events = poller.poll(500)
                 except OSError:
                     return
+                self._sweep_expired()
                 if not events:
                     continue
                 if any(ev & (select.POLLNVAL | select.POLLERR | select.POLLHUP)
@@ -415,6 +441,9 @@ class UnixScopeSupervisor:
                 if not self._inflight.acquire(blocking=False):
                     self._respond(nid, -errno.EAGAIN)
                     continue
+                with self._notif_lock:
+                    self._notif_deadlines[nid] = (
+                        time.monotonic() + _PRE_CONNECT_DEADLINE_S)
                 threading.Thread(
                     target=self._handle_one,
                     args=(nid, pid, nr, a0, a1, a2),
@@ -425,6 +454,43 @@ class UnixScopeSupervisor:
             self.close()
 
     # -- notification handling ----------------------------------------
+
+    def _sweep_expired(self) -> None:
+        """Answer notifications whose worker blew its deadline.
+
+        The deny is authoritative for the CHILD (its syscall returns
+        ETIMEDOUT); the worker may stay parked (see _notif_deadlines)
+        and its own late respond is rejected by the kernel (unknown
+        id) and suppressed. A pathname connect that later completes on
+        the parked dup was ALREADY policy-validated, so the late
+        completion grants nothing policy denied — the child merely
+        holds a socket that connected after it saw ETIMEDOUT.
+        """
+        now = time.monotonic()
+        with self._notif_lock:
+            expired = [nid for nid, dl in self._notif_deadlines.items()
+                       if dl <= now]
+            for nid in expired:
+                del self._notif_deadlines[nid]
+        for nid in expired:
+            logger.warning(
+                "unix-scope[%s]: notification %d exceeded its deadline"
+                " — answering ETIMEDOUT (worker may be parked on a"
+                " child-schedule target)", self._label, nid)
+            self._respond(nid, -errno.ETIMEDOUT)
+
+    def _deregister_notif(self, nid: int) -> None:
+        with self._notif_lock:
+            self._notif_deadlines.pop(nid, None)
+
+    def _extend_notif(self, nid: int, seconds: float) -> None:
+        """Called when a worker enters a LEGITIMATE bounded wait (the
+        EINPROGRESS poll) — extend the watchdog to the wait's own
+        budget. Only ever extends a still-registered notification."""
+        with self._notif_lock:
+            if nid in self._notif_deadlines:
+                self._notif_deadlines[nid] = (
+                    time.monotonic() + seconds + 10.0)
 
     def _respond(self, nid: int, error: int, val: int = 0) -> None:
         resp = struct.pack(_RESP_FMT, nid, val, error, 0)
@@ -444,9 +510,11 @@ class UnixScopeSupervisor:
         try:
             error, val = self._decide_and_execute(
                 nid, pid, nr, sockfd, addr_ptr, addr_len)
+            self._deregister_notif(nid)
             self._respond(nid, error, val)
         except Exception:  # noqa: BLE001 — supervisor must always answer; deny on any internal error
             logger.debug("unix-scope: handler error", exc_info=True)
+            self._deregister_notif(nid)
             self._respond(nid, -errno.EPERM)
         finally:
             self._inflight.release()
@@ -493,12 +561,12 @@ class UnixScopeSupervisor:
         try:
             if family != socket.AF_UNIX:
                 return self._connect_inet_policied(dupfd, addr, family,
-                                                   pid)
+                                                   pid, nid=nid)
             path = addr[2:addr_len]
             nul = path.find(b"\x00")
             if len(path) == 0:
                 # Unnamed — kernel returns EINVAL; execute as read.
-                return self._connect_raw(dupfd, addr)
+                return self._connect_raw(dupfd, addr, nid=nid)
             if nul == 0:
                 # Abstract — netns-scoped, so only safe when THIS run
                 # gave the child its own netns. On shared-netns runs
@@ -506,7 +574,7 @@ class UnixScopeSupervisor:
                 # (Landlock's ABI-6 abstract scope is task-scoped and
                 # never evaluates for a supervisor-executed connect).
                 if self._netns_isolated:
-                    return self._connect_raw(dupfd, addr)
+                    return self._connect_raw(dupfd, addr, nid=nid)
                 logger.warning(
                     "unix-scope[%s]: denied abstract AF_UNIX connect "
                     "%r from pid %d — the child shares the host "
@@ -522,12 +590,13 @@ class UnixScopeSupervisor:
                     "path %r from pid %d", self._label,
                     path[:64], pid)
                 return -errno.EPERM, 0
-            return self._connect_pathname(dupfd, pid, path)
+            return self._connect_pathname(dupfd, pid, path, nid=nid)
         finally:
             os.close(dupfd)
 
     def _connect_inet_policied(self, dupfd: int, addr: bytes,
-                               family: int, pid: int) -> tuple[int, int]:
+                               family: int, pid: int,
+                               nid: int | None = None) -> tuple[int, int]:
         """Re-apply the run's declared TCP policy before executing.
 
         Landlock CONNECT_TCP rules live in the CHILD's task domain;
@@ -552,9 +621,10 @@ class UnixScopeSupervisor:
                         "allowed_tcp_ports %s", self._label, port, pid,
                         sorted(self._allowed_tcp_ports))
                     return -errno.EACCES, 0
-        return self._connect_raw(dupfd, addr)
+        return self._connect_raw(dupfd, addr, nid=nid)
 
-    def _connect_raw(self, dupfd: int, addr: bytes) -> tuple[int, int]:
+    def _connect_raw(self, dupfd: int, addr: bytes,
+                     nid: int | None = None) -> tuple[int, int]:
         """Execute connect(2) with the address bytes WE read — immune
         to the child rewriting its buffer afterwards.
 
@@ -580,6 +650,22 @@ class UnixScopeSupervisor:
             except OSError:
                 return -errno.EPERM, 0
         try:
+            # Re-assert O_NONBLOCK IMMEDIATELY before the connect: the
+            # flag lives on the shared open file description, so a
+            # sibling child thread can clear it at any point — this
+            # narrows the window to a few instructions but CANNOT
+            # close it (kernel fact, no private status flags exist for
+            # a dup of the same OFD). A child that wins the race parks
+            # this worker in a blocking connect; the per-notification
+            # watchdog in serve_forever then answers the child's
+            # syscall with ETIMEDOUT at deadline, so the run is never
+            # held hostage — see _notif_deadlines for the bounded
+            # worker-leak accounting.
+            if not child_nonblocking:
+                try:
+                    fcntl.fcntl(dupfd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                except OSError:
+                    return -errno.EPERM, 0
             ctypes.set_errno(0)
             rc = libc.connect(dupfd, addr, len(addr))
             err = ctypes.get_errno() if rc < 0 else 0
@@ -594,7 +680,10 @@ class UnixScopeSupervisor:
                 return -errno.EAGAIN, 0
             if err != errno.EINPROGRESS:
                 return -(err or errno.EPERM), 0
-            # INET stream handshake in flight: wait, bounded.
+            # INET stream handshake in flight: wait, bounded. This is
+            # the one legitimate long wait — tell the watchdog.
+            if nid is not None:
+                self._extend_notif(nid, _CONNECT_DEADLINE_S)
             import select
             poller = select.poll()
             try:
@@ -625,7 +714,8 @@ class UnixScopeSupervisor:
                     fcntl.fcntl(dupfd, fcntl.F_SETFL, fl)
 
     def _connect_pathname(self, dupfd: int, pid: int,
-                          path: bytes) -> tuple[int, int]:
+                          path: bytes,
+                          nid: int | None = None) -> tuple[int, int]:
         # Resolve inside the CHILD's mount view, refusing symlinks and
         # magic links wholesale. The O_PATH fd pins the final inode.
         try:
@@ -665,7 +755,7 @@ class UnixScopeSupervisor:
             # policy just validated, regardless of later path games.
             proxied = f"/proc/self/fd/{target_fd}".encode()
             addr = struct.pack("=H", socket.AF_UNIX) + proxied + b"\x00"
-            return self._connect_raw(dupfd, addr)
+            return self._connect_raw(dupfd, addr, nid=nid)
         finally:
             if target_fd is not None:
                 os.close(target_fd)

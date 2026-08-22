@@ -284,27 +284,33 @@ def _guard_import_output_dir(output_base: Path, project_name: str) -> Path:
     return output_dir
 
 
-def _demote_stampless_imported_annotations(output_dir: Path) -> None:
-    """Stamp ``provenance=imported`` onto every restored annotation
-    that arrived without an invocation-context stamp.
+def _demote_imported_annotations(output_dir: Path) -> None:
+    """Stamp ``provenance=imported`` onto EVERY restored annotation,
+    regardless of what stamp the archive shipped.
 
-    A hostile export can ship ``source=human`` notes with NO
-    tty/provenance keys — bytes indistinguishable from pre-stamp-era
-    operator notes — to mass-mark vulnerable functions clean with
-    operator authority after import. The zip severed
-    whatever provenance the notes ever had, so the import stamps the
-    channel they came through: ``provenance=imported`` classifies as
-    hint tier and never earns human grade (see
-    :mod:`core.annotations.provenance`). Stamped notes (interactive
-    / non-tty) are restored byte-faithfully — their stamp already
-    grades them.
+    The archive is unsigned and its bytes are attacker-authored at
+    will: a hostile export can ship ``source=human`` notes pre-stamped
+    ``provenance=interactive-tty`` + ``tty=stdin`` — bytes
+    indistinguishable from a real operator's CLI write — to mass-mark
+    vulnerable functions clean with operator authority after import.
+    The stamp is caller-asserted text; nothing binds it to an actual
+    TTY, and the zip channel severs whatever provenance the note ever
+    had. So the import stamps the channel every note came through:
+    ``provenance=imported`` classifies as hint tier and never earns
+    human grade (see :mod:`core.annotations.provenance` — the
+    ``provenance`` tag wins over any retained ``tty`` key, and every
+    elevated-weight reader gates on :func:`is_human_grade`).
+
+    The note's text and other metadata (status, source, tty, custom
+    keys) are preserved for display; a pre-existing ``provenance``
+    claim is kept visible under ``provenance-claimed`` (a display-only
+    key no reader trusts).
 
     Fail-closed per note: a restored section the write path refuses
     to re-serialise (values that would corrupt the on-disk format)
-    is REMOVED rather than left stamp-less.
+    is REMOVED rather than left carrying its archive-supplied stamp.
     """
     from core.annotations.models import Annotation
-    from core.annotations.provenance import LEGACY, classify_provenance
     from core.annotations.provenance import IMPORTED as _IMPORTED
     from core.annotations.provenance import PROVENANCE_KEY as _PROV_KEY
     from core.annotations.storage import (
@@ -317,9 +323,16 @@ def _demote_stampless_imported_annotations(output_dir: Path) -> None:
         if not ann_base.is_dir() or ann_base.is_symlink():
             continue
         for ann in list(iter_all_annotations(ann_base)):
-            if classify_provenance(ann.metadata) != LEGACY:
+            if ann.metadata.get(_PROV_KEY) == _IMPORTED:
+                # Already demoted (idempotent re-run, or the archive
+                # self-stamped the demoted tag — nothing to launder).
                 continue
             meta = dict(ann.metadata)
+            claimed = meta.get(_PROV_KEY)
+            if claimed:
+                # Keep the archive's claim visible for operator
+                # display under a key no reader grades on.
+                meta.setdefault("provenance-claimed", claimed)
             meta[_PROV_KEY] = _IMPORTED
             try:
                 write_annotation(
@@ -609,13 +622,13 @@ def import_project(zip_path: Path, projects_dir: Path,
         msg = "Invalid zip file"
         raise ValueError(msg) from None
 
-    # Demote restored stamp-less annotations to hint tier BEFORE the
-    # project registers (readers must never see un-stamped imports).
-    # A failure here fails the import closed: remove the extracted
-    # tree rather than register a project carrying notes that would
-    # read as pre-stamp operator authority.
+    # Demote ALL restored annotations to hint tier BEFORE the project
+    # registers (readers must never see archive-supplied stamps as
+    # anything but imported). A failure here fails the import closed:
+    # remove the extracted tree rather than register a project
+    # carrying notes that would read as operator authority.
     try:
-        _demote_stampless_imported_annotations(output_dir)
+        _demote_imported_annotations(output_dir)
     except Exception as e:
         shutil.rmtree(output_dir, ignore_errors=True)
         msg = f"Import failed while stamping restored annotations: {e}"

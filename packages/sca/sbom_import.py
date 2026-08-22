@@ -43,6 +43,7 @@ import logging
 import re
 
 from .models import Confidence, Dependency, PinStyle
+from .parsers import _safe_read
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -89,11 +90,25 @@ def parse_cyclonedx(path: Path) -> tuple[list[Dependency], list[str]]:
     Errors that prevent the entire SBOM from being read (bad
     JSON, wrong shape) raise ``ValueError``.
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        msg = f"failed to read SBOM file {path}: {e}"
-        raise ValueError(msg) from e
+    # Bounded read: an SBOM is target/operator-supplied input, and an
+    # unbounded read_text is a memory-exhaustion primitive. The 50 MB
+    # package cap comfortably covers legitimate monorepo SBOMs.
+    text = _safe_read.read_bounded(path)
+    if text is None:
+        cap = _safe_read._MAX_PARSER_BYTES
+        try:
+            size = path.stat().st_size
+        except OSError as e:
+            msg = f"failed to read SBOM file {path}: {e}"
+            raise ValueError(msg) from e
+        if size > cap:
+            msg = (
+                f"SBOM file {path} is {size} bytes — exceeds the "
+                f"{cap}-byte read cap; refusing to parse"
+            )
+        else:
+            msg = f"failed to read SBOM file {path}"
+        raise ValueError(msg)
 
     try:
         data = json.loads(text)

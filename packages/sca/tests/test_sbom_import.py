@@ -355,3 +355,28 @@ def test_parse_npm_scoped_no_version(tmp_path: Path) -> None:
     assert len(deps) == 1
     assert deps[0].name == "@scope/name"
     assert deps[0].version is None
+
+
+def test_oversized_sbom_is_refused_with_size_error(tmp_path: Path) -> None:
+    """An SBOM over the read cap fails closed with a size-naming error."""
+    import os
+
+    from packages.sca.parsers import _safe_read
+
+    sbom = _write_cyclonedx(
+        tmp_path / "bom.json",
+        [{
+            "type": "library", "name": "left-pad", "version": "1.3.0",
+            "purl": "pkg:npm/left-pad@1.3.0",
+        }],
+    )
+    # Under the cap: parses normally.
+    deps, _warnings = parse_cyclonedx(sbom)
+    assert [d.name for d in deps] == ["left-pad"]
+
+    # Sparse-extend past the real cap: the stat gate fires BEFORE any
+    # read, so no 50 MB of data is ever written or buffered.
+    oversize = _safe_read._MAX_PARSER_BYTES + 1
+    os.truncate(sbom, oversize)
+    with pytest.raises(ValueError, match=rf"{oversize} bytes.*read cap"):
+        parse_cyclonedx(sbom)

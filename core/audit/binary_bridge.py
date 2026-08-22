@@ -388,7 +388,11 @@ def _merge_from_build_cache(
     validation). When the entry envelope records the producing binary's
     content hash, it must match the current binary's hash — a forged
     build-id then cannot substitute artifacts computed for a different
-    binary. No known current build-ids → nothing merges.
+    binary. No known current build-ids → nothing merges. A current
+    binary that cannot be hashed (deleted / unreadable / race) does
+    NOT degrade to build-id scope: its merge is skipped entirely —
+    without the current binary's content hash there is nothing to bind
+    foreign envelopes to, and build-ids are linker-choosable.
     """
     if not current_build_ids or not hasattr(cache, "get"):
         if current_build_ids is None:
@@ -398,22 +402,50 @@ def _merge_from_build_cache(
             )
         return
     for build_id, binary_path in current_build_ids.items():
-        expected_sha = None
-        if binary_path and Path(binary_path).is_file():
-            try:
-                from .build_id_cache import _binary_sha256
+        if not binary_path or not Path(binary_path).is_file():
+            logger.warning(
+                "build_id_cache merge skipped for build-id %s: current "
+                "binary %r is not a readable file — refusing "
+                "build-id-scoped merge (fail closed)",
+                build_id, binary_path,
+            )
+            continue
+        try:
+            from .build_id_cache import _binary_sha256
 
-                expected_sha = _binary_sha256(binary_path)
-            except Exception:  # noqa: BLE001 — binding check degrades to build-id scope
-                expected_sha = None
+            expected_sha = _binary_sha256(binary_path)
+        except Exception:  # noqa: BLE001 — unhashable = no binding = no merge
+            expected_sha = None
+        if not expected_sha:
+            logger.warning(
+                "build_id_cache merge skipped for build-id %s: current "
+                "binary %s cannot be hashed — refusing build-id-scoped "
+                "merge (fail closed)",
+                build_id, binary_path,
+            )
+            continue
         try:
             envelope = cache.get(
                 build_id, "layer0-findings",
                 expected_binary_sha256=expected_sha,
             )
         except TypeError:
-            # Older cache object without the binding kwarg.
+            # Older cache object without the binding kwarg: read at
+            # build-id scope, then enforce the content binding here so
+            # the injected object cannot skip it (envelopes without a
+            # recorded hash keep their legacy build-id-scope
+            # readability, matching BuildIDCache.get).
             envelope = cache.get(build_id, "layer0-findings")
+            if isinstance(envelope, dict):
+                recorded = envelope.get("binary_sha256") or ""
+                if recorded and recorded != expected_sha:
+                    logger.warning(
+                        "build_id_cache merge skipped for build-id %s: "
+                        "envelope records binary_sha256 %s but the "
+                        "current binary hashes to %s — content mismatch",
+                        build_id, recorded[:16], expected_sha[:16],
+                    )
+                    continue
         except Exception:
             logger.debug(
                 "build_id_cache read failed for %s", build_id,

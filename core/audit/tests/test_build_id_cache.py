@@ -112,32 +112,84 @@ class TestLoadCache:
 
 
 class TestImportHelpers:
+    """The import helpers REQUIRE the envelope to be content-hash
+    bound to the named on-disk binary — the shared cache is
+    externally writable and build-ids are linker-choosable, so any
+    unverifiable shape (no binary, unhashable binary, unstamped
+    envelope, hash mismatch) reads as None (fail closed)."""
+
+    @staticmethod
+    def _binary(tmp_path, content=b"binary bytes"):
+        from core.audit.build_id_cache import _binary_sha256
+
+        binary = tmp_path / "app"
+        binary.write_bytes(content)
+        return binary, _binary_sha256(binary)
+
     def test_import_validate_evidence(self, tmp_path):
-        cache = BuildIDCache(cache_dir=tmp_path)
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, sha = self._binary(tmp_path)
         cache.put("abc123", "feasibility", {
             "verdict": "likely_exploitable",
             "mitigations": {"pie": True},
-        })
-        result = import_validate_evidence(cache, "abc123")
+        }, binary_sha256=sha)
+        result = import_validate_evidence(cache, "abc123", binary)
         assert result is not None
         assert result["data"]["verdict"] == "likely_exploitable"
 
     def test_import_validate_evidence_missing(self, tmp_path):
-        cache = BuildIDCache(cache_dir=tmp_path)
-        assert import_validate_evidence(cache, "abc123") is None
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, _sha = self._binary(tmp_path)
+        assert import_validate_evidence(cache, "abc123", binary) is None
 
     def test_import_layer0_findings(self, tmp_path):
-        cache = BuildIDCache(cache_dir=tmp_path)
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, sha = self._binary(tmp_path)
         cache.put("abc123", "layer0-findings", {
             "findings": [{"pattern": "format_string"}],
-        })
-        result = import_layer0_findings(cache, "abc123")
+        }, binary_sha256=sha)
+        result = import_layer0_findings(cache, "abc123", binary)
         assert result is not None
         assert len(result["data"]["findings"]) == 1
 
     def test_import_layer0_missing(self, tmp_path):
-        cache = BuildIDCache(cache_dir=tmp_path)
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, _sha = self._binary(tmp_path)
+        assert import_layer0_findings(cache, "abc123", binary) is None
+
+    def test_import_refused_without_binary_path(self, tmp_path):
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        _binary, sha = self._binary(tmp_path)
+        cache.put("abc123", "layer0-findings", {"findings": []},
+                  binary_sha256=sha)
         assert import_layer0_findings(cache, "abc123") is None
+
+    def test_import_refused_for_unhashable_binary(self, tmp_path):
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        _binary, sha = self._binary(tmp_path)
+        cache.put("abc123", "layer0-findings", {"findings": []},
+                  binary_sha256=sha)
+        assert import_layer0_findings(
+            cache, "abc123", tmp_path / "no-such-binary",
+        ) is None
+
+    def test_import_refused_for_unstamped_envelope(self, tmp_path):
+        """Legacy hash-less envelopes stay readable at build-id scope
+        via cache.get, but the import helpers refuse them: an
+        unstamped envelope in an externally-writable cache is
+        unverifiable."""
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, _sha = self._binary(tmp_path)
+        cache.put("abc123", "layer0-findings", {"findings": []})
+        assert cache.get("abc123", "layer0-findings") is not None
+        assert import_layer0_findings(cache, "abc123", binary) is None
+
+    def test_import_refused_on_hash_mismatch(self, tmp_path):
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        binary, _sha = self._binary(tmp_path)
+        cache.put("abc123", "layer0-findings", {"findings": []},
+                  binary_sha256="0" * 64)
+        assert import_layer0_findings(cache, "abc123", binary) is None
 
 
 class TestFormatVersioning:
@@ -292,6 +344,42 @@ class TestBridgeRoundTrip:
     def test_populate_then_merge_layer0(self, tmp_path):
         from core.audit.binary_bridge import load_binary_bridge
 
+        # The current binary must exist on disk and hash — the merge
+        # binds cache entries to binary CONTENT, not just build-id.
+        binary = tmp_path / "app"
+        binary.write_bytes(b"\x7fELF current binary")
+
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        cache.put("ab12cd34", "layer0-findings", {
+            "findings": [
+                {"function": "parse_header", "target": "sprintf",
+                 "binary_path": str(binary)},
+            ],
+        }, source_command="external-tool")
+
+        out_dir = tmp_path / "out" / "run1"
+        out_dir.mkdir(parents=True)
+        # Cache merges are scoped to the current run's binaries: the
+        # build-id must be named for the entry to merge. (The envelope
+        # above is legacy hash-less — readable at build-id scope when
+        # the CURRENT binary hashes.)
+        result = load_binary_bridge(
+            out_dir, build_id_cache=cache,
+            current_build_ids={"ab12cd34": str(binary)},
+        )
+        assert result is not None
+        assert ("parse_header", "sprintf") in {
+            (e.caller, e.sink) for e in result.sink_edges
+        }
+        # Without the scoping (unknown current binaries) nothing merges.
+        assert load_binary_bridge(out_dir, build_id_cache=cache) is None
+
+    def test_merge_skipped_when_binary_missing(self, tmp_path):
+        """Residual (b): an unhashable current binary (deleted /
+        chmod 000 / race) must NOT degrade to serving build-id-scoped
+        foreign envelopes — the merge for that binary is skipped."""
+        from core.audit.binary_bridge import load_binary_bridge
+
         cache = BuildIDCache(cache_dir=tmp_path / "cache")
         cache.put("ab12cd34", "layer0-findings", {
             "findings": [
@@ -302,18 +390,69 @@ class TestBridgeRoundTrip:
 
         out_dir = tmp_path / "out" / "run1"
         out_dir.mkdir(parents=True)
-        # Cache merges are scoped to the current run's binaries: the
-        # build-id must be named for the entry to merge.
         result = load_binary_bridge(
             out_dir, build_id_cache=cache,
-            current_build_ids={"ab12cd34": "/build/app"},
+            current_build_ids={
+                "ab12cd34": str(tmp_path / "deleted-binary"),
+            },
         )
-        assert result is not None
-        assert ("parse_header", "sprintf") in {
-            (e.caller, e.sink) for e in result.sink_edges
-        }
-        # Without the scoping (unknown current binaries) nothing merges.
-        assert load_binary_bridge(out_dir, build_id_cache=cache) is None
+        assert result is None
+
+    def test_merge_skipped_when_binary_unhashable(self, tmp_path, monkeypatch):
+        """Binary present on disk but unreadable (chmod 000 shape):
+        hashing fails → no content binding → no merge."""
+        import core.audit.build_id_cache as bic
+        from core.audit.binary_bridge import load_binary_bridge
+
+        binary = tmp_path / "app"
+        binary.write_bytes(b"\x7fELF current binary")
+        monkeypatch.setattr(bic, "_binary_sha256", lambda p: None)
+
+        cache = BuildIDCache(cache_dir=tmp_path / "cache")
+        cache.put("ab12cd34", "layer0-findings", {
+            "findings": [
+                {"function": "parse_header", "target": "sprintf",
+                 "binary_path": str(binary)},
+            ],
+        }, source_command="external-tool")
+
+        out_dir = tmp_path / "out" / "run1"
+        out_dir.mkdir(parents=True)
+        result = load_binary_bridge(
+            out_dir, build_id_cache=cache,
+            current_build_ids={"ab12cd34": str(binary)},
+        )
+        assert result is None
+
+    def test_legacy_cache_object_still_hash_checked(self, tmp_path):
+        """An injected cache object without the binding kwarg
+        (TypeError fallback) cannot skip the content check: a stamped
+        envelope contradicting the current binary's hash is dropped."""
+        from core.audit.binary_bridge import load_binary_bridge
+
+        binary = tmp_path / "app"
+        binary.write_bytes(b"\x7fELF current binary")
+
+        class LegacyCache:
+            def get(self, build_id, artifact):  # no binding kwarg
+                return {
+                    "format_version": 1,
+                    "build_id": build_id,
+                    "artifact": artifact,
+                    "binary_sha256": "0" * 64,  # not this binary
+                    "data": {"findings": [
+                        {"function": "evil", "target": "system",
+                         "binary_path": str(binary)},
+                    ]},
+                }
+
+        out_dir = tmp_path / "out" / "run1"
+        out_dir.mkdir(parents=True)
+        result = load_binary_bridge(
+            out_dir, build_id_cache=LegacyCache(),
+            current_build_ids={"ab12cd34": str(binary)},
+        )
+        assert result is None
 
     def test_partial_cache_tolerated(self, tmp_path):
         """A build-ID dir holding only SOME artifacts (e.g. written by

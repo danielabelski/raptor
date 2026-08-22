@@ -52,10 +52,14 @@ class TestMergeScoping:
         )
 
         cache = _mk_cache(tmp_path)
+        binary = tmp_path / "prog"
+        binary.write_bytes(b"current target binary")
+        sha = hashlib.sha256(binary.read_bytes()).hexdigest()
         cache.put("deadbeef", "layer0-findings", _layer0("planted", "system"))
-        cache.put("cafe1234", "layer0-findings", _layer0("mine", "exec"))
+        cache.put("cafe1234", "layer0-findings", _layer0("mine", "exec"),
+                  binary_sha256=sha)
         result = BinaryBridgeResult()
-        _merge_from_build_cache(result, cache, {"cafe1234": ""})
+        _merge_from_build_cache(result, cache, {"cafe1234": str(binary)})
         assert [e.caller for e in result.sink_edges] == ["mine"], (
             "only entries for binaries in the current target set may "
             "merge as sink evidence"

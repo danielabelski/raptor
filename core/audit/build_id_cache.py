@@ -353,28 +353,85 @@ def load_build_id_cache(
     return BuildIDCache(cache_dir=cache_dir)
 
 
+def _hash_bound_import(
+    cache: BuildIDCache,
+    build_id: str,
+    artifact: str,
+    binary_path: str | Path | None,
+) -> dict[str, Any] | None:
+    """Content-hash-verified cache read for the import helpers.
+
+    The shared cache is externally writable and build-ids are
+    linker-choosable, so these helpers REQUIRE the envelope to be
+    bound to the current binary's content: the caller must name the
+    on-disk binary, it must hash, and the envelope must record a
+    matching ``binary_sha256``. Anything less — no binary named,
+    unhashable binary, envelope without a recorded hash, hash
+    mismatch — returns None (fail closed). Future wiring therefore
+    cannot skip the verification.
+    """
+    if not binary_path:
+        logger.warning(
+            "build-id cache import refused for %s/%s: no binary path "
+            "supplied — cannot bind the envelope to binary content",
+            build_id, artifact,
+        )
+        return None
+    expected_sha = _binary_sha256(binary_path)
+    if not expected_sha:
+        logger.warning(
+            "build-id cache import refused for %s/%s: binary %s cannot "
+            "be hashed — refusing build-id-scoped read",
+            build_id, artifact, binary_path,
+        )
+        return None
+    envelope = cache.get(
+        build_id, artifact, expected_binary_sha256=expected_sha,
+    )
+    if envelope is None:
+        return None
+    if (envelope.get("binary_sha256") or "") != expected_sha:
+        # get() tolerates hash-less legacy envelopes at build-id
+        # scope; the import helpers do not — an unstamped envelope in
+        # an externally-writable cache is unverifiable.
+        logger.warning(
+            "build-id cache import refused for %s/%s: envelope does "
+            "not record a matching binary_sha256",
+            build_id, artifact,
+        )
+        return None
+    return envelope
+
+
 def import_validate_evidence(
     cache: BuildIDCache,
     build_id: str,
+    binary_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Import /validate Stage E feasibility results from the cache.
 
     Returns the cache envelope (see BuildIDCache.get — feasibility
-    payload under ``["data"]``) if cached, None otherwise.
+    payload under ``["data"]``) only when it is content-hash-bound to
+    the on-disk binary at *binary_path* (see ``_hash_bound_import``);
+    None otherwise.
     """
-    return cache.get(build_id, "feasibility")
+    return _hash_bound_import(cache, build_id, "feasibility", binary_path)
 
 
 def import_layer0_findings(
     cache: BuildIDCache,
     build_id: str,
+    binary_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Import Layer 0 findings from the cache.
 
     Returns the cache envelope (findings payload under ``["data"]``)
-    if cached, None otherwise.
+    only when it is content-hash-bound to the on-disk binary at
+    *binary_path* (see ``_hash_bound_import``); None otherwise.
     """
-    return cache.get(build_id, "layer0-findings")
+    return _hash_bound_import(
+        cache, build_id, "layer0-findings", binary_path,
+    )
 
 
 def store_oracle_verdicts(

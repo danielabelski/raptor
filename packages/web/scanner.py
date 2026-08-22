@@ -465,6 +465,23 @@ Examples:
         help="Stop ffuf on all error cases (-sa)",
     )
     parser.add_argument(
+        "--ffuf-vhost",
+        action="store_true",
+        help=(
+            "Virtual-host discovery: keep the URL fixed and fuzz the Host "
+            "header as FUZZ.<target-host>. Pair with the default -ac and "
+            "--ffuf-filter-size of the wildcard response for clean output."
+        ),
+    )
+    parser.add_argument(
+        "--ffuf-vhost-host-template",
+        help=(
+            "Custom Host header template for --ffuf-vhost; must contain a "
+            "wordlist keyword and end with .<target-host> "
+            "(default: FUZZ.<target-host>)"
+        ),
+    )
+    parser.add_argument(
         "--ffuf-method",
         default="GET",
         choices=("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"),
@@ -533,6 +550,8 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         cookies=tuple(args.ffuf_cookie or ()),
         method=args.ffuf_method,
         data=args.ffuf_data,
+        vhost=bool(args.ffuf_vhost),
+        vhost_host_template=args.ffuf_vhost_host_template,
         stop_on_403=bool(args.ffuf_stop_on_403),
         stop_on_spurious=bool(args.ffuf_stop_on_spurious_errors),
         stop_on_all_errors=bool(args.ffuf_stop_on_all_errors),

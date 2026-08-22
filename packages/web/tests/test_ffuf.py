@@ -686,6 +686,124 @@ def test_scanner_cli_wires_multi_wordlists(tmp_path: Path):
     assert config.mode == "pitchfork"
 
 
+def test_build_command_vhost_fuzzes_host_header_against_fixed_url(tmp_path: Path):
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\nstaging\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, vhost=True),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-u") + 1] == "https://example.test/"
+    headers = [cmd[idx + 1] for idx, value in enumerate(cmd) if value == "-H"]
+    assert "Host: FUZZ.example.test" in headers
+
+
+def test_build_command_vhost_accepts_scoped_custom_template(tmp_path: Path):
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            vhost=True,
+            vhost_host_template="FUZZ-api.example.test",
+        ),
+        tmp_path / "out.json",
+    )
+
+    headers = [cmd[idx + 1] for idx, value in enumerate(cmd) if value == "-H"]
+    assert "Host: FUZZ-api.example.test" in headers
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "message"),
+    [
+        (
+            {"vhost": True, "vhost_host_template": "FUZZ.evil.test"},
+            "must stay under the target host",
+        ),
+        (
+            {"vhost": True, "vhost_host_template": "dev.example.test"},
+            "must contain a wordlist keyword",
+        ),
+        (
+            {"vhost": True, "vhost_host_template": "FUZZ.example.test\r\nX: y"},
+            "must not contain newlines",
+        ),
+        (
+            {"vhost": True, "path_template": "api/FUZZ"},
+            "remove wordlist keywords from the URL template",
+        ),
+        (
+            {"vhost": True, "recursion": True},
+            "cannot be combined with recursion",
+        ),
+        (
+            {"vhost": True, "headers": ("Host: pinned.example.test",)},
+            "synthesizes the Host header",
+        ),
+        (
+            {"vhost_host_template": "FUZZ.example.test"},
+            "requires vhost mode",
+        ),
+    ],
+)
+def test_build_command_rejects_invalid_vhost_configs(
+    tmp_path: Path,
+    config_kwargs: dict[str, object],
+    message: str,
+):
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, **config_kwargs),
+            tmp_path / "out.json",
+        )
+
+
+def test_summarize_result_carries_vhost_host_field(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    summary = runner._summarize_result(
+        {"url": "https://example.test/", "status": 200, "host": "dev.example.test"}
+    )
+    assert summary["host"] == "dev.example.test"
+
+    plain = runner._summarize_result({"url": "https://example.test/a", "status": 200})
+    assert "host" not in plain
+
+
+def test_scanner_cli_wires_ffuf_vhost(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-vhost",
+            "--ffuf-vhost-host-template",
+            "FUZZ.example.test",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.vhost is True
+    assert config.vhost_host_template == "FUZZ.example.test"
+
+
 def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The subprocess timeout must exceed -maxtime so ffuf's own clean
     shutdown (which flushes the JSON report) always wins the race."""

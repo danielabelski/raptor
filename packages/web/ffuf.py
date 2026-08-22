@@ -108,6 +108,8 @@ class FfufConfig:
     data: str | None = None
     extra_wordlists: tuple[tuple[Path, str], ...] = ()
     mode: str | None = None
+    vhost: bool = False
+    vhost_host_template: str | None = None
     stop_on_403: bool = False
     stop_on_spurious: bool = False
     stop_on_all_errors: bool = False
@@ -257,12 +259,49 @@ class FfufRunner:
         """Keywords ffuf will substitute for this configuration."""
         return ("FUZZ", *(keyword for _path, keyword in config.extra_wordlists))
 
+    def _build_vhost_header(self, config: FfufConfig) -> str | None:
+        """Synthesize and scope-check the fuzzed Host header for vhost mode.
+
+        The TCP destination stays pinned to the target host by the egress
+        proxy regardless — the Host header only selects virtual hosts on
+        that same server — but the template is still constrained to
+        subdomains of the target so a saved config cannot quietly probe a
+        sibling engagement's namespace.
+        """
+        if not config.vhost:
+            return None
+        target_host = (urlparse(self.base_url).hostname or "").lower()
+        template = config.vhost_host_template or f"FUZZ.{target_host}"
+        if "\n" in template or "\r" in template:
+            msg = "ffuf vhost host template must not contain newlines"
+            raise ValueError(msg)
+        keywords = self._fuzz_keywords(config)
+        if not any(kw in template for kw in keywords):
+            msg = (
+                "ffuf vhost host template must contain a wordlist keyword "
+                f"(got {template!r})"
+            )
+            raise ValueError(msg)
+        if not template.lower().endswith("." + target_host):
+            msg = (
+                "ffuf vhost host template must stay under the target host "
+                f"(expected a template ending in .{target_host}, "
+                f"got {self._redact(template)})"
+            )
+            raise ValueError(msg)
+        return f"Host: {template}"
+
     @classmethod
-    def _require_fuzz_keyword(cls, config: FfufConfig, url_template: str) -> None:
+    def _require_fuzz_keyword(
+        cls,
+        config: FfufConfig,
+        url_template: str,
+        extra_haystacks: tuple[str, ...] = (),
+    ) -> None:
         """Every keyword needs a substitution point; a dead wordlist is a
         config error, not a silent no-op."""
         keywords = cls._fuzz_keywords(config)
-        haystacks = [url_template, config.data or "", *config.headers]
+        haystacks = [url_template, config.data or "", *config.headers, *extra_haystacks]
         missing = [
             kw for kw in keywords
             if not any(kw in haystack for haystack in haystacks)
@@ -309,6 +348,25 @@ class FfufRunner:
             raise ValueError(msg)
         if config.method.upper() not in ALLOWED_METHODS:
             msg = f"ffuf method must be one of {', '.join(ALLOWED_METHODS)}"
+            raise ValueError(msg)
+        if config.vhost_host_template is not None and not config.vhost:
+            msg = "ffuf vhost host template requires vhost mode"
+            raise ValueError(msg)
+        if config.vhost and config.recursion:
+            msg = (
+                "ffuf vhost mode fuzzes the Host header against a fixed URL "
+                "and cannot be combined with recursion"
+            )
+            raise ValueError(msg)
+        if config.vhost and any(
+            header.split(":", 1)[0].strip().lower() == "host"
+            for header in config.headers
+            if ":" in header
+        ):
+            msg = (
+                "ffuf vhost mode synthesizes the Host header; remove the "
+                "explicit Host header or drop vhost mode"
+            )
             raise ValueError(msg)
         if config.mode is not None and config.mode not in ALLOWED_MODES:
             msg = f"ffuf mode must be one of {', '.join(ALLOWED_MODES)}"
@@ -401,8 +459,27 @@ class FfufRunner:
         """Return argv for a safe, non-shell ffuf invocation."""
         self._validate_config(config)
 
-        url_template = self.build_url_template(config.path_template)
-        self._require_fuzz_keyword(config, url_template)
+        # In vhost mode the URL is fixed and the Host header carries the
+        # keyword; the dataclass default path template of "FUZZ" would
+        # otherwise force a URL substitution point that vhost mode forbids.
+        path_template = config.path_template
+        if config.vhost and path_template == "FUZZ":
+            path_template = ""
+        url_template = self.build_url_template(path_template)
+        vhost_header = self._build_vhost_header(config)
+        if config.vhost and any(
+            kw in url_template for kw in self._fuzz_keywords(config)
+        ):
+            msg = (
+                "ffuf vhost mode fuzzes the Host header; remove wordlist "
+                "keywords from the URL template or drop vhost mode"
+            )
+            raise ValueError(msg)
+        self._require_fuzz_keyword(
+            config,
+            url_template,
+            extra_haystacks=(vhost_header,) if vhost_header else (),
+        )
         if config.recursion and not url_template.rstrip("/").endswith("FUZZ"):
             # ffuf constraint: recursion re-queues discovered directories
             # by substituting the FUZZ keyword at the end of the URL path.
@@ -467,6 +544,8 @@ class FfufRunner:
             cmd.extend(["-d", config.data])
         for header in config.headers:
             cmd.extend(["-H", header])
+        if vhost_header is not None:
+            cmd.extend(["-H", vhost_header])
         for cookie in config.cookies:
             cmd.extend(["-b", cookie])
         for extra_path, keyword in config.extra_wordlists:
@@ -617,10 +696,16 @@ class FfufRunner:
 
     def _summarize_result(self, result: dict[str, Any]) -> dict[str, Any]:
         """Keep ffuf report entries compact and secret-redacted."""
-        return {
+        summary = {
             "url": self._redact(result.get("url", "")),
             "status": result.get("status"),
             "length": result.get("length"),
             "words": result.get("words"),
             "lines": result.get("lines"),
         }
+        # vhost runs answer "which Host matched", not "which URL": ffuf
+        # reports the substituted Host value in the per-result host field.
+        host = result.get("host")
+        if host:
+            summary["host"] = self._redact(host)
+        return summary

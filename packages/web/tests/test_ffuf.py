@@ -149,6 +149,61 @@ def test_redact_body_masks_secret_form_fields_only(tmp_path: Path):
     assert "mode=FUZZ" in redacted
 
 
+def test_redact_body_masks_secret_keys_in_json(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    redacted = runner._redact_body(
+        '{"username": "FUZZ", "password": "hunter2-super-secret", '
+        '"nested": {"api_key": "sk-abc", "note": "ok"}, '
+        '"items": [{"token": "t-1"}]}'
+    )
+
+    assert "hunter2-super-secret" not in redacted
+    assert "sk-abc" not in redacted
+    assert "t-1" not in redacted
+    assert '"username": "FUZZ"' in redacted
+    assert '"note": "ok"' in redacted
+
+
+def test_redact_body_handles_semicolon_separated_form_fields(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    redacted = runner._redact_body("user=FUZZ;password=hunter2-super-secret")
+
+    assert "hunter2-super-secret" not in redacted
+    assert "user=FUZZ" in redacted
+    assert "password=[REDACTED]" in redacted
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"password": "hunter2-super-secret" MALFORMED',
+        (
+            "--boundary\r\n"
+            'Content-Disposition: form-data; name="password"\r\n\r\n'
+            "hunter2-super-secret\r\n--boundary--"
+        ),
+    ],
+)
+def test_redact_body_drops_unparseable_credential_shapes(tmp_path: Path, body: str):
+    """Malformed JSON and multipart have no reliable name/value pairing;
+    leaking is worse than over-redacting."""
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    redacted = runner._redact_body(body)
+
+    assert "hunter2-super-secret" not in redacted
+    assert redacted == "[REDACTED-BODY]"
+
+
+def test_redact_body_passes_through_when_secrets_revealed(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path, reveal_secrets=True)
+
+    body = '{"password": "hunter2"}'
+    assert runner._redact_body(body) == body
+
+
 def test_run_redacts_body_in_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     wordlist = tmp_path / "words.txt"
     wordlist.write_text("admin\n", encoding="utf-8")

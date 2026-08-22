@@ -178,24 +178,54 @@ class FfufRunner:
             return f"{name}: [REDACTED]"
         return self._redact(header)
 
-    def _redact_body(self, body: str) -> str:
-        """Redact secret-named fields from a form-encoded request body.
+    def _redact_json_value(self, value: object) -> object:
+        """Redact secret-keyed values recursively in a parsed JSON body."""
+        if isinstance(value, dict):
+            return {
+                key: (
+                    "[REDACTED]"
+                    if is_secret_field_name(str(key).strip().lower())
+                    else self._redact_json_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._redact_json_value(item) for item in value]
+        if isinstance(value, str):
+            return self._redact(value)
+        return value
 
-        JSON and other non-form bodies fall through to the generic
-        pattern-based redactor.
+    def _redact_body(self, body: str) -> str:
+        """Redact secret material from a request body before logging.
+
+        Form-encoded bodies ('&' or ';' separated) are redacted by secret
+        field name, JSON bodies by secret key name recursively. Shapes
+        without a reliable name/value pairing (multipart, malformed JSON)
+        are dropped wholesale rather than risking a leak — the generic
+        pattern redactor has no notion of field names.
         """
         if self.reveal_secrets:
             return body
-        if "=" not in body or body.lstrip().startswith(("{", "[")):
+        if body.lstrip().startswith(("{", "[")):
+            try:
+                return json.dumps(self._redact_json_value(json.loads(body)))
+            except ValueError:
+                return "[REDACTED-BODY]"
+        if "content-disposition" in body.lower():
+            return "[REDACTED-BODY]"
+        if "=" not in body:
             return self._redact(body)
         segments = []
-        for segment in body.split("&"):
+        for segment in re.split(r"([&;])", body):
+            if segment in ("&", ";"):
+                segments.append(segment)
+                continue
             name, sep, _value = segment.partition("=")
             if sep and is_secret_field_name(name.strip().lower()):
                 segments.append(f"{name}=[REDACTED]")
             else:
                 segments.append(self._redact(segment))
-        return "&".join(segments)
+        return "".join(segments)
 
     def _redact_command(self, cmd: list[str]) -> list[str]:
         redacted: list[str] = []

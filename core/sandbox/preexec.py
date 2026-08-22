@@ -455,12 +455,21 @@ def _sweeper_main(payload_pid: int, death_fd) -> None:
     # Close everything else we inherited (subprocess errpipe included
     # — holding it would block Popen's exec-status read until the
     # sweeper exits) except the death pipe.
+    # Enumerate the actually-open fds: the preexec rlimit step may
+    # already have LOWERED the NOFILE soft limit, and lowering it does
+    # not invalidate existing descriptors — a pre-existing inheritable
+    # fd at/above the reduced limit would survive a range()-based
+    # sweep. Fall back to the bounded range when /proc isn't listable.
     try:
-        _max = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-    except (ValueError, OSError):
-        _max = 4096
-    for _fd in range(3, min(int(_max), 65536)):
-        if death_fd is not None and _fd == death_fd:
+        _open = [int(_n) for _n in os.listdir("/proc/self/fd")]
+    except (OSError, ValueError):
+        try:
+            _max = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        except (ValueError, OSError):
+            _max = 4096
+        _open = list(range(3, min(int(_max), 65536)))
+    for _fd in _open:
+        if _fd <= 2 or (death_fd is not None and _fd == death_fd):
             continue
         try:
             os.close(_fd)

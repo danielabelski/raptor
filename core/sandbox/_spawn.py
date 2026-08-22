@@ -50,7 +50,6 @@ import contextlib
 import logging
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import sys
@@ -187,7 +186,8 @@ def _gidmap_allow_available() -> str | None:
         result: str | bool = False
         try:
             if GIDMAP_ALLOW_PATH.is_file():
-                getcap = shutil.which("getcap")
+                from .probes import _which_safe
+                getcap = _which_safe("getcap")
                 if getcap:
                     r = subprocess.run(
                         [getcap, str(GIDMAP_ALLOW_PATH)],
@@ -227,8 +227,9 @@ def mount_ns_available() -> bool:
     with state._cache_lock:
         if state._mount_ns_available_cache is not None:
             return state._mount_ns_available_cache
-        newuidmap = shutil.which("newuidmap")
-        newgidmap = shutil.which("newgidmap")
+        from .probes import _which_safe
+        newuidmap = _which_safe("newuidmap")
+        newgidmap = _which_safe("newgidmap")
         if not newuidmap or not newgidmap:
             state._mount_ns_available_cache = False
             return False
@@ -409,7 +410,16 @@ def _kill_and_reap(pid: int) -> None:
     # (codeql java → index.py → python_tracer.py → forkserver workers)
     # don't get orphaned to init. Uses the PGID captured pre-signal
     # above so we never target a group led by a PID-reuse victim.
-    if pgid is not None:
+    #
+    # Confused-deputy guard: with the supported start_new_session=
+    # False escape hatch (or a helper forked into the caller's own
+    # group, e.g. a hung tracer) the captured PGID can be RAPTOR'S
+    # OWN — an unconditional killpg would SIGKILL the orchestrator
+    # and every unrelated same-group process on a timeout the target
+    # itself provoked. Never signal our own group; the direct
+    # pid/pidfd kill above already handled the leader, which is all
+    # that exists in that shape.
+    if pgid is not None and pgid != os.getpgrp():
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -1829,6 +1839,32 @@ def run_sandboxed(
             if grand == 0:
                 # Grandchild runs as PID 1 in the new pid-ns.
                 #
+                # Tie our lifetime to the setup child (the sole
+                # death-pipe watcher): a subprocess timeout SIGKILLs
+                # that watcher FIRST, and pre-fix nothing then killed
+                # this pid-ns init — the target tree survived the
+                # timeout, still sandbox-confined but executing and
+                # mutating output after the run "ended". PDEATHSIG
+                # fires when our parent dies; as ns-init we cascade
+                # SIGKILL through the whole namespace (kernel-
+                # delivered SIGKILL from the ancestor ns reaches an
+                # ns-init). Persists across the target execvpe
+                # (no privilege change). The set-after-parent-died
+                # race is microseconds wide and covered by the
+                # parent-side backstop sweeps.
+                try:
+                    import ctypes as _ctypes
+                    import ctypes.util as _ctypes_util
+                    _libc_name = _ctypes_util.find_library("c") or "libc.so.6"
+                    _libc = _ctypes.CDLL(_libc_name, use_errno=True)
+                    _libc.prctl(1, int(signal.SIGKILL), 0, 0, 0)
+                except Exception:  # noqa: BLE001
+                    warn_post_fork(
+                        b"_spawn: grandchild PR_SET_PDEATHSIG failed; "
+                        b"a timeout that kills the setup child may "
+                        b"leave the target running\n"
+                    )
+                    _libc = None
                 # /proc was bind-mounted from HOST in setup_mount_ns
                 # (step 6) before the pid-ns existed, so it exposes
                 # host pids. Inside the new pid-ns the grandchild has
@@ -1837,20 +1873,24 @@ def run_sandboxed(
                 # for instance) gets ENOENT — the host procfs doesn't
                 # know about the ns-local pid. Remount a FRESH proc fs
                 # in our newly-entered pid-ns so /proc/<ns-pid> resolves.
-                # This is best-effort: if mount fails (no CAP_SYS_ADMIN
-                # in the right user-ns, or the kernel disallows the
-                # second mount), we keep the bind-mounted host /proc
-                # and accept that ns-pid procfs lookups will ENOENT.
+                # Best-effort, but the return code is CHECKED: rc=-1
+                # used to pass silently, keeping the host-pid procfs
+                # bind with no operator-visible signal — the warning
+                # names both consequences (ns-pid lookups ENOENT AND
+                # host process visibility through the retained bind).
+                _proc_rc = -1
                 try:
-                    import ctypes as _ctypes
-                    import ctypes.util as _ctypes_util
-                    _libc_name = _ctypes_util.find_library("c") or "libc.so.6"
-                    _libc = _ctypes.CDLL(_libc_name, use_errno=True)
-                    _libc.mount(b"proc", b"/proc", b"proc", 0, None)
+                    if _libc is not None:
+                        _proc_rc = int(_libc.mount(
+                            b"proc", b"/proc", b"proc", 0, None))
                 except Exception:  # noqa: BLE001
+                    _proc_rc = -1
+                if _proc_rc != 0:
                     warn_post_fork(
                         b"_spawn: grandchild fresh proc mount failed; "
-                        b"/proc/<ns-pid>/* will ENOENT for gdb/ptrace\n"
+                        b"/proc/<ns-pid>/* will ENOENT for gdb/ptrace "
+                        b"and the HOST-pid procfs bind stays visible "
+                        b"in the sandbox\n"
                     )
                 if rootfs is not None and not skip_pid_ns:
                     # Rootfs mode: split so the image entrypoint is PID 2
@@ -1899,8 +1939,22 @@ def run_sandboxed(
                 except (ValueError, OSError):
                     _soft_nofile = 1024
                 _keep_fds = {status_w}
-                for _fd in range(3, min(_soft_nofile, 65536)):
-                    if _fd not in _keep_fds:
+                # Enumerate the ACTUALLY-open fds instead of assuming
+                # they all sit below the RLIMIT_NOFILE soft limit:
+                # _set_rlimits already LOWERED that limit earlier in
+                # this child, and lowering NOFILE does not invalidate
+                # existing descriptors — a pre-existing inheritable fd
+                # numbered at/above the reduced limit survived the old
+                # range()-based sweep and rode into the exec as an
+                # out-of-policy capability. Fall back to the bounded
+                # range only when /proc isn't listable.
+                try:
+                    _open_fds = [int(_n)
+                                 for _n in os.listdir("/proc/self/fd")]
+                except (OSError, ValueError):
+                    _open_fds = list(range(3, min(_soft_nofile, 65536)))
+                for _fd in _open_fds:
+                    if _fd > 2 and _fd not in _keep_fds:
                         try:
                             os.close(_fd)
                         except OSError:
@@ -2142,9 +2196,10 @@ def run_sandboxed(
         # during init can start.  Falls back to newgidmap silently.
         host_uid = os.getuid()
         host_gid = os.getgid()
-        newuidmap = shutil.which("newuidmap")
+        from .probes import _which_safe as _ws
+        newuidmap = _ws("newuidmap")
         gidmap_allow = _gidmap_allow_available()
-        newgidmap = gidmap_allow or shutil.which("newgidmap")
+        newgidmap = gidmap_allow or _ws("newgidmap")
         if not newuidmap or not newgidmap:
             _kill_and_reap(child_pid)
             msg = (
@@ -2174,7 +2229,7 @@ def run_sandboxed(
             # contract; a range map must go through plain newgidmap
             # (setuid — no setgroups-deny involved, so setgroups to
             # mapped gids keeps working).
-            _plain_newgidmap = shutil.which("newgidmap")
+            _plain_newgidmap = _ws("newgidmap")
             if _urange and _grange and _plain_newgidmap:
                 _ucount = max(1, min(_urange[1], 65535))
                 _gcount = max(1, min(_grange[1], 65535))
@@ -2229,6 +2284,18 @@ def run_sandboxed(
                 tracer_pid = os.fork()
             if tracer_pid == 0:
                 # ===== TRACER SUBPROCESS =====
+                # Own session: the tracer must NOT share the
+                # orchestrator's process group. A hostile audited
+                # target can keep the tracer alive past the reap
+                # grace (a traced setsid descendant), and the
+                # _kill_and_reap fallback then killpg's the tracer's
+                # group — which, pre-setsid, WAS the orchestrator's
+                # own (the killpg self-group guard is the second
+                # layer; this makes the group correct to begin with).
+                try:
+                    os.setsid()
+                except OSError:
+                    pass
                 # Close the read end — only the parent reads.
                 os.close(t_ready_r)
                 # Defence-in-depth: close all inherited fds except
@@ -2279,6 +2346,22 @@ def run_sandboxed(
                     os.closerange(_lo, _k)
                     _lo = _k + 1
                 os.closerange(_lo, upper)
+                # The range ceiling derives from the CURRENT soft
+                # limit; fds can legitimately exist at/above it (a
+                # caller that lowered NOFILE after opening them, or
+                # a >65536 table). Sweep the stragglers by
+                # enumeration — cheap, and the keep-set fds are all
+                # below `upper` by construction.
+                try:
+                    for _n in os.listdir("/proc/self/fd"):
+                        _f = int(_n)
+                        if _f >= upper:
+                            try:
+                                os.close(_f)
+                            except OSError:
+                                pass
+                except (OSError, ValueError):
+                    pass
                 # Clear CLOEXEC on the config + evidence fds so THEY
                 # survive the tracer's execvpe. Only ever done in
                 # this post-fork tracer branch — the target child's

@@ -182,6 +182,12 @@ def run_sandboxed(cmd: list[str], *,
                   capture_output: bool = True,
                   text: bool = True,
                   stdin=None,
+                  # stdout=/stderr= redirects, honoured only when not
+                  # capturing (subprocess plumbs them natively here) —
+                  # signature parity with Linux _spawn, which needs
+                  # them for run_untrusted's write-only tty reopen.
+                  stdout=None,
+                  stderr=None,
                   # Unlike Linux _spawn's os.fork() chain, this backend
                   # wraps subprocess.run, which plumbs both of these
                   # natively — the shim chain preserves inherited
@@ -653,8 +659,8 @@ def run_sandboxed(cmd: list[str], *,
             sandbox_cmd,
             env=child_env,
             cwd=cwd,
-            stdout=subprocess.PIPE if capture_output else None,
-            stderr=subprocess.PIPE if capture_output else None,
+            stdout=subprocess.PIPE if capture_output else stdout,
+            stderr=subprocess.PIPE if capture_output else stderr,
             stdin=_popen_stdin,
             text=text,
             preexec_fn=preexec,

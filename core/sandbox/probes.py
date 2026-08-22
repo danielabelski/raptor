@@ -35,6 +35,20 @@ def check_sandbox_available() -> bool:
 _SAFE_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin")
 
 
+def _which_safe(name: str) -> "str | None":
+    """Non-raising twin of ``_resolve_sandbox_binary`` for OPTIONAL
+    privileged bootstrap helpers (newuidmap/newgidmap/getcap).
+
+    These execute in the UNSANDBOXED parent before any containment;
+    resolving them via the inherited PATH let a poisoned PATH entry
+    (malicious .envrc / direnv shell rc, a '.' entry with cwd inside a
+    hostile tree) substitute the binary — contra the doctrine above.
+    Absence means "capability unavailable" for these helpers, so this
+    returns None instead of raising.
+    """
+    return shutil.which(name, path=os.pathsep.join(_SAFE_BIN_DIRS))
+
+
 def _resolve_sandbox_binary(name: str) -> str:
     """Return the absolute path of a sandbox-setup binary (unshare, prlimit).
 
@@ -439,8 +453,8 @@ def check_mount_available() -> bool:
         # below then confirms the kernel actually permits
         # unshare(CLONE_NEWNS) — binary presence + the AppArmor
         # sysctl check alone proved necessary but not sufficient.
-        have_newuidmap = shutil.which("newuidmap") is not None
-        have_newgidmap = shutil.which("newgidmap") is not None
+        have_newuidmap = _which_safe("newuidmap") is not None
+        have_newgidmap = _which_safe("newgidmap") is not None
         if not (have_newuidmap and have_newgidmap):
             if state.warn_once("_mount_unavailable_warned"):
                 logger.info(
@@ -523,7 +537,7 @@ def mount_unavailable_reason() -> tuple[str, str]:
         pass
     # 2. uidmap binaries missing — distinct from the AppArmor case
     #    because the fix is package install, not sysctl flip.
-    if not (shutil.which("newuidmap") and shutil.which("newgidmap")):
+    if not (_which_safe("newuidmap") and _which_safe("newgidmap")):
         return (
             "mount-ns blocked by host "
             "(uidmap binaries newuidmap/newgidmap not installed)",

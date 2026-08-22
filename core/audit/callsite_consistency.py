@@ -153,8 +153,8 @@ class CallSite:
     #: acting on the value there may be impossible (§2.3
     #: ``deviant-on-error-path``).
     on_error_path: bool = False
-    #: Which extractor produced this row: "ts" (tree-sitter, in-file)
-    #: or "cpg" (Joern, cross-file). Provenance for the mixed majority
+    #: Which extractor produced this row: "ts" (tree-sitter, in-file),
+    #: "regex" (fallback, in-file) or "cpg" (Joern, cross-file). Provenance for the mixed majority
     #: statistic, plus the deviation pass's safety rule: a deviation
     #: verdict must not rest on a usage class the extracting engine
     #: cannot produce.
@@ -890,14 +890,28 @@ _PY_UNDERSCORE_ASSIGN_RE = re.compile(r"^\s*_\s*=[^=]")
 
 def _extract_callsites_regex(
     file_path: str, source: str,
+    limiter: _CensusLimiter | None = None,
 ) -> list[CallSite]:
-    """Regex fallback for call site extraction."""
+    """Regex fallback for call site extraction.
+
+    Honours the same census limiter as the tree-sitter path — the
+    self-limits exist to stop a hostile file stalling prep, and a
+    host without the relevant grammar (where this fallback is the
+    ONLY extractor) is exactly where an unbounded walk would bite.
+    """
     sites: list[CallSite] = []
     lines = source.splitlines()
     current_func = "<module>"
 
     for lineno_0, line in enumerate(lines):
         lineno = lineno_0 + 1
+
+        if limiter is not None and limiter.file_exhausted(len(sites)):
+            logger.warning(
+                "callsite_consistency: census truncated in %s (%s)",
+                file_path, limiter.hit,
+            )
+            break
 
         fm = _FUNC_HEADER_RE.match(line)
         if fm:
@@ -958,6 +972,7 @@ def _extract_callsites_regex(
                 callee=callee,
                 enclosing_function=current_func,
                 usage=usage,
+                engine="regex",
             ))
 
     return sites
@@ -1010,7 +1025,11 @@ def build_return_census(
             all_sites.extend(ts_sites)
         else:
             cleaned = _strip_block_comments(source) if "/*" in source else source
-            all_sites.extend(_extract_callsites_regex(file_path, cleaned))
+            all_sites.extend(
+                _extract_callsites_regex(file_path, cleaned, limiter),
+            )
+            if limiter.hit:
+                truncated = True
 
     if joern_server is not None and all_sites:
         seen_callees = frozenset({s.callee for s in all_sites})

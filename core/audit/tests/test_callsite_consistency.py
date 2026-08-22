@@ -532,6 +532,25 @@ class TestCensusSelfLimits:
         for entry in census.values():
             assert entry.truncated is True
 
+    def test_site_cap_holds_on_regex_fallback(self, monkeypatch):
+        """The self-limits must hold on hosts where tree-sitter (or a
+        grammar) is unavailable and the regex fallback is the only
+        extractor — the fallback used to receive no limiter at all,
+        so the cap was silently ignored exactly where an unbounded
+        walk could bite."""
+        import core.audit.callsite_consistency as cc
+        monkeypatch.setattr(
+            cc, "_extract_callsites_ts", lambda *a, **k: None,
+        )
+        src = "\n".join(f"z{i} = hh(a)" for i in range(300))
+        census = cc.build_return_census(
+            {"b.py": src}, max_sites_per_file=100,
+        )
+        entry = census["hh"]
+        assert entry.n == 100
+        assert entry.truncated is True
+        assert entry.sites[0].engine == "regex"
+
     def test_complete_census_is_not_stamped(self):
         from core.audit.callsite_consistency import build_return_census
         src = "\n".join(f"y{i} = gg(a)" for i in range(20))

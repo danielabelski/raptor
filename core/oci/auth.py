@@ -18,10 +18,14 @@ Three sources, tried in order:
      using credential helpers fall back to the env-var path.
 
   3. **Per-registry env vars** — ``RAPTOR_OCI_<HOST_UPPER>_USER`` and
-     ``RAPTOR_OCI_<HOST_UPPER>_PASSWORD``, with ``.`` replaced by
-     ``_`` in the host. So ``ghcr.io`` → ``RAPTOR_OCI_GHCR_IO_USER`` /
-     ``RAPTOR_OCI_GHCR_IO_PASSWORD``. Catches CI / ad-hoc cases
-     where ``docker login`` hasn't been run.
+     ``RAPTOR_OCI_<HOST_UPPER>_PASSWORD``, with ``.`` and ``-``
+     replaced by ``_`` in the host. So ``ghcr.io`` →
+     ``RAPTOR_OCI_GHCR_IO_USER`` / ``RAPTOR_OCI_GHCR_IO_PASSWORD``.
+     Catches CI / ad-hoc cases where ``docker login`` hasn't been
+     run. Because that encoding collapses ``.`` and ``-`` to the
+     same character, hostnames containing a dash (or underscore)
+     additionally require ``RAPTOR_OCI_<HOST_UPPER>_HOST`` set to
+     the exact hostname — see :func:`_from_env`.
 
 The chain is consulted lazily: anonymous gets tried first because
 it's free (no credential lookup); registry credentials are looked
@@ -100,13 +104,51 @@ def _from_env(registry: str) -> BasicCredentials | None:
     replaced with ``_`` so ``ghcr.io`` → ``RAPTOR_OCI_GHCR_IO_*``,
     ``registry-1.docker.io`` → ``RAPTOR_OCI_REGISTRY_1_DOCKER_IO_*``.
     The ``-`` → ``_`` substitution covers hosts with hyphens
-    (``registry-1`` etc.)."""
+    (``registry-1`` etc.).
+
+    The host → env-name encoding is NOT injective: ``.`` and ``-``
+    both map to ``_``, so an attacker-registrable hostname can
+    collide with the operator's configured registry
+    (``evil-registry.com`` and ``evil.registry.com`` share the key
+    ``EVIL_REGISTRY_COM``) and — via a hostile image reference in a
+    scanned repo — receive that registry's credentials. Two gates
+    close this:
+
+      * ``RAPTOR_OCI_<KEY>_HOST`` — optional exact-match pin. When
+        set, credentials go ONLY to that hostname.
+      * Without the pin, credentials are released only to hostnames
+        containing no ``-`` (or ``_``). On dash-free hostnames the
+        encoding is injective (every ``_`` in the key is
+        unambiguously a ``.``), so no distinct colliding hostname
+        exists. Operators whose registry hostname contains a dash
+        must set the pin; the refusal below says exactly that.
+    """
     safe = registry.upper().replace(".", "_").replace("-", "_")
     user = os.environ.get(f"RAPTOR_OCI_{safe}_USER")
     password = os.environ.get(f"RAPTOR_OCI_{safe}_PASSWORD")
-    if user and password:
-        return BasicCredentials(username=user, password=password)
-    return None
+    if not (user and password):
+        return None
+    pinned_host = os.environ.get(f"RAPTOR_OCI_{safe}_HOST")
+    if pinned_host is not None:
+        if pinned_host.strip().lower() == registry.lower():
+            return BasicCredentials(username=user, password=password)
+        logger.warning(
+            "core.oci.auth: refusing RAPTOR_OCI_%s_* credentials for "
+            "%s — RAPTOR_OCI_%s_HOST pins them to %r",
+            safe, registry, safe, pinned_host,
+        )
+        return None
+    if "-" in registry or "_" in registry:
+        logger.warning(
+            "core.oci.auth: refusing RAPTOR_OCI_%s_* credentials for "
+            "%s — the hostname is ambiguous under the env-var "
+            "encoding ('.' and '-' both map to '_'), so a colliding "
+            "hostname could capture these credentials. Set "
+            "RAPTOR_OCI_%s_HOST=%s to pin them to this host.",
+            safe, registry, safe, registry,
+        )
+        return None
+    return BasicCredentials(username=user, password=password)
 
 
 def _from_docker_config(registry: str) -> BasicCredentials | None:

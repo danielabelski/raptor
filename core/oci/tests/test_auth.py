@@ -36,11 +36,65 @@ def test_env_vars_picked_up(monkeypatch):
 
 def test_env_vars_with_hyphen_in_host(monkeypatch):
     """Hosts with hyphens (``registry-1.docker.io``) need the hyphen
-    replaced with ``_`` to fit env-var naming rules."""
+    replaced with ``_`` to fit env-var naming rules — and, because
+    that encoding is ambiguous ('.' also maps to '_'), an exact-match
+    ``RAPTOR_OCI_<KEY>_HOST`` pin."""
     monkeypatch.setenv("RAPTOR_OCI_REGISTRY_1_DOCKER_IO_USER", "u")
     monkeypatch.setenv("RAPTOR_OCI_REGISTRY_1_DOCKER_IO_PASSWORD", "p")
+    monkeypatch.setenv(
+        "RAPTOR_OCI_REGISTRY_1_DOCKER_IO_HOST", "registry-1.docker.io",
+    )
     creds = lookup_credentials("registry-1.docker.io")
     assert creds == BasicCredentials("u", "p")
+
+
+def test_env_key_collision_does_not_leak_credentials(monkeypatch):
+    """`evil-registry.com` and `evil.registry.com` share the derived
+    env key EVIL_REGISTRY_COM. Credentials configured for one must
+    never be released to the other: a hostile image reference naming
+    the colliding host would otherwise capture them via the Basic /
+    token-exchange path."""
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setattr(
+        "pathlib.Path.home", lambda: Path("/nonexistent-home"),
+    )
+    monkeypatch.setenv("RAPTOR_OCI_EVIL_REGISTRY_COM_USER", "operator")
+    monkeypatch.setenv("RAPTOR_OCI_EVIL_REGISTRY_COM_PASSWORD", "hunter2")
+    # Un-pinned creds: released only to the dash-free hostname (the
+    # encoding's unique dash-free preimage) ...
+    assert lookup_credentials("evil.registry.com") \
+        == BasicCredentials("operator", "hunter2")
+    # ... and never to a colliding dashed hostname.
+    assert lookup_credentials("evil-registry.com") is None
+
+
+def test_env_host_pin_releases_only_to_pinned_host(monkeypatch):
+    """When the operator's registry hostname itself contains a dash,
+    the RAPTOR_OCI_<KEY>_HOST pin routes credentials to exactly that
+    host — and blocks the dotted collider."""
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setattr(
+        "pathlib.Path.home", lambda: Path("/nonexistent-home"),
+    )
+    monkeypatch.setenv("RAPTOR_OCI_MY_REGISTRY_CORP_USER", "operator")
+    monkeypatch.setenv("RAPTOR_OCI_MY_REGISTRY_CORP_PASSWORD", "pw")
+    monkeypatch.setenv("RAPTOR_OCI_MY_REGISTRY_CORP_HOST", "my-registry.corp")
+    assert lookup_credentials("my-registry.corp") \
+        == BasicCredentials("operator", "pw")
+    assert lookup_credentials("my.registry.corp") is None
+
+
+def test_env_underscore_host_refused_without_pin(monkeypatch):
+    """Underscores are invalid in DNS hostnames but survive parsing;
+    they collide with '.' and '-' in the encoding, so they get the
+    same ambiguity treatment."""
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setattr(
+        "pathlib.Path.home", lambda: Path("/nonexistent-home"),
+    )
+    monkeypatch.setenv("RAPTOR_OCI_EVIL_REGISTRY_COM_USER", "operator")
+    monkeypatch.setenv("RAPTOR_OCI_EVIL_REGISTRY_COM_PASSWORD", "pw")
+    assert lookup_credentials("evil_registry.com") is None
 
 
 def test_env_vars_partial_returns_none(monkeypatch):

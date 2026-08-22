@@ -75,6 +75,12 @@ class _FakeProc:
     def terminate(self):
         self.terminated = True
 
+    def kill(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
     def poll(self):
         return None
 
@@ -303,6 +309,98 @@ def test_start_proceeds_in_best_effort_when_warm_up_times_out(tmp_path):
     assert streamer._reader is not None
     assert streamer._reader.is_alive() or streamer._reader.ident is not None
     streamer._stopped.set()
+
+
+def test_start_raises_when_warm_up_required_and_gate_fails(tmp_path):
+    """audit_required runs demand proven attachment: when the caller
+    passed warm_up_required=True and the warm-up gate reports False,
+    start() must raise (fail closed) instead of proceeding
+    best-effort with an unproven log-stream attachment — pre-fix the
+    fail-closed contract only covered the streamer Popen raising,
+    so an audit_required run could execute with zero captured
+    records and a healthy-looking summary."""
+    import pytest
+
+    streamer = seatbelt_audit.LogStreamer(
+        tmp_path, warm_up_required=True,
+    )
+    fake_log_stream = _FakeProc(_FakeStdout([]))
+
+    with mock.patch.object(
+        seatbelt_audit.subprocess, "Popen",
+        return_value=fake_log_stream,
+    ), mock.patch.object(
+        seatbelt_audit.LogStreamer, "_warm_up_until_attached",
+        return_value=False,
+    ):
+        with pytest.raises(seatbelt_audit.AuditWarmUpError):
+            streamer.start()
+
+    # The failed start must not leak the log-stream subprocess.
+    assert fake_log_stream.terminated is True
+    # No reader thread was started for the refused attachment.
+    assert streamer._reader is None
+
+
+def test_start_keeps_best_effort_when_warm_up_not_required(tmp_path):
+    """Without warm_up_required, a warm-up miss stays best-effort:
+    start() proceeds and the reader thread runs (existing
+    contract, pinned so the fail-closed arm stays opt-in)."""
+    streamer = _make_streamer(tmp_path)
+    fake_log_stream = _FakeProc(_FakeStdout([]))
+
+    with mock.patch.object(
+        seatbelt_audit.subprocess, "Popen",
+        return_value=fake_log_stream,
+    ), mock.patch.object(
+        seatbelt_audit.LogStreamer, "_warm_up_until_attached",
+        return_value=False,
+    ):
+        streamer.start()
+
+    assert streamer._reader is not None
+    assert fake_log_stream.terminated is False
+    streamer._stopped.set()
+
+
+def test_spawn_fails_closed_on_warm_up_miss_when_audit_required(
+        tmp_path, monkeypatch):
+    """End-to-end contract at the spawn layer: run_sandboxed must
+    propagate warm_up_required=audit_required into the streamer, so
+    an audit_required run whose warm-up gate fails refuses to spawn
+    the workload (SandboxSetupError) instead of running unaudited."""
+    import pytest
+
+    from core.sandbox import _macos_spawn
+    from core.sandbox.errors import SandboxSetupError
+
+    captured_kwargs: dict = {}
+
+    def _fail_start(run_dir, **kwargs):
+        captured_kwargs.update(kwargs)
+        if kwargs.get("warm_up_required"):
+            raise seatbelt_audit.AuditWarmUpError(
+                "warm-up attachment not confirmed")
+        raise AssertionError(
+            "audit_required must request warm_up_required=True")
+
+    monkeypatch.setattr(seatbelt_audit, "start_log_streamer", _fail_start)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    with pytest.raises(SandboxSetupError):
+        _macos_spawn.run_sandboxed(
+            ["/bin/true"],
+            output=str(out_dir),
+            audit_mode=True,
+            audit_run_dir=str(out_dir),
+            audit_required=True,
+            capture_output=True, text=True, timeout=30,
+        )
+    assert captured_kwargs.get("warm_up_required") is True
+    # The refused degradation is still marker-documented for the
+    # operator inspecting the run dir.
+    from core.sandbox import summary as summary_mod
+    assert (out_dir / summary_mod.AUDIT_DEGRADED_FILE).exists()
 
 
 def test_warm_up_reaps_child_even_on_match(tmp_path):

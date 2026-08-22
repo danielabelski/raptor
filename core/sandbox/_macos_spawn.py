@@ -519,6 +519,13 @@ def run_sandboxed(cmd: list[str], *,
                 # tree may be nonce-stamped into this run's JSONL.
                 # The shim PID is registered right after Popen below.
                 require_scope=True,
+                # audit_required is a fail-closed contract: the
+                # warm-up attachment gate failing must raise (caught
+                # below, converted to SandboxSetupError) rather than
+                # proceed best-effort with an unproven log-stream
+                # attachment and a healthy-looking zero-record
+                # summary.
+                warm_up_required=bool(audit_required),
             )
         except Exception as exc:
             logger.warning(

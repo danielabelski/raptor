@@ -69,6 +69,14 @@ from .seatbelt import SANDBOX_KEXT_SENDER
 logger = logging.getLogger(__name__)
 
 
+class AuditWarmUpError(RuntimeError):
+    """The warm-up attachment gate could not confirm the log-stream
+    feed is live and the caller demanded proof (warm_up_required=True
+    — what _macos_spawn passes for audit_required runs). Raised from
+    ``LogStreamer.start()`` so the fail-closed decision happens
+    BEFORE the workload spawns."""
+
+
 # Filename matches the Linux tracer convention so summarize_and_write
 # in summary.py picks it up unchanged.
 DENIALS_FILE = ".sandbox-denials.jsonl"
@@ -378,6 +386,7 @@ class LogStreamer:
                  observe_nonce: str | None = None,
                  target_pid: int | None = None,
                  require_scope: bool = False,
+                 warm_up_required: bool = False,
                  get_ppid=None,
                  getpgid=None,
                  list_pid_ppids=None,
@@ -391,6 +400,10 @@ class LogStreamer:
         # injectable so tests drive attribution deterministically
         # without a real /proc, ps, or getpgid.
         self._require_scope = bool(require_scope)
+        # Fail-closed warm-up: when True, a warm-up gate miss raises
+        # AuditWarmUpError from start() instead of proceeding
+        # best-effort (see start()'s docstring for the trade-offs).
+        self._warm_up_required = bool(warm_up_required)
         self._pending: list[dict] = []
         self._foreign_records_dropped = 0
         self._foreign_pid_cache: set[int] = set()
@@ -631,6 +644,13 @@ class LogStreamer:
         deliberately logged at WARNING with traceback, since it
         signals a sandbox-exec regression the operator must see.
 
+        Under ``warm_up_required=True`` (what _macos_spawn passes for
+        audit_required runs) there is no best-effort fallback: a
+        warm-up miss raises :class:`AuditWarmUpError` — with the
+        `log stream` subprocess torn down — so the caller's
+        fail-closed path refuses to run the workload with an
+        unproven log-stream attachment.
+
         When the predicate is PID-scoped (``target_pid`` at
         construction), the warm-up gate is skipped entirely: the
         synthetic workload runs under its own PID, so its kext
@@ -667,7 +687,11 @@ class LogStreamer:
         try:
             if self._target_pid is not None:
                 # PID-scoped predicate — the warm-up's synthetic
-                # workload events can't match it (see docstring).
+                # workload events can't match it (see docstring), so
+                # the gate is structurally unavailable here and
+                # warm_up_required cannot apply: callers choosing
+                # predicate-level scoping trade away the cold-start
+                # attachment confirmation (_macos_spawn never does).
                 logger.debug(
                     "seatbelt audit: warm-up gate skipped — predicate "
                     "is PID-scoped to %d and cannot see the synthetic "
@@ -675,6 +699,17 @@ class LogStreamer:
                     self._target_pid,
                 )
             elif not self._warm_up_until_attached():
+                if self._warm_up_required:
+                    # Fail closed: the raise lands in the except arm
+                    # below, which tears down the `log stream`
+                    # subprocess before re-raising, so a refused
+                    # attachment never leaks a zombie streamer.
+                    raise AuditWarmUpError(
+                        f"log-stream warm-up attachment was not "
+                        f"confirmed within {_WARM_UP_TIMEOUT_S}s — "
+                        f"refusing to proceed with an unproven audit "
+                        f"feed (warm_up_required=True)"
+                    )
                 logger.debug(
                     "seatbelt audit: warm-up gate did not see kext events "
                     "from synthetic workload within %ss; proceeding in "
@@ -872,15 +907,22 @@ class LogStreamer:
     def _read_loop(self) -> None:
         """Read ndjson lines from `log stream`, parse, and append
         records to the JSONL. Robust to malformed lines (silently
-        skip)."""
+        skip).
+
+        Runs to EOF, deliberately: stop() terminates the producer and
+        joins this thread BEFORE setting the stop flag, so lines that
+        were already buffered in the subprocess pipe at stop() time
+        get parsed rather than dropped. Pre-fix the loop broke on the
+        flag mid-stream and the tail records of every run were
+        silently lost while a healthy summary was appended. EOF is
+        guaranteed: stop() escalates terminate → kill on the
+        producer, which closes the pipe's write end."""
         try:
             # Explicit guard — survives `python -O`.
             if self._proc is None:
                 msg = "seatbelt_audit._read_loop: proc not started"
                 raise RuntimeError(msg)
             for raw_line in self._proc.stdout or ():
-                if self._stopped.is_set():
-                    break
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -1030,11 +1072,19 @@ class LogStreamer:
         has visible latency (spike #4 measured ~1.5s for a cold
         first event); without the drain we'd lose the tail-end
         records of short workloads.
+
+        Ordering is load-bearing: terminate the producer FIRST, drain
+        the reader to EOF (bounded join), and only THEN set the stop
+        flag and append the summary. Pre-fix the flag was set before
+        the terminate while _read_loop broke on it before parsing
+        already-buffered lines — the pipe-buffered tail of every run
+        was silently dropped, yet the summary still asserted a
+        healthy capture.
         """
-        self._stopped.set()
         if self._proc is not None:
-            # Give the reader a brief window to consume any buffered
-            # output before we kill the subprocess.
+            # Terminate the producer: no new lines are generated, the
+            # pipe's write end closes, and whatever is already
+            # buffered drains to EOF under the reader.
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=drain_timeout)
@@ -1044,29 +1094,25 @@ class LogStreamer:
                     self._proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     pass
-            # Reader thread is daemon — if it's still draining stdout,
-            # let it finish naturally; we don't block process exit on it.
-            #
-            # Pre-fix the join timeout was 0.5s. The kernel log
-            # streamer (`log show --predicate`) buffers messages in
-            # its stdout pipe; on stop, the proc.terminate above
-            # closes the pipe but bytes ALREADY in the buffer still
-            # need draining. Lines that arrived in the last ~500ms
-            # before stop didn't make it into the JSONL because the
-            # reader hadn't consumed them by the time the join
-            # timed out and the summary record fired (the lock
-            # below blocks further appends after summary, by
-            # design).
-            #
-            # Bump to 3s. Operators are willing to wait 3s for
-            # shutdown to fully drain the audit trail; missing
-            # the last few sandbox-denial events is a worse
-            # outcome than a 2.5s extra shutdown delay. Daemon
-            # status preserves the original "don't block exit
-            # forever" intent — a hung reader after 3s still
-            # gets killed by interpreter shutdown.
+            # Drain the reader to EOF before the summary fires (the
+            # append lock makes the summary the last write only for
+            # appends that RACE it — records the reader hasn't parsed
+            # yet would simply be lost after it). Bounded join: the
+            # kernel log streamer buffers messages in its stdout
+            # pipe, and bytes already in the buffer still need
+            # parsing after the terminate above. Operators are
+            # willing to wait 3s for shutdown to fully drain the
+            # audit trail; missing the last few sandbox-denial
+            # events is a worse outcome than a 3s extra shutdown
+            # delay. Daemon status preserves the original "don't
+            # block exit forever" intent — a hung reader after 3s
+            # still gets killed by interpreter shutdown.
             if self._reader is not None and self._reader.is_alive():
                 self._reader.join(timeout=3.0)
+        # Stop flag AFTER the drain: _read_loop runs to EOF by design
+        # (see its docstring); the flag's remaining consumer is the
+        # lineage poller's clock.
+        self._stopped.set()
         # Lineage poller: signalled via _stopped above; its loop does
         # one final tree refresh on the way out. Bounded join.
         if (self._lineage_poller is not None
@@ -1158,6 +1204,7 @@ def start_log_streamer(run_dir: Path, *,
                        observe_nonce: str | None = None,
                        target_pid: int | None = None,
                        require_scope: bool = False,
+                       warm_up_required: bool = False,
                        ) -> LogStreamer:
     """Convenience: instantiate + start a LogStreamer.
 
@@ -1187,10 +1234,16 @@ def start_log_streamer(run_dir: Path, *,
     then on only records attributable to the registered scope's
     process lineage are admitted (foreign sandboxed processes on the
     host are dropped + counted). _macos_spawn passes True.
+
+    `warm_up_required`: fail closed on the warm-up attachment gate —
+    a miss raises AuditWarmUpError from start() instead of the
+    best-effort proceed. _macos_spawn passes the run's
+    audit_required flag.
     """
     s = LogStreamer(run_dir, observe_mode=observe_mode,
                     observe_nonce=observe_nonce,
                     target_pid=target_pid,
-                    require_scope=require_scope)
+                    require_scope=require_scope,
+                    warm_up_required=warm_up_required)
     s.start()
     return s

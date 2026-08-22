@@ -53,6 +53,7 @@ from core.sandbox.summary import (
     AUDIT_DEGRADED_FILE,
     MAX_DENIALS_PER_RUN,
     SUMMARY_FILE,
+    get_run_posture,
     reassert_audit_degraded,
 )
 
@@ -309,6 +310,7 @@ def _verify_summary(
         if writer_flagged:
             return None, _INTEGRITY_TAMPERED
         return summary, _INTEGRITY_LEGACY
+    posture = summary.get("posture")
     fields = telemetry_mac.summary_fields(
         summary.get("total_denials", 0),
         _denials_sha256(summary.get("denials", [])),
@@ -316,6 +318,7 @@ def _verify_summary(
         corrupt_lines=corrupt_lines,
         inode_mismatch=inode_mismatch,
         planted_object=planted_object,
+        posture=posture if isinstance(posture, dict) else None,
     )
     if telemetry_mac.verify(fields, token):
         if writer_flagged:
@@ -473,6 +476,44 @@ def triage_run(run_dir: Path, *,
         _verify_audit_degraded(
             raw_audit_degraded, _run_binding, allow_legacy=_verify_legacy))
 
+    # Key-exposure posture gate: a verifying token only narrows to
+    # "written by the parent" when the run's sandbox posture could
+    # hide the telemetry-MAC key from the child (mount namespace or
+    # restrict_reads read allowlist — see telemetry_mac's module
+    # docstring). On a read-unrestricted run the target could read the
+    # key and mint valid tokens itself, so "verified" would overstate:
+    # demote to the legacy tier, clearly flagged below. The posture
+    # comes from parent memory (record_run_posture — out of the
+    # target's reach); the copy persisted inside the summary is only
+    # as trustworthy as the key itself, so it is trusted ONE-WAY: an
+    # on-disk "exposed" claim may demote (no attacker gains from
+    # forging it), an on-disk "hidden" claim proves nothing and never
+    # upgrades. Unknown posture (fresh-process re-triage, runs
+    # predating posture wiring) keeps today's behaviour.
+    posture = get_run_posture(run_dir)
+    posture_source = "parent-memory" if posture is not None else None
+    if posture is None:
+        _disk_posture = (summary or {}).get("posture")
+        if (isinstance(_disk_posture, dict)
+                and not _disk_posture.get("mac_key_hidden", True)):
+            posture = dict(_disk_posture)
+            posture_source = "summary"
+    key_exposed = (posture is not None
+                   and not posture.get("mac_key_hidden", True))
+    key_demoted: List[str] = []
+    if key_exposed:
+        if (raw_summary is not None
+                and summary_integrity == _INTEGRITY_VERIFIED):
+            summary_integrity = _INTEGRITY_LEGACY
+            key_demoted.append("sandbox_summary")
+        if raw_proxy_events and events_integrity == _INTEGRITY_VERIFIED:
+            events_integrity = _INTEGRITY_LEGACY
+            key_demoted.append("proxy_events")
+        if (raw_audit_degraded is not None
+                and degraded_integrity == _INTEGRITY_VERIFIED):
+            degraded_integrity = _INTEGRITY_LEGACY
+            key_demoted.append("audit_degraded")
+
     denials = (summary or {}).get("denials", [])
     enforcement_denials = [d for d in denials
                             if d.get("type") not in _BUDGET_MARKER_TYPES]
@@ -581,12 +622,16 @@ def triage_run(run_dir: Path, *,
             "total_denials": (summary or {}).get("total_denials", 0),
             "total_proxy_events": len(proxy_events),
             "integrity": integrity,
+            "mac_key_posture": (
+                {**posture, "source": posture_source}
+                if posture is not None else "unknown"),
         },
         "audit_degraded": audit_degraded is not None,
         "caveats": [],
     }
     legacy = sorted(name for name, state in integrity.items()
-                    if state == _INTEGRITY_LEGACY)
+                    if state == _INTEGRITY_LEGACY
+                    and name not in key_demoted)
     if legacy:
         report["caveats"].append(
             "Unstamped telemetry accepted at face value: "
@@ -595,6 +640,18 @@ def triage_run(run_dir: Path, *,
             "usable telemetry-mac key). The run dir is writable by "
             "the sandboxed target, so treat this verdict with "
             "correspondingly lower confidence."
+        )
+    if key_demoted:
+        report["caveats"].append(
+            "Telemetry provenance demoted to unverified/legacy tier: "
+            + ", ".join(sorted(key_demoted))
+            + " carry valid tokens, but this run's sandbox posture "
+            "could not hide the telemetry-mac key from the target "
+            "(no mount namespace and no restrict_reads read "
+            "allowlist), so the target could have read the key and "
+            "minted valid tokens itself. Token verification proves "
+            "nothing for this run — treat these inputs with the same "
+            "confidence as unstamped telemetry."
         )
     if audit_degraded is not None:
         report["caveats"].append(

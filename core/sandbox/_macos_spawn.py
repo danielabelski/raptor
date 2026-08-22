@@ -362,6 +362,21 @@ def run_sandboxed(cmd: list[str], *,
         from . import evidence as _evidence_mod
         _evidence_dir = str(_evidence_mod.ensure_audit_dir(audit_run_dir))
 
+    # 0c. Key-exposure posture for triage (summary.record_run_posture):
+    # macOS has no mount namespace, so only restrict_reads can hide the
+    # telemetry-MAC key from the child; without it a read-unrestricted
+    # target can read the key and mint valid telemetry tokens. Recorded
+    # per invocation, weakest-wins across the run. This layer only
+    # knows the run directory when audit_run_dir names it — postures of
+    # non-audit invocations are attributed at the dispatching layer.
+    if audit_run_dir:
+        from . import summary as _posture_mod
+        _posture_mod.record_run_posture(
+            Path(audit_run_dir),
+            mount_ns_active=False,
+            restrict_reads=bool(restrict_reads),
+        )
+
     # 1. Build SBPL profile from the kwargs.
     profile = seatbelt.build_profile(
         target=target,

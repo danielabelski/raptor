@@ -359,8 +359,15 @@ fire — escalate-only, no enforcement change, no auto-kill. Set
 
 Because the run dir is writable by the sandboxed target while it runs,
 every triage input the target could forge is stamped at write time with
-an HMAC token (key held outside every sandbox-readable tree); content
-failing verification is excluded and fires `telemetry_tampering`.
+an HMAC token; content failing verification is excluded and fires
+`telemetry_tampering`. The token's strength depends on the run's
+posture: the key lives outside the run directory, but only a mount
+namespace or a `restrict_reads` read allowlist hides it from the child
+— on a read-unrestricted run (the Landlock-only `full`/`target_run`
+default) the target could read the key and mint valid tokens itself,
+so triage records the posture and demotes token-verified telemetry to
+legacy confidence on such runs (flagged in the report's caveats and
+`inputs.mac_key_posture`).
 
 Re-run triage by hand (stranded runs, scripted gates), optionally with
 an LLM deeper-reasoning pass:

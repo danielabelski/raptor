@@ -12,12 +12,24 @@ not.
 
 Writers stamp each artifact with an HMAC-SHA256 token over the exact
 fields triage acts on; triage verifies and demotes records that fail.
-Same trust story as core/sage/rowmac.py, whose key-handling discipline
-this module copies: the key lives OUTSIDE every sandbox-readable tree
-(a target that could read it could mint valid tokens for forged
-telemetry), symlinked / foreign-owned / group-readable key files are
-refused rather than replaced, and verification failure is a demote
-path, never an error.
+Key-handling discipline is copied from core/sage/rowmac.py: symlinked
+/ foreign-owned / group-readable key files are refused rather than
+replaced, and verification failure is a demote path, never an error.
+
+POSTURE DEPENDENCY — what a verifying token actually proves. The key
+lives outside the run output directory (the tree the target holds
+WRITE access to), but it is NOT outside every sandbox-readable tree:
+only a mount namespace (pivoted rootfs) or a read allowlist
+(``restrict_reads``) hides it from the child. On read-unrestricted
+postures — the Landlock-only default of the ``full`` / ``target_run``
+profiles, and macOS runs without ``restrict_reads`` — a hostile
+target can read the key and mint valid tokens for forged telemetry.
+The spawn layer records each run's posture via
+``core.sandbox.summary.record_run_posture``; triage demotes
+token-verified telemetry to legacy confidence when the posture could
+not have hidden the key. A verifying token therefore means "written
+by a key-holder" — only under a key-hiding posture does that narrow
+to "written by the parent".
 
 Key
     ``$XDG_DATA_HOME/raptor/telemetry-mac.key`` (default
@@ -345,7 +357,8 @@ def triage_report_fields(report_sha256: str, run: str) -> dict:
 def summary_fields(total_denials: int, denials_sha256: str, run: str,
                    corrupt_lines: int = 0,
                    inode_mismatch: bool = False,
-                   planted_object: str = "") -> dict:
+                   planted_object: str = "",
+                   posture: "Mapping | None" = None) -> dict:
     """MAC fields for sandbox-summary.json: the denial payload is
     covered by its content hash, so a planted or edited summary fails
     verification even when the headline counters are preserved.
@@ -354,7 +367,16 @@ def summary_fields(total_denials: int, denials_sha256: str, run: str,
     flags (evidence rewritten in place / evidence file swapped). They
     join the MAC only when set so tokens minted before the flags
     existed keep verifying; binding them means a target that can edit
-    the summary cannot strip the flags without breaking the token."""
+    the summary cannot strip the flags without breaking the token.
+
+    ``posture`` is the summariser's key-exposure record (see
+    ``core.sandbox.summary.record_run_posture``). Only the fact triage
+    acts on — ``mac_key_hidden`` — is bound, and only when a posture
+    was recorded, so pre-posture tokens keep verifying. Binding it
+    means the field cannot be stripped or flipped on disk without
+    breaking the token; note it is intentionally NOT a proof of
+    posture (a target that could read the key can mint any posture),
+    which is why in-lifecycle triage prefers the parent-memory copy."""
     fields = {
         "kind": "sandbox-summary",
         "run": run,
@@ -367,4 +389,7 @@ def summary_fields(total_denials: int, denials_sha256: str, run: str,
         fields["inode_mismatch"] = True
     if planted_object:
         fields["planted_object"] = str(planted_object)
+    if posture is not None:
+        fields["posture_mac_key_hidden"] = bool(
+            posture.get("mac_key_hidden"))
     return fields

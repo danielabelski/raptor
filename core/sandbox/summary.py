@@ -128,6 +128,16 @@ _degraded_markers: dict[str, dict] = {}
 # planted object and reads as "altered".
 _MARKER_MAX_BYTES = 1024 * 1024
 
+# Parent-side memory of each run's sandbox POSTURE, keyed by resolved
+# run-dir path. Records whether the sandbox layers this run engaged
+# could hide parent-side secrets — specifically the telemetry-MAC key
+# at $XDG_DATA_HOME/raptor/telemetry-mac.key — from the child. Kept in
+# parent memory (out of the target's reach) because the on-disk copy
+# embedded in sandbox-summary.json is only as trustworthy as the key
+# itself: a target that could read the key can mint a summary claiming
+# the key was hidden. Guarded by _lock.
+_run_postures: dict[str, dict] = {}
+
 # Read bound for the denials JSONL. An honest file is capped at
 # MAX_DENIALS_PER_RUN records of well-under-PIPE_BUF lines (~40 MB
 # absolute ceiling, KBs in practice); anything bigger at the
@@ -379,6 +389,62 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
         return ("syscall blocked by seccomp; use `--sandbox network-only` or "
                 "`--sandbox none` to drop seccomp")
     return "review denial; no specific suggestion available"
+
+
+def record_run_posture(run_dir: Path, *, mount_ns_active: bool,
+                       restrict_reads: bool) -> None:
+    """Record whether a sandbox invocation's posture could hide the
+    telemetry-MAC key from the sandboxed child.
+
+    A mount namespace (pivoted rootfs) removes the host tree from the
+    child's view entirely; a read allowlist (``restrict_reads``)
+    denies reads outside the granted paths. With NEITHER — the
+    Landlock-only / read-unrestricted default of the ``full`` and
+    ``target_run`` profiles — the child can read the key file and mint
+    valid telemetry tokens, so token verification proves nothing for
+    that run. Triage consumes this record (via ``get_run_posture``) to
+    demote token-verified telemetry to legacy confidence on such runs.
+
+    Weakest-wins across multiple sandbox calls in one run: if ANY call
+    ran with the key readable, the whole run's telemetry must be
+    treated as mintable by the target.
+
+    Call sites: the sandbox spawn/dispatch layer, once per sandbox()
+    invocation that has a run/audit directory to attribute telemetry
+    to. Best-effort — never raises.
+    """
+    hidden = bool(mount_ns_active) or bool(restrict_reads)
+    try:
+        run_key = str(Path(run_dir).resolve())
+    except OSError:
+        return
+    with _lock:
+        cur = _run_postures.get(run_key)
+        if cur is None:
+            _run_postures[run_key] = {
+                "mount_ns_active": bool(mount_ns_active),
+                "restrict_reads": bool(restrict_reads),
+                "mac_key_hidden": hidden,
+            }
+        else:
+            cur["mount_ns_active"] = (cur["mount_ns_active"]
+                                      and bool(mount_ns_active))
+            cur["restrict_reads"] = (cur["restrict_reads"]
+                                     and bool(restrict_reads))
+            cur["mac_key_hidden"] = cur["mac_key_hidden"] and hidden
+
+
+def get_run_posture(run_dir: Path) -> dict[str, bool] | None:
+    """Parent-memory posture for ``run_dir`` (a copy), or None when no
+    sandbox call recorded one in this process — e.g. manual post-hoc
+    re-triage in a fresh process, or a run predating posture wiring."""
+    try:
+        run_key = str(Path(run_dir).resolve())
+    except OSError:
+        return None
+    with _lock:
+        cur = _run_postures.get(run_key)
+        return dict(cur) if cur is not None else None
 
 
 def record_audit_degraded(run_dir: Path, *, reason: str,
@@ -794,6 +860,15 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
         "by_type": by_type,
         "denials": denials,
     }
+    # Key-exposure posture (see record_run_posture): persisted for
+    # operator visibility and for post-hoc re-triage in a fresh
+    # process, and MAC-bound below so it cannot be stripped or flipped
+    # without breaking the token. In-lifecycle triage prefers the
+    # parent-memory copy — this on-disk field is only as trustworthy
+    # as the key, which is exactly what the field is ABOUT.
+    posture = get_run_posture(run_dir)
+    if posture is not None:
+        summary["posture"] = posture
     if corrupt_lines or inode_mismatch or planted_object:
         # Tamper flags. Corrupt lines mean someone rewrote evidence in
         # place (the inode check cannot see that on the Landlock-only
@@ -864,7 +939,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     _token = _tmac.mint(_tmac.summary_fields(
         len(denials), _denials_sha, run=_tmac.run_binding(run_dir),
         corrupt_lines=corrupt_lines, inode_mismatch=inode_mismatch,
-        planted_object=planted_object))
+        planted_object=planted_object, posture=posture))
     if _token:
         summary["mac"] = _token
 

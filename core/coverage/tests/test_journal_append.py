@@ -218,3 +218,37 @@ class TestCorruptLineCounting:
             if "skipped 2 corrupt line(s)" in r.getMessage()
         ]
         assert agg, "aggregate corrupt-line warning expected"
+
+
+class TestJournalByteBudget:
+    """Journal + index loads are size-gated before any read."""
+
+    def test_oversize_journal_loads_empty(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        append_entry(tmp_path, _entry(1))
+        append_entry(tmp_path, _entry(2))
+        size = (tmp_path / "review-journal.jsonl").stat().st_size
+        monkeypatch.setattr(journal_mod, "_MAX_JOURNAL_BYTES", size - 1)
+        assert load_entries(tmp_path) == []
+
+    def test_journal_at_cap_still_loads(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        append_entry(tmp_path, _entry(1))
+        size = (tmp_path / "review-journal.jsonl").stat().st_size
+        monkeypatch.setattr(journal_mod, "_MAX_JOURNAL_BYTES", size)
+        assert len(load_entries(tmp_path)) == 1
+
+    def test_oversize_index_starts_fresh(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        index_path = tmp_path / journal_mod.INDEX_FILENAME
+        index_path.write_text(json.dumps({
+            "schema_version": journal_mod.INDEX_SCHEMA_VERSION,
+            "entries": {"k": {"padding": "x" * 4096}},
+        }))
+        monkeypatch.setattr(journal_mod, "_MAX_JOURNAL_BYTES", 64)
+        assert journal_mod._load_index(index_path) == {}
+        monkeypatch.setattr(journal_mod, "_MAX_JOURNAL_BYTES", 1 << 20)
+        assert "k" in journal_mod._load_index(index_path)

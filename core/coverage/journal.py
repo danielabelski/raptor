@@ -35,6 +35,13 @@ JOURNAL_FILENAME = "review-journal.jsonl"
 INDEX_FILENAME = "review-journal-index.json"
 INDEX_SCHEMA_VERSION = 1
 
+# Byte budget for loading the journal / index. Both can arrive via a
+# /project archive import, so the st_size gate (before any read)
+# keeps an oversize file from being buffered. Real journals are one
+# ~1 KiB line per reviewed function — even huge audits stay far under
+# this.
+_MAX_JOURNAL_BYTES = 256 * 1024 * 1024
+
 VALID_VERDICTS = frozenset({
     "clean", "suspicious", "finding", "error", "dormant",
     # Gate-resolution bucket: tool-blind, needs concrete verification.
@@ -435,6 +442,18 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
     if not journal_path.is_file():
         return []
 
+    # Size gate before the read buffers the whole journal.
+    try:
+        size = journal_path.stat().st_size
+    except OSError:
+        return []
+    if size > _MAX_JOURNAL_BYTES:
+        logger.warning(
+            "journal: %s is %d bytes (over the %d byte cap); "
+            "refusing to load", journal_path, size, _MAX_JOURNAL_BYTES,
+        )
+        return []
+
     entries: list[ReviewJournalEntry] = []
     lines = journal_path.read_text(encoding="utf-8").splitlines()
 
@@ -769,12 +788,15 @@ def load_index_full(project_dir: Path) -> dict[str, ReviewJournalEntry]:
 
 
 def _load_index(path: Path) -> dict[str, dict[str, Any]]:
-    """Load raw index dict from disk."""
+    """Load raw index dict from disk (bounded — st_size gate before
+    read; an oversize index degrades to the corrupt-index path)."""
+    from core.json.utils import load_json
+
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = load_json(path, strict=True, max_bytes=_MAX_JOURNAL_BYTES)
+    except (OSError, ValueError):
         logger.warning("journal: corrupt index at %s, starting fresh", path)
         return {}
     if not isinstance(data, dict):

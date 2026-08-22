@@ -72,6 +72,15 @@ class TestSeccompUnixAllowancePlumbing:
         return captured
 
     def test_allowed_with_mount_ns(self, monkeypatch, tmp_path):
+        # The allowance is downgraded (fail-closed) on hosts where the
+        # connect-scoping supervisor cannot run; the allowed-case
+        # assertion only holds where the capability exists. The
+        # blocked-case tests below hold everywhere.
+        from core.sandbox._unix_scope import probe_unix_scope
+        if not probe_unix_scope():
+            pytest.skip(
+                "AF_UNIX connect scoping unavailable on this host",
+            )
         assert self._capture(monkeypatch, tmp_path) == [True]
 
     def test_blocked_without_target_or_output(self, monkeypatch, tmp_path):

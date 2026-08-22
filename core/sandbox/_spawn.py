@@ -1218,7 +1218,16 @@ def run_sandboxed(
                  _unix_scope_child_sock) = _socket_mod.socketpair()
             else:
                 _allow_unix = False
-                if state.warn_once("_unix_scope_unavailable_warned"):
+                if sys.platform != "linux":
+                    # The supervisor is Linux plumbing; other platforms
+                    # can never grow it, so Linux remediation guidance
+                    # in an operator-facing WARNING is just noise.
+                    logger.debug(
+                        "Sandbox: AF_UNIX connect scoping is Linux-only"
+                        " — socket(AF_UNIX) stays blocked for sandboxed"
+                        " children on this platform.",
+                    )
+                elif state.warn_once("_unix_scope_unavailable_warned"):
                     logger.warning(
                         "Sandbox: AF_UNIX connect scoping unavailable "
                         "(needs seccomp user-notify + pidfd_getfd + "

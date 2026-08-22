@@ -354,3 +354,39 @@ class TestEdgePrompt:
         assert "run_query(raw)" in prompt
         assert "exec(q)" in prompt
         assert "Verdict the CONTRACT" in prompt
+
+
+class TestKnowledgeDegradationGate:
+    """run_edge_pass states missing OR EMPTY domain models as degraded."""
+
+    def _run(self, tmp_path, model_json=None):
+        import json as _json
+
+        from core.audit.edge_review import run_edge_pass
+        target = _target(tmp_path)
+        run = tmp_path / "run"
+        run.mkdir(exist_ok=True)
+        if model_json is not None:
+            (run / "domain-model.json").write_text(_json.dumps(model_json))
+        cfg = SimpleNamespace(out_dir=run, target_path=target,
+                              llm_client=None, llm_budget_client=None)
+        run_edge_pass(cfg, _checklist(target), None,
+                      commit_fn=lambda *a, **k: None)
+        return _json.loads(
+            (run / "edge-obligations.json").read_text())["stats"]["degraded"]
+
+    def test_absent_model_degrades(self, tmp_path):
+        assert "no-domain-model" in self._run(tmp_path)
+
+    def test_empty_model_degrades_like_absent(self, tmp_path):
+        # The artifact a failed study run used to leave behind: parses
+        # fine, contains nothing. Zero knowledge = degraded.
+        degraded = self._run(tmp_path, model_json={
+            "concepts": [], "invariants": [], "contracts": []})
+        assert "no-domain-model" in degraded
+
+    def test_populated_model_not_degraded(self, tmp_path):
+        degraded = self._run(tmp_path, model_json={
+            "concepts": [{"id": "c1", "description": "d"}],
+            "invariants": [], "contracts": []})
+        assert "no-domain-model" not in degraded

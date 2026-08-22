@@ -293,7 +293,13 @@ def run_edge_pass(
     extra_degraded = []
     try:
         from core.coverage.journal import load_domain_model
-        if not load_domain_model(Path(config.out_dir)):
+        dm = load_domain_model(Path(config.out_dir))
+        # An EMPTY model (no concepts/invariants/contracts — e.g. the
+        # artifact a failed study run used to leave behind) provides
+        # zero knowledge and must degrade exactly like an absent one.
+        if not dm or not any(
+            dm.get(k) for k in ("concepts", "invariants", "contracts")
+        ):
             extra_degraded.append("no-domain-model")
             logger.warning(
                 "edge pass: no domain model for this target — contract "

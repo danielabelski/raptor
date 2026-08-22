@@ -352,10 +352,11 @@ def write_markdown_report(
                 "layer; run a study pass or seed concepts/domain-model.json "
                 "and re-audit (context-staleness re-queues affected "
                 "verdicts).")
-        elif degraded:
+        others = [d for d in degraded if d != "no-domain-model"]
+        if others:
             lines.append(
                 "- Degraded: " + ", ".join(_line(d, max_chars=40)
-                                           for d in degraded[:6]))
+                                           for d in others[:6]))
         for f in edge_block.get("edge_findings", [])[:10]:
             lines.append(
                 f"- **Contract violation:** "

@@ -608,6 +608,14 @@ class OrchestratorConfig:
     # ledger covers ALL segments while this process's budget client
     # only ever sees the remaining cap.
     prior_cost_breakdown: dict[str, Any] | None = None
+    # RESOLVED whole-run prior-segment spend from the resume CLI
+    # (core.audit.resume.resolve_prior_spend): reconciled ledger, else
+    # journal per-entry floor, raised to the incremental spend floor.
+    # Authoritative over ``prior_cost_breakdown`` for the amount
+    # booked — a segment whose predecessor died UNRECONCILED has no
+    # prior ledger dict, and booking only the dict used to drop every
+    # segment before the immediately-prior one from the ledger chain.
+    prior_booked_spend_usd: float = 0.0
     # 1 for a first run; the segment number stamped by
     # core.run.metadata.resume_run for resumed segments.
     resume_segment: int = 1
@@ -8019,16 +8027,26 @@ def _reconcile_cost_ledgers(config, result) -> None:
                     f"{c}=${v:.2f}" for c, v in sorted(booked.items())
                 ),
             )
-    # Same-run resume: book the prior segments' reconciled spend
-    # BEFORE injecting this segment's client ledger, so the rewritten
+    # Same-run resume: book the prior segments' spend BEFORE injecting
+    # this segment's client ledger, so the rewritten
     # cost-breakdown.json covers the whole run (the budget client only
-    # ever saw the remaining cap for this segment).
+    # ever saw the remaining cap for this segment). The RESOLVED
+    # figure from the resume CLI (prior_booked_spend_usd) is
+    # authoritative: it survives a predecessor that died before
+    # reconciling (no prior ledger dict), where booking only the dict
+    # dropped every segment before the immediately-prior one — the
+    # final ledger then under-reported the run by the whole early
+    # spend (observed live: $47.29 booked of ~$4,534).
     prior_breakdown = getattr(config, "prior_cost_breakdown", None)
-    if prior_breakdown:
+    prior_booked = max(
+        0.0,
+        float(getattr(config, "prior_booked_spend_usd", 0.0) or 0.0),
+    )
+    if prior_breakdown or prior_booked > 0:
         try:
             from .resume import booked_spend_usd
             result.cost_tracker.book_prior_segments(
-                booked_spend_usd(prior_breakdown),
+                max(booked_spend_usd(prior_breakdown), prior_booked),
                 segment=getattr(config, "resume_segment", 1),
             )
         except Exception:
@@ -10421,11 +10439,18 @@ def _persist_spend_floor(
                 float(getattr(client, "provider_spend_usd", 0.0) or 0.0),
             )
         # Whole-run figure: a resume segment's ledgers are segment-
-        # local; add the prior segments' reconciled spend.
+        # local; add the prior segments' spend. Same resolution rule
+        # as the reconciliation booking: the resolved figure from the
+        # resume CLI survives an unreconciled predecessor (no prior
+        # ledger dict).
         prior = getattr(config, "prior_cost_breakdown", None)
-        if prior:
+        prior_booked = max(
+            0.0,
+            float(getattr(config, "prior_booked_spend_usd", 0.0) or 0.0),
+        )
+        if prior or prior_booked > 0:
             from .resume import booked_spend_usd
-            spend += booked_spend_usd(prior)
+            spend += max(booked_spend_usd(prior), prior_booked)
         from .resume import persist_spend_floor
         persist_spend_floor(
             out_dir, spend,

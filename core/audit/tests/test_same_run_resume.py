@@ -275,6 +275,150 @@ class TestPriorSegmentLedger:
         assert "segments" not in ledger.to_dict()
 
 
+class TestMultiResumeCostContinuity:
+    """The cumulative ledger chain across resumed segments.
+
+    Representation under test: each segment's rewritten
+    cost-breakdown.json stores cumulative-so-far (a ``prior_segments``
+    phase + a ``segments`` row + whole-run ``totals.total_spend_usd``),
+    so readers never fold a chain. Each resume books the RESOLVED
+    whole-run prior spend (``resolve_prior_spend``), not merely the
+    immediately-prior segment's ledger — pre-fix a segment whose
+    predecessor died unreconciled restarted the chain, and the final
+    ledger under-reported the run by all earlier segments' spend
+    (observed live: segment 4 booked $47.29 of a ~$4,534 run).
+    """
+
+    def _segment(self, tmp_path, segment, own_spend, *, reconcile=True):
+        """Run one simulated segment through the production
+        reconciliation path (`_reconcile_cost_ledgers`)."""
+        from types import SimpleNamespace
+
+        from core.audit.orchestrator import _reconcile_cost_ledgers
+        from core.audit.resume import (
+            load_prior_cost_breakdown,
+            persist_spend_floor,
+            resolve_prior_spend,
+        )
+
+        out_dir = tmp_path / "run1"
+        prior_breakdown = None
+        booked = 0.0
+        if segment > 1:
+            # What cmd_resume does at segment start.
+            prior_breakdown = load_prior_cost_breakdown(out_dir)
+            booked, _note = resolve_prior_spend(out_dir)
+        config = _config(
+            tmp_path,
+            same_run_reuse=segment > 1,
+            prior_cost_breakdown=prior_breakdown,
+            prior_booked_spend_usd=booked,
+            resume_segment=segment,
+            llm_budget_client=SimpleNamespace(
+                total_cost=own_spend, provider_spend_usd=0.0,
+            ),
+        )
+        result = OrchestratorResult()
+        result.cost_tracker.record_call("review", cost_usd=own_spend)
+        if reconcile:
+            _reconcile_cost_ledgers(config, result)
+        else:
+            # Hard kill (SIGKILL/OOM): no ledger write — only the
+            # incremental spend floor the run persisted while alive.
+            persist_spend_floor(out_dir, own_spend + booked,
+                                segment=segment)
+        return result
+
+    def test_three_segments_final_ledger_is_whole_run(self, tmp_path):
+        import json as _json
+
+        from core.audit.resume import resolve_prior_spend
+
+        self._segment(tmp_path, 1, 100.0)
+        self._segment(tmp_path, 2, 50.0)
+        self._segment(tmp_path, 3, 25.0)
+
+        data = _json.loads(
+            (tmp_path / "run1" / "cost-breakdown.json").read_text())
+        assert abs(data["totals"]["total_spend_usd"] - 175.0) < 1e-6
+        assert data["segments"] == [
+            {"segment": 3, "prior_spend_usd": 150.0},
+        ]
+        booked, note = resolve_prior_spend(tmp_path / "run1")
+        assert abs(booked - 175.0) < 1e-6
+        assert note == "reconciled ledger"
+
+    def test_unreconciled_predecessor_spend_survives(self, tmp_path):
+        # Segment 1 dies hard: no cost-breakdown.json, only the
+        # spend floor. Pre-fix, segment 2 booked $0 into its ledger
+        # (no prior dict) and segment 3 then carried only segment 2's
+        # own spend forward.
+        import json as _json
+
+        self._segment(tmp_path, 1, 100.0, reconcile=False)
+        self._segment(tmp_path, 2, 50.0)
+        self._segment(tmp_path, 3, 25.0)
+
+        data = _json.loads(
+            (tmp_path / "run1" / "cost-breakdown.json").read_text())
+        assert abs(data["totals"]["total_spend_usd"] - 175.0) < 1e-6
+
+    def test_old_own_spend_only_ledger_still_readable(self, tmp_path):
+        # A pre-fix run dir whose ledger carries only the last
+        # segment's own spend (no segments rows, no prior_segments
+        # phase) must stay readable: the resolver returns its stated
+        # figure without crashing.
+        import json as _json
+
+        from core.audit.resume import resolve_prior_spend
+
+        out_dir = tmp_path / "run1"
+        out_dir.mkdir(exist_ok=True)
+        (out_dir / "cost-breakdown.json").write_text(_json.dumps({
+            "phases": {"re_review": {"calls": 129, "cost_usd": 14.0}},
+            "totals": {
+                "cost_usd": 14.0072,
+                "calls": 129,
+                "failed_attempts_cost_usd": 0.0,
+                "unattributed_cost_usd": 33.2853,
+                "total_spend_usd": 47.2925,
+            },
+        }))
+        booked, note = resolve_prior_spend(out_dir)
+        assert abs(booked - 47.2925) < 1e-6
+        assert note == "reconciled ledger"
+
+    def test_journal_floor_rescues_legacy_broken_ledger(self, tmp_path):
+        # A pre-fix own-segment-only ledger next to a journal whose
+        # per-entry costs exceed it: the journal is the best surviving
+        # evidence of the whole-run chain and must win the max().
+        # Reused verdicts journal at cost_usd=0, so the journal floor
+        # never double-counts a healthy cumulative ledger.
+        import json as _json
+
+        from core.audit.resume import resolve_prior_spend
+
+        out_dir = tmp_path / "run1"
+        out_dir.mkdir(exist_ok=True)
+        (out_dir / "cost-breakdown.json").write_text(_json.dumps({
+            "phases": {},
+            "totals": {"cost_usd": 47.29, "total_spend_usd": 47.29},
+        }))
+        for i, cost in enumerate((150.0, 250.0)):
+            append_entry(out_dir, ReviewJournalEntry(
+                ts=now_iso(),
+                run_id="run1",
+                file="auth.c",
+                function=f"fn_{i}",
+                verdict="clean",
+                source_hash="",
+                cost_usd=cost,
+            ))
+        booked, note = resolve_prior_spend(out_dir)
+        assert abs(booked - 400.0) < 1e-6
+        assert note == "journal per-entry floor — exceeds the reconciled ledger"
+
+
 _MACRO_SOURCE = """\
 #define SSHINT(x) ((x) + 1)
 int a;

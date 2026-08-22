@@ -350,6 +350,55 @@ def spend_floor_usd(out_dir: Path) -> float:
     return 0.0
 
 
+def resolve_prior_spend(out_dir: Path) -> tuple[float, str]:
+    """Resolve the whole-run spend booked by all prior segments.
+
+    Returns ``(booked_usd, note)`` where *note* names the winning
+    source for the operator-facing resume line. The rule (single
+    source of truth for both the remaining-budget math and the amount
+    the resumed segment books into its OWN rewritten ledger): the MAX
+    of the three surviving evidence sources —
+
+    * the reconciled ledger (``cost-breakdown.json``
+      ``totals.total_spend_usd``);
+    * the review journal's per-entry cost floor — never
+      double-counting, since reused verdicts journal at ``cost_usd=0``
+      and a healthy cumulative ledger always meets or exceeds it; the
+      journal can EXCEED a legacy own-segment-only ledger, where it is
+      the best surviving evidence of the chain;
+    * the incremental spend floor (``spend-floor.json``) — a
+      hard-killed segment (SIGKILL/OOM) never reconciled, but the
+      floor was persisted while it ran.
+
+    The resolved figure MUST be what the resumed segment carries
+    forward: booking only the prior ledger used to drop every segment
+    before the immediately-prior one whenever a segment died
+    unreconciled (observed live: segment 4 booked $47.29 of a ~$4,534
+    run — a ~99% under-report in the final ledger).
+    """
+    out_dir = Path(out_dir)
+    breakdown = load_prior_cost_breakdown(out_dir)
+    ledger = booked_spend_usd(breakdown)
+    journal = journal_spend_usd(out_dir)
+    floor = spend_floor_usd(out_dir)
+    booked = max(ledger, journal, floor)
+    if breakdown is not None and ledger >= journal and ledger >= floor:
+        note = "reconciled ledger"
+    elif journal >= floor:
+        note = (
+            "journal per-entry floor — exceeds the reconciled ledger"
+            if breakdown is not None
+            else "journal per-entry floor — the run died before its "
+                 "first ledger reconciliation"
+        )
+    else:
+        note = (
+            "incremental spend floor — the prior segment died before "
+            "its ledger reconciliation"
+        )
+    return booked, note
+
+
 #: Effective cap handed to the pipeline when the remaining budget is
 #: zero or negative: small enough that the reservation gate refuses
 #: every LLM call, while the $0 verdict re-import, the mechanical

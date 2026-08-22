@@ -1636,11 +1636,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
     """
     from core.audit.resume import (
         append_resume_markers,
-        booked_spend_usd,
         compute_drift,
-        journal_spend_usd,
         load_prior_cost_breakdown,
         load_run_config,
+        resolve_prior_spend,
         resume_ineligibility,
     )
     from core.run.metadata import load_run_metadata, resume_run
@@ -1726,29 +1725,14 @@ def cmd_resume(args: argparse.Namespace) -> int:
             )
 
     # --- remaining budget: original cap minus booked spend ---
+    # resolve_prior_spend is the single source of truth: reconciled
+    # ledger, else journal per-entry floor, raised to the incremental
+    # spend floor (hard-killed segments never reconciled). The SAME
+    # resolved figure is threaded into the pipeline below so this
+    # segment's rewritten ledger carries the whole-run cumulative
+    # chain, not just the immediately-prior segment's ledger.
     prior_breakdown = load_prior_cost_breakdown(out_dir)
-    if prior_breakdown is not None:
-        booked = booked_spend_usd(prior_breakdown)
-        ledger_note = "reconciled ledger"
-    else:
-        booked = journal_spend_usd(out_dir)
-        ledger_note = (
-            "journal per-entry floor — the run died before its first "
-            "ledger reconciliation"
-        )
-    # A hard-killed segment (SIGKILL/OOM) never reconciled its ledger,
-    # but the orchestrator persists an incremental spend floor while
-    # it runs — take the max so the dead segment's spend is booked and
-    # this segment's remaining budget reflects it.
-    from core.audit.resume import spend_floor_usd
-
-    floor = spend_floor_usd(out_dir)
-    if floor > booked:
-        booked = floor
-        ledger_note = (
-            "incremental spend floor — the prior segment died before "
-            "its ledger reconciliation"
-        )
+    booked, ledger_note = resolve_prior_spend(out_dir)
     original_cap = run_cfg.get("max_cost_usd")
     from core.audit.resume import (
         EXHAUSTED_BUDGET_EPSILON_USD,
@@ -1881,6 +1865,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         deepen_reserve_fraction=run_cfg.get("deepen_reserve_fraction"),
         same_run_reuse=True,
         prior_cost_breakdown=prior_breakdown,
+        prior_booked_spend_usd=booked,
         resume_segment=segment,
         prior_journal_dirs=(
             [Path(p) for p in run_cfg["prior_journal_dirs"]]

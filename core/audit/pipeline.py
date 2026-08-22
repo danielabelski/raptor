@@ -180,6 +180,12 @@ class AuditPipelineOpts:
     # into the run ledger at reconciliation so the rewritten ledger
     # covers all segments.
     prior_cost_breakdown: dict[str, Any] | None = None
+    # RESOLVED whole-run prior-segment spend (core.audit.resume.
+    # resolve_prior_spend): reconciled ledger, else journal floor,
+    # raised to the incremental spend floor. Booked at reconciliation
+    # even when no prior ledger exists — a hard-killed segment's
+    # spend must survive into every later segment's rewritten ledger.
+    prior_booked_spend_usd: float = 0.0
     # Segment number for a resumed run (from core.run.metadata.
     # resume_run); 1 for a first run.
     resume_segment: int = 1
@@ -344,6 +350,7 @@ def _build_orchestrator_config(
            if opts.review_reserve_fraction is not None else {}),
         same_run_reuse=opts.same_run_reuse,
         prior_cost_breakdown=opts.prior_cost_breakdown,
+        prior_booked_spend_usd=opts.prior_booked_spend_usd,
         resume_segment=opts.resume_segment,
         prior_journal_dirs=opts.prior_journal_dirs,
         prior_claims_per_function=opts.prior_claims_per_function,

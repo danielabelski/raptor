@@ -68,6 +68,7 @@ MS_REC         = 0x4000
 # Captured as a module constant (not `import errno` in the post-fork
 # path) — same fork-safety convention as the other constants here.
 _EINVAL        = 22
+_ELOOP         = 40
 MS_NOSUID      = 0x2
 MS_NODEV       = 0x4
 MS_NOEXEC      = 0x8
@@ -186,6 +187,40 @@ def _shadows_per_ns(path: str) -> bool:
     """Return True if `path` is served by one of our per-ns mounts."""
     norm = path.rstrip("/") or "/"
     return norm in _SHADOW_PATHS
+
+
+def _refuse_image_symlink_components(root: str, abs_path: str) -> None:
+    """Rootfs mode: refuse pre-existing symlink components below the
+    image root.
+
+    Pre-pivot setup performs path-based ``makedirs``/``mount(2)``
+    through ``{root}{abs_path}``. In rootfs mode every pre-existing
+    component below ``root`` is ATTACKER-AUTHORED image content, and a
+    symlink component resolves in the HOST namespace at this point —
+    redirecting inode creation (and the subsequent bind) onto host
+    paths. Walk the components with lstat and fail closed on any
+    symlink. Components that do not exist yet are fine: the caller's
+    makedirs will create real directories. The image tree is static
+    during setup (the child has not exec'd), so the lstat walk is not
+    raceable in-boundary. Host-root mode needs no such walk — there
+    the tree under ``root`` is a fresh tmpfs populated only by this
+    function.
+    """
+    cur = root
+    for comp in abs_path.lstrip("/").split("/"):
+        if not comp:
+            continue
+        cur = f"{cur}/{comp}"
+        try:
+            _st = os.lstat(cur)
+        except OSError:
+            return
+        if stat_module.S_ISLNK(_st.st_mode):
+            raise OSError(
+                _ELOOP,
+                f"mount_ns: image path component {cur!r} is a symlink "
+                f"(hostile-image shape); refusing setup",
+            )
 
 
 def _copy_etc_tree(src: str, dst: str) -> None:
@@ -401,8 +436,26 @@ def setup_mount_ns(target: str | None, output: str | None,
         # Exported image tarballs routinely lack /run, ship an empty
         # /dev, etc. — create the per-namespace mount points inside
         # the (writable) rootfs so steps 5-7 can stack their mounts.
+        # The image tree is ATTACKER-AUTHORED content: an image
+        # shipping one of these names as a symlink would make the
+        # path-based makedirs/mount(2) below resolve it in the HOST
+        # namespace pre-pivot (host-side inode creation, mount
+        # diversion). lstat and fail closed on anything that is not a
+        # real directory.
         for d in ("dev", "proc", "sys", "run", "tmp"):
-            os.makedirs(f"{root}/{d}", exist_ok=True)
+            _mp = f"{root}/{d}"
+            try:
+                _mpst = os.lstat(_mp)
+            except FileNotFoundError:
+                os.makedirs(_mp, exist_ok=True)
+                continue
+            if not stat_module.S_ISDIR(_mpst.st_mode):
+                raise OSError(
+                    _ELOOP,
+                    f"mount_ns: rootfs entry /{d} is a symlink or "
+                    f"non-directory (hostile-image shape); refusing "
+                    f"setup",
+                )
     else:
         _mount("tmpfs", root, "tmpfs", 0, "mode=755")
 
@@ -545,6 +598,8 @@ def setup_mount_ns(target: str | None, output: str | None,
     _step8_bound_dirs: set = set()
     if target and not _shadows_per_ns(target):
         inside = f"{root}{target}"
+        if rootfs:
+            _refuse_image_symlink_components(root, target)
         os.makedirs(inside, exist_ok=True)
         _mount(target, inside, None, MS_BIND)
         _step8_bound_dirs.add(target)
@@ -564,6 +619,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                 )
     if output and output != target and not _shadows_per_ns(output):
         inside = f"{root}{output}"
+        if rootfs:
+            _refuse_image_symlink_components(root, output)
         os.makedirs(inside, exist_ok=True)
         _mount(output, inside, None, MS_BIND)
         _step8_bound_dirs.add(output)
@@ -693,6 +750,8 @@ def setup_mount_ns(target: str | None, output: str | None,
             # except clause stays fork-safe + allocation-bounded.
             _step = b"setup"
             try:
+                if rootfs:
+                    _refuse_image_symlink_components(root, path)
                 if os.path.isdir(path):
                     _step = b"makedirs"
                     os.makedirs(inside, exist_ok=True)
@@ -857,6 +916,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                     b"skipping bind\n"
                 )
                 continue
+            if rootfs:
+                _refuse_image_symlink_components(root, ns_target)
             # For non-/etc paths (e.g. /tmp/<x>, /run/<x>) the mount
             # point may still need creating — those dirs are fresh tmpfs
             # (step 7), not host bind-mounts.
@@ -890,6 +951,25 @@ def setup_mount_ns(target: str | None, output: str | None,
                     b"RAPTOR: mount_ns: etc_overlay bind failed; "
                     b"overlay entry absent - target sees the "
                     b"un-overlaid view of this path\n"
+                )
+                continue
+            # Overlay entries are configuration VIEWS, never write
+            # surfaces — and in rootfs mode the Landlock write mask
+            # covers the image tree, so a writable bind here would be
+            # a write-through hole onto the LIVE host source file.
+            # Remount read-only; on failure withdraw the bind rather
+            # than leave the host file writable (fail closed — the
+            # target then sees the un-overlaid view, same as a failed
+            # bind).
+            try:
+                _mount(host_source, inside, None,
+                       _ro_remount_flags(inside))
+            except OSError as exc:
+                _umount(inside, MNT_DETACH)
+                warn_post_fork(
+                    b"RAPTOR: mount_ns: etc_overlay remount-ro failed "
+                    b"(errno=%d); overlay entry withdrawn "
+                    b"(fail-closed)\n" % (exc.errno or 0)
                 )
 
     # 8e. Caller-supplied stage_files — materialise arbitrary files in

@@ -58,6 +58,7 @@ _INIT_C = r"""
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <errno.h>
 
 int main(int argc, char **argv) {
     if (argc > 1 && strncmp(argv[1], "exit", 4) == 0)
@@ -65,6 +66,12 @@ int main(int argc, char **argv) {
     if (argc > 1 && strncmp(argv[1], "die", 3) == 0) {
         kill(getpid(), atoi(argv[1] + 3));
         pause();
+    }
+    if (argc > 2 && strcmp(argv[1], "wr") == 0) {
+        FILE *w = fopen(argv[2], "w");
+        if (w) { fputs("X", w); fclose(w); printf("devwrite=ok\n"); }
+        else   { printf("devwrite=fail errno=%d\n", errno); }
+        return 0;
     }
     printf("pid=%d\n", (int)getpid());
     printf("uid=%d\n", (int)getuid());
@@ -346,3 +353,107 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
         from core.sandbox.errors import SandboxSetupError
         with self.assertRaises(SandboxSetupError):
             self._run(["/bin/init"], input="x")
+
+
+class TestRootfsHostDeviceContainment(_RootfsE2EBase):
+    """rootfs mode rbinds host /dev and /sys. The Landlock write grant
+    must NOT cover them — otherwise same-UID host device nodes (the
+    operator's other ptys, most damningly) are writable from inside
+    the image sandbox — while /dev/null (file-scoped device rule) and
+    the image's own tree keep working."""
+
+    def _run(self, argv, **kw):
+        from core.sandbox import run as sandbox_run
+        return sandbox_run(
+            argv, rootfs=self.rootfs, output=self.out,
+            block_network=True, capture_output=True, text=True,
+            timeout=60, **kw,
+        )
+
+    def setUp(self):
+        super().setUp()
+        from core.sandbox.landlock import check_landlock_available
+        if not check_landlock_available():
+            self.skipTest("Landlock unavailable — the write-grant "
+                          "narrowing under test cannot engage")
+
+    def test_operator_pty_not_writable(self):
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        pty_path = os.ttyname(slave)
+        r = self._run(["/bin/init", "wr", pty_path])
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("devwrite=fail", r.stdout, (
+            f"sandboxed rootfs child wrote to the operator's pty "
+            f"{pty_path}: {r.stdout!r}"
+        ))
+
+    def test_dev_null_still_writable(self):
+        r = self._run(["/bin/init", "wr", "/dev/null"])
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("devwrite=ok", r.stdout, (
+            f"/dev/null write must keep working via the file-scoped "
+            f"device rule: {r.stdout!r} {r.stderr!r}"
+        ))
+
+    def test_image_tree_still_writable(self):
+        r = self._run(["/bin/init", "wr", "/var/g2probe"])
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("devwrite=ok", r.stdout, (
+            f"image upper layer must stay writable: {r.stdout!r}"
+        ))
+
+
+class TestRootfsEtcOverlayReadOnly(_RootfsE2EBase):
+    """Overlay entries are configuration views, never write surfaces.
+    In rootfs mode the Landlock grant covers the image's /etc, so a
+    writable overlay bind would be a write-through hole onto the LIVE
+    host source file — the bind must be remounted read-only."""
+
+    def test_overlay_write_refused_and_host_source_intact(self):
+        overlay_source = os.path.join(self.tmp.name, "overlay-src.conf")
+        sentinel = "RAPTOR-OVERLAY-RO-SENTINEL\n"
+        with open(overlay_source, "w") as f:
+            f.write(sentinel)
+        from core.sandbox import run as sandbox_run
+        r = sandbox_run(
+            ["/bin/init", "wr", "/etc/g2-overlay.conf"],
+            rootfs=self.rootfs, output=self.out, block_network=True,
+            capture_output=True, text=True, timeout=60,
+            etc_overlay={"/etc/g2-overlay.conf": overlay_source},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("devwrite=fail", r.stdout, (
+            f"child wrote through the etc_overlay bind onto the live "
+            f"host source: {r.stdout!r}"
+        ))
+        with open(overlay_source) as f:
+            self.assertEqual(f.read(), sentinel,
+                             "host overlay source file was mutated "
+                             "through the sandbox bind")
+
+
+class TestRootfsSymlinkedMountpointRefused(_RootfsE2EBase):
+    """An image shipping one of the per-namespace mountpoint names
+    (dev/proc/sys/run/tmp) as a symlink must be refused outright:
+    pre-pivot path-based makedirs/mount(2) would resolve it in the
+    HOST namespace, diverting inode creation and the /dev,/proc,/sys
+    binds."""
+
+    def test_symlinked_dev_refused(self):
+        os.symlink("var", os.path.join(self.rootfs, "dev"))
+        from core.sandbox import run as sandbox_run
+        from core.sandbox.errors import SandboxSetupError
+        try:
+            r = sandbox_run(
+                ["/bin/init", "exit0"], rootfs=self.rootfs,
+                output=self.out, block_network=True,
+                capture_output=True, text=True, timeout=60,
+            )
+        except SandboxSetupError:
+            return  # fail-closed refusal — expected
+        self.assertNotEqual(r.returncode, 0, (
+            "image with a symlinked /dev mountpoint must be refused, "
+            "not silently set up with diverted binds"
+        ))

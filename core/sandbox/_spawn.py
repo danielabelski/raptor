@@ -1161,18 +1161,43 @@ def run_sandboxed(
             if rootfs is not None:
                 # Landlock rule paths are opened POST-pivot (the child
                 # applies landlock_fn at step 10, after setup_mount_ns),
-                # where the image rootfs IS "/". Grant the pivoted root
-                # wholesale: in rootfs mode the mount namespace is the
-                # write boundary (host dirs simply are not bound in),
-                # and the image's own tree must stay writable for the
-                # environment to function. This does NOT reopen the
-                # target bind — its MS_RDONLY remount wins at the VFS
-                # layer regardless of Landlock's grant. Host-side paths
-                # in writable_paths keep working where they are bound
-                # at their original paths inside the new root (output);
-                # ones with no post-pivot presence degrade to the
-                # existing could-not-open stderr note.
-                effective_paths.append("/")
+                # where the image rootfs IS "/". The image's own tree
+                # must stay writable for the environment to function —
+                # but a wholesale "/" grant is WRONG in rootfs mode:
+                # /dev and /sys are recursive HOST binds there, so "/"
+                # would hand the child Landlock write access to
+                # same-UID host device nodes (the operator's other
+                # ptys, most damningly — "host dirs are not bound in"
+                # is false for exactly those two). Enumerate the
+                # image's top-level entries instead, skipping
+                # dev/sys/proc (device writes that tools legitimately
+                # need — /dev/null, /dev/tty — are covered by the
+                # file-scoped device rules landlock.py always adds;
+                # /dev/shm and /tmp,/run are per-sandbox tmpfs served
+                # via writable_paths). Symlinked entries are skipped:
+                # rule opens follow symlinks post-pivot, so a hostile
+                # image symlinking a top-level name into /dev would
+                # re-open the hole — and Landlock resolves the REAL
+                # path at access time anyway, so /bin -> usr/bin style
+                # links are covered by their target's grant. The
+                # target bind's MS_RDONLY remount still wins at the
+                # VFS layer regardless of Landlock's grant.
+                try:
+                    _rootfs_entries = sorted(os.listdir(rootfs))
+                except OSError:
+                    _rootfs_entries = []
+                for _ent in _rootfs_entries:
+                    if _ent in ("dev", "sys", "proc"):
+                        continue
+                    try:
+                        if os.path.islink(os.path.join(rootfs, _ent)):
+                            continue
+                    except OSError:
+                        continue
+                    effective_paths.append(f"/{_ent}")
+                # The per-sandbox /dev/shm tmpfs must stay writable
+                # even for direct callers whose writable_paths omit it.
+                effective_paths.append("/dev/shm")
             # readable_paths serves two consumers with different
             # semantics: the mount-ns bind list (always) and Landlock's
             # read allowlist (ONLY under restrict_reads — Landlock

@@ -227,3 +227,28 @@ def test_split_registry_port_not_confused_with_tag():
 def test_split_never_canonicalises():
     # No library/ prefix, no docker.io default, no latest default.
     assert split_image_ref("python") == ("python", None)
+
+# ---------------------------------------------------------------------------
+# Digest algorithm allowlist — only sha256 pins are verifiable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("digest", [
+    "sha512:" + "a" * 128,
+    "md5:" + "b" * 32,
+    "sha1:" + "c" * 40,
+    "blake2b-256:" + "d" * 64,
+])
+def test_non_sha256_digest_algorithms_rejected(digest):
+    """The client recomputes content addresses as sha256 only, so a
+    pin in any other algorithm would be fetched and used with no
+    content authentication. Refuse loudly at parse time."""
+    with pytest.raises(ValueError, match="unsupported digest algorithm"):
+        parse_image_ref(f"python@{digest}")
+
+
+def test_sha256_digest_case_canonicalised():
+    """Uppercase hex is operator-equivalent; canonicalise instead of
+    refusing (registries emit lowercase)."""
+    ref = parse_image_ref("python@SHA256:" + "A" * 64)
+    assert ref.digest == "sha256:" + "a" * 64

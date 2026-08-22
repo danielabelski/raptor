@@ -38,6 +38,14 @@ _DIGEST_RE = re.compile(
     r":(?P<hex>[A-Fa-f0-9]{32,})$"
 )
 
+# The one digest algorithm the client can actually verify: content
+# addresses are recomputed as sha256 over response bytes, so a pin in
+# any other algorithm (sha512:, md5:, ...) would be fetched and used
+# with NO content authentication. Refused loudly at parse time —
+# a quietly-accepted-but-unverifiable pin is strictly worse than an
+# error the operator can act on.
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 @dataclass(frozen=True)
 class ImageRef:
@@ -95,12 +103,23 @@ def parse_image_ref(s: str) -> ImageRef:
     digest: str | None = None
     if "@" in s:
         s, digest = s.rsplit("@", 1)
-        if not _DIGEST_RE.match(digest):
-            msg = (
+        m = _DIGEST_RE.match(digest)
+        if not m:
+            raise ValueError(
                 f"malformed digest {digest!r}; expected "
                 f"<algorithm>:<hex>"
             )
-            raise ValueError(msg)
+        # Canonicalise case (hex digests and algorithm names are
+        # case-insensitive in operator input; registries emit
+        # lowercase) before the algorithm gate.
+        digest = digest.lower()
+        if not _SHA256_DIGEST_RE.match(digest):
+            raise ValueError(
+                f"unsupported digest algorithm in {digest!r}: only "
+                f"sha256:<64 hex> pins are supported — content "
+                f"addresses are recomputed as sha256, so any other "
+                f"algorithm cannot be verified"
+            )
 
     # The registry is the first ``/``-separated segment IF it looks
     # like a host (contains a ``.`` or ``:`` or is exactly

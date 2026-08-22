@@ -305,7 +305,38 @@ class OciRegistryClient:
     ) -> ManifestResponse:
         """Fetch the manifest for ``ref``. If ``reference`` is given,
         it overrides ``ref``'s reference (used to fetch a child
-        manifest from an image-index list of platforms)."""
+        manifest from an image-index list of platforms).
+
+        Digest discipline: any digest-shaped pin (the ``reference``
+        override — commonly an image-index entry the registry itself
+        supplied — or ``ref.digest``) must be a verifiable sha256
+        content address. Pins in other algorithms are refused BEFORE
+        the fetch: the pre-fix check only compared pins that started
+        with ``sha256:``, so a ``sha512:``/``md5:`` pin was fetched
+        and used with no content authentication at all.
+        """
+        requested_pin: str | None = None
+        if reference is not None and ":" in reference:
+            # Digest-shaped (tags cannot contain ':'). Refusing here
+            # also keeps a hostile index-supplied digest inert in the
+            # URL path below.
+            if not _DIGEST_RE.match(reference):
+                raise RegistryError(
+                    0,
+                    f"refusing manifest reference {reference[:80]!r} "
+                    f"for {ref.to_canonical()}: pinned digest is not "
+                    f"a verifiable sha256 content address",
+                )
+            requested_pin = reference
+        elif reference is None and ref.digest:
+            if not _DIGEST_RE.match(ref.digest):
+                raise RegistryError(
+                    0,
+                    f"refusing digest pin {ref.digest[:80]!r} for "
+                    f"{ref.to_canonical()}: not a verifiable sha256 "
+                    f"content address",
+                )
+            requested_pin = ref.digest
         url = self._manifest_url(ref, reference=reference)
         resp = self._authed_request(
             "GET", ref.registry, url,
@@ -351,14 +382,11 @@ class OciRegistryClient:
                 f"header claims {header_digest}, body hashes to "
                 f"{computed}",
             )
-        requested = reference if _DIGEST_RE.match(reference or "") \
-            else ref.digest
-        if (requested and requested.startswith("sha256:")
-                and requested != computed):
+        if requested_pin and requested_pin != computed:
             raise RegistryError(
                 resp.status_code,
                 f"manifest digest mismatch for {ref.to_canonical()}: "
-                f"requested {requested}, body hashes to {computed}",
+                f"requested {requested_pin}, body hashes to {computed}",
             )
         return ManifestResponse(
             raw=resp.content, parsed=parsed,

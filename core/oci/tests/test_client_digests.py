@@ -149,3 +149,37 @@ def test_stream_blob_rejects_malformed_digest_before_request() -> None:
     with pytest.raises(RegistryError, match="malformed"):
         list(client.stream_blob(ref, "sha256:xyz/../../escape"))
     assert http.calls == []  # refused before any URL was built
+
+
+def test_fetch_by_non_sha256_pin_refused_before_request() -> None:
+    """A digest-shaped reference in an algorithm the client cannot
+    verify (e.g. supplied by a hostile image index) must be refused
+    BEFORE any fetch — pre-fix it was fetched and returned with no
+    content authentication at all."""
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    sha512_pin = "sha512:" + "a" * 128
+    http = _StubHttp({
+        f"https://ghcr.io/v2/acme/app/manifests/{sha512_pin}":
+            _StubResponse(200, _MANIFEST),
+    })
+    client = OciRegistryClient(http)
+    with pytest.raises(RegistryError, match="sha256"):
+        client.fetch_manifest(ref, reference=sha512_pin)
+    assert http.calls == []     # refused before any URL was fetched
+
+
+def test_ref_pinned_with_non_sha256_digest_refused() -> None:
+    """Defence in depth for a hand-constructed ImageRef that bypassed
+    parse_image_ref's algorithm gate."""
+    from core.oci.image_ref import ImageRef
+    md5_pin = "md5:" + "b" * 32
+    ref = ImageRef(registry="ghcr.io", repository="acme/app",
+                   tag=None, digest=md5_pin)
+    http = _StubHttp({
+        f"https://ghcr.io/v2/acme/app/manifests/{md5_pin}":
+            _StubResponse(200, _MANIFEST),
+    })
+    client = OciRegistryClient(http)
+    with pytest.raises(RegistryError, match="sha256"):
+        client.fetch_manifest(ref)
+    assert http.calls == []

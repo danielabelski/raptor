@@ -225,3 +225,139 @@ def test_verify_plan_requires_handle_or_executors() -> None:
         assert "handle or an executor table" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ValueError")
+
+
+# ── bounded HTTP exchange (the peer runs hostile target code) ─────────
+
+
+def _serve(handler_cls):
+    import socketserver
+    import threading
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_http_exchange_caps_oversize_body() -> None:
+    import http.server
+
+    class Big(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 — stdlib handler contract
+            payload = b"x" * (256 * 1024)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):  # noqa: A003
+            pass
+
+    srv = _serve(Big)
+    try:
+        status, content = ev._http_exchange(
+            host_ip="127.0.0.1", host_port=srv.server_address[1],
+            method="GET", path="/", timeout_seconds=5.0,
+            max_response_bytes=64 * 1024,
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert status == 200
+    assert len(content) == 64 * 1024  # capped, not the declared 256 KiB
+
+
+def test_http_exchange_deadline_stops_dripping_body() -> None:
+    import http.server
+    import time as _time
+
+    class Drip(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"  # no Content-Length: read-to-EOF body
+
+        def do_GET(self):  # noqa: N802 — stdlib handler contract
+            self.send_response(200)
+            self.end_headers()
+            try:
+                for _ in range(200):
+                    self.wfile.write(b"y" * 512)
+                    self.wfile.flush()
+                    _time.sleep(0.2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):  # noqa: A003
+            pass
+
+    srv = _serve(Drip)
+    start = _time.monotonic()
+    try:
+        status, content = ev._http_exchange(
+            host_ip="127.0.0.1", host_port=srv.server_address[1],
+            method="GET", path="/", timeout_seconds=1.0,
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    elapsed = _time.monotonic() - start
+    assert status == 200
+    # The drip feeds ~512 B per 0.2 s inside the socket-inactivity
+    # window; without the wall deadline this read would run ~40 s.
+    assert elapsed < 5.0
+    assert 0 < len(content) < 200 * 512
+
+
+def test_http_exchange_watchdog_stops_dripping_headers() -> None:
+    """The status/header phase blocks inside http.client with only the
+    inactivity timeout; a peer dripping header bytes (reviewer PoC:
+    one byte per 0.4 s sustains for hours) must be cut by the
+    whole-exchange watchdog, not survive it."""
+    import socket as _socket
+    import threading as _threading
+    import time as _time
+
+    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    stop = _threading.Event()
+
+    def _drip() -> None:
+        try:
+            conn, _ = srv.accept()
+            conn.sendall(b"HTTP/1.1 200 OK\r\n")
+            # Drip header bytes one at a time, each inside the
+            # inactivity window — never a blank line, never EOF.
+            for ch in (b"X-Drip: " + b"a" * 4096) * 4:
+                if stop.is_set():
+                    break
+                try:
+                    conn.sendall(bytes([ch]))
+                except OSError:
+                    break
+                _time.sleep(0.2)
+            conn.close()
+        except OSError:
+            pass
+
+    t = _threading.Thread(target=_drip, daemon=True)
+    t.start()
+    start = _time.monotonic()
+    try:
+        try:
+            ev._http_exchange(
+                host_ip="127.0.0.1", host_port=port,
+                method="GET", path="/", timeout_seconds=1.0,
+            )
+        except TimeoutError as exc:
+            assert "watchdog" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("expected TimeoutError from header drip")
+    finally:
+        stop.set()
+        srv.close()
+    # Watchdog fires at 2x timeout; without it this blocks ~55 min.
+    assert _time.monotonic() - start < 5.0

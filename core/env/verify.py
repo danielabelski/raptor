@@ -35,6 +35,7 @@ import ipaddress
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -121,6 +122,16 @@ def assert_local_host_ip(host_ip: str) -> str | None:
 
 # ── direct-connection HTTP exchange ───────────────────────────────────
 
+#: Ceiling on verify-probe response bodies. The peer is the provisioned
+#: workload — a service running fully hostile target code — so the body
+#: must never be trusted to terminate. Reads are chunked and stop at the
+#: cap; content checks then run on the capped prefix (truncation can
+#: only REMOVE marker bytes, so an oversize hostile body can never flip
+#: a failing check to passing). Real verify responses are health pages
+#: and banners, orders of magnitude below this.
+_MAX_RESPONSE_BYTES = 1024 * 1024
+_READ_CHUNK_BYTES = 65536
+
 
 def _http_exchange(
     *,
@@ -131,18 +142,76 @@ def _http_exchange(
     headers: dict[str, str] | None = None,
     body: bytes | None = None,
     timeout_seconds: float,
+    max_response_bytes: int = _MAX_RESPONSE_BYTES,
 ) -> tuple[int, bytes]:
     """One HTTP request/response over a DIRECT connection (no proxy,
     no redirects followed). Raises TimeoutError / OSError on transport
-    failure — callers fold those into check results."""
+    failure — callers fold those into check results.
+
+    The wall budget covers the ENTIRE exchange, in two layers:
+
+    * body phase: incremental ``read1`` (at most one recv per call, so
+      the check stays live) under ``max_response_bytes`` and a
+      cooperative monotonic deadline of ``timeout_seconds`` — oversize
+      / overtime bodies truncate to what was read in budget;
+    * connect + status-line + header phase: ``conn.getresponse()``
+      blocks inside http.client with only the socket *inactivity*
+      timeout, so a peer dripping status/header bytes inside that
+      window could hold the exchange open indefinitely. A hard
+      watchdog at ``2 x timeout_seconds`` shuts the socket down,
+      folding the stall into TimeoutError.
+
+    The peer runs fully hostile target code; neither phase may trust
+    it to terminate."""
+    deadline = time.monotonic() + timeout_seconds
     conn = http.client.HTTPConnection(host_ip, host_port,
                                       timeout=timeout_seconds)
+    watchdog_fired = threading.Event()
+
+    def _watchdog_shutdown() -> None:
+        watchdog_fired.set()
+        sock = getattr(conn, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:  # already closed — nothing to interrupt
+                pass
+
+    watchdog = threading.Timer(timeout_seconds * 2, _watchdog_shutdown)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         conn.request(method, path, body=body, headers=headers or {})
         resp = conn.getresponse()
-        content = resp.read()
-        return resp.status, content
+        chunks: list[bytes] = []
+        total = 0
+        while total < max_response_bytes:
+            if time.monotonic() > deadline:
+                break
+            chunk = resp.read1(min(_READ_CHUNK_BYTES,
+                                   max_response_bytes - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if watchdog_fired.is_set():
+            # The shutdown often surfaces as a clean EOF (http.client
+            # then "completes" with whatever was parsed) — a cut
+            # exchange must never masquerade as a successful response.
+            raise TimeoutError(
+                f"exchange exceeded the {timeout_seconds * 2:g}s wall "
+                "watchdog (peer dripped the status/header phase)"
+            )
+        return resp.status, b"".join(chunks)
+    except (OSError, http.client.HTTPException) as exc:
+        if watchdog_fired.is_set():
+            raise TimeoutError(
+                f"exchange exceeded the {timeout_seconds * 2:g}s wall "
+                "watchdog (peer dripped the status/header phase)"
+            ) from exc
+        raise
     finally:
+        watchdog.cancel()
         conn.close()
 
 

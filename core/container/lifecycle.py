@@ -32,6 +32,30 @@ def remove_labeled_containers(label: str, value: str,
     return len(ids) if outcome.returncode == 0 else 0
 
 
+def prune_labeled_dangling(label: str, value: str,
+                           timeout: float = 60.0) -> bool:
+    """Prune DANGLING images carrying ``label=value``.
+
+    The legacy builder commits every Dockerfile step as an untagged
+    cache image; a failed or superseded build leaves those layers
+    behind even after the tagged image is removed (and
+    :func:`remove_labeled_images` deliberately skips ``<none>`` rows).
+    ``docker image prune`` with a label filter removes exactly the
+    caller's dangling residue — untagged only, so concurrent
+    neighbours' tagged images are never touched. Callers must put the
+    label on the FIRST Dockerfile instruction so every intermediate
+    inherits it.
+    """
+    if not value:
+        return False
+    result = run_cli(
+        ["docker", "image", "prune", "--force",
+         "--filter", f"label={label}={value}"],
+        timeout=timeout,
+    )
+    return result.returncode == 0
+
+
 def remove_labeled_images(
     label: str,
     value: str,

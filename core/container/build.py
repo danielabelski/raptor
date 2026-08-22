@@ -167,6 +167,8 @@ def build_image(
     timeout_seconds: int = 600,
     labels: dict[str, str] | None = None,
     local_prefixes: tuple[str, ...] = (),
+    network: str | None = None,
+    force_rm: bool = False,
 ) -> BuildOutcome:
     """Run ``docker build``; return a structured outcome.
 
@@ -207,6 +209,18 @@ def build_image(
         )
 
     cmd: list[str] = ["docker", "build", "-t", tag]
+    if network:
+        # RUN-step network mode. Callers building UNTRUSTED build
+        # systems pass "none": consent-to-build is not consent to
+        # egress (metadata-service credential theft, bridge-network
+        # pivot, exfiltration). Default None keeps dependency-fetching
+        # builds (cve-env's own) unchanged.
+        cmd.extend(["--network", network])
+    if force_rm:
+        # Remove intermediate containers even when a step FAILS — the
+        # legacy builder otherwise leaves the failed step's container
+        # behind (untrusted-build callers pass True).
+        cmd.append("--force-rm")
     for k, v in (labels or {}).items():
         cmd.extend(["--label", f"{k}={v}"])
     if platform:

@@ -1594,8 +1594,16 @@ def _reuse_ineligibility(
     if getattr(entry, "context_reduced", None):
         return "context_reduced verdict"
     entry_model = getattr(entry, "model", None)
-    if current_model and entry_model and entry_model != current_model:
-        return f"model changed ({entry_model} → {current_model})"
+    if current_model and entry_model:
+        # Compare by bare identity: the journal records the resolved
+        # wire name (``anthropic.claude-x``) while the run may pin the
+        # route-prefixed override (``bedrock/anthropic.claude-x``) —
+        # a raw string compare read that as a model change and
+        # re-bought every prior verdict on every run (observed live:
+        # 11/66 reused, identical model end to end).
+        from core.security.llm_family import bare_model_id
+        if bare_model_id(entry_model) != bare_model_id(current_model):
+            return f"model changed ({entry_model} → {current_model})"
     if current_strategies_fn is not None:
         current = current_strategies_fn(key)
         if current is not None and sorted(entry.strategies or []) != sorted(current):

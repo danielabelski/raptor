@@ -606,3 +606,34 @@ class TestContextStaleness:
         gaps = self._gaps(target, project, sink)
         assert "auth.c:check_pw" in sink
         assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+
+class TestModelIdentityNormalisation:
+    def test_route_prefixed_current_model_reuses_wire_form_entry(self, tmp_path):
+        # Journal records the resolved wire name; the run pins the
+        # bedrock/ override string. Same model — must reuse, not
+        # re-review.
+        target = _write_target(tmp_path)
+        project = _project_with(
+            tmp_path, _entry(target, model="anthropic.claude-opus-4-7"))
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink,
+            current_model="bedrock/anthropic.claude-opus-4-7",
+        )
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_genuinely_different_model_still_blocks(self, tmp_path):
+        target = _write_target(tmp_path)
+        project = _project_with(
+            tmp_path, _entry(target, model="gemini-2.5-pro"))
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink,
+            current_model="bedrock/anthropic.claude-opus-4-7",
+        )
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)

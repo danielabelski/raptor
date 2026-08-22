@@ -63,6 +63,7 @@ class ToolchainSpec:
     """
 
     cc: str = ""
+    cxx: str = ""
     cflags: tuple[str, ...] = ()
     ldflags: tuple[str, ...] = ()
     instrumentation: tuple[str, ...] = ()  # e.g. ("asan",), ("coverage",)

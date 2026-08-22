@@ -265,3 +265,98 @@ class TestCacheAndProvenanceHardening:
             product = containerized_build(self._repo(tmp_path), "make",
                                           out_dir=tmp_path / "out")
         assert len(product.checksums["app"]) == 64
+
+
+class TestCcEmission:
+    def test_cc_cxx_reach_the_run_line(self):
+        tc = ToolchainSpec(cc="afl-clang-fast", cxx="afl-clang-fast++")
+        prefix = _flag_prefix(tc)
+        assert "CC='afl-clang-fast'" in prefix
+        assert "CXX='afl-clang-fast++'" in prefix
+
+    def test_cc_precedes_flags(self):
+        tc = ToolchainSpec(cc="afl-clang-fast", cflags=("-O1",))
+        prefix = _flag_prefix(tc)
+        assert prefix.index("CC=") < prefix.index("CFLAGS=")
+
+    def test_afl_toolchain_constant(self):
+        from core.env.build import AFL_BUILD_IMAGE, AFL_TOOLCHAIN
+        prefix = _flag_prefix(AFL_TOOLCHAIN)
+        assert "CC='afl-clang-fast'" in prefix
+        assert "CXX='afl-clang-fast++'" in prefix
+        assert "afl" in AFL_TOOLCHAIN.instrumentation
+        # pinned release tag, not a floating alias
+        assert ":" in AFL_BUILD_IMAGE
+        assert not AFL_BUILD_IMAGE.endswith((":latest", ":stable"))
+
+    def test_plain_toolchains_unaffected(self):
+        # HARDENED/SOFT carry no cc — the prefix shape is unchanged
+        assert _flag_prefix(HARDENED_TOOLCHAIN).startswith("CFLAGS=")
+
+
+class TestKeepRootfs:
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "Makefile").write_text("all:\n\tcc -o app main.c\n")
+        (repo / "main.c").write_text("int main(void){return 0;}\n")
+        return repo
+
+    def test_success_keeps_rootfs_and_reports_it(self, tmp_path):
+        from pathlib import Path as _P
+
+        def planter(dest):
+            _plant_elf(_P(dest) / "src" / "app")
+            (_P(dest) / "usr").mkdir(parents=True, exist_ok=True)
+
+        keep = tmp_path / "rootfs"
+        patches, _ = _fake_container_layer(planter)
+        with patches[0], patches[1], patches[2], patches[3]:
+            product = containerized_build(
+                self._repo(tmp_path), "make",
+                out_dir=tmp_path / "out", keep_rootfs=keep)
+        assert product.ok
+        assert product.rootfs == keep
+        assert (keep / "src" / "app").is_file()
+        # extraction still produced the read-only host copies
+        assert product.artifacts["app"].is_file()
+
+    def test_failure_discards_partial_rootfs(self, tmp_path):
+        from pathlib import Path as _P
+
+        def planter(dest):
+            # export "succeeded" but the build produced no ELF
+            (_P(dest) / "src").mkdir(parents=True, exist_ok=True)
+
+        keep = tmp_path / "rootfs"
+        patches, _ = _fake_container_layer(planter)
+        with patches[0], patches[1], patches[2], patches[3]:
+            product = containerized_build(
+                self._repo(tmp_path), "make",
+                out_dir=tmp_path / "out", keep_rootfs=keep)
+        assert not product.ok
+        assert product.reason == "no_artifacts"
+        assert product.rootfs is None
+        assert not keep.exists()
+
+    def test_build_failure_discards_rootfs_dir(self, tmp_path):
+        keep = tmp_path / "rootfs"
+        keep.mkdir()
+        (keep / "stale").write_text("x")
+        patches, _ = _fake_container_layer(build_ok=False)
+        with patches[0], patches[1], patches[2], patches[3]:
+            product = containerized_build(
+                self._repo(tmp_path), "make",
+                out_dir=tmp_path / "out", keep_rootfs=keep)
+        assert not product.ok
+        assert not keep.exists()
+
+    def test_default_call_has_no_rootfs(self, tmp_path):
+        from pathlib import Path as _P
+        patches, _ = _fake_container_layer(
+            lambda d: _plant_elf(_P(d) / "src" / "app"))
+        with patches[0], patches[1], patches[2], patches[3]:
+            product = containerized_build(
+                self._repo(tmp_path), "make", out_dir=tmp_path / "out")
+        assert product.ok
+        assert product.rootfs is None

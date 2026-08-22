@@ -55,6 +55,22 @@ SOFT_TOOLCHAIN = ToolchainSpec(
     ldflags=("-Wl,-z,norelro,-z,lazy", "-no-pie"),
 )
 
+#: AFL++ build image for instrumented fuzz builds (/fuzz env
+#: build-on-demand). Pinned release tag: the SAME image supplies the
+#: run-time afl-fuzz (its exported rootfs is the campaign substrate),
+#: so compile-time and run-time AFL versions agree by construction.
+AFL_BUILD_IMAGE = "aflplusplus/aflplusplus:v5.02c"
+
+#: Toolchain for AFL-instrumented builds: afl-clang-fast wraps the
+#: image's clang and injects coverage instrumentation via CC/CXX —
+#: effective for well-behaved make/cmake builds, same caveat as the
+#: mitigation postures above.
+AFL_TOOLCHAIN = ToolchainSpec(
+    cc="afl-clang-fast",
+    cxx="afl-clang-fast++",
+    instrumentation=("afl",),
+)
+
 _ELF_MAGIC = b"\x7fELF"
 
 
@@ -73,6 +89,11 @@ class BuildProduct:
     toolchain: ToolchainSpec | None = None
     base_image: str = DEFAULT_BUILD_IMAGE
     build_command: str = ""
+    rootfs: Path | None = None
+    #: populated only when the caller passed ``keep_rootfs``: the
+    #: exported image filesystem (repo at ``/src``, built artifacts in
+    #: place, toolchain runtime included) for ``sandbox(rootfs=...)``
+    #: consumers. Large (the full flattened image); caller owns cleanup.
 
 
 def containerized_build(
@@ -83,12 +104,52 @@ def containerized_build(
     toolchain: ToolchainSpec | None = None,
     base_image: str = DEFAULT_BUILD_IMAGE,
     timeout_seconds: int = 600,
+    keep_rootfs: Path | str | None = None,
 ) -> BuildProduct:
     """Build *repo_dir* with *command* in a container; extract ELF
     executables produced under the repo tree into ``out_dir``.
 
+    ``keep_rootfs``: when set, the exported image filesystem is written
+    there and survives the call (``product.rootfs``) for
+    ``sandbox(rootfs=...)`` consumers — in-image fuzzing runs the built
+    binary against the exact toolchain runtime that produced it. The
+    directory is LARGE (the full flattened image, potentially millions
+    of inodes): point it at disk-backed run storage, never a tmpfs,
+    and delete it when the run is done. On any failure path the
+    partial directory is removed.
+
     Never raises for build-class failures; see :class:`BuildProduct`.
     """
+    try:
+        product = _containerized_build(
+            repo_dir, command, out_dir=out_dir, toolchain=toolchain,
+            base_image=base_image, timeout_seconds=timeout_seconds,
+            keep_rootfs=keep_rootfs,
+        )
+    except BaseException:
+        if keep_rootfs:
+            shutil.rmtree(keep_rootfs, ignore_errors=True)
+        raise
+    if keep_rootfs:
+        if product.ok:
+            product.rootfs = Path(keep_rootfs)
+        else:
+            # A failed build must not leave a multi-GB partial image
+            # tree in the run directory.
+            shutil.rmtree(keep_rootfs, ignore_errors=True)
+    return product
+
+
+def _containerized_build(
+    repo_dir: Path | str,
+    command: str,
+    *,
+    out_dir: Path | str,
+    toolchain: ToolchainSpec | None,
+    base_image: str,
+    timeout_seconds: int,
+    keep_rootfs: Path | str | None,
+) -> BuildProduct:
     from core.container.build import build_image
     from core.container.export import export_rootfs
     from core.container.lifecycle import (
@@ -143,7 +204,7 @@ def containerized_build(
                 product.detail = (built.stderr_tail or "")[-1000:]
                 return product
 
-            rootfs = Path(tmp) / "rootfs"
+            rootfs = Path(keep_rootfs) if keep_rootfs else Path(tmp) / "rootfs"
             exported = export_rootfs(tag, rootfs)
             if not getattr(exported, "ok", True):
                 product.reason = "export_failed"
@@ -223,6 +284,10 @@ def _flag_prefix(toolchain: ToolchainSpec | None) -> str:
     cflags = " ".join(cflag_list)
     ldflags = " ".join(toolchain.ldflags)
     parts = []
+    if toolchain.cc:
+        parts.append(f"CC='{toolchain.cc}'")
+    if toolchain.cxx:
+        parts.append(f"CXX='{toolchain.cxx}'")
     if cflags:
         parts.append(f"CFLAGS='{cflags}' CXXFLAGS='{cflags}'")
     if ldflags:

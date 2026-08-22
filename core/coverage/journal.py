@@ -197,6 +197,11 @@ class ReviewJournalEntry:
     # ``[{callee, call_line, verdict}]``. Additive; absent when the
     # review carried no edge-contract section.
     edge_verdicts: list[dict] | None = None
+    # ``integrity``: HMAC provenance token over the row's canonical
+    # JSON (this field excluded), stamped by append_entry. The gap
+    # fold verifies before granting verdict-reuse authority; see
+    # core.coverage.journal_mac. Additive; absent on pre-MAC rows.
+    integrity: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     @property
@@ -349,8 +354,21 @@ def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
     """
     journal_path = out_dir / JOURNAL_FILENAME
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Provenance stamp (core.coverage.journal_mac): the fold trusts
+    # rows for review suppression and $0 verdict reuse, so each row
+    # carries a MAC over its own canonical content. Stamped on the
+    # entry object too, so a caller that keeps it sees the same row
+    # a reader would load. No usable key → the row persists unstamped
+    # and demotes to the hash-gated legacy tier on read.
+    from core.coverage import journal_mac
+    row = entry.to_dict()
+    row.pop(journal_mac.TOKEN_KEY, None)
+    token = journal_mac.mint_row(row)
+    if token:
+        entry.integrity = token
+        row[journal_mac.TOKEN_KEY] = token
     data = (
-        json.dumps(entry.to_dict(), separators=(",", ":")) + "\n"
+        json.dumps(row, separators=(",", ":")) + "\n"
     ).encode("utf-8")
     with _append_lock:
         fd = os.open(
@@ -507,6 +525,7 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         producer=raw.get("producer"),
         edge_callee=raw.get("edge_callee"),
         edge_verdicts=raw.get("edge_verdicts"),
+        integrity=raw.get("integrity"),
         schema_version=version,
     )
 

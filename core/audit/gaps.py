@@ -1773,6 +1773,8 @@ def _verify_entries_fold(
     (belt-and-braces): the same-run resume path feeds this fold from
     ``latest_entries`` on a run dir that could carry mixed producers.
     """
+    from core.coverage import journal_mac
+
     from .journal import is_function_grade
 
     def _credit(key: str) -> None:
@@ -1780,6 +1782,9 @@ def _verify_entries_fold(
         if credits is not None:
             credits[key] = credits.get(key, 0) + 1
 
+    tampered = 0
+    unstamped_credited = 0
+    unstamped_unverifiable = 0
     to_verify: dict[str, list] = {}
     for entry in entries:
         if entry.verdict == "error" or not is_function_grade(entry):
@@ -1792,6 +1797,22 @@ def _verify_entries_fold(
             # edge_review.reviewed_edge_keys.
             continue
         key = f"{entry.file}:{entry.function}"
+        # Row provenance (core.coverage.journal_mac): the journal is
+        # target-writable during runs and import-restorable, so a
+        # row's authority is tiered on its MAC. Tampered rows
+        # (token present but invalid) are dropped entirely; unstamped
+        # rows (pre-MAC legacy or forged-unstamped) keep fold-credit
+        # only behind the exact source-hash gate below and are never
+        # imported as $0 reused verdicts.
+        provenance = journal_mac.entry_provenance(entry)
+        if provenance == journal_mac.ROW_TAMPERED:
+            tampered += 1
+            logger.debug(
+                "journal-fold: %s row failed provenance verification "
+                "— dropped (resurfaces as gap)", key,
+            )
+            continue
+        verified_row = provenance == journal_mac.ROW_VERIFIED
         # Candidate spans, tried in order — a match on ANY verifies:
         # * the entry's OWN recorded span: same-named items (macro
         #   redefinitions, C++ overloads) live at different spans
@@ -1808,9 +1829,32 @@ def _verify_entries_fold(
         if cur is not None and cur not in spans:
             spans.append(cur)
         if not entry.source_hash or target_path is None or not spans:
-            _credit(key)
+            # No hash evidence to check. A VERIFIED row keeps the
+            # historical suppression (this install's writer recorded
+            # the review; hash computation failed at review time or
+            # there is no current source to compare). An UNSTAMPED
+            # row with no checkable hash carries nothing — crediting
+            # it was the forged-empty-hash suppression channel.
+            if verified_row:
+                _credit(key)
+            else:
+                unstamped_unverifiable += 1
             continue
-        to_verify.setdefault(entry.file, []).append((entry, key, spans))
+        to_verify.setdefault(entry.file, []).append(
+            (entry, key, spans, verified_row))
+
+    if tampered:
+        logger.warning(
+            "journal-fold: dropped %d row(s) whose provenance token "
+            "failed verification — resurfacing as gaps",
+            tampered,
+        )
+    if unstamped_unverifiable:
+        logger.info(
+            "journal-fold: %d unstamped row(s) without checkable "
+            "source hash resurfaced as gaps",
+            unstamped_unverifiable,
+        )
 
     if not to_verify:
         return
@@ -1837,12 +1881,13 @@ def _verify_entries_fold(
             continue
         flat_spans: list[tuple] = []
         span_counts: list[int] = []
-        for _entry, _key, entry_spans in items:
+        for _entry, _key, entry_spans, _verified in items:
             span_counts.append(len(entry_spans))
             flat_spans.extend(entry_spans)
         all_hashes = hash_spans(resolved, flat_spans)
         hash_idx = 0
-        for (entry, key, entry_spans), n_spans in zip(items, span_counts):
+        for (entry, key, entry_spans, verified_row), n_spans in zip(
+                items, span_counts):
             candidates = all_hashes[hash_idx:hash_idx + n_spans]
             hash_idx += n_spans
             stored = entry.source_hash
@@ -1860,14 +1905,25 @@ def _verify_entries_fold(
                     key, source_label, stored,
                 )
                 continue
-            if not any(
-                    h[:len(stored)] == stored[:len(h)] for h in computable):
+            # Exact, full-length compare. The old bidirectional
+            # prefix compare (h[:len(stored)] == stored[:len(h)])
+            # accepted an attacker-stored 1-char "hash" against ~1/16
+            # of real hashes; a short prefix is not drift evidence,
+            # it is no evidence.
+            if not any(h == stored for h in computable):
                 stale += 1
                 logger.debug(
                     "journal-fold: %s changed since %s review "
                     "(hash %s → %s) — resurfacing as gap",
                     key, source_label, stored, computable[0],
                 )
+                continue
+            if not verified_row:
+                # Unstamped row, hash checks out: keep the historical
+                # suppression (legacy tolerance) but never import an
+                # unauthenticated verdict as a $0 reuse.
+                unstamped_credited += 1
+                _credit(key)
                 continue
             if reuse_sink is not None:
                 reason = _reuse_ineligibility(
@@ -1899,6 +1955,13 @@ def _verify_entries_fold(
             "journal-fold: %d %s review(s) stale (source "
             "changed) — resurfacing as gaps for re-review",
             stale, source_label,
+        )
+    if unstamped_credited:
+        logger.info(
+            "journal-fold: %d unstamped %s row(s) kept legacy "
+            "suppression behind the exact hash gate (no verdict "
+            "reuse; rows re-stamp on their next live review)",
+            unstamped_credited, source_label,
         )
     if reuse_blocked:
         # Per-reason split, not an aggregate: the drivers have very

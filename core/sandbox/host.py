@@ -62,7 +62,9 @@ import json
 import logging
 import os
 import select
+import shutil
 import struct
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -72,6 +74,30 @@ log = logging.getLogger(__name__)
 
 
 _DAEMON_SCRIPT = Path(__file__).resolve().parent / "_daemon.py"
+
+
+def _resolve_output(target_path: Path, output: Path | None) -> tuple[str, str | None]:
+    """Resolve the sandbox output directory; never the target itself.
+
+    Returns ``(output_dir, owned_tmpdir)``. When ``output`` is omitted
+    a private mkdtemp becomes the output dir (``owned_tmpdir`` is
+    non-None and the caller removes it when the session ends).
+    Pre-fix the default was the TARGET path, which made the untrusted
+    target tree a writable bind — a hostile target could rewrite the
+    scanned repo. An explicit ``output`` that resolves (realpath) to
+    the target is refused for the same reason.
+    """
+    if output is None:
+        owned = tempfile.mkdtemp(prefix="raptor-host-out-")
+        return owned, owned
+    if os.path.realpath(os.fspath(output)) == os.path.realpath(
+            str(target_path)):
+        raise ValueError(
+            f"output {str(output)!r} resolves to the target directory "
+            f"{target_path} — the target tree must stay read-only "
+            f"inside the sandbox; choose a distinct output directory"
+        )
+    return os.fspath(output), None
 
 
 def _resolve_daemon_script() -> Path:
@@ -101,10 +127,14 @@ class SandboxHost:
         _read_fd: int,
         _daemon_fds: tuple[int, int] | None,
         _lock: threading.Lock,
+        _owned_output: str | None = None,
     ) -> None:
         self._thread = _thread
         self._write_fd = _write_fd
         self._read_fd = _read_fd
+        # Private mkdtemp used as the sandbox output dir when the
+        # caller didn't pass one; removed in close().
+        self._owned_output = _owned_output
         # Parent-held copies of the daemon-side pipe ends. Kept open
         # only until the startup ping proves the daemon inherited its
         # own copies, then closed so EOF tracks daemon death.
@@ -144,6 +174,7 @@ class SandboxHost:
 
         daemon = _resolve_daemon_script()
         target_path = Path(target).resolve()
+        output_dir, owned_output = _resolve_output(target_path, output)
 
         # Two pipe pairs. os.pipe() fds are CLOEXEC/non-inheritable by
         # default (PEP 446); pass_fds below clears CLOEXEC on the two
@@ -165,7 +196,7 @@ class SandboxHost:
                      "--rpc-in-fd", str(in_r),
                      "--rpc-out-fd", str(out_w)],
                     target=str(target_path),
-                    output=str(output or target_path),
+                    output=output_dir,
                     block_network=True,
                     restrict_reads=True,
                     readable_paths=readable,
@@ -190,18 +221,26 @@ class SandboxHost:
             except Exception as e:  # noqa: BLE001
                 result_holder["error"] = f"{type(e).__name__}: {e}"
 
-        thread = threading.Thread(
-            target=_worker, name="sandbox-host-daemon", daemon=True,
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=_worker, name="sandbox-host-daemon", daemon=True,
+            )
+            thread.start()
 
-        host = cls(
-            _thread=thread,
-            _write_fd=in_w,
-            _read_fd=out_r,
-            _daemon_fds=(in_r, out_w),
-            _lock=threading.Lock(),
-        )
+            host = cls(
+                _thread=thread,
+                _write_fd=in_w,
+                _read_fd=out_r,
+                _daemon_fds=(in_r, out_w),
+                _lock=threading.Lock(),
+                _owned_output=owned_output,
+            )
+        except BaseException:
+            # host.close() owns the cleanup from here on; before the
+            # handle exists the mkdtemp must not leak.
+            if owned_output:
+                shutil.rmtree(owned_output, ignore_errors=True)
+            raise
         try:
             pong = host._rpc({"cmd": "ping"}, timeout=startup_timeout)
             if not pong.get("ok"):
@@ -252,6 +291,11 @@ class SandboxHost:
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():
             log.warning("sandbox_host worker thread did not exit within 5s")
+        if getattr(self, "_owned_output", None):
+            # Default-output scratch dir this host created; removed
+            # after the worker released the sandbox that bound it.
+            shutil.rmtree(self._owned_output, ignore_errors=True)
+            self._owned_output = None
 
     # ------------------------------------------------------------------
     # RPC verbs
@@ -429,6 +473,7 @@ def one_shot_call(
 
     daemon = _resolve_daemon_script()
     target_path = Path(target).resolve()
+    output_dir, owned_output = _resolve_output(target_path, output)
     readable = list(readable_paths or [])
     readable.append(str(daemon))
 
@@ -444,7 +489,7 @@ def one_shot_call(
         r = sandbox_run(
             ["python3", "-S", str(daemon), "--one-shot"],
             target=str(target_path),
-            output=str(output or target_path),
+            output=output_dir,
             block_network=True,
             restrict_reads=True,
             readable_paths=readable,
@@ -460,6 +505,9 @@ def one_shot_call(
     except Exception as e:
         msg = f"one-shot daemon spawn failed: {type(e).__name__}: {e}"
         raise HostRPCError(msg) from e
+    finally:
+        if owned_output:
+            shutil.rmtree(owned_output, ignore_errors=True)
 
     if not r.stdout:
         stderr_tail = (r.stderr or b"").decode(

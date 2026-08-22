@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import re
 import textwrap
-from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from ._types import DarkWitnessSpec
+
+if TYPE_CHECKING:
+    from ._types import DarkWitnessSpec
+    from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
 # Helpers shared across harness generators

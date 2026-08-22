@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from core.git import get_safe_git_env
 # Per-invocation `-c` overrides defend against hostile per-repo
@@ -27,6 +26,10 @@ from core.git.clone import safe_git_command
 
 from cve_diff.core.exceptions import IdenticalCommitsError
 from cve_diff.core.models import CommitSha
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _SHA_RE = re.compile(r"[a-f0-9]{7,40}", re.IGNORECASE | re.ASCII)
 _INVALID_LITERALS = frozenset({"0", "none", "null", ""})

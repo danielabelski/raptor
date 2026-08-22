@@ -26,11 +26,13 @@ the rest of :mod:`core.recall`.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.recall.matcher import path_matches
 from core.recall.warm import load_suppression_records
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _DEFAULT_DRIFT = 2
 

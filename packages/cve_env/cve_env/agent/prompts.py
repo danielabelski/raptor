@@ -20,7 +20,10 @@ Design notes:
 
 from __future__ import annotations
 
-from cve_env.models import CveRecord, HostInfo
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cve_env.models import CveRecord, HostInfo
 
 SYSTEM_PROMPT = """\
 You are cve-env, an autonomous builder of reproducible Docker environments for CVEs.

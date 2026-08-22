@@ -22,8 +22,11 @@ from pathlib import Path
 
 from core.evidence import TIER_RANK, EvidenceTier
 
-from .specs import TaintSpec
 from .store import load_specs, load_store_metadata, save_specs
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .specs import TaintSpec
 
 logger = logging.getLogger(__name__)
 

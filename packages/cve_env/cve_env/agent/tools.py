@@ -21,8 +21,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
-from collections.abc import Callable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.tool_use.types import ToolDef
 
@@ -37,6 +36,9 @@ from cve_env.tools import nvd_lookup as _nvd_lookup
 from cve_env.tools import run_in_container as _run_in_container
 from cve_env.tools import source_build as _source_build
 from cve_env.tools import verify as _verify
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TOOL_NAMES: tuple[str, ...] = (
     "nvd_lookup",

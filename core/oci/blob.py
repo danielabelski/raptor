@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
 
 from core.tar import extract_files_from_tar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

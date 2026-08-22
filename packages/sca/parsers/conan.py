@@ -37,11 +37,14 @@ import ast
 import json
 import logging
 import re
-from pathlib import Path
-from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

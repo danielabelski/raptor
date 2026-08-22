@@ -34,8 +34,6 @@ Deferred to follow-ups:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
-from pathlib import Path
 
 from ..models import (
     Confidence,
@@ -66,6 +64,11 @@ from . import slopsquat as _slopsquat
 from . import typosquat as _typosquat
 from . import typosquat_domain as _typosquat_domain
 from . import workflow_signing as _workflow_signing
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

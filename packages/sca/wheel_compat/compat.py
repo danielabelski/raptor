@@ -35,11 +35,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from packages.sca.platform_matrix import PlatformPair, ProjectPlatformMatrix
-from packages.sca.platform_matrix.glibc_db import LibcVersion
 from packages.sca.wheel_compat.wheel_tags import (
     WheelTag, parse_wheel_filename,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.sca.platform_matrix.glibc_db import LibcVersion
+    from packages.sca.platform_matrix import PlatformPair, ProjectPlatformMatrix
 
 logger = logging.getLogger(__name__)
 

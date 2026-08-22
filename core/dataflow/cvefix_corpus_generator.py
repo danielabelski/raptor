@@ -35,11 +35,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
-from collections.abc import Iterable, Iterator, Mapping
+from typing import Any, TYPE_CHECKING
 
 from core.dataflow.adapters.codeql import from_sarif_result
-from core.dataflow.finding import Finding
 from core.dataflow.label import (
     FP_MISSING_SANITIZER_MODEL,
     VERDICT_FALSE_POSITIVE,
@@ -48,6 +46,10 @@ from core.dataflow.label import (
 )
 # Reuse the corpus writer verbatim — same on-disk shape as every other corpus.
 from core.dataflow.owasp_corpus_generator import write_corpus  # noqa: F401 (re-exported)
+
+if TYPE_CHECKING:
+    from core.dataflow.finding import Finding
+    from collections.abc import Iterable, Iterator, Mapping
 
 _DEFAULT_LABELER = "trust-corpus-cvefix"
 

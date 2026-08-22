@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING
 from core.hash import sha256_file
 from core.witness import Witness, WitnessOutcome, WitnessSource
 from core.witness.types import compute_bytes_hash
-from packages.fuzzing.crash_collector import Crash
 
 if TYPE_CHECKING:
+    from packages.fuzzing.crash_collector import Crash
     from packages.fuzzing.crash_attribution import CrashAttribution
 
 

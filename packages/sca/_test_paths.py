@@ -33,7 +33,10 @@ reporting findings in them (they are genuine supply-chain surface).
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Directory names treated as test trees. Same set across both
 # reachability and supply-chain — a project's "tests" dir is its

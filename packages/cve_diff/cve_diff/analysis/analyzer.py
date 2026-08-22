@@ -21,8 +21,11 @@ from string import Template
 from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import UntrustedBlock, build_prompt
 
-from cve_diff.core.models import DiffBundle
 from cve_diff.llm.client import ResilientLLMClient
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cve_diff.core.models import DiffBundle
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DIFF_PROMPT_LIMIT = 32_000  # Bytes of diff passed to the model.

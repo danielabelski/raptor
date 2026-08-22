@@ -24,9 +24,12 @@ env.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Mapping, Sequence
 
-from .server import LLMDispatcher
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .server import LLMDispatcher
+    from collections.abc import Mapping, Sequence
 
 
 def spawn_worker(

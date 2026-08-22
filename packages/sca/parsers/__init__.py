@@ -34,10 +34,12 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
-from collections.abc import Callable, Iterator
+from typing import Protocol, TYPE_CHECKING
 
-from ..models import Dependency, Manifest
+
+if TYPE_CHECKING:
+    from ..models import Dependency, Manifest
+    from collections.abc import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 

@@ -19,7 +19,6 @@ import operator
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from core.inventory.macro_resolve import (
     _C_EXTENSIONS,
@@ -29,6 +28,10 @@ from core.inventory.macro_resolve import (
     _SKIP_IDENTS_C,
     _parse_enumerator_value,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

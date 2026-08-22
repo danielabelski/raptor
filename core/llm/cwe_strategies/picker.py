@@ -40,12 +40,14 @@ call graph + any /agentic-emitted finding CWEs.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .loader import apply_supplements, builtin_profile, load_all
 from .models import Signals, Strategy
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Iterable
 
 # Sentinel name for the always-on default strategy.
 GENERAL = "general"

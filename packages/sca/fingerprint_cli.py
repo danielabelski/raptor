@@ -25,9 +25,12 @@ import json
 import logging
 import sys
 from pathlib import Path
-from collections.abc import Sequence
 
 from . import SCA_CACHE_ROOT
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

@@ -32,12 +32,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
 
 from core.cve import EpssClient, KevClient
-from core.http import HttpClient
 from core.json import JsonCache
 from core.security.log_sanitisation import escape_nonprintable
 from core.security.prompt_output_sanitise import sanitise_string
@@ -52,6 +50,11 @@ from .models import (
     VulnFinding,
 )
 from .osv import OsvClient
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

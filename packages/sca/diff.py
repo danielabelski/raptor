@@ -28,15 +28,17 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.security.log_sanitisation import escape_nonprintable
 
 from .findings import severity_rank
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 

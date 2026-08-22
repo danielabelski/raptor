@@ -35,14 +35,17 @@ import time
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
-from collections.abc import Iterable
 
-from core.http import HttpClient
 from core.zip import extract_files_from_zip
-from .models import Advisory
 from .osv import parse_osv_record
 from .versions import VersionError, in_range as _in_range
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import Advisory
+    from core.http import HttpClient
+    from collections.abc import Iterable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

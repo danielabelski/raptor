@@ -24,11 +24,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from packages.checker_synthesis.cwe_families import cwe_siblings
 
-from core.recall.manifest import ExpectedFinding, Tolerance
+
+if TYPE_CHECKING:
+    from core.recall.manifest import ExpectedFinding, Tolerance
 
 
 @dataclass

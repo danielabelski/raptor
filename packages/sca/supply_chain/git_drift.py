@@ -25,9 +25,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, PinStyle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

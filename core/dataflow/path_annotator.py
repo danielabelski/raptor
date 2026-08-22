@@ -39,9 +39,7 @@ evidence accordingly.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
 
-from core.dataflow.finding import Finding, Step
 from core.dataflow.sanitizer_evidence import (
     CandidateValidator,
     StepAnnotation,
@@ -56,6 +54,11 @@ from core.inventory.call_graph import (
     extract_call_graph_rust,
 )
 from core.inventory.languages import detect_language
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dataflow.finding import Finding, Step
+    from collections.abc import Callable, Sequence
 
 
 # Tree-sitter / AST extractor by language. Keys match

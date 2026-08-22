@@ -12,10 +12,12 @@ findings.json layers handle that wrapping.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Confidence — cross-cutting uncertainty type

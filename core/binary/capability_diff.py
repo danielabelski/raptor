@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from core.binary.fingerprint import (
     BUCKETS,  # noqa: F401  — re-exported for downstream parity
@@ -29,6 +28,10 @@ from core.binary.fingerprint import (
     CapabilityFingerprint,
     bucket_imports,  # noqa: F401  — re-exported for downstream parity
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

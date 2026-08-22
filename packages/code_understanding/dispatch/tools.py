@@ -45,8 +45,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # Output caps — generous but bounded. A hunt that exceeds these is

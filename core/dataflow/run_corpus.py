@@ -17,7 +17,6 @@ import csv
 import importlib
 import sys
 from pathlib import Path
-from collections.abc import Iterable
 
 from core.dataflow.finding import Finding
 from core.dataflow.label import (
@@ -26,6 +25,10 @@ from core.dataflow.label import (
     VERDICT_TRUE_POSITIVE,
 )
 from core.dataflow.validator import TrivialValidator, Validator, ValidatorVerdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 _DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "findings"

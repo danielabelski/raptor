@@ -34,10 +34,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .store import read_all
 from .types import FailureMode, LabeledAttempt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = [
     "RetrievedExemplar",

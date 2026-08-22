@@ -23,9 +23,11 @@ error back into the next prompt) are a different species and live in
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 __all__ = ["RetryPolicy", "retry_call"]
 

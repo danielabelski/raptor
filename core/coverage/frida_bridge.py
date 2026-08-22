@@ -7,12 +7,12 @@ this module just discovers and orchestrates.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.logging import get_logger
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from core.coverage.store import CoverageStore
 
 log = get_logger("coverage.frida_bridge")

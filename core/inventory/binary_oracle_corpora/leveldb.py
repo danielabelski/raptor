@@ -20,8 +20,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from core.analysis.binary_oracle import (
     _demangle_linkage_names,
@@ -39,6 +38,9 @@ from .snappy import (
     _resolve,
     _strip_llvm_file_prefix,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

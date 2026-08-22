@@ -37,12 +37,14 @@ import json as _json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from ._atomic import atomic_write_text
-from .models import Dependency
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from .models import Dependency
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

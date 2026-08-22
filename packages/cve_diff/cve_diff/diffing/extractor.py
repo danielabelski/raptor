@@ -9,7 +9,6 @@ one-liner (see plan's Port/Rewrite/Discard table).
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 from core.git import get_safe_git_env
 from core.git.clone import safe_git_command
@@ -19,6 +18,10 @@ from cve_diff.core.models import CommitSha, DiffBundle, FileChange, RepoRef
 from cve_diff.core.path_classifier import is_test_path
 from cve_diff.diffing import shape_dynamic
 from cve_diff.infra import github_client
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 DEFAULT_TIMEOUT_S = 300
 

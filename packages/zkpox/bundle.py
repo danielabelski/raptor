@@ -30,12 +30,14 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.witness.store import WitnessStore
-from core.witness.types import Witness
 
 from packages.zkpox.eligibility import is_zkpox_eligible
+
+if TYPE_CHECKING:
+    from core.witness.types import Witness
+    from core.witness.store import WitnessStore
 
 
 # A witness identity is always a sha256 hex digest. We use it as a

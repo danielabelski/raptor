@@ -37,9 +37,12 @@ envelope structure or inject role-confusion content.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Repository root (this file lives at core/security/prompt_envelope_audit.py).
 _REPO_ROOT = Path(__file__).resolve().parents[2]

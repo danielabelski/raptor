@@ -45,16 +45,18 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from core.json import JsonCache
 from . import SCA_CACHE_ROOT
 from .diff import compute_delta
 from .findings import severity_rank
-from core.http import HttpClient
 from . import default_client
 from .pipeline import RunOptions, run_sca
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

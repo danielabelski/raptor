@@ -34,7 +34,6 @@ import logging
 import re
 import shutil
 import tempfile
-from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -51,6 +50,10 @@ from core.security.redaction import redact_url_secrets_only
 # further down for why these hosts and no others.)
 from ._proxy_hosts import _DEFAULT_GIT_HOSTS as _PROXY_HOSTS  # noqa: F401
 from ._proxy_hosts import proxy_hosts_for_git as _proxy_hosts_for_git
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Git allows SHA abbreviations of 4+ chars; full SHA-1 is 40 hex.
 # We reject anything that doesn't match this shape so a tainted SHA

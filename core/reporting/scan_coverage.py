@@ -17,7 +17,10 @@ answers "what did we look at it WITH".
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # Tool display ordering — most-likely-to-fire first so the block

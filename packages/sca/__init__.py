@@ -27,9 +27,11 @@ import os
 import re
 from pathlib import Path
 
-from core.http import HttpClient
 from core.http.egress_backend import EgressClient
-from typing import NoReturn
+from typing import NoReturn, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
 
 logger = logging.getLogger(__name__)
 

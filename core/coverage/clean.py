@@ -24,12 +24,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from .importer import import_findings, import_run_dir, load_run_findings
 from .record import load_records
-from .store import CoverageStore
+
+if TYPE_CHECKING:
+    from .store import CoverageStore
+    from collections.abc import Iterable
 
 
 def _finding_key(f: dict[str, Any]) -> tuple[Any, Any, Any]:

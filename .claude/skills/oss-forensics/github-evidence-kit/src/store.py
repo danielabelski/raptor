@@ -7,12 +7,15 @@ Provides save/load/query functionality for evidence objects.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
-from collections.abc import Callable, Iterator, Sequence
 
-from .schema import AnyEvidence, AnyEvent, AnyObservation
 from .schema.common import EvidenceSource
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .schema import AnyEvidence, AnyEvent, AnyObservation
+    from collections.abc import Callable, Iterator, Sequence
+    from datetime import datetime
 
 
 class EvidenceStore:

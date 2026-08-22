@@ -11,11 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 GRAPH_FILENAME = "binary-graph.sqlite"
 SCHEMA_VERSION = 2

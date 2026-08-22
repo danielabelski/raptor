@@ -13,9 +13,12 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from core.logging import get_logger
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = get_logger("orchestration.frida_validation_bridge")
 

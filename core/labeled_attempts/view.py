@@ -39,16 +39,16 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
-from collections.abc import Iterable
 
 from core.security.log_sanitisation import escape_nonprintable
 from core.security.prompt_envelope import neutralize_tag_forgery
 
-from .types import LabeledAttempt
 
 _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # type-only — keep this module import-cheap
+    from .types import LabeledAttempt
+    from collections.abc import Iterable
     from core.dataflow.barrier_synth import BarrierProposal, SynthResult
     from core.witness.types import Witness
 

@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
 
 from . import RewriteEdit, RewriteResult, register
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

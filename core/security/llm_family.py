@@ -22,8 +22,7 @@ checker is meaningfully independent.
 
 from __future__ import annotations
 
-from typing import Literal
-from collections.abc import Iterable
+from typing import Literal, TYPE_CHECKING
 
 
 Family = Literal[
@@ -103,6 +102,9 @@ from core.llm.bedrock_prefixes import (  # noqa: E402
     BEDROCK_PROVIDER_SEGMENTS as _BEDROCK_PROVIDER_SEGMENTS,
     BEDROCK_REGIONAL_PREFIXES as _BEDROCK_REGIONAL_PREFIXES,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Local mapping segment → Family (Family is a Literal local to this
 # module, can't live in the shared constants module without a

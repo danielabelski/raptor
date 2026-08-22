@@ -14,8 +14,7 @@ documentation — the LLM sees them, so the output shape is explicit.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_defense_profiles import CONSERVATIVE, get_profile_for
 from core.security.prompt_envelope import (
@@ -26,7 +25,10 @@ from core.security.prompt_envelope import (
 from core.security.prompt_framing import with_audit_framing
 
 from .grammars import COCCINELLE_GRAMMAR, SEMGREP_GRAMMAR
-from .models import Match, SeedBug, SynthesisedRule
+
+if TYPE_CHECKING:
+    from .models import Match, SeedBug, SynthesisedRule
+    from collections.abc import Iterable
 
 
 def _envelope(

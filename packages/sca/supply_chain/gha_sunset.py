@@ -32,7 +32,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from collections.abc import Iterable
 
 from ..models import (
     Confidence,
@@ -40,6 +39,10 @@ from ..models import (
     Severity,
     SupplyChainFinding,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

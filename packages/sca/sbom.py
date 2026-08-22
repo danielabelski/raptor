@@ -27,13 +27,15 @@ import logging
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
-from collections.abc import Iterable, Sequence
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_output_sanitise import sanitise_string
 
-from .models import Advisory, Dependency, VulnFinding
+
+if TYPE_CHECKING:
+    from .models import Advisory, Dependency, VulnFinding
+    from collections.abc import Iterable, Sequence
+    from pathlib import Path
 
 # Cap on advisory text in CycloneDX vulnerability.description. Larger
 # than the sanitiser default (500) because Dependency-Track and other

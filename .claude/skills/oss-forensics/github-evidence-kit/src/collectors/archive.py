@@ -7,7 +7,6 @@ import json
 
 from ..clients.gharchive import GHArchiveClient
 from ..schema.common import EvidenceSource, VerificationInfo
-from ..schema.events import AnyEvent
 from ..schema.observations import CommitAuthor, CommitObservation, IssueObservation
 from ..helpers import (
     generate_evidence_id,
@@ -16,6 +15,10 @@ from ..helpers import (
     parse_datetime_strict,
 )
 from ..parsers import parse_gharchive_event
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..schema.events import AnyEvent
 
 
 def _gharchive_day(timestamp: str) -> str:

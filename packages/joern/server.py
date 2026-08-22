@@ -26,9 +26,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -46,6 +45,9 @@ from .runner import (
     _validate_query,
 )
 from .tunables import JoernTunables
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

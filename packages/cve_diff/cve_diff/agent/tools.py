@@ -21,10 +21,9 @@ import functools
 import json
 import re
 import subprocess
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import quote
 
 from cve_diff.discovery.nvd import NvdDiscoverer
@@ -39,6 +38,9 @@ from core.url_patterns import (
     KERNEL_SHA_URL_RE as _KERNEL_SHA_URL_RE,
     LINUX_UPSTREAM_SLUG as _LINUX_UPSTREAM_SLUG,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _TIMEOUT_S = 10.0
 _MAX_BYTES = 32 * 1024

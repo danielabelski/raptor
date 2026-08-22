@@ -30,12 +30,14 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
 
 from .cwe_families import cwe_siblings
-from .models import CheckerSynthesisResult, Match, MatchTriage
+
+if TYPE_CHECKING:
+    from .models import CheckerSynthesisResult, Match, MatchTriage
 
 logger = logging.getLogger(__name__)
 

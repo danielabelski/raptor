@@ -39,11 +39,13 @@ LLM consumes it alongside the dataflow path, no early return.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_envelope import UntrustedBlock
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

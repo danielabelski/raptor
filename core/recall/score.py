@@ -19,10 +19,12 @@ import shutil
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.recall.manifest import RecallManifest
-from core.recall.matcher import MatchResult
+
+if TYPE_CHECKING:
+    from core.recall.matcher import MatchResult
+    from core.recall.manifest import RecallManifest
 
 LABEL_CLASS = "recall-ground-truth"
 

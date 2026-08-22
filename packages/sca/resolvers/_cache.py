@@ -37,11 +37,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from . import Resolver, ResolverResult
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

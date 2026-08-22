@@ -14,11 +14,13 @@ import hashlib
 import heapq
 import logging
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from core.json import load_json, save_json
 from core.security.log_sanitisation import escape_nonprintable
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

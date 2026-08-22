@@ -19,9 +19,12 @@ predicate edge cases.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 
 from .image_ref import ImageRef, parse_image_ref
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # Each entry is (predicate, hosts). The predicate takes the image's

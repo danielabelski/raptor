@@ -42,7 +42,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..models import Dependency
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..models import Dependency
 
 logger = logging.getLogger(__name__)
 

@@ -8,10 +8,12 @@ lookups.  Consolidated here to avoid drift between copies.
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.paths import confine
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

@@ -27,11 +27,13 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
 
 from core.coverage.edges import item_spans
 from core.coverage.journal import encode_key_file, make_function_key
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

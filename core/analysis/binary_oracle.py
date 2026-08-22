@@ -38,12 +38,15 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Literal,
+TYPE_CHECKING,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 

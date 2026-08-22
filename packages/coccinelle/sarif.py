@@ -19,10 +19,12 @@ pre-check) can filter by rule.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
-from .models import SpatchResult
+
+if TYPE_CHECKING:
+    from .models import SpatchResult
+    from collections.abc import Iterable
 
 
 # SARIF level mapping. spatch doesn't emit severity; we treat every

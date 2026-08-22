@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from collections.abc import Callable, Iterator
 
 from ...models import PinStyle
 from ..requirements import _spec_bounds
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 
 # ---------------------------------------------------------------------------

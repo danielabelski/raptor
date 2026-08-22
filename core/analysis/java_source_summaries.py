@@ -38,7 +38,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
 
 # Shared parsing bones (deliberate private-name imports; the summary
 # modules form one family — see java_wrapper_summaries).
@@ -57,6 +56,7 @@ from core.analysis.java_wrapper_summaries import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from tree_sitter import Node
 
 # ── seed vocabulary ──────────────────────────────────────────────────

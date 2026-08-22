@@ -32,8 +32,6 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
-from pathlib import Path
-from collections.abc import Iterable
 
 from .models import (
     Confidence,
@@ -43,6 +41,11 @@ from .models import (
     PinStyle,
 )
 from .versions import VersionError, compare as version_compare
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

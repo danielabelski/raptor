@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import platform
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 OutcomeStatus = Literal[
     "success",

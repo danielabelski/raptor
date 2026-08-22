@@ -17,7 +17,6 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from core.json import JsonCache
@@ -33,6 +32,10 @@ from .registries.nuget import NugetClient
 from .registries.packagist import PackagistClient
 from .registries.pypi import PyPIClient
 from .registries.rubygems import RubyGemsClient
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

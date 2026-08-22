@@ -18,10 +18,12 @@ import logging
 import os
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from .condition_extraction import GuardCondition, SinkGuard
+
+if TYPE_CHECKING:
+    from .condition_extraction import GuardCondition, SinkGuard
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

@@ -36,10 +36,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:  # type-only — no runtime dep
+    from pathlib import Path
     from core.build.build_flags import BuildFlagsContext
 
 

@@ -36,13 +36,16 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from core.git import clone_repository, fetch_commit, get_safe_git_env
 from core.git.clone import safe_git_command
 
 from cve_diff.core.exceptions import AcquisitionError
-from cve_diff.core.models import RepoRef
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cve_diff.core.models import RepoRef
+    from pathlib import Path
 
 PROGRESSIVE_DEPTHS: tuple[int, ...] = (100, 500)
 TARGETED_DEPTH = 5

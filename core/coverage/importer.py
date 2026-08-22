@@ -17,9 +17,8 @@ arrives only when a producer emits ranges -- a later format extension.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import load_json
 from core.run.metadata import load_run_metadata
@@ -33,8 +32,11 @@ from core.run.provenance import (
 
 from .record import load_records
 from .registry import category_of
-from .store import CoverageStore
 from .summary import _inventory_name_index, _match_to_inventory
+
+if TYPE_CHECKING:
+    from .store import CoverageStore
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

@@ -13,11 +13,13 @@ and how to report.
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TextIO
+from typing import TextIO, TYPE_CHECKING
 
 from .findings import severity_rank
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _SEVERITY_CHOICES = ("info", "low", "medium", "high", "critical")
 

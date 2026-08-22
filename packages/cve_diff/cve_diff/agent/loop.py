@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from cve_diff.agent import source_classes
-from cve_diff.agent.tools import Tool
 from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSurrender
 from cve_diff.infra import github_client
 from cve_diff.llm.client import MODEL_PRICES
@@ -44,6 +42,10 @@ from core.llm.tool_use.types import (
     TurnCompleted,
 )
 from core.url_patterns import SHA_DISPLAY_LEN, extract_github_slug
+
+if TYPE_CHECKING:
+    from cve_diff.agent.tools import Tool
+    from collections.abc import Callable
 
 
 @dataclass(frozen=True, slots=True)

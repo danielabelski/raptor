@@ -16,10 +16,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterable, Sequence
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 from . import _hook_patterns
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 

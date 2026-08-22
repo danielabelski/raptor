@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 
 # ``_ET`` kept for its ``ParseError`` exception type — defusedxml
 # raises the stdlib's ParseError subclass on malformed XML, so
@@ -36,6 +35,10 @@ from xml.etree import ElementTree as _ET
 
 from ..models import Confidence, Dependency, PinStyle
 from . import _safe_read, register
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

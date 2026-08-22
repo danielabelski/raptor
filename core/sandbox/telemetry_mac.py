@@ -43,10 +43,13 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Mapping
 from pathlib import Path
 
 from core.logging import get_logger
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = get_logger(__name__)
 

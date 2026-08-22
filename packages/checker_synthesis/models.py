@@ -7,8 +7,10 @@ synthesis attempts as JSON alongside its annotations.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Synthesis verdict for an individual cross-codebase match. Mirrors
 # the annotation status enum where it makes sense, but adds

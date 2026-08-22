@@ -19,7 +19,10 @@ DIRECTORY — never into the rules tree, never registry content.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 #: Sink/sanitizer blocks mirrored from in-repo rules. Origin:
 #: engine/semgrep/rules/injection/xss.yaml (raptor.injection.xss.taint.java)

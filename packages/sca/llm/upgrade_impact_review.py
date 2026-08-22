@@ -26,7 +26,6 @@ from core.llm.scorecard import (
 )
 from core.llm.task_types import TaskType
 
-from ..models import Dependency
 from . import (
     StageResult,
     TaintedString,
@@ -35,6 +34,10 @@ from . import (
 )
 from .prompts import UPGRADE_IMPACT_PREFILTER_SYSTEM, UPGRADE_IMPACT_SYSTEM
 from .schemas import UpgradeImpactPrefilter, UpgradeImpactVerdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..models import Dependency
 
 logger = logging.getLogger(__name__)
 

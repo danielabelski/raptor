@@ -39,9 +39,12 @@ Semantic delta from the prior in-module implementation:
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def atomic_write_text(

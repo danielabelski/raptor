@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

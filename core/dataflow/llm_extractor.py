@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 from collections.abc import Callable, Sequence
 
 from core.dataflow.sanitizer_evidence import (
@@ -40,6 +39,10 @@ from core.security.prompt_envelope import (
     UntrustedBlock,
     build_prompt,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # ---------------------------------------------------------------------

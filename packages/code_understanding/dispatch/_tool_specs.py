@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from core.llm.tool_use import ToolDef
 
-from packages.code_understanding.dispatch.tools import SandboxedTools
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.code_understanding.dispatch.tools import SandboxedTools
 
 
 READ_FILE_DESCRIPTION = (

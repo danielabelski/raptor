@@ -16,10 +16,12 @@ Usage::
 from __future__ import annotations
 
 import uuid
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from .availability import z3
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def track(

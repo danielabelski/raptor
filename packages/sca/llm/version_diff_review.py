@@ -24,13 +24,11 @@ import json
 import logging
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.http import HttpClient
 from core.llm.task_types import TaskType
 from core.tar import extract_files_from_tar
 
-from ..models import Dependency
 from . import (
     StageResult,
     TaintedString,
@@ -40,6 +38,10 @@ from . import (
 from .exemplars import exfil_destinations_block
 from .prompts import VERSION_DIFF_SYSTEM
 from .schemas import VersionDiffVerdict
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
+    from ..models import Dependency
 
 logger = logging.getLogger(__name__)
 

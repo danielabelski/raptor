@@ -41,8 +41,11 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
 
 logger = logging.getLogger(__name__)
 

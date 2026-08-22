@@ -34,7 +34,6 @@ import logging
 import re
 import time
 from collections import OrderedDict, defaultdict
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +41,7 @@ from .prompt_defence import sanitise_for_prompt
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from tree_sitter import Node
 
 logger = logging.getLogger(__name__)

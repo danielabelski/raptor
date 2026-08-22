@@ -28,10 +28,12 @@ holds the sentinel" so the negative entry serves correctly.
 from __future__ import annotations
 
 import logging
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
 
 from core.json import JsonCache, MISSING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

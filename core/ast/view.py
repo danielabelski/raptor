@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from collections.abc import Callable
 
 from core.ast.model import FunctionView, Return, SCHEMA_VERSION
 from core.inventory.call_graph import (
@@ -54,6 +53,10 @@ from core.inventory.call_graph import (
 )
 from core.inventory.extractors import extract_functions
 from core.inventory.languages import detect_language
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # ---------------------------------------------------------------------------

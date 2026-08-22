@@ -7,10 +7,12 @@ high-bit-set values as two's-complement negatives when ``signed=True``.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .availability import z3
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 def bv_to_int(raw: int, width: int, signed: bool) -> int:

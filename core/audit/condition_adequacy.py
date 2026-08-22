@@ -17,9 +17,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from .condition_extraction import GuardCondition, SinkGuard
+
+if TYPE_CHECKING:
+    from .condition_extraction import GuardCondition, SinkGuard
 
 # ---------------------------------------------------------------------------
 # Adequacy verdict

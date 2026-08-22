@@ -12,10 +12,13 @@ even if the report write fails (out-of-disk, permission, etc.).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
-from pathlib import Path
 
 from cve_diff.report.markdown import render_flow
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Iterable
 
 
 def write_outcome_patches(

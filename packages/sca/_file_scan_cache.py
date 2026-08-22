@@ -28,10 +28,12 @@ serialise/deserialise as appropriate.
 from __future__ import annotations
 
 import hashlib
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
 
 from core.json import JsonCache, TTL_FOREVER
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def file_sha256(text: str) -> str:

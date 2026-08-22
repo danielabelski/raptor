@@ -30,12 +30,15 @@ from dataclasses import dataclass
 from typing import (
     Any,
     TypeVar,
+TYPE_CHECKING,
 )
-from collections.abc import Iterable, Mapping
 
 from core.dataflow.known_safe_calls import (
     all_entries,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
 
 
 N = TypeVar("N")

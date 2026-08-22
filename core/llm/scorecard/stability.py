@@ -18,11 +18,13 @@ the newest completed agentic run with the same target path.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

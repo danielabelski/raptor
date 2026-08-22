@@ -18,9 +18,12 @@ This shim preserves the package-local import surface
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from core.container.proc import RunOutcome, run_cli
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = ["RunOutcome", "run_with_timeout"]
 

@@ -20,14 +20,11 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.binary import CapabilityFingerprint
 from core.cve import EpssClient, KevClient
-from core.http import HttpClient
 from core.json import JsonCache
 from core.progress import HackerProgressBar
 
@@ -49,6 +46,11 @@ from .report import render_markdown_report, write_markdown_report
 from .sarif import write_sarif
 from .sbom import write_sbom_json
 from .supply_chain import evaluate as evaluate_supply_chain
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
+    from core.binary import CapabilityFingerprint
+    from collections.abc import Iterable, Sequence
 
 try:                                       # pragma: no cover — env-dependent
     from core.coverage.record import write_record as _coverage_write_record

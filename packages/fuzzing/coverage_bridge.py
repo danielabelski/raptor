@@ -31,11 +31,13 @@ import re
 import subprocess
 import time
 from datetime import datetime, timezone
-from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.sandbox import SandboxSetupError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 

@@ -27,13 +27,16 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
-from collections.abc import Sequence
 
 from .suppressions import (
     SUPPRESS_FILENAME,
     SuppressionEntry,
     load,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def main(argv: Sequence[str]) -> int:

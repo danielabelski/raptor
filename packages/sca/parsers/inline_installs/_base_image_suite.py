@@ -20,7 +20,10 @@ untouched.
 from __future__ import annotations
 
 
-from core.dockerfile.parser import Instruction
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dockerfile.parser import Instruction
 
 # Debian release codenames (recent + current + announced) and the suite
 # aliases madison accepts.

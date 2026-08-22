@@ -30,8 +30,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

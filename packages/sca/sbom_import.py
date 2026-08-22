@@ -41,9 +41,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 
 from .models import Confidence, Dependency, PinStyle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

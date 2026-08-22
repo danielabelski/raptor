@@ -14,12 +14,14 @@ calls needs, and the future ``core.treesitter`` lift would move
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 # Re-exported so ``core.ast`` consumers don't have to know it lives in
 # inventory. When the future ``core.treesitter`` lift happens, this
 # import moves and ``core.ast`` callers are unaffected.
-from core.inventory.call_graph import CallSite
+
+if TYPE_CHECKING:
+    from core.inventory.call_graph import CallSite
 
 
 SCHEMA_VERSION = 1

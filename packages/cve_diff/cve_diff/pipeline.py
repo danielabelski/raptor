@@ -26,10 +26,9 @@ Failure modes surface as typed exceptions (``DiscoveryError``,
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.http import HttpError as _HttpError
 from cve_diff.acquisition.layers import CascadingRepoAcquirer
@@ -50,6 +49,9 @@ from cve_diff.diffing.commit_resolver import CommitResolver
 from cve_diff.diffing.extract_via_api import extract_via_api
 from cve_diff.diffing.extractor import extract_diff
 from cve_diff.infra import disk_budget
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Maximum number of post-submit retries (i.e. extra agent runs after
 # stages 2-5 fail on the agent's first pick). One retry = two total

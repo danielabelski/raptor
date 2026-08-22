@@ -21,13 +21,16 @@ the envelope's separation guarantee.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 
-from core.dataflow.sanitizer_evidence import (
-    CandidateValidator,
-    SanitizerEvidence,
-    StepAnnotation,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dataflow.sanitizer_evidence import (
+        CandidateValidator,
+        SanitizerEvidence,
+        StepAnnotation,
+    )
+    from collections.abc import Iterable
 
 
 def render_evidence_for_prompt(evidence: SanitizerEvidence) -> str:

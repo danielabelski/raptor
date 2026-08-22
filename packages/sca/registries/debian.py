@@ -33,14 +33,16 @@ from __future__ import annotations
 import functools
 import logging
 import urllib.parse
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import JsonCache, MISSING
-from core.http import HttpClient
 
 from ._negative_cache import log_fetch_failure
 
 from ..versions.debian import compare as _debian_compare
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
 
 logger = logging.getLogger(__name__)
 

@@ -35,8 +35,11 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import (
     Any,
+TYPE_CHECKING,
 )
-from collections.abc import Mapping
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 # A reaching-def pair is (symbol, defining_node). Using a flat set

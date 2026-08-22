@@ -19,11 +19,14 @@ Also handles legacy/custom list format:
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from core.sandbox.observe_profile import ConnectTarget, ObserveProfile
 
 from . import parse_events
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = ["events_to_observe_profile"]
 

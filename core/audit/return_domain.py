@@ -40,10 +40,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
     from tree_sitter import Node
 
 logger = logging.getLogger(__name__)

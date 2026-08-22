@@ -38,8 +38,7 @@ import logging
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 # ``_qualified_from_demangled`` / ``_find_arglist_open`` /
 # ``_METHOD_TRAILING_QUALS`` live in ``binary_oracle`` so the classifier
@@ -55,6 +54,9 @@ from core.inventory.binary_oracle_corpora._sandbox_exec import (
     run_build_step,
     run_tool,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

@@ -9,13 +9,16 @@ Depends on packages.frida.evidence (PR #1) for discovery.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from core.logging import get_logger
 from core.sandbox.observe_context_merge import merge_observation_into_context_map
 
 from .evidence import discover_evidence
 from .observe_adapter import events_to_observe_profile
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = get_logger("frida.context_bridge")
 

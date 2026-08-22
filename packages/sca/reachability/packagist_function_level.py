@@ -28,11 +28,13 @@ returns UNCERTAIN. Direct static class/method calls work cleanly.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, Reachability
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

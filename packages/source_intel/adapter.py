@@ -29,9 +29,8 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.dataflow.finding import Finding
 from core.dataflow.validator import ValidatorVerdict
 from packages.source_intel.analyze import (
     GRADE_DOMINATES,
@@ -50,6 +49,9 @@ from packages.source_intel.analyze import (
     analyze,
 )
 from packages.source_intel.cache import SourceIntelCache
+
+if TYPE_CHECKING:
+    from core.dataflow.finding import Finding
 
 logger = logging.getLogger(__name__)
 

@@ -42,8 +42,11 @@ import json
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _USAGE_EX = 64       # EX_USAGE — bad argv
 _SOFTWARE_EX = 70    # EX_SOFTWARE — observe didn't engage

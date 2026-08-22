@@ -25,7 +25,6 @@ import sqlite3
 import stat
 import subprocess
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +41,10 @@ from core.git.clone import (
 # old name so other modules (and tests that import it via cvefix_walk)
 # keep working without churn.
 from packages.codeql.tunables import CodeQLTunables
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 DEFAULT_CODEQL_BIN = "codeql"
 

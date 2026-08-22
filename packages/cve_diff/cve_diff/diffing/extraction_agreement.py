@@ -24,8 +24,11 @@ hits, the API source is downweighted rather than treated as an outlier.
 from __future__ import annotations
 
 from cve_diff.core.exceptions import AnalysisError
-from cve_diff.core.models import DiffBundle, RepoRef
 from cve_diff.diffing.extract_via_gitlab_api import extract_for_agreement
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cve_diff.core.models import DiffBundle, RepoRef
 
 # Pairwise thresholds: clone vs API byte counts are usually within a
 # few percent (mostly whitespace / line-ending differences in how each

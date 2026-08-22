@@ -32,11 +32,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

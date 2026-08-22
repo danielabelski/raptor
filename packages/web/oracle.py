@@ -37,11 +37,13 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.logging import get_logger
-from packages.web.client import WebClient
 from packages.web.markers import marker_present
+
+if TYPE_CHECKING:
+    from packages.web.client import WebClient
 
 logger = get_logger()
 

@@ -36,9 +36,12 @@ from __future__ import annotations
 
 import datetime
 from copy import deepcopy
-from collections.abc import Iterable
 
-from .observe_profile import ObserveProfile
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .observe_profile import ObserveProfile
+    from collections.abc import Iterable
 
 
 # Top-level key under which the runtime observation lands. Pinned by

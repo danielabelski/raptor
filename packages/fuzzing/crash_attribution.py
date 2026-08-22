@@ -32,8 +32,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from packages.fuzzing.crash_collector import Crash
 from packages.fuzzing.smt_seed import MANIFEST_NAME, SEED_DIR_NAME
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.fuzzing.crash_collector import Crash
 
 logger = logging.getLogger(__name__)
 

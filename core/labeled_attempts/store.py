@@ -38,11 +38,14 @@ import contextlib
 import json
 import os
 import secrets
-from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
 from .types import LabeledAttempt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 __all__ = [
     "bundled_corpus_path",

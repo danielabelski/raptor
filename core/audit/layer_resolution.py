@@ -27,10 +27,12 @@ import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .evidence_grade import Confidence
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

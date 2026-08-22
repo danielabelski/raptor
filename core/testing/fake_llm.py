@@ -13,11 +13,13 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.client import LLMClient
 from core.llm.config import LLMConfig, ModelConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class FakeStructuredProvider:

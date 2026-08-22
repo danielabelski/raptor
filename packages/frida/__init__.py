@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
-from typing import Any
-from collections.abc import Iterator
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 __all__ = ["available", "parse_events"]
 

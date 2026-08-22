@@ -27,10 +27,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from collections.abc import Iterator
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
 from core.witness.types import Witness, compute_bytes_hash
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 logger = logging.getLogger(__name__)

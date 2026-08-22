@@ -17,10 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
 from core.llm.tool_use import (
     CacheControl,
@@ -34,6 +32,10 @@ from core.llm.tool_use import (
 from packages.code_understanding.dispatch._tool_specs import build_shared_tools
 from packages.code_understanding.dispatch.tools import SandboxedTools
 from packages.code_understanding.prompts import HUNT_SYSTEM_PROMPT
+
+if TYPE_CHECKING:
+    from core.llm.config import ModelConfig
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

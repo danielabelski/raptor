@@ -20,10 +20,12 @@ import ast
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from .prompt_defence import sanitise_for_prompt
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

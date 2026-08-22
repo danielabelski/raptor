@@ -29,9 +29,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import Path
 
 from . import ResolverResult, _check_tool, _run
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

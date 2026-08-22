@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
-from core.analysis.binary_oracle import Classification
+
+if TYPE_CHECKING:
+    from core.analysis.binary_oracle import Classification
 
 FIXTURE_DIR = (Path(__file__).resolve().parents[2] / "analysis" / "tests"
                / "fixtures" / "binary_oracle")

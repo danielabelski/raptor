@@ -35,14 +35,16 @@ import os
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .versions import VersionError
 from .versions import compare as version_compare
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 

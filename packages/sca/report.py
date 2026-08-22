@@ -39,9 +39,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Sequence
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlparse
 
 from core.security.log_sanitisation import escape_nonprintable
@@ -56,6 +54,11 @@ from .models import (
     SupplyChainFinding,
     VulnFinding,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Sequence
 
 # Per-finding detail strings can interpolate genuinely-untrusted
 # content — supply-chain findings include ``script_body`` from npm

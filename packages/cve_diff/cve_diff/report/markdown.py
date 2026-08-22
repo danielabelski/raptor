@@ -7,8 +7,11 @@ in later phases.
 
 from __future__ import annotations
 
-from cve_diff.analysis.analyzer import RootCause
-from cve_diff.core.models import DiffBundle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cve_diff.core.models import DiffBundle
+    from cve_diff.analysis.analyzer import RootCause
 
 DIFF_BODY_LIMIT_BYTES = 256 * 1024
 

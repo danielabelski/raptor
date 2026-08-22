@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from ..models import Reachability
+
+if TYPE_CHECKING:
+    from ..models import Reachability
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

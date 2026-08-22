@@ -33,7 +33,10 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 # Convention from ``core/llm/scorecard/consensus.py:135``. Reused so the

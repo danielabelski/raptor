@@ -14,7 +14,10 @@ from core.llm.model_data import (
     price_for,
 )
 
-from .hints import ModelHint
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .hints import ModelHint
 
 
 class ContextRoutingError(RuntimeError):

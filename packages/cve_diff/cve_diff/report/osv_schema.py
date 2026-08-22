@@ -11,10 +11,12 @@ Spec: https://ossf.github.io/osv-schema/
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from cve_diff.analysis.analyzer import RootCause
-from cve_diff.core.models import DiffBundle
+
+if TYPE_CHECKING:
+    from cve_diff.core.models import DiffBundle
+    from cve_diff.analysis.analyzer import RootCause
 
 OSV_SCHEMA_VERSION = "1.6.0"
 

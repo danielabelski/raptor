@@ -7,13 +7,15 @@ with branches shown as splits and sink nodes styled distinctly.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import load_json
 
 from .sanitize import sanitize as _sanitize
 from .sanitize import sanitize_id as _sid
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _step_label(step: dict[str, Any]) -> str:

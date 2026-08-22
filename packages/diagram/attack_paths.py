@@ -7,12 +7,14 @@ proximity score, and any blockers. WIP: we may want to add more details, e.g. sh
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import load_json
 
 from .sanitize import sanitize as _sanitize
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _PROXIMITY_LABEL = {
     (0, 1): "Theoretical only",

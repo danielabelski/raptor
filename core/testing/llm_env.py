@@ -31,7 +31,10 @@ core/llm/tests conftest history):
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # The full conventional proxy family. One drifted copy scrubbed only
 # the HTTPS/NO subset, leaving HTTP_PROXY/ALL_PROXY leaks possible.

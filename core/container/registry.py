@@ -19,10 +19,12 @@ import json
 import logging
 import re
 import time
-from typing import Literal
-from collections.abc import Callable
+from typing import Literal, TYPE_CHECKING
 
 from core.container.proc import PROXY_ENV_VARS, run_cli
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

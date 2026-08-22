@@ -16,8 +16,7 @@ evidence tiers.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from core.labeled_attempts.store import write as store_write
@@ -29,6 +28,9 @@ from core.labeled_attempts.types import (
 from core.logging import get_logger
 from core.security.redaction import redact_secrets
 from packages.web.oracle import REFUTED, VERIFIED, VerificationResult
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = get_logger()
 

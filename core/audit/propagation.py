@@ -24,7 +24,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ._util import (
     SAFE_COCCI_RULE_RE,
@@ -32,7 +32,9 @@ from ._util import (
     find_function_lines,
     safe_join,
 )
-from .constraints import Constraint
+
+if TYPE_CHECKING:
+    from .constraints import Constraint
 
 logger = logging.getLogger(__name__)
 

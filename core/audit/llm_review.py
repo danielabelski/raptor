@@ -14,13 +14,15 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .context import format_context_for_prompt, render_pattern_library
 from .orchestrator import OrchestratorConfig, ReviewOutcome, _ContentFilterError
 from .pipeline import ReviewMode
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

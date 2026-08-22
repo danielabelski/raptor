@@ -24,9 +24,11 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from .condition_extraction import SinkGuard
+
+if TYPE_CHECKING:
+    from .condition_extraction import SinkGuard
 
 logger = logging.getLogger(__name__)
 

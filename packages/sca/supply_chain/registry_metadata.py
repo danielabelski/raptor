@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import logging
 import threading as _threading
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

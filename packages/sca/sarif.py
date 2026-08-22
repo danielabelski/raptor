@@ -26,10 +26,12 @@ import json as _json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_output_sanitise import sanitise_string
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
-from collections.abc import Callable
+from typing import Any, TYPE_CHECKING
 
 from core.evidence import EvidenceTier
 
 import logging
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

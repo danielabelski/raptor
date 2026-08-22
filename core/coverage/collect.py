@@ -21,9 +21,11 @@ import struct
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.coverage.store import CoverageStore
+
+if TYPE_CHECKING:
+    from core.coverage.store import CoverageStore
 
 _TIMEOUT = 300
 

@@ -21,17 +21,19 @@ the rule-id-driven SMT profile heuristic falls back to defaults.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.dataflow.finding import Finding, Step
 from core.dataflow.llm_bridge import make_evidence_collector
-from core.dataflow.sanitizer_evidence import CandidateValidator
 from core.dataflow.validator import ValidatorVerdict
 from packages.codeql.dataflow_validator import (
     DataflowPath,
     DataflowStep,
     DataflowValidator,
 )
+
+if TYPE_CHECKING:
+    from core.dataflow.finding import Finding, Step
+    from core.dataflow.sanitizer_evidence import CandidateValidator
 
 
 # packages/codeql/evidence_validator.py → repo root via parents[2].

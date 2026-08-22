@@ -23,10 +23,12 @@ import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ._util import find_function_lines, safe_join
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

@@ -34,7 +34,6 @@ from __future__ import annotations
 import logging
 
 from core.http import HttpClient, HttpError
-from core.json import JsonCache
 from core.oci.client import OciRegistryClient, RegistryError
 from core.oci.image_ref import parse_image_ref
 
@@ -43,6 +42,10 @@ from .github_releases import (
     NoStableVersionsFound,
     UpstreamLookupError,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
 
 logger = logging.getLogger(__name__)
 

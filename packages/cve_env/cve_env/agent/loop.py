@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from cve_env.agent.audit import AuditEntry, AuditStatus
 from cve_env.agent.health_constraints import (
@@ -54,8 +54,10 @@ from cve_env.config import (
 from cve_env.config import (
     get_recovery_gap_turns as _get_recovery_gap_turns,
 )
-from cve_env.models import OutcomeStatus
 from cve_env.tools._smoke import has_functional_smoke
+
+if TYPE_CHECKING:
+    from cve_env.models import OutcomeStatus
 
 # Lifecycle vs active payload check types.
 #

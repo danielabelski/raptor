@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ._util import is_valid_identifier
 from .sweep import SweepResult, _check_path_containment
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

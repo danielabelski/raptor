@@ -5,12 +5,15 @@ SBOM / PR-comment renderers pick them up automatically."""
 from __future__ import annotations
 
 from pathlib import Path
-from collections.abc import Iterable
 
 from packages.sca.models import (
     Confidence, Dependency, PinStyle, SupplyChainFinding,
 )
-from packages.sca.transitive_drop.detector import DropOnBumpFinding
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.sca.transitive_drop.detector import DropOnBumpFinding
+    from collections.abc import Iterable
 
 
 def to_supply_chain_findings(

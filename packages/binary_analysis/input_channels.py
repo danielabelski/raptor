@@ -8,10 +8,12 @@ upgrade that to observed, but still do not invent taint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from core.evidence import BinaryEvidenceRecord, EvidenceTier, make_evidence
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Deliberately broader than core/function_taxonomy: ubiquitous functions
 # like read/fread/open are zero-signal as *sinks* but valid evidence that

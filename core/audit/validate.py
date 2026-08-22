@@ -15,7 +15,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.orchestration.skill_dispatch import (
     MAX_VALIDATE_FINDINGS,
@@ -24,8 +24,10 @@ from core.orchestration.skill_dispatch import (
 )
 from core.schema_constants import CWE_TO_VULN_TYPE, normalise_vuln_type
 
-from .orchestrator import OrchestratorResult, ReviewOutcome
 from .record import append_audit_log
+
+if TYPE_CHECKING:
+    from .orchestrator import OrchestratorResult, ReviewOutcome
 
 logger = logging.getLogger(__name__)
 

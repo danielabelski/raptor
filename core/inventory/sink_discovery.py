@@ -30,9 +30,11 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.inventory.call_graph import FileCallGraph
+
+if TYPE_CHECKING:
+    from core.inventory.call_graph import FileCallGraph
 
 logger = logging.getLogger(__name__)
 

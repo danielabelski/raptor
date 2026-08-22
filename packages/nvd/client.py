@@ -14,16 +14,18 @@ from __future__ import annotations
 import functools
 import os
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import quote
 
 from core.http import HttpError
 from core.http.urllib_backend import UrllibClient
 from core.json.cache import JsonCache
 from core.run.retry import RetryPolicy, retry_call
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 

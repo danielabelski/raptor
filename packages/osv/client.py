@@ -24,14 +24,16 @@ flow through, misses return ``None``/empty.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.http import HttpClient, HttpError
-from core.json import JsonCache
 
 from .parser import parse_record
-from .types import OsvRecord
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
+    from .types import OsvRecord
+    from collections.abc import Sequence
 
 log = logging.getLogger(__name__)
 

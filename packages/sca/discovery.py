@@ -16,9 +16,12 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from collections.abc import Iterator
 
 from .models import Manifest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 

@@ -27,10 +27,13 @@ on top of any CVE-tagged finding without depending on SCA-specific code.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 
-from core.json import JsonCache
 from core.http import HttpClient, HttpError
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

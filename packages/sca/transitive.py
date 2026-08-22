@@ -40,14 +40,17 @@ import logging
 import re
 import tempfile
 import threading
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.http import HttpClient
-from core.json import JsonCache
 
 from .models import Dependency, Manifest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
+    from core.http import HttpClient
+    from collections.abc import Callable, Sequence
 
 logger = logging.getLogger(__name__)
 

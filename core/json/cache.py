@@ -43,10 +43,9 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 # ``MISSING`` sentinel lives in ``core.sentinels`` (sibling to
 # ``core.json``) so test suites that delete ``core.json.*`` from
@@ -56,6 +55,9 @@ from typing import Any
 from core.sentinels import MISSING
 
 from .utils import _reject_non_finite
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

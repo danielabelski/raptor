@@ -35,8 +35,10 @@ import datetime as _dt
 import re
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _HISTORY_WINDOW: int = 4
 """Turn-events of preceding context stored per refusal."""

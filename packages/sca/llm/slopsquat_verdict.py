@@ -27,10 +27,9 @@ attacker-controlled package metadata.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.task_types import TaskType
-from ..models import Dependency
 from . import (
     StageResult,
     TaintedString,
@@ -39,6 +38,9 @@ from . import (
 )
 from .prompts import SLOPSQUAT_VERDICT_SYSTEM
 from .schemas import SlopsquatVerdict
+
+if TYPE_CHECKING:
+    from ..models import Dependency
 
 logger = logging.getLogger(__name__)
 

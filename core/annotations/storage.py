@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -59,6 +58,10 @@ from .provenance import (
     TTY_KEY,
     valid_tty_value,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 

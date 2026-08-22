@@ -32,8 +32,10 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Security: redact obvious secrets before persisting tool I/O to the audit
 # JSONL. The agent has a built-in host Bash, so a command line could carry a

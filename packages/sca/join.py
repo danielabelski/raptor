@@ -40,9 +40,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from collections.abc import Iterable
 
 from .models import Confidence, Dependency
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Cap on ancestor walks. Real repos have tens of levels at most; a cap
 # stops the join from doing unbounded work on adversarial paths.

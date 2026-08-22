@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .sink_vocab import HOOK_PAYLOAD_EXTRA_SINKS, SHARED_SUPPLY_CHAIN_SINKS
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

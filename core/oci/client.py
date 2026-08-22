@@ -31,17 +31,19 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.http import HttpClient
 
 from .auth import (
     lookup_credentials,
     parse_www_authenticate,
 )
-from .image_ref import ImageRef
+
+if TYPE_CHECKING:
+    from .image_ref import ImageRef
+    from core.http import HttpClient
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 

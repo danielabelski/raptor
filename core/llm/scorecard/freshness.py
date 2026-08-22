@@ -21,7 +21,10 @@ See the design memo.
 from __future__ import annotations
 
 from datetime import datetime
-from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # A very large age (days) assigned to an unparseable bucket key so it decays to
 # ~0 under any positive half-life rather than raising. Defensive: a hand-edited

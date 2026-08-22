@@ -29,12 +29,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from .findings import severity_rank
 from .models import REACHABILITY_LABELS, REACHABILITY_ORDER
 from .sarif import write_sarif
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

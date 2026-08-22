@@ -22,7 +22,10 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class RateLimitTimeout(TimeoutError):

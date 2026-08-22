@@ -43,11 +43,14 @@ import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterable
 
 from .._test_paths import is_test_path as _shared_is_test_path
 from ..discovery import EXCLUDED_DIR_NAMES
 from ..models import Confidence, Dependency, Manifest, PinStyle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

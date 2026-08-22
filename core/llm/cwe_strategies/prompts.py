@@ -28,9 +28,12 @@ already rejected the most pathological structural inputs.)
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 
-from .models import Exemplar, Strategy
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import Exemplar, Strategy
+    from collections.abc import Iterable
 
 
 # Default soft cap on rendered output. Picked-strategies × addenda +

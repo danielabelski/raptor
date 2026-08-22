@@ -30,9 +30,8 @@ import logging
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .update import (
     UpgradeChange,
@@ -46,6 +45,9 @@ from .update import (
 )
 from .versions import VersionError
 from .versions import compare as version_compare
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

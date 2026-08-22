@@ -32,8 +32,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from core.analysis.binary_oracle import (
     _qualified_from_demangled,
@@ -50,6 +49,9 @@ from .snappy import (
     _LLVM_PROFDATA_CANDIDATES,
     _resolve,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

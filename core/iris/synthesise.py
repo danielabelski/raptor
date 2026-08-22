@@ -18,10 +18,8 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.evidence import EvidenceTier
 
@@ -32,6 +30,10 @@ from .assumptions import (
     assumption_from_dict,
 )
 from .specs import CandidateFunction, TaintSpec, parse_spec_response
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

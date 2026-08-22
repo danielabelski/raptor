@@ -11,12 +11,14 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_framing import with_audit_framing
 
 from .orchestrator import OrchestratorConfig, ReviewOutcome
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

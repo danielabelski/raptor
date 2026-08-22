@@ -25,10 +25,12 @@ JSON entries can later be re-parsed by the same adapter without loss.
 from __future__ import annotations
 
 import hashlib
-from typing import Any
-from collections.abc import Mapping
+from typing import Any, TYPE_CHECKING
 
 from core.dataflow.finding import Finding, Step
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 PRODUCER = "codeql"

@@ -23,14 +23,16 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.tool_use.types import Message, TextBlock, ToolCall, ToolResult
 
 from .types import TrajectoryRecord, TrajectoryStep
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _log = logging.getLogger(__name__)
 

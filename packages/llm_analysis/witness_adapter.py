@@ -29,11 +29,14 @@ Adapter lives in ``packages/llm_analysis/`` rather than
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from core.hash import sha256_file
 from core.witness import Witness, WitnessOutcome, WitnessSource
 from core.witness.types import compute_bytes_hash
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def witness_from_exploit(

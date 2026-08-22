@@ -29,9 +29,12 @@ from __future__ import annotations
 import logging
 from collections import defaultdict, deque
 
-from core.inventory.call_graph import FileCallGraph
 
 from .assumptions import BypassFinding, SafetyAssumption
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.inventory.call_graph import FileCallGraph
 
 logger = logging.getLogger(__name__)
 

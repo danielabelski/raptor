@@ -32,10 +32,13 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
-from collections.abc import Iterable
 
 from core.http import HttpClient, HttpError
 from core.json import TTL_FOREVER, JsonCache
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

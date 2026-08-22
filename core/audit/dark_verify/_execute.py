@@ -16,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from core.paths import confine
@@ -44,6 +43,10 @@ from ._types import (
     DarkWitnessSpec,
     language_for_file,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

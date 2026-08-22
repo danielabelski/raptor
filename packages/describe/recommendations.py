@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from packages.describe.target_shape import TargetShape
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.describe.target_shape import TargetShape
 
 
 @dataclass(frozen=True)

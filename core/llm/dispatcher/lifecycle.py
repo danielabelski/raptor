@@ -18,10 +18,13 @@ import atexit
 import contextlib
 import os
 from pathlib import Path
-from collections.abc import Iterator
 
 from .auth import CredentialStore, seed_from_config
 from .server import LLMDispatcher
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 _AUDIT_FILENAME = "audit-llm-dispatcher.jsonl"

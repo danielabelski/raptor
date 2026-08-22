@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import logging
 
-from core.json import JsonCache
 from core.http import HttpClient, HttpError
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
 
 logger = logging.getLogger(__name__)
 

@@ -20,9 +20,12 @@ import logging
 import os
 import threading
 from pathlib import Path
-from collections.abc import Iterable
 
 from ..discovery import EXCLUDED_DIR_NAMES
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

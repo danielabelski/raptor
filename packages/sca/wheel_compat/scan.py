@@ -22,8 +22,6 @@ silently no-ops.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from collections.abc import Iterable
 
 from packages.sca.models import (
     Confidence, Dependency, HygieneFinding,
@@ -34,6 +32,11 @@ from packages.sca.platform_matrix import (
 from packages.sca.wheel_compat.compat import (
     check_compat, find_compatible_version, wheel_matrix_for_version,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

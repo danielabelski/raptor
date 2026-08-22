@@ -17,7 +17,6 @@ LLM-found installs carry ``parser_confidence="low"`` and
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from core.llm.task_types import TaskType
 from ..models import Confidence, Dependency, PinStyle
@@ -29,6 +28,10 @@ from . import (
 )
 from .prompts import INLINE_INSTALL_SYSTEM
 from .schemas import InlineInstallVerdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

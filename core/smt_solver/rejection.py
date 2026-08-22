@@ -30,10 +30,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .availability import z3
-from .config import BVProfile
+
+if TYPE_CHECKING:
+    from .config import BVProfile
 
 
 class RejectionKind(str, Enum):

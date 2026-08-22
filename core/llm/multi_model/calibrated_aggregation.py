@@ -25,7 +25,6 @@ Design constraints:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from collections.abc import Mapping
 
 from core.llm.multi_model.dawid_skene import (
     FindingPosterior,
@@ -37,6 +36,10 @@ from core.llm.multi_model.panel_log import (
     _decision_class_for,
 )
 from core.llm.scorecard.priors import BetaPrior, uniform_prior
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 # Aggregation method tag emitted on each finding. Surfaces in the

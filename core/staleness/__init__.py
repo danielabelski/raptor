@@ -27,12 +27,15 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
-from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from core.source.lines import slice_lines as _slice_lines
 from core.source.strip import strip_comments as _strip_comments
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Sequence
 
 __all__ = [
     "CheckItem",

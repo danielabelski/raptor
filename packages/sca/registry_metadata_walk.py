@@ -42,12 +42,15 @@ import urllib.parse
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 
 from core.http import HttpClient, HttpError
 from core.json import TTL_FOREVER, JsonCache
 
 from .models import Confidence, Dependency, PinStyle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

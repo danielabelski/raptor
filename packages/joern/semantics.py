@@ -30,11 +30,13 @@ vocabulary boundary, mirroring the DomainVocabulary receipts gate.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .runner import _escape_scala_string, _validate_substitution_value
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 

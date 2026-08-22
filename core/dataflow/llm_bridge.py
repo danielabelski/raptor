@@ -25,21 +25,23 @@ extraction is a structured-output classification problem (per-function
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.dataflow.adapters.codeql import from_dataflow_path
 from core.dataflow.evidence_collector import (
     DEFAULT_MAX_FILES,
     collect_sanitizer_evidence,
 )
-from core.dataflow.llm_extractor import ExtractorFn
-from core.dataflow.sanitizer_evidence import (
-    CandidateValidator,
-    SanitizerEvidence,
-)
 from core.llm.task_types import TaskType
-from core.security.prompt_envelope import PromptBundle
+
+if TYPE_CHECKING:
+    from core.security.prompt_envelope import PromptBundle
+    from core.dataflow.sanitizer_evidence import (
+        CandidateValidator,
+        SanitizerEvidence,
+    )
+    from core.dataflow.llm_extractor import ExtractorFn
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

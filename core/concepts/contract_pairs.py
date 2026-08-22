@@ -36,10 +36,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import combinations
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 from core.audit.prompt_defence import sanitise_for_prompt
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 # ── Data model ────────────────────────────────────────────────────────

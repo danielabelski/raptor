@@ -30,7 +30,6 @@ import sqlite3
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Sequence
 from pathlib import Path
 
 from core.config import RaptorConfig
@@ -47,6 +46,10 @@ from core.dataflow.barrier_synth import (
 from core.dataflow.cvefix_loader import CveFixPair
 from core.git import safe_git_readonly_command
 from core.paths import strip_file_uri
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Tier 0 (SMT) is the free first-pass backend. Imported defensively so a
 # missing substrate / packaging glitch can't break the existing Tier 2

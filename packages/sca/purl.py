@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
 
 from .ecosystems import canonicalise, known_list
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def main(argv: Sequence[str]) -> int:

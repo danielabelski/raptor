@@ -32,16 +32,18 @@ three registries uniformly."""
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.http import HttpClient, HttpError
-from core.json import JsonCache
 
 from ._version_filter import highest_stable
 from .github_releases import (
     NoStableVersionsFound,
     UpstreamLookupError,
 )
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
 
 logger = logging.getLogger(__name__)
 

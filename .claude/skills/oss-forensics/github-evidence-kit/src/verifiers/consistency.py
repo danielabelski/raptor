@@ -3,13 +3,16 @@ Verification Service - Verify evidence against original sources.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 
 from ..clients.gharchive import GHArchiveClient
 from ..clients.github import GitHubClient
 from ..schema.common import EvidenceSource, VerificationResult
 from ..schema.events import Event
 from ..schema.observations import Observation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 
 class ConsistencyVerifier:

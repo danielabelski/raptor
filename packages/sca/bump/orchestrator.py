@@ -29,19 +29,22 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 
-from ..models import SupplyChainFinding, VulnFinding
 from ..parsers.inline_installs._arg_version_pins import (
     _ARG_RE,
     _BUILTIN_ARG_MAP,
 )
-from ..registries.npm import NpmClient
-from ..registries.pypi import PyPIClient
 from ..rewriters import RewriteEdit, RewriteResult, rewrite
 from .evaluator import evaluate_bump_supply_chain
 from .upstream_map import UpstreamSource, lookup_upstream
 from .vuln_delta import evaluate_bump_vulns
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..registries.pypi import PyPIClient
+    from ..registries.npm import NpmClient
+    from ..models import SupplyChainFinding, VulnFinding
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

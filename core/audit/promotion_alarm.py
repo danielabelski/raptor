@@ -33,12 +33,14 @@ review outcome.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import append_jsonl, load_jsonl
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

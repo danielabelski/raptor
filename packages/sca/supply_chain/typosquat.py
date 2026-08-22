@@ -27,9 +27,12 @@ import json as _json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from collections.abc import Iterable
 
 from ..models import Confidence, Dependency
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

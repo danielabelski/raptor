@@ -14,20 +14,23 @@ emits both formats when ``--html`` is passed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime, timezone
 from html import escape
-from pathlib import Path
 from urllib.parse import urlparse
 
 from core.security.log_sanitisation import escape_nonprintable
 
 from .findings import severity_rank
-from .models import (
-    HygieneFinding,
-    SupplyChainFinding,
-    VulnFinding,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import (
+        HygieneFinding,
+        SupplyChainFinding,
+        VulnFinding,
+    )
+    from pathlib import Path
+    from collections.abc import Sequence
 
 _SEV_LABEL = {
     "critical": "Critical", "high": "High", "medium": "Medium",

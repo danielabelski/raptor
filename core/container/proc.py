@@ -32,8 +32,10 @@ import queue
 import subprocess
 import threading
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Extra wall, beyond ``timeout``, granted to ``subprocess.run``'s own
 # post-SIGKILL cleanup before the runner abandons the thread.

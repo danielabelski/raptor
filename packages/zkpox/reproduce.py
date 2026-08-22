@@ -40,7 +40,10 @@ from pathlib import Path
 
 from core.sandbox import SandboxSetupError
 from core.witness.types import WitnessOutcome
-from packages.zkpox.bundle import ZKPoXBundle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.zkpox.bundle import ZKPoXBundle
 
 logger = logging.getLogger(__name__)
 

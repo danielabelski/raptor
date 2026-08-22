@@ -23,14 +23,17 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
 
-from packages.sca.models import (
-    Dependency,
-    SupplyChainFinding,
-    VulnFinding,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.sca.models import (
+        Dependency,
+        SupplyChainFinding,
+        VulnFinding,
+    )
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 

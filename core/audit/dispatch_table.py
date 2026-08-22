@@ -18,10 +18,12 @@ lifecycle classification.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _OPS_TABLE_PATTERNS = [
     # C kernel: struct file_operations, proto_ops, etc.

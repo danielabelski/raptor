@@ -29,12 +29,10 @@ import tempfile
 import threading as _threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.analysis.reachability_gates import (
     GUARD_UNAVAILABLE,
@@ -205,6 +203,10 @@ from .sweep import (
 )
 from .topo_order import topological_sort as _topological_sort
 from .triage import TriageBucket, classify_all, format_triage_summary
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

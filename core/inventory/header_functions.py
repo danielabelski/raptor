@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _HEADER_EXTENSIONS = frozenset({".h", ".hh", ".hpp", ".hxx"})
 

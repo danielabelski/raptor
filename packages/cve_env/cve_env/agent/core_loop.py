@@ -30,8 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
@@ -74,6 +73,9 @@ from cve_env.config import (
     stage_for_tool,
 )
 from cve_env.models import CveRecord, HostInfo, Outcome
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

@@ -14,11 +14,13 @@ are confirmed vs theoretical, or adding more info about blockers.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.json import load_json
 from .sanitize import sanitize as _sanitize, sanitize_id as _sid
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 _PROXIMITY_LABEL = {

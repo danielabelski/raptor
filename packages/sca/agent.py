@@ -37,8 +37,11 @@ import logging
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _REPO = Path(__file__).resolve().parents[2]  # raptor-sca repo root
 sys.path.insert(0, str(_REPO))

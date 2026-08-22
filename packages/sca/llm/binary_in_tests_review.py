@@ -13,10 +13,8 @@ LLM verdict does not suppress the mechanical ``binary_in_tests`` finding.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from core.llm.task_types import TaskType
-from ..models import SupplyChainFinding
 from . import (
     StageResult,
     TaintedString,
@@ -25,6 +23,11 @@ from . import (
 )
 from .prompts import BINARY_IN_TESTS_SYSTEM
 from .schemas import BinaryInTestsVerdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..models import SupplyChainFinding
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

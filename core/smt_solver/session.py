@@ -7,10 +7,12 @@ per-call via ``new_solver(timeout_ms=...)``.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any
-from collections.abc import Iterator
+from typing import Any, TYPE_CHECKING
 
 from .availability import z3
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 DEFAULT_TIMEOUT_MS = 5000
 

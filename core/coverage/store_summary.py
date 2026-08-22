@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable
+from typing import Any, TYPE_CHECKING
 
 from .registry import DEPTH_SCANNED, category_of, depth_of
 from .store import CoverageStore, iter_inventory_functions
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _CATEGORIES = ("static", "llm", "runtime")
 # Kinds an LLM reviews unit-by-unit. The LLM-review gap is scoped to these:

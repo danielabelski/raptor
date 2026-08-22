@@ -20,11 +20,14 @@ for everything else.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from core.atomic_fs import write_text_atomically
 
 from .types import FailureMode, LabeledAttempt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = ["set_failure_mode"]
 

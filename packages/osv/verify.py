@@ -18,9 +18,12 @@ from core.url_patterns import (
     normalize_slug,
 )
 
-from .client import OsvClient
-from .types import OsvRecord
 from .verdicts import OracleVerdict, Verdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .types import OsvRecord
+    from .client import OsvClient
 
 
 def _extract_pairs(

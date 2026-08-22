@@ -13,8 +13,7 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .journal import (
     ReviewJournalEntry,
@@ -23,6 +22,9 @@ from .journal import (
     flush_journal,
     now_iso,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

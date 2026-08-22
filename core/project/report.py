@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.security.prompt_output_sanitise import sanitise_code, sanitise_string
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _CONFIRMED_STATUSES = {
     "exploitable",

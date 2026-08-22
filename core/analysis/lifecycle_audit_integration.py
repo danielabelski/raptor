@@ -9,12 +9,14 @@ covered by the field's write-site preconditions.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .lifecycle_checker import check_coverage
 from .lifecycle_context_map import load_state_fields
-from .lifecycle_model import LifecycleFinding
+
+if TYPE_CHECKING:
+    from .lifecycle_model import LifecycleFinding
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

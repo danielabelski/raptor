@@ -8,19 +8,21 @@ All classification is deterministic — no LLM calls.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ._util import safe_join
-from .prefilter import PrefilterResult
 from .vendored_detector import (
     KIND_GENERATED,
     VendorVerdict,
     detect_vendored_files,
 )
+
+if TYPE_CHECKING:
+    from .prefilter import PrefilterResult
+    from pathlib import Path
+    from collections.abc import Sequence
 
 
 class TriageBucket(str, Enum):

@@ -18,7 +18,10 @@ empty result so /describe doesn't crash on unusual targets.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # Cap on manifests we parse. /describe should be sub-second on

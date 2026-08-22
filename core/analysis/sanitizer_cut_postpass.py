@@ -42,10 +42,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterable, Mapping
+from typing import Any, TYPE_CHECKING
 
 from core.analysis import threat_model_java as _tm
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 

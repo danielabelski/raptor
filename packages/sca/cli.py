@@ -40,13 +40,16 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
 
 from .pipeline import run_sca
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

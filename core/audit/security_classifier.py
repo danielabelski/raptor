@@ -11,11 +11,13 @@ The classifier adds ``security_impact`` to the outcome's review_result.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.coerce import structured_result
 from core.security.prompt_framing import with_audit_framing
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

@@ -25,12 +25,14 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
 from .requirements import _spec_bounds
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

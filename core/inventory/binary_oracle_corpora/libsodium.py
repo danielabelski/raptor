@@ -22,13 +22,15 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from core.inventory.binary_oracle_corpora._sandbox_exec import (
     run_build_step,
     run_tool,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

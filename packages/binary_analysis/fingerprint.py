@@ -37,8 +37,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.function_taxonomy import (
     ALLOC_FUNCS,
@@ -52,6 +51,9 @@ from core.function_taxonomy import (
     STRING_OVERFLOW_FUNCS,
     TOCTOU_FUNCS,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

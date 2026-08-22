@@ -25,8 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
 # Path setup for direct script execution (`python3 raptor.py binary`
 # spawns this file; `libexec/raptor-binary` imports it with the path
@@ -45,6 +44,9 @@ from packages.binary_analysis.harness import generate_binary_harness
 from packages.binary_analysis.manifest import BinaryManifest
 from packages.binary_analysis.pipeline import map_result_payload
 from packages.binary_analysis.pipeline import analyse_blackbox_binary, append_runtime_evidence_to_run
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _COMMANDS = {
     "investigate",

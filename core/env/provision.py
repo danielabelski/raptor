@@ -25,7 +25,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.container.build import build_image
 from core.container.containers import launch_container
@@ -35,9 +35,11 @@ from core.container.lifecycle import (
     remove_labeled_images,
 )
 from core.env.handle import DockerHandle, RuntimeHandle, SandboxHandle
-from core.env.spec import EnvironmentSpec
 from core.env.store import save_run_spec
 from core.env.verify import VerifyHooks, verify_plan
+
+if TYPE_CHECKING:
+    from core.env.spec import EnvironmentSpec
 
 logger = logging.getLogger(__name__)
 

@@ -18,17 +18,19 @@ and the future Python orchestrator call run_audit_multi_review().
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.llm.multi_model.adapters import BaseVerdictAdapter
 from core.llm.multi_model.dispatch import run_multi_model
-from core.llm.multi_model.types import (
-    CostGate,
-    ModelHandle,
-    MultiModelResult,
-)
+
+if TYPE_CHECKING:
+    from core.llm.multi_model.types import (
+        CostGate,
+        ModelHandle,
+        MultiModelResult,
+    )
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

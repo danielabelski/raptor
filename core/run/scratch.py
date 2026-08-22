@@ -35,8 +35,11 @@ import logging
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator, MutableMapping
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, MutableMapping
 
 logger = logging.getLogger(__name__)
 

@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.analysis.summaries import FunctionSummary, Precondition, TaintRule
 from core.evidence import EvidenceTier
 from core.security.prompt_framing import with_audit_framing
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

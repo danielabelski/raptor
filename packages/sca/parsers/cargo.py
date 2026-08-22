@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 try:
     import tomllib                # Python 3.11+

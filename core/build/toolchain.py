@@ -36,7 +36,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 

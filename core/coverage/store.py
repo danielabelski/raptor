@@ -37,14 +37,16 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from collections.abc import Iterator
+from typing import Any, TYPE_CHECKING
 
 from core.atomic_fs import write_text_atomically
 from core.logging import get_logger as _get_logger
 
 from .registry import category_of
 from .schema import check_version, normalise_loaded_files
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 try:
     import fcntl

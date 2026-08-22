@@ -32,10 +32,13 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 
 from .store import project_pool_path
 from .types import LabeledAttempt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = ["PruneReport", "prune_pool"]
 

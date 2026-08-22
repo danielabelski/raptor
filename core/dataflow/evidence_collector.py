@@ -21,16 +21,19 @@ design is documented at the design memo.
 
 from __future__ import annotations
 
-from pathlib import Path
-from collections.abc import Iterator
 
-from core.dataflow.finding import Finding
 from core.dataflow.llm_extractor import ExtractorFn, extract_from_files
 from core.dataflow.path_annotator import annotate_finding
 from core.dataflow.sanitizer_evidence import (
     CandidateValidator,
     SanitizerEvidence,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dataflow.finding import Finding
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 DEFAULT_MAX_FILES = 5

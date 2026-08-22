@@ -29,13 +29,15 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import quote
 
 from core.http import HttpClient, HttpError
-from core.json import JsonCache
 
 from ._version_filter import highest_stable
+
+if TYPE_CHECKING:
+    from core.json import JsonCache
 
 # ``owner/name`` — exactly one slash, both components restricted to
 # GitHub's own username/repo character set. Slugs are read out of the

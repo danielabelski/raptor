@@ -33,7 +33,6 @@ import os
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +44,10 @@ from core.llm.cc_proxy_hosts import (
 )
 from core.sandbox import run_untrusted_networked
 from core.sandbox.errors import SandboxSetupError as _SandboxSetupError
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 logger = logging.getLogger(__name__)
 

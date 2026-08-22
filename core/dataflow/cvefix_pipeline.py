@@ -22,12 +22,15 @@ import datetime
 import json
 import sys
 from pathlib import Path
-from collections.abc import Iterable, Sequence
 
 from core.dataflow.codeql_augmented_run import DEFAULT_CODEQL_BIN, RunnerFn, analyze
 from core.dataflow.cvefix_corpus_generator import generate_from_sarif, write_corpus
-from core.dataflow.finding import Finding
-from core.dataflow.label import GroundTruth
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.dataflow.label import GroundTruth
+    from core.dataflow.finding import Finding
+    from collections.abc import Iterable, Sequence
 
 
 def generate_corpus_for_pair(

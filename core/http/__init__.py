@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Protocol
-from collections.abc import Iterator, Mapping
+from typing import Any, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 # Default size limits — caps protect parser code paths from decompression
 # bombs and pathological response shapes.

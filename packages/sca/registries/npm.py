@@ -14,10 +14,13 @@ import logging
 import re
 import urllib.parse
 
-from core.http import HttpClient
 from core.json import MISSING, JsonCache
 
 from ._negative_cache import log_fetch_failure
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.http import HttpClient
 
 logger = logging.getLogger(__name__)
 

@@ -30,13 +30,16 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from collections.abc import Sequence
 
 from core.llm.scorecard.scorecard import (
     ALL_EVENT_TYPES,
     EventType,
     ModelScorecard,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 DEFAULT_PATH = Path("out/llm_scorecard.json")

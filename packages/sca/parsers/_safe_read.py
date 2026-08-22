@@ -35,8 +35,11 @@ import contextvars
 import logging
 import os
 import stat as _stat
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 

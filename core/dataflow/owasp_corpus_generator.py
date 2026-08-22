@@ -28,7 +28,6 @@ import random
 import re
 import sys
 from pathlib import Path
-from collections.abc import Sequence
 
 from core.dataflow.adapters.codeql import from_sarif_result
 from core.dataflow.finding import Finding, Step
@@ -38,6 +37,10 @@ from core.dataflow.label import (
     VERDICT_FALSE_POSITIVE,
     VERDICT_TRUE_POSITIVE,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _TESTNAME_RE = re.compile(r"BenchmarkTest\d{5}")

@@ -22,7 +22,10 @@ operator can run /describe for the full breakdown.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def format_start_line(target_path: Path) -> str | None:

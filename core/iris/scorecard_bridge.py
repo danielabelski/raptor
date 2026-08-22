@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
-from collections.abc import Sequence
+from typing import Any, TYPE_CHECKING
 
-from .specs import TaintSpec
 from .store import _spec_key
+
+if TYPE_CHECKING:
+    from .specs import TaintSpec
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

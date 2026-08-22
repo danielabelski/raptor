@@ -30,9 +30,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Ecosystem -> CVEfixes ``repo_language`` value.  Restricted to languages
 # the walker explicitly supports (cvefix_walk._LANG_MAP).  npm packages

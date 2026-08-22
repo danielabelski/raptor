@@ -7,6 +7,7 @@ an executor function; execute_witness() looks it up and calls it.
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import logging
 import os
@@ -773,6 +774,142 @@ def _sandbox_refusal_result(
 _SYSTEM_TOOLCHAIN_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/etc/", "/bin/", "/sbin/")
 
 
+# Parent-side capture bound. The executors used capture_output=True
+# and sliced proc.stdout[:_MAX_OUTPUT_BYTES] only AFTER the child
+# exited — a hostile witness looping print() for its timeout window
+# fed an unbounded pipe accumulation buffer into the auditor process
+# (RLIMIT_FSIZE bounds files, not pipes; the child-side memory rlimit
+# does not bound the parent's buffer). Streams are redirected to
+# tmpfiles and read back capped instead: head-only for stdout
+# (matching the existing head-slice truncation semantics), head+tail
+# for stderr (the harness pre-call sentinel prints at the start; a
+# sanitizer report prints at the end — both must survive the cap).
+_CAPTURE_CAP_BYTES = 64 * 1024
+_TRUNCATION_MARKER = "\n...[output truncated]...\n"
+
+
+def _read_capped(path: Path, *, keep_tail: bool) -> str:
+    """Read at most head (+ optional tail) of *path*, bounded."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            if size <= 2 * _CAPTURE_CAP_BYTES:
+                return f.read(2 * _CAPTURE_CAP_BYTES).decode(
+                    "utf-8", errors="replace",
+                )
+            head = f.read(_CAPTURE_CAP_BYTES).decode(
+                "utf-8", errors="replace",
+            )
+            if not keep_tail:
+                return head + _TRUNCATION_MARKER
+            f.seek(size - _CAPTURE_CAP_BYTES)
+            tail = f.read(_CAPTURE_CAP_BYTES).decode(
+                "utf-8", errors="replace",
+            )
+            return head + _TRUNCATION_MARKER + tail
+    except OSError:
+        return ""
+
+
+def _merge_capped_stderr_classification(proc, label: str) -> None:
+    """Re-derive stderr-based sandbox classification on capped text.
+
+    The sandbox's own post-run classification (sanitizer detection in
+    ``sandbox_info``) reads ``result.stderr``, which file redirection
+    leaves unset — re-run the same observe helper over the capped
+    stderr and merge the stderr-derived keys. Enforcement-pattern
+    detection (``blocked``) is not re-derived; witness verdicts never
+    confirm from it.
+    """
+    stderr_text = proc.stderr or ""
+    if not stderr_text:
+        return
+    try:
+        from core.sandbox.observe import _interpret_result
+    except ImportError:
+        return
+    clone = subprocess.CompletedProcess(
+        getattr(proc, "args", []), proc.returncode, None, stderr_text,
+    )
+    try:
+        _interpret_result(clone, label)
+    except Exception:
+        logger.debug(
+            "capped stderr re-classification failed", exc_info=True,
+        )
+        return
+    derived = getattr(clone, "sandbox_info", None) or {}
+    info = getattr(proc, "sandbox_info", None)
+    if info is None:
+        proc.sandbox_info = derived
+        return
+    if derived.get("sanitizer") and not info.get("sanitizer"):
+        info["sanitizer"] = derived["sanitizer"]
+        if derived.get("crashed"):
+            info["crashed"] = True
+        extra = derived.get("evidence")
+        if extra:
+            existing = info.get("evidence") or ""
+            info["evidence"] = (
+                f"{existing} — {extra}" if existing else extra
+            )
+
+
+_CAP_STDOUT_NAME = "raptor-cap-stdout"
+_CAP_STDERR_NAME = "raptor-cap-stderr"
+
+
+def _sandbox_run_capped(
+    sandbox_run: Callable,
+    cmd: list[str],
+    *,
+    cap_dir: Path,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """sandbox_run with bounded on-disk capture instead of pipes.
+
+    Replaces ``sandbox_run(cmd, capture_output=True, text=True, ...)``.
+    The sandbox facade does not plumb ``stdout=``/``stderr=`` file
+    handles, so the redirection happens INSIDE the child command line:
+    ``/bin/sh -c 'exec "$@" > out 2> err'`` — ``exec`` replaces the
+    shell with the target, so exit codes and crash signals reach the
+    parent (and the sandbox's rc-based classification) unchanged.
+
+    *cap_dir* must be a directory that is writable inside the sandbox
+    and visible to the parent afterwards — the caller's ``output=``
+    dir (the sandbox's designated writable channel). Returns the
+    CompletedProcess with ``stdout``/``stderr`` set to the CAPPED text
+    and the stderr-derived ``sandbox_info`` keys re-merged. A runner
+    that captured inline anyway (stub/injected runner) keeps its own
+    already-in-memory text. Exceptions (TimeoutExpired etc.) propagate
+    exactly as before.
+    """
+    import shlex
+
+    out_path = Path(cap_dir) / _CAP_STDOUT_NAME
+    err_path = Path(cap_dir) / _CAP_STDERR_NAME
+    script = (
+        'exec "$@" > ' + shlex.quote(str(out_path))
+        + " 2> " + shlex.quote(str(err_path))
+    )
+    wrapped = ["/bin/sh", "-c", script, cmd[0], *cmd]
+    try:
+        proc = sandbox_run(wrapped, **kwargs)
+        if proc.stdout is None:
+            proc.stdout = _read_capped(out_path, keep_tail=False)
+        if proc.stderr is None:
+            proc.stderr = _read_capped(err_path, keep_tail=True)
+            _merge_capped_stderr_classification(
+                proc,
+                str(kwargs.get("caller_label") or "audit-dark-verify"),
+            )
+        return proc
+    finally:
+        for leftover in (out_path, err_path):
+            with contextlib.suppress(OSError):
+                leftover.unlink()
+
+
 def _toolchain_read_paths(binary: str | None) -> list[str]:
     """Read-allowance roots for a toolchain binary under restrict_reads.
 
@@ -855,13 +992,16 @@ def _sandboxed_compile(
     if env is not None:
         kwargs["env"] = env
         kwargs["strict_env"] = True
-    return sandbox_run(
+    return _sandbox_run_capped(
+        sandbox_run,
         compile_cmd,
+        # work_dir doubles as the capture dir — it is the compile's
+        # output= channel (writable inside the sandbox, parent-visible).
+        cap_dir=work_dir,
         block_network=True,
         restrict_reads=True,
         target=str(target_root),
         output=str(work_dir),
-        capture_output=True, text=True,
         timeout=_COMPILE_TIMEOUT_S,
         caller_label=caller_label,
         tool_paths=[str(work_dir), *_toolchain_read_paths(compile_cmd[0])],
@@ -905,17 +1045,26 @@ def _run_script_witness(
         sandbox_run = _import_sandbox_run()
         if sandbox_run is None:
             return _sandbox_refusal_result(spec, language)
-        proc = sandbox_run(
-            cmd_prefix + [str(script_file)],
-            block_network=True,
-            restrict_reads=True,
-            target=str(target_root),
-            capture_output=True, text=True,
-            timeout=timeout_s,
-            caller_label=f"audit-dark-verify-{language}",
-            tool_paths=[str(script_dir),
-                        *_toolchain_read_paths(cmd_prefix[0])],
-        )
+        cap_dir = Path(tempfile.mkdtemp(
+            prefix="raptor_dark_cap_", dir=exec_workdir()))
+        try:
+            proc = _sandbox_run_capped(
+                sandbox_run,
+                cmd_prefix + [str(script_file)],
+                cap_dir=cap_dir,
+                block_network=True,
+                restrict_reads=True,
+                target=str(target_root),
+                # The capture dir is the run's writable channel — the
+                # sandbox binds output= read-write and parent-visible.
+                output=str(cap_dir),
+                timeout=timeout_s,
+                caller_label=f"audit-dark-verify-{language}",
+                tool_paths=[str(script_dir),
+                            *_toolchain_read_paths(cmd_prefix[0])],
+            )
+        finally:
+            shutil.rmtree(cap_dir, ignore_errors=True)
 
         stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
         return _classify_json_output(
@@ -1002,18 +1151,25 @@ def _run_native_binary(
     sandbox_run = _import_sandbox_run()
     if sandbox_run is None:
         return _sandbox_refusal_result(spec, lang)
-    proc = sandbox_run(
-        [str(binary)],
-        block_network=True,
-        restrict_reads=True,
-        target=str(target_root),
-        capture_output=True, text=True,
-        timeout=timeout_s,
-        caller_label="audit-dark-verify-native",
-        tool_paths=[str(binary.parent)],
-        env=env,
-        strict_env=True,
-    )
+    cap_dir = Path(tempfile.mkdtemp(
+        prefix="raptor_dark_cap_", dir=exec_workdir()))
+    try:
+        proc = _sandbox_run_capped(
+            sandbox_run,
+            [str(binary)],
+            cap_dir=cap_dir,
+            block_network=True,
+            restrict_reads=True,
+            target=str(target_root),
+            output=str(cap_dir),
+            timeout=timeout_s,
+            caller_label="audit-dark-verify-native",
+            tool_paths=[str(binary.parent)],
+            env=env,
+            strict_env=True,
+        )
+    finally:
+        shutil.rmtree(cap_dir, ignore_errors=True)
 
     sandbox_info = getattr(proc, "sandbox_info", None)
     return _classify_native_output(
@@ -1712,17 +1868,24 @@ def _execute_java(
                 "DarkWitnessHarness",
             ]
 
-            proc = sandbox_run(
-                run_cmd,
-                block_network=True,
-                restrict_reads=True,
-                target=str(target_root),
-                capture_output=True, text=True,
-                timeout=timeout_s,
-                caller_label="audit-dark-verify-java",
-                tool_paths=[str(work_dir),
-                            *_toolchain_read_paths(java_bin)],
-            )
+            cap_dir = Path(tempfile.mkdtemp(
+                prefix="raptor_dark_cap_", dir=exec_workdir()))
+            try:
+                proc = _sandbox_run_capped(
+                    sandbox_run,
+                    run_cmd,
+                    cap_dir=cap_dir,
+                    block_network=True,
+                    restrict_reads=True,
+                    target=str(target_root),
+                    output=str(cap_dir),
+                    timeout=timeout_s,
+                    caller_label="audit-dark-verify-java",
+                    tool_paths=[str(work_dir),
+                                *_toolchain_read_paths(java_bin)],
+                )
+            finally:
+                shutil.rmtree(cap_dir, ignore_errors=True)
 
             stdout = (proc.stdout or "")[:_MAX_OUTPUT_BYTES]
             return _classify_json_output(

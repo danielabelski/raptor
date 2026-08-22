@@ -2737,6 +2737,15 @@ def _completed(stdout="", returncode=0):
     )
 
 
+def _unwrap_capped(cmd):
+    """Executors wrap commands in the bounded-capture redirect
+    (/bin/sh -c 'exec "$@" > cap 2> cap' argv0 cmd...) — return the
+    inner command for assertions."""
+    assert cmd[:2] == ["/bin/sh", "-c"], cmd
+    assert 'exec "$@"' in cmd[2]
+    return cmd[4:]
+
+
 def _forbid_bare_subprocess(monkeypatch):
     """Any subprocess.run reached from the executor module is a sandbox
     bypass — fail the test loudly."""
@@ -2780,6 +2789,7 @@ class TestCompileSandboxParity:
         assert r.verdict == "confirmed"
         assert len(spy.calls) == 2
         cmd, kwargs = spy.calls[0]
+        cmd = _unwrap_capped(cmd)
         assert cmd[0] == "cc"
         assert "-fsanitize=address,undefined" in cmd
         assert kwargs["block_network"] is True
@@ -2811,6 +2821,7 @@ class TestCompileSandboxParity:
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "confirmed"
         cmd, kwargs = spy.calls[0]
+        cmd = _unwrap_capped(cmd)
         assert cmd[:2] == ["/usr/bin/go", "build"]
         assert kwargs["block_network"] is True
         # go build gets a caller env (GOPATH/GOCACHE redirected into the
@@ -2843,6 +2854,7 @@ class TestCompileSandboxParity:
         r = execute_witness(spec, tmp_path)
         assert r.verdict == "confirmed"
         cmd, kwargs = spy.calls[0]
+        cmd = _unwrap_capped(cmd)
         assert cmd[0] == "/usr/bin/rustc"
         assert kwargs["block_network"] is True
         assert "compile" in kwargs["caller_label"]
@@ -2884,6 +2896,7 @@ class TestCompileSandboxParity:
         assert r.verdict == "confirmed"
         assert len(spy.calls) == 2
         cmd, kwargs = spy.calls[0]
+        cmd = _unwrap_capped(cmd)
         assert cmd[0] == "/usr/bin/javac"
         # Classpath annotation processors must never execute at compile
         # time, even inside the sandbox.
@@ -2891,7 +2904,77 @@ class TestCompileSandboxParity:
         assert kwargs["block_network"] is True
         assert "compile" in kwargs["caller_label"]
         run_cmd, _run_kwargs = spy.calls[1]
+        run_cmd = _unwrap_capped(run_cmd)
         assert run_cmd[0] == "/usr/bin/java"
+
+
+class TestBoundedCapture:
+    """Witness stdout/stderr reach the parent CAPPED, never as an
+    unbounded in-memory pipe accumulation."""
+
+    @staticmethod
+    def _passthrough_sandbox(cmd, **kwargs):
+        import subprocess as sp
+        return sp.run(cmd, check=False)  # noqa: S603 — test-local echo of the sandbox shape
+
+    def test_huge_stdout_is_capped_parent_side(self, tmp_path):
+        from core.audit.dark_verify import _execute as ex
+
+        proc = ex._sandbox_run_capped(
+            self._passthrough_sandbox,
+            [sys.executable, "-c", "print('x' * 1000000)"],
+            cap_dir=tmp_path,
+        )
+        assert proc.returncode == 0
+        assert proc.stdout.startswith("xxx")
+        assert len(proc.stdout) <= 2 * ex._CAPTURE_CAP_BYTES + len(
+            ex._TRUNCATION_MARKER,
+        ), "parent-side stdout must be capped"
+
+    def test_stderr_keeps_head_and_tail(self, tmp_path):
+        from core.audit.dark_verify import _execute as ex
+
+        code = (
+            "import sys; sys.stderr.write('HEAD-MARKER\\n');"
+            "sys.stderr.write('y' * 1000000);"
+            "sys.stderr.write('\\nERROR: AddressSanitizer: "
+            "heap-buffer-overflow tail\\n')"
+        )
+        proc = ex._sandbox_run_capped(
+            self._passthrough_sandbox,
+            [sys.executable, "-c", code],
+            cap_dir=tmp_path,
+        )
+        assert "HEAD-MARKER" in proc.stderr, "sentinel head must survive"
+        assert "AddressSanitizer" in proc.stderr, "report tail must survive"
+        assert len(proc.stderr) <= 2 * ex._CAPTURE_CAP_BYTES + len(
+            ex._TRUNCATION_MARKER,
+        )
+        # stderr-derived classification re-merged for the witness
+        # outcome adapter.
+        info = getattr(proc, "sandbox_info", None) or {}
+        assert info.get("sanitizer") == "asan"
+
+    def test_exit_code_passes_through_exec(self, tmp_path):
+        from core.audit.dark_verify import _execute as ex
+
+        proc = ex._sandbox_run_capped(
+            self._passthrough_sandbox,
+            [sys.executable, "-c", "raise SystemExit(7)"],
+            cap_dir=tmp_path,
+        )
+        assert proc.returncode == 7
+
+    def test_stub_runner_inline_capture_untouched(self, tmp_path):
+        from core.audit.dark_verify import _execute as ex
+
+        canned = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"status": "ok"}', stderr="",
+        )
+        proc = ex._sandbox_run_capped(
+            lambda cmd, **kw: canned, ["true"], cap_dir=tmp_path,
+        )
+        assert proc.stdout == '{"status": "ok"}'
 
 
 class TestSandboxFailClosed:
@@ -3183,21 +3266,35 @@ class TestNoCallSiteOmitsRestrictReads:
             node for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "sandbox_run"
+            and node.func.id == "_sandbox_run_capped"
         ]
         # _sandboxed_compile's inner call, the script witness, the
-        # native run, and the Java run step.
+        # native run, and the Java run step — all via the bounded-
+        # capture wrapper.
         assert len(call_sites) >= 4
         for call in call_sites:
             kwargs = {kw.arg: kw.value for kw in call.keywords}
             assert "restrict_reads" in kwargs, (
-                f"sandbox_run call at line {call.lineno} omits restrict_reads"
+                f"_sandbox_run_capped call at line {call.lineno} omits "
+                f"restrict_reads"
             )
             value = kwargs["restrict_reads"]
             assert isinstance(value, ast.Constant) and value.value is True, (
-                f"sandbox_run call at line {call.lineno} must pass "
-                f"restrict_reads=True"
+                f"_sandbox_run_capped call at line {call.lineno} must "
+                f"pass restrict_reads=True"
             )
+        # The only raw sandbox_run invocation is the wrapper's own
+        # pass-through (isolation kwargs arrive via **kwargs there).
+        raw_calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sandbox_run"
+        ]
+        assert len(raw_calls) == 1, (
+            "executor sandbox calls must route through the bounded-"
+            "capture wrapper"
+        )
 
 
 class TestToolchainReadPaths:

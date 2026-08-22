@@ -226,11 +226,39 @@ def resolve_dynamic_validation(
     return False
 
 
+def resolve_build_execution(
+    explicit: bool | None, *, banner: bool = True,
+    target_path: str | Path | None = None,
+) -> bool:
+    """Resolve build-execution consent for consumers that must RUN a
+    target's build system (env build-on-demand): explicit per-run
+    choice wins; else the project's ``build`` marker; else off.
+
+    Building a repo executes repo-influenced code, so this rides the
+    same operator assertion traced-build extraction uses — including
+    the one-target rule (the marker never authorises building a tree
+    that is not the active project's target).
+    """
+    if explicit is not None:
+        return bool(explicit)
+    markers, _name = active_project_trust()
+    if "build" in markers:
+        run_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
+        if not run_target_matches_project(run_target):
+            _emit_marker_target_mismatch(["build"], run_target and str(run_target))
+            return False
+        if banner:
+            emit_trust_banner(["build"])
+        return True
+    return False
+
+
 __all__ = [
     "active_project_target",
     "active_project_trust",
     "apply_project_trust_flags",
     "emit_trust_banner",
+    "resolve_build_execution",
     "resolve_dynamic_validation",
     "resolve_trust_flag",
     "run_target_matches_project",

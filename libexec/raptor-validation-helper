@@ -1287,12 +1287,65 @@ def _match_finding_to_binary(finding, executables):
     return ""
 
 
-def _discover_and_match_binaries(workdir, target, data):
+def _any_elf(executables):
+    from packages.exploitability_validation.env_build_stage import any_elf
+    return any_elf(executables)
+
+
+def _env_build_on_demand(workdir, target, data, build):
+    """Delegates to the importable core (also consumed by the Python
+    orchestrator's Stage E); returns {rel: (path, sha256)}."""
+    from packages.exploitability_validation.env_build_stage import (
+        env_build_on_demand,
+    )
+    return env_build_on_demand(workdir, target, data, build, log=print)
+
+
+def _run_mitigation_matrix(workdir, target, data, build):
+    from packages.exploitability_validation.env_build_stage import (
+        mitigation_matrix_hook,
+    )
+    mitigation_matrix_hook(workdir, target, data, build, log=print)
+
+
+def _discover_and_match_binaries(workdir, target, data, build=None,
+                                 mitigation_matrix=False):
     """Discover binaries and match to findings."""
 
     executables = _discover_executables(target)
     if executables:
         print(f"Discovered {len(executables)} executable(s) in {target}")
+
+    env_built_paths = set()
+    env_meta_by_path = {}
+    single_env_binary = ""
+    if not _any_elf(executables):
+        # Exec-bit discovery matches configure/*.sh scripts too — the
+        # build-on-demand trigger is "no ELF executable exists", not
+        # "no executable file exists" (adversarial-review finding: an
+        # executable configure script silently disabled the feature
+        # on typical source trees).
+        env_built = _env_build_on_demand(workdir, target, data, build)
+        if env_built:
+            # rel-keyed (stems collide: bin/app vs test/app); the
+            # matching map below keys by stem only for UNIQUE stems.
+            executables = {}
+            for rel, (path, sha) in env_built.items():
+                stem = Path(rel).stem
+                if stem in executables:
+                    print(f"  note: multiple env artifacts share stem "
+                          f"{stem!r}; stem matching disabled for it")
+                    executables.pop(stem)
+                else:
+                    executables[stem] = str(path)
+                env_meta_by_path[str(path)] = (rel, sha)
+            env_built_paths = set(env_meta_by_path)
+            if len(env_built) == 1:
+                # A single-artifact build IS the program: stem
+                # heuristics (source file name vs binary name) would
+                # spuriously skip findings whose file doesn't share
+                # the artifact's name — e.g. main.c building vulnapp.
+                single_env_binary = next(iter(env_built.values()))[0]
 
     matched = 0
     skipped = 0
@@ -1307,9 +1360,18 @@ def _discover_and_match_binaries(workdir, target, data):
             continue
         bp = finding.get("feasibility", {}).get("binary_path", "")
         if not bp and executables:
-            bp = _match_finding_to_binary(finding, executables)
+            bp = (_match_finding_to_binary(finding, executables)
+                  or single_env_binary)
             if bp:
-                finding.setdefault("feasibility", {})["binary_path"] = bp
+                if str(bp) in env_built_paths:
+                    from packages.exploitability_validation.env_build_stage import (  # noqa: E501
+                        stamp_env_built,
+                    )
+                    rel, sha = env_meta_by_path[str(bp)]
+                    stamp_env_built(finding, str(bp), rel, sha)
+                else:
+                    finding.setdefault("feasibility", {})[
+                        "binary_path"] = bp
                 print(f"  {finding['id']}: matched -> {bp}")
                 matched += 1
         if not bp:
@@ -1327,6 +1389,10 @@ def _discover_and_match_binaries(workdir, target, data):
     print(f"{len(groups)} binary group(s), {matched} matched, {skipped} skipped")
     for bp, ids in groups.items():
         print(f"  {bp}: {', '.join(ids)}")
+
+    if mitigation_matrix and groups:
+        _run_mitigation_matrix(workdir, target, data, build)
+        _save_findings(workdir, data)
 
 
 def _run_witness_execution(workdir, target, data, dynamic=None):
@@ -1390,7 +1456,8 @@ def _run_witness_execution(workdir, target, data, dynamic=None):
     )
 
 
-def prepare_E(workdir, target=None, dynamic=None):
+def prepare_E(workdir, target=None, dynamic=None, build=None,
+              mitigation_matrix=False):
     _apply_stage_file(workdir, "D")
 
 
@@ -1421,7 +1488,8 @@ def prepare_E(workdir, target=None, dynamic=None):
 
     # --- Discover binaries ---
     if target:
-        _discover_and_match_binaries(workdir, target, data)
+        _discover_and_match_binaries(workdir, target, data, build=build,
+                                     mitigation_matrix=mitigation_matrix)
     else:
         print("  No --target provided, skipping binary discovery")
 
@@ -2061,7 +2129,7 @@ def _flag_value(args, flag):
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in STAGES:
-        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--dynamic|--no-dynamic] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--dynamic|--no-dynamic] [--build|--no-build] [--mitigation-matrix] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
         sys.exit(1)
 
     stage = args[0]
@@ -2075,6 +2143,14 @@ def main():
     # choice (project 'dynamic' trust marker decides); --no-dynamic
     # wins over --dynamic.
     dynamic = None
+    # Tri-state build-execution consent for Stage E env builds:
+    # explicit flags win, None defers to the project 'build' marker.
+    build = None
+    if "--no-build" in args:
+        build = False
+    elif "--build" in args:
+        build = True
+    mitigation_matrix = "--mitigation-matrix" in args
     if "--no-dynamic" in args:
         dynamic = False
     elif "--dynamic" in args:
@@ -2116,7 +2192,8 @@ def main():
     if stage == "1":
         prepare_1(workdir, target, model=model)
     elif stage == "E":
-        prepare_E(workdir, target, dynamic=dynamic)
+        prepare_E(workdir, target, dynamic=dynamic, build=build,
+                  mitigation_matrix=mitigation_matrix)
     else:
         STAGES[stage](workdir, target)
 

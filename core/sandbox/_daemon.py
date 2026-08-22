@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
 import json
 import os
 import re
@@ -77,6 +78,44 @@ from typing import Any
 def _log(msg: str) -> None:
     sys.stderr.write(f"[host-daemon] {msg}\n")
     sys.stderr.flush()
+
+
+# prctl(2) option numbers — stable Linux ABI values.
+_PR_GET_DUMPABLE = 3
+_PR_SET_DUMPABLE = 4
+
+
+def _set_non_dumpable() -> bool:
+    """Set PR_SET_DUMPABLE=0 on this process; True on success.
+
+    A non-dumpable process's ``/proc/<pid>/`` entries are owned by
+    root, so a same-UID non-root process — in particular a target the
+    daemon spawns — can no longer open ``/proc/<daemon>/fd/<n>`` to
+    reopen the RPC pipe ends and forge daemon→parent frames or steal
+    parent→daemon requests. CLOEXEC keeps the fds out of the target's
+    fd table; this closes the /proc reopen side door (which Yama does
+    NOT cover: ptrace_scope 1 restricts ATTACH-mode access, while
+    /proc fd opens need only READ-mode).
+
+    Children the daemon spawns are unaffected: execve resets the
+    dumpable flag, so target crash-dumps and target /proc
+    introspection keep working.
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
+
+
+def _get_dumpable() -> int | None:
+    """Return this process's PR_GET_DUMPABLE value (None if unknown)."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        v = libc.prctl(_PR_GET_DUMPABLE, 0, 0, 0, 0)
+        return None if v < 0 else v
+    except (OSError, AttributeError):
+        return None
 
 
 def _read_frame(fd: int) -> dict | None:
@@ -308,8 +347,12 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
 # --------------------------------------------------------------------
 
 
-def _handle_ping(_payload: dict) -> dict:
-    return {"ok": True, "pong": True, "pid": os.getpid()}
+def _handle_ping(payload: dict) -> dict:
+    # ``dumpable`` lets the parent (and the hardening tests) verify
+    # the /proc-reopen defence engaged without needing to read the
+    # daemon's /proc entries (which non-dumpability itself hides).
+    return {"ok": True, "pong": True, "pid": os.getpid(),
+            "dumpable": _get_dumpable()}
 
 
 def _handle_spawn(payload: dict) -> dict:
@@ -710,6 +753,24 @@ DISPATCH = {
 }
 
 
+def _echo_rid(frame: dict, response: dict) -> dict:
+    """Bind a response to its request via the parent-minted id.
+
+    The parent stamps each request with an unguessable ``rid`` and
+    rejects any reply that does not echo it — a cheap integrity layer
+    on the persistent channel: a peer that somehow gains a write
+    handle on the daemon→parent pipe but cannot read the request
+    stream cannot mint an acceptable reply, and stale/duplicated
+    frames desync loudly instead of silently answering the wrong
+    request. Requests without a ``rid`` (older parents) get their
+    reply unchanged, so the wire format stays backward-compatible.
+    """
+    rid = frame.get("rid")
+    if rid is not None:
+        response = {**response, "rid": rid}
+    return response
+
+
 def _run_one_shot() -> int:
     """Execute exactly one verb, then exit.
 
@@ -728,6 +789,12 @@ def _run_one_shot() -> int:
     """
     in_fd = sys.stdin.fileno()
     out_fd = sys.stdout.fileno()
+    # Same /proc-reopen hardening as the persistent loop: the one-shot
+    # channel is the daemon's own stdio, equally reopenable via
+    # /proc/<daemon>/fd/{0,1} by a spawned target while it runs.
+    if not _set_non_dumpable():
+        _log("prctl(PR_SET_DUMPABLE, 0) failed — /proc fd reopen "
+             "hardening not engaged")
     try:
         frame = _read_frame(in_fd)
     except Exception as e:  # noqa: BLE001
@@ -741,8 +808,8 @@ def _run_one_shot() -> int:
     cmd = frame.get("cmd")
     handler = DISPATCH.get(cmd)
     if handler is None:
-        _write_frame(out_fd, {"ok": False,
-                              "error": f"unknown cmd {cmd!r}"})
+        _write_frame(out_fd, _echo_rid(frame, {
+            "ok": False, "error": f"unknown cmd {cmd!r}"}))
         return 1
     try:
         response = handler(frame)
@@ -750,7 +817,7 @@ def _run_one_shot() -> int:
         response = {"ok": False,
                     "error": (f"handler {cmd} raised: "
                               f"{type(e).__name__}: {e}")}
-    _write_frame(out_fd, response)
+    _write_frame(out_fd, _echo_rid(frame, response))
     return 0
 
 
@@ -792,6 +859,13 @@ def main() -> int:
         except OSError as e:
             _log(f"rpc fd {fd} is not usable: {e}")
             return 1
+    # Before ANY handler can spawn a target: make this process
+    # non-dumpable so same-UID non-root processes (targets in
+    # particular) cannot reopen the RPC pipe ends via
+    # /proc/<daemon>/fd/<n>. See _set_non_dumpable's docstring.
+    if not _set_non_dumpable():
+        _log("prctl(PR_SET_DUMPABLE, 0) failed — /proc fd reopen "
+             "hardening not engaged")
     _log(f"rpc fds inherited pid={os.getpid()} "
          f"in_fd={in_fd} out_fd={out_fd}")
 
@@ -808,12 +882,13 @@ def main() -> int:
             cmd = frame.get("cmd")
             if cmd == "close":
                 _log("close requested — exiting")
-                _write_frame(out_fd, {"ok": True, "closed": True})
+                _write_frame(out_fd, _echo_rid(frame, {"ok": True,
+                                                       "closed": True}))
                 return 0
             handler = DISPATCH.get(cmd)
             if handler is None:
-                _write_frame(out_fd, {"ok": False,
-                                      "error": f"unknown cmd {cmd!r}"})
+                _write_frame(out_fd, _echo_rid(frame, {
+                    "ok": False, "error": f"unknown cmd {cmd!r}"}))
                 continue
             try:
                 response = handler(frame)
@@ -821,7 +896,7 @@ def main() -> int:
                 response = {"ok": False,
                             "error": (f"handler {cmd} raised: "
                                       f"{type(e).__name__}: {e}")}
-            _write_frame(out_fd, response)
+            _write_frame(out_fd, _echo_rid(frame, response))
     finally:
         for fd in (in_fd, out_fd):
             try:

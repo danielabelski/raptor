@@ -332,9 +332,24 @@ class SandboxHost:
     # ------------------------------------------------------------------
 
     def _rpc(self, payload: dict, *, timeout: float) -> dict:
+        # Stamp every request with an unguessable parent-minted id and
+        # require the reply to echo it: binds each response frame to
+        # its request, so a forged / stale / misordered frame on the
+        # persistent channel is rejected instead of silently answering
+        # the wrong RPC. The daemon echoes ``rid`` verbatim; extra
+        # response keys keep the wire format backward-compatible.
+        rid = os.urandom(16).hex()
         with self._lock:
-            self._write_frame(payload)
-            return self._read_frame(timeout=timeout)
+            self._write_frame({**payload, "rid": rid})
+            response = self._read_frame(timeout=timeout)
+        if response.get("rid") != rid:
+            raise HostRPCError(
+                f"reply not bound to request: expected rid={rid} "
+                f"got rid={response.get('rid')!r} — forged, stale, or "
+                f"misordered frame on the RPC channel"
+            )
+        response.pop("rid", None)
+        return response
 
     def _write_frame(self, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -417,7 +432,12 @@ def one_shot_call(
     readable = list(readable_paths or [])
     readable.append(str(daemon))
 
-    body = json.dumps({"cmd": cmd, **payload}).encode("utf-8")
+    # Same request/response binding as SandboxHost._rpc: the daemon
+    # echoes the parent-minted ``rid`` and the reply is rejected on a
+    # mismatch (a target that reopened the daemon's stdout could
+    # otherwise substitute the verdict frame).
+    rid = os.urandom(16).hex()
+    body = json.dumps({"cmd": cmd, **payload, "rid": rid}).encode("utf-8")
     frame = struct.pack("!I", len(body)) + body
 
     try:
@@ -461,7 +481,14 @@ def one_shot_call(
         )
         raise HostRPCError(msg)
     try:
-        return json.loads(r.stdout[4:4 + length].decode("utf-8"))
+        response = json.loads(r.stdout[4:4 + length].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         msg = f"one-shot response parse failed: {e}"
         raise HostRPCError(msg) from e
+    if response.get("rid") != rid:
+        raise HostRPCError(
+            f"one-shot reply not bound to request: expected rid={rid} "
+            f"got rid={response.get('rid')!r}"
+        )
+    response.pop("rid", None)
+    return response

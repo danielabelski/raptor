@@ -184,6 +184,21 @@ class TestHostRPCTransport(unittest.TestCase):
             finally:
                 host.close()
 
+    def test_daemon_nondumpable_inside_sandbox(self):
+        """The daemon sets PR_SET_DUMPABLE=0 before serving requests
+        (and reports it via ping), so a target can't reopen the RPC
+        pipe ends through /proc/<daemon>/fd/<n> — the reopen defence
+        must survive the real sandbox spawn chain, not just the
+        pipe-level harness."""
+        with TemporaryDirectory() as tmp:
+            host = self._start(Path(tmp))
+            try:
+                pong = host._rpc({"cmd": "ping"}, timeout=10.0)
+                self.assertTrue(pong.get("ok"), pong)
+                self.assertEqual(pong.get("dumpable"), 0, pong)
+            finally:
+                host.close()
+
     # ------------------------------------------------------------------
     # Functional round-trips
     # ------------------------------------------------------------------

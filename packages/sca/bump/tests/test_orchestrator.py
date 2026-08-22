@@ -2022,3 +2022,123 @@ class TestRunBumpPolicyTrustGate:
             policy=BumpPolicy(binary_capability_delta_enabled=False),
         )
         assert report.candidates == []
+
+
+# ---------------------------------------------------------------------------
+# --exclude: operator globs filter the WRITE candidate set
+# ---------------------------------------------------------------------------
+
+def _semgrep_stubs():
+    """Stub upstream (release 1.119.0, old enough to be Clean) shared
+    by the --exclude tests."""
+    http = _StubHttp({
+        "https://api.github.com/repos/semgrep/semgrep/releases/latest":
+            {"tag_name": "v1.119.0"},
+    })
+    pypi = _StubPyPI({
+        "semgrep": {"releases": {
+            "1.119.0": [{"upload_time_iso_8601": "2025-12-01T00:00:00Z"}],
+        }},
+    })
+    now = datetime(2026, 5, 11, tzinfo=timezone.utc)
+    return http, pypi, now
+
+
+def test_exclude_globs_protect_fixture_dockerfile(tmp_path: Path) -> None:
+    """--exclude '**/testdata/**' + --apply edits the prod Dockerfile
+    only; the fixture pin (a test assertion) stays untouched and the
+    exclusion is surfaced in the report — never a silent truncation."""
+    prod = tmp_path / "Dockerfile"
+    prod.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+    fixture_dir = tmp_path / "testdata"
+    fixture_dir.mkdir()
+    fixture = fixture_dir / "Dockerfile"
+    fixture.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+
+    http, pypi, now = _semgrep_stubs()
+    report = run_bump(
+        tmp_path, http=http, pypi_client=pypi, now=now, apply=True,
+        exclude=["**/testdata/**"],
+    )
+    assert "1.119.0" in prod.read_text()
+    assert fixture.read_text() == "ARG SEMGREP_VERSION=1.50.0\n", (
+        "fixture Dockerfile must not be edited"
+    )
+    assert [p for p in report.excluded_by_pattern] == [fixture]
+    text = render_report(report)
+    assert "1 surface(s) excluded from write by --exclude patterns" in text
+
+
+def test_exclude_anchors_at_root_level_test_dir(tmp_path: Path) -> None:
+    """'**/test/**' must also cover a ROOT-level test/ directory (the
+    raptor repo ships test/data/... fixtures) — raw fnmatch would
+    require a leading path component."""
+    prod = tmp_path / "Dockerfile"
+    prod.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+    fixture = tmp_path / "test" / "data" / "Dockerfile.fixture"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+
+    http, pypi, now = _semgrep_stubs()
+    report = run_bump(
+        tmp_path, http=http, pypi_client=pypi, now=now, apply=True,
+        exclude=["**/test/**"],
+    )
+    assert "1.119.0" in prod.read_text()
+    assert "1.50.0" in fixture.read_text()
+    assert report.excluded_by_pattern == [fixture]
+
+
+def test_no_exclude_is_fully_inclusive_with_note(tmp_path: Path) -> None:
+    """No --exclude → every surface is written (exclusion is caller
+    policy, not a tool default), and the report carries the
+    informational guardrail pointing at --exclude."""
+    prod = tmp_path / "Dockerfile"
+    prod.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+    fixture = tmp_path / "testdata" / "Dockerfile"
+    fixture.parent.mkdir()
+    fixture.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+
+    http, pypi, now = _semgrep_stubs()
+    report = run_bump(
+        tmp_path, http=http, pypi_client=pypi, now=now, apply=True,
+    )
+    assert "1.119.0" in prod.read_text()
+    assert "1.119.0" in fixture.read_text()
+    assert report.excluded_by_pattern == []
+    text = render_report(report)
+    assert "note:" in text and "--exclude" in text
+
+
+def test_exclude_drops_workflow_files_before_parse(tmp_path: Path) -> None:
+    """GHA workflow files under an excluded tree are dropped at the
+    file-list stage (before any uses: parsing / upstream lookups) and
+    still surface in excluded_by_pattern."""
+    wf = (tmp_path / "tests" / "fixture-repo" / ".github" / "workflows"
+          / "ci.yml")
+    wf.parent.mkdir(parents=True)
+    wf.write_text(
+        "jobs:\n  b:\n    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+    )
+    http = _StubHttp({})
+    report = run_bump(
+        tmp_path, http=http, exclude=["**/tests/**"],
+    )
+    assert report.candidates == []
+    assert wf in report.excluded_by_pattern
+
+
+def test_pr_comment_reports_exclusions(tmp_path: Path) -> None:
+    from packages.sca.bump.pr_comment import render_pr_comment
+
+    fixture = tmp_path / "testdata" / "Dockerfile"
+    fixture.parent.mkdir()
+    fixture.write_text("ARG SEMGREP_VERSION=1.50.0\n")
+    http, pypi, now = _semgrep_stubs()
+    report = run_bump(
+        tmp_path, http=http, pypi_client=pypi, now=now,
+        exclude=["**/testdata/**"],
+    )
+    md = render_pr_comment(report)
+    assert "excluded from write by `--exclude` patterns" in md

@@ -243,6 +243,7 @@ def main(argv: Sequence[str]) -> int:
         logger.info("sca.harden: target classified %s — raising dependency "
                     "floors minimally to preserve ranges", target_kind)
 
+    excluded_surfaces: list[str] = []
     candidates = plan(
         target=target,
         registries=registries,
@@ -254,6 +255,8 @@ def main(argv: Sequence[str]) -> int:
         pin_only=args.pin_only,
         pin_debian=args.pin_debian,
         library_mode=library_mode,
+        exclude=args.exclude,
+        excluded_surfaces=excluded_surfaces,
     )
 
     # ``--ecosystems`` is a post-plan filter: candidates outside the
@@ -284,8 +287,11 @@ def main(argv: Sequence[str]) -> int:
             ecosystem_allowlist=ecosystem_allowlist,
         )
         _write_report(out_dir / "report.md", candidates, [],
-                      target_kind=target_kind, target_kind_reason=target_kind_reason)
-        _print_summary(candidates, [], out_dir, target_kind=target_kind)
+                      target_kind=target_kind, target_kind_reason=target_kind_reason,
+                      excluded_surfaces=excluded_surfaces)
+        _print_summary(candidates, [], out_dir, target_kind=target_kind,
+                       excluded_surfaces=excluded_surfaces,
+                       exclude_patterns=args.exclude, target=target)
         if actionable:
             print(f"raptor-sca fix --harden --check: {actionable} candidate(s) would be "
                   f"applied; rerun without --check to apply.")
@@ -326,6 +332,7 @@ def main(argv: Sequence[str]) -> int:
             allow_major_without_review=args.allow_major_without_review,
             allow_degraded=args.allow_degraded,
             library_mode=library_mode,
+            exclude=args.exclude,
         )
         if rc != 0:
             return rc
@@ -338,8 +345,11 @@ def main(argv: Sequence[str]) -> int:
             return rc
 
     _write_report(out_dir / "report.md", candidates, changes,
-                  target_kind=target_kind, target_kind_reason=target_kind_reason)
-    _print_summary(candidates, changes, out_dir, target_kind=target_kind)
+                  target_kind=target_kind, target_kind_reason=target_kind_reason,
+                  excluded_surfaces=excluded_surfaces)
+    _print_summary(candidates, changes, out_dir, target_kind=target_kind,
+                   excluded_surfaces=excluded_surfaces,
+                   exclude_patterns=args.exclude, target=target)
     return 0
 
 
@@ -359,6 +369,8 @@ def plan(
     pin_only: bool = False,
     pin_debian: bool = False,
     library_mode: bool = False,
+    exclude: Sequence[str] | None = None,
+    excluded_surfaces: list[str] | None = None,
 ) -> list[HardenCandidate]:
     """Walk the target and produce one HardenCandidate per dep.
 
@@ -380,8 +392,32 @@ def plan(
         safe version above the baseline rather than the newest — a minimal
         floor-raise that clears advisories while keeping the dependency
         range wide for downstream consumers.
+      exclude: operator ``--exclude`` globs (see ``_exclude`` module for
+        the matching semantics). Manifests matching any pattern are
+        dropped from the WRITE candidate set — no pins are proposed for
+        them. Policy lives with the caller: the tool itself applies no
+        default exclusion, so with no patterns the plan is fully
+        inclusive (test-tree manifests hold real dev dependencies in
+        ordinary repos).
+      excluded_surfaces: optional out-list; when an ``--exclude``
+        pattern drops a manifest, its path is appended here so the
+        caller can report the exclusion instead of silently truncating.
     """
-    manifests = find_manifests(target)
+    # Enumerate INCLUSIVELY — the write path sees every manifest the
+    # walker can see, and the ONLY filter is the operator's --exclude
+    # globs, applied here at candidate selection (before any parsing
+    # or registry traffic for the excluded trees).
+    manifests = find_manifests(target, include_test_paths=True)
+    if exclude:
+        from ._exclude import matches_exclude
+        kept = []
+        for m in manifests:
+            if matches_exclude(m.path, exclude, root=target):
+                if excluded_surfaces is not None:
+                    excluded_surfaces.append(str(m.path))
+            else:
+                kept.append(m)
+        manifests = kept
     raw_deps: list[Dependency] = []
     for m in manifests:
         raw_deps.extend(parse_manifest(m))
@@ -1181,6 +1217,7 @@ def _run_self_test(
     allow_degraded: bool,
     pin_debian: bool = False,
     library_mode: bool = False,
+    exclude: Sequence[str] | None = None,
 ) -> int:
     """Apply patch to a temp copy of ``target`` and re-run the planner.
 
@@ -1304,11 +1341,17 @@ def _run_self_test(
         # ``pin_debian``, so apt pins are re-validated as up_to_date rather
         # than silently deferred (which would make the self-test pass
         # vacuously without confirming the pin landed).
+        # ``exclude`` mirrors pass 1: if the operator's --exclude
+        # globs kept e.g. fixture manifests out of the patch, the
+        # re-plan must drop them too — otherwise their (deliberately
+        # old) pins would show up as "still actionable" and fail the
+        # self-test spuriously.
         post_candidates = plan(
             target=worktree,
             registries=registries, osv=osv, kev=kev, epss=epss,
             offline=offline, allow_major=allow_major, pin_only=pin_only,
             pin_debian=pin_debian, library_mode=library_mode,
+            exclude=exclude,
         )
         post_actionable = _count_actionable(
             post_candidates,
@@ -1556,6 +1599,18 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
                         "alternative for reproducible apt installs.")
     p.add_argument("--git-patch", action="store_true",
                    help="emit upgrade.patch alongside candidates.json")
+    p.add_argument("--exclude", action="append", metavar="GLOB",
+                   default=None,
+                   help="glob of paths to exclude from the WRITE set "
+                        "(no pins proposed for matching manifests); "
+                        "repeatable. Matched against the target-"
+                        "relative path; * spans /, and a leading **/ "
+                        "also matches at the target root. Typical use: "
+                        "protecting test-fixture manifests whose "
+                        "deliberately-old pins are test assertions "
+                        "(--exclude '**/tests/**' --exclude "
+                        "'**/fixtures/**'). Scanning is unaffected — "
+                        "findings in excluded trees stay reported.")
     p.add_argument("--offline", action="store_true",
                    help="don't call registries / OSV; cache only")
     p.add_argument("--no-cache", action="store_true",
@@ -1590,6 +1645,7 @@ def _write_report(
     *,
     target_kind: str = "unknown",
     target_kind_reason: str = "",
+    excluded_surfaces: list[str] | None = None,
 ) -> None:
     by_status: dict[str, list[HardenCandidate]] = {}
     for c in candidates:
@@ -1631,6 +1687,12 @@ def _write_report(
         if status in by_status:
             lines.append(f"| {status} | {len(by_status[status])} |")
     lines.append("")
+    if excluded_surfaces:
+        n = len(excluded_surfaces)
+        lines.append(
+            f"{n} surface(s) excluded from write by --exclude patterns."
+        )
+        lines.append("")
 
     if "promoted" in by_status:
         lines.append("## Promoted (applied)")
@@ -1720,10 +1782,33 @@ def _print_summary(
     out_dir: Path,
     *,
     target_kind: str = "unknown",
+    excluded_surfaces: list[str] | None = None,
+    exclude_patterns: Sequence[str] | None = None,
+    target: Path | None = None,
 ) -> None:
     by_status: dict[str, int] = {}
     for c in candidates:
         by_status[c.status] = by_status.get(c.status, 0) + 1
+    if excluded_surfaces:
+        print(f"raptor-sca fix: {len(excluded_surfaces)} surface(s) "
+              f"excluded from write by --exclude patterns")
+    if not exclude_patterns and target is not None:
+        # Informational guardrail (NOT a skip): fixture manifests in
+        # test trees often pin deliberately-old versions as test
+        # assertions. When no --exclude policy was given and the plan
+        # is about to write into such paths, say so once — the
+        # operator may want ``--exclude '**/tests/**'`` etc.
+        from ._test_paths import is_test_resident
+        flagged = {
+            c.manifest for c in candidates
+            if c.status == "promoted"
+            and is_test_resident(Path(c.manifest), target)
+        }
+        if flagged:
+            print(f"raptor-sca fix: note — {len(flagged)} write "
+                  f"target(s) under test/fixture paths (tests/, "
+                  f"testdata/, fixtures/, ...); if those pins are "
+                  f"test assertions, protect them with --exclude")
     if target_kind in ("library", "hybrid"):
         print(f"raptor-sca fix: target detected as a {target_kind} — raising "
               f"dependency floors to safe ranges (>=X), not exact pins (==X). "

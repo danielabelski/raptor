@@ -88,6 +88,14 @@ def main(argv: Sequence[str]) -> int:
         advisory_filter=advisory_filter,
         allow_major=args.allow_major,
     )
+    exclude_root = (Path(args.target).resolve()
+                    if getattr(args, "target", None) else None)
+    targets, excluded_files = _filter_excluded_plans(
+        targets, args.exclude, root=exclude_root,
+    )
+    if excluded_files:
+        print(f"raptor-sca fix: {len(excluded_files)} surface(s) "
+              f"excluded from write by --exclude patterns")
     if not targets:
         print("raptor-sca fix: no actionable upgrades — every vulnerable dep is "
               "either unfixed, already at the highest fix, or filtered out by "
@@ -491,6 +499,17 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--git-patch", action="store_true",
                    help="emit upgrade.patch alongside proposed/ — a "
                         "git-apply-compatible unified diff")
+    p.add_argument("--exclude", action="append", metavar="GLOB",
+                   default=None,
+                   help="glob of paths to exclude from the WRITE set "
+                        "(no upgrades planned for matching manifests); "
+                        "repeatable. Matched against the target-"
+                        "relative path (or the findings' file path "
+                        "as-is when only --findings is given); * spans "
+                        "/, and a leading **/ also matches at the "
+                        "root. Typical use: protecting test-fixture "
+                        "manifests whose deliberately-old pins are "
+                        "test assertions. Scanning is unaffected.")
     p.add_argument("--apply", action="store_true",
                    help="after generating the patch, run ``git apply`` "
                         "to write the proposed manifest changes back to "
@@ -615,6 +634,36 @@ def _parse_advisory_filter(value: str | None) -> set | None:
 # ---------------------------------------------------------------------------
 # Target selection
 # ---------------------------------------------------------------------------
+
+def _filter_excluded_plans(
+    plans: dict[tuple[str, str, str], "_PlanEntry"],
+    exclude: Sequence[str] | None,
+    *,
+    root: Path | None,
+) -> tuple[dict[tuple[str, str, str], "_PlanEntry"], list[str]]:
+    """Drop plan entries whose manifest matches an ``--exclude`` glob.
+
+    The write-path filter shared by ``fix`` (optimise), ``fix
+    --cve-only`` (this module) and — in spirit — ``fix --harden`` /
+    ``bump`` (which filter at their own enumeration points): the
+    operator's globs remove surfaces from the WRITE set only; scan
+    findings are untouched. Returns ``(kept_plans,
+    excluded_manifest_paths)`` — the excluded list is distinct,
+    order-preserving, for the one-line report (exclusions must be
+    visible, never a silent truncation).
+    """
+    if not exclude:
+        return plans, []
+    from ._exclude import matches_exclude
+    kept: dict[tuple[str, str, str], _PlanEntry] = {}
+    excluded: dict[str, None] = {}
+    for key, entry in plans.items():
+        if matches_exclude(entry.manifest, exclude, root=root):
+            excluded.setdefault(str(entry.manifest), None)
+        else:
+            kept[key] = entry
+    return kept, list(excluded)
+
 
 def _plan_targets(
     rows: list[dict[str, Any]],

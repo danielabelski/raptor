@@ -70,6 +70,17 @@ def main(argv: Sequence[str]) -> int:
              "in PR threads.",
     )
     parser.add_argument(
+        "--exclude", action="append", metavar="GLOB", default=None,
+        help="glob of paths to exclude from the WRITE set (no bump "
+             "candidates from matching files); repeatable. Matched "
+             "against the target-relative path; * spans /, and a "
+             "leading **/ also matches at the target root. Typical "
+             "use: protecting test-fixture trees whose deliberately-"
+             "old pins are test assertions (--exclude '**/tests/**' "
+             "--exclude '**/fixtures/**'). Scanning is unaffected — "
+             "findings in excluded trees stay reported.",
+    )
+    parser.add_argument(
         "--no-cache", action="store_true",
         help="bypass cache for upstream-latest + registry lookups",
     )
@@ -178,6 +189,7 @@ def main(argv: Sequence[str]) -> int:
             cache=cache,
             github_token=github_token,
             trust_repo=trust_repo,
+            exclude=args.exclude,
         )
     except Exception as e:
         logger.exception("raptor-sca bump: unrecoverable error")
@@ -257,5 +269,8 @@ def _report_to_dict(report) -> dict:
         "skipped": [
             {"arg_name": arg, "file": str(path), "reason": reason}
             for arg, path, reason in report.skipped
+        ],
+        "excluded_by_pattern": [
+            str(path) for path in report.excluded_by_pattern
         ],
     }

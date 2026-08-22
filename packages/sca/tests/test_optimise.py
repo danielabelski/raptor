@@ -1152,3 +1152,45 @@ class TestVersionErrorResilience:
                           side_effect=VersionError("unparseable")):
             result = optimise._plan_hygiene_pins([], vuln_plans)
         assert isinstance(result, dict)
+
+
+class TestExcludeGlobs:
+    """--exclude on the default `fix` path (this module): write-set
+    filtering shared with `fix --cve-only` via
+    ``update._filter_excluded_plans``."""
+
+    def test_parse_args_exclude_is_repeatable(self) -> None:
+        args = optimise._parse_args(
+            ["/tmp", "--exclude", "**/tests/**",
+             "--exclude", "**/fixtures/**"])
+        assert args.exclude == ["**/tests/**", "**/fixtures/**"]
+        assert optimise._parse_args(["/tmp"]).exclude is None
+
+    def test_filter_excluded_plans_drops_matching_manifests(
+        self, tmp_path: Path,
+    ) -> None:
+        from packages.sca.update import _filter_excluded_plans
+
+        prod = _PlanEntry(
+            ecosystem="npm", name="lodash", installed="4.17.19",
+            target="4.17.21",
+            manifest=tmp_path / "package.json", advisory_ids=["GHSA-1"],
+        )
+        fixture = _PlanEntry(
+            ecosystem="npm", name="lodash", installed="1.0.0",
+            target="4.17.21",
+            manifest=tmp_path / "tests" / "fixtures" / "package.json",
+            advisory_ids=["GHSA-1"],
+        )
+        plans = {
+            ("npm", "lodash", str(prod.manifest)): prod,
+            ("npm", "lodash", str(fixture.manifest)): fixture,
+        }
+        kept, excluded = _filter_excluded_plans(
+            plans, ["**/tests/**"], root=tmp_path,
+        )
+        assert list(kept.values()) == [prod]
+        assert excluded == [str(fixture.manifest)]
+        # No patterns → no filtering, nothing reported.
+        kept2, excluded2 = _filter_excluded_plans(plans, None, root=tmp_path)
+        assert kept2 == plans and excluded2 == []

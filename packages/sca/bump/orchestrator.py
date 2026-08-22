@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,6 +116,11 @@ class BumpReport:
     skipped: list[tuple[str, Path, str]] = field(default_factory=list)
     # ``(arg_name, file, reason)`` for ARGs we couldn't bump
     # (no upstream mapping, current version not parseable, etc.)
+    excluded_by_pattern: list[Path] = field(default_factory=list)
+    # Distinct files whose bump surfaces were excluded from the
+    # write path by the operator's ``--exclude`` globs (typical use:
+    # test-fixture trees whose deliberately-old pins are test
+    # assertions). Reported, never silently truncated.
 
 
 def _resolve_repo_trust() -> bool:
@@ -161,9 +167,19 @@ def run_bump(
     github_token: str | None = None,
     policy=None,
     trust_repo: bool | None = None,
+    exclude: Sequence[str] | None = None,
 ) -> BumpReport:
     """Walk Dockerfiles under ``target``, propose ARG bumps,
     compute verdicts, optionally apply.
+
+    ``exclude`` — operator ``--exclude`` globs (see the ``_exclude``
+    module for matching semantics). Surfaces in matching files are
+    dropped from the candidate set, so ``--apply`` never edits them
+    and no verdict traffic is spent on them. The tool applies no
+    default exclusion — policy lives with the caller (typical use:
+    CI jobs protecting test-fixture trees whose deliberately-old
+    pins are test assertions). Excluded files are surfaced in
+    ``BumpReport.excluded_by_pattern``, never silently dropped.
 
     ``apply=False`` is dry-run: candidates + verdicts only, no
     file writes. ``apply=True`` rewrites in place via the
@@ -189,9 +205,10 @@ def run_bump(
         if trust_repo is None:
             trust_repo = _resolve_repo_trust()
         policy = load_policy(target, trust_repo=trust_repo)
-    candidates, skipped = _enumerate_candidates(
+    candidates, skipped, excluded_by_pattern = _enumerate_candidates(
         target, http=http, cache=cache, github_token=github_token,
         pypi_client=pypi_client,
+        exclude=exclude,
     )
     # Apply policy ``skip:`` rules — these move candidates from
     # the candidates list into the skipped list with the
@@ -319,6 +336,7 @@ def run_bump(
         candidates=candidates,
         results=results,
         skipped=skipped,
+        excluded_by_pattern=excluded_by_pattern,
     )
 
 
@@ -329,22 +347,38 @@ def _enumerate_candidates(
     cache,
     github_token: str | None,
     pypi_client: PyPIClient | None = None,
-) -> tuple[list[BumpCandidate], list[tuple[str, Path, str]]]:
+    exclude: Sequence[str] | None = None,
+) -> tuple[list[BumpCandidate], list[tuple[str, Path, str]], list[Path]]:
     """Find every (Dockerfile, ARG) pair under ``target`` with a
     built-in upstream-source mapping, query the upstream, and
-    build a candidate list."""
+    build a candidate list.
+
+    Returns ``(candidates, skipped, excluded_by_pattern)`` —
+    ``excluded_by_pattern`` is the distinct files dropped by the
+    operator's ``--exclude`` globs. File-list surfaces (Dockerfiles,
+    GHA workflows) are filtered BEFORE any upstream lookup; the
+    manifest-walker surfaces are filtered at the candidate choke
+    point below, which also acts as the safety net for every
+    future walker."""
     from core.upstream_latest.github_releases import (
         NoStableVersionsFound,
         UpstreamLookupError,
         latest_release,
         latest_tag,
     )
+    from .._exclude import matches_exclude, partition_excluded
     candidates: list[BumpCandidate] = []
     skipped: list[tuple[str, Path, str]] = []
+    excluded_files: dict[Path, None] = {}   # ordered de-dupe
     target = target.resolve()
     if not target.exists():
-        return candidates, skipped
+        return candidates, skipped, []
     dockerfiles = _find_dockerfiles(target)
+    if exclude:
+        dockerfiles, dropped = partition_excluded(
+            dockerfiles, exclude, root=target,
+        )
+        excluded_files.update((p, None) for p in dropped)
     # Cache upstream lookups per (kind, coordinate) — multiple
     # Dockerfiles may pin the same tool.
     latest_cache: dict = {}
@@ -483,6 +517,11 @@ def _enumerate_candidates(
     # pinned support only; SHA-pinned refs (raptor's convention)
     # need a tag→SHA resolver and ship in 3.b.2.
     workflow_files = _find_gha_workflows(target)
+    if exclude:
+        workflow_files, dropped = partition_excluded(
+            workflow_files, exclude, root=target,
+        )
+        excluded_files.update((p, None) for p in dropped)
     for wf in workflow_files:
         try:
             text = wf.read_text(encoding="utf-8")
@@ -496,7 +535,21 @@ def _enumerate_candidates(
         )
         candidates.extend(gha_candidates)
         skipped.extend(gha_skipped)
-    return candidates, skipped
+
+    # Candidate choke point for the --exclude globs: the manifest-
+    # based walkers above (yaml image / Helm / submodule) enumerate
+    # their own files, so their candidates are filtered here — one
+    # place every current and future surface flows through before
+    # verdict evaluation and ``--apply``.
+    if exclude:
+        kept: list[BumpCandidate] = []
+        for cand in candidates:
+            if matches_exclude(cand.file, exclude, root=target):
+                excluded_files.setdefault(cand.file, None)
+                continue
+            kept.append(cand)
+        candidates = kept
+    return candidates, skipped, list(excluded_files)
 
 
 def _enumerate_inline_install_candidates(
@@ -963,7 +1016,11 @@ def _enumerate_yaml_image_candidates(
     # ``find_manifests`` walks the target; ``parse_manifest``
     # dispatches per file shape.
     try:
-        manifests = find_manifests(target)
+        # Fully inclusive walk: write-path policy (which trees not to
+        # edit) is the operator's ``--exclude`` globs, applied at the
+        # candidate choke point in ``_enumerate_candidates`` — not the
+        # scan walker's test-path default.
+        manifests = find_manifests(target, include_test_paths=True)
     except Exception:                       # noqa: BLE001
         return candidates, skipped
     for manifest in manifests:
@@ -1075,7 +1132,11 @@ def _enumerate_helm_chart_candidates(
     candidates: list[BumpCandidate] = []
     skipped: list[tuple[str, Path, str]] = []
     try:
-        manifests = find_manifests(target)
+        # Fully inclusive walk: write-path policy (which trees not to
+        # edit) is the operator's ``--exclude`` globs, applied at the
+        # candidate choke point in ``_enumerate_candidates`` — not the
+        # scan walker's test-path default.
+        manifests = find_manifests(target, include_test_paths=True)
     except Exception:                       # noqa: BLE001
         return candidates, skipped
     for manifest in manifests:
@@ -1161,7 +1222,11 @@ def _enumerate_git_submodule_candidates(
     candidates: list[BumpCandidate] = []
     skipped: list[tuple[str, Path, str]] = []
     try:
-        manifests = find_manifests(target)
+        # Fully inclusive walk: write-path policy (which trees not to
+        # edit) is the operator's ``--exclude`` globs, applied at the
+        # candidate choke point in ``_enumerate_candidates`` — not the
+        # scan walker's test-path default.
+        manifests = find_manifests(target, include_test_paths=True)
     except Exception:                       # noqa: BLE001
         return candidates, skipped
     for manifest in manifests:
@@ -1635,6 +1700,30 @@ def render_report(report: BumpReport) -> str:
     a future commit)."""
     lines: list[str] = []
     lines.append(f"raptor-sca bump: target {report.target}")
+    if report.excluded_by_pattern:
+        n = len(report.excluded_by_pattern)
+        lines.append(
+            f"  {n} surface(s) excluded from write by --exclude patterns"
+        )
+    else:
+        # Informational guardrail (NOT a skip): fixture files in test
+        # trees often pin deliberately-old versions as test assertions.
+        # When no --exclude policy was given and edits land in such
+        # paths, say so once.
+        from .._test_paths import is_test_resident
+        root = report.target.resolve(strict=False)
+        flagged = {
+            r.candidate.file for r in report.results
+            if r.rewrite_result is not None and r.rewrite_result.applied
+            and is_test_resident(r.candidate.file, root)
+        }
+        if flagged:
+            lines.append(
+                f"  note: {len(flagged)} edited file(s) under "
+                f"test/fixture paths (tests/, testdata/, fixtures/, "
+                f"...); if those pins are test assertions, protect "
+                f"them with --exclude"
+            )
     if not report.candidates and not report.skipped:
         lines.append("  no bump candidates found")
         return "\n".join(lines) + "\n"

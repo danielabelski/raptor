@@ -38,6 +38,7 @@ from .update import (
     UpgradeChange,
     _change_to_dict,
     _emit_git_patch,
+    _filter_excluded_plans,
     _materialise_changes,
     _plan_targets,
     _PlanEntry,
@@ -143,6 +144,25 @@ def main(argv: Sequence[str]) -> int:
 
     # ---- Phase 3: plan hygiene pins -----------------------------------------
     hygiene_plans = _plan_hygiene_pins(findings_rows, vuln_plans)
+
+    # Operator --exclude globs: drop matching surfaces from the WRITE
+    # set (all three plan buckets). Scan findings above are untouched —
+    # the globs only stop edits, e.g. to test-fixture manifests whose
+    # deliberately-old pins are test assertions.
+    if args.exclude:
+        excluded_files: dict[str, None] = {}
+        vuln_plans, dropped = _filter_excluded_plans(
+            vuln_plans, args.exclude, root=target)
+        excluded_files.update((p, None) for p in dropped)
+        hygiene_plans, dropped = _filter_excluded_plans(
+            hygiene_plans, args.exclude, root=target)
+        excluded_files.update((p, None) for p in dropped)
+        major_blocked, dropped = _filter_excluded_plans(
+            major_blocked, args.exclude, root=target)
+        excluded_files.update((p, None) for p in dropped)
+        if excluded_files:
+            print(f"raptor-sca fix: {len(excluded_files)} surface(s) "
+                  f"excluded from write by --exclude patterns")
 
     # ---- Phase 3a: detect GHA-action-ref drift (independent of pins) -------
     has_gha_drift = any(
@@ -932,6 +952,17 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
                    help="allow CVE-fix upgrades that cross a major version")
     p.add_argument("--git-patch", action="store_true",
                    help="emit upgrade.patch alongside proposed/")
+    p.add_argument("--exclude", action="append", metavar="GLOB",
+                   default=None,
+                   help="glob of paths to exclude from the WRITE set "
+                        "(no pins / upgrades for matching manifests); "
+                        "repeatable. Matched against the target-"
+                        "relative path; * spans /, and a leading **/ "
+                        "also matches at the target root. Typical use: "
+                        "protecting test-fixture manifests whose "
+                        "deliberately-old pins are test assertions. "
+                        "Scanning is unaffected — findings in excluded "
+                        "trees stay reported.")
     p.add_argument("--offline", action="store_true",
                    help="skip all network calls; use cache only")
     p.add_argument("--no-llm", action="store_true",

@@ -428,3 +428,30 @@ def test_bump_missing_target_returns_error(tmp_path: Path) -> None:
            "not found" in proc.stderr.lower(), (
         f"missing-target error not helpful: {proc.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# --exclude flag wiring through the bump CLI
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_bump_cli_exclude_flag_wires_through(tmp_path: Path) -> None:
+    """`raptor-sca bump --exclude <glob>` reaches the orchestrator: the
+    excluded fixture Dockerfile surfaces in the JSON report's
+    ``excluded_by_pattern`` (filtered pre-lookup, so this needs no
+    network even beyond --offline)."""
+    repo = tmp_path / "repo"
+    fixture = repo / "testdata" / "Dockerfile"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("ARG SEMGREP_VERSION=1.50.0\n", encoding="utf-8")
+
+    proc = _run_bump(
+        [str(repo), "--json", "--exclude", "**/testdata/**"],
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["candidates"] == []
+    assert any(
+        p.endswith("testdata/Dockerfile")
+        for p in payload["excluded_by_pattern"]
+    ), payload

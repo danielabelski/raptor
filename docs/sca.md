@@ -233,6 +233,11 @@ bin/raptor-sca fix /path/to/project --allow-major
 
 # Mechanical-only mode (no LLM, CI-safe)
 bin/raptor-sca fix /path/to/project --no-llm
+
+# Never edit test-fixture manifests (pins there are test assertions)
+bin/raptor-sca fix /path/to/project --apply \
+    --exclude '**/tests/**' --exclude '**/fixtures/**' \
+    --exclude '**/testdata/**'
 ```
 
 ### Fix Flags
@@ -246,6 +251,15 @@ bin/raptor-sca fix /path/to/project --no-llm
 | `--allow-major` | Include fixes that cross a major version boundary |
 | `--no-llm` | Skip LLM analysis (mechanical-only, fast, CI-safe) |
 | `--findings <path>` | Reuse findings from a previous scan |
+| `--exclude <glob>` | Exclude matching paths from the write set (repeatable). Also accepted by `bump`. |
+
+`--exclude` filters only what gets *edited* -- scanning still reports
+findings in excluded trees. Globs match the target-relative path;
+`*` spans `/`, and a leading `**/` also matches at the target root.
+Typical use: protecting test-fixture manifests whose deliberately-old
+pins are test assertions. When patterns drop candidates, the report
+prints one summary line with the count; without `--exclude`, writes
+that land under test/fixture paths get an informational note.
 
 ### LLM-Assisted Major Bumps
 

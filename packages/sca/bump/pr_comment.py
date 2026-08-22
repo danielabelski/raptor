@@ -73,6 +73,12 @@ def render_pr_comment(
         f"| {total} | {n_clean} | {review_cell} | {block_cell} |\n\n"
     )
 
+    if report.excluded_by_pattern:
+        buf.write(
+            f"{len(report.excluded_by_pattern)} surface(s) excluded "
+            f"from write by `--exclude` patterns.\n\n"
+        )
+
     if report.results:
         # Dedup by (kind, locator, current, target). Same shape
         # as the text-mode render_report so PR comment + terminal

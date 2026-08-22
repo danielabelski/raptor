@@ -329,7 +329,8 @@ class TestBumpEntrypoint:
         def _fake_run_bump(*, target, trust_repo=None, **kw):
             seen["trust_repo"] = trust_repo
             return SimpleNamespace(target=target, candidates=[],
-                                   results=[], skipped=[])
+                                   results=[], skipped=[],
+                                   excluded_by_pattern=[])
 
         monkeypatch.setattr(orchestrator, "run_bump", _fake_run_bump)
         rc = bump_cli.main([str(tmp_path), "--json", "--no-cache",

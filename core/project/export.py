@@ -508,14 +508,43 @@ def import_project(zip_path: Path, projects_dir: Path,
             output_dir = _guard_import_output_dir(
                 output_base, project_name,
             )
-            orphaned_output = None
-            if existing and force:
-                old_output_path = Path(existing.output_dir).resolve()
-                shutil.rmtree(output_dir, ignore_errors=True)
-                mgr.delete(project_name, purge=False)
-                if old_output_path != output_dir.resolve() and old_output_path.exists():
-                    orphaned_output = str(old_output_path)
-                logger.info("Removed existing project '%s' (force=True)", project_name)
+            # Refuse a same-name destination dir that exists but is
+            # NOT a registered project (an orphan from a deleted
+            # project, an operator's unrelated dir, debris). Pre-fix
+            # the collision check consulted only the registry, so
+            # import silently MERGED into the orphan
+            # (mkdir exist_ok=True) and any late failure rmtree'd it —
+            # destroying data import never created. --force is the
+            # explicit operator override: it replaces the dir
+            # wholesale (never merges), same as it replaces a
+            # registered project's tree.
+            if output_dir.exists() and not existing and not force:
+                raise ValueError(
+                    f"Refusing import: output dir {output_dir} already "
+                    f"exists but no project '{project_name}' is "
+                    f"registered. Move the directory aside, or pass "
+                    f"--force to replace it."
+                )
+
+            # --- Stage the extraction ---
+            # Extract into a fresh private staging dir and atomically
+            # move it into place only after extraction AND the
+            # trust-demotion passes succeed. Pre-fix the loop wrote
+            # straight into output_dir and the failure cleanup
+            # rmtree'd the FINAL path — with --force the old project
+            # tree was even deleted before a single byte extracted,
+            # so a failed import destroyed the previous data with no
+            # rollback. Failure cleanup now only ever removes the
+            # staging dir import itself created.
+            import tempfile
+            Path(output_base).mkdir(parents=True, exist_ok=True)
+            staging_dir = Path(tempfile.mkdtemp(
+                prefix=f".import-{project_name}-", dir=str(output_base),
+            ))
+            # mkdtemp creates 0o700; project output dirs are plain
+            # mkdir-default dirs, so widen before the rename publishes
+            # the tree (umask still applies to files within).
+            os.chmod(staging_dir, 0o755)
 
             # --- Extract output data ---
             #
@@ -534,7 +563,6 @@ def import_project(zip_path: Path, projects_dir: Path,
             # the running cumulative bytes BEFORE writing each
             # chunk to the destination. The per-chunk write
             # short-circuits as soon as the cap is exceeded.
-            output_dir.mkdir(parents=True, exist_ok=True)
             max_size = 10 * 1024 * 1024 * 1024  # 10GB
             chunk = 1024 * 1024  # 1 MiB
             bytes_extracted = 0
@@ -568,7 +596,7 @@ def import_project(zip_path: Path, projects_dir: Path,
                             f"would exceed limit ({max_size / 1024 / 1024:.0f}MB)"
                         )
                         raise ValueError(msg)
-                    extract_dest = output_dir
+                    extract_dest = staging_dir
                     target_path = extract_dest / arcrel
                     # Resolve and re-check containment.
                     # `_check_zip_entries` already vetted the
@@ -621,8 +649,9 @@ def import_project(zip_path: Path, projects_dir: Path,
                         )
                         raise ValueError(msg)
             except Exception:
-                # Clean up partial extraction
-                shutil.rmtree(output_dir, ignore_errors=True)
+                # Clean up the partial extraction — ONLY the staging
+                # dir import itself created; never the final path.
+                shutil.rmtree(staging_dir, ignore_errors=True)
                 raise
 
     except zipfile.BadZipFile:
@@ -632,14 +661,42 @@ def import_project(zip_path: Path, projects_dir: Path,
     # Demote ALL restored annotations to hint tier BEFORE the project
     # registers (readers must never see archive-supplied stamps as
     # anything but imported). A failure here fails the import closed:
-    # remove the extracted tree rather than register a project
-    # carrying notes that would read as operator authority.
+    # remove the staged tree rather than register a project carrying
+    # notes that would read as operator authority.
     try:
-        _demote_imported_annotations(output_dir)
+        _demote_imported_annotations(staging_dir)
     except Exception as e:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        shutil.rmtree(staging_dir, ignore_errors=True)
         msg = f"Import failed while stamping restored annotations: {e}"
         raise ValueError(msg) from e
+
+    # --- Publish the staged tree ---
+    # Everything below only runs once the staged import is complete
+    # and demoted; the pre-existing tree (registered project with
+    # --force, or an unregistered orphan the operator --force'd over)
+    # is removed at the last moment before the atomic rename.
+    orphaned_output = None
+    try:
+        if existing and force:
+            old_output_path = Path(existing.output_dir).resolve()
+            mgr.delete(project_name, purge=False)
+            if old_output_path != output_dir.resolve() and old_output_path.exists():
+                orphaned_output = str(old_output_path)
+            logger.info("Removed existing project '%s' (force=True)", project_name)
+        if output_dir.exists():
+            if not force:
+                # The pre-extraction check already refused this shape;
+                # reaching it here means the dir appeared mid-import.
+                # Refuse rather than delete data import didn't create.
+                raise ValueError(
+                    f"Refusing import: output dir {output_dir} "
+                    f"appeared during import and --force was not given"
+                )
+            shutil.rmtree(output_dir)
+        staging_dir.rename(output_dir)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     # Register the project
     target = embedded_meta.get("target", "(imported)") if embedded_meta else "(imported)"

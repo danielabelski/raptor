@@ -315,7 +315,7 @@ def _strip_inline_directives(line: str) -> str:
 
 
 def _is_pip_option(line: str) -> bool:
-    head = line.split()[0] if line.split() else ""
+    head = line.split(maxsplit=1)[0] if line.split() else ""
     if head.startswith("--"):
         return any(line.startswith(p) for p in _PIP_OPTION_PREFIXES)
     return head in ("-i", "-f")

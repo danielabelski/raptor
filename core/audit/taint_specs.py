@@ -459,29 +459,29 @@ def _read_gap_source(
 
 
 _DB_WRITE_PATTERNS = [
-    re.compile(r"\b(?:INSERT|UPDATE|REPLACE)\b", re.I),
-    re.compile(r"\.(?:save|create|update|put|set|write|insert)\s*\(", re.I),
-    re.compile(r"\.(?:execute|query)\s*\(\s*[\"'](?:INSERT|UPDATE)", re.I),
+    re.compile(r"\b(?:INSERT|UPDATE|REPLACE)\b", re.IGNORECASE),
+    re.compile(r"\.(?:save|create|update|put|set|write|insert)\s*\(", re.IGNORECASE),
+    re.compile(r"\.(?:execute|query)\s*\(\s*[\"'](?:INSERT|UPDATE)", re.IGNORECASE),
 ]
 
 _DB_READ_PATTERNS = [
-    re.compile(r"\bSELECT\b", re.I),
-    re.compile(r"\.(?:get|find|filter|all|first|fetch|read|query|select)\s*\(", re.I),
-    re.compile(r"\.(?:execute|query)\s*\(\s*[\"']SELECT", re.I),
+    re.compile(r"\bSELECT\b", re.IGNORECASE),
+    re.compile(r"\.(?:get|find|filter|all|first|fetch|read|query|select)\s*\(", re.IGNORECASE),
+    re.compile(r"\.(?:execute|query)\s*\(\s*[\"']SELECT", re.IGNORECASE),
 ]
 
 
 _TABLE_NAME_RE = re.compile(
     r"(?:INTO|FROM|UPDATE|JOIN|TABLE)\s+[`\"']?(\w+)[`\"']?",
-    re.I,
+    re.IGNORECASE,
 )
 _MODEL_NAME_RE = re.compile(
     r"(\w+)\.(?:objects|query|filter|get|find|save|create|update|delete|all)\s*\(",
-    re.I,
+    re.IGNORECASE,
 )
 _CACHE_KEY_RE = re.compile(
     r"(?:cache|redis|memcache)\w*\.(?:get|set|delete|hget|hset)\s*\(\s*[\"']([^\"']+)",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -546,7 +546,7 @@ def check_stored_taint(
         source = resolved_source.get(rkey, "")
         has_sanitizer = bool(re.search(
             r"\b(?:escape|sanitiz|sanitise|html_escape|quote|param)\b",
-            source, re.I,
+            source, re.IGNORECASE,
         ))
         if has_sanitizer:
             continue
@@ -554,7 +554,7 @@ def check_stored_taint(
         has_render = bool(re.search(
             r"\b(?:render|template|format_html|format_template|render_template"
             r"|innerHTML|response_write|write_html|f[\"']|\.html\b|response\.write)\b",
-            source, re.I,
+            source, re.IGNORECASE,
         ))
         if not has_render:
             continue
@@ -601,16 +601,16 @@ def check_stored_taint(
 
 
 _CONFIG_READ_PATTERNS = [
-    re.compile(r"os\.environ\b|getenv\b|process\.env\b", re.I),
-    re.compile(r"ConfigParser|yaml\.(?:safe_)?load|json\.load|toml\.load", re.I),
-    re.compile(r"settings\.\w+|app\.config\[", re.I),
+    re.compile(r"os\.environ\b|getenv\b|process\.env\b", re.IGNORECASE),
+    re.compile(r"ConfigParser|yaml\.(?:safe_)?load|json\.load|toml\.load", re.IGNORECASE),
+    re.compile(r"settings\.\w+|app\.config\[", re.IGNORECASE),
 ]
 
 _SECURITY_DECISION_PATTERNS = [
-    re.compile(r"(?:auth|authenticat|permission|role|admin|sudo|privilege)", re.I),
-    re.compile(r"(?:tls|ssl|https|cert|cipher|encrypt|decrypt)", re.I),
-    re.compile(r"(?:cors|origin|allow|deny|firewall|whitelist|allowlist)", re.I),
-    re.compile(r"(?:debug|verbose|trace|log.?level)", re.I),
+    re.compile(r"(?:auth|authenticat|permission|role|admin|sudo|privilege)", re.IGNORECASE),
+    re.compile(r"(?:tls|ssl|https|cert|cipher|encrypt|decrypt)", re.IGNORECASE),
+    re.compile(r"(?:cors|origin|allow|deny|firewall|whitelist|allowlist)", re.IGNORECASE),
+    re.compile(r"(?:debug|verbose|trace|log.?level)", re.IGNORECASE),
 ]
 
 

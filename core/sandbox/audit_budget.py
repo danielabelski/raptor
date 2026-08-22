@@ -670,4 +670,4 @@ def from_cli_state() -> AuditBudget:
     """
     from . import state
     cli_cap = getattr(state, "_cli_sandbox_audit_budget", None)
-    return AuditBudget(global_cap=cli_cap if cli_cap else None)
+    return AuditBudget(global_cap=cli_cap or None)

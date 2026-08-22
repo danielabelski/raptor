@@ -137,7 +137,7 @@ def topological_sort(
     # Build reversed condensed DAG (callee→caller) so Kahn's gives
     # leaves first — the bottom-up order we need for summary propagation.
     rev_adj: dict[int, set[int]] = {i: set() for i in range(len(sccs))}
-    in_degree: dict[int, int] = {i: 0 for i in range(len(sccs))}
+    in_degree: dict[int, int] = dict.fromkeys(range(len(sccs)), 0)
     for node, neighbours in adj.items():
         src = node_to_scc.get(node)
         if src is None:
@@ -207,7 +207,7 @@ def resolve_scc_summaries(
         summary = build_fn(member, {})
         return {member: {"summary": summary, "converged": True, "iterations": 1}}
 
-    current: dict[str, Any] = {m: None for m in scc.members}
+    current: dict[str, Any] = dict.fromkeys(scc.members)
     converged = False
     iteration = 0
 

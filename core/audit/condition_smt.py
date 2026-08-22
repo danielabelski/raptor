@@ -1087,7 +1087,7 @@ def _z3_dispatch(
         "malloc", "calloc", "realloc", "kmalloc", "kzalloc",
     }
 
-    api_base = sink_api.split(".")[-1] if "." in sink_api else sink_api
+    api_base = sink_api.rsplit(".", maxsplit=1)[-1] if "." in sink_api else sink_api
 
     if api_base in memcpy_sinks and buffer_size is not None:
         return _z3_overflow_check(constraints, buffer_size)
@@ -1432,7 +1432,7 @@ def _z3_path_feasibility_check(
                     witness[name] = val.as_long()
                 except AttributeError:
                     pass
-        return (True, "path feasible", witness if witness else None)
+        return (True, "path feasible", witness or None)
     return (True, "solver timeout — conservatively assume path feasible", None)
 
 
@@ -1578,7 +1578,7 @@ def _z3_auth_bypass_check(
                 f"Z3 SAT: guard '{guard_text.strip()}' is satisfiable — "
                 f"early return bypasses {', '.join(bypassed_checks)}"
             ),
-            witness=witness if witness else None,
+            witness=witness or None,
         )
     elif result == z3.unsat:
         return AuthBypassResult(
@@ -2467,7 +2467,7 @@ def _z3_lock_discipline_check(
                 f"Z3 SAT: return at line {ret_line} with {lock_func} held — "
                 f"guard '{guard_text.strip()}' is satisfiable"
             ),
-            witness=witness if witness else None,
+            witness=witness or None,
         )
     elif result == z3.unsat:
         return LockDisciplineResult(
@@ -2924,7 +2924,7 @@ def _z3_resource_leak_check(
                 f"'{var_name}' — guard '{guard_text.strip()}' "
                 f"is satisfiable"
             ),
-            witness=witness if witness else None,
+            witness=witness or None,
         )
     elif result == z3.unsat:
         return ResourceLeakResult(
@@ -3829,7 +3829,7 @@ def _z3_integer_narrowing_check(
                 f"Z3 SAT: {src_type} ({src_width}-bit) → {dest_type} "
                 f"({dest_width}-bit) can overflow at line {assign_line}"
             ),
-            witness=w if w else None,
+            witness=w or None,
         )
     return IntegerNarrowingResult(
         narrowing_found=False,

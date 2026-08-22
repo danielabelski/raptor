@@ -19,15 +19,15 @@ from .coverage import to_coverage_record
 from .nosemgrep import annotate_sarif, extract_nosemgrep
 
 __all__ = [
+    "SemgrepFinding",
+    "SemgrepResult",
+    "annotate_sarif",
     "build_cmd",
+    "extract_nosemgrep",
     "is_available",
     "run_rule",
     "run_rules",
-    "version",
-    "SemgrepFinding",
-    "SemgrepResult",
-    "to_findings",
     "to_coverage_record",
-    "annotate_sarif",
-    "extract_nosemgrep",
+    "to_findings",
+    "version",
 ]

@@ -2385,7 +2385,7 @@ def _enrich_callees_with_source(
         lines = text.splitlines()
 
         start = max(0, line_start - 1) if line_start else 0
-        end = line_end if line_end else min(start + max_lines, len(lines))
+        end = line_end or min(start + max_lines, len(lines))
         end = min(end, start + max_lines)
         end = min(end, len(lines))
 
@@ -2982,7 +2982,7 @@ def _load_threat_model(target_path: Path) -> str | None:
     try:
         from core.threat_model import threat_model_prompt_block
         block = threat_model_prompt_block(target_path)
-        return block if block else None
+        return block or None
     except Exception:  # noqa: BLE001
         return None
 
@@ -3910,7 +3910,7 @@ def _read_flow_node_source(
     lines = text.splitlines()
 
     start = max(0, node_line - 1) if node_line else 0
-    end = line_end if line_end else min(start + max_lines, len(lines))
+    end = line_end or min(start + max_lines, len(lines))
     end = min(end, start + max_lines, len(lines))
 
     if start >= len(lines):

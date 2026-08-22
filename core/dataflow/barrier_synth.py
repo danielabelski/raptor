@@ -572,7 +572,7 @@ class _BarrierProposerAdapter:
         self._last_verdict_id: int = -1
 
     def propose(self, context, feedback, *, prior_verdict=None):
-        error = feedback if feedback else None
+        error = feedback or None
         if prior_verdict is not None and prior_verdict.evidence:
             vid = id(prior_verdict)
             if vid != self._last_verdict_id:

@@ -74,7 +74,7 @@ class TfHelperIndex:
     """Summaries for one compilation unit: ``(name, arity)`` pairs
     whose helper provably returns only attacker-free values."""
 
-    __slots__ = ("ok", "taint_free", "hits", "refused", "str_members")
+    __slots__ = ("hits", "ok", "refused", "str_members", "taint_free")
 
     def __init__(self) -> None:
         self.ok: bool = False

@@ -91,34 +91,34 @@ _INJECTION_PATTERNS: list[re.Pattern[str]] = [
         r"\b(?:ignore|disregard|forget|override|skip)\b.*"
         r"\b(?:previous|prior|above|all|every)\b.*"
         r"\b(?:instructions?|rules?|guidelines?|findings?|vulnerabilit)",
-        re.I | re.DOTALL,
+        re.IGNORECASE | re.DOTALL,
     ),
     re.compile(
         r"\b(?:do\s+not|don'?t|never)\b.*"
         r"\b(?:report|flag|find|detect|mention|note)\b.*"
         r"\b(?:vulnerabilit|bug|issue|flaw|problem|finding)",
-        re.I | re.DOTALL,
+        re.IGNORECASE | re.DOTALL,
     ),
     re.compile(
         r"\b(?:this\s+code|this\s+function|this\s+file)\b.*"
         r"\b(?:is\s+safe|has\s+been\s+audited|is\s+secure|"
         r"has\s+no\s+(?:bugs?|vulnerabilit|issue|flaw))",
-        re.I | re.DOTALL,
+        re.IGNORECASE | re.DOTALL,
     ),
     re.compile(
         r"\b(?:you\s+are|your\s+(?:instructions?|role|task|purpose)|"
         r"system\s+prompt|assistant\s+(?:instructions?|rules?))\b",
-        re.I,
+        re.IGNORECASE,
     ),
     re.compile(
         r"</?(?:system|instruction|prompt|user|assistant|source-code|"
         r"binary-string|decompiled|dwarf-info|function-name)\b",
-        re.I,
+        re.IGNORECASE,
     ),
     re.compile(
         r"\b(?:report|mark|classify|label)\b.*"
         r"\b(?:clean|safe|no\s+(?:issues?|findings?|bugs?|vulnerabilit))",
-        re.I,
+        re.IGNORECASE,
     ),
 ]
 

@@ -1380,7 +1380,7 @@ def _solve_pending(
 
     if result == z3.unsat:
         conflicts = _core_names(solver, label_map)
-        conflict_set = conflicts if conflicts else [t for t, _ in pending]
+        conflict_set = conflicts or [t for t, _ in pending]
         reasoning = f"infeasible ({mode}): path conditions are mutually exclusive"
         if conflicts:
             reasoning += f"; conflict: {' ⊥ '.join(conflicts[:3])}"

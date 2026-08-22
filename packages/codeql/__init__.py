@@ -44,16 +44,16 @@ def version() -> str | None:
 
 
 __all__ = [
-    "LanguageDetector",
-    "LanguageInfo",
     "BuildDetector",
     "BuildSystem",
-    "DatabaseManager",
-    "DatabaseResult",
-    "DatabaseMetadata",
-    "QueryRunner",
-    "QueryResult",
     "CodeQLTunables",
+    "DatabaseManager",
+    "DatabaseMetadata",
+    "DatabaseResult",
+    "LanguageDetector",
+    "LanguageInfo",
+    "QueryResult",
+    "QueryRunner",
     "is_available",
     "version",
 ]

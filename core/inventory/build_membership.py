@@ -169,7 +169,7 @@ def crate_module_excluded(
 
 __all__ = [
     "BuildExcluded",
+    "crate_module_excluded",
     "detect_build_excluded",
     "tu_membership_excluded",
-    "crate_module_excluded",
 ]

@@ -552,7 +552,7 @@ def _materialise_pin_changes(
     for manifest, plan_list in by_manifest.items():
         # If the CVE phase already wrote a proposed copy, read that
         # instead so both sets of changes compose.
-        base = target if target else Path.cwd()
+        base = target or Path.cwd()
         try:
             rel = manifest.resolve().relative_to(base)
         except ValueError:

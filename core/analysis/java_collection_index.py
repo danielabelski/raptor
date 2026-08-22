@@ -590,8 +590,8 @@ def compose_invocation_hooks(*hooks):
 
 __all__ = [
     "ALL_ELEMENTS",
+    "CollectionFoldResolver",
     "LocalCollectionIndex",
     "build_local_collection_index",
-    "CollectionFoldResolver",
     "compose_invocation_hooks",
 ]

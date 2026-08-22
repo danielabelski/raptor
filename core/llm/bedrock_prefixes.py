@@ -149,10 +149,10 @@ def prefix_region_mismatch(model_id: str, region: str) -> str | None:
 
 
 __all__ = [
-    "BEDROCK_REGIONAL_PREFIXES",
-    "BEDROCK_REGIONAL_SURCHARGE_PREFIXES",
     "BEDROCK_GLOBAL_PREFIX",
     "BEDROCK_PROVIDER_SEGMENTS",
+    "BEDROCK_REGIONAL_PREFIXES",
+    "BEDROCK_REGIONAL_SURCHARGE_PREFIXES",
     "bedrock_shaped_model_id",
     "mantle_model_id",
     "prefix_region_mismatch",

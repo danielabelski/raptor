@@ -189,9 +189,9 @@ def record_tool_evidence_outcomes(
 
 
 __all__ = [
+    "auto_back_prop_from_validate_run",
     "record_tool_evidence_outcome",
     "record_tool_evidence_outcomes",
-    "auto_back_prop_from_validate_run",
 ]
 
 

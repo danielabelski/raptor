@@ -109,4 +109,4 @@ def load_jsonc(text: str) -> Any:
     return json.loads(cleaned)
 
 
-__all__ = ["strip_jsonc_comments", "load_jsonc"]
+__all__ = ["load_jsonc", "strip_jsonc_comments"]

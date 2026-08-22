@@ -82,12 +82,12 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "RaptorConfig",
-    "get_logger",
-    "deduplicate_findings",
-    "parse_sarif_findings",
-    "validate_sarif",
-    "generate_scan_metrics",
-    "sanitize_finding_for_display",
     "clone_repository",
+    "deduplicate_findings",
+    "generate_scan_metrics",
+    "get_logger",
+    "parse_sarif_findings",
+    "sanitize_finding_for_display",
     "sha256_tree",
+    "validate_sarif",
 ]

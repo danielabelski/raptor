@@ -165,4 +165,4 @@ def _chunked(items: list[str], size: int):
         yield items[i:i + size]
 
 
-__all__ = ["EpssClient", "EPSS_URL"]
+__all__ = ["EPSS_URL", "EpssClient"]

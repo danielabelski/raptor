@@ -727,7 +727,7 @@ def annotate_inventory_with_edges(
 __all__ = [
     "BinaryCallEdge",
     "BinaryEdgeIndex",
+    "annotate_inventory_with_edges",
     "extract_direct_call_edges",
     "load_cached_edge_index",
-    "annotate_inventory_with_edges",
 ]

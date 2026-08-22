@@ -2582,9 +2582,9 @@ __all__ = [
     "FixtureMeasurement",
     "PrecisionReport",
     "build_corpus",
+    "main",
     "measure_fixture",
     "run_corpus",
-    "main",
 ]
 
 

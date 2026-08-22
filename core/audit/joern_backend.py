@@ -755,7 +755,7 @@ def import_sibling_joern_flows(
             "sibling joern-flow import: %d stale run(s) skipped",
             skipped_stale,
         )
-    return imported if imported else None
+    return imported or None
 
 
 def sibling_run_dirs(

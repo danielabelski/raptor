@@ -252,12 +252,12 @@ def record_boost(
 
 
 __all__ = [
+    "SUPPRESS_SOURCES",
+    "BoostEvidence",
     "ContractViolation",
     "EvidenceDirection",
-    "SUPPRESS_SOURCES",
-    "ToolSource",
-    "BoostEvidence",
     "SuppressEvidence",
+    "ToolSource",
     "assert_boost_only",
     "record_boost",
 ]

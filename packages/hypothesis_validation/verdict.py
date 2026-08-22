@@ -91,4 +91,4 @@ def aggregate(
     return out
 
 
-__all__ = ["verdict_from", "aggregate"]
+__all__ = ["aggregate", "verdict_from"]

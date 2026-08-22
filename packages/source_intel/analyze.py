@@ -115,13 +115,13 @@ _SOURCE_SIDE_STREAM_INPUT_FUNCS: frozenset[str] = (
 })
 
 _C_L1_SOURCE_CALLS: dict[str, str] = {
-    **{name: "fd" for name in sorted(_SOURCE_SIDE_FD_READ_FUNCS)},
-    **{name: "socket" for name in sorted(_SOURCE_SIDE_SOCKET_INPUT_FUNCS)},
-    **{name: "stream" for name in sorted(_SOURCE_SIDE_STREAM_INPUT_FUNCS)},
-    **{name: "env" for name in sorted(PROCESS_BOUNDARY_FUNCS)},
-    **{name: "kernel_user" for name in sorted(KERNEL_USERSPACE_FUNCS)},
-    **{name: "ipc" for name in sorted(IPC_FUNCS)},
-    **{name: "device_control" for name in sorted(DEVICE_CONTROL_FUNCS)},
+    **dict.fromkeys(sorted(_SOURCE_SIDE_FD_READ_FUNCS), "fd"),
+    **dict.fromkeys(sorted(_SOURCE_SIDE_SOCKET_INPUT_FUNCS), "socket"),
+    **dict.fromkeys(sorted(_SOURCE_SIDE_STREAM_INPUT_FUNCS), "stream"),
+    **dict.fromkeys(sorted(PROCESS_BOUNDARY_FUNCS), "env"),
+    **dict.fromkeys(sorted(KERNEL_USERSPACE_FUNCS), "kernel_user"),
+    **dict.fromkeys(sorted(IPC_FUNCS), "ipc"),
+    **dict.fromkeys(sorted(DEVICE_CONTROL_FUNCS), "device_control"),
 }
 
 
@@ -930,7 +930,7 @@ def analyze(
         )
 
     effective_rules_root = (
-        rules_dir if rules_dir else _shipped_rules_root()
+        rules_dir or _shipped_rules_root()
     )
     if effective_rules_root is None:
         return SourceIntelResult(
@@ -942,7 +942,7 @@ def analyze(
     # caller hands us a flat rules_dir (e.g. tests), accept that too —
     # if no subdirs are present, run rules from the dir directly.
     axis_dirs = _axis_dirs(effective_rules_root)
-    rule_dirs = axis_dirs if axis_dirs else [effective_rules_root]
+    rule_dirs = axis_dirs or [effective_rules_root]
 
     # Build + register the inventory for the target so the parser
     # path's `_enclosing_function` lookups go through tree-sitter
@@ -1215,7 +1215,7 @@ def _classify_size_source(
     if not file_path or not line_no:
         return None
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -1407,7 +1407,7 @@ def _classify_call_site_grade(file_path: str, call_line: int) -> str:
     if not file_path or not call_line:
         return GRADE_SAME_FUNCTION
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return GRADE_SAME_FUNCTION
@@ -1682,7 +1682,7 @@ def _crypto_call_apis() -> frozenset[str]:
                 pack_apis(root / "crypto" / "packs")
                 if root is not None else frozenset()
             )
-            apis |= packed if packed else _CRYPTO_FALLBACK_APIS
+            apis |= packed or _CRYPTO_FALLBACK_APIS
         except Exception:  # parser must keep working without packs
             logger.warning(
                 "crypto api packs unavailable; using fallback tag set",
@@ -2111,7 +2111,7 @@ def _enclosing_function(file_path: str, line: int) -> str | None:
         return via_inv
     # 2. Regex fallback (only path when no inventory is cached).
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -2895,7 +2895,7 @@ def _local_line_uses_privileged_cap(file_path: str, line_no: int) -> bool:
     constant. Functionally equivalent to adapter's helper but
     duplicated here to break the import cycle in minimal installs."""
     try:
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return False

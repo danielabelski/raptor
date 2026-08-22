@@ -382,7 +382,7 @@ def run_rule(
                 returncode=-1,
             )
 
-    sp_file_path = harnessed_rule_path if harnessed_rule_path else rule
+    sp_file_path = harnessed_rule_path or rule
     cmd = [_spatch_path() or _SPATCH_BIN, "--sp-file", str(sp_file_path)]
 
     if target.is_dir():

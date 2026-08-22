@@ -409,8 +409,7 @@ def _canonicalise_repo(url: str) -> str | None:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     path = parsed.path.lstrip("/")
-    if path.endswith(".git"):
-        path = path[: -len(".git")]
+    path = path.removesuffix(".git")
     if not host or not path:
         return None
     return f"{host}/{path}".lower()

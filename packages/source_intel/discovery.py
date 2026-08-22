@@ -132,7 +132,7 @@ def discover_aliases(target: Path) -> DiscoveryResult:
     target = Path(target)
     if not target.is_dir():
         return DiscoveryResult(
-            aliases_by_family={k: () for k in _KIND_MARKERS},
+            aliases_by_family=dict.fromkeys(_KIND_MARKERS, ()),
             headers_scanned=0,
             sources_scanned=0,
         )
@@ -284,7 +284,7 @@ def _count_usage(target: Path, names: set[str]) -> dict[str, int]:
     valid C identifiers, so word-boundary checks are safe against
     English-language false positives.
     """
-    counts: dict[str, int] = {n: 0 for n in names}
+    counts: dict[str, int] = dict.fromkeys(names, 0)
     if not names:
         return counts
 

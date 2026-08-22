@@ -75,7 +75,7 @@ def derive_replay_spec(
         port = 0
 
     source: SourceSpec | None = None
-    if image.split(":")[0] in _LOCAL_TAG_PREFIXES or _built_in_session(
+    if image.split(":", maxsplit=1)[0] in _LOCAL_TAG_PREFIXES or _built_in_session(
             image, tool_uses):
         dockerfile = _dockerfile_for(image, tool_uses)
         if dockerfile:

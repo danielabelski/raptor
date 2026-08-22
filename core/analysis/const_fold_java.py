@@ -92,9 +92,14 @@ class _FoldExt:
     the taint-free tier and the cross-file resolver. ``None`` (the
     default everywhere) is byte-for-byte the pre-extension folder."""
 
-    __slots__ = ("allow_taint_free", "xfile", "receiver_type",
-                 "union_hits", "ban_tf_system_reads",
-                 "union_member_check")
+    __slots__ = (
+        "allow_taint_free",
+        "ban_tf_system_reads",
+        "receiver_type",
+        "union_hits",
+        "union_member_check",
+        "xfile",
+    )
 
     def __init__(self, allow_taint_free: bool = False, xfile=None,
                  receiver_type=None, ban_tf_system_reads: bool = False):
@@ -561,7 +566,7 @@ def _fold_xfile_call(node, ext) -> Any:
     elif obj.type == "identifier":
         recv = obj.text.decode("utf-8", "replace")
         typed = ext.receiver_type(recv) if ext.receiver_type else None
-        cls = typed if typed else recv
+        cls = typed or recv
     else:
         cls = _receiver_chain(obj)
     if not cls:

@@ -143,6 +143,6 @@ def _reset_cache_for_tests() -> None:
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
-    "walk_source_files",
     "iter_source_files",
+    "walk_source_files",
 ]

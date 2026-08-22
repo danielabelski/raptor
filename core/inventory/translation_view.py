@@ -514,7 +514,7 @@ def preprocess_view(
     # (fidelity 2); without one, literal-only `#if 0` (fidelity 1). Either
     # way line_map stays identity — blanking replaces dead-arm characters
     # with spaces and never moves a line.
-    macros = config if config else None
+    macros = config or None
     dead = detect_preprocessor_dead_ranges(content, macros, language=language)
     parse_text = _blank_ranges(content, dead)
     return TranslationView(parse_text=parse_text, line_map=IDENTITY_LINE_MAP,
@@ -523,11 +523,11 @@ def preprocess_view(
 
 
 __all__ = [
-    "LineMap",
     "IDENTITY_LINE_MAP",
-    "TranslationView",
-    "preprocess_view",
-    "detect_preprocessor_dead_ranges",
-    "detect_macro_call_targets",
     "_C_FAMILY",
+    "LineMap",
+    "TranslationView",
+    "detect_macro_call_targets",
+    "detect_preprocessor_dead_ranges",
+    "preprocess_view",
 ]

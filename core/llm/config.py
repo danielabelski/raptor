@@ -1303,7 +1303,7 @@ def resolve_model_roles(
 
     return {
         "analysis_model": analysis_model,
-        "analysis_models": analysis if analysis else ([all_models[0]] if all_models else []),
+        "analysis_models": analysis or ([all_models[0]] if all_models else []),
         "code_model": code_model,
         "consensus_models": consensus,
         "judge_models": judge,

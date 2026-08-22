@@ -239,7 +239,7 @@ class ExploitTask(DispatchTask):
                 sca = f.get("sca", {})
                 reachability = sca.get("reachability", "")
                 in_kev = sca.get("in_kev", False)
-                if reachability in self._SCA_REACHABILITY_FOR_EXPLOIT or in_kev and reachability != "not_reachable":
+                if reachability in self._SCA_REACHABILITY_FOR_EXPLOIT or (in_kev and reachability != "not_reachable"):
                     selected.append(f)
         # Highest-priority SCA findings first so a budget-cutoff
         # truncation upstream catches the most-actionable rows.

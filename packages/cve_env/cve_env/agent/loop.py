@@ -279,9 +279,9 @@ class _StreamState:
     # recent tool (OTHER before any tool call); stage_calls counts tool
     # dispatches per stage.
     stage_costs: dict[str, float] = field(
-        default_factory=lambda: {s: 0.0 for s in STAGES}
+        default_factory=lambda: dict.fromkeys(STAGES, 0.0)
     )
-    stage_calls: dict[str, int] = field(default_factory=lambda: {s: 0 for s in STAGES})
+    stage_calls: dict[str, int] = field(default_factory=lambda: dict.fromkeys(STAGES, 0))
     last_tool_stage: str = "OTHER"
     # Adaptive cost-cap extension state. Mirrors B-20's `extension_count` +
     # `effective_max_turns` for cost. `effective_max_cost_usd` starts at

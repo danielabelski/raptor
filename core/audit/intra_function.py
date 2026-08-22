@@ -109,7 +109,7 @@ def _cleanup_call_re(
     alt = "|".join(
         re.escape(n) for n in sorted(names, key=len, reverse=True)
     )
-    return re.compile(rf"\b({alt})\s*\(", re.I)
+    return re.compile(rf"\b({alt})\s*\(", re.IGNORECASE)
 
 
 # Seed-only matcher for vocabulary-less callers.

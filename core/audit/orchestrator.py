@@ -13893,7 +13893,7 @@ def _hypothesis_to_tool_chain(
             seen_types.add(entry["type"])
 
     keyed_rule = _hypothesis_to_semgrep_rule_keyed(hypothesis, file_path)
-    semgrep_rule, semgrep_keyword = keyed_rule if keyed_rule else (None, "")
+    semgrep_rule, semgrep_keyword = keyed_rule or (None, "")
     if semgrep_rule and "semgrep" not in seen_types:
         # keyword travels with the rule so the sweep can run the
         # matching negative-control fixture before confirming.
@@ -15292,7 +15292,7 @@ def _run_tool_chain(
                         file_path=file_path,
                         function_name=function_name,
                         cocci_rule=tool_cfg["rule"],
-                        line_start=line_start if line_start else None,
+                        line_start=line_start or None,
                         line_end=None,
                         domain_vocab=domain_vocab,
                     )
@@ -15533,7 +15533,7 @@ def _run_tool_chain(
                     function_name=function_name,
                     hypothesis=hypothesis,
                     template=tool_cfg.get("template"),
-                    line_start=line_start if line_start else None,
+                    line_start=line_start or None,
                     line_end=None,
                 )
                 if cf_result.outcome == "confirmed":
@@ -20750,14 +20750,14 @@ _RECEIPT_CALL_NAME_RE = re.compile(r"\b(\w+)\(\)\s+(?:call|perform)")
 # carries none of shared/writer/race).
 _RECEIPT_FAMILY_HYP_RES = {
     "auth_mode_registration": re.compile(
-        r"auth[\s_-]*(?:mode|type)|regist|reset|unconditional", re.I,
+        r"auth[\s_-]*(?:mode|type)|regist|reset|unconditional", re.IGNORECASE,
     ),
     "shared_writer_race": re.compile(
         r"concurren|race|interleav|unsynchron|\block\b|mutex|goroutine",
-        re.I,
+        re.IGNORECASE,
     ),
     "url_boundary_composition": re.compile(
-        r"\burl\b|boundar|redirect|\bhost\b|origin", re.I,
+        r"\burl\b|boundar|redirect|\bhost\b|origin", re.IGNORECASE,
     ),
 }
 

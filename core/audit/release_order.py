@@ -234,9 +234,7 @@ def learned_verify_release_pairs(
 def _finalizer_vocabulary(
     domain_model: dict[str, Any] | None,
 ) -> dict[str, tuple[str, str]]:
-    vocab: dict[str, tuple[str, str]] = {
-        name: ("seed", "seed") for name in _SEED_FINALIZER_NAMES
-    }
+    vocab: dict[str, tuple[str, str]] = dict.fromkeys(_SEED_FINALIZER_NAMES, ("seed", "seed"))
     for pair in learned_verify_release_pairs(domain_model):
         vocab[pair["finalizer"]] = ("learned", pair["provenance"])
     return vocab
@@ -245,9 +243,7 @@ def _finalizer_vocabulary(
 def _release_vocabulary(
     domain_model: dict[str, Any] | None,
 ) -> dict[str, tuple[str, str]]:
-    vocab: dict[str, tuple[str, str]] = {
-        name: ("seed", "seed") for name in _SEED_RELEASE_NAMES
-    }
+    vocab: dict[str, tuple[str, str]] = dict.fromkeys(_SEED_RELEASE_NAMES, ("seed", "seed"))
     for pair in learned_verify_release_pairs(domain_model):
         vocab[pair["release"]] = ("learned", pair["provenance"])
     return vocab

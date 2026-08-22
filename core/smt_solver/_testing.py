@@ -57,4 +57,4 @@ def eval_bv(expr: Any, width: int) -> int:
     return s.model()[probe].as_long()
 
 
-__all__ = ["eval_predicate", "eval_bv"]
+__all__ = ["eval_bv", "eval_predicate"]

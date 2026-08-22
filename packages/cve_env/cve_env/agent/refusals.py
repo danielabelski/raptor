@@ -51,21 +51,21 @@ _RECOVERY_WINDOW: int = 4
 _REFUSAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\bI\s+(can'?t|cannot|will\s+not|won'?t)\s+(help|assist|do|provide|comply)",
-        re.I,
+        re.IGNORECASE,
     ),
-    re.compile(r"\bI\s+(must|have\s+to)\s+decline\b", re.I),
-    re.compile(r"\b(unable|not\s+able)\s+to\s+(help|assist|provide|comply)\b", re.I),
-    re.compile(r"\bI\s+(shouldn'?t|should\s+not)\s+(help|do|assist)\b", re.I),
+    re.compile(r"\bI\s+(must|have\s+to)\s+decline\b", re.IGNORECASE),
+    re.compile(r"\b(unable|not\s+able)\s+to\s+(help|assist|provide|comply)\b", re.IGNORECASE),
+    re.compile(r"\bI\s+(shouldn'?t|should\s+not)\s+(help|do|assist)\b", re.IGNORECASE),
     re.compile(
         r"\b(against|violates?)\s+(my|the|Anthropic[']?s?)\s+"
         r"(guidelines|policy|policies|usage\s+policy)\b",
-        re.I,
+        re.IGNORECASE,
     ),
     re.compile(
         r"\b(as\s+an\s+AI|as\s+a\s+language\s+model)\b.*?\b(cannot|can'?t|won'?t)\b",
-        re.I,
+        re.IGNORECASE,
     ),
-    re.compile(r"\bI\s+don'?t\s+feel\s+comfortable\b", re.I),
+    re.compile(r"\bI\s+don'?t\s+feel\s+comfortable\b", re.IGNORECASE),
     # This apology pattern requires a refusal-class keyword
     # (cannot/won't/unable/refuse/decline/must not/shouldn't) within ~100
     # non-period chars after the trigger — the natural window for "I apologize,
@@ -76,16 +76,16 @@ _REFUSAL_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bI\s+apologize[,.]?\s+but\s+(?:I|this|that)\b"
         r"[^.]{0,100}?\b"
         r"(?:cannot|can'?t|won'?t|unable|refuse|refus|decline|must\s+not|shouldn'?t)\b",
-        re.I,
+        re.IGNORECASE,
     ),
-    re.compile(r"\brefus(?:e|ing|ed)\s+to\s+(help|assist|do|provide)\b", re.I),
+    re.compile(r"\brefus(?:e|ing|ed)\s+to\s+(help|assist|do|provide)\b", re.IGNORECASE),
     # claude-agent-sdk's bundled `claude` CLI wraps AUP-class refusals in an
     # "API Error" prefix. The wrapper text uses "unable to respond" (not
     # "unable to help|assist") and "violate our Usage Policy" (not "violate
     # the/my/Anthropic's policy"), so the patterns above don't match. These two
     # patterns close that gap.
-    re.compile(r"\bAPI\s+Error:.*?\bunable\s+to\s+respond\b", re.I),
-    re.compile(r"\bviolat(?:e|es)\s+(?:our|the)\s+Usage\s+Policy\b", re.I),
+    re.compile(r"\bAPI\s+Error:.*?\bunable\s+to\s+respond\b", re.IGNORECASE),
+    re.compile(r"\bviolat(?:e|es)\s+(?:our|the)\s+Usage\s+Policy\b", re.IGNORECASE),
 )
 
 

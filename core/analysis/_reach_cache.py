@@ -388,9 +388,9 @@ def cache_dir() -> Path:
 
 
 __all__ = [
+    "cache_dir",
+    "clear_cache",
     "compute_fingerprint",
     "load_index",
     "save_index",
-    "clear_cache",
-    "cache_dir",
 ]

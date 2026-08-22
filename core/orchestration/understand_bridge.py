@@ -1633,7 +1633,7 @@ def _import_unchecked_flow_conditions(
             f"{flow.get('entry_point')} → {sink_id}"
         )
         digest = hashlib.sha256(
-            f"{flow.get('entry_point')!r}|{sink_id}".encode("utf-8"),
+            f"{flow.get('entry_point')!r}|{sink_id}".encode(),
         ).hexdigest()[:12]
         path_id = f"map-flow-{digest}"
         if path_id in existing_ids or entry_name in legacy_names:

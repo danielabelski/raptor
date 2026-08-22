@@ -116,4 +116,4 @@ def _extract_cves(record: object) -> set[str]:
     return out
 
 
-__all__ = ["KevClient", "KEV_URL"]
+__all__ = ["KEV_URL", "KevClient"]

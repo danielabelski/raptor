@@ -45,7 +45,7 @@ from .schema.events import (
 class _RowContext:
     """Extracted common data from a GH Archive row."""
 
-    __slots__ = ("row", "payload", "when", "who", "repository", "verification")
+    __slots__ = ("payload", "repository", "row", "verification", "when", "who")
 
     def __init__(self, row: dict[str, Any], table: str | None = None):
         self.row = row

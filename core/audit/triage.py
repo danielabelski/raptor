@@ -425,7 +425,7 @@ def vendor_decision(tr: TriageResult) -> str | None:
 
 def format_triage_summary(results: dict[str, TriageResult]) -> str:
     """One-line summary of triage distribution."""
-    counts = {b: 0 for b in TriageBucket}
+    counts = dict.fromkeys(TriageBucket, 0)
     for tr in results.values():
         counts[tr.bucket] += 1
     total = len(results)
@@ -476,7 +476,7 @@ def _read_function_source(gap: dict[str, Any], target_path: Path) -> str:
     if start <= 0 or end < start:
         return ""
     try:
-        with open(resolved, "r", errors="replace") as f:
+        with open(resolved, errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return ""

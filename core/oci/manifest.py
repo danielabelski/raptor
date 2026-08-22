@@ -205,14 +205,14 @@ def select_platform(
 
 
 __all__ = [
-    "DEFAULT_PLATFORM_OS",
     "DEFAULT_PLATFORM_ARCH",
-    "LayerDescriptor",
+    "DEFAULT_PLATFORM_OS",
     "ImageManifest",
     "IndexEntry",
+    "LayerDescriptor",
     "is_image_index",
     "is_image_manifest",
-    "parse_image_manifest",
     "parse_image_index",
+    "parse_image_manifest",
     "select_platform",
 ]

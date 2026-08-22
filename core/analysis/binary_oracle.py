@@ -1086,7 +1086,7 @@ def _combine_verdicts(
                 "_CLASS_PRIORITY.", c,
             )
     full = [c for c, t in pairs if t == "full"]
-    pool = full if full else [c for c, _ in pairs]
+    pool = full or [c for c, _ in pairs]
     return max(pool, key=lambda v: _CLASS_PRIORITY.get(v, 0))
 
 

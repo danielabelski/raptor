@@ -125,8 +125,7 @@ def _patch_url_for(ref: RepoRef) -> str | None:
     from urllib.parse import urlsplit
     if is_kernel_org_url(url):
         base = url.rstrip("/")
-        if base.endswith(".git"):
-            base = base[:-4]
+        base = base.removesuffix(".git")
         return f"{base}/commit/?id={sha}&format=patch"
     try:
         parts = urlsplit(url)
@@ -139,14 +138,12 @@ def _patch_url_for(ref: RepoRef) -> str | None:
     # but require it to be a true path component):
     if "/cgit/" in path:
         base = url.rstrip("/")
-        if base.endswith(".git"):
-            base = base[:-4]
+        base = base.removesuffix(".git")
         return f"{base}/commit/?id={sha}&format=patch"
     if host in ("git.savannah.gnu.org", "savannah.gnu.org",
                 "git.savannah.nongnu.org", "savannah.nongnu.org"):
         base = url.rstrip("/")
-        if base.endswith(".git"):
-            base = base[:-4]
+        base = base.removesuffix(".git")
         return f"{base}/commit/?id={sha}&format=patch"
 
     return None

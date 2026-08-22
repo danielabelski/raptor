@@ -256,4 +256,4 @@ def write_bytes_atomically(
         raise
 
 
-__all__ = ["write_text_atomically", "write_bytes_atomically"]
+__all__ = ["write_bytes_atomically", "write_text_atomically"]

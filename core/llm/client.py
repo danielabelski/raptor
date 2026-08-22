@@ -1963,7 +1963,7 @@ class LLMClient:
         held (clamped to [0, cap])."""
         with self._stats_lock:
             cap = self.config.max_cost_per_scan
-            held = max(0.0, min(float(amount), cap if cap else 0.0))
+            held = max(0.0, min(float(amount), cap or 0.0))
             self._budget_reserve = held
             return held
 

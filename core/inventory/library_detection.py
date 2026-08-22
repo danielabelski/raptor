@@ -41,11 +41,11 @@ _RE_PYPROJECT_POETRY_SCRIPTS = re.compile(r"(?m)^\s*\[tool\.poetry\.scripts\]")
 _RE_SETUP_PACKAGES = re.compile(r"\b(packages|py_modules)\s*=")
 _RE_SETUP_PACKAGES_TOML = re.compile(r"(?m)^\s*packages\s*=")
 _RE_CSPROJ_OUTPUT_TYPE = re.compile(
-    r"<OutputType>\s*([A-Za-z]+)\s*</OutputType>", re.I,
+    r"<OutputType>\s*([A-Za-z]+)\s*</OutputType>", re.IGNORECASE,
 )
-_RE_CSPROJ_SDK_LIB = re.compile(r'Sdk\s*=\s*"Microsoft\.NET\.Sdk"', re.I)
+_RE_CSPROJ_SDK_LIB = re.compile(r'Sdk\s*=\s*"Microsoft\.NET\.Sdk"', re.IGNORECASE)
 _RE_CSPROJ_SDK_APP = re.compile(
-    r'Sdk\s*=\s*"Microsoft\.NET\.Sdk\.(Web|Worker)"', re.I,
+    r'Sdk\s*=\s*"Microsoft\.NET\.Sdk\.(Web|Worker)"', re.IGNORECASE,
 )
 
 # Directories never worth descending for manifests. Mirrors the dir entries of
@@ -280,7 +280,7 @@ def _check_java(manifests, root, has_main):
         text = _read_text(p)
         if text is None:
             continue
-        m = re.search(r"<packaging>\s*([a-z]+)\s*</packaging>", text, re.I)
+        m = re.search(r"<packaging>\s*([a-z]+)\s*</packaging>", text, re.IGNORECASE)
         packaging = m.group(1).lower() if m else "jar"  # Maven default = jar
         if packaging in ("war", "ear"):
             return ("application", f"{_rel(p, root)}: Maven {packaging}")

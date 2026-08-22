@@ -220,7 +220,7 @@ def render_text(rep: CorpusReport) -> str:
     if rep.sound:
         for backend in ("smt", "codeql", ""):
             n = rep.sound_by_backend.get(backend, 0)
-            label = backend if backend else "<unknown>"
+            label = backend or "<unknown>"
             out.append(f"  {label:8s} : {_fmt_rate(n, rep.sound)}")
         attempts = rep.tier0_attempts_saved()
         out.append(

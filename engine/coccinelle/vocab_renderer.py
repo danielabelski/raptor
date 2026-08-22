@@ -216,7 +216,7 @@ def render(rule_path: Path, vocab: Any) -> Path | None:
             out.append(_extend_identifier_list(line, names))
             modified = modified or bool(names)
             i += 1
-        elif '= {"' in stripped or '= {' in stripped and '"' in stripped:
+        elif '= {"' in stripped or ('= {' in stripped and '"' in stripped):
             out.append(_extend_python_set(line, names))
             modified = modified or bool(names)
             i += 1

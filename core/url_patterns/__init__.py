@@ -66,8 +66,7 @@ def normalize_slug(slug: str) -> str:
     # may have been captured: e.g. `slug.,`).
     while slug and slug[-1] in ")]>,.;":
         slug = slug[:-1]
-    if slug.endswith(".git"):
-        slug = slug[:-4]
+    slug = slug.removesuffix(".git")
     return slug.lower()
 
 

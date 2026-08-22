@@ -608,7 +608,7 @@ def primers_from_domain_model(
         for po in paired:
             acq = po.get("acquire", "")
             rel = po.get("release", "")
-            if acq and re.search(r"\b" + re.escape(acq.lower()) + r"\b", source_lower) or rel and re.search(r"\b" + re.escape(rel.lower()) + r"\b", source_lower):
+            if (acq and re.search(r"\b" + re.escape(acq.lower()) + r"\b", source_lower)) or (rel and re.search(r"\b" + re.escape(rel.lower()) + r"\b", source_lower)):
                 relevant_pairs.append(po)
         if relevant_pairs:
             score = 6.0 + len(relevant_pairs)

@@ -101,7 +101,7 @@ def gather_prereqs(
     if not _has_c_cpp_source(target):
         return PrereqFacts(skipped_reason="no_c_cpp_source")
 
-    effective_rules_dir = rules_dir if rules_dir else _shipped_prereqs_rules_dir()
+    effective_rules_dir = rules_dir or _shipped_prereqs_rules_dir()
     if effective_rules_dir is None:
         return PrereqFacts(skipped_reason="rules_dir_missing")
 

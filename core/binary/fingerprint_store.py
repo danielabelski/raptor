@@ -144,7 +144,7 @@ def load_fingerprint(
     if not file_path.is_file():
         return None
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             payload = json.load(f)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.debug(
@@ -210,7 +210,7 @@ def iter_refs(
             # final-named entry is what's load-bearing.
             continue
         try:
-            with open(entry, "r", encoding="utf-8") as f:
+            with open(entry, encoding="utf-8") as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue

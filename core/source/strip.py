@@ -30,8 +30,8 @@ from pathlib import Path
 
 __all__ = [
     "C_FAMILY_SUFFIXES",
-    "strip_comments",
     "strip_c_comments",
+    "strip_comments",
     "strip_python_comments",
     "strip_shell_comments",
 ]

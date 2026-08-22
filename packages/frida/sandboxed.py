@@ -61,7 +61,7 @@ def _find_frida_site() -> str | None:
     if not frida_bin:
         return None
     try:
-        with open(frida_bin, "r", encoding="utf-8") as f:
+        with open(frida_bin, encoding="utf-8") as f:
             shebang = f.readline(256).strip()
         if shebang.startswith("#!"):
             parts = shebang[2:].strip().split()

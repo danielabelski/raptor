@@ -1424,7 +1424,7 @@ def _handle_settings(mgr, args) -> None:
         print(f"Project '{name}' settings:")
         width = max(len(k) for k in view)
         for k, v in view.items():
-            print(f"  {k:<{width}}  {v if v else '(unset)'}")
+            print(f"  {k:<{width}}  {v or '(unset)'}")
         return
     if value is None:
         print(_red(f"set requires a value: raptor project set {key} "

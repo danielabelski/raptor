@@ -131,7 +131,7 @@ _DETECTION_CLASSIFIER_MODULES: dict[str, str] = {
 }
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _channel_detection_classifier(namespace: str):
     """The channel's own ``is_detection_rule_id``, or None when the
     channel module is unavailable (fall back to the string heuristics
@@ -212,7 +212,7 @@ def _is_single_tool_evidence(part: str) -> bool:
             return _is_single_tool_evidence(part[len(wrapper):])
     if _is_detection_variant(part):
         return False
-    root = part.split(":")[0] if ":" in part else part
+    root = part.split(":", maxsplit=1)[0] if ":" in part else part
     return root in _TOOL_NAMESPACES or part in _TOOL_NAMESPACES
 
 

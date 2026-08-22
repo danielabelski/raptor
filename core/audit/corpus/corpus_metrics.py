@@ -181,7 +181,7 @@ def compute_attribution(rows: list[dict[str, Any]]) -> AttributionSummary:
     """
     from .attribution import ATTRIBUTION_CELLS, attribute_row
 
-    cells: dict[str, int] = {c: 0 for c in ATTRIBUTION_CELLS}
+    cells: dict[str, int] = dict.fromkeys(ATTRIBUTION_CELLS, 0)
     misattributed: list[dict[str, Any]] = []
     unattributed: list[dict[str, Any]] = []
     checked = 0

@@ -89,7 +89,7 @@ def environment_source_patterns() -> tuple[str, ...]:
 
 __all__ = [
     "ENVIRONMENT_SOURCE_SYSTEM_READS",
-    "NON_SOURCE_SYSTEM_READS",
     "NON_SOURCE_JVM_CONSTANT_FIELDS",
+    "NON_SOURCE_SYSTEM_READS",
     "environment_source_patterns",
 ]

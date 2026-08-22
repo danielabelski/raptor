@@ -15,8 +15,8 @@ from core.ux.interactivity import (
 
 __all__ = [
     "INTERACTIVE",
-    "NON_INTERACTIVE",
     "NONINTERACTIVE_ENV",
+    "NON_INTERACTIVE",
     "session_interactivity",
     "session_may_ask",
 ]

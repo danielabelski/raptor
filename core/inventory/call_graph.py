@@ -2331,7 +2331,7 @@ class _JavaCallGraph:
         #     Method.invoke / Constructor.newInstance patterns.
         if chain == ["Class", "forName"]:
             self.graph.indirection.add(INDIRECTION_IMPORTLIB)
-        elif chain[-1:] == ["invoke"] and len(chain) >= 2 or chain[-1:] == ["newInstance"] and len(chain) >= 2:
+        elif (chain[-1:] == ["invoke"] and len(chain) >= 2) or (chain[-1:] == ["newInstance"] and len(chain) >= 2):
             self.graph.indirection.add(INDIRECTION_REFLECT)
 
         caller = self._enclosing[-1] if self._enclosing else None
@@ -2345,7 +2345,7 @@ class _JavaCallGraph:
         if (self._class_stack and not self._class_stack[-1].nested
                 and self._enclosing
                 and (len(chain) == 1
-                     or len(chain) == 2 and chain[0] == "this")):
+                     or (len(chain) == 2 and chain[0] == "this"))):
             receiver_class = self._class_stack[-1].name
 
         # Typed dispatch (Tier 2): when the receiver is a simple
@@ -3535,7 +3535,7 @@ class _CSharpCallGraph:
                         and not self._class_stack[-1].nested
                         and self._enclosing
                         and (len(chain) == 1
-                             or len(chain) == 2 and chain[0] == "this")):
+                             or (len(chain) == 2 and chain[0] == "this"))):
                     receiver_class = self._class_stack[-1].name
                 # Typed dispatch (Tier 2): declared type of a simple
                 # ``recv.m()`` receiver, when not a this/implicit call.
@@ -4456,7 +4456,7 @@ class _CCallGraph:
         if chain is None:
             return
 
-        if is_fn_pointer or len(chain) == 1 and chain[0] in self._fn_ptr_vars:
+        if is_fn_pointer or (len(chain) == 1 and chain[0] in self._fn_ptr_vars):
             self.graph.indirection.add(INDIRECTION_FN_POINTER)
 
         caller = self._enclosing[-1] if self._enclosing else None
@@ -5152,7 +5152,7 @@ class _CppCallGraph(_CCallGraph):
         # Extension: qualified_identifier as a callee.
         if node.type == self._QUALIFIED_IDENTIFIER:
             parts = self._qualified_parts(node)
-            return (parts if parts else None), False
+            return (parts or None), False
         if node.type == self._FIELD_EXPRESSION:
             # Override C base: field_expression in C++ may root on
             # ``this`` (own node type) rather than an identifier.

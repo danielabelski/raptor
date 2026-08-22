@@ -158,7 +158,7 @@ def main(argv: Sequence[str]) -> int:
         # via .git-walk). When no patch was generated (no applicable
         # changes), the helper handles it as a graceful no-op.
         rc = apply_patch_to_target(
-            repo_root if repo_root else Path.cwd(),
+            repo_root or Path.cwd(),
             patch_path,
             caller_label="raptor-sca fix --cve-only",
         )

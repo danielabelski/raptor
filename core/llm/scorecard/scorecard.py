@@ -1140,7 +1140,7 @@ class ModelScorecard:
             # have exclusive access to the rename-replace dance.
             content = ""
             try:
-                with open(path, "r", encoding="utf-8") as data_fh:
+                with open(path, encoding="utf-8") as data_fh:
                     content = data_fh.read()
             except FileNotFoundError:
                 pass

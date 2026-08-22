@@ -205,7 +205,7 @@ def _parse_top_level(raw: bytes) -> tuple[str, ...] | None:
         line.strip() for line in lines
         if line.strip() and not line.strip().startswith("#")
     )
-    return modules if modules else None
+    return modules or None
 
 
 # ---------------------------------------------------------------------------

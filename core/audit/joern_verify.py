@@ -677,7 +677,7 @@ def run_guard_dominance_check(
       * ``error`` — Joern unavailable, invalid input, or query error.
     """
     tool_stamp = GUARD_DOMINANCE_STAMP
-    sink_bare = sink_call.split(".")[-1]
+    sink_bare = sink_call.rsplit(".", maxsplit=1)[-1]
     pre = _validate_common(
         tool_stamp, target_path, file_path, function_name, server,
         {"identifier": identifier, "sink_call": sink_bare},
@@ -809,7 +809,7 @@ def run_flow_reachability_check(
       * ``error`` — Joern unavailable, invalid input, or query error.
     """
     tool_stamp = FLOW_STAMP
-    sink_bare = sink_call.split(".")[-1]
+    sink_bare = sink_call.rsplit(".", maxsplit=1)[-1]
     pre = _validate_common(
         tool_stamp, target_path, file_path, function_name, server,
         {"source_id": source_id, "sink_call": sink_bare},

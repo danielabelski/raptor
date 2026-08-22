@@ -489,9 +489,9 @@ def _short_int(n: int) -> str:
 
 
 __all__ = [
-    "TargetTypeDefaults",
     "DescribeReport",
+    "TargetTypeDefaults",
     "build_describe_report",
-    "format_text",
     "format_json",
+    "format_text",
 ]

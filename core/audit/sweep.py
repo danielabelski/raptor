@@ -1182,7 +1182,7 @@ def get_smt_verb_role(verb: str) -> str:
 
     Unknown verbs default to ``"detection"``.
     """
-    bare = verb.split(":")[0]
+    bare = verb.split(":", maxsplit=1)[0]
     return _SMT_VERB_ROLES.get(bare, "detection")
 
 
@@ -1210,7 +1210,7 @@ VACUOUS_SMT_VERBS = frozenset({
 
 def is_vacuous_smt_verb(verb: str) -> bool:
     """True when *verb* (bare or ``smt:``-prefixed) is in the vacuous set."""
-    bare = verb.split(":")[-1] if verb.startswith("smt:") else verb
+    bare = verb.rsplit(":", maxsplit=1)[-1] if verb.startswith("smt:") else verb
     return bare.split(":")[0] in VACUOUS_SMT_VERBS
 
 

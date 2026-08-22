@@ -3078,7 +3078,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Quick scope: {len(labels)} label(s) remaining "
               f"({len(skipped_repos)} repo(s) skipped)")
 
-    models = args.model if args.model else [""]
+    models = args.model or [""]
 
     _print_run_header(labels, args, models)
 

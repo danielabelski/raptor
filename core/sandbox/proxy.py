@@ -1837,7 +1837,7 @@ class EgressProxy:
 
         # Single-family path: no race needed, just walk in order.
         if not v6 or not v4:
-            return await _walk_serial(v6 if v6 else v4)
+            return await _walk_serial(v6 or v4)
 
         # Dual-family: race v6 first, kick v4 _HAPPY_EYEBALLS_DELAY later.
         # Take the first connector to succeed; cancel the other. We only

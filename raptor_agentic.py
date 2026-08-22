@@ -2220,7 +2220,7 @@ Examples:
     # RAPTOR_CALLER_DIR happened to be set).
     out_dir = get_output_dir(
         "agentic", target_name=repo_name,
-        explicit_out=args.out if args.out else None,
+        explicit_out=args.out or None,
         target_path=str(repo_path),
     )
     # Parent (RAPTOR_DIR/out/, project dir, or --out target's parent) is
@@ -3535,7 +3535,7 @@ Examples:
         validate_input_report = (
             out_dir / "orchestrated_report.json"
             if orchestration_result
-            else (analysis_report if analysis_report else out_dir / "autonomous" / "autonomous_analysis_report.json")
+            else (analysis_report or out_dir / "autonomous" / "autonomous_analysis_report.json")
         )
         postpass_result = run_validate_postpass(
             target=original_repo_path,
@@ -3960,7 +3960,7 @@ Examples:
         except OSError:
             _suppr_count = 0
         if _suppr_count > 0:
-            _candidates = total_findings if total_findings else _suppr_count
+            _candidates = total_findings or _suppr_count
             _pct = (_suppr_count / _candidates * 100) if _candidates else 0
             if _pct >= 50.0:
                 print(

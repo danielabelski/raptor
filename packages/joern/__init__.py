@@ -30,20 +30,20 @@ from .tunables import JoernTunables
 _logger = logging.getLogger(__name__)
 
 __all__ = [
-    "build_cpg",
-    "cleanup_cpg",
-    "run_query",
-    "run_taint_query",
-    "check_prereqs",
-    "is_available",
-    "version",
     "FlowStep",
     "JoernCPG",
     "JoernMethodSummary",
     "JoernResult",
-    "TaintFlow",
     "JoernServer",
+    "TaintFlow",
+    "build_cpg",
+    "check_prereqs",
+    "cleanup_cpg",
+    "is_available",
     "joern_session",
+    "run_query",
+    "run_taint_query",
+    "version",
 ]
 
 

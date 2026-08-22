@@ -699,7 +699,7 @@ def bench(
     # while bounding pathological input.
     _MAX_SAMPLE_BYTES = 50 * 1024 * 1024
     try:
-        with open(sample, "r", encoding="utf-8") as _sf:
+        with open(sample, encoding="utf-8") as _sf:
             _sample_text = _sf.read(_MAX_SAMPLE_BYTES + 1)
     except OSError as e:
         typer.echo(f"bench: cannot read sample {sample}: {e}", err=True)

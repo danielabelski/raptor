@@ -2074,8 +2074,7 @@ def _candidate_qualified_names(
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
-        if base.endswith("/__init__"):
-            base = base[: -len("/__init__")]
+        base = base.removesuffix("/__init__")
         if base:
             candidates.append(f"{base.replace('/', '.')}.{fn_name}")
         # src-layout: ``src/mypkg/foo.py`` is imported as ``mypkg.foo``
@@ -2096,8 +2095,7 @@ def _candidate_qualified_names(
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
-        if base.endswith("/index"):
-            base = base[: -len("/index")]
+        base = base.removesuffix("/index")
         if base:
             module_form = base.replace("/", ".")
             # Class-qualified takes priority — JS / Ruby classes
@@ -4135,8 +4133,8 @@ def _find_file_record(
 
 
 __all__ = [
-    "CallersResult",
     "CalleesResult",
+    "CallersResult",
     "ClosureResult",
     "ExternalFunction",
     "FunctionId",
@@ -4151,13 +4149,13 @@ __all__ = [
     "callees_of",
     "callers_of",
     "enclosing_function",
+    "entry_reachability",
     "forward_closure",
+    "frida_runtime_trace_present",
     "function_called",
     "is_framework_callable",
-    "entry_reachability",
     "is_lexically_dead",
     "is_registered_via_call",
-    "frida_runtime_trace_present",
     "module_aborts_on_load",
     "parse_evidence_entry",
     "reverse_closure",

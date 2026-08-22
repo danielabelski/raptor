@@ -1263,7 +1263,7 @@ def default_executors(
     normalized step kwargs.
     """
     endpoint = handle.endpoint()
-    host_ip, host_port = endpoint if endpoint else ("", 0)
+    host_ip, host_port = endpoint or ("", 0)
     return {
         "container_status": lambda: check_container_status(handle, hooks=hooks),
         "http_check": lambda **kw: check_http(
@@ -1314,7 +1314,7 @@ def verify_plan(
         }
     if endpoint is None and handle is not None:
         endpoint = handle.endpoint()
-    host_ip, host_port = endpoint if endpoint else ("", 0)
+    host_ip, host_port = endpoint or ("", 0)
 
     plan = canonicalize_plan(plan)
     plan, _injected_indices = inject_version_assertion(

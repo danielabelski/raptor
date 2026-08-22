@@ -9,8 +9,7 @@ def strip_import_prefix(name: str) -> str:
     """Remove radare2 / linker import prefixes, keeping dotted segments."""
     value = str(name or "")
     for prefix in _IMPORT_PREFIXES:
-        if value.startswith(prefix):
-            value = value[len(prefix):]
+        value = value.removeprefix(prefix)
     return value
 
 

@@ -104,7 +104,7 @@ _warn_lock = threading.Lock()
 
 def _token() -> str | None:
     tok = os.environ.get("GITHUB_TOKEN")
-    return tok if tok else None
+    return tok or None
 
 
 def warn_if_token_missing(echo=None) -> None:

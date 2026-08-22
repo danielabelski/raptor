@@ -56,7 +56,7 @@ def _read_manifest_lines(manifest_path: Path) -> set[str]:
             import fcntl as _fcntl
         except ImportError:
             _fcntl = None
-        with open(manifest_path, "r", encoding="utf-8",
+        with open(manifest_path, encoding="utf-8",
                   errors="replace") as f:
             if _fcntl is not None:
                 try:

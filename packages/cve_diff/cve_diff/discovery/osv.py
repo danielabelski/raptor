@@ -225,8 +225,7 @@ class OSVDiscoverer:
         """
         if not url:
             return ""
-        if url.endswith(".git"):
-            url = url[:-4]
+        url = url.removesuffix(".git")
         if url.startswith("git://"):
             url = "https://" + url[len("git://"):]
         elif url.startswith("ssh://git@"):

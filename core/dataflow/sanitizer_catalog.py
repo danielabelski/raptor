@@ -289,9 +289,9 @@ def match_sanitizers_in_cfg(
 
 __all__ = [
     "SanitizerBinding",
-    "nodes_of",
-    "sink_classes_for_cwe",
-    "sanitizer_callables_for_cwe",
     "all_sanitizer_callables",
     "match_sanitizers_in_cfg",
+    "nodes_of",
+    "sanitizer_callables_for_cwe",
+    "sink_classes_for_cwe",
 ]

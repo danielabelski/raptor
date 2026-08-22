@@ -303,7 +303,7 @@ def function_spans(source: str, file_path: str = "") -> list[FunctionSpan]:
     if tree is None:
         return function_spans_regex(source)
     spans = _function_spans_ts(tree, source)
-    return spans if spans else function_spans_regex(source)
+    return spans or function_spans_regex(source)
 
 
 # ── tree-sitter tier ────────────────────────────────────────────────

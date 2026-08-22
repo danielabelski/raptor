@@ -218,12 +218,12 @@ def distinct_models(records: Sequence[PanelRecord]) -> list[str]:
 
 
 __all__ = [
-    "PanelRecord",
     "DEFAULT_DECISION_CLASS_PREFIX",
+    "PanelRecord",
+    "discover_reports",
+    "distinct_models",
+    "group_by_decision_class",
+    "group_by_finding",
     "load_from_orchestrated_report",
     "load_from_paths",
-    "discover_reports",
-    "group_by_finding",
-    "group_by_decision_class",
-    "distinct_models",
 ]

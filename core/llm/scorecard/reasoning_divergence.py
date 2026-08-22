@@ -184,6 +184,6 @@ def record_reasoning_divergence(
 
 
 __all__ = [
-    "record_reasoning_divergence",
     "DEFAULT_DIVERGENCE_THRESHOLD",
+    "record_reasoning_divergence",
 ]

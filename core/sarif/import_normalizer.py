@@ -24,28 +24,28 @@ logger = get_logger()
 # ---------------------------------------------------------------------------
 
 _CWE_MESSAGE_PATTERNS: list[tuple] = [
-    (re.compile(r"sql.?inject", re.I), "CWE-89"),
-    (re.compile(r"command.?inject|os.?command|shell.?inject", re.I), "CWE-78"),
-    (re.compile(r"cross.?site.?script|xss", re.I), "CWE-79"),
-    (re.compile(r"path.?travers|directory.?travers", re.I), "CWE-22"),
-    (re.compile(r"buffer.?over(?:flow|run)|stack.?overflow", re.I), "CWE-120"),
-    (re.compile(r"heap.?over(?:flow|run)", re.I), "CWE-122"),
-    (re.compile(r"format.?string", re.I), "CWE-134"),
-    (re.compile(r"integer.?over(?:flow|wrap)", re.I), "CWE-190"),
-    (re.compile(r"double.?free", re.I), "CWE-415"),
-    (re.compile(r"use.?after.?free|uaf", re.I), "CWE-416"),
-    (re.compile(r"null.?(?:pointer|deref|dereference)", re.I), "CWE-476"),
-    (re.compile(r"out.?of.?bounds.?write", re.I), "CWE-787"),
-    (re.compile(r"out.?of.?bounds.?read", re.I), "CWE-125"),
-    (re.compile(r"uninitiali[sz]ed", re.I), "CWE-908"),
-    (re.compile(r"deseriali[sz]ation", re.I), "CWE-502"),
-    (re.compile(r"(?:server.?side|ssrf).?request.?forg", re.I), "CWE-918"),
-    (re.compile(r"race.?condition|toctou|time.?of.?check", re.I), "CWE-367"),
-    (re.compile(r"type.?confusion", re.I), "CWE-843"),
-    (re.compile(r"hardcoded.?(?:secret|password|credential|key)", re.I), "CWE-798"),
+    (re.compile(r"sql.?inject", re.IGNORECASE), "CWE-89"),
+    (re.compile(r"command.?inject|os.?command|shell.?inject", re.IGNORECASE), "CWE-78"),
+    (re.compile(r"cross.?site.?script|xss", re.IGNORECASE), "CWE-79"),
+    (re.compile(r"path.?travers|directory.?travers", re.IGNORECASE), "CWE-22"),
+    (re.compile(r"buffer.?over(?:flow|run)|stack.?overflow", re.IGNORECASE), "CWE-120"),
+    (re.compile(r"heap.?over(?:flow|run)", re.IGNORECASE), "CWE-122"),
+    (re.compile(r"format.?string", re.IGNORECASE), "CWE-134"),
+    (re.compile(r"integer.?over(?:flow|wrap)", re.IGNORECASE), "CWE-190"),
+    (re.compile(r"double.?free", re.IGNORECASE), "CWE-415"),
+    (re.compile(r"use.?after.?free|uaf", re.IGNORECASE), "CWE-416"),
+    (re.compile(r"null.?(?:pointer|deref|dereference)", re.IGNORECASE), "CWE-476"),
+    (re.compile(r"out.?of.?bounds.?write", re.IGNORECASE), "CWE-787"),
+    (re.compile(r"out.?of.?bounds.?read", re.IGNORECASE), "CWE-125"),
+    (re.compile(r"uninitiali[sz]ed", re.IGNORECASE), "CWE-908"),
+    (re.compile(r"deseriali[sz]ation", re.IGNORECASE), "CWE-502"),
+    (re.compile(r"(?:server.?side|ssrf).?request.?forg", re.IGNORECASE), "CWE-918"),
+    (re.compile(r"race.?condition|toctou|time.?of.?check", re.IGNORECASE), "CWE-367"),
+    (re.compile(r"type.?confusion", re.IGNORECASE), "CWE-843"),
+    (re.compile(r"hardcoded.?(?:secret|password|credential|key)", re.IGNORECASE), "CWE-798"),
 ]
 
-_CWE_RE = re.compile(r"CWE-(\d+)", re.I)
+_CWE_RE = re.compile(r"CWE-(\d+)", re.IGNORECASE)
 
 
 def _infer_cwe(rule_id: str, message: str) -> str | None:

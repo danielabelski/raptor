@@ -482,7 +482,7 @@ def import_validation_results(
             lesson=lesson or None,
             validate_verdict=validate_verdict,
             validate_reason=reason or None,
-            source_drifted=source_drifted if source_drifted else None,
+            source_drifted=source_drifted or None,
             # Kind-aware producer: a correction to an existing review
             # inherits its grade (legacy audit entries without the
             # stamp default to audit). A validated finding in a

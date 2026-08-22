@@ -315,10 +315,10 @@ def priors_from_validation(
 
 __all__ = [
     "BetaPrior",
-    "posterior_update",
-    "uniform_prior",
     "jeffreys_prior",
-    "weak_informative_prior",
+    "posterior_update",
     "prior_from_validation_labels",
     "priors_from_validation",
+    "uniform_prior",
+    "weak_informative_prior",
 ]

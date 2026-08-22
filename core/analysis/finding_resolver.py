@@ -656,7 +656,7 @@ def _resolve_source(
     node = _node_at_lineno(cfg, source_line)
     if node is None:
         return None, frozenset()
-    symbols = node.defs if node.defs else node.uses
+    symbols = node.defs or node.uses
     return node, symbols
 
 
@@ -957,8 +957,7 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
                     f"in {fn_name}"
                 ),
             )
-        source_symbols = source_node.defs \
-            if source_node.defs else source_node.uses
+        source_symbols = source_node.defs or source_node.uses
 
     sink_node = node_at_or_statement_start(parsed.sink_lineno)
     if sink_node is None or not sink_node.call_sites:
@@ -1150,7 +1149,7 @@ def _resolve_source_cpp(
     node = _cpp_node_at_lineno(cfg, source_line)
     if node is None:
         return None, frozenset()
-    symbols = node.defs if node.defs else node.uses
+    symbols = node.defs or node.uses
     return node, symbols
 
 
@@ -1194,8 +1193,8 @@ def _cpp_node_at_lineno(cfg: CPPCFG, lineno: int) -> CPPCFGNode | None:
 
 
 __all__ = [
-    "ResolvedFinding",
-    "ResolutionFailure",
     "Resolution",
+    "ResolutionFailure",
+    "ResolvedFinding",
     "resolve_finding",
 ]

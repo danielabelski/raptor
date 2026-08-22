@@ -321,9 +321,7 @@ def _insert_vocabulary(
     """Merged insert verbs → ``(vocab_source, provenance)``.
     Precedence learned > pack > seed on collision (registry sources
     win the grade)."""
-    vocab: dict[str, tuple[str, str]] = {
-        name: ("seed", "seed") for name in _SEED_INSERT_NAMES
-    }
+    vocab: dict[str, tuple[str, str]] = dict.fromkeys(_SEED_INSERT_NAMES, ("seed", "seed"))
     pack_inserts, _ = _pack_collection_verbs(target_path)
     for name in pack_inserts:
         vocab[name] = ("pack", "linux_kernel")
@@ -336,9 +334,7 @@ def _alloc_vocabulary(
     domain_model: dict[str, Any] | None,
 ) -> dict[str, tuple[str, str]]:
     """Merged allocator verbs: seeds plus learned ``alloc`` pairs."""
-    vocab: dict[str, tuple[str, str]] = {
-        name: ("seed", "seed") for name in _SEED_ALLOC_NAMES
-    }
+    vocab: dict[str, tuple[str, str]] = dict.fromkeys(_SEED_ALLOC_NAMES, ("seed", "seed"))
     for entry in (domain_model or {}).get("paired_operations") or []:
         if not isinstance(entry, dict):
             continue

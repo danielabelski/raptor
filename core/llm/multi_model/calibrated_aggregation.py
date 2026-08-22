@@ -273,9 +273,9 @@ def verdict_to_json(verdict: CalibratedVerdict) -> dict:
 
 
 __all__ = [
-    "CalibratedVerdict",
     "METHOD_DAWID_SKENE",
     "METHOD_VOTE",
+    "CalibratedVerdict",
     "calibrate_results",
     "verdict_to_json",
 ]

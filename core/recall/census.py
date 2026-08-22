@@ -35,7 +35,7 @@ UNCLASSIFIED = "unclassified"
 #: should come from measured data, not speculation.
 _IDIOM_PROBES: list[tuple[str, re.Pattern[str]]] = [
     ("esapi_encoder",
-     re.compile(r"ESAPI\s*\.\s*encoder\s*\(\s*\)\s*\.\s*encode", re.S)),
+     re.compile(r"ESAPI\s*\.\s*encoder\s*\(\s*\)\s*\.\s*encode", re.DOTALL)),
     ("owasp_java_encoder",
      re.compile(r"org\.owasp\.encoder|Encode\.for")),
     ("esapi_other",

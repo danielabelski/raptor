@@ -884,7 +884,7 @@ class BinaryUnderstand:
                 dangerous_exact.add(base)
 
         def _match_dangerous(name: str) -> str | None:
-            base = name.split(".")[-1]
+            base = name.rsplit(".", maxsplit=1)[-1]
             if name in dangerous_exact or base in _DANGEROUS_IMPORTS:
                 return base
             classification = classify_security_api(name)

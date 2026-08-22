@@ -591,7 +591,7 @@ class CorpusGenerator:
             # Record characteristics. `size` reflects the actual
             # file size (not the truncated read length).
             knowledge = {
-                "size": file_size if file_size else len(content),
+                "size": file_size or len(content),
                 "has_nulls": b"\x00" in content,
                 "has_high_bytes": any(b > 127 for b in content),
                 "crash_type": crash_type,

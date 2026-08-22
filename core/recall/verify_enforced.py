@@ -167,7 +167,7 @@ def verify_enforced_paths(
 
 
 __all__ = [
+    "render_verify_markdown",
     "verify_enforced",
     "verify_enforced_paths",
-    "render_verify_markdown",
 ]

@@ -842,7 +842,7 @@ def find_dead(idx: RepoIndex):
     def own_body_refs(fd: FuncDef):
         c = 0
         for n in ast.walk(fd.node):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == fd.name or isinstance(n, ast.Attribute) and n.attr == fd.name:
+            if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == fd.name) or (isinstance(n, ast.Attribute) and n.attr == fd.name):
                 c += 1
         return c
 
@@ -898,7 +898,7 @@ def find_dead(idx: RepoIndex):
             # subtract own-module self refs inside the class (e.g., factory
             # classmethods returning cls) are attr/name loads of 'cls', fine.
             for n in ast.walk(ci.node):
-                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == cname or isinstance(n, ast.Attribute) and n.attr == cname:
+                if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == cname) or (isinstance(n, ast.Attribute) and n.attr == cname):
                     uses -= 1
             if uses > 0:
                 continue

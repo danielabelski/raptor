@@ -519,7 +519,7 @@ class CExtractor:
     def _c_metadata(self, line: str, name: str) -> FunctionMetadata | None:
         """Extract return type and storage class from the text before the function name."""
         try:
-            prefix = line.split(name)[0].strip() if name in line else ""
+            prefix = line.split(name, maxsplit=1)[0].strip() if name in line else ""
             words = prefix.split()
             storage = set()
             type_words = []

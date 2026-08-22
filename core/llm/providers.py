@@ -2863,7 +2863,7 @@ class AnthropicProvider(LLMProvider):
             "model": self.config.model_name,
             "max_tokens": max_tokens,
             "messages": wire_messages,
-            "tools": tool_schemas if tool_schemas else None,
+            "tools": tool_schemas or None,
         }
         if anthropic_task_budget_beta:
             kwargs["betas"] = [_ANTHROPIC_TASK_BUDGET_BETA]
@@ -3136,7 +3136,7 @@ class AnthropicProvider(LLMProvider):
             "model": self.config.model_name,
             "max_tokens": max_tokens,
             "messages": wire_messages,
-            "tools": tool_schemas if tool_schemas else None,
+            "tools": tool_schemas or None,
         }
         if system_arg is not None:
             kwargs["system"] = system_arg

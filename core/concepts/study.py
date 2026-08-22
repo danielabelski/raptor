@@ -2101,7 +2101,7 @@ def _names_in_signal(items: list[StudyItem], attr: str) -> set[str]:
 
 def _bare_name(value: str) -> str:
     """``foo_lock(dev)`` → ``foo_lock``."""
-    return value.split("(")[0].strip()
+    return value.split("(", maxsplit=1)[0].strip()
 
 
 def _parse_api_vocabulary(
@@ -2915,9 +2915,9 @@ def _semantic_dedup_concepts(concepts: list[Concept]) -> list[Concept]:
     for i in range(len(concepts)):
         for j in range(i + 1, len(concepts)):
             sim = _jaccard(keywords[i], keywords[j])
-            if sim >= threshold or sim >= id_boost_threshold and _jaccard(
+            if sim >= threshold or (sim >= id_boost_threshold and _jaccard(
                 id_keywords[i], id_keywords[j],
-            ) >= 0.4:
+            ) >= 0.4):
                 union(i, j)
 
     groups: dict[int, list[int]] = {}

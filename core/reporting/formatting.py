@@ -32,8 +32,7 @@ def display_rule_id(rule_id: str | None) -> str:
     if not rule_id:
         return "unknown"
     short = rule_id
-    if short.startswith(_SEMGREP_REGISTRY_CACHE_PREFIX):
-        short = short[len(_SEMGREP_REGISTRY_CACHE_PREFIX):]
+    short = short.removeprefix(_SEMGREP_REGISTRY_CACHE_PREFIX)
     # Collapse trailing leaf-duplication: `...foo.foo` -> `...foo`.
     # Split on '.' so it only fires on the rule-id structure, not
     # if the trailing segment happens to repeat a substring within

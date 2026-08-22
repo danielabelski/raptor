@@ -144,7 +144,7 @@ def recover_external_ingress(
     def bind_function(name: str) -> tuple[str, str, str]:
         exact = functions.get(name)
         if exact is None:
-            base = name.split(".")[-1]
+            base = name.rsplit(".", maxsplit=1)[-1]
             exact = next(
                 (
                     item

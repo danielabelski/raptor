@@ -272,7 +272,7 @@ def _line_invokes_library_call(
     assignment) and claim it is ``shlex.quote``.  Without this check
     the curated-table lookup adjudicates a call that never happens.
     """
-    tail = library_call.split(".")[-1]
+    tail = library_call.rsplit(".", maxsplit=1)[-1]
     lib_parts = library_call.split(".")
     for m in _re.finditer(r"([A-Za-z_][\w.]*)\s*\(", line):
         name_parts = m.group(1).split(".")

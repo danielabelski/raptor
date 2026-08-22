@@ -344,16 +344,16 @@ def resolve_reachability(
 
 
 __all__ = [
-    "Reachability",
-    "WitnessKind",
-    "Soundness",
-    "Witness",
-    "ReachabilityVerdict",
-    "VerdictSpec",
-    "VERDICTS",
     "STRUCTURALLY_SUPPRESSIBLE_KINDS",
-    "verdict_from_classification",
+    "VERDICTS",
+    "Reachability",
+    "ReachabilityVerdict",
+    "Soundness",
+    "VerdictSpec",
+    "Witness",
+    "WitnessKind",
     "blocker_for",
     "prompt_verdict_for",
     "resolve_reachability",
+    "verdict_from_classification",
 ]

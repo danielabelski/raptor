@@ -161,9 +161,9 @@ def verdict_from_posterior(
 
 
 __all__ = [
-    "Posterior",
     "UNIFORM_PRIOR",
-    "update",
+    "Posterior",
     "posterior_from",
+    "update",
     "verdict_from_posterior",
 ]

@@ -359,8 +359,8 @@ class AdjacencyGraph(Generic[N]):
 
 
 __all__ = [
-    "Graph",
-    "DomTree",
     "AdjacencyGraph",
+    "DomTree",
+    "Graph",
     "build_dom_tree",
 ]

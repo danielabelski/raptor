@@ -400,7 +400,7 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
             "profile": profile,
             "block_network": block_network,
             "inherit_netns": True,
-            "env": env if env else None,
+            "env": env or None,
             "capture_output": True,
             "timeout": timeout,
             "restrict_reads": restrict_reads,
@@ -484,7 +484,7 @@ def _wait_listen_port(port: int, timeout: float) -> bool:
     while time.monotonic() < deadline:
         for tcp_path in ("/proc/self/net/tcp", "/proc/self/net/tcp6"):
             try:
-                with open(tcp_path, "r", encoding="utf-8") as f:
+                with open(tcp_path, encoding="utf-8") as f:
                     for line in f:
                         parts = line.split()
                         if len(parts) < 4:

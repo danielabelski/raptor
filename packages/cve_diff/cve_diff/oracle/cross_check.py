@@ -77,8 +77,7 @@ def _load_pick_from_osv_file(summary_dir: Path, cve_id: str) -> tuple[str, str]:
         m = _GH_COMMIT_URL.search(url)
         if m:
             slug = m.group(1)
-            if slug.endswith(".git"):
-                slug = slug[:-4]
+            slug = slug.removesuffix(".git")
             return slug, m.group(2)
     # Fallback: the repo field + the first fixed event.
     affected = data.get("affected") or []
@@ -110,8 +109,7 @@ def _load_pick_from_osv_file(summary_dir: Path, cve_id: str) -> tuple[str, str]:
             slug = ""
             if m:
                 slug = m.group(1)
-                if slug.endswith(".git"):
-                    slug = slug[:-4]
+                slug = slug.removesuffix(".git")
             events = rng.get("events") or []
             if not isinstance(events, list):
                 continue

@@ -1428,7 +1428,7 @@ def _count_actionable(
         if (ecosystem_allowlist is not None
                 and c.ecosystem not in ecosystem_allowlist):
             continue
-        if c.status == "promoted" or c.status == "review_required" and allow_major_without_review or (c.status in ("degraded_safety", "downgraded_safety")
+        if c.status == "promoted" or (c.status == "review_required" and allow_major_without_review) or (c.status in ("degraded_safety", "downgraded_safety")
               and allow_degraded):
             total += 1
     return total

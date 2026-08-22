@@ -582,14 +582,14 @@ def _extract_assignment_parts(
 
         # Get first identifier from LHS
         lhs_name = ""
-        for c in (lhs_list.children if lhs_list.children else [lhs_list]):
+        for c in (lhs_list.children or [lhs_list]):
             if c.type == "identifier":
                 lhs_name = _node_text(c, src)
                 break
 
         # Get first expression from RHS
         rhs = None
-        for c in (rhs_list.children if rhs_list.children else [rhs_list]):
+        for c in (rhs_list.children or [rhs_list]):
             if c.type != ",":
                 rhs = c
                 break

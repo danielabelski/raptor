@@ -292,9 +292,9 @@ def _sha256_of_file(path: Path, *, chunk_size: int = 64 * 1024) -> str:
 
 __all__ = [
     "BUCKETS",
-    "CapabilityFingerprint",
     "FINGERPRINT_SCHEMA_VERSION",
     "HIGH_SEVERITY_BUCKETS",
+    "CapabilityFingerprint",
     "bucket_imports",
     "capability_fingerprint",
 ]

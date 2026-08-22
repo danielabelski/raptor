@@ -290,7 +290,7 @@ def _find_string_producers(
                 node.value.value, str
             ):
                 producers.append((node.value.value, node.lineno))
-        elif isinstance(node, ast.Assign) or isinstance(node, ast.AnnAssign) and node.value is not None:
+        elif isinstance(node, ast.Assign) or (isinstance(node, ast.AnnAssign) and node.value is not None):
             _collect_string_constants(node.value, producers)
     return producers
 

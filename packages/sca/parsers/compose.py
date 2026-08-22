@@ -246,7 +246,7 @@ def _split_image_ref(ref: str) -> tuple:
         name, _, digest = ref.rpartition("@")
         if ":" in name.rsplit("/", 1)[-1]:
             name = name.rsplit(":", 1)[0]
-        return name, digest if digest else None
+        return name, digest or None
     # Tag pin (last colon, but only AFTER the last slash so we
     # don't confuse a registry port like ``localhost:5000``).
     last_slash = ref.rfind("/")
@@ -254,5 +254,5 @@ def _split_image_ref(ref: str) -> tuple:
     if ":" in rest:
         prefix = ref[:last_slash + 1] if last_slash >= 0 else ""
         rest_name, _, tag = rest.partition(":")
-        return prefix + rest_name, tag if tag else None
+        return prefix + rest_name, tag or None
     return ref, None

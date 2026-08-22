@@ -264,7 +264,7 @@ def _resolve_weights(schema: dict[str, Any]) -> dict[str, float]:
     for signature, weights in _WEIGHT_REGISTRY:
         if signature <= field_names:
             return weights
-    return {f: _DEFAULT_WEIGHT for f in field_names}
+    return dict.fromkeys(field_names, _DEFAULT_WEIGHT)
 
 
 # ---- Schema helpers ----------------------------------------------------------

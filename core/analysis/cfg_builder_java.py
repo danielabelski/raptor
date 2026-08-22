@@ -1510,7 +1510,7 @@ def _refine_constant_ifs(
 __all__ = [
     "JavaCFG",
     "JavaCFGNode",
-    "build_java_intraproc_cfg",
     "build_import_map",
+    "build_java_intraproc_cfg",
     "find_enclosing_method",
 ]

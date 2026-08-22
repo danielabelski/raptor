@@ -1994,7 +1994,7 @@ def _derive_entry_points(checklist: dict[str, Any]) -> set:
                         entries.add(f"{file_path}:{name}")
                 elif visibility != "static":
                     entries.add(f"{file_path}:{name}")
-            elif lang == "go" and name[:1].isupper() or lang == "rust" and visibility == "pub":
+            elif (lang == "go" and name[:1].isupper()) or (lang == "rust" and visibility == "pub"):
                 entries.add(f"{file_path}:{name}")
 
     return entries

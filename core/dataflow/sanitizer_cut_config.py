@@ -109,7 +109,7 @@ def _resolve_parity_log(
             return raw
     if not want_default:
         return None
-    base = run_dir if run_dir else "."
+    base = run_dir or "."
     return os.path.join(base, DEFAULT_PARITY_LOG_NAME)
 
 
@@ -379,16 +379,16 @@ def configure_from_args(
 __all__ = [
     "VALID_MODES",
     "SanitizerCutConfig",
+    "add_cli_arguments",
+    "audit_dir",
     "config_for_mode",
     "configure",
     "configure_from_args",
-    "persist",
-    "load_persisted",
-    "add_cli_arguments",
     "current",
+    "lexical_fallback_enabled",
+    "load_persisted",
+    "parity_log_path",
+    "persist",
     "reset",
     "value_bound_enabled",
-    "lexical_fallback_enabled",
-    "parity_log_path",
-    "audit_dir",
 ]

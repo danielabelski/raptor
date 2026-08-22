@@ -78,7 +78,7 @@ _LOCK_CALL_RE = re.compile(
     r"|pthread_mutex_lock"
     r"|sync\.(?:Mutex|RWMutex)\.(?:Lock|RLock)"
     r"|\.acquire)\s*\(",
-    re.I,
+    re.IGNORECASE,
 )
 
 _UNLOCK_CALL_RE = re.compile(
@@ -88,7 +88,7 @@ _UNLOCK_CALL_RE = re.compile(
     r"|pthread_mutex_unlock"
     r"|\.Unlock|\.RUnlock"
     r"|\.release)\s*\(",
-    re.I,
+    re.IGNORECASE,
 )
 
 _LOCK_NAME_RE = re.compile(

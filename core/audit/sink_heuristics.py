@@ -34,14 +34,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _WRAPPER_NAME_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"(?:^|_)(?:exec|execute|run|eval|do_query)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:query|sql|db_|database)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:render|template|format_html)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:deseriali[sz]e|unpickle|unmarshal|decode_obj)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:dispatch|invoke|call_handler|process_cmd)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:write_file|read_file|open_file|serve_file)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:send_request|http_get|http_post|fetch_url)(?:$|_)", re.I),
-    re.compile(r"(?:^|_)(?:run_command|shell|spawn|popen)(?:$|_)", re.I),
+    re.compile(r"(?:^|_)(?:exec|execute|run|eval|do_query)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:query|sql|db_|database)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:render|template|format_html)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:deseriali[sz]e|unpickle|unmarshal|decode_obj)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:dispatch|invoke|call_handler|process_cmd)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:write_file|read_file|open_file|serve_file)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:send_request|http_get|http_post|fetch_url)(?:$|_)", re.IGNORECASE),
+    re.compile(r"(?:^|_)(?:run_command|shell|spawn|popen)(?:$|_)", re.IGNORECASE),
 ]
 
 _SIDE_EFFECT_TARGETS: frozenset[str] = frozenset({

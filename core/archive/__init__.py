@@ -16,9 +16,9 @@ from .cache import safe_cache_name
 from .errors import ArchiveError, DecompressionLimitExceeded, UnsupportedArchive
 
 __all__ = [
-    "ArchiveError",
     "DEFAULT_MAX_FILES",
     "DEFAULT_MAX_TOTAL_BYTES",
+    "ArchiveError",
     "DecompressionLimitExceeded",
     "UnsupportedArchive",
     "detect_format",

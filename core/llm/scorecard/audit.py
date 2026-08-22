@@ -95,7 +95,7 @@ class AuditReport:
 def _empty_event_summary(event_type: str) -> EventTypeSummary:
     return EventTypeSummary(
         event_type=event_type,
-        cells_at_thresholds={t: 0 for t in THRESHOLDS},
+        cells_at_thresholds=dict.fromkeys(THRESHOLDS, 0),
     )
 
 

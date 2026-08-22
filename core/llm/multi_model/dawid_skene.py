@@ -262,15 +262,11 @@ def estimate(
     model_names = sorted({r.model for r in records})
 
     # ----- 2. Initialise model reliabilities ----------------------------
-    reliabilities: dict[str, tuple[float, float]] = {
-        m: (initial_reliability, initial_reliability)
-        for m in model_names
-    }
+    reliabilities: dict[str, tuple[float, float]] = dict.fromkeys(model_names, (initial_reliability, initial_reliability))
     fixed_class_rate = prior.mean
 
     # ----- 3. EM loop ---------------------------------------------------
-    posteriors: dict[str, float] = {fid: fixed_class_rate
-                                    for fid in finding_ids}
+    posteriors: dict[str, float] = dict.fromkeys(finding_ids, fixed_class_rate)
     iterations = 0
     converged = False
     for iteration in range(1, max_iter + 1):
@@ -367,11 +363,11 @@ def estimate_partitioned(
 
 
 __all__ = [
-    "ModelReliability",
-    "FindingPosterior",
+    "DEFAULT_CLIP_EPSILON",
+    "DEFAULT_INITIAL_RELIABILITY",
     "DawidSkeneResult",
+    "FindingPosterior",
+    "ModelReliability",
     "estimate",
     "estimate_partitioned",
-    "DEFAULT_INITIAL_RELIABILITY",
-    "DEFAULT_CLIP_EPSILON",
 ]

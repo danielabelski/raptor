@@ -1941,10 +1941,10 @@ def _check_js_patterns(
         if re.search(
             r'child_process.*\b(?:exec|execSync|spawn|execFile)\s*\(',
             stripped,
-        ) or re.search(
+        ) or (re.search(
             r'\b(?:exec|execSync|spawn|spawnSync|execFile)\s*\(',
             stripped,
-        ) and re.search(r'child_process|require.*child', source):
+        ) and re.search(r'child_process|require.*child', source)):
             result.hits.append(PrefilterHit(
                 rule_id="js-command-exec",
                 message="child_process execution — command injection risk",

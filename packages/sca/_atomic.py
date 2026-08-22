@@ -62,4 +62,4 @@ def atomic_write_bytes(
     write_bytes_atomically(path, content)
 
 
-__all__ = ["atomic_write_text", "atomic_write_bytes"]
+__all__ = ["atomic_write_bytes", "atomic_write_text"]

@@ -332,4 +332,4 @@ def _build_purl(name: str, version: str | None) -> str:
     return base
 
 
-__all__ = ["parse_manifest", "parse_lockfile"]
+__all__ = ["parse_lockfile", "parse_manifest"]

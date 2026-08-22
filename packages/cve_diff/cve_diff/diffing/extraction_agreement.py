@@ -158,7 +158,7 @@ def _summarize_n(bundles_named: list[tuple[str, DiffBundle]]) -> dict:
     # Per-source disagreement count (a source is an "outlier" if every
     # pair involving it is disagree/partial).
     names = [n for n, _ in bundles_named]
-    disagree_count = {n: 0 for n in names}
+    disagree_count = dict.fromkeys(names, 0)
     for key, v in pairwise.items():
         if v == "disagree":
             a, b = key.split(":", 1)

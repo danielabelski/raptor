@@ -387,7 +387,7 @@ def store_view(store: CoverageStore, checklist: dict[str, Any]) -> dict[str, Any
     covered_any = 0
     reviewable_total = 0
     reviewed_count = 0
-    by_category = {c: 0 for c in _CATEGORIES}
+    by_category = dict.fromkeys(_CATEGORIES, 0)
     by_kind: dict[str, int] = {}
     llm_gap: list[dict[str, Any]] = []
     total_gap = 0

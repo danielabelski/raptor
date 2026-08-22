@@ -704,8 +704,7 @@ def _is_exploit_host_url(url: str) -> bool:
         host = urlparse(url).netloc.lower()
     except Exception:                                       # noqa: BLE001
         return False
-    if host.startswith("www."):
-        host = host[4:]
+    host = host.removeprefix("www.")
     return host in _OSV_EVIDENCE_EXPLOIT_HOSTS
 
 

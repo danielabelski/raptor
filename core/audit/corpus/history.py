@@ -287,8 +287,7 @@ def append_records(path: Path, records: list[dict[str, Any]]) -> None:
     """Append records to the JSONL store (append-only, one per line)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
+        f.writelines(json.dumps(rec, sort_keys=True) + "\n" for rec in records)
 
 
 def record_run(
@@ -630,7 +629,7 @@ def format_runs(runs: list[dict[str, Any]]) -> str:
             f"{(r.get('timestamp') or '')[:25]:<26} "
             f"{(r.get('pipeline_tree_sha') or '')[:12]:<12} "
             f"{run_profile(r)[:9]:<9} "
-            f"{str(config.get('mode') or ''):<10} "
+            f"{config.get('mode') or ''!s:<10} "
             f"{totals.get('labels', 0):>6} "
             f"{totals.get('matched', 0):>6} "
             f"${float(r.get('cost_usd') or 0.0):>8.4f} "

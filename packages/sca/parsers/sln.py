@@ -108,8 +108,7 @@ def find_sln_referenced_csprojs(
     # ``.sln`` files often carry a UTF-8 BOM. ``read_bounded``
     # returns the raw decoded string; strip a leading BOM so the
     # first Project line still matches the line-anchored regex.
-    if text.startswith("﻿"):
-        text = text[1:]
+    text = text.removeprefix("﻿")
     parent = sln_path.parent.resolve()
     if repo_root is not None:
         try:

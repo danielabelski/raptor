@@ -98,8 +98,7 @@ def _gitlab_host_and_slug(repo_url: str) -> tuple[str | None, str | None]:
     host, hostname, slug = m.group(1), m.group(2).lower(), m.group(3)
     if hostname not in _GITLAB_ALLOWED_HOSTS:
         return None, None
-    if slug.endswith(".git"):
-        slug = slug[:-4]
+    slug = slug.removesuffix(".git")
     return host, slug
 
 

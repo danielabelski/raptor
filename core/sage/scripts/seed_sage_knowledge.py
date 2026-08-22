@@ -328,7 +328,7 @@ def _chunk_text(text: str, max_chars: int = 1500) -> list[str]:
     if current.strip():
         chunks.append(current.strip())
 
-    return chunks if chunks else [text[:max_chars]]
+    return chunks or [text[:max_chars]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

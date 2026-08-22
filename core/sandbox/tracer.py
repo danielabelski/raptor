@@ -1884,7 +1884,7 @@ def _cli_main(argv: list | None = None) -> int:
     audit_filter = None
     if config_path is not None:
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 audit_filter = json.load(f)
         except OSError as e:
             sys.stderr.write(

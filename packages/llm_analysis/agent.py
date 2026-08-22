@@ -337,7 +337,7 @@ class VulnerabilityContext:
         # the agent can analyse the visible portion.
         _MAX_SOURCE_BYTES = 10 * 1024 * 1024
         try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
                 content = f.read(_MAX_SOURCE_BYTES + 1)
             if len(content) > _MAX_SOURCE_BYTES:
                 logger.warning(
@@ -401,7 +401,7 @@ class VulnerabilityContext:
             # rationale: bound the in-flight memory regardless of
             # source-file size.
             _MAX_SOURCE_BYTES = 10 * 1024 * 1024
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
                 content = f.read(_MAX_SOURCE_BYTES + 1)
             if len(content) > _MAX_SOURCE_BYTES:
                 content = content[:_MAX_SOURCE_BYTES]

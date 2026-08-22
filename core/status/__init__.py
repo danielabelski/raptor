@@ -102,4 +102,4 @@ def normalize_findings(data: dict) -> None:
                 feasibility["status"] = normalize_status(feasibility["status"])
 
 
-__all__ = ["normalize_status", "normalize_findings"]
+__all__ = ["normalize_findings", "normalize_status"]

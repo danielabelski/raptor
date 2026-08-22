@@ -14,9 +14,9 @@ from .broker.context_routing import select_by_context
 from .broker.decision_log import DecisionLog, DecisionRecord
 
 __all__ = [
+    "DecisionLog",
+    "DecisionRecord",
     "ModelHint",
     "SpeedTier",
     "select_by_context",
-    "DecisionLog",
-    "DecisionRecord",
 ]

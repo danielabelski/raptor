@@ -128,16 +128,16 @@ _LANG_EXTRACTORS = {
 # --- Sensitivity scoring ---
 
 _SECURITY_GUARD_PATTERNS = [
-    re.compile(r"\b(?:auth|permission|privilege|access|role)\b", re.I),
-    re.compile(r"\b(?:null|nil|none|nullptr)\b", re.I),
-    re.compile(r"\b(?:bounds|size|length|count|limit|max|min)\b", re.I),
-    re.compile(r"\b(?:lock|mutex|semaphore|atomic)\b", re.I),
+    re.compile(r"\b(?:auth|permission|privilege|access|role)\b", re.IGNORECASE),
+    re.compile(r"\b(?:null|nil|none|nullptr)\b", re.IGNORECASE),
+    re.compile(r"\b(?:bounds|size|length|count|limit|max|min)\b", re.IGNORECASE),
+    re.compile(r"\b(?:lock|mutex|semaphore|atomic)\b", re.IGNORECASE),
 ]
 
 _LIFECYCLE_FUNCTION_PATTERNS = [
-    re.compile(r"\b(?:init|setup|create|alloc|new|open|start)\b", re.I),
-    re.compile(r"\b(?:free|destroy|close|cleanup|teardown|release|del)\b", re.I),
-    re.compile(r"\b(?:exec|fork|clone|spawn)\b", re.I),
+    re.compile(r"\b(?:init|setup|create|alloc|new|open|start)\b", re.IGNORECASE),
+    re.compile(r"\b(?:free|destroy|close|cleanup|teardown|release|del)\b", re.IGNORECASE),
+    re.compile(r"\b(?:exec|fork|clone|spawn)\b", re.IGNORECASE),
 ]
 
 

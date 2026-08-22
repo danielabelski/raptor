@@ -1248,10 +1248,10 @@ def _confidence_from_dict(raw: dict[str, Any]) -> Any:
 
 
 __all__ = [
-    "ConstantRefit",
     "DEFAULT_IMPROVEMENT_THRESHOLD",
     "DEFAULT_MAX_DELTA",
     "MIN_SAMPLES_FOR_REFIT",
+    "ConstantRefit",
     "RefitReport",
     "grid_search_refit",
 ]

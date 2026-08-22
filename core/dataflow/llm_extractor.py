@@ -121,7 +121,7 @@ character substitution, the function is partial at best — confidence
 
 
 _PROMPT_VERSION_SHA = hashlib.sha256(
-    f"{_PROMPT_VERSION}:{_SYSTEM_PROMPT}".encode("utf-8")
+    f"{_PROMPT_VERSION}:{_SYSTEM_PROMPT}".encode()
 ).hexdigest()[:16]
 
 

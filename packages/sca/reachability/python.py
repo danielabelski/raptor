@@ -349,4 +349,4 @@ def _format_evidence(
     return out
 
 
-__all__ = ["scan_imports", "resolve_dep"]
+__all__ = ["resolve_dep", "scan_imports"]

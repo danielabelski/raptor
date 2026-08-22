@@ -61,7 +61,7 @@ class BasicCredentials:
         """Render as the ``Authorization: Basic ...`` header value
         (without the ``Basic`` prefix)."""
         token = base64.b64encode(
-            f"{self.username}:{self.password}".encode("utf-8"),
+            f"{self.username}:{self.password}".encode(),
         ).decode("ascii")
         return token
 

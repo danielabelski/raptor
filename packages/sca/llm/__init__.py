@@ -150,8 +150,8 @@ def run_stage(
             error=str(exc),
         )
 
-    raw_text = resp.raw if resp.raw else ""
-    cost = resp.cost if resp.cost else 0.0
+    raw_text = resp.raw or ""
+    cost = resp.cost or 0.0
 
     # 4. Validate response against Pydantic schema.
     import json as _json

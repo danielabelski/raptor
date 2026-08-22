@@ -2070,13 +2070,13 @@ def record_sanitizer_cut_suppression(
 
 
 __all__ = [
-    "VERDICT_SANITIZER_DOMINATED",
-    "VERDICT_SANITIZER_CANDIDATE",
-    "VERDICT_SUPPRESS",
     "VERDICT_CANDIDATE_ONLY",
     "VERDICT_NO_SUPPRESS",
+    "VERDICT_SANITIZER_CANDIDATE",
+    "VERDICT_SANITIZER_DOMINATED",
+    "VERDICT_SUPPRESS",
     "SanitizerCutResult",
-    "sanitizer_cuts_source_to_sink",
     "evaluate_finding",
     "record_sanitizer_cut_suppression",
+    "sanitizer_cuts_source_to_sink",
 ]

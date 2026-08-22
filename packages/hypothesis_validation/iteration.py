@@ -119,9 +119,9 @@ def must_progress(prev: IterationStep, curr: IterationStep) -> None:
 
 
 __all__ = [
-    "IterationStep",
     "IterationStalled",
-    "uncertainty",
-    "resolved_fraction",
+    "IterationStep",
     "must_progress",
+    "resolved_fraction",
+    "uncertainty",
 ]

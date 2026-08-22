@@ -22,14 +22,14 @@ _CORRECTION_PATTERNS = [
         r"uses?\s+[`'\"]([^`'\"]+)[`'\"]"
         r"\s+(?:instead\s+of|but\s+should\s+be|rather\s+than|not)\s+"
         r"[`'\"]([^`'\"]+)[`'\"]",
-        re.I,
+        re.IGNORECASE,
     ),
     # "`=` should be `==`"
     re.compile(
         r"[`'\"]([^`'\"]+)[`'\"]"
         r"\s+(?:should|must|needs?\s+to)\s+be\s+"
         r"[`'\"]([^`'\"]+)[`'\"]",
-        re.I,
+        re.IGNORECASE,
     ),
     # "should be `==` not `=`"  /  "should use `==` instead of `=`"
     re.compile(
@@ -37,11 +37,11 @@ _CORRECTION_PATTERNS = [
         r"[`'\"]([^`'\"]+)[`'\"]"
         r"\s+(?:not|instead\s+of|rather\s+than)\s+"
         r"[`'\"]([^`'\"]+)[`'\"]",
-        re.I,
+        re.IGNORECASE,
     ),
 ]
 
-_LINE_REF_RE = re.compile(r"\blines?\s+(\d+)\b", re.I)
+_LINE_REF_RE = re.compile(r"\blines?\s+(\d+)\b", re.IGNORECASE)
 
 
 def _value_present_not_as_correct(

@@ -54,11 +54,11 @@ if TYPE_CHECKING:  # type-only — keep this module import-cheap
 
 
 __all__ = [
+    "VERIFIED_OUTCOMES_FILENAME",
     "ExemplarSlot",
     "Oracle",
     "OutcomeStatus",
     "ScoredOutcome",
-    "VERIFIED_OUTCOMES_FILENAME",
     "VerifiedOutcome",
     "collect_outcomes",
     "exemplar_block_for_finding",

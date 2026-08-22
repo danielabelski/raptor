@@ -209,4 +209,4 @@ def _format_metadata(
     return "\n".join(lines)
 
 
-__all__ = ["SlopsquatVerdict", "assess_slopsquat", "assess_batch"]
+__all__ = ["SlopsquatVerdict", "assess_batch", "assess_slopsquat"]

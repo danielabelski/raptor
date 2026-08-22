@@ -136,6 +136,6 @@ def ensure_same_provenance(items: Iterable[Any]) -> HypothesisHash:
 __all__ = [
     "HypothesisHash",
     "ProvenanceMismatch",
-    "hash_hypothesis",
     "ensure_same_provenance",
+    "hash_hypothesis",
 ]

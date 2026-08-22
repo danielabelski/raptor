@@ -96,7 +96,7 @@ def bucket_orchestration_results(results: list[dict]) -> dict[str, Any]:
         # to ANY verdict bucket — they're tracked separately by
         # callers that care.
         explicit_status = r.get("status") if isinstance(r, dict) else None
-        status = explicit_status if explicit_status else derive_status(r)
+        status = explicit_status or derive_status(r)
 
         if status == ERROR or "error" in r:
             # ``error`` field takes precedence even when status was

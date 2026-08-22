@@ -1709,7 +1709,7 @@ def run_cocci(
         logger.debug("cocci: target has no C/C++ source; skipping")
         return []
 
-    effective_rules_dir = rules_dir if rules_dir else _shipped_cocci_rules_dir()
+    effective_rules_dir = rules_dir or _shipped_cocci_rules_dir()
     if effective_rules_dir is None:
         logger.debug(
             "cocci: shipped rules dir not found "

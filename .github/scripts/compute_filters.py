@@ -92,7 +92,7 @@ def evaluate(changed_files: list[str] | None) -> dict[str, bool]:
     on so a CI mistake errs toward running tests.
     """
     if changed_files is None:
-        return {name: True for name in FILTERS}
+        return dict.fromkeys(FILTERS, True)
     out: dict[str, bool] = {}
     for name, patterns in FILTERS.items():
         out[name] = any(
@@ -134,8 +134,7 @@ def main() -> int:
     results = evaluate(changed)
 
     with open(output, "a", encoding="utf-8") as fh:
-        for name, hit in results.items():
-            fh.write(f"{name}={'true' if hit else 'false'}\n")
+        fh.writelines(f"{name}={'true' if hit else 'false'}\n" for name, hit in results.items())
 
     if changed is None:
         list_path = os.environ.get("CHANGED_FILES_LIST")

@@ -376,7 +376,7 @@ def _extract_text_files(
     except Exception:
         logger.debug("sca.llm.version_diff: extraction failed", exc_info=True)
         return None
-    return files if files else None
+    return files or None
 
 
 def _extract_tar(data: bytes, out: dict[str, str]) -> None:

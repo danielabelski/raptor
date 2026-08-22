@@ -136,8 +136,8 @@ def resolve_greatest_leq(
 
 
 __all__ = [
+    "compare_versions",
     "parse_major_minor",
     "parse_version",
-    "compare_versions",
     "resolve_greatest_leq",
 ]

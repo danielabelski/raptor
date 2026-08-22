@@ -335,7 +335,7 @@ def _index_by_canonical_key(
         if key is None:
             continue
         existing = out.get(key)
-        if existing is None or existing.get("suppressed") and not row.get("suppressed"):
+        if existing is None or (existing.get("suppressed") and not row.get("suppressed")):
             out[key] = row
     return out
 

@@ -19,6 +19,7 @@ from core.project.findings_utils import (
     load_findings_from_dir as _load_findings_from_dir,
 )
 from core.project.findings_utils import run_is_imported as _run_is_imported
+from core.run.findings import is_canonical_ref_shape as _is_canonical_ref_shape
 from core.sarif.parser import merge_sarif
 
 logger = get_logger()
@@ -213,12 +214,23 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
     ties within the same origin class.
 
     **Provenance preservation:** the winning representation's
-    ``provenance_refs`` becomes the UNION (deduped by ``run_id``, insertion-
-    order preserved) of every losing source's ``provenance_refs``. So a
-    finding seen in runs A → B → D where B "won" the status race still
-    surfaces the A and D refs on the merged record — the cross-run trail
-    survives the deduplication. Pre-stamping findings (no ``provenance_refs``
-    field) merge cleanly; they just don't contribute to the union.
+    ``provenance_refs`` becomes the UNION (insertion-order preserved) of
+    every losing source's ``provenance_refs``. So a finding seen in runs
+    A → B → D where B "won" the status race still surfaces the A and D
+    refs on the merged record — the cross-run trail survives the
+    deduplication. Pre-stamping findings (no ``provenance_refs`` field)
+    merge cleanly; they just don't contribute to the union.
+
+    **Stamp-aware dedup:** refs that verify as the canonical stamp shape
+    (:func:`core.run.findings.is_canonical_ref_shape`) dedup on their
+    full tuple; everything else keeps the historical first-wins-per-
+    ``run_id`` fold. Pre-fix the whole union deduped by ``run_id``
+    FIRST-WINS, so a forged ref that merely claimed a run's id — which
+    the stamping path deliberately leaves in place, appending the
+    canonical stamp AFTER it (see ``core/run/findings.py``) — displaced
+    the genuine stamp and the merged view silently dropped the run's
+    canonical back-link. Now the canonical stamp always survives the
+    merge; forged refs are retained as extras but can never displace it.
 
     Args:
         run_dirs: Ordered list of run directories (later entries override earlier).
@@ -231,10 +243,10 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
     # outranks imported before status is even consulted.
     rank_by_key: dict[tuple, tuple[int, int]] = {}
     # Parallel structure tracking the provenance union per key. Kept in
-    # insertion order via a dict-of-dicts indexed by run_id so re-additions
-    # of the same run (e.g. a /project clean + rerun on the same dir) don't
-    # multiply the refs.
-    refs_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
+    # insertion order via a dict-of-dicts indexed by a per-ref dedup key
+    # so re-additions of the same run (e.g. a /project clean + rerun on
+    # the same dir) don't multiply the refs.
+    refs_by_key: dict[tuple, dict[tuple, dict[str, Any]]] = {}
 
     for run_dir in run_dirs:
         findings = _load_findings_from_dir(Path(run_dir))
@@ -245,10 +257,26 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
             # key — independent of who wins the status race.
             ref_acc = refs_by_key.setdefault(key, {})
             for r in finding.get("provenance_refs", []) or ():
-                if isinstance(r, dict):
-                    run_id = r.get("run_id")
-                    if isinstance(run_id, str) and run_id not in ref_acc:
-                        ref_acc[run_id] = r
+                if not isinstance(r, dict):
+                    continue
+                run_id = r.get("run_id")
+                if not isinstance(run_id, str):
+                    continue
+                # Stamp-aware dedup: a ref that verifies as the
+                # canonical stamp shape dedups on its full tuple, so
+                # a forged ref that merely CLAIMS a run_id (the shape
+                # the stamping path leaves in place, appending the
+                # canonical stamp after it) can never displace the
+                # run's genuine back-link. Non-canonical refs keep
+                # the historical first-wins-per-run_id fold so junk
+                # refs don't multiply across sources.
+                if _is_canonical_ref_shape(r):
+                    acc_key = ("stamp", run_id,
+                               r["manifest_path"], r.get("ts"))
+                else:
+                    acc_key = ("ref", run_id)
+                if acc_key not in ref_acc:
+                    ref_acc[acc_key] = r
             candidate_rank = (origin_rank, _status_rank(finding))
             if key not in merged or candidate_rank >= rank_by_key[key]:
                 merged[key] = finding

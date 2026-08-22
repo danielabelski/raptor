@@ -197,6 +197,49 @@ def _is_canonical_ref(candidate: Any, ref: dict[str, Any]) -> bool:
     return isinstance(candidate, dict) and candidate == ref
 
 
+def is_canonical_ref_shape(candidate: Any) -> bool:
+    """Whether *candidate* has the exact SHAPE of a canonical stamp
+    produced by :func:`build_provenance_ref`.
+
+    Strict shape/field validation, no run directory needed:
+
+      * a dict whose keys are exactly ``{run_id, manifest_path}`` or
+        ``{run_id, manifest_path, ts}`` — extra smuggled keys fail;
+      * ``run_id`` a non-empty string shaped like a run-dir basename
+        (no path separators, never ``.`` / ``..``);
+      * ``manifest_path`` exactly the run-dir-relative
+        :data:`~core.run.metadata.RUN_METADATA_FILE` — the only value
+        stamping ever writes;
+      * ``ts`` (when present) a non-empty string.
+
+    Consumers that fold refs across runs (``core/project/merge.py``)
+    use this to keep a forged ref that merely claims a ``run_id``
+    from displacing the run's genuine stamp. It is a shape check,
+    not authentication: a forger can mimic the shape, but a
+    shape-valid forgery can only ever sit ALONGSIDE the canonical
+    stamp, never suppress it.
+    """
+    if not isinstance(candidate, dict):
+        return False
+    keys = set(candidate)
+    if "run_id" not in keys or "manifest_path" not in keys:
+        return False
+    if not keys <= {"run_id", "manifest_path", "ts"}:
+        return False
+    run_id = candidate["run_id"]
+    if not isinstance(run_id, str) or not run_id:
+        return False
+    if "/" in run_id or "\\" in run_id or run_id in (".", ".."):
+        return False
+    if candidate["manifest_path"] != RUN_METADATA_FILE:
+        return False
+    if "ts" in keys:
+        ts = candidate["ts"]
+        if not isinstance(ts, str) or not ts:
+            return False
+    return True
+
+
 def _resolve_findings_list(
     data: Any,
 ) -> tuple[list[Any] | None, str | None]:

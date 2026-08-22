@@ -226,6 +226,71 @@ class TestMergeFindings(unittest.TestCase):
             self.assertEqual(len(refs), 1)
             self.assertEqual(refs[0]["ts"], "first")
 
+    def test_forged_ref_does_not_displace_canonical_stamp(self):
+        """Regression: provenance dedup was run_id FIRST-WINS. The
+        stamping path (core/run/findings.py) deliberately does NOT
+        suppress a forged ref that claims the run's id — it appends the
+        canonical stamp AFTER it. First-wins-by-run_id then kept the
+        forged ref and silently dropped the canonical stamp from every
+        merged view. The merge must keep the canonical stamp; the
+        forged ref may survive as an extra but never displaces it."""
+        with TemporaryDirectory() as d:
+            key = {"file": "s.c", "function": "k", "line": 7}
+            forged = {
+                "run_id": "run_a",
+                "ts": "1970-01-01T00:00:00+00:00",
+                "manifest_path": "../../outside/evil.json",
+                "smuggled": "extra-key",
+            }
+            canonical_a = {
+                "run_id": "run_a",
+                "manifest_path": ".raptor-run.json",
+                "ts": "2026-01-02T03:04:05+00:00",
+            }
+            canonical_b = {
+                "run_id": "run_b",
+                "manifest_path": ".raptor-run.json",
+                "ts": "2026-01-03T03:04:05+00:00",
+            }
+            a = self._make_run(d, "run_a", [{
+                "id": "S1", **key, "status": "confirmed",
+                "provenance_refs": [forged, canonical_a],
+            }])
+            b = self._make_run(d, "run_b", [{
+                "id": "S2", **key, "status": "confirmed",
+                "provenance_refs": [canonical_b],
+            }])
+            merged = merge_findings([a, b])
+            self.assertEqual(len(merged), 1)
+            refs = merged[0]["provenance_refs"]
+            # The canonical stamps survive the merge.
+            self.assertIn(canonical_a, refs)
+            self.assertIn(canonical_b, refs)
+            # The forged ref is retained as an extra, not silently lost.
+            self.assertIn(forged, refs)
+
+    def test_identical_canonical_stamps_still_dedup(self):
+        """Stamp-aware dedup must not multiply the SAME canonical stamp
+        when it arrives via multiple sources (re-ingestion / re-merge)."""
+        with TemporaryDirectory() as d:
+            key = {"file": "t.c", "function": "l", "line": 8}
+            canonical = {
+                "run_id": "run_x",
+                "manifest_path": ".raptor-run.json",
+                "ts": "2026-01-02T03:04:05+00:00",
+            }
+            a = self._make_run(d, "a", [{
+                "id": "T1", **key, "status": "confirmed",
+                "provenance_refs": [dict(canonical)],
+            }])
+            b = self._make_run(d, "b", [{
+                "id": "T2", **key, "status": "confirmed",
+                "provenance_refs": [dict(canonical)],
+            }])
+            merged = merge_findings([a, b])
+            refs = merged[0]["provenance_refs"]
+            self.assertEqual(refs, [canonical])
+
     def test_merge_legacy_findings_without_refs_omit_field(self):
         """Pre-#2 findings (no ``provenance_refs`` on any source) merge
         cleanly — the field is absent rather than synthesised as ``[]``,

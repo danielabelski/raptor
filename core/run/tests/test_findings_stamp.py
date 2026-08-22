@@ -11,6 +11,7 @@ import pytest
 from core.run.findings import (
     PROVENANCE_REFS_FIELD,
     build_provenance_ref,
+    is_canonical_ref_shape,
     stamp_findings_in_run,
 )
 from core.run.metadata import (
@@ -249,3 +250,39 @@ def test_canonical_stamp_still_idempotent_after_forged_entry(
     assert stamp_findings_in_run(tmp_path)["findings_stamped"] == 0
     data = json.loads((tmp_path / "findings.json").read_text())
     assert len(data[0][PROVENANCE_REFS_FIELD]) == 2
+
+
+# --- is_canonical_ref_shape ----------------------------------------------
+
+
+def test_canonical_shape_accepts_stamped_ref(tmp_path: Path) -> None:
+    """The exact ref build_provenance_ref produces passes the shape
+    check — with and without the optional ``ts``."""
+    _write_manifest(tmp_path)
+    ref = build_provenance_ref(tmp_path)
+    assert is_canonical_ref_shape(ref)
+    assert is_canonical_ref_shape(
+        {"run_id": "scan_20260101-000000", "manifest_path": RUN_METADATA_FILE}
+    )
+
+
+@pytest.mark.parametrize("candidate", [
+    None,
+    "not-a-dict",
+    {},
+    {"run_id": "r"},                                        # no manifest_path
+    {"manifest_path": RUN_METADATA_FILE},                   # no run_id
+    {"run_id": "r", "manifest_path": "/evil"},              # wrong manifest
+    {"run_id": "r", "manifest_path": RUN_METADATA_FILE,
+     "smuggled": "x"},                                      # extra key
+    {"run_id": "", "manifest_path": RUN_METADATA_FILE},     # empty run_id
+    {"run_id": "..", "manifest_path": RUN_METADATA_FILE},   # traversal
+    {"run_id": "a/b", "manifest_path": RUN_METADATA_FILE},  # separator
+    {"run_id": 7, "manifest_path": RUN_METADATA_FILE},      # non-str run_id
+    {"run_id": "r", "manifest_path": RUN_METADATA_FILE,
+     "ts": ""},                                             # empty ts
+    {"run_id": "r", "manifest_path": RUN_METADATA_FILE,
+     "ts": 12345},                                          # non-str ts
+])
+def test_canonical_shape_rejects_forgeries(candidate) -> None:
+    assert not is_canonical_ref_shape(candidate)

@@ -15,7 +15,10 @@ unification.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def extract_qualified_symbols(advisory: Any, dep_name: str) -> list[str]:
@@ -82,4 +85,26 @@ def extract_function_names(advisory: Any) -> list[str]:
             v = source.get(key)
             if isinstance(v, list):
                 out.extend(s for s in v if isinstance(s, str))
+    return out
+
+
+def format_evidence(
+    hits: list[tuple[Path, int, bool]],
+    *,
+    target: Path | None,
+    cap: int = 5,
+) -> list[str]:
+    """Format scan hits as compact ``file:line`` evidence strings.
+
+    Paths under ``target`` are shown relative to it; the list is
+    capped at ``cap`` entries with a ``... (+N more)`` marker when
+    hits overflow.
+    """
+    out: list[str] = []
+    for f, line, _ in hits[:cap]:
+        rel = (f.relative_to(target) if target and target in f.parents
+                else f)
+        out.append(f"{rel}:{line}")
+    if len(hits) > cap:
+        out.append(f"... (+{len(hits) - cap} more)")
     return out

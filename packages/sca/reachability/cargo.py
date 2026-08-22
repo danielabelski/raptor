@@ -21,6 +21,7 @@ import logging
 import re
 
 from ..models import Confidence, Reachability
+from ._shared import format_evidence as _format_evidence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -146,18 +147,3 @@ def _is_test_file(path: Path, target: Path) -> bool:
         return True
     return bool(path.name.endswith("_test.rs"))
 
-
-def _format_evidence(
-    hits: list[tuple[Path, int, bool]],
-    *,
-    target: Path | None,
-    cap: int = 5,
-) -> list[str]:
-    out: list[str] = []
-    for f, line, _ in hits[:cap]:
-        rel = (f.relative_to(target) if target and target in f.parents
-                else f)
-        out.append(f"{rel}:{line}")
-    if len(hits) > cap:
-        out.append(f"... (+{len(hits) - cap} more)")
-    return out

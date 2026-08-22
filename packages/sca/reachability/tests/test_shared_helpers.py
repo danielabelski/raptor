@@ -7,10 +7,12 @@ helpers under their historical private names.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from packages.sca.reachability._shared import (
     extract_function_names,
+    format_evidence,
     extract_qualified_symbols,
 )
 
@@ -113,3 +115,35 @@ class TestExtractFunctionNames:
             ds={"affected_symbols": ["x"]},
         )
         assert extract_function_names(adv) == ["x", "x"]
+
+
+class TestFormatEvidence:
+    def test_relative_under_target_and_absolute_outside(self):
+        target = Path("/repo")
+        hits = [
+            (Path("/repo/src/a.py"), 3, False),
+            (Path("/elsewhere/b.py"), 9, False),
+        ]
+        assert format_evidence(hits, target=target) == [
+            "src/a.py:3", "/elsewhere/b.py:9",
+        ]
+
+    def test_none_target_keeps_paths_verbatim(self):
+        hits = [(Path("/x/y.go"), 12, True)]
+        assert format_evidence(hits, target=None) == ["/x/y.go:12"]
+
+    def test_cap_with_overflow_marker(self):
+        hits = [(Path(f"/t/f{i}.rb"), i, False) for i in range(7)]
+        out = format_evidence(hits, target=Path("/t"), cap=5)
+        assert len(out) == 6
+        assert out[-1] == "... (+2 more)"
+
+    def test_exactly_cap_no_marker(self):
+        hits = [(Path(f"/t/f{i}.cs"), i, False) for i in range(5)]
+        out = format_evidence(hits, target=Path("/t"))
+        assert len(out) == 5
+
+    def test_target_itself_not_relativised(self):
+        # ``target in f.parents`` is False for the target itself.
+        hits = [(Path("/t"), 1, False)]
+        assert format_evidence(hits, target=Path("/t")) == ["/t:1"]

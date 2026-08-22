@@ -108,6 +108,8 @@ TIERS: dict[str, dict] = {
             "packages/cve_diff/cve_diff/agent/loop.py",
             "packages/cve_diff/cve_diff/agent/prompt.py",
             "packages/cve_diff/cve_diff/analysis/analyzer.py",
+            "packages/cve_env/cve_env/agent/loop.py",
+            "packages/cve_env/cve_env/agent/prompts.py",
             "core/audit/llm_summaries.py",
             "core/audit/context.py",
             "core/audit/batch_glance.py",

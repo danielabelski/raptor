@@ -144,8 +144,17 @@ def _parse_rfc822_stanza(stanza: str) -> dict:
     """Parse one RFC822-ish stanza into a {field: value} dict.
     Multi-line values (continuation lines indented by whitespace)
     get joined with the leading whitespace stripped per dpkg
-    convention."""
-    out: dict = {}
+    convention.
+
+    Values accumulate as line lists and are joined once at the end.
+    The previous per-continuation-line ``out[key] = out.get(key, "")
+    + ...`` rebuilt a dict-held string on every line (the dict
+    reference keeps the refcount above 1, so CPython's in-place
+    concat fast path never applies) — O(n²) CPU on
+    attacker-controlled input: a 64 MiB member made entirely of
+    continuation lines burned hours in this loop.
+    """
+    parts: dict[str, list[str]] = {}
     current_key: str | None = None
     for line in stanza.splitlines():
         if not line:
@@ -153,16 +162,14 @@ def _parse_rfc822_stanza(stanza: str) -> dict:
         if line[0].isspace():
             # Continuation of previous field's value.
             if current_key is not None:
-                out[current_key] = (
-                    out.get(current_key, "") + "\n" + line.strip()
-                )
+                parts[current_key].append(line.strip())
             continue
         if ":" not in line:
             continue
         key, _, value = line.partition(":")
         current_key = key.strip()
-        out[current_key] = value.strip()
-    return out
+        parts[current_key] = [value.strip()]
+    return {key: "\n".join(lines) for key, lines in parts.items()}
 
 
 def _dpkg_status_is_installed(status: str) -> bool:

@@ -424,3 +424,44 @@ def test_record_cap_is_generous_for_real_databases():
     """Real installed-state files are tens of thousands of records;
     the cap must not clip them."""
     assert sbom_module.MAX_PACKAGE_RECORDS >= 100_000
+
+
+def test_continuation_line_accumulation_is_linear():
+    """A stanza that is almost entirely continuation lines must parse
+    in linear time. The pre-fix per-line string rebuild was O(n^2):
+    this 200k-line fixture took minutes; linear accumulation takes
+    milliseconds. The generous wall-clock bound only trips on a
+    quadratic regression."""
+    import time
+    content = (
+        b"Package: foo\n"
+        b"Status: install ok installed\n"
+        b"Version: 1.0\n"
+        b"Description: header\n"
+        + b" continuation-line-padding-0123456789\n" * 200_000
+        + b"\n"
+    )
+    start = time.monotonic()
+    pkgs = parse_dpkg_status(content)
+    elapsed = time.monotonic() - start
+    assert [p.name for p in pkgs] == ["foo"]
+    assert elapsed < 20, (
+        f"continuation-line parse took {elapsed:.1f}s — "
+        f"quadratic accumulation regression"
+    )
+
+
+def test_continuation_lines_still_join_with_newlines():
+    stanza_fields = parse_dpkg_status(
+        b"Package: foo\n"
+        b"Status: install ok installed\n"
+        b"Version: 1.0\n\n"
+    )
+    assert stanza_fields[0].name == "foo"
+    # Direct check of the joining semantics on the private helper.
+    from core.oci.sbom import _parse_rfc822_stanza
+    fields = _parse_rfc822_stanza(
+        "Description: first\n second\n third\nOther: x"
+    )
+    assert fields["Description"] == "first\nsecond\nthird"
+    assert fields["Other"] == "x"

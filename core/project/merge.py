@@ -18,6 +18,7 @@ from core.project.findings_utils import dedup_key as _dedup_key
 from core.project.findings_utils import (
     load_findings_from_dir as _load_findings_from_dir,
 )
+from core.project.findings_utils import run_is_imported as _run_is_imported
 from core.sarif.parser import merge_sarif
 
 logger = get_logger()
@@ -26,6 +27,7 @@ logger = get_logger()
 KNOWN_FILES = {
     "findings.json",
     ".raptor-run.json",
+    ".raptor-imported.json",
     "checklist.json",
     "validation-report.md",
     "agentic-report.md",
@@ -202,6 +204,14 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
     most progressed status (e.g. "confirmed" beats "not_disproven"). Among equal
     statuses, the latest run wins.
 
+    **Origin preference:** runs restored by ``/project import`` carry a
+    persisted marker (:func:`core.project.findings_utils.run_is_imported`)
+    because their archives are unsigned — every status they carry is an
+    attacker-selectable claim. A locally-produced representation of a
+    finding therefore ALWAYS beats an imported one, regardless of how
+    "progressed" the imported status looks; the status race only breaks
+    ties within the same origin class.
+
     **Provenance preservation:** the winning representation's
     ``provenance_refs`` becomes the UNION (deduped by ``run_id``, insertion-
     order preserved) of every losing source's ``provenance_refs``. So a
@@ -217,6 +227,9 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
         Deduplicated list of findings.
     """
     merged: dict[tuple, dict[str, Any]] = {}
+    # Winning candidate's (origin, status) rank per key — local origin
+    # outranks imported before status is even consulted.
+    rank_by_key: dict[tuple, tuple[int, int]] = {}
     # Parallel structure tracking the provenance union per key. Kept in
     # insertion order via a dict-of-dicts indexed by run_id so re-additions
     # of the same run (e.g. a /project clean + rerun on the same dir) don't
@@ -225,6 +238,7 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
 
     for run_dir in run_dirs:
         findings = _load_findings_from_dir(Path(run_dir))
+        origin_rank = 0 if _run_is_imported(Path(run_dir)) else 1
         for finding in findings:
             key = _finding_key(finding)
             # Accumulate this finding's refs (if any) into the union for the
@@ -235,9 +249,10 @@ def merge_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
                     run_id = r.get("run_id")
                     if isinstance(run_id, str) and run_id not in ref_acc:
                         ref_acc[run_id] = r
-            existing = merged.get(key)
-            if existing is None or _status_rank(finding) >= _status_rank(existing):
+            candidate_rank = (origin_rank, _status_rank(finding))
+            if key not in merged or candidate_rank >= rank_by_key[key]:
                 merged[key] = finding
+                rank_by_key[key] = candidate_rank
 
     # Inject the union back onto each winning representation. If the key has
     # no refs at all (all sources were pre-stamping), leave the field absent

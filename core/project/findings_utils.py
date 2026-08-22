@@ -19,6 +19,29 @@ def get_finding_id(finding: dict[str, Any]) -> str | None:
     return finding.get("id") or finding.get("finding_id")
 
 
+# Marker file stamped by ``/project import`` into every restored run
+# directory (and the restored project root). Run dirs carrying it came
+# from an UNSIGNED archive: their findings' statuses are
+# attacker-selectable claims, so merge folds must never let them
+# override locally-produced statuses (see core.project.merge).
+IMPORTED_RUN_MARKER_FILE = ".raptor-imported.json"
+
+
+def run_is_imported(run_dir: Path) -> bool:
+    """True when *run_dir* carries the ``/project import`` marker.
+
+    Best-effort read: a missing, unparseable, or falsey marker means
+    "not imported" — locally-produced runs never carry the file, and
+    an attacker gains nothing by planting a truthy one (it only
+    DEMOTES the run's standing in merges).
+    """
+    marker = Path(run_dir) / IMPORTED_RUN_MARKER_FILE
+    if not marker.is_file():
+        return False
+    data = load_json(marker)
+    return bool(isinstance(data, dict) and data.get("imported"))
+
+
 def safe_run_mtime(path: Path) -> float:
     """``st_mtime`` of a run dir, or 0.0 when it has vanished.
 

@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from core.hash import sha256_file
+from core.json import load_json, save_json
 from core.logging import get_logger
 from core.zip import DEFAULT_MAX_ENTRIES, bomb_shaped_reason, peek_eocd
 
@@ -363,6 +364,101 @@ def _demote_imported_annotations(output_dir: Path) -> None:
                     )
 
 
+# Findings files (relative to a run dir) whose provenance refs get
+# namespaced on import. Mirrors core/run/findings.py's _STAMP_PATHS —
+# the same files the lifecycle stamper writes canonical refs into.
+_IMPORTED_REF_REWRITE_PATHS = ("findings.json", "sca/findings.json")
+
+# Prefix stamped onto every imported provenance ref's run_id. An
+# imported archive cannot own ANY run id on this install: a
+# pre-seeded ref claiming a local run id (including the very run id
+# the restored dir will register under) would otherwise suppress
+# canonical stamping (core/run/findings.py skips findings that
+# already carry a ref for the current run_id) and read as
+# locally-verified work in reports/correlation.
+_IMPORTED_REF_PREFIX = "imported:"
+
+# Skip provenance-ref rewriting (and log) on absurdly large findings
+# files rather than parse them wholesale at import time. Consumers'
+# loaders refuse files over the same bound (see
+# core/project/findings_utils.py), so an unrewritten oversized file
+# never feeds a merge fold either.
+_MAX_REWRITE_JSON_BYTES = 64 * 1024 * 1024
+
+
+def _namespace_imported_provenance_refs(run_dir: Path) -> None:
+    """Prefix every provenance ref's ``run_id`` in *run_dir*'s
+    findings files with ``imported:`` (idempotent)."""
+    for rel in _IMPORTED_REF_REWRITE_PATHS:
+        path = run_dir / rel
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > _MAX_REWRITE_JSON_BYTES:
+            logger.warning(
+                "import: %s is %d bytes — too large to rewrite "
+                "provenance refs; loaders refuse it at the same bound",
+                path, size,
+            )
+            continue
+        data = load_json(path)
+        if isinstance(data, list):
+            findings = data
+        elif isinstance(data, dict):
+            findings = data.get("findings") or data.get("results") or []
+        else:
+            continue
+        changed = False
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            for ref in finding.get("provenance_refs") or ():
+                if not isinstance(ref, dict):
+                    continue
+                run_id = ref.get("run_id")
+                if (isinstance(run_id, str) and run_id
+                        and not run_id.startswith(_IMPORTED_REF_PREFIX)):
+                    ref["run_id"] = _IMPORTED_REF_PREFIX + run_id
+                    changed = True
+        if changed:
+            save_json(path, data)
+
+
+def _mark_imported_runs(output_dir: Path, archive_sha256: str) -> None:
+    """Stamp the persisted imported marker onto the restored project
+    root and every restored run directory, and namespace each run's
+    provenance refs.
+
+    The marker (:data:`core.project.findings_utils.
+    IMPORTED_RUN_MARKER_FILE`) is what merge folds consult to keep
+    attacker-selected statuses from an unsigned archive from
+    dominating locally-produced ones. Run-dir candidates mirror
+    ``Project._list_run_dirs``'s enumeration (top-level dirs, no
+    dot/underscore prefix, not the generated ``findings`` dir).
+    """
+    from datetime import datetime, timezone
+
+    from core.project.findings_utils import IMPORTED_RUN_MARKER_FILE
+
+    payload = {
+        "imported": True,
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+        "archive_sha256": archive_sha256,
+    }
+    root = Path(output_dir)
+    save_json(root / IMPORTED_RUN_MARKER_FILE, payload)
+    for child in root.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")) or child.name == "findings":
+            continue
+        save_json(child / IMPORTED_RUN_MARKER_FILE, payload)
+        _namespace_imported_provenance_refs(child)
+
+
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
                    output_base: Path | None = None) -> dict[str, str]:
@@ -669,6 +765,19 @@ def import_project(zip_path: Path, projects_dir: Path,
         shutil.rmtree(staging_dir, ignore_errors=True)
         msg = f"Import failed while stamping restored annotations: {e}"
         raise ValueError(msg) from e
+
+    # Stamp the persisted imported marker onto the restored root and
+    # every restored run dir, and namespace their provenance refs —
+    # merge/report consumers must always be able to tell imported
+    # runs from locally-produced ones. Fails the import closed like
+    # the annotation pass above.
+    try:
+        _mark_imported_runs(staging_dir, sha256_file(zip_path))
+    except Exception as e:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise ValueError(
+            f"Import failed while marking imported runs: {e}"
+        ) from e
 
     # --- Publish the staged tree ---
     # Everything below only runs once the staged import is complete

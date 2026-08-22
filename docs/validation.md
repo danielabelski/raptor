@@ -250,7 +250,49 @@ confusion.  Non-memory-corruption findings receive
 
 The prep script (`raptor-validation-helper E`) scans the target for executables
 matching source files, sets `feasibility.binary_path` on each finding, and
-groups them by binary.  The feasibility analysis then runs via:
+groups them by binary.
+
+**Build-on-demand:** when discovery finds NOTHING and the project's
+`build` trust marker (or an explicit `--build` on the helper)
+authorises build execution, the prep builds the target in a container
+(`core/env/build.py` -- the command resolves operator-first:
+`/project set build-command` slots, then detector synthesis) and
+analyses the extracted executables instead of skipping the whole
+feasibility dimension.  Env-built binaries carry
+`feasibility.binary_provenance: "env-built"`; every failure degrades
+to the skip with the reason printed.
+
+**Mitigation matrix** (`--mitigation-matrix`, same build gate): the
+target is rebuilt as the two canonical posture variants (hardened /
+soft) and re-analysed alongside the as-built artifact, producing
+`mitigation-matrix.json` (per distinct vuln_type in each binary
+group) and a per-finding `feasibility.verdict_robustness` --
+`exploitable_even_hardened` (prioritise anywhere), `build_dependent`
+(the remediation may be the build flags), `blocked_even_soft`
+(mitigations are not what stops it), or `unknown` (a variant failed
+to build/analyse, or did not ACHIEVE its requested posture -- build
+systems that override ambient flags ground no claim; the measured
+protections are checked before any label is assigned).  Untrusted
+variant builds run network-isolated, and extracted artifacts are
+stripped of execute/setuid bits.  Matrix results are
+provenance-stamped static-analysis facts: the analyzer executes
+nothing from the target, so no witness-tier claim is made.
+
+Both the in-session helper path (`raptor-validation-helper E`) and
+the Python orchestrator's Stage E consume the shared build-on-demand
+core (`packages/exploitability_validation/env_build_stage.py`); the
+orchestrator's single-binary model consumes only unambiguous
+single-artifact builds (multi-artifact targets go through the helper
+path's per-finding matching, or `--binary`).  The mitigation matrix
+remains a helper-path flag.  Env-built analyses surface in the final
+report as an "Env-Built Binaries" section (repo-relative path and
+artifact sha256 are recorded per finding).  Cleanup is exact-scope on
+every exit path, including the legacy builder's dangling step-cache
+(label-inherited, scoped prune); a hostile build's disk burst DURING
+the bounded build window is daemon-quota territory and remains the
+one documented residual.
+
+The feasibility analysis then runs via:
 
 ```bash
 libexec/raptor-run-feasibility <binary_path> "$OUTPUT_DIR/findings.json" "$OUTPUT_DIR" --target "$TARGET_PATH"

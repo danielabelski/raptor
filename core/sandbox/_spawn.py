@@ -2629,6 +2629,14 @@ def run_sandboxed(
     # .raptor-sbx-* dir under /tmp.
     stdout_buf = b"" if capture_output else None
     stderr_buf = b"" if capture_output else None
+    # Per-stream capture ceiling: the child's RLIMIT_FSIZE/AS bound
+    # its FILES, not its pipe writes — a hostile target streaming
+    # gigabytes to stdout ballooned the TRUSTED PARENT's memory well
+    # inside any timeout. Past the cap the stream is drained and
+    # DISCARDED (the child never blocks) and a truncation marker is
+    # appended so consumers can tell.
+    _CAPTURE_CAP = 64 * 1024 * 1024
+    _truncated = {1: False, 2: False}
     # time.monotonic() for deadline math — see _reap_tracer() above for the
     # NTP/wall-clock-jump rationale; same hazard applies here.
     deadline = time.monotonic() + timeout if timeout else None
@@ -2657,9 +2665,21 @@ def run_sandboxed(
                             _parent_fds.discard(fd)
                             fds.remove(fd)
                         elif fd == out_r:
-                            stdout_buf += chunk
+                            if len(stdout_buf) < _CAPTURE_CAP:
+                                stdout_buf += chunk
+                            else:
+                                _truncated[1] = True
                         else:
-                            stderr_buf += chunk
+                            if len(stderr_buf) < _CAPTURE_CAP:
+                                stderr_buf += chunk
+                            else:
+                                _truncated[2] = True
+                if _truncated[1]:
+                    stdout_buf += (b"\n[RAPTOR sandbox: stdout "
+                                   b"capture truncated at 64 MiB]\n")
+                if _truncated[2]:
+                    stderr_buf += (b"\n[RAPTOR sandbox: stderr "
+                                   b"capture truncated at 64 MiB]\n")
             finally:
                 # Close any pipes we didn't drain (timeout, exception).
                 for fd in fds:

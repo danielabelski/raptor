@@ -2309,6 +2309,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # NOT stripped: it is not accepted by the libexec trust gate
         # and children may derive tool paths from it.
         strip_trust_markers = kwargs.pop("strip_trust_markers", False)
+        # ``keep_trust_markers_for_dispatch``: the ONLY sanctioned way
+        # to keep CLAUDECODE/_RAPTOR_TRUSTED in a sandboxed target's
+        # env (RAPTOR's own Claude Code skill dispatches — see
+        # run_untrusted_networked(keep_trust_markers=True)). Travels
+        # as an explicit call kwarg and reaches the pid1 shim as an
+        # ARGV flag: the old in-band _RAPTOR_KEEP_TRUST_MARKERS env
+        # key meant ANY caller-supplied env dict carrying that key
+        # silently preserved the markers for untrusted code.
+        keep_trust_markers_for_dispatch = kwargs.pop(
+            "keep_trust_markers_for_dispatch", False)
         # ``env_caller_filtered``: opt-in assertion from the caller
         # that the env dict was constructed from a get_safe_env-
         # equivalent base AND that any DANGEROUS_ENV_VARS present
@@ -2929,6 +2939,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _shim_argv = [shim_path]
             if block_network:
                 _shim_argv.append("--netns-lo")
+            # Keep-trust decision travels OUT-OF-BAND (shim argv), not
+            # through the environment: the shim used to honour a
+            # _RAPTOR_KEEP_TRUST_MARKERS key from its inherited env,
+            # which any RAPTOR-side caller could (accidentally or via a
+            # poisoned env dict) carry in — preserving _RAPTOR_TRUSTED/
+            # CLAUDECODE for untrusted code. Only run() itself may make
+            # that call, keyed on the wrapper-level strip_trust_markers
+            # contract (run_untrusted_networked(keep_trust_markers=
+            # True) is the sole legitimate minting site).
+            if keep_trust_markers_for_dispatch:
+                _shim_argv.append("--keep-trust-markers")
             full_cmd = unshare_cmd + ["--"] + prlimit_wrapper + _shim_argv + cmd
         else:
             full_cmd = cmd
@@ -4950,6 +4971,16 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     # pass start_new_session=False explicitly.
     if "start_new_session" not in kwargs:
         kwargs["start_new_session"] = True
+    # macOS has no private mount view: unless excluded, Seatbelt seeds
+    # host-shared /private/tmp into the write exceptions (and, under
+    # restrict_reads, the read allowlist), so same-UID cross-run temp
+    # artifacts are writable and a /tmp-resident target is mutable —
+    # the class the Linux private-scratch posture closes. Default the
+    # untrusted contract to the per-run scratch posture (the spawn
+    # layer steers TMPDIR into {output}/.tmp); callers may override
+    # explicitly.
+    if sys.platform == "darwin" and "exclude_tmp_baseline" not in kwargs:
+        kwargs["exclude_tmp_baseline"] = True
     # fd 1/2 pass-through: the stdin/setsid defences above plug fd 0
     # and /dev/tty, but when the caller doesn't capture, the child
     # inherits the operator's terminal on fd 1/2 — and a PTY slave is
@@ -5129,7 +5160,8 @@ def run_untrusted_networked(
         if base_env is None:
             from core.config import RaptorConfig
             base_env = RaptorConfig.get_safe_env()
-        kwargs["env"] = {**base_env, "_RAPTOR_KEEP_TRUST_MARKERS": "1"}
+        kwargs["env"] = dict(base_env)
+        kwargs["keep_trust_markers_for_dispatch"] = True
     return run(
         cmd,
         block_network=False,

@@ -206,7 +206,11 @@ def test_networked_keep_trust_markers_disables_strip(monkeypatch, tmp_path):
     assert kwargs.get("strip_trust_markers") is False
     env = kwargs.get("env")
     assert env["CLAUDECODE"] == "1"
-    assert env["_RAPTOR_KEEP_TRUST_MARKERS"] == "1"
+    # The keep decision travels OUT-OF-BAND (run-level kwarg -> shim
+    # argv), never through the environment: an env key could be
+    # carried in by any caller-supplied dict.
+    assert kwargs.get("keep_trust_markers_for_dispatch") is True
+    assert "_RAPTOR_KEEP_TRUST_MARKERS" not in env
 
 
 def test_networked_keep_from_untrusted_parent_propagates_nothing(
@@ -247,6 +251,7 @@ def test_networked_default_keeps_strip_and_no_keep_flag(
     kwargs = captured["kwargs"]
     assert kwargs.get("strip_trust_markers") is True
     assert "_RAPTOR_KEEP_TRUST_MARKERS" not in kwargs.get("env", {})
+    assert not kwargs.get("keep_trust_markers_for_dispatch")
 
 
 def test_run_untrusted_has_no_keep_opt_out(monkeypatch, tmp_path):

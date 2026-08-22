@@ -183,6 +183,17 @@ class SandboxHost:
         has no knowledge of what runs inside the sandbox.
         """
         from core.sandbox import run as sandbox_run
+        from core.sandbox.context import _require_userns_or_optin
+
+        # SandboxHost is an explicitly hostile-target facility; the
+        # generic sandbox_run below carries none of run_untrusted's
+        # fail-closed preflight, so on a namespace-less host it would
+        # silently degrade to Landlock-only with the whole-/proc read
+        # grant (same-UID environ readable). Apply the same gate: fail
+        # closed unless the operator opted into degraded mode, and
+        # withdraw the /proc read grant when they did.
+        _omit_proc = _require_userns_or_optin("SandboxHost",
+                                              restrict_reads=True)
 
         daemon = _resolve_daemon_script()
         target_path = Path(target).resolve()
@@ -211,6 +222,7 @@ class SandboxHost:
                     output=output_dir,
                     block_network=True,
                     restrict_reads=True,
+                    omit_proc_reads=_omit_proc,
                     readable_paths=readable,
                     writable_paths=writable_paths,
                     etc_overlay=etc_overlay,
@@ -489,6 +501,11 @@ def one_shot_call(
     domain-specific paths BEFORE calling.
     """
     from core.sandbox import run as sandbox_run
+    from core.sandbox.context import _require_userns_or_optin
+
+    # Same fail-closed preflight as SandboxHost.start — see there.
+    _omit_proc = _require_userns_or_optin("SandboxHost.one_shot_call",
+                                          restrict_reads=True)
 
     daemon = _resolve_daemon_script()
     target_path = Path(target).resolve()
@@ -511,6 +528,7 @@ def one_shot_call(
             output=output_dir,
             block_network=True,
             restrict_reads=True,
+            omit_proc_reads=_omit_proc,
             readable_paths=readable,
             writable_paths=writable_paths,
             etc_overlay=etc_overlay,

@@ -217,6 +217,23 @@ def main() -> int:
             )
             return 2
 
+    # --keep-trust-markers (from context.run() ONLY): keep the two
+    # trust markers in the target env. Out-of-band by design — the
+    # old _RAPTOR_KEEP_TRUST_MARKERS ENV flag meant any caller-
+    # supplied env dict carrying the key preserved the markers for
+    # untrusted code; an argv flag can only come from the code that
+    # builds this command line.
+    keep_trust_markers = False
+    if target_argv and target_argv[0] == "--keep-trust-markers":
+        target_argv = target_argv[1:]
+        keep_trust_markers = True
+        if not target_argv:
+            sys.stderr.write(
+                "raptor-pid1-shim: missing target argv after "
+                "--keep-trust-markers\n"
+            )
+            return 2
+
     # Orchestrator-liveness pipe (read end), or None when not configured.
     # Resolved BEFORE the fork so the CLOEXEC set here is in place for the
     # target's exec; we additionally close it explicitly in the target
@@ -330,9 +347,12 @@ def main() -> int:
             # own Claude Code skill dispatches) keeps the two trust markers
             # so the child can drive libexec/ helpers; the flag itself and
             # the death fd are stripped unconditionally.
-            _keep_trust = os.environ.pop("_RAPTOR_KEEP_TRUST_MARKERS", None)
+            # The env key is stripped UNCONDITIONALLY and no longer
+            # trusted — the keep decision arrives via the argv flag
+            # (see above), which only context.run() can set.
+            os.environ.pop("_RAPTOR_KEEP_TRUST_MARKERS", None)
             _strip = (
-                ("_RAPTOR_DEATH_FD",) if _keep_trust
+                ("_RAPTOR_DEATH_FD",) if keep_trust_markers
                 else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE")
             )
             for _m in _strip:

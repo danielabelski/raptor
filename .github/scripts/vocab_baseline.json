@@ -282,6 +282,11 @@
     "count": 13,
     "kind": "literal"
   },
+  "core/audit/condition_smt.py::_SIGNED_TYPES": {
+    "count": 19,
+    "kind": "literal",
+    "note": "C/C++ signed integer type spellings (int, __s32, ptrdiff_t, ...) used to thread operand signedness into the overflow-disproof SMT encoding \u2014 fixed language/kernel-typedef grammar, not a learned API vocabulary"
+  },
   "core/audit/condition_smt.py::_SIGNED_TYPE_NAMES": {
     "count": 20,
     "kind": "literal",
@@ -299,11 +304,6 @@
     "count": 14,
     "kind": "alternation"
   },
-  "core/audit/condition_smt.py::_UNSIGNED_TYPE_NAMES": {
-    "count": 14,
-    "kind": "literal",
-    "note": "unsigned C/kernel integer type names for declared-signedness evidence (language taxonomy, not target API names)"
-  },
   "core/audit/condition_smt.py::_TOCTOU_PY_USES": {
     "count": 13,
     "kind": "alternation"
@@ -311,6 +311,11 @@
   "core/audit/condition_smt.py::_TYPE_WIDTHS": {
     "count": 35,
     "kind": "literal"
+  },
+  "core/audit/condition_smt.py::_UNSIGNED_TYPE_NAMES": {
+    "count": 14,
+    "kind": "literal",
+    "note": "unsigned C/kernel integer type names for declared-signedness evidence (language taxonomy, not target API names)"
   },
   "core/audit/condition_smt.py::memcpy_sinks": {
     "count": 10,
@@ -411,6 +416,16 @@
     "count": 13,
     "kind": "literal"
   },
+  "core/audit/edge_obligations.py::build_edge_obligations": {
+    "count": 10,
+    "kind": "literal",
+    "note": "obligation-record field keys (ambiguous, boundary_functions, degraded, dispatch_resolved, ...) \u2014 a serialization schema consumed verbatim by the edge fold and /review, not an API vocabulary"
+  },
+  "core/audit/edge_review.py::gap": {
+    "count": 10,
+    "kind": "literal",
+    "note": "journal field-key names for the edge-obligation gap record (edge_callee*, edge_verdicts, ...) \u2014 a serialization schema, not an API vocabulary; readers and the fold consume these exact keys"
+  },
   "core/audit/evidence_fusion.py::_extract_concern_key": {
     "count": 14,
     "kind": "literal"
@@ -451,6 +466,11 @@
   "core/audit/fix_history.py::_GENERIC_CALLEES": {
     "count": 19,
     "kind": "literal"
+  },
+  "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
+    "count": 109,
+    "kind": "literal",
+    "note": "language-keyword / prose stopword list for the G2 structural-anchor matcher \u2014 tokens that anchor NOTHING (keywords, stock types, ubiquitous prose), not an API vocabulary; the anchors themselves come from study receipt quotes"
   },
   "core/audit/iris_specs.py::_SECURITY_NAME_PATTERNS": {
     "count": 47,
@@ -505,15 +525,15 @@
     "count": 12,
     "kind": "literal"
   },
-  "core/audit/negative_space.py::_AMR_REGISTRATION_SHAPE_RE": {
-    "count": 15,
-    "kind": "alternation",
-    "note": "wiring-verb and view/api suffix morphology gating auth-mode asymmetry receipts to registration-shaped callees (verb/suffix taxonomy, not target API names)"
-  },
   "core/audit/negative_space.py::_AMR_KEYWORDS": {
     "count": 17,
     "kind": "literal",
     "note": "language keywords / Python builtins excluded from call-name extraction in the auth-mode-registration check - language taxonomy, not target API names"
+  },
+  "core/audit/negative_space.py::_AMR_REGISTRATION_SHAPE_RE": {
+    "count": 15,
+    "kind": "alternation",
+    "note": "wiring-verb and view/api suffix morphology gating auth-mode asymmetry receipts to registration-shaped callees (verb/suffix taxonomy, not target API names)"
   },
   "core/audit/negative_space.py::_NON_REENTRANT_CALLS": {
     "count": 14,
@@ -551,14 +571,14 @@
     "kind": "literal",
     "note": "audit-log demotion record field names (framework record keys, not target API names)"
   },
+  "core/audit/orchestrator.py::_make_tier_counters": {
+    "count": 34,
+    "kind": "literal"
+  },
   "core/audit/orchestrator.py::_post_loop_receipt_rescue": {
     "count": 10,
     "kind": "literal",
     "note": "audit-log refutation-gate record field names (framework record keys, not target API names)"
-  },
-  "core/audit/orchestrator.py::_make_tier_counters": {
-    "count": 34,
-    "kind": "literal"
   },
   "core/audit/orchestrator.py::_review_items": {
     "count": 10,
@@ -912,6 +932,21 @@
     "kind": "literal",
     "note": "tool-dependency registry keys (doctor/banner); crossed the seed threshold when the perl entry (perlasm generated-asm inventory) was added - not a name vocabulary"
   },
+  "core/container/compose.py::_BUILD_ALLOWED_KEYS": {
+    "count": 10,
+    "kind": "literal",
+    "note": "compose-spec build sub-keys (external standard schema) forming the build-block pass-through ALLOWLIST; static and reviewable by design (see _SERVICE_ALLOWED_KEYS)."
+  },
+  "core/container/compose.py::_SAFE_CAP_ADD": {
+    "count": 13,
+    "kind": "literal",
+    "note": "Linux capability names (Docker's default grant set + SYS_NICE) \u2014 kernel/docker external standard, not project API vocab; security ALLOWLIST whose membership must be static and reviewable, never learned from the scanned target."
+  },
+  "core/container/compose.py::_SERVICE_ALLOWED_KEYS": {
+    "count": 33,
+    "kind": "literal",
+    "note": "compose-spec service keys (external standard schema) forming the sanitizer's pass-through ALLOWLIST; must be static and reviewable \u2014 a learned or data-pack list would let hostile input steer which host-resource keys survive."
+  },
   "core/container/failures.py::DockerFailureClass": {
     "count": 11,
     "kind": "literal",
@@ -1033,6 +1068,11 @@
   "core/inventory/header_functions.py::_SKIP_NAMES": {
     "count": 10,
     "kind": "literal"
+  },
+  "core/inventory/js_lexer.py::_REGEX_PRECEDER_KEYWORDS": {
+    "count": 14,
+    "kind": "literal",
+    "note": "ECMA-262 keywords after which a '/' token lexes as a regex literal (return, case, typeof, ...) \u2014 fixed language grammar for the JS dead-scope lexer, not an API vocabulary"
   },
   "core/inventory/languages.py::LANG_DISPLAY": {
     "count": 25,
@@ -2232,30 +2272,5 @@
   "packages/static-analysis/scanner.py::_SEMGREP_LANG_ALIASES": {
     "count": 11,
     "kind": "literal"
-  },
-  "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
-    "count": 109,
-    "kind": "literal",
-    "note": "language-keyword / prose stopword list for the G2 structural-anchor matcher \u2014 tokens that anchor NOTHING (keywords, stock types, ubiquitous prose), not an API vocabulary; the anchors themselves come from study receipt quotes"
-  },
-  "core/audit/edge_review.py::gap": {
-    "count": 10,
-    "kind": "literal",
-    "note": "journal field-key names for the edge-obligation gap record (edge_callee*, edge_verdicts, ...) \u2014 a serialization schema, not an API vocabulary; readers and the fold consume these exact keys"
-  },
-  "core/audit/condition_smt.py::_SIGNED_TYPES": {
-    "count": 19,
-    "kind": "literal",
-    "note": "C/C++ signed integer type spellings (int, __s32, ptrdiff_t, ...) used to thread operand signedness into the overflow-disproof SMT encoding \u2014 fixed language/kernel-typedef grammar, not a learned API vocabulary"
-  },
-  "core/inventory/js_lexer.py::_REGEX_PRECEDER_KEYWORDS": {
-    "count": 14,
-    "kind": "literal",
-    "note": "ECMA-262 keywords after which a '/' token lexes as a regex literal (return, case, typeof, ...) \u2014 fixed language grammar for the JS dead-scope lexer, not an API vocabulary"
-  },
-  "core/audit/edge_obligations.py::build_edge_obligations": {
-    "count": 10,
-    "kind": "literal",
-    "note": "obligation-record field keys (ambiguous, boundary_functions, degraded, dispatch_resolved, ...) \u2014 a serialization schema consumed verbatim by the edge fold and /review, not an API vocabulary"
   }
 }

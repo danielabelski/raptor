@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from core.container import compose as _core_compose
 from cve_env.tools.docker_compose_up import (
     _ACTIVE_STACKS,
     ComposeContainer,
@@ -30,6 +31,19 @@ from cve_env.tools.docker_compose_up import (
     rewrite_for_localhost,
     up_stack,
 )
+
+@pytest.fixture(autouse=True)
+def _stub_model_resolver(monkeypatch: Any) -> None:
+    """Unit tests run without a docker daemon: stand in for
+    ``docker compose config`` by treating the fixture as already
+    resolved. The real-resolver seam is covered by the docker-gated
+    integration tests in core/container/tests/test_compose_sanitize.py.
+    """
+    monkeypatch.setattr(
+        _core_compose, "_resolve_effective_model",
+        lambda f: yaml.safe_load(f.read_text(encoding="utf-8")),
+    )
+
 
 # -- project_name_for -------------------------------------------------------
 
@@ -98,9 +112,14 @@ def test_rewrite_ports_no_op_when_no_ports(tmp_path: Path) -> None:
     original = yaml.safe_dump({"services": {"web": {"image": "x"}}})
     compose.write_text(original)
     _rewrite_ports_in_place(compose)
-    # File should still be parseable and unchanged in services structure.
+    # File should still be parseable; the image is preserved, no ports
+    # appear, and the sanitizer's mandatory resource limits are injected.
     data = yaml.safe_load(compose.read_text())
-    assert data["services"]["web"] == {"image": "x"}
+    web = data["services"]["web"]
+    assert web["image"] == "x"
+    assert "ports" not in web
+    assert web["mem_limit"] == "4g"
+    assert web["pids_limit"] == 512
 
 
 # -- rewrite_for_localhost (full copy) -------------------------------------

@@ -103,6 +103,12 @@ def test_inject_labels_merges_and_wins(tmp_path: Path) -> None:
     assert spec["labels"] == {"user": "x", "raptor.owner": "new"}
 
 
+def _identity_resolver(compose_file: Path) -> dict[str, Any]:
+    """Hermetic stand-in for ``docker compose config``: the fixture is
+    treated as already resolved (no docker daemon in unit tests)."""
+    return yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+
+
 def test_rewrite_hardens_and_labels(tmp_path: Path) -> None:
     compose = tmp_path / "docker-compose.yml"
     compose.write_text(yaml.safe_dump({
@@ -120,8 +126,9 @@ def test_rewrite_hardens_and_labels(tmp_path: Path) -> None:
             },
         },
     }))
-    staged, staging = cco.rewrite_for_localhost(
-        compose, labels={"raptor.owner": "test"})
+    with patch.object(cco, "_resolve_effective_model", _identity_resolver):
+        staged, staging = cco.rewrite_for_localhost(
+            compose, labels={"raptor.owner": "test"})
     try:
         data = yaml.safe_load(staged.read_text())
         svc = data["services"]["web"]
@@ -133,6 +140,9 @@ def test_rewrite_hardens_and_labels(tmp_path: Path) -> None:
         assert svc["volumes"] == ["./html:/usr/share/nginx/html"]
         assert svc["devices"] == ["/dev/null:/dev/null"]
         assert svc["labels"]["raptor.owner"] == "test"
+        # Single-container-parity limits are injected per service.
+        assert svc["mem_limit"] == "4g"
+        assert svc["pids_limit"] == 512
     finally:
         import shutil
 

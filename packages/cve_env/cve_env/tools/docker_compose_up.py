@@ -258,7 +258,7 @@ def docker_compose_up_payload(
         "compose_file": str(rewritten),
         "primary_container_id": primary.container_id,
         "primary_service": primary.service,
-        "host_ip": "127.0.0.1",
+        "host_ip": primary.host_ip,
         "host_port": primary.host_port,
         "container_port": primary.container_port,
         "services": [
@@ -274,7 +274,7 @@ def docker_compose_up_payload(
         # end_turn after the compose stack comes up.
         "next_step_hint": (
             f"compose stack '{project}' running; primary service "
-            f"'{primary.service}' on 127.0.0.1:{primary.host_port}. "
+            f"'{primary.service}' on {primary.host_ip}:{primary.host_port}. "
             "YOUR LITERAL NEXT TOOL CALL MUST BE `verify` with a plan "
             "that includes container_status + http_check (or "
             "tcp_probe_check for non-HTTP) + a version-assertion "

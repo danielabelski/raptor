@@ -19,14 +19,23 @@ this flow — binaries may be re-analysed across commands.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json.utils import load_json
+
 logger = logging.getLogger(__name__)
+
+# Byte budget for sibling-run JSON artefacts (findings.json,
+# checklist.json, run manifests). Candidate directories are matched
+# purely by target path under out/ — a directory another principal
+# can populate — so the bridge must not buffer an arbitrarily large
+# file while probing candidates. Real /validate + /audit artefacts
+# are a few MiB at most; 64 MiB is generous headroom.
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -72,10 +81,13 @@ class BridgeResult:
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError, UnicodeDecodeError):
-        return None
+    # Bounded, best-effort load: st_size gate before read, warn+None
+    # on oversize/malformed/unreadable (core.json.utils.load_json
+    # non-strict contract). allow_non_finite preserves the historical
+    # stdlib-json parse semantics — the budget is the only change.
+    return load_json(
+        path, max_bytes=_MAX_ARTIFACT_BYTES, allow_non_finite=True,
+    )
 
 
 def _sanitised_findings(

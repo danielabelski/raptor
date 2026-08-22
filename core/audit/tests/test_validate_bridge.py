@@ -505,3 +505,32 @@ class TestImportedEvidenceProvenance:
         result = import_validate_evidence(tmp_path, tmp_path / "target")
         assert result.feasibility_verdicts[0]["verdict"] == "exploitable"
         assert result.feasibility_verdicts[0]["final_status"] == "exploitable"
+
+class TestArtifactByteBudget:
+    """Bridge artefacts are matched by target path only — the loader
+    must reject an oversize candidate before buffering it."""
+
+    def test_oversize_findings_not_imported(self, tmp_path, monkeypatch):
+        import core.audit.validate_bridge as vb
+        _write_validate_findings(tmp_path)
+        size = (tmp_path / "findings.json").stat().st_size
+        monkeypatch.setattr(vb, "_MAX_ARTIFACT_BYTES", size - 1)
+        result = import_validate_evidence(tmp_path, tmp_path / "target")
+        assert not result.has_content
+
+    def test_within_budget_imports(self, tmp_path, monkeypatch):
+        import core.audit.validate_bridge as vb
+        _write_validate_findings(tmp_path)
+        size = (tmp_path / "findings.json").stat().st_size
+        monkeypatch.setattr(vb, "_MAX_ARTIFACT_BYTES", size)
+        result = import_validate_evidence(tmp_path, tmp_path / "target")
+        assert result.has_content
+
+    def test_load_json_helper_bounds(self, tmp_path, monkeypatch):
+        import core.audit.validate_bridge as vb
+        p = tmp_path / "checklist.json"
+        p.write_text(json.dumps({"target": "x" * 200}))
+        monkeypatch.setattr(vb, "_MAX_ARTIFACT_BYTES", 16)
+        assert vb._load_json(p) is None
+        monkeypatch.setattr(vb, "_MAX_ARTIFACT_BYTES", 1 << 20)
+        assert vb._load_json(p) == {"target": "x" * 200}

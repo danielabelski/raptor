@@ -110,9 +110,14 @@ class TestHashAwareFolding:
             "review must be re-reviewed, not suppressed as covered"
         )
 
-    def test_short_prefix_hash_still_matches(self, tmp_path):
-        # Historical entries may carry a shorter prefix of the same
-        # hash — prefix comparison must still suppress.
+    def test_short_prefix_hash_resurfaces(self, tmp_path):
+        # Contract inverted by the journal-provenance hardening:
+        # the old bidirectional prefix compare let an
+        # attacker-stored 1-char "hash" match ~1/16 of real hashes, so
+        # the fold now requires an EXACT full-length match. A shorter
+        # prefix — even a correct one — is no longer drift evidence
+        # and the function resurfaces for one re-review (its fresh
+        # entry re-records the full hash).
         target = _write_target(tmp_path)
         stored = hash_span(target / "auth.c", 1, 5)[:8]
         project = _project_with_entry(tmp_path, stored)
@@ -120,13 +125,17 @@ class TestHashAwareFolding:
         gaps = compute_gaps(
             _checklist(target), [], project_dir=project,
         )
-        assert "auth.c:check_pw" not in _gap_keys(gaps)
+        assert "auth.c:check_pw" in _gap_keys(gaps)
 
     def test_missing_hash_keeps_current_behaviour_covered(self, tmp_path):
         # Documented choice: entries without a source_hash (legacy
         # journals, hash-computation failures at review time) carry no
         # drift evidence. Treating them as changed would resurface
         # every legacy review at once — so they STAY covered.
+        # Post journal-MAC: this leniency applies to VERIFIED rows
+        # only (the fixture appends through append_entry, which
+        # stamps); an UNSTAMPED empty-hash row resurfaces — see
+        # test_journal_fold_provenance.
         target = _write_target(tmp_path)
         project = _project_with_entry(tmp_path, "")
 

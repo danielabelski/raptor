@@ -256,3 +256,80 @@ def test_finding_missing_id_does_not_crash():
     finding = {"file": "src/auth.c"}
     score, _ = score_witness_for_finding(w, finding)
     assert score == 4
+
+
+# ----------------------------------------------------------------------
+# Binary criterion: the ON-DISK hash is authoritative
+# ----------------------------------------------------------------------
+
+
+def test_forged_declared_hash_never_beats_on_disk_content(tmp_path):
+    """A declared ``binary_sha256`` is copy-paste satisfiable: when
+    the on-disk binary at binary_path is readable, its content hash
+    decides — a declared field equal to the witness hash but
+    CONTRADICTED by the on-disk content must not award."""
+    binary = tmp_path / "svc"
+    binary.write_bytes(b"the real binary content")
+    forged = "deadbeef" * 8
+    w = _make_witness({}, target_binary_hash=forged)
+    finding = {
+        "id": "FIND-0003",
+        "feasibility": {
+            "binary_path": str(binary),
+            "binary_sha256": forged,  # copy-pasted from the witness
+        },
+    }
+    score, _ = score_witness_for_finding(w, finding)
+    assert score == 0
+
+
+def test_on_disk_match_wins_over_stale_declared_hash(tmp_path):
+    """Symmetric direction: the on-disk content matches the witness
+    while the declared field is stale/bogus — the on-disk hash
+    governs."""
+    import hashlib
+
+    binary = tmp_path / "svc"
+    binary.write_bytes(b"the real binary content")
+    digest = hashlib.sha256(b"the real binary content").hexdigest()
+    w = _make_witness({}, target_binary_hash=digest)
+    finding = {
+        "id": "FIND-0004",
+        "feasibility": {
+            "binary_path": str(binary),
+            "binary_sha256": "cafef00d" * 8,  # stale
+        },
+    }
+    score, reason = score_witness_for_finding(w, finding)
+    assert score == 2
+    assert "on-disk" in reason
+
+
+def test_declared_fallback_only_when_binary_unreadable(tmp_path):
+    """No readable binary on disk → declared-vs-declared equality is
+    still accepted (fall-back only)."""
+    w = _make_witness({}, target_binary_hash="deadbeef" * 8)
+    finding = {
+        "id": "FIND-0005",
+        "feasibility": {
+            "binary_path": str(tmp_path / "gone"),
+            "binary_sha256": "deadbeef" * 8,
+        },
+    }
+    score, reason = score_witness_for_finding(w, finding)
+    assert score == 2
+    assert "hash match" in reason
+
+
+def test_finding_level_binary_path_is_hashed(tmp_path):
+    """binary_path at the finding level (not only under feasibility)
+    feeds the on-disk hash."""
+    import hashlib
+
+    binary = tmp_path / "svc"
+    binary.write_bytes(b"content")
+    digest = hashlib.sha256(b"content").hexdigest()
+    w = _make_witness({}, target_binary_hash=digest)
+    finding = {"id": "FIND-0006", "binary_path": str(binary)}
+    score, _ = score_witness_for_finding(w, finding)
+    assert score == 2

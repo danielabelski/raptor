@@ -43,6 +43,26 @@ def _progress(phase: str, message: str) -> None:
     print(f"study-run[{phase}]: {message}", file=sys.stderr, flush=True)
 
 
+
+
+def _ensure_llm_dispatcher(client, label: str) -> None:
+    """Self-serve the in-process LLM dispatcher for Bedrock-routed
+    models. Pipeline runs inherit one from their parent; a standalone
+    CLI is its own parent — without this every Bedrock call dies with
+    "requires the RAPTOR LLM dispatcher". Shared gate with
+    raptor-llm-ask; no-op when a route exists or none is needed.
+    """
+    try:
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        configs = [getattr(client.config, "primary_model", None)]
+        configs += list(getattr(client.config, "fallback_models", []) or [])
+        ensure_route_for_model_configs(configs, label=label)
+    except Exception:  # noqa: BLE001 — provider errors surface at call time
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="raptor-study-run",
@@ -51,6 +71,11 @@ def main() -> int:
     ap.add_argument("output_dir", help="Directory with study-list.json.")
     ap.add_argument("--model", default=None,
                     help="LLM model override (e.g. claude-sonnet-4-6).")
+    ap.add_argument("--batch-target", type=int, default=80,
+                    help="Items per Phase-2 LLM batch (default 80). "
+                         "Lower it for slow/thinking models whose "
+                         "single-batch responses outlive transport "
+                         "read timeouts.")
     ap.add_argument("-v", "--verbose", action="store_true")
     parsed = ap.parse_args()
 
@@ -77,7 +102,11 @@ def main() -> int:
 
         cfg = LLMConfig()
         mc = cfg.config_for_model(parsed.model)
-        if not mc.api_key:
+        # Dispatcher-routed providers (Bedrock) are keyless BY DESIGN —
+        # workers never hold AWS credentials; the dispatcher attaches
+        # them at the parent's trust boundary. Only key-carrying
+        # providers fail fast here.
+        if not mc.api_key and mc.provider != "bedrock":
             print(
                 f"study-run: no API key for --model {parsed.model}\n"
                 f"  Set the provider env var or add the key to models.json",
@@ -85,6 +114,7 @@ def main() -> int:
             )
             return 1
         client = get_client(config=LLMConfig(primary_model=mc, fallback_models=[]))
+        _ensure_llm_dispatcher(client, "raptor-study-run")
     else:
         client = get_client()
 
@@ -102,6 +132,7 @@ def main() -> int:
         output_dir,
         client,
         on_progress=_progress,
+        batch_target=parsed.batch_target,
     )
 
     print(

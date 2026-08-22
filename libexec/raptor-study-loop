@@ -368,6 +368,7 @@ def _overview_from_directory(
             client = LLMClient(pinned_model=model)
         else:
             client = get_client()
+        _ensure_llm_dispatcher(client, "raptor-study-loop")
     except Exception:  # noqa: BLE001 - overview is best-effort
         print("study-loop: WARNING: no LLM available for overview",
               file=sys.stderr)
@@ -551,6 +552,7 @@ def _synthesise_overview(
             client = LLMClient(pinned_model=model)
         else:
             client = get_client()
+        _ensure_llm_dispatcher(client, "raptor-study-loop")
     except Exception:  # noqa: BLE001 - synthesis is best-effort
         return "", "", "", None
     if client is None:
@@ -961,6 +963,26 @@ def _render_study_report(output_dir: Path) -> None:
 # Main
 # ------------------------------------------------------------------
 
+
+
+def _ensure_llm_dispatcher(client, label: str) -> None:
+    """Self-serve the in-process LLM dispatcher for Bedrock-routed
+    models. Pipeline runs inherit one from their parent; a standalone
+    CLI is its own parent — without this every Bedrock call dies with
+    "requires the RAPTOR LLM dispatcher". Shared gate with
+    raptor-llm-ask; no-op when a route exists or none is needed.
+    """
+    try:
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        configs = [getattr(client.config, "primary_model", None)]
+        configs += list(getattr(client.config, "fallback_models", []) or [])
+        ensure_route_for_model_configs(configs, label=label)
+    except Exception:  # noqa: BLE001 — provider errors surface at call time
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="raptor-study-loop",
@@ -976,6 +998,8 @@ def main() -> int:
                     help="Initial semantic concepts (comma-separated).")
     ap.add_argument("--model", default=None,
                     help="LLM model override for study-run.")
+    ap.add_argument("--batch-target", type=int, default=80,
+                    help="Items per Phase-2 study batch (passed to raptor-study-run).")
     ap.add_argument("--include-dir", action="append", default=None,
                     dest="include_dirs", metavar="DIR",
                     help="Additional include search directories (repeatable).")
@@ -1092,6 +1116,8 @@ def main() -> int:
             run_cmd = [sys.executable, run_bin, str(output_dir)]
             if parsed.model:
                 run_cmd.extend(["--model", parsed.model])
+            if parsed.batch_target != 80:
+                run_cmd.extend(["--batch-target", str(parsed.batch_target)])
             if parsed.verbose:
                 run_cmd.append("-v")
 

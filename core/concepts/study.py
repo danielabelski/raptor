@@ -2537,6 +2537,7 @@ def run_phase2(
     correlate: list[str] | None = None,
     discard_sink: list | None = None,
     vocab_sink: list | None = None,
+    batch_target: int = 80,
 ) -> tuple[
     list[Concept], list[Invariant], list[Contract],
     list[BugPattern], list[dict[str, str]],
@@ -2561,7 +2562,7 @@ def run_phase2(
         len(in_scope), len(deps),
     )
 
-    batches = _cluster_items(in_scope, deps)
+    batches = _cluster_items(in_scope, deps, batch_target=batch_target)
 
     from core.llm.concurrency import derive_max_workers
     model_name = getattr(llm_client, "model", None)
@@ -2613,6 +2614,8 @@ def _run_phase2_serial(
     all_struct_annots: list[dict[str, str]] = []
     total = len(batches)
     consecutive_failures = 0
+    failures = 0
+    successes = 0
 
     for idx, (focus, context) in enumerate(batches):
         try:
@@ -2626,6 +2629,7 @@ def _run_phase2_serial(
             )
         except _BatchLLMError:
             consecutive_failures += 1
+            failures += 1
             if consecutive_failures >= _CONSECUTIVE_FAIL_LIMIT:
                 logger.error(
                     "Phase 2: %d consecutive batch failures — aborting "
@@ -2635,11 +2639,23 @@ def _run_phase2_serial(
                 break
             continue
         consecutive_failures = 0
+        successes += 1
         all_concepts.extend(concepts)
         all_invariants.extend(invariants)
         all_contracts.extend(contracts)
         all_bug_patterns.extend(bug_patterns)
         all_struct_annots.extend(struct_annots)
+
+    if total and successes == 0 and failures:
+        # Zero successful batches with at least one LLM failure —
+        # "the run never happened", not "the code contains nothing".
+        # A silently-empty result would synthesise and persist an
+        # empty domain model, poisoning the project-canonical model
+        # and churning every journal entry's domain_model_hash.
+        raise _BatchLLMError(
+            f"all {failures} attempted Phase 2 batch(es) failed — "
+            "no study output; refusing to synthesise an empty domain "
+            "model")
 
     return (all_concepts, all_invariants, all_contracts,
             all_bug_patterns, all_struct_annots)
@@ -2670,6 +2686,8 @@ def _run_phase2_parallel(
     _fail_lock = _threading.Lock()
     _consecutive_failures = [0]
 
+    _successes = [0]
+
     def _do_batch(args: tuple[int, list[StudyItem], list[StudyItem]]) -> tuple:
         if _abort.is_set():
             return ([], [], [], [], [])
@@ -2682,12 +2700,16 @@ def _run_phase2_parallel(
         )
         with _fail_lock:
             _consecutive_failures[0] = 0
+            _successes[0] += 1
         return result
 
     items = [(i, focus, ctx) for i, (focus, ctx) in enumerate(batches)]
 
+    _failed = [0]
+
     def _on_batch_error(item: Any, exc: Exception) -> tuple:
         with _fail_lock:
+            _failed[0] += 1
             _consecutive_failures[0] += 1
             if _consecutive_failures[0] >= _CONSECUTIVE_FAIL_LIMIT:
                 logger.error(
@@ -2709,6 +2731,14 @@ def _run_phase2_parallel(
         label="study-p2",
         on_error=_on_batch_error,
     )
+
+    if items and _successes[0] == 0 and _failed[0]:
+        # Zero successful batches with at least one LLM failure — the
+        # run never happened; see the sequential path's twin check.
+        raise _BatchLLMError(
+            f"all {_failed[0]} attempted Phase 2 batch(es) failed — "
+            "no study output; refusing to synthesise an empty domain "
+            "model")
 
     all_concepts: list[Concept] = []
     all_invariants: list[Invariant] = []
@@ -3341,6 +3371,7 @@ def run_study(
     *,
     on_progress: Any = None,
     correlate: list[str] | None = None,
+    batch_target: int = 80,
 ) -> DomainModel:
     """Run the full study pipeline: load items → Phase 2 → Phase 3 → save.
 
@@ -3466,6 +3497,7 @@ def run_study(
         correlate=correlate,
         discard_sink=receipt_discards,
         vocab_sink=vocab_entries,
+        batch_target=batch_target,
     )
     _record_discards(output_dir, receipt_discards)
     if receipt_discards and on_progress:

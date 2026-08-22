@@ -599,21 +599,32 @@ class TestRunPhase2:
         assert mock_client.generate_structured.called
 
     def test_failed_batch_continues(self) -> None:
+        # Partial tolerance: one batch failing does not kill the run —
+        # later batches still contribute. (All-batches-failed now
+        # raises instead of returning silently-empty results; see
+        # TestPhase2FailureHonesty.)
         items = [
             StudyItem(id="f1", kind="function", name="fn1",
                       file="x.c", calls=["a"]),
+            StudyItem(id="f2", kind="function", name="fn2",
+                      file="y.c", calls=["b"]),
         ]
         mock_client = MagicMock()
-        mock_client.generate_structured.side_effect = RuntimeError("API down")
-
+        mock_client.generate_structured.side_effect = [
+            RuntimeError("API down"),
+            ({"concepts": [], "invariants": [], "contracts": [],
+              "bug_patterns": []}, "raw"),
+        ]
         concepts, invariants, contracts, _, _ = run_phase2(
-            items, "t/", mock_client,
+            items, "t/", mock_client, batch_target=1,
         )
         assert concepts == []
-        assert invariants == []
-        assert contracts == []
+        assert mock_client.generate_structured.call_count == 2
 
     def test_circuit_breaker_aborts_after_consecutive_failures(self) -> None:
+        import pytest
+
+        from core.concepts.study import _BatchLLMError
         items = [
             StudyItem(
                 id=f"f{i}", kind="function", name=f"fn{i}",
@@ -625,7 +636,8 @@ class TestRunPhase2:
         mock_client.generate_structured.side_effect = RuntimeError(
             "budget exceeded",
         )
-        run_phase2(items, "t/", mock_client)
+        with pytest.raises(_BatchLLMError, match="refusing"):
+            run_phase2(items, "t/", mock_client)
         assert mock_client.generate_structured.call_count <= (
             _CONSECUTIVE_FAIL_LIMIT + 1
         )
@@ -1948,3 +1960,31 @@ class TestStampRelatedStrategies:
         )])
         _stamp_related_strategies(model)
         assert model.concepts[0].related_strategies == ["auth"]
+
+
+class TestPhase2FailureHonesty:
+    """All-batches-failed must raise, never synthesise an empty model."""
+
+    def _items(self, n=3):
+        from core.concepts.model import StudyItem
+        return [StudyItem(id=f"i{k}", kind="function", name=f"fn{k}",
+                          file=f"f{k}.c") for k in range(n)]
+
+    def test_all_batches_failed_raises(self):
+        import pytest
+
+        from core.concepts.study import _BatchLLMError, run_phase2
+
+        class _DeadClient:
+            def generate_structured(self, *a, **k):
+                raise RuntimeError("transport down")
+        with pytest.raises(_BatchLLMError, match="refusing"):
+            run_phase2(self._items(), "t", _DeadClient(), batch_target=1)
+
+    def test_batch_target_threads_to_clustering(self):
+        from core.concepts.study import _cluster_items
+        items = self._items(6)
+        batches = _cluster_items(items, [], batch_target=2)
+        assert len(batches) >= 3
+        big = _cluster_items(items, [], batch_target=80)
+        assert len(big) == 1

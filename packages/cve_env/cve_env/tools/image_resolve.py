@@ -292,7 +292,10 @@ def image_resolve(
         return ResolveResult(
             ok=False,
             decision="not_found",
-            reason="empty product/version",
+            reason=(
+                "empty or invalid product/version (product must not carry "
+                "':' / '@'; version must be a valid image tag)"
+            ),
             reason_class="not_found",
         )
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Literal, TYPE_CHECKING
@@ -28,7 +29,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-InspectClass = Literal["ok", "not_found", "rate_limited", "transport", "auth"]
+InspectClass = Literal[
+    "ok", "not_found", "rate_limited", "transport", "auth", "denied",
+]
 """Classification of a docker manifest inspect failure.
 
 * ``ok``           — probe succeeded
@@ -36,7 +39,31 @@ InspectClass = Literal["ok", "not_found", "rate_limited", "transport", "auth"]
 * ``rate_limited`` — DockerHub anonymous rate limit (HTTP 429 / "toomanyrequests")
 * ``transport``    — timeout / connection error / 5xx (transient, retry)
 * ``auth``         — 401 / unauthorized (do not retry without creds)
+* ``denied``       — registry authority not in the probe allowlist
+                     (permanent; the probe was never issued)
 """
+
+#: Registries the manifest-probe chokepoint will contact.
+#: :func:`candidate_refs` only emits these, but the probe functions are
+#: also reachable with caller-shaped refs — image_resolve ``product``
+#: strings are LLM/advisory-influenced, so a smuggled authority
+#: (``10.0.0.1:5000/x``, ``internal.corp/x``) would otherwise turn
+#: ``docker manifest inspect`` into network reachability probing from
+#: the analysis host. Operators extend the set via the
+#: ``RAPTOR_REGISTRY_ALLOW`` env var (comma-separated hosts, URL-ish
+#: forms accepted).
+DEFAULT_REGISTRY_ALLOWLIST: frozenset[str] = frozenset({
+    "docker.io",
+    "mirror.gcr.io",
+    "public.ecr.aws",
+    "quay.io",
+    "ghcr.io",
+    "mcr.microsoft.com",
+})
+
+#: Docker image tag grammar (also excludes ``/`` ``:`` ``@`` — a
+#: version can never smuggle an authority or digest into a ref).
+_VERSION_TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 
 RETRY_BACKOFF_RATE_LIMITED_S: float = 10.0
 RETRY_BACKOFF_TRANSPORT_S: float = 5.0
@@ -77,10 +104,25 @@ _DOCKERHUB_ALIASES = frozenset(
 
 def candidate_refs(product: str, version: str) -> list[str]:
     """Generate likely image references for a product+version,
-    mirrors-first, deduped preserving order. Empty product/version → []."""
+    mirrors-first, deduped preserving order. Empty or invalid
+    product/version → [].
+
+    Both inputs are agent/advisory-influenced. ``product`` may carry
+    ``/`` (namespaced and mirror-pivot forms like
+    ``mirror.gcr.io/library/nginx`` are documented usage) but never
+    ``:`` / ``@`` / whitespace — a port-bearing or digest-bearing
+    product would smuggle an arbitrary registry authority or pin into
+    the bare ``{product}:{version}`` candidates. ``version`` must be a
+    valid docker tag. The registry-authority allowlist in
+    :func:`probe_manifest_once` backstops this shape check.
+    """
     p = product.strip().lower()
     v = version.strip()
     if not p or not v:
+        return []
+    if ":" in p or "@" in p or any(c.isspace() for c in p):
+        return []
+    if not _VERSION_TAG_RE.fullmatch(v):
         return []
     candidates = [
         # Independent registries first (no Docker Hub rate-limit pool).
@@ -181,6 +223,65 @@ def filter_denied_registries(candidates: list[str], denied_str: str) -> list[str
                 continue
         out.append(c)
     return out
+
+
+def _split_host_port(segment: str) -> tuple[str, str]:
+    """Split an authority segment into ``(host, port)`` (port "" when
+    absent). Handles bracketed IPv6 (``[::1]:5000``)."""
+    segment = segment.strip().lower()
+    if segment.startswith("["):
+        host, _, rest = segment.partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+        return host[1:], port
+    if segment.count(":") == 1:
+        host, _, port = segment.partition(":")
+        return host, port
+    return segment, ""
+
+
+def registry_authority(image_ref: str) -> str:
+    """The registry authority a docker CLI would contact for
+    ``image_ref``, as ``host`` or ``host:port``.
+
+    Docker's own resolution rule: the first path segment is a registry
+    authority only when it contains ``.`` or ``:`` or is ``localhost``;
+    everything else (bare names, ``library/*``, ``vulhub/*``) defaults
+    to Docker Hub. An explicit port is PRESERVED in the comparison key:
+    ``quay.io:8080`` is a different network endpoint than ``quay.io``
+    and must not inherit its allowlisting.
+    """
+    first, sep, _rest = image_ref.strip().partition("/")
+    if not sep:
+        return "docker.io"
+    if "." in first or ":" in first or first.lower() == "localhost":
+        host, port = _split_host_port(first)
+        if ":" not in host:  # bare IPv6 literals must not be re-split
+            host = normalize_registry_token(host)
+        return f"{host}:{port}" if port else host
+    return "docker.io"
+
+
+def allowed_registry_hosts() -> frozenset[str]:
+    """:data:`DEFAULT_REGISTRY_ALLOWLIST` plus the operator's
+    ``RAPTOR_REGISTRY_ALLOW`` additions (comma-separated, URL-ish forms
+    accepted; Docker Hub aliases collapse). Entries carrying an
+    explicit port keep it (``localhost:5000`` allowlists exactly that
+    endpoint, not every port on localhost)."""
+    hosts = set(DEFAULT_REGISTRY_ALLOWLIST)
+    for token in os.environ.get("RAPTOR_REGISTRY_ALLOW", "").split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        if "://" in token:
+            token = token.split("://", 1)[1]
+        token = token.split("/", 1)[0].split("?", 1)[0]
+        host, port = _split_host_port(token)
+        if ":" not in host:  # bare IPv6 literals must not be re-split
+            host = normalize_registry_token(host)
+        if not host:
+            continue
+        hosts.add(f"{host}:{port}" if port else host)
+    return frozenset(hosts)
 
 
 def classify_inspect_failure(stderr: str) -> InspectClass:
@@ -287,7 +388,21 @@ def probe_manifest_once(
     """Single inspect attempt. Returns ``(parsed_or_None, class, stderr_tail)``.
 
     Returning the class lets the caller decide retry vs pivot.
+
+    Refs whose registry authority is not allowlisted (see
+    :data:`DEFAULT_REGISTRY_ALLOWLIST` / ``RAPTOR_REGISTRY_ALLOW``)
+    classify ``denied`` without any network contact — this is the
+    chokepoint that keeps agent-shaped refs from steering the probe at
+    arbitrary hosts.
     """
+    authority = registry_authority(image_ref)
+    if authority not in allowed_registry_hosts():
+        return (
+            None,
+            "denied",
+            f"registry {authority!r} is not in the probe allowlist "
+            "(extend via RAPTOR_REGISTRY_ALLOW)",
+        )
     # manifest inspect is a CLIENT-side registry call — the daemon's
     # proxy config doesn't apply, so the ambient proxy env must ride
     # along or every probe on a proxy-only host classifies "transport".
@@ -333,7 +448,8 @@ def probe_manifest(
     result, klass, _stderr = probe_manifest_once(
         image_ref, timeout_seconds=timeout_seconds
     )
-    if klass == "ok" or klass in ("not_found", "auth") or not enable_retry:
+    if (klass == "ok" or klass in ("not_found", "auth", "denied")
+            or not enable_retry):
         return result, klass
     backoff = (
         RETRY_BACKOFF_RATE_LIMITED_S

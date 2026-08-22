@@ -809,3 +809,45 @@ def test_phase67_image_resolve_globals_isolated_per_cve() -> None:
         "_TRANSPORT_COOLDOWN_DONE not reset"
     )
     assert _state._ARCH_INCOMPATIBLE_TOTAL == 0, "_ARCH_INCOMPATIBLE_TOTAL not zeroed"
+
+
+# ── authority smuggling (agent-supplied product is untrusted) ─────────
+
+
+def test_authority_smuggling_product_yields_no_candidates() -> None:
+    """A product carrying ':' (port-bearing registry authority) or '@'
+    (digest pin) is refused at candidate generation — no probes fire."""
+    r = image_resolve(product="10.0.0.1:5000/x", version="1.0",
+                      host_arch="amd64")
+    assert r.ok is False
+    assert r.candidates_tried == []
+    assert "invalid" in r.reason
+
+
+def test_off_allowlist_authority_never_probed(monkeypatch) -> None:
+    """A '/'-shaped product is valid (documented mirror pivot), but its
+    bare {product}:{version} candidate carries a non-allowlisted
+    authority — the probe chokepoint refuses it without any docker
+    manifest contact for that authority."""
+    import core.container.registry as rg
+
+    monkeypatch.delenv("RAPTOR_REGISTRY_ALLOW", raising=False)
+    probed: list[str] = []
+
+    def spy(cmd: list[str], **_kw: Any):
+        from core.container.proc import RunOutcome
+        probed.append(cmd[-1])  # the image ref
+        return RunOutcome(returncode=1, stdout="",
+                          stderr="manifest unknown", timed_out=False)
+
+    with patch.object(rg, "run_cli", side_effect=spy):
+        r = image_resolve(product="internal.corp/scan-me", version="1.0",
+                          host_arch="amd64")
+    assert r.ok is False
+    # Allowlisted-registry candidates were probed; the smuggled
+    # authority never was.
+    assert probed, "expected allowlisted candidates to be probed"
+    assert all(
+        rg.registry_authority(ref) in rg.DEFAULT_REGISTRY_ALLOWLIST
+        for ref in probed
+    ), probed

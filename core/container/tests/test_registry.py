@@ -191,3 +191,109 @@ def test_probe_keeps_proxy_env_for_client_side_registry_call() -> None:
     with patch.object(rg, "run_cli", side_effect=run):
         rg.probe_manifest("x:1", enable_retry=False)
     assert seen.get("keep_env") == rg.PROXY_ENV_VARS
+
+
+# ── probe authority allowlist (agent-shaped refs are untrusted) ───────
+
+
+def test_candidate_refs_reject_authority_and_digest_smuggling() -> None:
+    # ':' would smuggle a port-bearing registry authority into the bare
+    # {product}:{version} candidates; '@' would smuggle a digest pin.
+    assert rg.candidate_refs("10.0.0.1:5000/x", "1.0") == []
+    assert rg.candidate_refs("nginx@sha256:abcd", "1.0") == []
+    assert rg.candidate_refs("nginx x", "1.0") == []
+    assert rg.candidate_refs("nginx", "1.0/../evil") == []
+    assert rg.candidate_refs("nginx", "1.0:extra") == []
+    # Documented pivot form: a mirror path (no ':' / '@') stays valid.
+    refs = rg.candidate_refs("mirror.gcr.io/library/ubuntu", "22.04")
+    assert "mirror.gcr.io/library/ubuntu:22.04" in refs
+
+
+def test_registry_authority_resolution() -> None:
+    assert rg.registry_authority("redis:7.0") == "docker.io"
+    assert rg.registry_authority("library/redis:7.0") == "docker.io"
+    assert rg.registry_authority("vulhub/redis:7.0") == "docker.io"
+    assert rg.registry_authority("mirror.gcr.io/library/redis:7.0") == \
+        "mirror.gcr.io"
+    assert rg.registry_authority("localhost/x:1") == "localhost"
+    assert rg.registry_authority("index.docker.io/library/x:1") == "docker.io"
+    # Explicit ports are preserved — a port-bearing authority is a
+    # DIFFERENT network endpoint and never inherits the bare host's
+    # allowlisting (quay.io:8080 != quay.io).
+    assert rg.registry_authority("10.0.0.1:5000/x:1") == "10.0.0.1:5000"
+    assert rg.registry_authority("quay.io:8080/x:1") == "quay.io:8080"
+    assert rg.registry_authority("index.docker.io:1337/x:1") == \
+        "docker.io:1337"
+    assert rg.registry_authority("[2001:db8::1]:5000/x:1") == \
+        "2001:db8::1:5000"
+
+
+def test_probe_denies_allowlisted_host_with_explicit_port(
+        monkeypatch) -> None:
+    """quay.io:8080 must not pass as quay.io (adversarial-review F4):
+    the probe would otherwise be issued to an arbitrary port on an
+    allowlisted host."""
+    monkeypatch.delenv("RAPTOR_REGISTRY_ALLOW", raising=False)
+    calls: list[list[str]] = []
+
+    def spy(cmd: list[str], **_kw: Any) -> RunOutcome:
+        calls.append(list(cmd))
+        return RunOutcome(returncode=0, stdout="[]", stderr="",
+                          timed_out=False)
+
+    with patch.object(rg, "run_cli", side_effect=spy):
+        for ref in ("quay.io:8080/x:1", "docker.io:1337/x:1",
+                    "ghcr.io:22/x:1"):
+            result, klass, _stderr = rg.probe_manifest_once(
+                ref, timeout_seconds=5)
+            assert result is None and klass == "denied", ref
+    assert calls == []  # no probe ever issued
+
+
+def test_probe_denies_off_allowlist_authority_without_network(
+        monkeypatch) -> None:
+    monkeypatch.delenv("RAPTOR_REGISTRY_ALLOW", raising=False)
+    calls: list[list[str]] = []
+
+    def spy(cmd: list[str], **_kw: Any) -> RunOutcome:
+        calls.append(list(cmd))
+        return RunOutcome(returncode=0, stdout="{}", stderr="",
+                          timed_out=False)
+
+    with patch.object(rg, "run_cli", side_effect=spy):
+        result, klass, stderr = rg.probe_manifest_once(
+            "10.0.0.1:5000/x:1", timeout_seconds=5)
+    assert result is None and klass == "denied"
+    assert "not in the probe allowlist" in stderr
+    assert calls == []  # the probe was never issued
+
+    # denied is permanent — probe_manifest must not burn a retry.
+    with patch.object(rg, "run_cli", side_effect=spy):
+        result, klass = rg.probe_manifest("internal.corp/x:1")
+    assert result is None and klass == "denied" and calls == []
+
+
+def test_probe_allowlist_operator_extension(monkeypatch) -> None:
+    monkeypatch.setenv("RAPTOR_REGISTRY_ALLOW",
+                       "https://registry.example:5000/v2/, my-mirror.local")
+    hosts = rg.allowed_registry_hosts()
+    # Port-bearing entries keep their port; bare entries stay bare.
+    assert "registry.example:5000" in hosts and "my-mirror.local" in hosts
+    assert rg.DEFAULT_REGISTRY_ALLOWLIST <= hosts
+
+    def ok(cmd: list[str], **_kw: Any) -> RunOutcome:
+        return RunOutcome(returncode=0, stdout="[]", stderr="",
+                          timed_out=False)
+
+    with patch.object(rg, "run_cli", side_effect=ok):
+        _result, klass, _stderr = rg.probe_manifest_once(
+            "registry.example:5000/x:1", timeout_seconds=5)
+        assert klass != "denied"
+        # The allowlisted endpoint is host:port — a different port (or
+        # the bare host) on the same name stays denied.
+        _result, klass, _stderr = rg.probe_manifest_once(
+            "registry.example:9999/x:1", timeout_seconds=5)
+        assert klass == "denied"
+        _result, klass, _stderr = rg.probe_manifest_once(
+            "registry.example/x:1", timeout_seconds=5)
+        assert klass == "denied"

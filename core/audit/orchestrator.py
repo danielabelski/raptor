@@ -6217,6 +6217,23 @@ def _run_audit_body(
                 batch_outcomes, batch = fut.result()
                 for outcome, gap in zip(batch_outcomes, batch):
                     outcome.line = gap.get("line_start", 0)
+                    # Phase-book batched reviews like the single-review
+                    # path does — pre-fix only that path booked, so
+                    # every batched review's spend surfaced as
+                    # "unattributed" in the run cost summary ($13.60 of
+                    # a $16.30 run measured; same class of miss as the
+                    # two-call continuation booking above).
+                    result.cost_tracker.record_call(
+                        "review",
+                        cost_usd=outcome.cost_usd,
+                        tokens_in=getattr(outcome, "tokens_in", 0),
+                        tokens_out=getattr(outcome, "tokens_out", 0),
+                        cache_read_tokens=getattr(
+                            outcome, "cache_read_tokens", 0),
+                        cache_write_tokens=getattr(
+                            outcome, "cache_write_tokens", 0),
+                        wall_time_s=getattr(outcome, "duration_s", 0.0),
+                    )
                     _tally_outcome(result, outcome)
                     if on_progress:
                         on_progress(review_idx, total, outcome)

@@ -34,6 +34,20 @@ logger = logging.getLogger(__name__)
 _EXPORT_TIMEOUT_S = 600.0
 _INSPECT_TIMEOUT_S = 30.0
 
+#: Refuse to export images whose daemon-reported flattened size exceeds
+#: this — the export tar + extracted rootfs are two more full host-disk
+#: copies of a registry-supplied (attacker-influenced) image.
+DEFAULT_MAX_IMAGE_BYTES = 8 << 30  # 8 GiB
+#: Extraction quotas: cumulative header-declared bytes and member count.
+DEFAULT_MAX_ROOTFS_BYTES = 8 << 30  # 8 GiB
+DEFAULT_MAX_ROOTFS_ENTRIES = 400_000
+#: Above this skipped-member fraction the rootfs is flagged degraded.
+_DEGRADED_SKIP_RATIO = 0.05
+
+
+class RootfsQuotaExceeded(RuntimeError):
+    """Raised when rootfs extraction exceeds its byte/entry quota."""
+
 
 @dataclass(frozen=True)
 class ImageRuntimeConfig:
@@ -56,7 +70,7 @@ class ExportOutcome:
     ok: bool
     config: ImageRuntimeConfig | None = None
     reason: str = ""  # "" | create_failed | export_failed | inspect_failed |
-    #                   extract_failed
+    #                   extract_failed | quota_exceeded
     reason_class: str = "ok"
     stderr: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
@@ -103,21 +117,37 @@ def parse_image_config(inspect_json: str) -> ImageRuntimeConfig | None:
     )
 
 
-def extract_rootfs_tar(tar_path: str | Path,
-                       dest_dir: str | Path) -> tuple[int, int]:
+def extract_rootfs_tar(
+    tar_path: str | Path,
+    dest_dir: str | Path,
+    *,
+    max_total_bytes: int = DEFAULT_MAX_ROOTFS_BYTES,
+    max_entry_count: int = DEFAULT_MAX_ROOTFS_ENTRIES,
+) -> tuple[int, int]:
     """Extract an image-export tarball into ``dest_dir`` safely.
 
     Returns ``(extracted, skipped)``. Members PEP 706's ``data`` filter
     refuses (device nodes, absolute paths, traversal, unsafe links) are
-    skipped and counted — never trusted. Raises ``tarfile.TarError`` /
+    skipped and counted — never trusted. Cumulative header-declared
+    bytes and member count are quota-checked BEFORE each extract (a
+    hostile image must not fill host disk/inodes mid-walk); breach
+    raises :class:`RootfsQuotaExceeded`. Raises ``tarfile.TarError`` /
     ``OSError`` only for whole-archive failures.
     """
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     extracted = 0
     skipped = 0
+    total_bytes = 0
     with tarfile.open(tar_path) as tf:
-        for member in tf:
+        for count, member in enumerate(tf, start=1):
+            if count > max_entry_count:
+                raise RootfsQuotaExceeded(
+                    f"rootfs tar exceeds {max_entry_count} entries; refusing")
+            total_bytes += member.size
+            if total_bytes > max_total_bytes:
+                raise RootfsQuotaExceeded(
+                    f"rootfs tar exceeds {max_total_bytes} bytes; refusing")
             try:
                 tf.extract(member, dest, filter="data")
                 extracted += 1
@@ -132,12 +162,29 @@ def extract_rootfs_tar(tar_path: str | Path,
     return extracted, skipped
 
 
+def _image_size_bytes(inspect_json: str) -> int | None:
+    """Daemon-reported flattened image size from ``docker image inspect``."""
+    try:
+        data = json.loads(inspect_json)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    size = data.get("Size")
+    return size if isinstance(size, int) else None
+
+
 def export_rootfs(
     image_ref: str,
     dest_dir: str | Path,
     *,
     platform: str | None = None,
     timeout_seconds: float = _EXPORT_TIMEOUT_S,
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    max_rootfs_bytes: int = DEFAULT_MAX_ROOTFS_BYTES,
+    max_rootfs_entries: int = DEFAULT_MAX_ROOTFS_ENTRIES,
 ) -> ExportOutcome:
     """Flatten ``image_ref`` into ``dest_dir`` and read its runtime config.
 
@@ -146,6 +193,16 @@ def export_rootfs(
     path. The resulting directory is the sacrificial writable upper
     layer for ``sandbox(rootfs=...)`` runs — treat it as consumed after
     the environment runs.
+
+    Quotas: the daemon-reported image size is gated BEFORE ``docker
+    export`` writes a host-tmp tar copy (``max_image_bytes``), and the
+    extraction walk is byte/entry-bounded (``max_rootfs_bytes`` /
+    ``max_rootfs_entries``) — a hostile image must not fill host
+    disk/inodes during witness-tier export. Extraction counts land in
+    ``extras`` (``rootfs_extracted``/``rootfs_skipped``); a rootfs
+    where nothing extracted FAILS instead of silently feeding the
+    sandbox tier an empty tree, and a high skip ratio is flagged
+    ``rootfs_degraded``.
     """
     create_cmd = ["docker", "create"]
     if platform:
@@ -165,6 +222,32 @@ def export_rootfs(
 
     tar_path: Path | None = None
     try:
+        inspect = run_cli(
+            ["docker", "image", "inspect", image_ref],
+            timeout=_INSPECT_TIMEOUT_S,
+        )
+        config = (parse_image_config(inspect.stdout)
+                  if inspect.returncode == 0 else None)
+        if config is None:
+            return ExportOutcome(
+                ok=False,
+                reason="inspect_failed",
+                reason_class="unknown",
+                stderr=(inspect.stderr or "").strip()[-4000:],
+            )
+        image_size = _image_size_bytes(inspect.stdout)
+        if image_size is not None and image_size > max_image_bytes:
+            return ExportOutcome(
+                ok=False,
+                reason="quota_exceeded",
+                reason_class="unknown",
+                stderr=(
+                    f"image size {image_size} bytes exceeds the "
+                    f"{max_image_bytes}-byte export quota; refusing"
+                ),
+                extras={"image_size": image_size},
+            )
+
         # Stage the tar NEXT TO the destination, not in the default
         # temp dir: the flattened image can be many GB, and on hosts
         # where /tmp is a tmpfs a handful of concurrent exports
@@ -191,22 +274,19 @@ def export_rootfs(
                 stderr=(export.stderr or "").strip()[-4000:],
             )
 
-        inspect = run_cli(
-            ["docker", "image", "inspect", image_ref],
-            timeout=_INSPECT_TIMEOUT_S,
-        )
-        config = (parse_image_config(inspect.stdout)
-                  if inspect.returncode == 0 else None)
-        if config is None:
+        try:
+            extracted, skipped = extract_rootfs_tar(
+                tar_path, dest_dir,
+                max_total_bytes=max_rootfs_bytes,
+                max_entry_count=max_rootfs_entries,
+            )
+        except RootfsQuotaExceeded as exc:
             return ExportOutcome(
                 ok=False,
-                reason="inspect_failed",
+                reason="quota_exceeded",
                 reason_class="unknown",
-                stderr=(inspect.stderr or "").strip()[-4000:],
+                stderr=str(exc)[:400],
             )
-
-        try:
-            extract_rootfs_tar(tar_path, dest_dir)
         except (tarfile.TarError, OSError) as exc:
             return ExportOutcome(
                 ok=False,
@@ -214,7 +294,26 @@ def export_rootfs(
                 reason_class="unknown",
                 stderr=str(exc)[:400],
             )
-        return ExportOutcome(ok=True, config=config)
+        extras: dict[str, Any] = {
+            "rootfs_extracted": extracted,
+            "rootfs_skipped": skipped,
+        }
+        if extracted == 0:
+            return ExportOutcome(
+                ok=False,
+                reason="extract_failed",
+                reason_class="unknown",
+                stderr="rootfs extraction produced no files — refusing to "
+                       "run the sandbox tier on an empty tree",
+                extras=extras,
+            )
+        if skipped > extracted * _DEGRADED_SKIP_RATIO:
+            extras["rootfs_degraded"] = True
+            logger.warning(
+                "rootfs export of %s: %d/%d members skipped — tree flagged "
+                "degraded", image_ref, skipped, extracted + skipped,
+            )
+        return ExportOutcome(ok=True, config=config, extras=extras)
     finally:
         run_cli(["docker", "rm", "-f", cid], timeout=30)
         if tar_path is not None:

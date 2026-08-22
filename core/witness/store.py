@@ -46,6 +46,24 @@ class WitnessStoreError(Exception):
     specifically without swallowing arbitrary OSErrors."""
 
 
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _valid_hash_key(bytes_hash: str) -> bool:
+    """Whether *bytes_hash* is a plain SHA-256 hex digest.
+
+    The hash is interpolated into on-disk paths
+    (``manifests/<hash>.json`` / ``blobs/<hash>.bin``) — anything but
+    hex digits could traverse outside the store root (``../``), so
+    the shape is validated BEFORE any filesystem use.
+    """
+    return (
+        isinstance(bytes_hash, str)
+        and len(bytes_hash) == 64
+        and all(c in _HEX_DIGITS for c in bytes_hash)
+    )
+
+
 class WitnessStore:
     """Read/write Witness records + their bytes, hash-addressed.
 
@@ -190,16 +208,24 @@ class WitnessStore:
 
     def has(self, bytes_hash: str) -> bool:
         """True iff a manifest with ``bytes_hash`` exists in the store."""
+        if not _valid_hash_key(bytes_hash):
+            return False
         return (self._manifests_dir / f"{bytes_hash}.json").is_file()
 
     def get_bytes(self, bytes_hash: str) -> bytes:
-        """Load the raw bytes for ``bytes_hash``.
+        """Load the raw bytes for ``bytes_hash``, VERIFIED.
 
-        Raises :class:`WitnessStoreError` if the blob is missing.
-        Does NOT verify the loaded bytes match the hash (would be
-        slow and the store-write enforced it on put); a caller that
-        suspects on-disk corruption can recompute themselves.
+        Raises :class:`WitnessStoreError` if the hash key is not a
+        plain SHA-256 hex digest (it becomes an on-disk path), if the
+        blob is missing, or if the loaded bytes do not hash to
+        ``bytes_hash`` — the store is hash-addressed, so content that
+        fails its own address is a planted/corrupt blob, not evidence.
         """
+        if not _valid_hash_key(bytes_hash):
+            raise WitnessStoreError(
+                f"invalid bytes_hash {str(bytes_hash)[:32]!r}: expected "
+                f"a 64-char SHA-256 hex digest"
+            )
         blob_path = self._blobs_dir / f"{bytes_hash}.bin"
         if not blob_path.is_file():
             msg = (
@@ -207,14 +233,29 @@ class WitnessStore:
                 f"(expected at {blob_path})"
             )
             raise WitnessStoreError(msg)
-        return blob_path.read_bytes()
+        data = blob_path.read_bytes()
+        actual = compute_bytes_hash(data)
+        if actual.lower() != bytes_hash.lower():
+            raise WitnessStoreError(
+                f"blob at {blob_path} does not match its address: "
+                f"expected {bytes_hash[:16]!r}..., content hashes to "
+                f"{actual[:16]!r}... — corrupt or planted blob"
+            )
+        return data
 
     def get_witness(self, bytes_hash: str) -> Witness:
         """Load the Witness record for ``bytes_hash``.
 
-        Raises :class:`WitnessStoreError` if the manifest is missing
-        or malformed.
+        Raises :class:`WitnessStoreError` if the hash key is invalid,
+        the manifest is missing or malformed, or the manifest's own
+        ``bytes_hash`` disagrees with the address it was loaded from
+        (a planted manifest claiming someone else's hash).
         """
+        if not _valid_hash_key(bytes_hash):
+            raise WitnessStoreError(
+                f"invalid bytes_hash {str(bytes_hash)[:32]!r}: expected "
+                f"a 64-char SHA-256 hex digest"
+            )
         manifest_path = self._manifests_dir / f"{bytes_hash}.json"
         if not manifest_path.is_file():
             msg = (
@@ -224,33 +265,57 @@ class WitnessStore:
             raise WitnessStoreError(msg)
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            return Witness.from_dict(data)
+            witness = Witness.from_dict(data)
         except json.JSONDecodeError as exc:
             msg = f"manifest at {manifest_path} is malformed JSON: {exc}"
             raise WitnessStoreError(msg) from exc
         except (KeyError, ValueError) as exc:
             msg = f"manifest at {manifest_path} has invalid structure: {exc}"
             raise WitnessStoreError(msg) from exc
+        if witness.bytes_hash.lower() != bytes_hash.lower():
+            raise WitnessStoreError(
+                f"manifest at {manifest_path} claims bytes_hash "
+                f"{witness.bytes_hash[:16]!r}... — inconsistent with "
+                f"its address; refusing the record"
+            )
+        return witness
 
     def list_witnesses(self) -> Iterator[Witness]:
         """Iterate every Witness in the store.
 
-        Skips manifests that fail to parse (logs at WARNING). The
-        store's contract is "load all valid witnesses"; one corrupt
-        file shouldn't abort enumeration. Use :meth:`get_witness`
-        for a specific hash if strict-load semantics are needed.
+        Skips manifests that fail to parse AND manifests whose
+        filename is not a valid hash address or disagrees with the
+        record's own ``bytes_hash`` (logs at WARNING) — enumeration
+        must not launder planted records that a direct
+        :meth:`get_witness` would refuse. Use :meth:`get_witness` for
+        a specific hash if strict-load semantics are needed.
         """
         if not self._manifests_dir.is_dir():
             return
         for manifest in sorted(self._manifests_dir.glob("*.json")):
+            if not _valid_hash_key(manifest.stem):
+                logger.warning(
+                    "WitnessStore: skipping manifest with non-hash "
+                    "name %s", manifest,
+                )
+                continue
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
-                yield Witness.from_dict(data)
+                witness = Witness.from_dict(data)
             except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError) as exc:
                 logger.warning(
                     "WitnessStore: skipping malformed manifest %s: %s",
                     manifest, exc,
                 )
+                continue
+            if witness.bytes_hash.lower() != manifest.stem.lower():
+                logger.warning(
+                    "WitnessStore: skipping manifest %s claiming "
+                    "bytes_hash %s (inconsistent with its address)",
+                    manifest, witness.bytes_hash[:16],
+                )
+                continue
+            yield witness
 
     def blob_path(self, bytes_hash: str) -> Path | None:
         """Return the path to the raw bytes blob, or ``None`` if
@@ -258,7 +323,11 @@ class WitnessStore:
 
         Useful when a consumer wants to pass the bytes to a tool
         that takes a filename (gcc, gdb, etc.) rather than reading
-        them into memory.
+        them into memory. NOTE: this path is returned unverified;
+        callers that act on the CONTENT should use :meth:`get_bytes`
+        (which verifies the hash) or recompute it themselves.
         """
+        if not _valid_hash_key(bytes_hash):
+            return None
         path = self._blobs_dir / f"{bytes_hash}.bin"
         return path if path.is_file() else None

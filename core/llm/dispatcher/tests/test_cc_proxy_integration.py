@@ -171,8 +171,11 @@ def test_real_claude_cli_round_trip_through_credential_proxy(
     )
     try:
         port = d.enable_loopback_listener()
+        # Budget must cover the request's derived worst-case ceiling
+        # (the CLI declares its full output window as max_tokens, and
+        # admission now refuses ceilings over the unreserved budget).
         token, info = d.allocate_child(
-            "cc-smoke", budget_usd=1.0, ttl_s=600,
+            "cc-smoke", budget_usd=25.0, ttl_s=600,
         )
         # Force the Bedrock-mode branch with a known priced model,
         # regardless of the host's own install shape.

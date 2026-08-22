@@ -141,6 +141,51 @@ class _Upstream:
         self._server.server_close()
 
 
+class _GatedUpstream:
+    """JSON upstream that holds every response until ``release`` is
+    set — keeps a dispatched request in flight deterministically so a
+    test can observe/perturb dispatcher state mid-request."""
+
+    def __init__(self, model: str = _PRICED_MODEL):
+        self.release = threading.Event()
+        outer = self
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a, **_kw):
+                return
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                if length:
+                    self.rfile.read(length)
+                outer.release.wait(30)
+                resp = json.dumps({
+                    "id": "msg_gated",
+                    "model": model,
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), _H)
+        self.base_url = (
+            f"http://127.0.0.1:{self._server.server_address[1]}"
+        )
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True,
+        )
+        self._thread.start()
+
+    def shutdown(self):
+        self.release.set()
+        self._server.shutdown()
+        self._server.server_close()
+
+
 def _make_dispatcher(fake_creds, tmp_path, upstream: _Upstream):
     d = LLMDispatcher(
         run_id="child-tok", creds=fake_creds,
@@ -174,14 +219,17 @@ def _tcp_client(d: LLMDispatcher) -> httpx.Client:
     return httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10.0)
 
 
-def _messages_post(client, token, model=_PRICED_MODEL, url=None):
+def _messages_post(client, token, model=_PRICED_MODEL, url=None,
+                   max_tokens=100):
     return client.post(
         url or "http://_/anthropic/v1/messages",
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
-        content=json.dumps({"model": model, "messages": []}).encode(),
+        content=json.dumps({
+            "model": model, "max_tokens": max_tokens, "messages": [],
+        }).encode(),
     )
 
 
@@ -420,6 +468,128 @@ class TestEnforcement:
                     content=b'{"messages":[]}',
                 )
                 assert r.status_code == 400
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Reservation is a cap — derived ceilings, captured-amount release
+# ---------------------------------------------------------------------------
+
+
+class TestReservationIsACap:
+
+    def test_huge_declared_max_tokens_refused_at_admission(
+        self, fake_creds, tmp_path,
+    ):
+        """A priced request whose declared ``max_tokens`` puts its
+        worst-case cost over the remaining budget must be refused
+        BEFORE the forward leg — pre-fix the flat $0.25 reservation
+        admitted it and the upstream could book any amount."""
+        upstream = _Upstream("json")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token, info = d.allocate_child(
+                "cc-cap", budget_usd=1.0, models=[_PRICED_MODEL],
+                ttl_s=600,
+            )
+            with _uds_client(d) as client:
+                resp = _messages_post(
+                    client, token, max_tokens=10_000_000,
+                )
+                assert resp.status_code == 402
+                assert "ceiling" in resp.json()["error"]
+                assert upstream.requests == []  # never forwarded
+                # Refusal is per-request, not terminal: nothing stays
+                # reserved and an affordable request still dispatches.
+                rec = d._tokens[token]
+                assert rec.reserved_usd == 0.0
+                ok = _messages_post(client, token, max_tokens=100)
+                assert ok.status_code == 200
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_booked_spend_at_budget_refuses_next_admission(
+        self, fake_creds, tmp_path,
+    ):
+        """Once actual booked spend reaches the budget the very next
+        admission is refused — worst-case overrun is bounded by the
+        in-flight set's ceilings, never by future admissions."""
+        upstream = _Upstream("json")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            # One affordable call whose actual booked cost exceeds
+            # the whole budget (the stub reports 1000/500 tokens).
+            token, info = d.allocate_child(
+                "cc-book", budget_usd=_expected_cost() / 2,
+                models=[_PRICED_MODEL], ttl_s=600,
+            )
+            with _uds_client(d) as client:
+                first = _messages_post(client, token, max_tokens=100)
+                assert first.status_code == 200
+                _wait_spend(d, info["token_id"])
+                n_forwarded = len(upstream.requests)
+                second = _messages_post(client, token, max_tokens=100)
+            assert second.status_code == 402
+            assert "exhausted" in second.json()["error"]
+            assert len(upstream.requests) == n_forwarded
+            assert d.child_spend(info["token_id"])["status"] == "exhausted"
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_release_returns_captured_amount_after_knob_lowered(
+        self, fake_creds, tmp_path, monkeypatch,
+    ):
+        """The release path must return exactly what was reserved for
+        THIS request — pre-fix it re-read the env knob, so lowering
+        the knob mid-flight leaked the difference into
+        ``reserved_usd`` permanently."""
+        monkeypatch.setenv(
+            "RAPTOR_LLM_DISPATCHER_CHILD_RESERVE_USD", "0.25",
+        )
+        # Unpriced model → the flat-knob reservation path.
+        upstream = _GatedUpstream(model="zz-unpriced-model-e2e")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token, _info = d.allocate_child(
+                "cc-knob", budget_usd=1.0, ttl_s=600,
+            )
+            rec = d._tokens[token]
+            results: dict = {}
+
+            def _call():
+                with _uds_client(d) as client:
+                    results["resp"] = _messages_post(
+                        client, token, model="zz-unpriced-model-e2e",
+                    )
+
+            t = threading.Thread(target=_call)
+            t.start()
+            deadline = time.time() + 5.0
+            while time.time() < deadline and not rec.reserved_usd:
+                time.sleep(0.01)
+            assert rec.reserved_usd == pytest.approx(0.25)
+            # Operator lowers the knob while the request is in flight.
+            monkeypatch.setenv(
+                "RAPTOR_LLM_DISPATCHER_CHILD_RESERVE_USD", "0.01",
+            )
+            upstream.release.set()
+            t.join(10)
+            assert results["resp"].status_code == 200
+            deadline = time.time() + 2.0
+            while time.time() < deadline and rec.reserved_usd:
+                time.sleep(0.01)
+            # Pre-fix: 0.25 reserved, 0.01 released → 0.24 leaked.
+            assert rec.reserved_usd == pytest.approx(0.0)
+            # No phantom reservation blocks the next request.
+            with _uds_client(d) as client:
+                follow_up = _messages_post(
+                    client, token, model="zz-unpriced-model-e2e",
+                )
+            assert follow_up.status_code == 200
         finally:
             upstream.shutdown()
             d.shutdown()

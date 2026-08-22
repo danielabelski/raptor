@@ -112,9 +112,13 @@ def _uds_client(d: LLMDispatcher) -> httpx.Client:
     return httpx.Client(transport=transport, timeout=10.0)
 
 
-def _model_body(model=_PRICED_MODEL, pad: int = 0) -> bytes:
+def _model_body(model=_PRICED_MODEL, pad: int = 0,
+                max_tokens: int = 100) -> bytes:
     return json.dumps(
-        {"model": model, "messages": [], "pad": "x" * pad},
+        {
+            "model": model, "max_tokens": max_tokens,
+            "messages": [], "pad": "x" * pad,
+        },
     ).encode()
 
 
@@ -227,13 +231,17 @@ class TestChildBudgetReservation:
                 ttl_s=600,
             )
             rec = d._tokens[token]
-            body = _model_body()
+            # Ceiling for one request ≈ $0.20 (8000 output tokens at
+            # the priced model's rate): one fits the $0.30 budget,
+            # two cannot be in flight at once.
+            body = _model_body(max_tokens=8000)
 
-            first = d._authorize_child_request(
+            first, first_reserved = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
             )
             assert first is None
-            second = d._authorize_child_request(
+            assert first_reserved > 0
+            second, _ = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
             )
             assert second is not None
@@ -245,8 +253,8 @@ class TestChildBudgetReservation:
 
             # First request settles -> its reservation is released and
             # the next request is admissible again.
-            d._release_child_reservation(rec)
-            third = d._authorize_child_request(
+            d._release_child_reservation(rec, first_reserved)
+            third, _ = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
             )
             assert third is None

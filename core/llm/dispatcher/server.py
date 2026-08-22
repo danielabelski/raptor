@@ -268,11 +268,23 @@ class RelayLimitExceeded(OSError):
 # check and the post-response booking are separated by the whole
 # upstream round-trip; without a reservation N concurrent requests all
 # observe the pre-spend balance and the cap is overshot by concurrency
-# × max-single-response cost. Authorization therefore RESERVES a
-# conservative per-request estimate under the token lock (check and
-# book are one atomic step) and the handler releases it when the
-# request settles. One request is always admitted when nothing is in
-# flight, so a budget smaller than the reserve serialises instead of
+# × max-single-response cost. Authorization therefore RESERVES the
+# request's derived worst-case cost (see
+# :func:`_request_cost_ceiling_usd`) under the token lock — check and
+# book are one atomic step, and admission is refused when the ceiling
+# does not fit in the unreserved remainder, so the reservation is a
+# CAP, not just a concurrency damper. The handler releases the exact
+# captured amount when the request settles.
+#
+# The flat env-knob estimate below survives only as the fallback
+# reservation for UNPRICED models, where no USD ceiling is derivable.
+# Residual bound for that path: booked spend from an unpriced call is
+# exactly $0 by the :func:`_usage_cost_usd` contract, so the token's
+# USD ledger cannot be overrun through it — the real-world provider
+# charge is not USD-enforceable (pre-existing unpriced-model
+# behaviour, surfaced via ``unpriced_requests`` + a WARNING per call).
+# One unpriced request is always admitted when nothing is in flight,
+# so a budget smaller than the flat reserve serialises instead of
 # deadlocking.
 _CHILD_RESERVE_USD_DEFAULT = 0.25
 
@@ -283,6 +295,62 @@ def _child_request_reserve_usd() -> float:
         _CHILD_RESERVE_USD_DEFAULT,
         minimum=0.01,
     )
+
+
+# Output-token ceiling used when a priced request declares no usable
+# ``max_tokens``: sized to the largest output window a shipping
+# Anthropic model exposes so the derived ceiling stays a true upper
+# bound (the Messages API requires max_tokens, so this fallback only
+# fires for malformed traffic — which then needs a budget generous
+# enough to cover a full-window response to be admitted).
+_CEILING_DEFAULT_MAX_OUTPUT_TOKENS = 128_000
+
+
+def _request_cost_ceiling_usd(
+    model: str, max_tokens: int | None, body_len: int,
+) -> float | None:
+    """Upper bound (USD) on what one request can BOOK against a child
+    token's ledger, or ``None`` when the model has no pricing entry
+    (an unpriced call books $0 by the :func:`_usage_cost_usd`
+    contract, so no ceiling is derivable — or needed — for the
+    ledger).
+
+    Output side: the declared ``max_tokens`` × output rate — the
+    provider enforces max_tokens, so reported output cannot exceed
+    it. Input side: BPE tokens each consume at least one byte of
+    request text, so prompt tokens (input + cache_read +
+    cache_creation, which are disjoint slices of the prompt) are
+    bounded by the body size; the cache-write multiplier is the
+    highest rate :func:`_usage_cost_usd` books any input-side token
+    at, so ``body_len × in_rate × write_multiplier`` bounds the
+    input-side booking. Residual (documented, not enforced):
+    server-side tool use can report input tokens that never rode the
+    request body, and an upstream that violates its own max_tokens
+    contract can exceed the output side — in both cases the
+    admission-time exhaustion check still cuts off new admissions the
+    moment booked spend reaches the budget, so overrun stays bounded
+    by the in-flight set.
+    """
+    from core.llm.model_data import (
+        ANTHROPIC_CACHE_WRITE_MULTIPLIER,
+        price_for,
+    )
+    in_rate = out_rate = 0.0
+    for form in _model_id_forms(model):
+        rates = price_for(form)
+        if rates != (0.0, 0.0):
+            in_rate, out_rate = rates
+            break
+    if (in_rate, out_rate) == (0.0, 0.0):
+        return None
+    out_tokens = (
+        max_tokens if max_tokens and max_tokens > 0
+        else _CEILING_DEFAULT_MAX_OUTPUT_TOKENS
+    )
+    return (
+        body_len * in_rate * ANTHROPIC_CACHE_WRITE_MULTIPLIER
+        + out_tokens * out_rate
+    ) / 1_000_000.0
 
 
 # The conventional proxy-route family (same set core.llm.egress
@@ -976,81 +1044,125 @@ class LLMDispatcher:
     def _authorize_child_request(
         self, rec: _TokenRecord, provider_name: str, method: str,
         body: bytes,
-    ) -> tuple[int, str] | None:
+    ) -> tuple[tuple[int, str] | None, float]:
         """Scoped-token enforcement before the forward leg.
 
-        Returns ``(http_status, reason)`` to reject, or None to allow.
-        Order: provider scope → method shape → model allowlist →
-        budget. The budget check runs BEFORE the forward so an
-        exhausted token never reaches the provider.
+        Returns ``(deny, reserved_usd)``: ``deny`` is
+        ``(http_status, reason)`` to reject (nothing reserved), or
+        None to allow. Order: provider scope → method shape → model
+        allowlist → budget. The budget check runs BEFORE the forward
+        so an exhausted token never reaches the provider.
 
-        On allow, a per-request estimate has been RESERVED against the
-        token's budget under the lock (check-and-book is atomic — N
-        concurrent requests no longer all observe the pre-spend
-        balance). The caller MUST call
-        :meth:`_release_child_reservation` once the request settles,
-        on every path.
+        On allow, ``reserved_usd`` — the request's derived worst-case
+        cost for priced models, the flat env-knob estimate for
+        unpriced ones — has been RESERVED against the token's budget
+        under the lock (check-and-book is atomic — N concurrent
+        requests no longer all observe the pre-spend balance, and a
+        priced request whose ceiling exceeds the unreserved remainder
+        is refused outright). The caller MUST pass exactly that
+        captured amount to :meth:`_release_child_reservation` once
+        the request settles, on every path.
         """
         if provider_name not in _CHILD_ALLOWED_PROVIDERS:
-            return 403, (
+            return (403, (
                 f"scoped token: provider '{provider_name}' not permitted"
-            )
+            )), 0.0
         if method != "POST":
-            return 405, "scoped token: only POST requests are permitted"
+            return (
+                405, "scoped token: only POST requests are permitted",
+            ), 0.0
         model = ""
+        max_tokens: int | None = None
         try:
             payload = json.loads(body) if body else {}
             if isinstance(payload, dict):
                 model = str(payload.get("model") or "")
+                mt = payload.get("max_tokens")
+                if isinstance(mt, int) and not isinstance(mt, bool):
+                    max_tokens = mt
         except (json.JSONDecodeError, UnicodeDecodeError):
             model = ""
         if not model:
-            return 400, "scoped token: request body carries no model"
+            return (
+                400, "scoped token: request body carries no model",
+            ), 0.0
         if rec.model_allowlist is not None and not (
             _model_id_forms(model) & rec.model_allowlist
         ):
-            return 403, (
+            return (403, (
                 f"scoped token: model '{model}' not in allowlist"
-            )
+            )), 0.0
+        reserve = 0.0
         with self._tokens_lock:
             rec.last_model = model
             if rec.budget_usd is not None:
                 if rec.spent_usd >= rec.budget_usd:
                     rec.status = "exhausted"
-                    return 402, (
+                    return (402, (
                         f"scoped token budget exhausted: spent "
                         f"${rec.spent_usd:.4f} of ${rec.budget_usd:.4f}"
-                    )
-                # Settled spend is under budget — admit only while the
-                # in-flight reservations also fit. ``exhausted`` is NOT
-                # set here: reservations are estimates and the state
-                # is transient (in-flight requests settling below their
-                # reserve re-open the budget). The `reserved_usd > 0`
-                # guard keeps one request admissible when nothing is in
-                # flight, so a budget below the reserve serialises
-                # rather than deadlocks.
-                reserve = _child_request_reserve_usd()
-                if (
-                    rec.reserved_usd > 0
-                    and rec.spent_usd + rec.reserved_usd + reserve
-                        > rec.budget_usd
-                ):
-                    return 429, (
-                        "scoped token budget fully reserved by "
-                        "in-flight requests"
-                    )
+                    )), 0.0
+                ceiling = _request_cost_ceiling_usd(
+                    model, max_tokens, len(body),
+                )
+                if ceiling is None:
+                    # Unpriced model: booking is $0 by contract, so
+                    # the ledger cannot be overrun through this call
+                    # (residual bound documented at the knob above).
+                    # Reserve the flat estimate purely as a
+                    # concurrency damper; the ``reserved_usd > 0``
+                    # guard keeps one request admissible when nothing
+                    # is in flight, so a budget below the flat
+                    # reserve serialises rather than deadlocks.
+                    reserve = _child_request_reserve_usd()
+                    if (
+                        rec.reserved_usd > 0
+                        and rec.spent_usd + rec.reserved_usd + reserve
+                            > rec.budget_usd
+                    ):
+                        return (429, (
+                            "scoped token budget fully reserved by "
+                            "in-flight requests"
+                        )), 0.0
+                else:
+                    # Priced model: the reservation is the request's
+                    # worst-case bookable cost, so admission is a
+                    # cap — the in-flight set's ceilings always fit
+                    # within budget − spent, and total booked spend
+                    # cannot exceed the budget while each response's
+                    # actual cost stays within its ceiling.
+                    reserve = ceiling
+                    if (
+                        rec.spent_usd + rec.reserved_usd + reserve
+                            > rec.budget_usd
+                    ):
+                        if rec.reserved_usd > 0:
+                            return (429, (
+                                "scoped token budget fully reserved "
+                                "by in-flight requests"
+                            )), 0.0
+                        return (402, (
+                            f"scoped token: request cost ceiling "
+                            f"${reserve:.4f} exceeds remaining budget "
+                            f"${rec.budget_usd - rec.spent_usd:.4f}"
+                        )), 0.0
                 rec.reserved_usd += reserve
-        return None
+        return None, reserve
 
-    def _release_child_reservation(self, rec: _TokenRecord) -> None:
-        """Release the per-request estimate reserved by a successful
-        :meth:`_authorize_child_request`. Runs exactly once per
-        admitted request (the handler's ``finally``); actual cost has
-        by then been settled onto ``spent_usd`` by
-        :meth:`_book_child_usage` where a response was seen."""
-        reserve = _child_request_reserve_usd()
+    def _release_child_reservation(
+        self, rec: _TokenRecord, reserved_usd: float,
+    ) -> None:
+        """Release exactly the amount :meth:`_authorize_child_request`
+        reserved for THIS request — the captured per-request value,
+        never a re-read of the env knob, so a knob change mid-flight
+        can neither leak reservation permanently (knob lowered) nor
+        over-release and reopen the concurrency window (knob raised).
+        Runs exactly once per admitted request (the handler's
+        ``finally``); actual cost has by then been settled onto
+        ``spent_usd`` by :meth:`_book_child_usage` where a response
+        was seen."""
         with self._tokens_lock:
-            rec.reserved_usd = max(0.0, rec.reserved_usd - reserve)
+            rec.reserved_usd = max(0.0, rec.reserved_usd - reserved_usd)
 
     def _book_child_usage(
         self, rec: _TokenRecord, scanner: _UsageScanner,
@@ -1705,8 +1817,9 @@ def _make_request_handler(
 
             # ---- scoped-token enforcement (kind="child") ----
             reservation_held = False
+            reserved_usd = 0.0
             if rec.kind == "child":
-                deny = dispatcher._authorize_child_request(
+                deny, reserved_usd = dispatcher._authorize_child_request(
                     rec, provider_name, method, body,
                 )
                 if deny is not None:
@@ -1721,9 +1834,10 @@ def _make_request_handler(
                     ))
                     self._send_simple(status, why)
                     return
-                # Authorization reserved a per-request budget estimate;
-                # _forward_upstream's caller-side finally releases it
-                # on EVERY path out of the forward leg.
+                # Authorization reserved this request's budget
+                # ceiling; _forward_upstream's caller-side finally
+                # releases that exact captured amount on EVERY path
+                # out of the forward leg.
                 reservation_held = True
 
             try:
@@ -1733,7 +1847,9 @@ def _make_request_handler(
                 )
             finally:
                 if reservation_held:
-                    dispatcher._release_child_reservation(rec)
+                    dispatcher._release_child_reservation(
+                        rec, reserved_usd,
+                    )
 
         def _forward_upstream(
             self,

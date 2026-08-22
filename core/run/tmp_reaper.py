@@ -398,6 +398,30 @@ def _reap_runs(parent: Path, now: float | None) -> list[Path]:
         age = _run_age_seconds(meta, st, now)
         if age < max_age:
             continue
+        # Everything above was decided against the lstat() snapshot
+        # `st`; deletion is by pathname. A writer with access to the
+        # parent can swap a different entry into this name between
+        # validation and rmtree — e.g. rename a completed sibling
+        # here — and the reaper would delete the wrong directory.
+        # Narrow that window: re-lstat immediately before deleting
+        # and require the same identity (st_dev, st_ino) and still-
+        # a-directory; anything swapped in (replacement dir OR
+        # symlink — S_ISDIR on lstat is false for a symlink) is
+        # skipped this sweep. Below the top level shutil.rmtree's
+        # fd-based traversal handles symlinks itself.
+        try:
+            st2 = d.lstat()
+        except OSError:
+            continue
+        if (
+            (st2.st_dev, st2.st_ino) != (st.st_dev, st.st_ino)
+            or not stat.S_ISDIR(st2.st_mode)
+        ):
+            logger.warning(
+                "run reaper: %s changed identity between validation "
+                "and delete; skipping this sweep", d,
+            )
+            continue
         shutil.rmtree(d, ignore_errors=True)
         if not d.exists():
             reaped.append(d)

@@ -338,6 +338,34 @@ class TestRunReaping:
         assert (failed / ".raptor-run.json").stat().st_size <= (1 << 20)
         assert reap_stale_runs(out_root) == [failed]
 
+    def test_swapped_dir_not_deleted(self, out_root, tmp_path, monkeypatch):
+        # Validation happens against an lstat snapshot; deletion is by
+        # pathname. If another writer swaps a different directory into
+        # the validated name in between (e.g. renames a completed
+        # sibling there), the reaper must notice the identity change
+        # and skip — not delete the swapped-in victim.
+        import shutil as _shutil
+
+        import core.run.tmp_reaper as reaper_mod
+
+        stale = self._run_dir(out_root, "scan-001", "failed")
+        victim = tmp_path / "victim-results"
+        victim.mkdir()
+        (victim / "findings.json").write_text("{}")
+
+        real_age = reaper_mod._run_age_seconds
+
+        def swap_then_age(meta, st, now):
+            # Runs after validation, before the delete: replace the
+            # validated dir with the victim under the same name.
+            _shutil.rmtree(stale)
+            os.rename(victim, stale)
+            return real_age(meta, st, now)
+
+        monkeypatch.setattr(reaper_mod, "_run_age_seconds", swap_then_age)
+        assert reaper_mod.reap_stale_runs(out_root) == []
+        assert (stale / "findings.json").is_file()
+
 
 class TestStartRunHook:
 

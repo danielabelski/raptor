@@ -1139,6 +1139,29 @@ def run_sandboxed(
             and _ll_avail()
         )
 
+        # Is the ro bind the ONLY read-only enforcement for the target
+        # on this spawn? The remount-ro failure path says "relying on
+        # Landlock" — that is vacuous when (a) Landlock doesn't engage
+        # for this spawn at all, (b) the target sits UNDER a writable
+        # grant (a /tmp-resident target under the /tmp baseline: the
+        # per-ns tmpfs masks host /tmp but the target bind stacked on
+        # top is covered by the grant), or (c) rootfs mode (the image
+        # tree is granted wholesale). In those cases the mount flag
+        # must fail CLOSED instead of warning.
+        _target_under_writable = bool(target) and any(
+            target == _w or target.startswith(_w.rstrip("/") + "/")
+            for _w in (writable_paths or []) if _w
+        )
+        _require_target_ro = bool(
+            target and output != target
+            and (rootfs is not None
+                 # a net-only ruleset (allowed_tcp_ports without
+                 # writable_paths) handles no write accesses, so only
+                 # an engaged WRITE mask counts as a backstop
+                 or not (writable_paths and _ll_avail())
+                 or _target_under_writable)
+        )
+
         # All-or-nothing persona: without the mount-ns overlay step the
         # file half (/proc/cpuinfo, /etc/os-release, ...) never applies
         # while UTS + affinity still would — an inconsistent
@@ -1156,7 +1179,13 @@ def run_sandboxed(
             )
             persona = None
         landlock_fn = None
-        if writable_paths or allowed_tcp_ports:
+        # readable_paths under restrict_reads is a POLICY too: a
+        # read-restricted spawn with no writable paths and no TCP
+        # ports (skip_mount_ns + exclude_tmp_baseline shapes) must
+        # still build the Landlock read allowlist — the preexec-path
+        # twin of this gate already includes it.
+        if (writable_paths or allowed_tcp_ports
+                or (readable_paths and restrict_reads)):
             effective_paths = list(writable_paths) if writable_paths else []
             if rootfs is not None:
                 # Landlock rule paths are opened POST-pivot (the child
@@ -1676,7 +1705,8 @@ def run_sandboxed(
                                persona=persona,
                                etc_overlay=etc_overlay,
                                rw_submounts_ok=_rw_submounts_ok,
-                               rootfs=rootfs)
+                               rootfs=rootfs,
+                               require_target_ro=_require_target_ro)
 
             # Step 9.5 (fingerprint sanitisation): pin sched_setaffinity
             # to a mask of size persona.cpu_count. The persona's

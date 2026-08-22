@@ -1765,6 +1765,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     extra_writable_paths = list(writable_paths or [])
     writable_paths = None
     _private_scratch_dir: str | None = None
+    # Per-CALL private scratch dirs minted when a mount-ns run is
+    # demoted to the Landlock-only path mid-call (see the demotion
+    # hardening in run()); cleaned up with the context.
+    _demoted_scratch_dirs: list[str] = []
     if target or output or allowed_tcp_ports or extra_writable_paths:
         # ``/tmp`` is in the writable baseline so Python's pyc cache
         # and the C compiler's intermediate files survive. Callers that
@@ -1858,11 +1862,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # "Landlock unavailable" warning even when seatbelt is fully
     # engaged — confusing and Linux-flavoured.
     if (not effectively_disabled and not use_mount and not use_seatbelt
-            and (target or output or allowed_tcp_ports)):
+            and (target or output or allowed_tcp_ports
+                 or restrict_reads)):
+        # restrict_reads is part of the declared policy too: a
+        # read-restricted caller without target/output (possible under
+        # skip-mount / helper shapes) would otherwise silently lose
+        # its read restriction here instead of failing closed.
         if not check_landlock_available():
             from .errors import SandboxSetupError
             msg = (
-                "Sandbox: target/output/allowed_tcp_ports were set but "
+                "Sandbox: target/output/allowed_tcp_ports/restrict_reads "
+                "were set but "
                 "Landlock is unavailable on this kernel — filesystem writes "
                 "and TCP ports would NOT be restricted."
             )
@@ -3585,6 +3595,97 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                          if (map_root or target) else ""),
                     )
             if not used_spawn:
+                # ---- Mount-ns demotion hardening -------------------
+                # Reaching here with use_mount True means THIS CALL was
+                # demoted from the mount-ns backend to the Landlock-only
+                # subprocess path (pass_fds/input= kwarg compat, the
+                # B-fallback cmd-visibility check, the speculative-
+                # failure cache, an M/X setup status, or a mid-setup
+                # spawn error). Two contracts must survive that:
+                #
+                # 1. strict is fail-closed. The construction-time gate
+                #    runs before any per-call demotion exists — without
+                #    a per-call recheck, strict silently degraded here
+                #    (the rootfs gates #2/#4 are the model).
+                # 2. The construction-time writable grants were computed
+                #    for the mount backend, where /tmp and /dev/shm are
+                #    per-sandbox tmpfs. On the demoted path they are the
+                #    HOST-SHARED directories — exactly the grants the
+                #    private-scratch posture exists to withhold from
+                #    restricted (restrict_reads) runs. Recompute them
+                #    for this call.
+                _demoted_call_writable: list[str] | None = None
+                if (use_mount and rootfs is None
+                        and sys.platform == "linux"
+                        and not effectively_disabled):
+                    if strict_required:
+                        from .errors import SandboxSetupError
+                        _demote_why = (
+                            _mount_ns_degraded or _b_fallback_reason
+                            or "pass_fds=/input= are not plumbed "
+                               "through the fork-based spawn path")
+                        raise SandboxSetupError(
+                            "sandbox profile 'strict': this call was "
+                            "demoted from the mount-ns backend to the "
+                            f"Landlock-only path ({_demote_why}) — "
+                            "strict does not degrade silently.",
+                            "drop pass_fds=/input= (write stdin via "
+                            "stdin=<fd> instead), make cmd[0] visible "
+                            "in the mount-ns bind tree (tool_paths=), "
+                            "or explicitly choose a profile that "
+                            "degrades gracefully (e.g. `--sandbox "
+                            "full`). RAPTOR will not silently "
+                            "downgrade for you.",
+                        )
+                    if restrict_reads and not exclude_tmp_baseline:
+                        import tempfile as _tempfile_dem
+                        _demoted_scratch = _tempfile_dem.mkdtemp(
+                            prefix=".raptor-scratch-")
+                        _demoted_scratch_dirs.append(_demoted_scratch)
+                        _shared_scratch = {
+                            "/tmp", "/dev/shm",
+                            os.path.realpath(
+                                _tempfile_dem.gettempdir()),
+                        }
+                        _demoted_call_writable = [_demoted_scratch] + [
+                            w for w in (writable_paths or [])
+                            if w not in _shared_scratch
+                            and os.path.realpath(w)
+                            not in _shared_scratch
+                        ]
+                        _dem_preexec = _make_preexec_fn(
+                            effective_limits,
+                            writable_paths=_demoted_call_writable,
+                            allowed_tcp_ports=allowed_tcp_ports,
+                            seccomp_profile=seccomp_profile,
+                            seccomp_block_udp=seccomp_block_udp,
+                            readable_paths=_preexec_readable,
+                            deny_all_tcp_connect=_degraded_tcp_deny,
+                            host_nproc_cap=_host_nproc_cap,
+                            reaper_cell=_reaper_cell,
+                        )
+                        if existing_preexec:
+                            def _dem_combined(_ep=existing_preexec,
+                                              _np=_dem_preexec):
+                                _ep()
+                                _np()
+                            kwargs["preexec_fn"] = _dem_combined
+                        else:
+                            kwargs["preexec_fn"] = _dem_preexec
+                        _dem_env = {
+                            "TMPDIR": _demoted_scratch,
+                            "TEMP": _demoted_scratch,
+                            "TMP": _demoted_scratch,
+                        }
+                        kwargs["env"] = {**kwargs["env"], **_dem_env}
+                        _env_for_target = {**_env_for_target,
+                                           **_dem_env}
+                        logger.info(
+                            "Sandbox: mount-ns demotion under "
+                            "restrict_reads — host-shared /tmp and "
+                            "/dev/shm grants replaced by a per-call "
+                            "private scratch dir for this run.",
+                        )
                 if _exec_pid_callback is not None:
                     logger.debug(
                         "Sandbox: exec_pid_callback supplied but this "
@@ -3632,15 +3733,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 readable_paths=None,
                                 allowed_tcp_ports=None,
                             )
-                            _wp = list(writable_paths or [])
+                            _wp = list(
+                                _demoted_call_writable
+                                if _demoted_call_writable is not None
+                                else (writable_paths or []))
                             # Honour exclude_tmp_baseline: the caller
                             # explicitly stripped the scratch dirs
                             # (exploit-engine wrapper-script defence)
                             # and the audit tracer must not silently
                             # re-open them. The plain (non-audit)
                             # preexec at the sandbox() baseline obeys
-                            # the same flag.
-                            if not exclude_tmp_baseline and "/tmp" not in _wp:
+                            # the same flag. Same for BOTH private-
+                            # scratch postures (construction-time and
+                            # per-call demoted): the whole point of
+                            # the scratch swap is to withhold the
+                            # host-shared /tmp, and the audit branch
+                            # must not silently re-open it.
+                            if (not exclude_tmp_baseline
+                                    and "/tmp" not in _wp
+                                    and _private_scratch_dir is None
+                                    and _demoted_call_writable is None):
                                 _wp.append("/tmp")
                             _la_readable = (
                                 list(effective_read_paths)
@@ -3683,7 +3795,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                         if observe and nonlocal_audit_mode
                                         else None
                                     ),
-                                    writable_paths=writable_paths or [],
+                                    writable_paths=(
+                                        _demoted_call_writable
+                                        if _demoted_call_writable
+                                        is not None
+                                        else (writable_paths or [])),
                                     readable_paths=_la_readable or effective_read_paths or [],
                                     allowed_tcp_ports=(
                                         list(allowed_tcp_ports)
@@ -3980,10 +4096,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # the bind tree + Landlock, skip_mount_ns and Landlock-only via
         # the Landlock read allowlist alone.
         result.sandbox_info["restrict_reads"] = bool(restrict_reads)
-        if _private_scratch_dir:
+        if _private_scratch_dir or (
+                not used_spawn
+                and locals().get("_demoted_call_writable") is not None):
             # Restricted Landlock-only posture: the host-shared /tmp
-            # and /dev/shm grants were replaced by a per-context 0700
-            # scratch dir (TMPDIR-steered).
+            # and /dev/shm grants were replaced by a 0700 scratch dir
+            # (TMPDIR-steered) — per-context, or per-call when this
+            # run was demoted from the mount-ns backend.
             result.sandbox_info["private_scratch"] = True
         if _reaper_cell is not None:
             # No-namespace posture: teardown containment came from the
@@ -4366,6 +4485,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     "private scratch cleanup failed for %s",
                     _private_scratch_dir, exc_info=True,
                 )
+        # Per-call scratch dirs minted by mount-ns demotions.
+        if _demoted_scratch_dirs:
+            import shutil as _shutil
+            for _dsd in _demoted_scratch_dirs:
+                try:
+                    _shutil.rmtree(_dsd, ignore_errors=True)
+                except Exception:
+                    logger.debug(
+                        "demoted scratch cleanup failed for %s",
+                        _dsd, exc_info=True,
+                    )
 
 
 # Convenience: standalone run function for one-off sandboxed commands

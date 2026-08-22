@@ -334,7 +334,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                    etc_overlay: dict | None = None,
                    stage_files: dict | None = None,
                    rw_submounts_ok: bool = False,
-                   rootfs: str | None = None) -> None:
+                   rootfs: str | None = None,
+                   require_target_ro: bool = False) -> None:
     """Establish pivot_root'd tmpfs sandbox root.
 
     Must be called AFTER the child has entered the new user-ns and acquired
@@ -616,6 +617,15 @@ def setup_mount_ns(target: str | None, output: str | None,
             try:
                 _mount(target, inside, None, _ro_remount_flags(inside))
             except OSError as exc:
+                # ``require_target_ro`` means the caller determined the
+                # ro bind is the ONLY read-only enforcement for the
+                # target on this spawn (no Landlock backstop: Landlock
+                # unavailable/unengaged, the target sits under a
+                # writable grant, or rootfs mode grants the image
+                # tree). "Relying on Landlock" would be vacuous — fail
+                # closed instead of executing with a writable target.
+                if require_target_ro:
+                    raise
                 warn_post_fork(
                     b"mount_ns: target remount-ro failed (errno=%d); "
                     b"relying on Landlock for read-only enforcement\n"

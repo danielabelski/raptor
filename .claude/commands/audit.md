@@ -54,7 +54,7 @@ Two-phase: Claude runs `/understand --map` (LLM-driven, produces context-map.jso
 - `--no-validate` — skip the /validate post-pass (not recommended)
 - `--model <name>` — model ID (repeatable for multi-model consensus; first model used for lifecycle)
 - `--adversarial` — enable adversarial reviewer that challenges positive verdicts (requires `--model` x2+)
-- `--edges` — review cross-function edge obligations: tier-1 boundary edges as dedicated contract units, tier-2 on-path edges folded into caller reviews (flag-gated beta)
+- `--edges` — review cross-function edge obligations: tier-1 boundary edges as dedicated contract units, tier-2 on-path edges folded into caller reviews (flag-gated beta). Aliasing/ownership contract detection needs a populated domain model — run a study pass first or seed `concepts/domain-model.json`; absence is reported as a degradation
 - `--max-propagation-depth <N>` — override adaptive constraint propagation depth (default: auto-calibrated p90+2, floor 5, cap 15)
 
 ## Instructions

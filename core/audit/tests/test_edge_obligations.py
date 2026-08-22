@@ -162,3 +162,25 @@ def test_build_and_write_persists(tmp_path):
         (tmp_path / EDGE_OBLIGATIONS_FILENAME).read_text(encoding="utf-8"))
     assert on_disk == payload
     assert on_disk["schema_version"] == 1
+
+
+class TestKnowledgeDegradation:
+    def test_extra_degraded_lands_in_stats(self, tmp_path):
+        from core.audit.edge_obligations import build_and_write
+        checklist = {"target_path": str(tmp_path), "files": []}
+        payload = build_and_write(
+            tmp_path, checklist, None,
+            extra_degraded=["no-domain-model"])
+        assert "no-domain-model" in payload["stats"]["degraded"]
+        import json
+        on_disk = json.loads(
+            (tmp_path / "edge-obligations.json").read_text())
+        assert "no-domain-model" in on_disk["stats"]["degraded"]
+
+    def test_no_duplicate_degradation_entries(self, tmp_path):
+        from core.audit.edge_obligations import build_and_write
+        checklist = {"target_path": str(tmp_path), "files": []}
+        payload = build_and_write(
+            tmp_path, checklist, None,
+            extra_degraded=["no-context-map"])
+        assert payload["stats"]["degraded"].count("no-context-map") == 1

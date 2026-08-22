@@ -344,6 +344,18 @@ def write_markdown_report(
         lines.append(
             f"- Tier-2 (on-path) edges folded into caller reviews: "
             f"{edge_block.get('tier2_total', 0)}")
+        degraded = (edge_block.get("stats") or {}).get("degraded") or []
+        if "no-domain-model" in degraded:
+            lines.append(
+                "- **Degraded — no domain model:** contract review of "
+                "aliasing/ownership bug classes needs the knowledge "
+                "layer; run a study pass or seed concepts/domain-model.json "
+                "and re-audit (context-staleness re-queues affected "
+                "verdicts).")
+        elif degraded:
+            lines.append(
+                "- Degraded: " + ", ".join(_line(d, max_chars=40)
+                                           for d in degraded[:6]))
         for f in edge_block.get("edge_findings", [])[:10]:
             lines.append(
                 f"- **Contract violation:** "

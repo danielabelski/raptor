@@ -285,8 +285,27 @@ def run_edge_pass(
     """
     from core.audit.edge_obligations import build_and_write
 
+    # Contract review of aliasing/ownership classes depends on the
+    # knowledge layer: A/B-validated on CVE-2026-31431 — the identical
+    # review verdicts the violated edge clean without a domain model
+    # and flags it with one. Absence is a stated degradation, never
+    # silent.
+    extra_degraded = []
+    try:
+        from core.coverage.journal import load_domain_model
+        if not load_domain_model(Path(config.out_dir)):
+            extra_degraded.append("no-domain-model")
+            logger.warning(
+                "edge pass: no domain model for this target — contract "
+                "review of aliasing/ownership bug classes is degraded. "
+                "Run a study pass (or seed <project>/concepts/"
+                "domain-model.json) for full-strength edge review.")
+    except Exception:  # noqa: BLE001 — the check must never block the pass
+        logger.debug("domain-model presence check failed", exc_info=True)
+
     obligations = build_and_write(
         Path(config.out_dir), checklist, context_map,
+        extra_degraded=extra_degraded,
     )
     tier2_by_caller: dict[str, list] = {}
     for rec in obligations.get("tier2", []):

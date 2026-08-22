@@ -282,9 +282,19 @@ def build_and_write(
     run_dir: Path,
     checklist: dict[str, Any],
     context_map: dict[str, Any] | None,
+    extra_degraded: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Scope + persist for a run dir, folding in its touched edges."""
+    """Scope + persist for a run dir, folding in its touched edges.
+
+    ``extra_degraded`` lets the caller record run-level degradations
+    the scoping pass itself cannot see (e.g. ``no-domain-model``) in
+    the same ``stats.degraded`` channel — one place for every
+    honesty-of-coverage note.
+    """
     payload = build_edge_obligations(
         checklist, context_map, touched=load_touched(Path(run_dir)))
+    for reason in extra_degraded or []:
+        if reason not in payload["stats"]["degraded"]:
+            payload["stats"]["degraded"].append(reason)
     write_edge_obligations(Path(run_dir), payload)
     return payload

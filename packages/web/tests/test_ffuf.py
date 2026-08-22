@@ -60,11 +60,151 @@ def test_build_url_template_rejects_out_of_scope_templates(tmp_path: Path, templ
         runner.build_url_template(template)
 
 
-def test_build_url_template_requires_fuzz_marker(tmp_path: Path):
+def test_build_command_requires_a_fuzz_keyword_somewhere(tmp_path: Path):
+    """A config with no substitution point anywhere is a config error;
+    a fixed URL is fine as long as the body or a header carries FUZZ."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
     runner = FfufRunner("https://example.test", tmp_path)
 
-    with pytest.raises(ValueError, match="must include FUZZ"):
-        runner.build_url_template("admin")
+    with pytest.raises(ValueError, match="no substitution point"):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, path_template="admin"),
+            tmp_path / "out.json",
+        )
+
+    body_cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="api/login",
+            method="POST",
+            data="FUZZ=1",
+        ),
+        tmp_path / "out.json",
+    )
+    assert body_cmd[body_cmd.index("-u") + 1] == "https://example.test/api/login"
+
+    header_cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="api/login",
+            headers=("X-Forwarded-For: FUZZ",),
+        ),
+        tmp_path / "out.json",
+    )
+    assert header_cmd[header_cmd.index("-H") + 1] == "X-Forwarded-For: FUZZ"
+
+
+def test_build_command_emits_method_and_body(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="api/users",
+            method="POST",
+            data='{"FUZZ": "1"}',
+            headers=("Content-Type: application/json",),
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-X") + 1] == "POST"
+    assert cmd[cmd.index("-d") + 1] == '{"FUZZ": "1"}'
+
+
+def test_build_command_get_method_omits_x_flag(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(FfufConfig(wordlist=wordlist), tmp_path / "out.json")
+
+    assert "-X" not in cmd
+    assert "-d" not in cmd
+
+
+def test_build_command_rejects_unknown_method(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="method must be one of"):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, method="TRACE"),
+            tmp_path / "out.json",
+        )
+
+
+def test_redact_body_masks_secret_form_fields_only(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    redacted = runner._redact_body("username=admin&password=hunter2&mode=FUZZ")
+
+    assert "hunter2" not in redacted
+    assert "password=[REDACTED]" in redacted
+    assert "username=admin" in redacted
+    assert "mode=FUZZ" in redacted
+
+
+def test_run_redacts_body_in_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "packages.web.ffuf.logger.info",
+        lambda fmt, *args: messages.append(fmt % args if args else fmt),
+    )
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="login",
+            method="POST",
+            data="user=FUZZ&api_key=sk-verysecretvalue123",
+        )
+    )
+
+    logs = "\n".join(messages)
+    assert "sk-verysecretvalue123" not in logs
+    assert "user=FUZZ" in logs
+
+
+def test_scanner_cli_wires_ffuf_method_and_data(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-method",
+            "POST",
+            "--ffuf-data",
+            "FUZZ=1",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.method == "POST"
+    assert config.data == "FUZZ=1"
 
 
 @pytest.mark.parametrize(

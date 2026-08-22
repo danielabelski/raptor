@@ -35,6 +35,11 @@ _MAX_FFUF_OUTPUT_BYTES = 64 * 1024 * 1024
 # target is an operational hazard, not a scanner feature.
 DEFAULT_GUARDED_RATE = 50
 
+# Methods ffuf may send. Write methods are permitted here because the
+# operator opted in explicitly; policy layers above the engine decide
+# whether a run may use them at all.
+ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
 
 @dataclass(frozen=True)
 class FfufConfig:
@@ -54,6 +59,8 @@ class FfufConfig:
     filter_size: int | None = None
     headers: tuple[str, ...] = ()
     cookies: tuple[str, ...] = ()
+    method: str = "GET"
+    data: str | None = None
     stop_on_403: bool = False
     stop_on_spurious: bool = False
     stop_on_all_errors: bool = False
@@ -121,17 +128,45 @@ class FfufRunner:
             return f"{name}: [REDACTED]"
         return self._redact(header)
 
+    def _redact_body(self, body: str) -> str:
+        """Redact secret-named fields from a form-encoded request body.
+
+        JSON and other non-form bodies fall through to the generic
+        pattern-based redactor.
+        """
+        if self.reveal_secrets:
+            return body
+        if "=" not in body or body.lstrip().startswith(("{", "[")):
+            return self._redact(body)
+        segments = []
+        for segment in body.split("&"):
+            name, sep, _value = segment.partition("=")
+            if sep and is_secret_field_name(name.strip().lower()):
+                segments.append(f"{name}=[REDACTED]")
+            else:
+                segments.append(self._redact(segment))
+        return "&".join(segments)
+
     def _redact_command(self, cmd: list[str]) -> list[str]:
         redacted: list[str] = []
         redact_next_cookie = False
+        redact_next_body = False
         for part in cmd:
             if redact_next_cookie:
                 redacted.append(self._redact_cookie_value(part))
                 redact_next_cookie = False
                 continue
+            if redact_next_body:
+                redacted.append(self._redact_body(part))
+                redact_next_body = False
+                continue
             if part == "-b":
                 redacted.append(part)
                 redact_next_cookie = True
+                continue
+            if part == "-d":
+                redacted.append(part)
+                redact_next_body = True
                 continue
             if part == "-H":
                 redacted.append(part)
@@ -145,21 +180,21 @@ class FfufRunner:
     def build_url_template(self, path_template: str) -> str:
         """Build and scope-check the ffuf URL template.
 
-        ffuf marks the replacement point with ``FUZZ``. Accepting a raw URL from
-        the CLI without checking it would let a saved RAPTOR config or copied
-        command accidentally aim ffuf at a different host. Treat the template
-        like WebClient paths: relative paths are anchored to ``base_url``;
-        absolute URLs are allowed only when their normalized origin matches.
+        Accepting a raw URL from the CLI without checking it would let a
+        saved RAPTOR config or copied command accidentally aim ffuf at a
+        different host. Treat the template like WebClient paths: relative
+        paths are anchored to ``base_url``; absolute URLs are allowed only
+        when their normalized origin matches.
+
+        The URL itself does not have to carry a fuzz keyword — request-body
+        and header fuzzing keep the URL fixed. ``build_command`` enforces
+        that at least one keyword appears somewhere in the request.
 
         ``urljoin`` intentionally normalizes ``..`` segments before the origin
         check. That can move a relative template outside the base path while
         staying on the same origin; this integration scopes ffuf to the target
         host/origin rather than to a specific subpath.
         """
-        if "FUZZ" not in path_template:
-            msg = "ffuf path template must include FUZZ"
-            raise ValueError(msg)
-
         url_template = urljoin(self.base_url + "/", path_template)
         probe_url = url_template.replace("FUZZ", "raptor-scope-probe")
         if self._origin(probe_url) != self._origin(self.base_url):
@@ -169,6 +204,23 @@ class FfufRunner:
             )
             raise ValueError(msg)
         return url_template
+
+    @staticmethod
+    def _fuzz_keywords(config: FfufConfig) -> tuple[str, ...]:
+        """Keywords ffuf will substitute for this configuration."""
+        return ("FUZZ",)
+
+    @classmethod
+    def _require_fuzz_keyword(cls, config: FfufConfig, url_template: str) -> None:
+        """Every run needs at least one substitution point somewhere."""
+        keywords = cls._fuzz_keywords(config)
+        haystacks = [url_template, config.data or "", *config.headers]
+        if not any(kw in haystack for kw in keywords for haystack in haystacks):
+            msg = (
+                "ffuf configuration has no substitution point: put FUZZ in "
+                "the URL template, request body, or a header value"
+            )
+            raise ValueError(msg)
 
     _TIME_MATCHER_RE = re.compile(r"^[<>]\d+$")
 
@@ -195,6 +247,9 @@ class FfufRunner:
             raise ValueError(msg)
         if config.filter_size is not None and config.filter_size < 0:
             msg = "ffuf filter size must be >= 0 when set"
+            raise ValueError(msg)
+        if config.method.upper() not in ALLOWED_METHODS:
+            msg = f"ffuf method must be one of {', '.join(ALLOWED_METHODS)}"
             raise ValueError(msg)
         if config.recursion_depth < 1:
             msg = "ffuf recursion depth must be >= 1"
@@ -257,6 +312,7 @@ class FfufRunner:
         self._validate_config(config)
 
         url_template = self.build_url_template(config.path_template)
+        self._require_fuzz_keyword(config, url_template)
         if config.recursion and not url_template.rstrip("/").endswith("FUZZ"):
             # ffuf constraint: recursion re-queues discovered directories
             # by substituting the FUZZ keyword at the end of the URL path.
@@ -315,6 +371,10 @@ class FfufRunner:
             cmd.extend(["-ft", config.filter_time])
         if config.extensions:
             cmd.extend(["-e", ",".join(config.extensions)])
+        if config.method.upper() != "GET":
+            cmd.extend(["-X", config.method.upper()])
+        if config.data:
+            cmd.extend(["-d", config.data])
         for header in config.headers:
             cmd.extend(["-H", header])
         for cookie in config.cookies:

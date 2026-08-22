@@ -449,6 +449,20 @@ Examples:
         help="Stop ffuf on all error cases (-sa)",
     )
     parser.add_argument(
+        "--ffuf-method",
+        default="GET",
+        choices=("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"),
+        help="HTTP method for ffuf requests (-X); default GET",
+    )
+    parser.add_argument(
+        "--ffuf-data",
+        help=(
+            "Request body for ffuf -d; may contain FUZZ for parameter "
+            "discovery, e.g. 'FUZZ=1' with --ffuf-method POST. Set the "
+            "Content-Type via --ffuf-header."
+        ),
+    )
+    parser.add_argument(
         "--ffuf-header",
         action="append",
         default=[],
@@ -498,6 +512,8 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         filter_size=args.ffuf_filter_size,
         headers=tuple(args.ffuf_header or ()),
         cookies=tuple(args.ffuf_cookie or ()),
+        method=args.ffuf_method,
+        data=args.ffuf_data,
         stop_on_403=bool(args.ffuf_stop_on_403),
         stop_on_spurious=bool(args.ffuf_stop_on_spurious_errors),
         stop_on_all_errors=bool(args.ffuf_stop_on_all_errors),

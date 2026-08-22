@@ -962,8 +962,7 @@ def _build_taint_query(
 
     query = _TAINT_QUERY_TEMPLATE.replace("__SOURCE_FILTER__", source_filter)
     query = query.replace("__SINK_CALL__", sink_call)
-    query = query.replace("__MAX_CALL_DEPTH__", str(int(max_call_depth)))
-    return query
+    return query.replace("__MAX_CALL_DEPTH__", str(int(max_call_depth)))
 
 
 _TAINT_QUERY_TEMPLATE = r'''import io.joern.dataflowengineoss.queryengine._

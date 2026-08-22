@@ -12648,7 +12648,7 @@ def _tally_outcome(
             result.suspicious += 1
         elif outcome.status == "clean":
             result.clean += 1
-        elif outcome.status == "dormant" or outcome.status == "dark":
+        elif outcome.status in {"dormant", "dark"}:
             result.dormant += 1
         elif outcome.status == "error":
             result.errors += 1
@@ -15982,7 +15982,7 @@ def _sweep_validate(
                 if outcome.review_result:
                     outcome.review_result["evidence_tool"] = "smt:disproof:unsat"
                 return outcome
-            elif smt_result.disproved is False:
+            if smt_result.disproved is False:
                 if _premise_blocks_confirm(premise_h, ["smt:disproof:sat"]):
                     _note_premise_blocked_validation(
                         outcome, premise_h, ["smt:disproof:sat"],
@@ -16233,7 +16233,7 @@ def _proactive_validate(
                         if tier_counters:
                             _increment_tier_dict(tier_counters, "codeql", "confirmed")
                         break
-                    elif codeql_result.outcome == "error":
+                    if codeql_result.outcome == "error":
                         errored.add("codeql")
                         if tier_counters:
                             _increment_tier_dict(tier_counters, "codeql", "errors")
@@ -17851,10 +17851,7 @@ def _inject_chain_targets(
         t_file, t_name = target_bare.split(":", 1)
         if checklist_index is not None:
             gap = checklist_index.get((t_file, t_name))
-            if gap is not None:
-                gap = dict(gap)
-            else:
-                gap = None
+            gap = dict(gap) if gap is not None else None
         else:
             gap = _find_gap_in_checklist(checklist, t_file, t_name)
         if not gap:
@@ -17890,7 +17887,7 @@ def _untally_outcome(result: OrchestratorResult, outcome: ReviewOutcome) -> None
             result.suspicious -= 1
         elif outcome.status == "clean":
             result.clean -= 1
-        elif outcome.status == "dormant" or outcome.status == "dark":
+        elif outcome.status in {"dormant", "dark"}:
             result.dormant -= 1
         elif outcome.status == "error":
             result.errors -= 1
@@ -21764,10 +21761,7 @@ def _is_verification_evidence_for_gate(outcome: ReviewOutcome) -> bool:
     if not ev:
         return False
     from .pipeline import _is_verification_evidence
-    for part in ev.split("+"):
-        if _is_verification_evidence(part.strip()):
-            return True
-    return False
+    return any(_is_verification_evidence(part.strip()) for part in ev.split("+"))
 
 
 _COUNTER_ESCALATION_PREFIX = "[counter-hypothesis escalation:"

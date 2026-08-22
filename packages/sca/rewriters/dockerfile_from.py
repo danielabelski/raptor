@@ -47,9 +47,7 @@ def _is_dockerfile(path: Path) -> bool:
         return True
     if name.startswith("Dockerfile.") or name.endswith(".Dockerfile"):
         return True
-    if path.suffix == ".dockerfile":
-        return True
-    return False
+    return path.suffix == ".dockerfile"
 
 
 @register(predicate=_is_dockerfile, filenames=None)
@@ -82,14 +80,13 @@ def rewrite_dockerfile_from(
             arg_edits.append(edit)
         elif kind == "inline_install_pip":
             inline_install_edits.append(edit)
+        # Back-compat shape heuristic for edits without an
+        # ``extra["kind"]``: image refs always contain ``/``,
+        # ARG names never do.
+        elif "/" in edit.locator:
+            from_edits.append(edit)
         else:
-            # Back-compat shape heuristic for edits without an
-            # ``extra["kind"]``: image refs always contain ``/``,
-            # ARG names never do.
-            if "/" in edit.locator:
-                from_edits.append(edit)
-            else:
-                arg_edits.append(edit)
+            arg_edits.append(edit)
 
     results: list[RewriteResult] = []
     if from_edits:

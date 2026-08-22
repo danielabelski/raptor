@@ -133,10 +133,7 @@ def _is_macos_write_action(name: str) -> bool:
     classification so the two ends agree on what counts as a write
     on macOS.
     """
-    for prefix in _MACOS_WRITE_PREFIXES:
-        if name.startswith(prefix):
-            return True
-    return False
+    return any(name.startswith(prefix) for prefix in _MACOS_WRITE_PREFIXES)
 
 
 # Match the connect-record path field shape produced by tracer.py:
@@ -612,10 +609,9 @@ def parse_observe_log(run_dir, *,
                 if path not in seen_write:
                     seen_write.add(path)
                     profile.paths_written.append(path)
-            else:
-                if path not in seen_read:
-                    seen_read.add(path)
-                    profile.paths_read.append(path)
+            elif path not in seen_read:
+                seen_read.add(path)
+                profile.paths_read.append(path)
         elif _is_macos_write_action(name):
             # macOS-only branch — kext write actions
             # (file-write-create / file-write-data / file-mknod /

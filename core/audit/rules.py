@@ -144,10 +144,9 @@ def run_rule_sweep(
 
     if tool == "semgrep":
         return _run_semgrep_rule(rule_path, target_path)
-    elif tool == "coccinelle":
+    if tool == "coccinelle":
         return _run_coccinelle_rule(rule_path, target_path)
-    else:
-        return {"error": f"unknown tool {tool!r}"}
+    return {"error": f"unknown tool {tool!r}"}
 
 
 def _finding_to_match(finding: Any) -> dict[str, Any]:

@@ -305,10 +305,7 @@ def _find_stale_files(
         if disk_hash_cache is not None and rel_path in disk_hash_cache:
             disk_hash = disk_hash_cache[rel_path]
         else:
-            if not full_path.is_file():
-                disk_hash = None
-            else:
-                disk_hash = sha256_file(full_path)
+            disk_hash = None if not full_path.is_file() else sha256_file(full_path)
             if disk_hash_cache is not None:
                 disk_hash_cache[rel_path] = disk_hash
         if disk_hash is None:

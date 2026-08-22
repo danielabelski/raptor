@@ -149,9 +149,7 @@ def _is_test_file(path: Path, target: Path) -> bool:
     rel_parts = path.relative_to(target).parts
     if any(p.lower() in {"tests", "test"} for p in rel_parts):
         return True
-    if path.stem.lower().endswith(("tests", "test")):
-        return True
-    return False
+    return bool(path.stem.lower().endswith(("tests", "test")))
 
 
 def _format_evidence(

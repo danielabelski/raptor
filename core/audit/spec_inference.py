@@ -676,11 +676,7 @@ def _checks_return_value(source: str, function_name: str) -> bool:
         r"if\s*\(\s*(?:ret|rc|err|result|status|rv)\s*[!=<>]",
     ]
 
-    for pat in patterns:
-        if re.search(pat, source):
-            return True
-
-    return False
+    return any(re.search(pat, source) for pat in patterns)
 
 
 # Audit-purpose framing: this class (the IRIS spec/refine leg) was
@@ -1015,8 +1011,7 @@ def _extract_base_name(name: str) -> str:
     """Strip version suffixes and common prefixes to get the base concept."""
     stripped = re.sub(r"_?v\d+$", "", name)
     stripped = re.sub(r"_(?:new|old|orig|fixed|safe|unsafe)$", "", stripped)
-    stripped = re.sub(r"\d+$", "", stripped)
-    return stripped
+    return re.sub(r"\d+$", "", stripped)
 
 
 def _is_peer(base: str, original: str, candidate: str) -> bool:

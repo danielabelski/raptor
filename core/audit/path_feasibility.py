@@ -203,19 +203,18 @@ def check_path_feasibility(
                 conditions=list(conditions),
                 reasoning=result.raw_output or "conditions are satisfiable",
             )
-        elif result.outcome == "refuted":
+        if result.outcome == "refuted":
             return FeasibilityResult(
                 feasible=False,
                 conditions=list(conditions),
                 reasoning=result.raw_output or "conditions are unsatisfiable",
             )
-        else:
-            return FeasibilityResult(
-                feasible=None,
-                conditions=list(conditions),
-                reasoning=result.raw_output or "inconclusive",
-                error="; ".join(result.errors) if result.errors else "",
-            )
+        return FeasibilityResult(
+            feasible=None,
+            conditions=list(conditions),
+            reasoning=result.raw_output or "inconclusive",
+            error="; ".join(result.errors) if result.errors else "",
+        )
 
     except Exception as exc:
         return FeasibilityResult(

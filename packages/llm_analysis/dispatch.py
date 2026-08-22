@@ -593,15 +593,14 @@ def _dispatch_inner(
                         abort_reason = "auth failure"
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
-                    else:
-                        # Single-model auth failure — keep dispatching
-                        # to other models. Surface the per-model
-                        # failure but don't kill peers.
-                        print(
-                            f"  (model {model_key} auth-failed;"
-                            " continuing with other models)",
-                            file=sys.stderr,
-                        )
+                    # Single-model auth failure — keep dispatching
+                    # to other models. Surface the per-model
+                    # failure but don't kill peers.
+                    print(
+                        f"  (model {model_key} auth-failed;"
+                        " continuing with other models)",
+                        file=sys.stderr,
+                    )
 
                 # Per-model consecutive_errors. Pre-fix the global
                 # counter triggered "3 consecutive failures" abort
@@ -661,5 +660,4 @@ def _dispatch_inner(
                 })
 
     # Finalize (e.g. consensus verdict rules)
-    results = task.finalize(results, prior_results)
-    return results
+    return task.finalize(results, prior_results)

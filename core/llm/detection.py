@@ -696,9 +696,8 @@ def _config_has_keyed_models() -> bool:
             if not (bool(os.getenv("RAPTOR_LLM_SOCKET"))
                     or BOTOCORE_SDK_AVAILABLE):
                 continue
-        else:
-            if not OPENAI_SDK_AVAILABLE:
-                continue
+        elif not OPENAI_SDK_AVAILABLE:
+            continue
 
         # Check if model has a key
         if entry.get("api_key"):

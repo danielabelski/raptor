@@ -919,14 +919,13 @@ def _extract_callsites_regex(
             continue
 
         cm = _C_FUNC_HEADER_RE.match(line)
-        if cm:
-            if cm.group("name") not in _KEYWORDS:
-                if cm.group("tail") != ";":
-                    # Definition header: subsequent sites belong to it.
-                    current_func = cm.group("name")
-                # Either way the line itself declares — the name-plus-
-                # parens here is not a call site.
-                continue
+        if cm and cm.group("name") not in _KEYWORDS:
+            if cm.group("tail") != ";":
+                # Definition header: subsequent sites belong to it.
+                current_func = cm.group("name")
+            # Either way the line itself declares — the name-plus-
+            # parens here is not a call site.
+            continue
 
         stripped = line.lstrip()
         # Determine how this line consumes return values.

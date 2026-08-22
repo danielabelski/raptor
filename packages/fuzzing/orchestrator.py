@@ -114,7 +114,7 @@ class FuzzingOrchestrator:
         kind = target.kind
         caps = self.capabilities
 
-        if kind == "elf-linux" or kind == "macho":
+        if kind in {"elf-linux", "macho"}:
             plan.fuzzer = self._pick_for_unix_binary(caps, target.path)
         elif kind in ("pe-exe", "pe-dll"):
             plan.fuzzer = "winafl" if caps.platform == "Windows" else None

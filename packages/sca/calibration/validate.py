@@ -56,8 +56,7 @@ class ValidationReport:
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        d = self.__dict__.copy()
-        return d
+        return self.__dict__.copy()
 
 
 def validate_corpus(

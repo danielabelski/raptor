@@ -341,18 +341,17 @@ def _advisories(env: Mapping[str, str]) -> list[str]:
                 f"augmentation); the operator shell and other tools do "
                 f"not — add {_IMDS_IP} to NO_PROXY there."
             )
-    else:  # non-imds
-        if not disabled_raw and proxies:
-            out.append(
-                f"optional: proxied environment and the AWS credential "
-                f"chain does not depend on EC2 IMDS ({detail}) — "
-                f"setting {_IMDS_DISABLED_ENV}=true stops AWS SDKs "
-                f"probing {_IMDS_IP} through the proxy. Probe-noise "
-                f"hygiene only; do NOT set it on hosts whose "
-                f"credentials come from an instance role "
-                f"(credential_source = Ec2InstanceMetadata) — it "
-                f"breaks them."
-            )
+    elif not disabled_raw and proxies:
+        out.append(
+            f"optional: proxied environment and the AWS credential "
+            f"chain does not depend on EC2 IMDS ({detail}) — "
+            f"setting {_IMDS_DISABLED_ENV}=true stops AWS SDKs "
+            f"probing {_IMDS_IP} through the proxy. Probe-noise "
+            f"hygiene only; do NOT set it on hosts whose "
+            f"credentials come from an instance role "
+            f"(credential_source = Ec2InstanceMetadata) — it "
+            f"breaks them."
+        )
     return out
 
 

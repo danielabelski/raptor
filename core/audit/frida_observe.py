@@ -272,10 +272,7 @@ def _build_hook_targets(
 
     callees = ctx.get("callees", [])
     for ce in callees:
-        if isinstance(ce, dict):
-            name = ce.get("name", "")
-        else:
-            name = str(ce)
+        name = ce.get("name", "") if isinstance(ce, dict) else str(ce)
         if name and name not in targets:
             targets.append(name)
 

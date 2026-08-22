@@ -691,9 +691,8 @@ class DataflowVisualizer:
         text = text.replace(')', '&#41;')
         text = text.replace('<', '&lt;')
         text = text.replace('>', '&gt;')
-        text = text.replace('#', '&#35;')
+        return text.replace('#', '&#35;')
 
-        return text
 
     def generate_ascii(self, dataflow: DataflowPath, finding_id: str) -> Path:
         """

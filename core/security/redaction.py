@@ -298,11 +298,10 @@ def redact_url_secrets_only(value: object, *, reveal_secrets: bool = False) -> s
     # — `_redact_url`'s urlsplit then includes the `)` in the
     # path/query and the redacted output preserves the malformed
     # tail visible in logs.
-    text = re.sub(
+    return re.sub(
         # Any RFC-3986 scheme, not just http(s): connection strings
         # (postgres://, mongodb+srv://, redis://, amqp://, ftp://, ...)
         # carry credentials in the SAME userinfo/query positions and
         # slipped through the http-only pattern verbatim.
         r"\b[a-zA-Z][a-zA-Z0-9+.-]{0,31}://[^\s'\"<>()]{1,8192}",
         _redact_url, text)
-    return text

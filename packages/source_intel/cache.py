@@ -110,7 +110,7 @@ def _sorted_source_files(target: Path) -> list[Path]:
             entry for entry in target.rglob("*")
             if entry.is_file() and entry.suffix.lower() in _C_CPP_EXTS
         ),
-        key=lambda p: str(p),
+        key=str,
     )
 
 
@@ -260,7 +260,7 @@ def _hash_rules_dir(rules_dir: Path | None) -> str:
     h = hashlib.sha256()
     files = sorted(
         [*rules_dir.rglob("*.cocci"), *rules_dir.rglob("*.json")],
-        key=lambda p: str(p),
+        key=str,
     )
     for path in files:
         h.update(str(path.relative_to(rules_dir)).encode("utf-8"))

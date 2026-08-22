@@ -450,12 +450,11 @@ def _msf_ref_to_cve(ref: Any) -> str | None:
         if ref.startswith("CVE-"):
             return ref
         return None
-    if isinstance(ref, dict):
-        if ref.get("type") == "CVE":
-            cve_num = ref.get("ref") or ""
-            if cve_num and not cve_num.startswith("CVE-"):
-                cve_num = f"CVE-{cve_num}"
-            return cve_num or None
+    if isinstance(ref, dict) and ref.get("type") == "CVE":
+        cve_num = ref.get("ref") or ""
+        if cve_num and not cve_num.startswith("CVE-"):
+            cve_num = f"CVE-{cve_num}"
+        return cve_num or None
     return None
 
 

@@ -416,7 +416,7 @@ class CrashAnalyser:
                 lr_addr = context.registers["lr"]
                 if lr_addr and lr_addr.startswith("0x"):
                     func_name, file_line = self._resolve_address_with_addr2line(lr_addr)
-                    if func_name != "unknown" and func_name != context.function_name:
+                    if func_name not in ("unknown", context.function_name):
                         logger.info("✓ Return address resolved: %s at %s", func_name, file_line)
                         # Update source location if we found a better one
                         if not context.source_location or context.source_location == "unknown":
@@ -472,32 +472,30 @@ class CrashAnalyser:
             
             if "heap" in memory_region or "malloc" in context.function_name.lower():
                 return "heap_overflow"
-            elif "stack" in memory_region or any(word in context.function_name.lower() for word in _STACK_OVERFLOW_FUNCS):
+            if "stack" in memory_region or any(word in context.function_name.lower() for word in _STACK_OVERFLOW_FUNCS):
                 return "stack_overflow"
-            elif "null" in memory_region or context.crash_address in ["0x0", "0x00000000"]:
+            if "null" in memory_region or context.crash_address in ["0x0", "0x00000000"]:
                 return "null_deref"
-            else:
-                return "memory_access_violation"
+            return "memory_access_violation"
                 
-        elif signal in _SIGABRT_SIGNALS:
+        if signal in _SIGABRT_SIGNALS:
             # Abort signal - could be ASan, assert, or double-free
             if context.binary_info.get("asan_enabled") == "true":
                 return "asan_detected_bug"
-            elif "free" in context.function_name.lower().split("_") or "double free" in context.stack_trace.lower():
+            if "free" in context.function_name.lower().split("_") or "double free" in context.stack_trace.lower():
                 return "double_free"
-            else:
-                return "abort_signal"
+            return "abort_signal"
 
-        elif signal in _SIGFPE_SIGNALS:
+        if signal in _SIGFPE_SIGNALS:
             return "arithmetic_error"
 
-        elif signal in _SIGILL_SIGNALS:
+        if signal in _SIGILL_SIGNALS:
             return "illegal_instruction"
 
-        elif signal in _SIGPIPE_SIGNALS:
+        if signal in _SIGPIPE_SIGNALS:
             return "broken_pipe"
 
-        elif signal in _SIGBUS_SIGNALS:
+        if signal in _SIGBUS_SIGNALS:
             return "bus_error"
             
         # Function name based classification
@@ -505,18 +503,18 @@ class CrashAnalyser:
         func_words = func_name.split("_")
         if "free" in func_words or any(w in func_name for w in _HEAP_ALLOC_FUNCS):
             return "heap_corruption"
-        elif any(word in func_name for word in _BUFFER_COPY_FUNCS):
+        if any(word in func_name for word in _BUFFER_COPY_FUNCS):
             return "buffer_overflow"
-        elif "printf" in func_name:
+        if "printf" in func_name:
             return "format_string_vulnerability"
             
         # Stack trace based classification
         stack_lower = context.stack_trace.lower()
         if "heap" in stack_lower and "overflow" in stack_lower:
             return "heap_overflow"
-        elif "stack" in stack_lower and "overflow" in stack_lower:
+        if "stack" in stack_lower and "overflow" in stack_lower:
             return "stack_overflow"
-        elif "use after free" in stack_lower or "double free" in stack_lower:
+        if "use after free" in stack_lower or "double free" in stack_lower:
             return "use_after_free"
             
         # Default classification
@@ -526,8 +524,7 @@ class CrashAnalyser:
         """Run debugger to analyze crash."""
         if self._debugger == "lldb":
             return self._run_lldb_analysis(input_file)
-        else:
-            return self._run_gdb_analysis_internal(input_file)
+        return self._run_gdb_analysis_internal(input_file)
 
     def _write_debugger_script(self, commands: list[str], prefix: str) -> Path:
         """Write a debugger command script NEXT TO the binary, not /tmp.
@@ -838,7 +835,7 @@ class CrashAnalyser:
                 elif "SIGBUS" in line:
                     context.signal = "07"
                 break
-            elif "stop reason = EXC_BREAKPOINT" in line:
+            if "stop reason = EXC_BREAKPOINT" in line:
                 # macOS exception for breakpoint (SIGTRAP)
                 context.signal = "05"
                 break
@@ -964,7 +961,7 @@ class CrashAnalyser:
             if "disassemble" in line.lower():
                 in_disassembly = True
                 continue
-            elif in_disassembly and line.strip() and "0x" in line and ":" in line:
+            if in_disassembly and line.strip() and "0x" in line and ":" in line:
                 disassembly_lines.append(line.strip())
                 if len(disassembly_lines) >= 10:
                     break
@@ -988,7 +985,7 @@ class CrashAnalyser:
                             logger.info("✓ Source location extracted from backtrace: %s", parts[0].strip())
                     break
                 # Alternative format without backticks
-                elif " in " in line:
+                if " in " in line:
                     parts = line.split(" in ")[1].split()
                     if parts:
                         context.function_name = parts[0].split("(")[0].strip()
@@ -1134,7 +1131,7 @@ class CrashAnalyser:
             if "=>" in line and "0x" in line:
                 in_disassembly = True
                 continue
-            elif in_disassembly and line.strip() and not line.startswith("(gdb)") and "0x" in line:
+            if in_disassembly and line.strip() and not line.startswith("(gdb)") and "0x" in line:
                 disassembly_lines.append(line.strip())
                 if len(disassembly_lines) >= 10:  # Limit to 10 instructions
                     break
@@ -1209,15 +1206,14 @@ class CrashAnalyser:
                 if "<" in line and ">" in line:  # Function start marker
                     in_disassembly = True
                     continue
-                elif in_disassembly and ":" in line and any(c in line for c in _DISASM_MARKERS):
+                if in_disassembly and ":" in line and any(c in line for c in _DISASM_MARKERS):
                     disasm_lines.append(line.strip())
                     if len(disasm_lines) >= num_instructions:
                         break
                         
             if disasm_lines:
                 return "\n".join(disasm_lines)
-            else:
-                return "No disassembly instructions found"
+            return "No disassembly instructions found"
 
         except Exception as e:  # noqa: BLE001 — defensive: degrade, never crash the analysis
             logger.debug("Disassembly failed: %s", e)
@@ -1589,9 +1585,8 @@ class CrashAnalyser:
             if "AddressSanitizer" in asan_output or "runtime error" in asan_output:
                 logger.info("✓ ASan diagnostics captured")
                 return asan_output
-            else:
-                logger.debug("No ASan output detected")
-                return ""
+            logger.debug("No ASan output detected")
+            return ""
                 
         except subprocess.TimeoutExpired:
             logger.warning("ASan analysis timed out")
@@ -1651,10 +1646,9 @@ class CrashAnalyser:
                 rsp = context.registers.get("rsp", "")
                 if rsp and "0x00000" in rsp:
                     return "null_deref"
-                elif context.crash_instruction and "call" in context.crash_instruction.lower():
+                if context.crash_instruction and "call" in context.crash_instruction.lower():
                     return "call_to_invalid_address"
-                else:
-                    return "memory_access_violation"
+                return "memory_access_violation"
         elif context.signal == "06":  # SIGABRT
             if context.stack_trace and ("malloc" in context.stack_trace or "free" in context.stack_trace):
                 return "heap_corruption"
@@ -1666,11 +1660,11 @@ class CrashAnalyser:
         elif context.signal == "05":  # SIGTRAP
             if context.crash_instruction and ("int3" in context.crash_instruction.lower() or "breakpoint" in context.crash_instruction.lower()):
                 return "debug_breakpoint"
-            elif context.stack_trace and "assert" in context.stack_trace.lower():
+            if context.stack_trace and "assert" in context.stack_trace.lower():
                 return "assertion_failure"
-            elif context.stack_trace and ("sanitizer" in context.stack_trace.lower() or "asan" in context.stack_trace.lower()):
+            if context.stack_trace and ("sanitizer" in context.stack_trace.lower() or "asan" in context.stack_trace.lower()):
                 return "sanitizer_violation"
-            elif context.stack_trace and ("__chk_fail" in context.stack_trace or "buffer overflow" in str(context.registers)):
+            if context.stack_trace and ("__chk_fail" in context.stack_trace or "buffer overflow" in str(context.registers)):
                 return "stack_buffer_overflow"
             return "trap_signal"
         elif context.signal == "07":  # SIGBUS
@@ -1688,16 +1682,16 @@ class CrashAnalyser:
             instr = context.crash_instruction.lower()
             if "div" in instr and ("zero" in instr or "/ 0" in instr):
                 return "division_by_zero"
-            elif "int3" in instr or "breakpoint" in instr:
+            if "int3" in instr or "breakpoint" in instr:
                 return "debug_breakpoint"
-            elif "call" in instr and ("0x0" in instr or "null" in instr):
+            if "call" in instr and ("0x0" in instr or "null" in instr):
                 return "call_to_null"
         if context.stack_trace:
             trace = context.stack_trace.lower()
             if "sanitizer" in trace or re.search(r'(?:^|[^a-z])asan(?:$|[^a-z])', trace):
                 return "sanitizer_violation"
-            elif "assert" in trace:
+            if "assert" in trace:
                 return "assertion_failure"
-            elif "malloc" in trace or re.search(r'(?:^|[^a-z])free(?:$|[^a-z])', trace):
+            if "malloc" in trace or re.search(r'(?:^|[^a-z])free(?:$|[^a-z])', trace):
                 return "heap_issue"
         return "unknown_crash_type"

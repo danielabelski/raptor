@@ -289,9 +289,8 @@ def _target_matches_any(
             negation = pat[1:]
             if _glob_match(rel_str, negation):
                 matched = False
-        else:
-            if _glob_match(rel_str, pat):
-                matched = True
+        elif _glob_match(rel_str, pat):
+            matched = True
     return matched
 
 

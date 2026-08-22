@@ -317,10 +317,7 @@ def main(argv: Sequence[str]) -> int:
             res = _emit_git_patch(applied, out_dir.resolve())
         finally:
             os.chdir(prev)
-        if isinstance(res, tuple):
-            patch_path = res[0]
-        else:
-            patch_path = res
+        patch_path = res[0] if isinstance(res, tuple) else res
 
     if args.self_test:
         rc = _run_self_test(

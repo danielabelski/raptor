@@ -166,8 +166,7 @@ def load_project_assumptions(
     resolved = _resolve_out_dir(out_dir)
     if resolved is None:
         return []
-    result = load_assumptions(resolved, target_path=target_path)
-    return result
+    return load_assumptions(resolved, target_path=target_path)
 
 
 def get_bypass_findings(

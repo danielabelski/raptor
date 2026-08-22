@@ -222,9 +222,8 @@ class FuzzingPlanner:
                 logger.info("Target duration reached, but found %s crashes recently", state.crashes_last_minute)
                 logger.info("Autonomous decision: CONTINUE fuzzing (overriding duration)")
                 return True
-            else:
-                logger.info("Target duration reached and no recent crashes")
-                return False
+            logger.info("Target duration reached and no recent crashes")
+            return False
 
         return True
 

@@ -29,8 +29,7 @@ def _normalize_condition(cond: str) -> str:
     s = re.sub(r"\s*!=\s*null\b", "", s)
     s = re.sub(r"\s*!=\s*0\b", "", s)
     s = re.sub(r"\s*==\s*null\b", " == null", s)
-    s = re.sub(r"\s*==\s*0\b", " == 0", s)
-    return s
+    return re.sub(r"\s*==\s*0\b", " == 0", s)
 
 
 def _guard_covers(read_guard: Guard, write_guard: Guard) -> bool:

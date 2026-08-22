@@ -471,9 +471,7 @@ def function_called(
         # _resolves_to + its inner generator at >190s of 410s total).
         target_in_imports = False
         for bound in imports.values():
-            if (bound == target_module
-                    or bound == target_dot_func
-                    or bound.startswith(target_module_dot)):
+            if (bound in (target_module, target_dot_func) or bound.startswith(target_module_dot)):
                 target_in_imports = True
                 break
 
@@ -677,10 +675,7 @@ def _resolves_to(
     if bound is None:
         return False
     middle = ".".join(chain[1:-1])
-    if middle:
-        resolved_module = f"{bound}.{middle}"
-    else:
-        resolved_module = bound
+    resolved_module = f"{bound}.{middle}" if middle else bound
     return resolved_module == target_module and chain[-1] == target_func
 
 
@@ -1840,10 +1835,7 @@ def _apply_reexport_aliases(idx: _AdjacencyIndex) -> int:
         if not rel_imports and not abs_imports:
             continue
         # Package this __init__.py defines (path → dotted form).
-        if path == "__init__.py":
-            pkg_path = ""
-        else:
-            pkg_path = path[: -len("/__init__.py")]
+        pkg_path = "" if path == "__init__.py" else path[:-len("/__init__.py")]
         pkg_dotted_candidates: list[str] = []
         if pkg_path:
             pkg_dotted_candidates.append(pkg_path.replace("/", "."))
@@ -2139,10 +2131,7 @@ def _resolve_callee_chain(
     if bound is None:
         return None
     middle = ".".join(chain[1:-1])
-    if middle:
-        qualified = f"{bound}.{middle}.{chain[-1]}"
-    else:
-        qualified = f"{bound}.{chain[-1]}"
+    qualified = f"{bound}.{middle}.{chain[-1]}" if middle else f"{bound}.{chain[-1]}"
     return ExternalFunction(qualified_name=qualified)
 
 
@@ -3200,9 +3189,7 @@ def _item_is_entry(item: dict[str, Any], language: str,
             return False
         if (item.get("metadata") or {}).get("class_name"):
             return False
-        if (name, int(item.get("line_start") or 0)) in nested_keys:
-            return False
-        return True
+        return (name, int(item.get("line_start") or 0)) not in nested_keys
     return False
 
 
@@ -3440,9 +3427,7 @@ def _file_masks_target(
         if _wildcard_could_provide(imports, target_module, target_name):
             return True
     macro_targets = cg.get("macro_call_targets") or []
-    if target_name in macro_targets:
-        return True
-    return False
+    return target_name in macro_targets
 
 
 def is_virtual_dispatch_candidate(

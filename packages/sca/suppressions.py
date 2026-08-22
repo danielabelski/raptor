@@ -108,10 +108,7 @@ class SuppressionEntry:
             return False
         # An entry with *no* match keys would match everything — guard
         # against that defensively (the loader also rejects it).
-        if not any((self.finding_id, self.advisory_id, self.ecosystem,
-                    self.name, self.version)):
-            return False
-        return True
+        return any((self.finding_id, self.advisory_id, self.ecosystem, self.name, self.version))
 
 
 def load(path: Path) -> list[SuppressionEntry]:
@@ -220,10 +217,7 @@ def _matches_view(entry: SuppressionEntry, view: dict[str, Any]) -> bool:
         return False
     if entry.version and view["version"] != entry.version:
         return False
-    if not any((entry.finding_id, entry.advisory_id, entry.ecosystem,
-                entry.name, entry.version)):
-        return False
-    return True
+    return any((entry.finding_id, entry.advisory_id, entry.ecosystem, entry.name, entry.version))
 
 
 def apply(

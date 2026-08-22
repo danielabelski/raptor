@@ -201,16 +201,12 @@ def _mounts_docker_socket(volume: Any) -> bool:
         return False
     source = source.strip()
     if (
-        source == "/var/run/docker.sock"
-        or source == "docker.sock"
-        or source.endswith("/docker.sock")
+        source in {"/var/run/docker.sock", "docker.sock"} or source.endswith("/docker.sock")
     ):
         return True
     # Parent directory mounts that would expose the docker socket.
     source_norm = source.rstrip("/") or "/"
-    if source_norm in ('/', '/var', '/var/run', '/run'):
-        return True
-    return False
+    return source_norm in ('/', '/var', '/var/run', '/run')
 
 
 _SAFE_DEVICE_PREFIXES = (

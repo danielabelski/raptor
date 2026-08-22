@@ -381,8 +381,7 @@ class XFileConst:
                 if len(decls) == 1:
                     body = decls[0].child_by_field_name("body")
                     stmts = [c for c in (body.children if body else ())
-                             if c.is_named and c.type != "line_comment"
-                             and c.type != "block_comment"]
+                             if c.is_named and c.type not in {"line_comment", "block_comment"}]
                     if len(stmts) == 1 and stmts[0].type == "return_statement":
                         exprs = [c for c in stmts[0].children if c.is_named]
                         if len(exprs) == 1:

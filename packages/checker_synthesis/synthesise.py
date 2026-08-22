@@ -799,24 +799,23 @@ def synthesise_and_run(
                     rule = None
                     rule_path = None
                     continue
-                else:
-                    # Fail-closed: without fixtures the rule was never
-                    # exercised against known-good/known-bad code, so
-                    # it may not enter the persistent library
-                    # (rule_tier stays "sweep_once").  The rule is
-                    # still used for this run's codebase sweep.
-                    result.errors.append(
-                        f"{tag}: dual control skipped — LLM did not "
-                        "emit test fixtures; rule excluded from "
-                        "library (rule_tier=sweep_once)"
-                    )
-                    logger.warning(
-                        "dual control skipped: LLM did not emit "
-                        "test fixtures for %s — rule excluded from "
-                        "library",
-                        seed.file,
-                    )
-                    break
+                # Fail-closed: without fixtures the rule was never
+                # exercised against known-good/known-bad code, so
+                # it may not enter the persistent library
+                # (rule_tier stays "sweep_once").  The rule is
+                # still used for this run's codebase sweep.
+                result.errors.append(
+                    f"{tag}: dual control skipped — LLM did not "
+                    "emit test fixtures; rule excluded from "
+                    "library (rule_tier=sweep_once)"
+                )
+                logger.warning(
+                    "dual control skipped: LLM did not emit "
+                    "test fixtures for %s — rule excluded from "
+                    "library",
+                    seed.file,
+                )
+                break
             result.errors.append(
                 f"{tag}: rule did not match seed at "
                 f"{seed.file}:{seed.line_start}-{seed.line_end}"

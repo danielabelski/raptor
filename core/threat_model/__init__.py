@@ -129,8 +129,7 @@ def _clip_str_list(values: Any) -> list[str]:
     hostile JSON inputs claiming ``"focus_areas": [str * 1_000_000]``
     or single entries 100 MB long."""
     raw = _coerce_str_list(values)
-    capped = [_clip_str(v) for v in raw[:_MAX_LIST_ENTRIES]]
-    return capped
+    return [_clip_str(v) for v in raw[:_MAX_LIST_ENTRIES]]
 
 
 def _resolve_inside(path: Path, project_out: Path) -> Path | None:
@@ -1567,14 +1566,7 @@ def _outcome_matches_threat(data: dict[str, Any], threat: dict[str, Any]) -> boo
         return True
     cwe_num = _extract_cwe_number(data.get("cwe_id"))
     category = str(threat.get("category") or "").lower()
-    if cwe_num and (
-        (cwe_num == "78" and category == "command_execution")
-        or (cwe_num == "89" and category == "sql_injection")
-        or (cwe_num == "1336" and "template" in category)
-        or (cwe_num == "22" and category == "path_traversal")
-    ):
-        return True
-    return False
+    return bool(cwe_num and (cwe_num == "78" and category == "command_execution" or cwe_num == "89" and category == "sql_injection" or cwe_num == "1336" and "template" in category or cwe_num == "22" and category == "path_traversal"))
 
 
 def _mermaid_id(value: str) -> str:

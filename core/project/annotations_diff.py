@@ -38,9 +38,7 @@ def _has_changed(a: dict[str, Any], b: dict[str, Any]) -> bool:
     """Did the verdict-relevant content change between two records?"""
     if a["body"] != b["body"]:
         return True
-    if a["metadata"].get("status") != b["metadata"].get("status"):
-        return True
-    return False
+    return a["metadata"].get("status") != b["metadata"].get("status")
 
 
 def diff_annotations(run_dir_a: Path, run_dir_b: Path) -> dict[str, Any]:

@@ -634,10 +634,7 @@ def _block_uses_raise(body: list) -> bool:
     the sink — soundness requires checking the surrounding context."""
     if not body:
         return False
-    for stmt in body:
-        if isinstance(stmt, ast.Raise):
-            return True
-    return False
+    return any(isinstance(stmt, ast.Raise) for stmt in body)
 
 
 def _line_in_try_body_with_catching_handler(
@@ -1229,10 +1226,7 @@ def _crosses_function_boundary(
         return False
     lines = source_text.splitlines()
     # lines is 0-indexed; validator/sink are 1-indexed lines.
-    for ln in lines[validator_line:sink_line - 1]:
-        if pat.search(ln):
-            return True
-    return False
+    return any(pat.search(ln) for ln in lines[validator_line:sink_line - 1])
 
 
 def _collect_target_names(target: ast.AST, names: set) -> None:
@@ -1367,10 +1361,7 @@ def _python_chain_reaches_sink(
             chain -= target_names
     if not chain:
         return False
-    for var in chain:
-        if _re.search(rf"\b{_re.escape(var)}\b", sink_line_text):
-            return True
-    return False
+    return any(_re.search(rf"\b{_re.escape(var)}\b", sink_line_text) for var in chain)
 
 
 def _lexical_var_reaches_sink(

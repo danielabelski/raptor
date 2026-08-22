@@ -1027,7 +1027,7 @@ def guard_presence_verdict(
     witness = getattr(smt, "witness", None)
 
     if feasible is False:
-        result = ConsistencyResult(
+        return ConsistencyResult(
             outcome="refuted",
             reason=(
                 f"{REFUTED_PATH_INFEASIBLE}: the guards dominating "
@@ -1038,7 +1038,6 @@ def guard_presence_verdict(
             dimension=DIMENSION_GUARD_PRESENCE,
             callee=deviation.group_key,
         )
-        return result
 
     unguarded_note = (
         "genuinely-unguarded within the searched caller set — "

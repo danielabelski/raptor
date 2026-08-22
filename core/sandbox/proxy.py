@@ -1907,8 +1907,7 @@ class EgressProxy:
             last_err: Exception | None = None
             for t in pending:
                 try:
-                    result = await t
-                    return result
+                    return await t
                 except (OSError, asyncio.TimeoutError) as e:
                     last_err = e
             # First address of each family failed — walk the rest
@@ -2098,7 +2097,7 @@ class EgressProxy:
                              lane: "_Lane | None" = None) -> None:
         peer = writer.get_extra_info("peername")
         # Unix socket peers: peername is "" (empty string) or None.
-        if peer is None or peer == "" or peer == b"":
+        if peer is None or peer in {"", b""}:
             client_ip = "unix"
         elif isinstance(peer, tuple):
             client_ip = peer[0] if peer else "?"

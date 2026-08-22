@@ -116,10 +116,7 @@ def _availability_for_cwe(
     # constraints the substrate can't decide statically — leave
     # ``arbitrary_write`` at ``None`` (conditional) unless the sink is
     # exclusively format-string.
-    if cwe == "CWE-134":
-        arbitrary_write = fmt_n
-    else:
-        arbitrary_write = None
+    arbitrary_write = fmt_n if cwe == "CWE-134" else None
 
     # GOT overwrite: blocked iff Full RELRO. .fini_array under Full
     # RELRO is also blocked; under partial RELRO both are writable.
@@ -135,10 +132,7 @@ def _availability_for_cwe(
         try:
             major_minor = ".".join(glibc_ver_str.split(".")[:2])
             major, minor = map(int, major_minor.split("."))
-            if (major, minor) >= (2, 34):
-                hook_overwrite = False
-            else:
-                hook_overwrite = True
+            hook_overwrite = False if (major, minor) >= (2, 34) else True
         except (ValueError, IndexError):
             hook_overwrite = None
 
@@ -146,10 +140,7 @@ def _availability_for_cwe(
     # attacker's leak posture — not statically decidable from the ELF
     # alone. Leave as None for CWE-121, False for non-stack CWEs.
     stack_smash: bool | None
-    if cwe == "CWE-121":
-        stack_smash = None
-    else:
-        stack_smash = False
+    stack_smash = None if cwe == "CWE-121" else False
 
     return {
         "arbitrary_write": arbitrary_write,

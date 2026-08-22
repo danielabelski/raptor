@@ -785,17 +785,13 @@ def _is_dockerfile(path: Path) -> bool:
         return True
     if name.startswith("Dockerfile.") or name.endswith(".Dockerfile"):
         return True
-    if path.suffix == ".dockerfile":
-        return True
-    return False
+    return path.suffix == ".dockerfile"
 
 
 def _is_devcontainer_json(path: Path) -> bool:
     if path.name == "devcontainer.json":
         return True
-    if path.name == ".devcontainer.json":
-        return True
-    return False
+    return path.name == ".devcontainer.json"
 
 
 def _is_shell_script(path: Path) -> bool:
@@ -809,9 +805,7 @@ def _is_gha_workflow(path: Path) -> bool:
     for j in range(len(parts) - 2):
         if parts[j] == ".github" and parts[j + 1] == "workflows":
             return True
-    if path.name in ("action.yml", "action.yaml"):
-        return True
-    return False
+    return path.name in ("action.yml", "action.yaml")
 
 
 register(predicate=_is_dockerfile)(parse_dockerfile)

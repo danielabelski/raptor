@@ -778,10 +778,7 @@ def _signatures_compatible(
 
     ret_a = meta_a.get("return_type")
     ret_b = meta_b.get("return_type")
-    if ret_a and ret_b and ret_a != ret_b:
-        return False
-
-    return True
+    return not (ret_a and ret_b and ret_a != ret_b)
 
 
 def _shared_decorator(a: dict[str, Any], b: dict[str, Any]) -> str | None:

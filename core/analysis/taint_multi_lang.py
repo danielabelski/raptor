@@ -630,11 +630,11 @@ def extract_summaries_for_file(
 
     if lang == "java":
         return extract_java_summaries(content, file_path)
-    elif lang in ("javascript", "typescript"):
+    if lang in ("javascript", "typescript"):
         return extract_js_summaries(content, file_path)
-    elif lang == "go":
+    if lang == "go":
         return extract_go_summaries(content, file_path)
-    elif lang == "rust":
+    if lang == "rust":
         return extract_rust_summaries(content, file_path)
 
     return {}

@@ -340,7 +340,7 @@ def build_llm_config_from_flags(
                 continue
             cfg_name = cfg_entry.get("model")
             cfg_alias = cfg_entry.get("_configured_model")
-            if (cfg_name == bare or cfg_alias == bare) and cfg_entry.get("api_key"):
+            if (bare in (cfg_name, cfg_alias)) and cfg_entry.get("api_key"):
                 entry["api_key"] = cfg_entry["api_key"]
                 break
         mc = _model_config_from_entry(entry)
@@ -778,18 +778,17 @@ def orchestrate(
                     duration=response.duration, quality=quality,
                     resolved_model=response.resolved_model,
                 )
-            else:
-                response = client.generate(
-                    prompt=prompt, system_prompt=system_prompt,
-                    model_config=model, temperature=temperature,
-                    exclude_fallback_to=other_active,
-                )
-                return DispatchResult(
-                    result={"content": response.content}, cost=response.cost,
-                    tokens=response.tokens_used, model=response.model,
-                    duration=response.duration,
-                    resolved_model=response.resolved_model,
-                )
+            response = client.generate(
+                prompt=prompt, system_prompt=system_prompt,
+                model_config=model, temperature=temperature,
+                exclude_fallback_to=other_active,
+            )
+            return DispatchResult(
+                result={"content": response.content}, cost=response.cost,
+                tokens=response.tokens_used, model=response.model,
+                duration=response.duration,
+                resolved_model=response.resolved_model,
+            )
 
         dispatch_mode = "external_llm"
     else:

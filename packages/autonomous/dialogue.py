@@ -648,7 +648,7 @@ class MultiTurnAnalyser:
 
         if probability > 0.7 and analysis["exploitability"] == "low":
             return f"Warning: Memory suggests this pattern is usually exploitable (p={probability:.2f})"
-        elif probability < 0.3 and analysis["exploitability"] == "high":
+        if probability < 0.3 and analysis["exploitability"] == "high":
             return f"Warning: Memory suggests this pattern is rarely exploitable (p={probability:.2f})"
 
         return f"Memory validation: consistent with history (p={probability:.2f})"

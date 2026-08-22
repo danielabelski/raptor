@@ -403,9 +403,7 @@ def _is_clean_var_substitution(token: str) -> bool:
     if "`" in token or "$(" in token:
         return False
     # Count braces. ``${A}`` is fine; ``${A`` or ``A}`` is not.
-    if token.count("{") != token.count("}"):
-        return False
-    return True
+    return token.count("{") == token.count("}")
 
 
 __all__ = [

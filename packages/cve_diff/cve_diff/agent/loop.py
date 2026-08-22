@@ -608,7 +608,7 @@ class AgentLoop:
             "not_found_submits": not_found_submits,
         }
         if isinstance(result, AgentSurrender):
-            out = AgentSurrender(
+            return AgentSurrender(
                 reason=result.reason,
                 detail=result.detail,
                 tool_calls=result.tool_calls or tool_calls,
@@ -617,8 +617,7 @@ class AgentLoop:
                 elapsed_s=elapsed_s,
                 verified_candidates=result.verified_candidates or verified_candidates,
             )
-            return out
-        out_ok = AgentOutput(
+        return AgentOutput(
             value=result.value,
             rationale=result.rationale,
             tool_calls=result.tool_calls or tool_calls,
@@ -627,4 +626,3 @@ class AgentLoop:
             elapsed_s=elapsed_s,
             verified_candidates=verified_candidates,
         )
-        return out_ok

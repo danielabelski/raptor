@@ -503,9 +503,7 @@ def _specs_from_list(items: list[dict[str, Any]]) -> list[TaintSpec]:
         else:
             taint_classes = []
         pa = item.get("params_affected", [])
-        if isinstance(pa, (int, float)):
-            params_affected = [int(pa)]
-        elif isinstance(pa, str) and pa.isdigit():
+        if isinstance(pa, (int, float)) or isinstance(pa, str) and pa.isdigit():
             params_affected = [int(pa)]
         elif isinstance(pa, list):
             params_affected = []

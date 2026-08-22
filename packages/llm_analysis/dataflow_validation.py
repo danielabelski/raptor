@@ -2076,10 +2076,7 @@ def _finding_language(finding: dict) -> str | None:
         if file_path.endswith(ext):
             return lang
     fl = finding.get("language") or finding.get("languages")
-    if isinstance(fl, list):
-        candidates = fl
-    else:
-        candidates = [fl] if fl else []
+    candidates = fl if isinstance(fl, list) else [fl] if fl else []
     for c in candidates:
         norm = _normalise_language(str(c))
         if norm:
@@ -2279,10 +2276,7 @@ def _pick_adapter_for_finding(
 
     # Fall back to Semgrep's language field if the finding has it
     fl = finding.get("language") or finding.get("languages")
-    if isinstance(fl, list):
-        candidates = fl
-    else:
-        candidates = [fl] if fl else []
+    candidates = fl if isinstance(fl, list) else [fl] if fl else []
     for c in candidates:
         norm = _normalise_language(str(c))
         if norm and norm in adapters:

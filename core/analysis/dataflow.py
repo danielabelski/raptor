@@ -169,10 +169,7 @@ def reaching_defs(cfg: Any) -> ReachingDefs:
         # whose symbol n redefines"; we filter directly rather than
         # materialising KILL.
         defs = _node_defs(n)
-        if defs:
-            kept = frozenset((s, m) for (s, m) in new_in if s not in defs)
-        else:
-            kept = new_in
+        kept = frozenset((s, m) for s, m in new_in if s not in defs) if defs else new_in
         new_out = _gen(n) | kept
 
         if new_out != out_set[n]:

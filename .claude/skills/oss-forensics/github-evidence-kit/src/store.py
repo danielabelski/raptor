@@ -112,9 +112,7 @@ class EvidenceStore:
                     return False
                 if before and ts > before:
                     return False
-            if predicate and not predicate(e):
-                return False
-            return True
+            return not (predicate and not predicate(e))
 
         return [e for e in self._evidence if matches(e)]
 

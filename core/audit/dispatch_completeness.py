@@ -478,10 +478,7 @@ def find_dispatch_gaps(
                 continue
 
             # For cross-file sites, also require the affix check.
-            if same_file:
-                selected_same = same_file[:3]
-            else:
-                selected_same = []
+            selected_same = same_file[:3] if same_file else []
             selected_other = other[:2] if _shares_affix(produced_key, table.keys) else []
             selected = selected_same + selected_other
             if not selected:

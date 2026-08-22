@@ -730,10 +730,7 @@ def _body_writes_env_to_disk(
     """
     if _ENV_DUMP_RE.search(body):
         return True
-    for var in secret_bound_env:
-        if _VAR_DUMP_RE_FACTORY(var).search(body):
-            return True
-    return False
+    return any(_VAR_DUMP_RE_FACTORY(var).search(body) for var in secret_bound_env)
 
 
 def _strip_bash_full_line_comments(body: str) -> str:

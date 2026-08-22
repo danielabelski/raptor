@@ -3557,10 +3557,7 @@ def _parse_patterns(text: str) -> list[tuple]:
 
 
 def _is_tier1(title: str, tier1_set: set) -> bool:
-    for keyword in tier1_set:
-        if keyword.lower() in title.lower():
-            return True
-    return False
+    return any(keyword.lower() in title.lower() for keyword in tier1_set)
 
 
 def _match_trigger_keywords(title: str) -> list[str] | None:

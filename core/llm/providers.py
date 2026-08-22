@@ -1343,8 +1343,7 @@ def _dict_schema_to_pydantic(schema: dict[str, Any] | type['BaseModel'], _model_
             field_definitions[field_name] = (python_type, default_value)
 
     # Create and return Pydantic model
-    model = create_model(_model_name, **field_definitions)
-    return model
+    return create_model(_model_name, **field_definitions)
 
 
 # OpenAI reasoning-tier detection. Gated on the version *number*, not a
@@ -2257,7 +2256,7 @@ def _is_tool_use_unsupported_error(exc: BaseException) -> bool:
     # false-positive synthesis fallback when native tool-use was
     # actually broken for an UNRELATED reason. Require a phrase that
     # actually links the negation to tool/function support.
-    has_unsupported_phrase = any(
+    return any(
         phrase in text for phrase in (
             "does not support tools",
             "does not support tool",
@@ -2278,7 +2277,6 @@ def _is_tool_use_unsupported_error(exc: BaseException) -> bool:
             "tool_use not supported",
         )
     )
-    return has_unsupported_phrase
 
 
 def _message_to_openai_wire(m: Message) -> list[dict[str, Any]]:
@@ -4810,7 +4808,7 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         _guard_transport_model_shape(config, transport="anthropic")
         if ANTHROPIC_SDK_AVAILABLE:
             return AnthropicProvider(config)
-        elif OPENAI_SDK_AVAILABLE:
+        if OPENAI_SDK_AVAILABLE:
             logger.warning(
                 "Anthropic SDK not installed — using OpenAI-compatible endpoint. "
                 "Structured output will use Pydantic fallback (response_format is ignored by Anthropic). "
@@ -4819,19 +4817,17 @@ def create_provider(config: ModelConfig) -> LLMProvider:
             from dataclasses import replace
             compat_config = replace(config, api_base="https://api.anthropic.com/v1")
             return OpenAICompatibleProvider(compat_config)
-        else:
-            msg = "Anthropic provider requires: pip install anthropic (or) pip install openai"
-            raise RuntimeError(msg)
+        msg = "Anthropic provider requires: pip install anthropic (or) pip install openai"
+        raise RuntimeError(msg)
     if provider == "gemini":
         if GENAI_SDK_AVAILABLE:
             return GeminiProvider(config)
-        elif OPENAI_SDK_AVAILABLE:
+        if OPENAI_SDK_AVAILABLE:
             logger.info("google-genai SDK not installed — using OpenAI-compatible endpoint for Gemini. "
                         "For accurate thinking token tracking: pip install google-genai")
             return OpenAICompatibleProvider(config)
-        else:
-            msg = "Gemini provider requires: pip install google-genai (or) pip install openai"
-            raise RuntimeError(msg)
+        msg = "Gemini provider requires: pip install google-genai (or) pip install openai"
+        raise RuntimeError(msg)
     if OPENAI_SDK_AVAILABLE:
         return OpenAICompatibleProvider(config)
     msg = f"Provider '{provider}' requires: pip install openai"

@@ -155,10 +155,7 @@ def format_survival(agg: dict[str, dict[str, int]]) -> list[str]:
     lines.append("Finding survival by evidence channel (/validate):")
     for channel, c in sorted(agg.items(), key=_volume):
         adjudicated = c["survived"] + c["disproven"]
-        if adjudicated:
-            rate = f"{c['survived'] * 100.0 / adjudicated:.0f}%"
-        else:
-            rate = "n/a"
+        rate = f"{c['survived'] * 100.0 / adjudicated:.0f}%" if adjudicated else "n/a"
         extra = f", {c['unknown']} unknown" if c["unknown"] else ""
         lines.append(
             f"  {channel}: {c['survived']} survived / "

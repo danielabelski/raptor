@@ -458,17 +458,16 @@ def _diff_one(
                 f"vuln_findings {bv} → {current.vuln_findings} "
                 f"({signed_pct*100:+.0f}%, ≥ {vuln_warn_pct*100:.0f}% warn)"
             )
-    else:
-        # Baseline was 0 vuln_findings; flag any non-zero current as
-        # warn so an OSV-Cargo-shaped fix that suddenly STARTS finding
-        # vulns is loud.
-        if current.vuln_findings > 0:
-            if severity == "ok":
-                severity = "warn"
-            issues.append(
-                f"vuln_findings 0 → {current.vuln_findings} "
-                f"(baseline was 0; intentional? update baseline)"
-            )
+    # Baseline was 0 vuln_findings; flag any non-zero current as
+    # warn so an OSV-Cargo-shaped fix that suddenly STARTS finding
+    # vulns is loud.
+    elif current.vuln_findings > 0:
+        if severity == "ok":
+            severity = "warn"
+        issues.append(
+            f"vuln_findings 0 → {current.vuln_findings} "
+            f"(baseline was 0; intentional? update baseline)"
+        )
 
     # Deps-analysed drift (parser regressions).
     bd = int(baseline.get("deps_analysed", 0) or 0)

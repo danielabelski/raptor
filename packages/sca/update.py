@@ -399,13 +399,13 @@ def _run_external_validation(manifest: Path, out_dir: Path) -> None:
 
 
 def _detect_ecosystem_from_filename(name: str) -> str | None:
-    if name == "package.json" or name == "package-lock.json":
+    if name in {"package.json", "package-lock.json"}:
         return "npm"
     if name.startswith("requirements") and name.endswith(".txt"):
         return "PyPI"
-    if name == "pyproject.toml" or name == "Pipfile" or name == "poetry.lock":
+    if name in {"pyproject.toml", "Pipfile", "poetry.lock"}:
         return "PyPI"
-    if name == "go.mod" or name == "go.sum":
+    if name in {"go.mod", "go.sum"}:
         return "Go"
     return None
 

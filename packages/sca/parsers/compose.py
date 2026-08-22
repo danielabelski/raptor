@@ -158,7 +158,7 @@ def _is_compose_file(path: Path) -> bool:
     name = path.name.lower()
     if name.startswith("docker-compose"):
         return True
-    if name == "compose.yml" or name == "compose.yaml":
+    if name in {"compose.yml", "compose.yaml"}:
         return True
     if name.startswith("compose.") and name.endswith((".yml", ".yaml")):
         # ``compose.dev.yml`` etc. — common operator pattern.

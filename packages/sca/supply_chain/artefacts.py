@@ -459,9 +459,7 @@ def _is_binary(path: Path, sniff_bytes: int = 256) -> bool:
         return False
     if any(head.startswith(sig) for sig in _BINARY_MAGIC):
         return True
-    if b"\x00" in head:
-        return True
-    return False
+    return b"\x00" in head
 
 
 def _walk(root: Path, *, max_depth: int) -> Iterable[Path]:

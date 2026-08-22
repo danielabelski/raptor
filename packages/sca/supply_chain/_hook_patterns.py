@@ -219,10 +219,7 @@ def is_publish_helper(dep: Dependency) -> bool:
     name = dep.name or ""
     if name in exact:
         return True
-    for scope in scopes:
-        if name.startswith(scope):
-            return True
-    return False
+    return any(name.startswith(scope) for scope in scopes)
 
 
 # ---------------------------------------------------------------------------

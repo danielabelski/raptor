@@ -234,9 +234,7 @@ def _matches_rule(rule: _Rule, url: str, host: str) -> bool:
         # link-local, and the documentation prefixes (TEST-NET) don't
         # fit. Filter them out here rather than complicate the regex
         # in data/exfil_destinations.json.
-        if rule.category == "raw_ip" and _is_non_routable_ipv4(host):
-            return False
-        return True
+        return not (rule.category == "raw_ip" and _is_non_routable_ipv4(host))
     return False
 
 

@@ -242,13 +242,12 @@ def validate_dataflow_claim(
                     smt_pruned=smt_pruned,
                     smt_receipts=smt_receipts,
                 )
-            else:
-                return ValidationResult(
-                    claim=claim,
-                    confirmed=None,
-                    error="no SARIF output produced",
-                    query_text=query_text,
-                )
+            return ValidationResult(
+                claim=claim,
+                confirmed=None,
+                error="no SARIF output produced",
+                query_text=query_text,
+            )
 
     except Exception as exc:  # noqa: BLE001 — degrade to inconclusive
         return ValidationResult(

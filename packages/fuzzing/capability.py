@@ -419,16 +419,7 @@ def _check_macos_afl_shmem(afl_fuzz: str) -> bool:
             )
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         lowered = output.lower()
-        if (
-            "shmget" in lowered
-            or "shmat" in lowered
-            or "shared memory" in lowered
-            or "afl-system-config" in lowered
-            or "cannot allocate memory" in lowered
-            or "operation not permitted" in lowered
-        ):
-            return False
-        return True
+        return not ("shmget" in lowered or "shmat" in lowered or "shared memory" in lowered or "afl-system-config" in lowered or "cannot allocate memory" in lowered or "operation not permitted" in lowered)
     except Exception:
         return True   # If we cannot tell, assume OK and let AFL fail loudly later
 

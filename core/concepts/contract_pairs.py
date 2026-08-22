@@ -896,10 +896,7 @@ def format_contract_pairs_for_prompt(
             for p in partners
         )
 
-        if role in ("producer", "consumer"):
-            role_desc = role
-        else:
-            role_desc = "partner"
+        role_desc = role if role in ("producer", "consumer") else "partner"
 
         lines.append(
             f"- **{kind_label}** — this function is the {role_desc}; "

@@ -258,11 +258,10 @@ def _check_one(dep: Dependency) -> SlopsquatFinding | None:
 
     # --- 2. Generic suffix on a popular prefix.
     prefix, suffix = _split_suffix(name)
-    if prefix and suffix:
-        if prefix in popular and suffix in _GENERIC_WORDS:
-            reasons.append("popular_prefix_generic_suffix")
-            if suspected_root is None:
-                suspected_root = prefix
+    if prefix and suffix and prefix in popular and suffix in _GENERIC_WORDS:
+        reasons.append("popular_prefix_generic_suffix")
+        if suspected_root is None:
+            suspected_root = prefix
 
     # --- 3. Language-suffix on a popular prefix.
     if prefix and suffix:

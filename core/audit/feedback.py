@@ -577,8 +577,7 @@ def _deduplicate_findings(
 def _finding_cwe(finding: dict[str, Any]) -> str:
     """Normalised CWE number from a finding ('787' from 'CWE-787')."""
     raw = finding.get("cwe") or finding.get("cwe_id") or ""
-    digits = "".join(c for c in str(raw) if c.isdigit())
-    return digits
+    return "".join(c for c in str(raw) if c.isdigit())
 
 
 def _finding_line(finding: dict[str, Any]) -> int | None:
@@ -659,10 +658,7 @@ def _classify_verdict(finding: dict[str, Any]) -> str:
     Returns one of: ``disproven``, ``confirmed``, ``unknown``.
     """
     ruling = finding.get("ruling", {})
-    if isinstance(ruling, dict):
-        status = ruling.get("status", "")
-    else:
-        status = str(ruling)
+    status = ruling.get("status", "") if isinstance(ruling, dict) else str(ruling)
 
     if status in _DISPROVEN_STATUSES:
         return "disproven"

@@ -309,12 +309,11 @@ def _envelope_text(text: str) -> str:
     from .prompt_defence import sanitise_comment
 
     cleaned = sanitise_comment(text)
-    cleaned = (
+    return (
         cleaned.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-    return cleaned
 
 
 def format_fp_warnings(
@@ -353,17 +352,16 @@ def format_fp_warnings(
                 entry = f'{entry} was overridden: "{note}"'
             else:
                 entry = f"{entry} was overridden to clean"
+        elif note:
+            entry = (
+                f"{entry} was marked clean by a machine-attributed "
+                f'note (hint tier): "{note}"'
+            )
         else:
-            if note:
-                entry = (
-                    f"{entry} was marked clean by a machine-attributed "
-                    f'note (hint tier): "{note}"'
-                )
-            else:
-                entry = (
-                    f"{entry} was marked clean by a machine-attributed "
-                    f"note (hint tier)"
-                )
+            entry = (
+                f"{entry} was marked clean by a machine-attributed "
+                f"note (hint tier)"
+            )
 
         lines.append(f"- {entry}")
 

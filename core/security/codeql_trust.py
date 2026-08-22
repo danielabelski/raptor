@@ -359,10 +359,7 @@ def _scan_codeql_config(path: Path) -> FileScan:
     if queries:
         entries = queries if isinstance(queries, list) else [queries]
         for e in entries:
-            if isinstance(e, dict):
-                uses = str(e.get("uses", ""))
-            else:
-                uses = str(e)
+            uses = str(e.get("uses", "")) if isinstance(e, dict) else str(e)
             # External: any path containing ``/`` that isn't a relative
             # local reference (``./`` or ``../``).
             if "/" in uses and not uses.startswith(("./", "../")):

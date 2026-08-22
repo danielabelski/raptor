@@ -439,7 +439,7 @@ def aggregate_parity(records: list[ParityRecord]) -> ParitySummary:
         noise_suppression=_rate(vb_ss_supp, ss_total),
         bug_hiding=_rate(vb_sns_supp, sns_total),
     )
-    summary = ParitySummary(
+    return ParitySummary(
         total=len(records),
         labelled_total=ss_total + sns_total,
         should_suppress_total=ss_total,
@@ -454,7 +454,6 @@ def aggregate_parity(records: list[ParityRecord]) -> ParitySummary:
         no_lexical_regression=(lex_only == 0),
         by_kind=by_kind,
     )
-    return summary
 
 
 def _rate_criterion(lexical: MethodRates, value_bound: MethodRates) -> bool:

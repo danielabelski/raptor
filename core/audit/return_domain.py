@@ -368,9 +368,7 @@ def _on_if_decision_edge(comparison_node) -> bool:
                 cur = cur.parent
                 continue
             return False
-        if t == "if_statement":
-            return True
-        return False
+        return t == "if_statement"
     return False
 
 

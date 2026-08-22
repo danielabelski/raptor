@@ -153,10 +153,7 @@ def format_vars(
     """
     out: dict[str, int] = {}
     for name, var in vars_.items():
-        if completion:
-            val = model.eval(var, model_completion=True)
-        else:
-            val = model[var]
+        val = model.eval(var, model_completion=True) if completion else model[var]
         if val is None or not z3.is_bv_value(val):
             # Pre-fix this skip was silent. Log so operators
             # tailing debug see WHICH vars went unconstrained.

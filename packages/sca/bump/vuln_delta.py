@@ -86,12 +86,11 @@ def evaluate_bump_vulns(
     # Build VulnFindings for the new advisories. The target_dep
     # is what we're proposing TO, so the findings are tagged
     # against it.
-    findings = build_vuln_findings(
+    return build_vuln_findings(
         [target_dep],
         [OsvResult(target_dep.key(), new_advisories)],
         kev=kev_client, epss=epss_client,
     )
-    return findings
 
 
 def _advisory_delta(

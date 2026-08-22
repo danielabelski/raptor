@@ -145,9 +145,8 @@ def safe_member_reason(
     # don't have to special-case the directory shape.
 
     # Absolute-path check.
-    if not allow_absolute_paths:
-        if name.startswith("/"):
-            return UnsafeMemberReason.ABSOLUTE_PATH
+    if not allow_absolute_paths and name.startswith("/"):
+        return UnsafeMemberReason.ABSOLUTE_PATH
 
     # Backslash check. Zip spec uses forward slash; any backslash
     # is either a malformed producer or an intentional Windows

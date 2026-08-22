@@ -527,8 +527,7 @@ def neutralize_tag_forgery(content: str) -> str:
 
     content = _ENVELOPE_TAG_RE.sub(_escape_match, content)
     content = _MARKDOWN_HEADING_RE.sub(r'\1\\\2', content)
-    content = _SETEXT_UNDERLINE_RE.sub(_break_setext_underline, content)
-    return content
+    return _SETEXT_UNDERLINE_RE.sub(_break_setext_underline, content)
 
 
 # Back-compat alias — keep the underscore name working in case other

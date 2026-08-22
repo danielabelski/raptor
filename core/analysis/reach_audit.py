@@ -373,12 +373,11 @@ def audit_corpus(
             else:
                 report.missed_dead += 1
                 report.missed_detail.append((rel, name, verdict))
-        else:  # label == "live"
-            if is_dead:
-                report.false_suppress += 1
-                report.false_suppress_detail.append((rel, name, verdict))
-            else:
-                report.live_ok += 1
+        elif is_dead:
+            report.false_suppress += 1
+            report.false_suppress_detail.append((rel, name, verdict))
+        else:
+            report.live_ok += 1
     return report
 
 

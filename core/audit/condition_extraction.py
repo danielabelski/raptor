@@ -139,8 +139,7 @@ def _get_parser(lang: str) -> Any | None:
         ts_lang = _ts_language(lang)
         if ts_lang is None:
             return None
-        parser = TSParser(ts_lang)
-        return parser
+        return TSParser(ts_lang)
     except Exception:
         logger.debug("condition_extraction: parser setup failed for "
                      "%s", lang, exc_info=True)

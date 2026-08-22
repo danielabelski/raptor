@@ -303,11 +303,10 @@ class SourceIntelValidator:
             # returning varying-but-meaningless values aren't
             # detectable structurally — that's Stage D LLM's job.
             # See README adversarial-tolerance section.
-            if ev.kind == KIND_WUR:
-                if not _wur_annotation_trustworthy(
-                    ev.location[0], ev.function_name,
-                ):
-                    continue
+            if ev.kind == KIND_WUR and not _wur_annotation_trustworthy(
+                ev.location[0], ev.function_name,
+            ):
+                continue
             return ValidatorVerdict.EXPLOITABLE
 
         return ValidatorVerdict.UNCERTAIN
@@ -410,9 +409,7 @@ def _finding_in_dead_code(finding: Finding, repo_root: Path) -> bool:
     # vtable / callback naming conventions are highly likely to be
     # macro-registered handlers — defer to LLM Stage D rather than
     # claim dead-code.
-    if _looks_like_macro_registered_handler(finding_fn):
-        return False
-    return True
+    return not _looks_like_macro_registered_handler(finding_fn)
 
 
 # Naming-convention suffixes/infixes for functions that are commonly
@@ -450,10 +447,7 @@ def _looks_like_macro_registered_handler(fn_name: str) -> bool:
         if fn_name.endswith(suffix):
             return True
     # Also infixes — common shapes like `*_ioctl_*`.
-    for infix in ("_ioctl_", "_callback_", "_handler_"):
-        if infix in fn_name:
-            return True
-    return False
+    return any(infix in fn_name for infix in ("_ioctl_", "_callback_", "_handler_"))
 
 
 def _function_referenced_as_pointer(
@@ -900,9 +894,8 @@ def _privileged_capability_dominates(
             if cap.enclosing_function != finding_fn:
                 continue
         # DOMINATES additionally requires cap_line < sink_line.
-        if cap.grade == GRADE_DOMINATES and sink_line:
-            if cap_line >= sink_line:
-                continue
+        if cap.grade == GRADE_DOMINATES and sink_line and cap_line >= sink_line:
+            continue
         # Final filter: the capability constant on this line must be
         # privileged. We read the source line and look for one of the
         # privileged constants.
@@ -1020,9 +1013,7 @@ def _fortify_source_blocks_finding(
     # unchecked. Without this guard the verdict policy over-suppresses
     # findings on malloc'd destinations, which is the common case in
     # most userspace.
-    if _fortified_dest_is_variable_size(finding):
-        return False
-    return True
+    return not _fortified_dest_is_variable_size(finding)
 
 
 _DYNAMIC_ALLOCATORS_PATTERN = re.compile(
@@ -1084,10 +1075,7 @@ def _fortified_dest_is_variable_size(finding: Finding) -> bool:
     )
     start = max(0, sink_line - 200)
     end = min(sink_line, len(lines))
-    for i in range(start, end):
-        if assign_pat.search(lines[i]):
-            return True
-    return False
+    return any(assign_pat.search(lines[i]) for i in range(start, end))
 
 
 # =====================================================================
@@ -1865,7 +1853,4 @@ def _stack_protector_suppresses_finding(
     fixed_array_re = re.compile(
         r"\b[A-Za-z_][A-Za-z_0-9]*\s+[A-Za-z_][A-Za-z_0-9]*\s*\[\s*\d+\s*\]"
     )
-    for i in range(start, end):
-        if fixed_array_re.search(lines[i]):
-            return True
-    return False
+    return any(fixed_array_re.search(lines[i]) for i in range(start, end))

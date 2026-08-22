@@ -96,10 +96,7 @@ def registry_hosts_for(image: str | ImageRef) -> list[str]:
     For ECR private registries the regional STS host is added so the
     auth dance succeeds. The list is deduplicated and order-stable.
     """
-    if isinstance(image, str):
-        ref = parse_image_ref(image)
-    else:
-        ref = image
+    ref = parse_image_ref(image) if isinstance(image, str) else image
 
     registry = ref.registry
     out: list[str] = []

@@ -77,15 +77,14 @@ def _index_file(path_str: str) -> tuple[ConditionalBlock, ...]:
 
         if directive in ("if", "ifdef", "ifndef"):
             open_stack.append((n, directive, rest))
-        elif directive == "endif":
-            if open_stack:
-                start_line, dir_open, cond = open_stack.pop()
-                blocks.append(ConditionalBlock(
-                    start_line=start_line,
-                    end_line=n,
-                    condition=cond,
-                    directive=dir_open,
-                ))
+        elif directive == "endif" and open_stack:
+            start_line, dir_open, cond = open_stack.pop()
+            blocks.append(ConditionalBlock(
+                start_line=start_line,
+                end_line=n,
+                condition=cond,
+                directive=dir_open,
+            ))
         # `elif` and `else` are continuations of the current block —
         # we don't change the stack. v1 limitation documented in the
         # module docstring.

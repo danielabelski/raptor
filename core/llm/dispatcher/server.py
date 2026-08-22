@@ -1192,10 +1192,7 @@ class LLMDispatcher:
         # Audit log on disk continues to record EVERY event at
         # full fidelity — this only affects the stdlib logger
         # that terminal output uses.
-        if ev.event in _DEMOTED_AUDIT_EVENTS:
-            level = logging.DEBUG
-        else:
-            level = logging.INFO
+        level = logging.DEBUG if ev.event in _DEMOTED_AUDIT_EVENTS else logging.INFO
         # Always log via stdlib logger for terminal visibility.
         # ``ev.token_id`` is a 12-character correlation prefix (see
         # ``AuditEvent.token_id`` docstring) — explicitly NOT the

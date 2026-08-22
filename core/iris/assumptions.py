@@ -168,9 +168,7 @@ def assumption_from_dict(d: dict[str, Any]) -> SafetyAssumption:
         raw_enforced = []
 
     raw_params = d.get("params_affected") or []
-    if isinstance(raw_params, (int, float)):
-        raw_params = [raw_params]
-    elif isinstance(raw_params, str):
+    if isinstance(raw_params, (int, float)) or isinstance(raw_params, str):
         raw_params = [raw_params]
     elif not isinstance(raw_params, list):
         raw_params = []

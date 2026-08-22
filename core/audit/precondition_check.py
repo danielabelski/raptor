@@ -185,7 +185,7 @@ def _read_function_source(
     # For Python: find def block
     if file_path.endswith((".c", ".h", ".cpp", ".cc")):
         return _extract_c_function(text, function_name)
-    elif file_path.endswith(".py"):
+    if file_path.endswith(".py"):
         return _extract_python_function(text, function_name)
     return text
 
@@ -353,22 +353,21 @@ def _check_null_termination(
             evidence=f"no null-termination found in {file}:{func}",
             grade=GRADE_ABSENCE,
         )
-    else:
-        # LLM claims null-termination IS present
-        if has_null_term:
-            return CheckResult(
-                check_type="caller_null_terminates",
-                assumption="",
-                verdict="supported",
-                evidence=f"null-termination found: {', '.join(found_patterns[:3])}",
-                grade=GRADE_LEXICAL,
-            )
+    # LLM claims null-termination IS present
+    if has_null_term:
         return CheckResult(
             check_type="caller_null_terminates",
             assumption="",
-            verdict="inconclusive",
-            evidence=f"no null-termination pattern found in {file}:{func}",
+            verdict="supported",
+            evidence=f"null-termination found: {', '.join(found_patterns[:3])}",
+            grade=GRADE_LEXICAL,
         )
+    return CheckResult(
+        check_type="caller_null_terminates",
+        assumption="",
+        verdict="inconclusive",
+        evidence=f"no null-termination pattern found in {file}:{func}",
+    )
 
 
 _BOUNDS_PATTERNS = [
@@ -427,21 +426,20 @@ def _check_bounds(
             evidence=f"no bounds checking found in {file}:{func}",
             grade=GRADE_ABSENCE,
         )
-    else:
-        if has_bounds:
-            return CheckResult(
-                check_type="caller_bounds_checks",
-                assumption="",
-                verdict="supported",
-                evidence=f"bounds checking found: {', '.join(found[:3])}",
-                grade=GRADE_LEXICAL,
-            )
+    if has_bounds:
         return CheckResult(
             check_type="caller_bounds_checks",
             assumption="",
-            verdict="inconclusive",
-            evidence=f"no bounds pattern found in {file}:{func}",
+            verdict="supported",
+            evidence=f"bounds checking found: {', '.join(found[:3])}",
+            grade=GRADE_LEXICAL,
         )
+    return CheckResult(
+        check_type="caller_bounds_checks",
+        assumption="",
+        verdict="inconclusive",
+        evidence=f"no bounds pattern found in {file}:{func}",
+    )
 
 
 _SANITIZE_PATTERNS = [
@@ -503,21 +501,20 @@ def _check_sanitization(
             evidence=f"no sanitization found in {file}:{func}",
             grade=GRADE_ABSENCE,
         )
-    else:
-        if has_sanitization:
-            return CheckResult(
-                check_type="caller_sanitizes",
-                assumption="",
-                verdict="supported",
-                evidence=f"sanitization found: {', '.join(found[:3])}",
-                grade=GRADE_LEXICAL,
-            )
+    if has_sanitization:
         return CheckResult(
             check_type="caller_sanitizes",
             assumption="",
-            verdict="inconclusive",
-            evidence=f"no sanitization pattern found in {file}:{func}",
+            verdict="supported",
+            evidence=f"sanitization found: {', '.join(found[:3])}",
+            grade=GRADE_LEXICAL,
         )
+    return CheckResult(
+        check_type="caller_sanitizes",
+        assumption="",
+        verdict="inconclusive",
+        evidence=f"no sanitization pattern found in {file}:{func}",
+    )
 
 
 def _check_attacker_control(
@@ -596,27 +593,26 @@ def _check_attacker_control(
             evidence=f"{func} is not reachable from entry points",
             grade=GRADE_CONTEXT_MAP,
         )
-    else:
-        # LLM claims attacker DOES control input
-        if reachable:
-            # The context map's entry points are LLM-authored
-            # (/understand output) — corroborating, never a
-            # tool-grounded anchor.
-            return CheckResult(
-                check_type="attacker_controls_input",
-                assumption="",
-                verdict="supported",
-                evidence=f"{func} is reachable from entry points",
-                grade=GRADE_CONTEXT_MAP,
-            )
+    # LLM claims attacker DOES control input
+    if reachable:
+        # The context map's entry points are LLM-authored
+        # (/understand output) — corroborating, never a
+        # tool-grounded anchor.
         return CheckResult(
             check_type="attacker_controls_input",
             assumption="",
-            verdict="contradicted",
-            evidence=(
-                f"{func} is NOT reachable from entry points"
-            ),
+            verdict="supported",
+            evidence=f"{func} is reachable from entry points",
+            grade=GRADE_CONTEXT_MAP,
         )
+    return CheckResult(
+        check_type="attacker_controls_input",
+        assumption="",
+        verdict="contradicted",
+        evidence=(
+            f"{func} is NOT reachable from entry points"
+        ),
+    )
 
 
 # Call-shaped sink patterns: the token must be followed by an opening
@@ -695,24 +691,23 @@ def _check_reaches_sink(
             evidence=f"no sink calls found in {func}",
             grade=GRADE_ABSENCE,
         )
-    else:
-        if has_sink:
-            return CheckResult(
-                check_type="function_reaches_sink",
-                assumption="",
-                verdict="supported",
-                evidence=(
-                    f"sink call sites found (sanitized view): "
-                    f"{', '.join(found[:3])}"
-                ),
-                grade=GRADE_STRUCTURAL,
-            )
+    if has_sink:
         return CheckResult(
             check_type="function_reaches_sink",
             assumption="",
-            verdict="inconclusive",
+            verdict="supported",
             evidence=(
-                f"{func} does not directly call known sinks "
-                "(may reach them through callees)"
+                f"sink call sites found (sanitized view): "
+                f"{', '.join(found[:3])}"
             ),
+            grade=GRADE_STRUCTURAL,
         )
+    return CheckResult(
+        check_type="function_reaches_sink",
+        assumption="",
+        verdict="inconclusive",
+        evidence=(
+            f"{func} does not directly call known sinks "
+            "(may reach them through callees)"
+        ),
+    )

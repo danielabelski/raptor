@@ -254,7 +254,7 @@ def _max_severity(a: str | None, b: str) -> str:
     if a is None:
         return b
     try:
-        return max(a, b, key=lambda s: _SEVERITY_ORDER.index(s))
+        return max(a, b, key=_SEVERITY_ORDER.index)
     except ValueError:
         return b
 

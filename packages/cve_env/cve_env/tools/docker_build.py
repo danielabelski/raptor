@@ -216,9 +216,7 @@ def docker_build(
                 ),
             )
 
-    if image_tag and not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._/-]*(?::[a-zA-Z0-9._-]+)?$', image_tag):
-        image_tag = None
-    elif image_tag and re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', image_tag):
+    if image_tag and not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._/-]*(?::[a-zA-Z0-9._-]+)?$', image_tag) or image_tag and re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/', image_tag):
         image_tag = None
     if image_tag:
         tag = image_tag

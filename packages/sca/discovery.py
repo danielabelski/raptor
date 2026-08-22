@@ -412,7 +412,7 @@ def _walk(root: Path, max_depth: int, excludes: set[str]) -> Iterator[Path]:
         # doesn't pay the stat cost on every yielded file.
         parent_symlinked = False
         check = cur
-        while check != root and check.parent != check:
+        while check not in (root, check.parent):
             try:
                 if check.is_symlink():
                     parent_symlinked = True
@@ -499,8 +499,6 @@ def _is_compose_file(name: str) -> bool:
         return False
     if lower.startswith("docker-compose"):
         return True
-    if lower == "compose.yml" or lower == "compose.yaml":
+    if lower in {"compose.yml", "compose.yaml"}:
         return True
-    if lower.startswith("compose."):
-        return True
-    return False
+    return bool(lower.startswith("compose."))

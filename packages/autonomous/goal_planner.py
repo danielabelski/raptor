@@ -119,7 +119,7 @@ class GoalPlanner:
                 }
             )
 
-        elif any(code_area in user_goal_lower for code_area in [
+        if any(code_area in user_goal_lower for code_area in [
             "parser", "network", "authentication", "crypto"
         ]):
             # Target specific code area
@@ -144,7 +144,7 @@ class GoalPlanner:
                 }
             )
 
-        elif any(exploit in user_goal_lower for exploit in [
+        if any(exploit in user_goal_lower for exploit in [
             "rce", "code execution", "shell", "exploit"
         ]):
             return Goal(
@@ -157,7 +157,7 @@ class GoalPlanner:
                 }
             )
 
-        elif "coverage" in user_goal_lower or "explore" in user_goal_lower:
+        if "coverage" in user_goal_lower or "explore" in user_goal_lower:
             return Goal(
                 goal_type=GoalType.MAXIMIZE_COVERAGE,
                 description=user_goal,
@@ -167,15 +167,14 @@ class GoalPlanner:
                 }
             )
 
-        else:
-            # Default: find any crash
-            return Goal(
-                goal_type=GoalType.FIND_ANY_CRASH,
-                description=user_goal,
-                strategy_hints={
-                    "fast_mode": True,
-                }
-            )
+        # Default: find any crash
+        return Goal(
+            goal_type=GoalType.FIND_ANY_CRASH,
+            description=user_goal,
+            strategy_hints={
+                "fast_mode": True,
+            }
+        )
 
     def adapt_fuzzing_strategy(self, base_strategy: dict) -> dict:
         """

@@ -545,10 +545,7 @@ def write_record(run_dir: Path, record: dict[str, Any],
         tool_name: If provided, writes coverage-<tool_name>.json.
                    Otherwise writes the legacy coverage-record.json.
     """
-    if tool_name:
-        filename = f"coverage-{tool_name}.json"
-    else:
-        filename = COVERAGE_RECORD_FILE
+    filename = f"coverage-{tool_name}.json" if tool_name else COVERAGE_RECORD_FILE
     path = Path(run_dir) / filename
     save_json(path, record)
     return path

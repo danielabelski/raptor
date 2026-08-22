@@ -60,7 +60,7 @@ def _knowledge_to_natural_language(k: FuzzingKnowledge) -> str:
 
     if isinstance(k.value, dict):
         for vk, vv in k.value.items():
-            if vv is not None and vv != "" and vv != 0:
+            if vv is not None and vv not in {"", 0}:
                 parts.append(f"{vk}: {vv}.")
     else:
         parts.append(f"Value: {k.value}.")

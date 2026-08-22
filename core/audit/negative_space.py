@@ -1992,7 +1992,7 @@ def check_shared_writer_race(
 
     findings: list[NegativeSpaceFinding] = []
     for recv_var, recv_type, method, body in _go_method_bodies(source):
-        if method != func and f"{recv_type}.{method}" != func:
+        if func not in (method, f"{recv_type}.{method}"):
             continue
         write_calls = re.findall(
             rf"\b{re.escape(recv_var)}\.(?:\w+\.)?Write\s*\(", body,

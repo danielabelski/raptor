@@ -86,9 +86,8 @@ def evaluate_platform_compat(
         if not dep.version:
             continue
         # Exact pins only — ranges aren't single-version queries.
-        if hasattr(dep.pin_style, "value"):
-            if dep.pin_style.value != "exact":
-                continue
+        if hasattr(dep.pin_style, "value") and dep.pin_style.value != "exact":
+            continue
         key = (dep.name, dep.version)
         if key in seen:
             continue

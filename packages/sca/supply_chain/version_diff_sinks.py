@@ -292,9 +292,7 @@ def _detect_guard_changes(
     # vice versa for a site gaining its first guard.
     if new_uncond > old_uncond:
         change_type = "guard_removed"
-    elif new_uncond < old_uncond:
-        change_type = "guard_added"
-    elif new_total > old_total:
+    elif new_uncond < old_uncond or new_total > old_total:
         change_type = "guard_added"
     else:
         change_type = "guard_removed"

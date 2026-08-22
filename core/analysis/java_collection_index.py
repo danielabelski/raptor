@@ -419,11 +419,10 @@ def build_local_collection_index(
             if right is not None:
                 walk(right)
             return
-        if t == _METHOD_INVOCATION:
-            if record_accessor(n):
-                for a in named_args(n):
-                    walk(a)
-                return
+        if t == _METHOD_INVOCATION and record_accessor(n):
+            for a in named_args(n):
+                walk(a)
+            return
         for c in n.children:
             if c.is_named:
                 walk(c)

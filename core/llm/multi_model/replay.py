@@ -456,10 +456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = replay(
         paths, decision_class_prefix=args.decision_class_prefix,
     )
-    if args.json:
-        rendered = render_json(report)
-    else:
-        rendered = render_markdown(report)
+    rendered = render_json(report) if args.json else render_markdown(report)
     sys.stdout.write(rendered)
     if not rendered.endswith("\n"):
         sys.stdout.write("\n")

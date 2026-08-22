@@ -458,10 +458,9 @@ class AFLRunner:
             if has_ubsan:
                 logger.info("  - UndefinedBehaviorSanitizer (UBSAN) detected")
             return True
-        else:
-            logger.warning("⚠ Binary does not appear to be compiled with sanitizers")
-            logger.warning("  Consider recompiling with -fsanitize=address for better bug detection")
-            return False
+        logger.warning("⚠ Binary does not appear to be compiled with sanitizers")
+        logger.warning("  Consider recompiling with -fsanitize=address for better bug detection")
+        return False
 
     @staticmethod
     def _has_runtime_sanitizer(strings_output: str, sanitizer: str) -> bool:
@@ -1105,17 +1104,16 @@ class AFLRunner:
                 # AFL will replace @@ with the input file path
                 # We need to set AFL_INPUT_FILE environment variable
                 pass
-        else:
-            # For stdin mode, need to provide input via stdin parameter
-            if test_input:
-                try:
-                    stdin_input = open(test_input, 'rb')  # noqa: SIM115 — closed in the finally below
-                except Exception as e:  # noqa: BLE001 — showmap is best-effort
-                    logger.warning("Failed to open test input %s: %s", test_input, e)
-                    return {}
-            else:
-                logger.warning("No test input for afl-showmap with stdin mode")
+        # For stdin mode, need to provide input via stdin parameter
+        elif test_input:
+            try:
+                stdin_input = open(test_input, 'rb')  # noqa: SIM115 — closed in the finally below
+            except Exception as e:  # noqa: BLE001 — showmap is best-effort
+                logger.warning("Failed to open test input %s: %s", test_input, e)
                 return {}
+        else:
+            logger.warning("No test input for afl-showmap with stdin mode")
+            return {}
 
         try:
             from core.config import RaptorConfig
@@ -1186,9 +1184,8 @@ class AFLRunner:
                             coverage[key] = value
                 logger.info("Coverage analysis complete")
                 return coverage
-            else:
-                logger.warning("afl-showmap failed: %s", result.stderr)
-                return {}
+            logger.warning("afl-showmap failed: %s", result.stderr)
+            return {}
 
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result

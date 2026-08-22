@@ -269,11 +269,11 @@ def sanitise_for_prompt(
     """
     if content_type == "name":
         return sanitise_name(content)
-    elif content_type == "path":
+    if content_type == "path":
         return sanitise_path(content)
-    elif content_type == "string":
+    if content_type == "string":
         return sanitise_string_literal(content)
-    elif content_type == "comment":
+    if content_type == "comment":
         return sanitise_comment(content)
     sanitised = _CONTROL_CHAR_RE.sub("", content)
     _SOURCE_CAP = 50_000

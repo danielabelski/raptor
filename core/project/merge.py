@@ -46,10 +46,7 @@ def _is_known_file(name: str) -> bool:
     """Check if a filename is in the known set or matches known extensions."""
     if name in KNOWN_FILES:
         return True
-    for ext in KNOWN_EXTENSIONS:
-        if name.endswith(ext):
-            return True
-    return False
+    return any(name.endswith(ext) for ext in KNOWN_EXTENSIONS)
 
 
 def _extract_date_from_dir(run_dir: Path) -> str:

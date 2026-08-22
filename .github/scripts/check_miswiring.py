@@ -1098,19 +1098,18 @@ def classify_handler(handler: ast.ExceptHandler, mod: Module):
         kinds.append("return_default")
     elif QUIET_LOG.search(src_seg):
         kinds.append("quiet_log_only")
+    # assignments-to-default / result=None then fallthrough
+    elif all(isinstance(s, (ast.Assign, ast.AugAssign, ast.AnnAssign,
+                          ast.Pass, ast.Expr, ast.Continue, ast.Return,
+                          ast.Break)) for s in body):
+        # Expr could be a call doing real fallback work — count those
+        calls = [s for s in body if isinstance(s, ast.Expr)
+                 and isinstance(s.value, ast.Call)]
+        if calls:
+            return ("fallback_action", only_stmts)
+        kinds.append("assign_default")
     else:
-        # assignments-to-default / result=None then fallthrough
-        if all(isinstance(s, (ast.Assign, ast.AugAssign, ast.AnnAssign,
-                              ast.Pass, ast.Expr, ast.Continue, ast.Return,
-                              ast.Break)) for s in body):
-            # Expr could be a call doing real fallback work — count those
-            calls = [s for s in body if isinstance(s, ast.Expr)
-                     and isinstance(s.value, ast.Call)]
-            if calls:
-                return ("fallback_action", only_stmts)
-            kinds.append("assign_default")
-        else:
-            return None                  # substantial handler; not a swallow
+        return None                  # substantial handler; not a swallow
     return (kinds[0], only_stmts)
 
 
@@ -1471,7 +1470,7 @@ def find_plumbing(idx: RepoIndex):
             env_write_forms[name].add(
                 "child_env" if m_.group(3) else "global")
     for p, text in idx.text_files:
-        if p.suffix == ".sh" or p.suffix == "":
+        if p.suffix in {".sh", ""}:
             for m_ in re.finditer(r"export\s+([A-Z][A-Z0-9_]+)=", text):
                 env_writes[m_.group(1)].append(str(p))
                 env_write_forms[m_.group(1)].add("global")

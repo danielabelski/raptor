@@ -90,7 +90,7 @@ def run_dynamic_sweep(
 
     if file_path.endswith((".c", ".h", ".cpp", ".cc", ".cxx")):
         return _run_c_harness(outcome, ctx, config, start)
-    elif file_path.endswith(".py"):
+    if file_path.endswith(".py"):
         return _run_python_harness(outcome, ctx, config, start)
 
     return None
@@ -114,11 +114,11 @@ def generate_c_harness(
 
     if _is_buffer_overflow(cwe, hypothesis):
         return _harness_buffer_overflow(function_name, source, file_path)
-    elif _is_format_string(cwe, hypothesis):
+    if _is_format_string(cwe, hypothesis):
         return _harness_format_string(function_name, source, file_path)
-    elif _is_use_after_free(cwe, hypothesis):
+    if _is_use_after_free(cwe, hypothesis):
         return _harness_use_after_free(function_name, source, file_path)
-    elif _is_null_deref(cwe, hypothesis):
+    if _is_null_deref(cwe, hypothesis):
         return _harness_null_deref(function_name, source, file_path)
 
     return _harness_generic(function_name, source, file_path)
@@ -412,10 +412,7 @@ def _run_python_harness(
 
         has_unexpected = "UNEXPECTED_EXCEPTION" in combined_output
 
-        if has_unexpected or crashed:
-            strength = "crash"
-        else:
-            strength = "inconclusive"
+        strength = "crash" if has_unexpected or crashed else "inconclusive"
 
         return DynamicSweepResult(
             compiled=True,

@@ -455,10 +455,7 @@ def _classify(spec: str) -> tuple[PinStyle, str | None, str | None]:
         version: str | None = None
         if "#" in spec:
             tag = spec.split("#", 1)[1]
-            if tag.startswith("semver:"):
-                version = tag[len("semver:"):]
-            else:
-                version = tag
+            version = tag[len("semver:"):] if tag.startswith("semver:") else tag
         return PinStyle.GIT, version, None
 
     # Local paths.

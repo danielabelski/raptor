@@ -787,8 +787,7 @@ def check_site_preservation(
         )
     import z3
     _ln, site_code, var, aop, rhs_text = sites[0]
-    result = _check_one_site(
+    return _check_one_site(
         z3, lhs, op, rhs, variables, line or _ln, site_code, var, aop,
         rhs_text, timeout_ms, pre_conditions=tuple(pre_conditions),
     )
-    return result

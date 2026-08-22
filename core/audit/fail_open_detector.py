@@ -620,13 +620,12 @@ def _extract_function_body_regex(source: str, func_name: str) -> str:
                     if depth <= 0 and j > start:
                         return "\n".join(lines[start:j + 1])
                 return "\n".join(lines[start:])
-            else:
-                # Python: indentation-based
-                stripped = line.lstrip()
-                if stripped and not stripped.startswith("#"):
-                    line_indent = len(line) - len(stripped)
-                    if line_indent <= indent:
-                        return "\n".join(lines[start:i])
+            # Python: indentation-based
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith("#"):
+                line_indent = len(line) - len(stripped)
+                if line_indent <= indent:
+                    return "\n".join(lines[start:i])
 
     if start is not None:
         return "\n".join(lines[start:])

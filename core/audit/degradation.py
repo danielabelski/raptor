@@ -255,10 +255,7 @@ def format_capabilities_table(
         fallback = ""
         if not capabilities[tool]:
             fb = get_fallback(tool)
-            if fb:
-                fallback = fb.fallback_tool
-            else:
-                fallback = "none"
+            fallback = fb.fallback_tool if fb else "none"
         lines.append(f"| {tool} | {avail} | {fallback} |")
     return "\n".join(lines)
 

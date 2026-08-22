@@ -111,9 +111,7 @@ def annotate(
     #     the call as ``called_in_dead_code`` — operator's
     #     /understand pass identified the host as a real entry,
     #     so the static "no callers" claim was wrong.
-    if "sink" in matched_kinds:
-        new_verdict = "likely_called"
-    elif (reach.verdict == "called_in_dead_code"
+    if "sink" in matched_kinds or (reach.verdict == "called_in_dead_code"
             and "entry_point" in matched_kinds):
         new_verdict = "likely_called"
     else:

@@ -163,9 +163,7 @@ def _cwe_buffer_overflow_shape(exploit_code: str) -> bool:
     ):
         return True
     # Long byte literal (≥ 8 escape sequences in a row).
-    if re.search(r'[bB]["\'](?:\\x[0-9a-fA-F]{2}){8,}', exploit_code):
-        return True
-    return False
+    return bool(re.search(r'[bB]["\'](?:\\x[0-9a-fA-F]{2}){8,}', exploit_code))
 
 
 def _cwe_command_injection_shape(exploit_code: str) -> bool:
@@ -185,12 +183,7 @@ def _cwe_command_injection_shape(exploit_code: str) -> bool:
         # the pattern is already narrow enough.
         return True
     # `$()` subshell or backticks inside string literals.
-    if re.search(
-        r"""['"][^'"]*(?:\$\([^)]+\)|`[^`]+`)[^'"]*['"]""",
-        exploit_code,
-    ):
-        return True
-    return False
+    return bool(re.search(r"""['"][^'"]*(?:\$\([^)]+\)|`[^`]+`)[^'"]*['"]""", exploit_code))
 
 
 def _cwe_sql_injection_shape(exploit_code: str) -> bool:
@@ -624,10 +617,7 @@ def _llm_tiebreak(
     verdict, reason = _parse_judge_response(judge_content)
     # LLM confidence baseline: matches/off_target → 0.65, uncertain → 0.3.
     # Deliberately modest — no calibration to claim higher.
-    if verdict == VERDICT_UNCERTAIN:
-        confidence = 0.3
-    else:
-        confidence = 0.65
+    confidence = 0.3 if verdict == VERDICT_UNCERTAIN else 0.65
 
     reasoning = (
         f"LLM tiebreak: {verdict} ({reason}). "

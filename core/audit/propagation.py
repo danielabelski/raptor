@@ -388,7 +388,7 @@ def try_codeql_resolve(
                 resolution="confirmed",
                 resolver_used="codeql",
             )
-        elif result.confirmed is False:
+        if result.confirmed is False:
             return PropagationResult(
                 constraint=constraint,
                 resolved=True,

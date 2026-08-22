@@ -371,7 +371,7 @@ def _strip_c_literals_comments(s: str) -> str:
             continue
         if c == "/" and i + 1 < n and s[i + 1] == "/":
             break
-        if c == '"' or c == "'":
+        if c in {'"', "'"}:
             q = c
             i += 1
             while i < n:

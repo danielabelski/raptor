@@ -645,7 +645,7 @@ def _extract_python_types(source: str, function_name: str) -> list[dict[str, str
                 continue
             results: list[dict[str, str]] = []
             for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
-                if arg.arg == "self" or arg.arg == "cls":
+                if arg.arg in {"self", "cls"}:
                     continue
                 ann = arg.annotation
                 if ann is None:
@@ -679,8 +679,7 @@ def _ast_type_name(node: ast.AST) -> str:
             parts.append(obj.id)
         return ".".join(reversed(parts))
     if isinstance(node, ast.Subscript):
-        base = _ast_type_name(node.value)
-        return base
+        return _ast_type_name(node.value)
     return ""
 
 

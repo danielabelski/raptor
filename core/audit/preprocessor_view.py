@@ -274,7 +274,7 @@ def _macro_flags(macro_config: Any) -> list:
         if not _DEFINE_NAME_RE.match(name or ""):
             logger.debug("preprocessor_view: dropping invalid define name %r", name)
             return
-        if value is None or value == "" or value == "1":
+        if value is None or value in {"", "1"}:
             flags.append(f"-D{name}")
             return
         if _has_control_chars(value):

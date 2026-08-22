@@ -971,9 +971,8 @@ def evaluate(
             elif label.expected_status == "clean":
                 if has_hit:
                     fp.append(label.function_id)
-            elif label.expected_status == "dormant":
-                if has_hit:
-                    dormant_hits.append(label.function_id)
+            elif label.expected_status == "dormant" and has_hit:
+                dormant_hits.append(label.function_id)
         if tp or fp or misses or untargeted or dormant_hits:
             denominator = len(tp) + len(fp)
             per_rule.append({

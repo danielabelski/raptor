@@ -27,10 +27,9 @@ class ConsistencyVerifier:
         """Verify evidence against its source."""
         if isinstance(evidence, Event):
             return self._verify_event(evidence)
-        elif isinstance(evidence, Observation):
+        if isinstance(evidence, Observation):
             return self._verify_observation(evidence)
-        else:
-            return VerificationResult(is_valid=False, errors=["Unknown evidence type"])
+        return VerificationResult(is_valid=False, errors=["Unknown evidence type"])
 
     def verify_all(self, evidence_list: Sequence[Event | Observation]) -> VerificationResult:
         """Verify a list of evidence items. Aggregates all errors."""

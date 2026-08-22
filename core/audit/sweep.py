@@ -475,7 +475,7 @@ def _target_in_failed_files(
         s = str(entry)
         if not s:
             continue
-        if s == full_str or s == file_path or s.endswith("/" + file_path):
+        if s in (full_str, file_path) or s.endswith("/" + file_path):
             return True
     return False
 

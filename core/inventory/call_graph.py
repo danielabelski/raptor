@@ -3180,7 +3180,7 @@ class _RubyCallGraph:
                     # ``self.foo`` — keep ``self`` as the receiver
                     # so the chain reads ``["self", "foo"]``.
                     receiver = c
-                elif c.type == self._SCOPE_RES or c.type == self._CALL:
+                elif c.type in (self._SCOPE_RES, self._CALL):
                     receiver = c
                 else:
                     continue

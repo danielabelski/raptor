@@ -79,10 +79,7 @@ def _extract_path(fn: str, args) -> str | None:
             return path
         return None
     if isinstance(args, list):
-        if fn in _AT_FNS:
-            idx = 1
-        else:
-            idx = 0
+        idx = 1 if fn in _AT_FNS else 0
         if len(args) > idx and isinstance(args[idx], str) and args[idx]:
             path = args[idx]
             if "\x00" in path:
@@ -101,10 +98,7 @@ def _extract_flags(fn: str, args) -> int | None:
         flags = args.get("flags")
         return flags if isinstance(flags, int) else None
     if isinstance(args, list):
-        if fn in _AT_FNS:
-            idx = 2
-        else:
-            idx = 1
+        idx = 2 if fn in _AT_FNS else 1
         if len(args) > idx and isinstance(args[idx], int):
             return args[idx]
     return None

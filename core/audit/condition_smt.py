@@ -1091,7 +1091,7 @@ def _z3_dispatch(
 
     if api_base in memcpy_sinks and buffer_size is not None:
         return _z3_overflow_check(constraints, buffer_size)
-    elif api_base in alloc_sinks:
+    if api_base in alloc_sinks:
         return _z3_alloc_overflow_check(constraints)
 
     return _z3_consistency_check(constraints)
@@ -1422,7 +1422,7 @@ def _z3_path_feasibility_check(
     result = solver.check()
     if result == z3.unsat:
         return (False, "path infeasible: guard conjunction is unsatisfiable", None)
-    elif result == z3.sat:
+    if result == z3.sat:
         model = solver.model()
         witness = {}
         for name, var in vars_map.items():
@@ -1580,7 +1580,7 @@ def _z3_auth_bypass_check(
             ),
             witness=witness or None,
         )
-    elif result == z3.unsat:
+    if result == z3.unsat:
         return AuthBypassResult(
             bypass_found=False,
             guard_text=guard_text,
@@ -2011,10 +2011,7 @@ def _guard_is_auth_check(
     guard_text: str, auth_checks: list[tuple[int, str, str]],
 ) -> bool:
     """Check if the guard itself is one of the auth checks."""
-    for _, _, func_name in auth_checks:
-        if func_name in guard_text:
-            return True
-    return False
+    return any(func_name in guard_text for _, _, func_name in auth_checks)
 
 
 def _try_z3_auth_bypass(
@@ -2469,7 +2466,7 @@ def _z3_lock_discipline_check(
             ),
             witness=witness or None,
         )
-    elif result == z3.unsat:
+    if result == z3.unsat:
         return LockDisciplineResult(
             violation_found=False,
             reasoning=(
@@ -2926,7 +2923,7 @@ def _z3_resource_leak_check(
             ),
             witness=witness or None,
         )
-    elif result == z3.unsat:
+    if result == z3.unsat:
         return ResourceLeakResult(
             leak_found=False,
             reasoning=(
@@ -4628,11 +4625,9 @@ def _extract_path_arg(line: str, call_match: re.Match) -> str:
         elif ch == ")":
             depth -= 1
             if depth == 0 and arg_start >= 0:
-                arg = rest[arg_start:i].split(",")[0].strip().strip('"\'')
-                return arg
+                return rest[arg_start:i].split(",")[0].strip().strip('"\'')
         elif ch == "," and depth == 1 and arg_start >= 0:
-            arg = rest[arg_start:i].strip().strip('"\'')
-            return arg
+            return rest[arg_start:i].strip().strip('"\'')
     return ""
 
 

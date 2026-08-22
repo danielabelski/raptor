@@ -358,9 +358,7 @@ def _is_type_checking_guard(node: ast.AST) -> bool:
         return False
     if isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
         return True
-    if isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING":
-        return True
-    return False
+    return bool(isinstance(node.test, ast.Attribute) and node.test.attr == "TYPE_CHECKING")
 
 
 def _is_constant_assignment(node: ast.AST) -> bool:

@@ -715,8 +715,7 @@ def _parse_scala_list(raw: str) -> list:
         return _split_scala_items(inner)
 
     # Newline-separated fallback
-    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
-    return lines
+    return [ln.strip() for ln in raw.split("\n") if ln.strip()]
 
 
 def _classify_guard_text(text: str) -> str:

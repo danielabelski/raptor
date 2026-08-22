@@ -450,9 +450,7 @@ def _binding_satisfies_value_gate(
     reaching = rd.at(sink, sink_arg)
     if binding.node not in reaching:
         return False
-    if any(d not in sanitizer_output_nodes for d in reaching):
-        return False
-    return True
+    return not any(d not in sanitizer_output_nodes for d in reaching)
 
 
 def _fold_stack(graph, java_source_text: str,
@@ -1122,15 +1120,14 @@ def _whole_array_taint_free_reason(
             )
             if val is not REFUSE:
                 continue
-            if w.rhs.type == "identifier":
-                if definers_all_fold(
-                        rd, at, w.rhs.text.decode("utf-8", "replace"),
-                        index, array_resolver=table_resolver,
-                        config_resolver=config_resolver,
-                        conduit_resolver=invocation_hook,
-                        ban_tf_system_reads=ban_tf_system_reads,
-                        union_member_check=union_member_check):
-                    continue
+            if w.rhs.type == "identifier" and definers_all_fold(
+                    rd, at, w.rhs.text.decode("utf-8", "replace"),
+                    index, array_resolver=table_resolver,
+                    config_resolver=config_resolver,
+                    conduit_resolver=invocation_hook,
+                    ban_tf_system_reads=ban_tf_system_reads,
+                    union_member_check=union_member_check):
+                continue
             return None
         if not _siblings_fold_or_refuse(
                 graph, rd, sink, sink_arg,
@@ -1428,12 +1425,11 @@ def _conduit_transparent_result(
     escape_nodes = _may_escape_nodes_on_path(
         graph, sources_set, sink, excluded=set(),
     )
-    if escape_nodes and array_index is not None:
-        if all(
-            array_index.exempt_line(getattr(n, "lineno", 0))
-            for n in escape_nodes
-        ):
-            escape_nodes = []
+    if escape_nodes and array_index is not None and all(
+        array_index.exempt_line(getattr(n, "lineno", 0))
+        for n in escape_nodes
+    ):
+        escape_nodes = []
     if escape_nodes:
         return SanitizerCutResult(
             suppress=False,
@@ -1811,12 +1807,11 @@ def evaluate_finding(
         escape_nodes = _may_escape_nodes_on_path(
             graph, sources_set, sink, excluded=set(),
         )
-        if escape_nodes and array_index is not None:
-            if all(
-                array_index.exempt_line(getattr(n, "lineno", 0))
-                for n in escape_nodes
-            ):
-                escape_nodes = []
+        if escape_nodes and array_index is not None and all(
+            array_index.exempt_line(getattr(n, "lineno", 0))
+            for n in escape_nodes
+        ):
+            escape_nodes = []
         if escape_nodes:
             return SanitizerCutResult(
                 suppress=False,

@@ -40,9 +40,7 @@ def _is_compose_file(path: Path) -> bool:
         return True
     if name in ("compose.yml", "compose.yaml"):
         return True
-    if name.startswith("compose.") and name.endswith((".yml", ".yaml")):
-        return True
-    return False
+    return bool(name.startswith("compose.") and name.endswith((".yml", ".yaml")))
 
 
 def _is_gitlab_ci_file(path: Path) -> bool:

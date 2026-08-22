@@ -87,11 +87,10 @@ class GitHubActionsClient:
             if cached is not MISSING:
                 # Cache stores the dict — extract tag. ``None`` from
                 # a negative-cached failure surfaces as no tag.
-                tag = (
+                return (
                     cached.get("tag_name")
                     if isinstance(cached, dict) else None
                 )
-                return tag
         if self._offline:
             return None
         try:

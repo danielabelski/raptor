@@ -621,9 +621,8 @@ def _extract_assignment_parts(
                     if sub.type == "identifier":
                         lhs_name = _node_text(sub, src)
                         break
-        else:
-            if rhs is None:
-                rhs = child
+        elif rhs is None:
+            rhs = child
 
     return lhs_name, rhs
 
@@ -723,11 +722,10 @@ def _extract_method_chain(
             if obj and obj.type in call_types:
                 current = obj
                 continue
-            elif obj and obj.type == "identifier":
+            if obj and obj.type == "identifier":
                 var_name = _node_text(obj, src)
             break
-        else:
-            break
+        break
 
     if len(steps) < 2:
         return None

@@ -152,11 +152,10 @@ def load_project_context(out_dir: Path) -> ProjectContext:
                         function=item.get("function", ""),
                         strategy=item.get("strategy", ""),
                     ))
-                ctx = ProjectContext(
+                return ProjectContext(
                     version=data.get("version", _SCHEMA_VERSION),
                     learnings=learnings,
                 )
-                return ctx
             except Exception:
                 logger.warning("project-context load failed: %s", candidate, exc_info=True)
     return ProjectContext()

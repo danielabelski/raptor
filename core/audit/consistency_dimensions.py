@@ -1119,8 +1119,7 @@ def _shape_sites_for_file(
             )
             pos = 0
             for child in arg_node.children:
-                if not child.is_named or child.type == "comment" \
-                        or child.type == "keyword_argument":
+                if not child.is_named or child.type in {"comment", "keyword_argument"}:
                     continue
                 if pos >= _MAX_ARG_POSITIONS:
                     break

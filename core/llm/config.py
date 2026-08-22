@@ -1622,7 +1622,7 @@ class LLMConfig:
         candidates = self._configured_models()
         bare = bare_model_id(model_id)
         for mc in candidates:
-            if mc.model_name == model_id or mc.model_name == bare:
+            if mc.model_name in (model_id, bare):
                 return mc
             if _strip_dated_alias(mc.model_name) == bare:
                 return mc

@@ -226,11 +226,7 @@ def _writers_of(method, name: str) -> list[int]:
                 if c.is_named and c.type == "identifier" \
                         and _text(c) == name:
                     out.append(n.start_byte)
-        elif t == "variable_declarator":
-            nm = n.child_by_field_name("name")
-            if nm is not None and _text(nm) == name:
-                out.append(n.start_byte)
-        elif t == "enhanced_for_statement":
+        elif t in {"variable_declarator", "enhanced_for_statement"}:
             nm = n.child_by_field_name("name")
             if nm is not None and _text(nm) == name:
                 out.append(n.start_byte)

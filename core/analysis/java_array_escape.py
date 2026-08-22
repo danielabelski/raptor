@@ -257,9 +257,7 @@ def build_local_array_index(
                 const_index = int(_text(index_node))
             except ValueError:
                 const_index = None
-        if const_index is None:
-            idx._violated.add(name)
-        elif compound:
+        if const_index is None or compound:
             idx._violated.add(name)
         elif is_write:
             idx._writes.setdefault((name, const_index), []).append(

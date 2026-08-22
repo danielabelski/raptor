@@ -518,9 +518,7 @@ def run_landlock_audit(
             # _spawn for parity (no PIPE on this path; that's a
             # caller-side construct that wouldn't survive exec).
             _use_devnull = (
-                stdin is None
-                or stdin == subprocess.DEVNULL
-                or stdin == subprocess.PIPE
+                stdin is None or stdin in (subprocess.DEVNULL, subprocess.PIPE)
             )
             if _use_devnull:
                 try:

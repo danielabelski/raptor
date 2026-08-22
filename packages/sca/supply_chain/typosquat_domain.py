@@ -300,9 +300,7 @@ def _walk_sources(target: Path, *, max_depth: int) -> Iterable[Path]:
         else:
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
         for fn in filenames:
-            if any(fn.endswith(ext) for ext in _EXTENSIONS):
-                yield cur / fn
-            elif fn in ("Dockerfile", "Containerfile"):
+            if any(fn.endswith(ext) for ext in _EXTENSIONS) or fn in ("Dockerfile", "Containerfile"):
                 yield cur / fn
 
 

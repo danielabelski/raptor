@@ -221,8 +221,7 @@ def _md_table_cell(s: str) -> str:
     s = s.replace("\\", "\\\\")
     s = s.replace("|", "\\|")
     s = s.replace("`", "\\`")
-    s = s.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
-    return s
+    return s.replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
 
 
 def build_finding_detail(finding: dict[str, Any], index: int) -> ReportSection:

@@ -133,9 +133,8 @@ class DistroFetcher:
             "error" not in result
             or (err.startswith("http ") and not err.startswith("http 5"))
         )
-        if cacheable:
-            if self.cache_enabled and self._disk is not None:
-                self._disk.put(f"{distro}/{cve_id}", result, ttl_seconds=_CACHE_TTL)
+        if cacheable and self.cache_enabled and self._disk is not None:
+            self._disk.put(f"{distro}/{cve_id}", result, ttl_seconds=_CACHE_TTL)
         self._mem_put(key, result)
         return result
 

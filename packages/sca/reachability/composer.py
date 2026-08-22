@@ -184,9 +184,7 @@ def _is_test_file(path: Path, target: Path) -> bool:
     rel_parts = path.relative_to(target).parts
     if any(p in _TEST_DIR_NAMES for p in rel_parts):
         return True
-    if path.stem.endswith(("Test", "Tests")):
-        return True
-    return False
+    return bool(path.stem.endswith(("Test", "Tests")))
 
 
 def _format_evidence(

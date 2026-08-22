@@ -158,9 +158,7 @@ def _is_k8s_manifest(path: Path) -> bool:
         if parts[j] == ".github" and parts[j + 1] == "workflows":
             return False
     # Composite-action manifests handled by GHA parser.
-    if name in ("action.yml", "action.yaml"):
-        return False
-    return True
+    return name not in ("action.yml", "action.yaml")
 
 
 def _extract_images(

@@ -457,11 +457,10 @@ class QueryRunner:
                             )
                         else:
                             logger.error("✗ Cannot resolve suite path - will attempt pack reference (may cause conflicts)")
-            else:
-                # Already an absolute path or simple name
-                if Path(suite_name).exists():
-                    actual_suite_path = str(Path(suite_name).resolve())
-                    resolved_to_absolute = True
+            # Already an absolute path or simple name
+            elif Path(suite_name).exists():
+                actual_suite_path = str(Path(suite_name).resolve())
+                resolved_to_absolute = True
 
         # Build command
         cmd = [
@@ -797,17 +796,16 @@ class QueryRunner:
                     errors=[],
                     suite_name="custom",
                 )
-            else:
-                return QueryResult(
-                    success=False,
-                    language=language,
-                    database_path=database_path,
-                    sarif_path=None,
-                    findings_count=0,
-                    duration_seconds=time.time() - start_time,
-                    errors=[result.stderr] if result.stderr else [],
-                    suite_name="custom",
-                )
+            return QueryResult(
+                success=False,
+                language=language,
+                database_path=database_path,
+                sarif_path=None,
+                findings_count=0,
+                duration_seconds=time.time() - start_time,
+                errors=[result.stderr] if result.stderr else [],
+                suite_name="custom",
+            )
 
         except SandboxSetupError:
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result

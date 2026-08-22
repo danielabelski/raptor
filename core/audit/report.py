@@ -951,10 +951,7 @@ def _find_unrecorded_reads(
         if funcs:
             file_functions[rel_path] = funcs
 
-    if target_path:
-        target_resolved = str(Path(target_path).resolve())
-    else:
-        target_resolved = None
+    target_resolved = str(Path(target_path).resolve()) if target_path else None
 
     result = []
     for abs_path in read_paths:

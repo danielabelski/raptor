@@ -629,10 +629,7 @@ def _fetch_crates_license(
         return None
     crate = (data or {}).get("crate") or {}
     spdx = crate.get("license") if isinstance(crate, dict) else None
-    if isinstance(spdx, str) and spdx.strip():
-        result = spdx.strip()
-    else:
-        result = None
+    result = spdx.strip() if isinstance(spdx, str) and spdx.strip() else None
     if cache is not None:
         cache.put(cache_key, result or "", ttl_seconds=24 * 3600)
     return result

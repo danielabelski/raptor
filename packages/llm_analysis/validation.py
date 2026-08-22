@@ -126,28 +126,27 @@ def check_self_contradiction(results_by_id: dict[str, dict]) -> int:
             r["contradictions"] = contradictions
             flagged += 1
             logger.warning("Self-contradiction in %s: %s", fid, contradictions[0])
-        else:
-            # Pre-fix this branch was missing — once a finding had
-            # `self_contradictory=True` set, it persisted across
-            # re-runs of `_check_self_contradiction` even when a
-            # successful retry resolved the contradiction. The
-            # downstream consensus / judge logic still saw the
-            # stale flag and treated the (now-clean) finding as
-            # uncertain.
-            #
-            # Real failure mode: RetryTask issues a fresh LLM call
-            # whose response IS internally consistent; the
-            # finding's previous self_contradictory=True from the
-            # original call leaks through unchanged. Operators
-            # see "self-contradictory" annotations on findings
-            # whose actual reasoning is fine.
-            #
-            # Clear the flag (and the contradictions list) when
-            # the current pass finds none. dict.pop with default
-            # so this is a no-op for findings that were never
-            # flagged.
-            if r.pop("self_contradictory", False):
-                r.pop("contradictions", None)
+        # Pre-fix this branch was missing — once a finding had
+        # `self_contradictory=True` set, it persisted across
+        # re-runs of `_check_self_contradiction` even when a
+        # successful retry resolved the contradiction. The
+        # downstream consensus / judge logic still saw the
+        # stale flag and treated the (now-clean) finding as
+        # uncertain.
+        #
+        # Real failure mode: RetryTask issues a fresh LLM call
+        # whose response IS internally consistent; the
+        # finding's previous self_contradictory=True from the
+        # original call leaks through unchanged. Operators
+        # see "self-contradictory" annotations on findings
+        # whose actual reasoning is fine.
+        #
+        # Clear the flag (and the contradictions list) when
+        # the current pass finds none. dict.pop with default
+        # so this is a no-op for findings that were never
+        # flagged.
+        elif r.pop("self_contradictory", False):
+            r.pop("contradictions", None)
 
     if flagged:
         logger.info("Self-consistency check: %d finding(s) flagged as contradictory", flagged)

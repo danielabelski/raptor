@@ -179,10 +179,7 @@ def _iter_named(root):
 
 
 def _subtree_touches_state(n) -> bool:
-    for cur in _iter_named(n):
-        if cur.type in _STATE_NODES:
-            return True
-    return False
+    return any(cur.type in _STATE_NODES for cur in _iter_named(n))
 
 
 def _straight_line_locals(body, params: tuple[str, ...],

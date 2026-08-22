@@ -161,7 +161,7 @@ def _normalise(source: str) -> str:
                 out.append(source[i:i + 2])
                 i += 2
                 continue
-            if c == quote or c == "\n":
+            if c in (quote, "\n"):
                 # A literal can't span a raw newline; drop back to code
                 # so an unterminated quote can't swallow the file.
                 state = "code"

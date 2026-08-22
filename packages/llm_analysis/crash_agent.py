@@ -746,7 +746,7 @@ class CrashAnalysisAgent:
                 if not exploit_data:
                     logger.error("Exploit data is an empty list - LLM returned invalid response")
                     return False
-                elif isinstance(exploit_data[0], dict):
+                if isinstance(exploit_data[0], dict):
                     logger.info("Extracting first dict element from list")
                     exploit_data = exploit_data[0]
                 else:
@@ -839,9 +839,8 @@ FULL LLM RESPONSE:
                     self._record_exploit_witness(crash_context, exploit_code)
 
                 return True
-            else:
-                logger.warning("   ✗ LLM response did not contain valid code")
-                return False
+            logger.warning("   ✗ LLM response did not contain valid code")
+            return False
 
         except Exception as e:  # noqa: BLE001
             logger.error("   ✗ Exploit generation failed: %s", e)

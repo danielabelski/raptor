@@ -105,12 +105,11 @@ def derive_verification_tier(finding: dict[str, Any]) -> str:
         or finding.get("dataflow_validation")
         or {}
     )
-    if isinstance(dv, dict) and dv.get("verdict") in ("confirmed", "refuted"):
-        if (
-            dv.get("method") in _MECHANICAL_METHODS
-            or dv.get("tier") == "iris_tier1"
-        ):
-            return VerificationTier.TOOL_BACKED.value
+    if isinstance(dv, dict) and dv.get("verdict") in ("confirmed", "refuted") and (
+        dv.get("method") in _MECHANICAL_METHODS
+        or dv.get("tier") == "iris_tier1"
+    ):
+        return VerificationTier.TOOL_BACKED.value
 
     return VerificationTier.LLM_ONLY.value
 

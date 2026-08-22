@@ -364,7 +364,7 @@ class CorpusGenerator:
                 b'<?xml version="1.0"?><root><![CDATA[data]]></root>',  # CDATA
             ]
 
-        elif format_name == "json":
+        if format_name == "json":
             return [
                 b'{}',
                 b'{"key": "value"}',
@@ -378,7 +378,7 @@ class CorpusGenerator:
                 b'{"unicode": "\\u0000\\u0001\\u0002"}',  # Unicode escapes
             ]
 
-        elif format_name == "yaml":
+        if format_name == "yaml":
             return [
                 b'key: value',
                 b'---\nkey: value\nlist:\n  - item1\n  - item2',
@@ -386,7 +386,7 @@ class CorpusGenerator:
                 b'nested:\n  level1:\n    level2: value',
             ]
 
-        elif format_name == "http":
+        if format_name == "http":
             return [
                 b'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n',
                 b'POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello',
@@ -394,7 +394,7 @@ class CorpusGenerator:
                 b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n',
             ]
 
-        elif format_name == "csv":
+        if format_name == "csv":
             return [
                 b'col1,col2,col3',
                 b'val1,val2,val3\nval4,val5,val6',
@@ -402,7 +402,7 @@ class CorpusGenerator:
                 b'a,b,c\n1,2,3\n4,5,6',
             ]
 
-        elif format_name == "ini":
+        if format_name == "ini":
             return [
                 b'[section]\nkey=value',
                 b'[global]\noption1=true\noption2=123\n\n[local]\npath=/tmp',
@@ -635,14 +635,14 @@ class CorpusGenerator:
                     seed[pos] ^= (1 << random.randint(0, 7))  # nosemgrep: crypto.prng.random-module.python
             return bytes(seed)
 
-        elif mutation_type == "byte_insert":
+        if mutation_type == "byte_insert":
             # Insert random bytes
             seed = bytearray(base_seed)
             pos = random.randint(0, len(seed))  # nosemgrep: crypto.prng.random-module.python
             seed.insert(pos, random.randint(0, 255))  # nosemgrep: crypto.prng.random-module.python
             return bytes(seed)
 
-        elif mutation_type == "byte_delete":
+        if mutation_type == "byte_delete":
             # Delete random byte
             if len(base_seed) > 0:
                 seed = bytearray(base_seed)
@@ -651,13 +651,13 @@ class CorpusGenerator:
                 return bytes(seed)
             return base_seed
 
-        elif mutation_type == "expand":
+        if mutation_type == "expand":
             # Expand the input
             return base_seed + (base_seed * random.randint(1, 10))  # nosemgrep: crypto.prng.random-module.python
 
-        else:  # havoc - combine multiple mutations
-            seed = base_seed
-            for _ in range(random.randint(1, 5)):  # nosemgrep: crypto.prng.random-module.python
-                mutation = random.choice(["bit_flip", "byte_insert", "byte_delete", "expand"])  # nosemgrep: crypto.prng.random-module.python
-                seed = self.generate_mutated_seed(seed, mutation)
-            return seed
+        # havoc - combine multiple mutations
+        seed = base_seed
+        for _ in range(random.randint(1, 5)):  # nosemgrep: crypto.prng.random-module.python
+            mutation = random.choice(["bit_flip", "byte_insert", "byte_delete", "expand"])  # nosemgrep: crypto.prng.random-module.python
+            seed = self.generate_mutated_seed(seed, mutation)
+        return seed

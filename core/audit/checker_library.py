@@ -95,7 +95,7 @@ class CheckerLibrary:
     def active_checkers(self, *, language: str | None = None) -> list[CheckerEntry]:
         result = [e for e in self.entries.values() if not e.retired]
         if language:
-            result = [e for e in result if e.language == language or e.language == "*"]
+            result = [e for e in result if e.language in (language, "*")]
         return result
 
     def retire_low_precision(self) -> list[str]:
@@ -250,8 +250,8 @@ def _graduation_path(engine_dir: Path, entry: CheckerEntry) -> Path:
     """Compute the target path for a graduated rule."""
     if entry.tool == "semgrep":
         return engine_dir / "semgrep" / "rules" / f"{entry.rule_id}.yaml"
-    elif entry.tool == "coccinelle":
+    if entry.tool == "coccinelle":
         return engine_dir / "coccinelle" / f"{entry.rule_id}.cocci"
-    elif entry.tool == "codeql":
+    if entry.tool == "codeql":
         return engine_dir / "codeql" / f"{entry.rule_id}.ql"
     return engine_dir / entry.tool / f"{entry.rule_id}.rule"

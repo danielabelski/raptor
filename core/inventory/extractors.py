@@ -2383,26 +2383,25 @@ class TreeSitterExtractor:
             )
             if has_local:
                 visibility = "private"
-            else:
-                # For function_definition (anonymous assigned), check if
-                # the enclosing variable_declaration has a ``local`` child.
-                if node.type == "function_definition":
-                    p = node.parent
-                    # Walk up: expression_list → assignment_statement →
-                    # variable_declaration.
-                    while p is not None and p.type in (
-                        "expression_list", "assignment_statement",
-                    ):
-                        p = p.parent
-                    if p is not None and p.type == "variable_declaration":
-                        if any(c.type == "local" for c in p.children):
-                            visibility = "private"
-                        else:
-                            visibility = "public"
+            # For function_definition (anonymous assigned), check if
+            # the enclosing variable_declaration has a ``local`` child.
+            elif node.type == "function_definition":
+                p = node.parent
+                # Walk up: expression_list → assignment_statement →
+                # variable_declaration.
+                while p is not None and p.type in (
+                    "expression_list", "assignment_statement",
+                ):
+                    p = p.parent
+                if p is not None and p.type == "variable_declaration":
+                    if any(c.type == "local" for c in p.children):
+                        visibility = "private"
                     else:
                         visibility = "public"
                 else:
                     visibility = "public"
+            else:
+                visibility = "public"
 
         # JS/TS: export statement wrapping
         parent = node.parent
@@ -3144,7 +3143,7 @@ def _global_names(node, language: str):
     """
     if language == "go":
         for child in node.children:
-            if child.type == "var_spec" or child.type == "const_spec":
+            if child.type in {"var_spec", "const_spec"}:
                 for sub in child.children:
                     if sub.type == "identifier":
                         yield sub.text.decode()
@@ -3316,7 +3315,7 @@ def _global_name(node, language: str) -> str | None:
 
     if language == "go":
         for child in node.children:
-            if child.type == "var_spec" or child.type == "const_spec":
+            if child.type in {"var_spec", "const_spec"}:
                 for sub in child.children:
                     if sub.type == "identifier":
                         return sub.text.decode()

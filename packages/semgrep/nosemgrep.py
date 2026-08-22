@@ -165,10 +165,7 @@ def annotate_sarif(sarif_data: dict, repo_root: str) -> int:
 
             # Resolve the file path against repo root.
             stripped = strip_file_uri(uri)
-            if stripped != uri:
-                abs_path = stripped
-            else:
-                abs_path = str(root / uri)
+            abs_path = stripped if stripped != uri else str(root / uri)
 
             lines = cache.lines(abs_path)
             if lines is None:

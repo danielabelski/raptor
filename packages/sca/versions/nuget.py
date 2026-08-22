@@ -73,9 +73,8 @@ def _cmp_prerelease(a: list[str], b: list[str]) -> int:
                 return -1 if ia < ib else 1
         elif a_is_num != b_is_num:
             return -1 if a_is_num else 1
-        else:
-            if sa != sb:
-                return -1 if sa < sb else 1
+        elif sa != sb:
+            return -1 if sa < sb else 1
     if len(a) != len(b):
         return -1 if len(a) < len(b) else 1
     return 0

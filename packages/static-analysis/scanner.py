@@ -1625,8 +1625,7 @@ def run_codeql(
     # Glob for the agent's SARIF outputs. Naming matches the old
     # in-tree runner so downstream code (SARIF merge, coverage
     # records, _classify_artifact) needs no changes.
-    sarif_paths = sorted(str(p) for p in out_dir.glob("codeql_*.sarif"))
-    return sarif_paths
+    return sorted(str(p) for p in out_dir.glob("codeql_*.sarif"))
 
 
 # ---------------------------------------------------------------------------
@@ -2394,10 +2393,7 @@ def _sarif_has_findings(sarif_path: Path) -> bool:
         data = json.loads(sarif_path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return False
-    for run_obj in data.get("runs", []) or []:
-        if run_obj.get("results"):
-            return True
-    return False
+    return any(run_obj.get("results") for run_obj in data.get("runs", []) or [])
 
 
 def cleanup_per_pack_artifacts(out_dir: Path) -> int:
@@ -2482,16 +2478,15 @@ def cleanup_per_pack_artifacts(out_dir: Path) -> int:
                     pass
                 except OSError as e:
                     logger.debug("cleanup: could not remove %s: %s", victim, e)
-        else:
-            # Failed pack: keep .exit. Keep .sarif only if it has findings;
-            # otherwise it is redundant noise (an empty {"runs":[]} stub).
-            if sarif_file.is_file() and not sarif_file.is_symlink():  # noqa: SIM102
-                if not _sarif_has_findings(sarif_file):
-                    try:
-                        os.unlink(sarif_file)
-                        removed += 1
-                    except OSError as e:
-                        logger.debug("cleanup: could not remove %s: %s", sarif_file, e)
+        # Failed pack: keep .exit. Keep .sarif only if it has findings;
+        # otherwise it is redundant noise (an empty {"runs":[]} stub).
+        elif sarif_file.is_file() and not sarif_file.is_symlink():  # noqa: SIM102
+            if not _sarif_has_findings(sarif_file):
+                try:
+                    os.unlink(sarif_file)
+                    removed += 1
+                except OSError as e:
+                    logger.debug("cleanup: could not remove %s: %s", sarif_file, e)
 
     if removed:
         logger.info("Cleaned up %s redundant per-pack scan files in %s", removed, out_dir)

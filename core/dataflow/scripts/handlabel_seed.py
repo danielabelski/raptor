@@ -353,7 +353,7 @@ def _entry_to_pair(
     intermediate = tuple(
         _step(entry.fixture_path, ln, "step", repo_root)
         for ln in entry.intermediate_lines
-        if ln != entry.source_line and ln != entry.sink_line
+        if ln not in (entry.source_line, entry.sink_line)
     )
     base_id = make_finding_id(entry.rule_id, src, sink, producer=entry.producer)
     finding_id = f"{source_label}_{base_id}"

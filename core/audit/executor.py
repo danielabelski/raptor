@@ -760,8 +760,7 @@ async def _run_async_body(
                 except asyncio.TimeoutError:
                     pass
                 continue
-            else:
-                break
+            break
 
         done, _pending = await asyncio.wait(
             inflight, return_when=asyncio.FIRST_COMPLETED,

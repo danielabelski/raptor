@@ -147,9 +147,8 @@ def _within(
         if lo_incl:
             if c_lo < 0:
                 return False
-        else:
-            if c_lo <= 0:
-                return False
+        elif c_lo <= 0:
+            return False
     if hi is None:
         return True
     c_hi = compare(ecosystem, version, hi)

@@ -1667,9 +1667,8 @@ class AutonomousSecurityAgentV2:
                     self._record_exploit_witness(vuln, exploit_code)
 
                 return True
-            else:
-                logger.warning("   ✗ LLM response did not contain valid code")
-                return False
+            logger.warning("   ✗ LLM response did not contain valid code")
+            return False
 
         except Exception as e:  # noqa: BLE001
             logger.error("   ✗ Exploit generation failed: %s", e)

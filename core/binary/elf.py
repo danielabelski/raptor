@@ -335,10 +335,7 @@ def _read_dynsym_imports(
     #           st_value(Q) st_size(Q)  → 24 bytes
     # ELF32 sym: st_name(I) st_value(I) st_size(I) st_info(B)
     #           st_other(B) st_shndx(H) → 16 bytes
-    if bits == 64:
-        sym_fmt = endian + "IBBHQQ"
-    else:
-        sym_fmt = endian + "IIIBBH"
+    sym_fmt = endian + "IBBHQQ" if bits == 64 else endian + "IIIBBH"
     record_size = struct.calcsize(sym_fmt)
     if dynsym.sh_entsize < record_size:
         return set()

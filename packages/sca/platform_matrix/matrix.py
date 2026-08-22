@@ -645,9 +645,7 @@ def _is_dockerfile(path: Path) -> bool:
         return True
     if name.startswith("Dockerfile."):
         return True
-    if name.endswith(".dockerfile"):
-        return True
-    return False
+    return bool(name.endswith(".dockerfile"))
 
 
 def _iter_dockerfiles(target: Path) -> Iterable[Path]:

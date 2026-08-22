@@ -620,13 +620,12 @@ def _sanitize_log_message(msg: str) -> str:
         flags=re.IGNORECASE,
     )
     # Unquoted values end at common log/JSON delimiters.
-    msg = re.sub(
+    return re.sub(
         rf'(\b{secret_field}\b\s*[:=]\s*)([^"\'\s,}}]+)',
         r'\1[REDACTED-API-KEY]',
         msg,
         flags=re.IGNORECASE,
     )
-    return msg
 
 
 def _is_auth_error(error: Exception) -> bool:
@@ -909,24 +908,23 @@ def _get_quota_guidance(model_name: str, provider: str) -> str:
 
     if provider_lower in ("gemini", "google"):
         return "\n→ Google Gemini quota/rate limit exceeded"
-    elif provider_lower == "openai":
+    if provider_lower == "openai":
         return "\n→ OpenAI rate limit exceeded"
-    elif provider_lower == "anthropic":
+    if provider_lower == "anthropic":
         return "\n→ Anthropic rate limit exceeded"
-    elif provider_lower == "ollama":
+    if provider_lower == "ollama":
         return "\n→ Ollama server limit exceeded"
-    elif provider_lower:
+    if provider_lower:
         return f"\n→ {provider.title()} rate limit exceeded"
-    else:
-        # Pre-fix the catch-all branch ran for empty-provider strings,
-        # producing the cosmetically-broken `"\n→  rate limit exceeded"`
-        # (double space, no provider name) that operators saw in
-        # error logs as "what's empty? did the framework break?".
-        # Empty provider is a real case for in-process tests and
-        # for failures where the model_config wasn't yet wired up.
-        # Surface a generic message that doesn't pretend to know the
-        # provider.
-        return "\n→ Rate limit exceeded (provider unspecified)"
+    # Pre-fix the catch-all branch ran for empty-provider strings,
+    # producing the cosmetically-broken `"\n→  rate limit exceeded"`
+    # (double space, no provider name) that operators saw in
+    # error logs as "what's empty? did the framework break?".
+    # Empty provider is a real case for in-process tests and
+    # for failures where the model_config wasn't yet wired up.
+    # Surface a generic message that doesn't pretend to know the
+    # provider.
+    return "\n→ Rate limit exceeded (provider unspecified)"
 
 
 def _ollama_check_url() -> str:
@@ -2441,7 +2439,7 @@ class LLMClient:
                                 _esc(model.provider), _esc(model.model_name),
                             )
                             break
-                        elif _is_quota_error(e):
+                        if _is_quota_error(e):
                             quota_guidance = _get_quota_guidance(model.model_name, model.provider)
                             # escape_nonprintable on provider/model
                             # — config-loaded strings, could carry
@@ -3067,7 +3065,7 @@ class LLMClient:
                                 _esc(model.provider), _esc(model.model_name),
                             )
                             break
-                        elif _is_quota_error(e):
+                        if _is_quota_error(e):
                             quota_guidance = _get_quota_guidance(model.model_name, model.provider)
                             # escape_nonprintable on provider/model
                             # — config-loaded strings, could carry

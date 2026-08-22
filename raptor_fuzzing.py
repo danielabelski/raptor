@@ -879,12 +879,11 @@ Examples:
                         binary_hash=binary_hash,
                         exploitable=is_exploitable
                     )
-            else:
-                # Standard single-shot analysis
-                if llm_agent.analyse_crash(
-                    crash_context,
-                ):
-                    analysed += 1
+            # Standard single-shot analysis
+            elif llm_agent.analyse_crash(
+                crash_context,
+            ):
+                analysed += 1
 
             # Generate exploit if exploitable
             if crash_context.exploitability == "exploitable":

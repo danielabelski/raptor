@@ -169,9 +169,7 @@ def parser_shape(
         called = set(_CALLED_NAME_RE.findall(src))
         called.discard(name)
         catalog = _taxonomy_parser_names()
-        if called & catalog:
-            parser_api_call = True
-        elif domain_vocab is not None and called & _learned_parser_names(
+        if called & catalog or domain_vocab is not None and called & _learned_parser_names(
             domain_vocab,
         ):
             parser_api_call = True

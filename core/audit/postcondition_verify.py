@@ -764,10 +764,7 @@ def _postcondition_covers_precondition(
     validation_terms = {"valid", "check", "verify", "confirm"}
     has_validation = any(t in guarantee for t in validation_terms)
     needs_validation = any(t in precondition for t in validation_terms)
-    if needs_validation and not has_validation:
-        return False
-
-    return True
+    return not (needs_validation and not has_validation)
 
 
 def _default_representations() -> list[str]:

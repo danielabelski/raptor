@@ -360,9 +360,8 @@ def cap_confidence_for_unobserved(
     exercised.
     """
     if observation.status == ObservationStatus.UNOBSERVED:
-        if observation.observation_runs >= 2:
-            if confidence == Confidence.HIGH:
-                return Confidence.MEDIUM
+        if observation.observation_runs >= 2 and confidence == Confidence.HIGH:
+            return Confidence.MEDIUM
     return confidence
 
 

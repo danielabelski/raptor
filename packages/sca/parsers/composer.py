@@ -174,7 +174,7 @@ def parse_lockfile(path: Path) -> list[Dependency]:
 
 def _is_platform_req(name: str) -> bool:
     """``php``, ``ext-*``, ``lib-*``, ``hhvm`` — environment requirements."""
-    if name == "php" or name == "hhvm":
+    if name in {"php", "hhvm"}:
         return True
     return name.startswith(("ext-", "lib-"))
 

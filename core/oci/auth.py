@@ -60,10 +60,9 @@ class BasicCredentials:
     def to_basic_header(self) -> str:
         """Render as the ``Authorization: Basic ...`` header value
         (without the ``Basic`` prefix)."""
-        token = base64.b64encode(
+        return base64.b64encode(
             f"{self.username}:{self.password}".encode(),
         ).decode("ascii")
-        return token
 
 
 def lookup_credentials(registry: str) -> BasicCredentials | None:

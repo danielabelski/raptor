@@ -39,10 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Resolve: local path or image ref?
     local_path = Path(target)
-    if local_path.is_file():
-        fp_input = ("path", local_path)
-    else:
-        fp_input = ("image_ref", target)
+    fp_input = ("path", local_path) if local_path.is_file() else ("image_ref", target)
 
     cache_root = Path(args.cache_root) if args.cache_root else SCA_CACHE_ROOT
     store_dir = cache_root / "fingerprints"

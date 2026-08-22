@@ -160,9 +160,8 @@ def _yanked_cargo(client, name, version) -> str | None:
     if not isinstance(meta, dict):
         return None
     for v in meta.get("versions") or []:
-        if isinstance(v, dict) and v.get("num") == version:
-            if v.get("yanked"):
-                return "crate version was yanked from crates.io."
+        if isinstance(v, dict) and v.get("num") == version and v.get("yanked"):
+            return "crate version was yanked from crates.io."
     return None
 
 

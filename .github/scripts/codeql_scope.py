@@ -136,11 +136,7 @@ def _extract_dynamic_imports(tree: ast.Module) -> list[str]:
                 if val:
                     modules.append(val)
         elif isinstance(func, ast.Name):
-            if func.id in bare_names:
-                val = _get_str_literal(node.args[0])
-                if val:
-                    modules.append(val)
-            elif func.id == "__import__":
+            if func.id in bare_names or func.id == "__import__":
                 val = _get_str_literal(node.args[0])
                 if val:
                     modules.append(val)

@@ -201,10 +201,7 @@ def main(argv: Sequence[str]) -> int:
         # CI can use this to detect "needs attention".
         return 1 if major_blocked else 0
 
-    if args.apply:
-        proposed_root = out_dir / "_apply_staging"
-    else:
-        proposed_root = out_dir / "proposed"
+    proposed_root = out_dir / "_apply_staging" if args.apply else out_dir / "proposed"
 
     # ---- Phase 4: materialise all changes -----------------------------------
     import os

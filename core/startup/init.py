@@ -489,7 +489,7 @@ def _test_key(provider: str, api_key: str, api_base: str | None = None) -> bool:
                 timeout=timeout,
             )
             return r.status_code == 200
-        elif provider == "openai":
+        if provider == "openai":
             base = (api_base or "https://api.openai.com").rstrip("/")
             r = requests.get(  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
                 f"{base}/v1/models",
@@ -497,21 +497,21 @@ def _test_key(provider: str, api_key: str, api_base: str | None = None) -> bool:
                 timeout=timeout,
             )
             return r.status_code == 200
-        elif provider == "anthropic":
+        if provider == "anthropic":
             r = requests.get(  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
                 "https://api.anthropic.com/v1/models",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
                 timeout=timeout,
             )
             return r.status_code == 200
-        elif provider == "mistral":
+        if provider == "mistral":
             r = requests.get(  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
                 "https://api.mistral.ai/v1/models",
                 headers={"Authorization": f"Bearer {api_key}"},
                 timeout=timeout,
             )
             return r.status_code == 200
-        elif provider == "ollama":
+        if provider == "ollama":
             base = (api_base or "http://localhost:11434").rstrip("/")
             # loopback_safe_get: bypasses proxy env for loopback URLs
             # — a plain requests.get routed localhost through the
@@ -521,8 +521,7 @@ def _test_key(provider: str, api_key: str, api_base: str | None = None) -> bool:
             from core.llm.egress import loopback_safe_get
             r = loopback_safe_get(f"{base}/api/tags", timeout=timeout)  # nosemgrep: sinks.raptor.web.ssrf.dynamic-url
             return r.status_code == 200
-        else:
-            return True  # Unknown provider — can't test, assume OK
+        return True  # Unknown provider — can't test, assume OK
     except requests.RequestException:
         return False
 

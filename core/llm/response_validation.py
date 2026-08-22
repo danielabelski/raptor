@@ -532,11 +532,10 @@ def validate_structured_response(
                 fields[field_name] = FieldResult(status="ok", original=original)
                 weighted_score += weight
                 continue
-            else:
-                data[field_name] = None
-                fields[field_name] = FieldResult(status="invalid", original=original)
-                incomplete.append(field_name)
-                continue
+            data[field_name] = None
+            fields[field_name] = FieldResult(status="invalid", original=original)
+            incomplete.append(field_name)
+            continue
 
         # Type coercion
         value, type_coerced = _coerce_value(value, field_type)

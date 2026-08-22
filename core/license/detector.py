@@ -388,10 +388,7 @@ def _classify_gpl_version(
     # line 2 or 3).
     window = text[family_pos: family_pos + 500]
     m = _GPL_VERSION_RE.search(window)
-    if m:
-        version = m.group(1)
-    else:
-        version = default_version
+    version = m.group(1) if m else default_version
     # SPDX normalises bare-integer versions to N.0 (the
     # canonical id is "GPL-3.0", "AGPL-3.0", "LGPL-2.0" —
     # never "GPL-3"). "LGPL-2.1" keeps its minor because it's

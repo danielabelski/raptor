@@ -73,9 +73,7 @@ def _valid_version(version: str) -> bool:
         return False
     if "\\" in version or ".." in version or "/" in version:
         return False
-    if any(c in version for c in (" ", "\t", "\n", "\r")):
-        return False
-    return True
+    return not any(c in version for c in (" ", "\t", "\n", "\r"))
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:

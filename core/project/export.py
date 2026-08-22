@@ -196,9 +196,7 @@ def _is_transient_artefact(path: Path) -> bool:
     name = path.name
     if name.endswith(".lock"):
         return True
-    if name.startswith(".annotation-") and name.endswith(".tmp"):
-        return True
-    return False
+    return bool(name.startswith(".annotation-") and name.endswith(".tmp"))
 
 
 def export_project(project_output_dir: Path, dest_path: Path,

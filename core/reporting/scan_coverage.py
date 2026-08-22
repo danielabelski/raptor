@@ -75,9 +75,8 @@ def _findings_for_tool(metrics: dict, tool: str) -> int:
                         "javascript", "ts", "typescript", "go",
                         "rb", "ruby", "cs", "csharp"}:
                 total += count
-        elif tool == "coccinelle":
-            if "/" not in rule_id and "." not in rule_id:
-                total += count
+        elif tool == "coccinelle" and "/" not in rule_id and "." not in rule_id:
+            total += count
     return total
 
 

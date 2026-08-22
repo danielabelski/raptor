@@ -272,7 +272,7 @@ def _candidate_modules(dep_name: str) -> list[str]:
     norm_underscore = norm.replace("-", "_")
     norm_dot = norm.replace("-", ".")
     cands: list[str] = [norm, norm_underscore]
-    if norm_dot != norm and norm_dot != norm_underscore:
+    if norm_dot not in (norm, norm_underscore):
         cands.append(norm_dot)
     # Strip a leading ``python-`` prefix that's purely cosmetic on PyPI
     # (``python-dateutil``, ``python-magic``).

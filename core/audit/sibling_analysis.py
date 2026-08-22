@@ -603,7 +603,7 @@ def _check_variable_use(
     return _flag_outliers(
         group,
         sources,
-        lambda src: _AUTH_CHECK_RE.search(src),
+        _AUTH_CHECK_RE.search,
         "{present}/{total} siblings perform auth/permission checks; "
         "{function} does not",
         "CWE-862",
@@ -618,7 +618,7 @@ def _check_error_handling(
     return _flag_outliers(
         group,
         sources,
-        lambda src: _ERROR_RETURN_RE.search(src),
+        _ERROR_RETURN_RE.search,
         "{present}/{total} siblings return error codes on failure; "
         "{function} silently continues",
         "CWE-390",
@@ -691,7 +691,7 @@ def _check_guard_consistency(
     findings.extend(_flag_outliers(
         group,
         sources,
-        lambda src: _NULL_GUARD_RE.search(src),
+        _NULL_GUARD_RE.search,
         "{present}/{total} siblings have null/none checks; "
         "{function} skips the guard",
         "CWE-476",
@@ -699,7 +699,7 @@ def _check_guard_consistency(
     findings.extend(_flag_outliers(
         group,
         sources,
-        lambda src: _BOUNDS_GUARD_RE.search(src),
+        _BOUNDS_GUARD_RE.search,
         "{present}/{total} siblings have bounds/length checks; "
         "{function} skips the guard",
         "CWE-129",

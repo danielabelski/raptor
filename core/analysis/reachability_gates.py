@@ -281,10 +281,7 @@ def is_conduit_candidate(body: str) -> bool:
     body_lower = _prose_only(body).lower()
     if _CONDUIT_CALL_RE.search(body_lower):
         return True
-    for phrase in _CONDUIT_PHRASES:
-        if re.search(phrase, body_lower):
-            return True
-    return False
+    return any(re.search(phrase, body_lower) for phrase in _CONDUIT_PHRASES)
 
 
 # ─── Guarded-sink detection (Joern) ─────────────────────────────────────────

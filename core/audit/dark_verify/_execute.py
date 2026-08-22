@@ -830,6 +830,23 @@ def _sandboxed_compile(
     even on Landlock-only hosts where the mount namespace is unavailable
     — the compile executes target-derived code, so it gets the read
     restriction too.
+
+    work_dir is passed as ``output`` — the sandbox's designated writable
+    channel — because the compiler writes into it (object files, rustc
+    rmeta scratch, javac .class files, GOPATH/GOCACHE). ``tool_paths``
+    is a READ-ONLY grant: under mount-namespace isolation it becomes a
+    read-only bind, and a compile writing through it fails with EROFS
+    ("couldn't create a temp dir: Read-only file system"). That write
+    used to sneak through only because the read-only remount of a
+    /tmp-resident bind failed EPERM (clearing the host mount's locked
+    nosuid/nodev flags) and fell back to Landlock, whose baseline allows
+    /tmp — a hole closed when read-only remounts started preserving
+    locked flags. work_dir stays in ``tool_paths`` as well: under
+    restrict_reads the Landlock read allowlist is built from
+    target + readable_paths + tool_paths (``output`` grants writes, not
+    reads), and the mount layer skips the read-only stacking for paths
+    equal to target/output, so the pair yields exactly read+write on
+    work_dir and read-only everywhere else.
     """
     kwargs: dict = {}
     if env is not None:
@@ -840,6 +857,7 @@ def _sandboxed_compile(
         block_network=True,
         restrict_reads=True,
         target=str(target_root),
+        output=str(work_dir),
         capture_output=True, text=True,
         timeout=_COMPILE_TIMEOUT_S,
         caller_label=caller_label,
@@ -1654,8 +1672,16 @@ def _execute_java(
             # RUNS them at compile time.  Disabling processing means
             # target classes never execute inside javac, even in the
             # sandbox (belt and braces, and faster).
+            #
+            # -d work_dir: without it javac writes each .class next to
+            # its source — including the TARGET's class into the
+            # read-only target tree, failing "error while writing ...:
+            # Read-only file system" (that write only ever succeeded
+            # through the /tmp-resident read-only-bind remount hole,
+            # see _sandboxed_compile). work_dir is the compile step's
+            # writable surface and already leads the run classpath.
             compile_cmd = [
-                javac, "-proc:none", "-cp",
+                javac, "-proc:none", "-d", str(work_dir), "-cp",
                 f"{work_dir}:{source_file.parent}:{target_root}",
                 str(harness_file), str(source_file),
             ]

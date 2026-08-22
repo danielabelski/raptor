@@ -8,7 +8,9 @@ import json
 import shutil
 import sys
 import subprocess
+import tempfile
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -1743,6 +1745,96 @@ class TestResolveRustc:
 # ============================================================================
 # Real execution tests per language — skip when runtime unavailable
 # ============================================================================
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != "linux",
+                    reason="Linux sandbox write-grant semantics")
+class TestSandboxedCompileWriteGrants:
+    """The compile work_dir rides the sandbox's writable channel.
+
+    Regression tests for the dark-verify compile EROFS breakage: the
+    witness work_dir lives under host /tmp (the exec-workdir session
+    family), and ``tool_paths`` is a READ-ONLY grant — under
+    mount-namespace isolation it becomes a read-only bind, so a
+    compiler writing through it fails with "Read-only file system".
+    That write historically snuck through only because the read-only
+    remount of a /tmp-resident bind failed EPERM (it would have
+    cleared the host mount's locked nosuid/nodev flags) and fell back
+    to Landlock, whose baseline allows /tmp — a hole since closed.
+    ``_sandboxed_compile`` therefore passes work_dir as ``output``.
+
+    Three properties pin the intended posture (uses /bin/sh as the
+    "compiler" so no toolchain is needed):
+      1. the designated work_dir IS writable in-sandbox even though it
+         is /tmp-resident, and the write is visible on the host;
+      2. an ungranted host-/tmp path stays unwritable (private-tmpfs /
+         private-scratch isolation is not reopened);
+      3. the read-only target bind stays read-only.
+    """
+
+    @pytest.fixture()
+    def sandbox_run(self):
+        run = ex._import_sandbox_run()
+        if run is None:
+            pytest.skip("core.sandbox unavailable")
+        from core.sandbox import check_landlock_available
+        from core.sandbox._spawn import mount_ns_available
+        if not (check_landlock_available() or mount_ns_available()):
+            pytest.skip("no sandbox write enforcement on this host")
+        return run
+
+    @pytest.fixture()
+    def dirs(self, tmp_path):
+        from core.run.workdir import exec_workdir
+        work_dir = Path(tempfile.mkdtemp(
+            prefix="raptor_dark_test_", dir=exec_workdir()))
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "src.c").write_text("int x;\n", encoding="utf-8")
+        yield work_dir, target
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    def test_work_dir_writable_in_sandbox(self, sandbox_run, dirs):
+        work_dir, target = dirs
+        artifact = work_dir / "artifact"
+        comp = _sandboxed_compile(
+            sandbox_run,
+            ["/bin/sh", "-c", f"echo compiled > {artifact}"],
+            target_root=target, work_dir=work_dir,
+            caller_label="test-dark-verify-write-grant",
+        )
+        assert comp.returncode == 0, comp.stderr
+        # The write must land on the HOST side of the grant — the run
+        # step consumes the compiled artifact after the sandbox exits.
+        assert artifact.read_text(encoding="utf-8").strip() == "compiled"
+
+    def test_ungranted_tmp_path_not_writable(self, sandbox_run, dirs):
+        work_dir, target = dirs
+        other = Path(tempfile.mkdtemp(prefix="raptor_dark_test_other_",
+                                      dir="/tmp"))
+        try:
+            comp = _sandboxed_compile(
+                sandbox_run,
+                ["/bin/sh", "-c", f"echo pwn > {other}/pwn"],
+                target_root=target, work_dir=work_dir,
+                caller_label="test-dark-verify-tmp-deny",
+            )
+            assert comp.returncode != 0
+            assert not (other / "pwn").exists()
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_target_root_stays_read_only(self, sandbox_run, dirs):
+        work_dir, target = dirs
+        comp = _sandboxed_compile(
+            sandbox_run,
+            ["/bin/sh", "-c", f"echo pwn > {target}/pwn"],
+            target_root=target, work_dir=work_dir,
+            caller_label="test-dark-verify-target-ro",
+        )
+        assert comp.returncode != 0
+        assert not (target / "pwn").exists()
 
 
 @pytest.mark.slow

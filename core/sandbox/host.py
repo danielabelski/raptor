@@ -70,10 +70,22 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.sandbox._daemon import _MAX_CAPTURE_BYTES as _DAEMON_CAPTURE_CAP
+
 log = logging.getLogger(__name__)
 
 
 _DAEMON_SCRIPT = Path(__file__).resolve().parent / "_daemon.py"
+
+# Ceiling on one daemon→parent reply frame. The daemon retains at
+# most _MAX_CAPTURE_BYTES per stream and a reply carries at most two
+# capped streams, each hex-doubled (spawn: stdout+stderr;
+# conversation: recvs+stdout), so 4x the capture cap bounds the
+# payload; 1 MiB covers JSON overhead. Sized from the daemon's cap so
+# a maximal legitimate reply always fits — pre-fix the parent
+# rejected frames over 64 MiB only AFTER the daemon had already built
+# and half-sent them, wedging the persistent channel mid-frame.
+_MAX_REPLY_FRAME_BYTES = 4 * _DAEMON_CAPTURE_CAP + 1024 * 1024
 
 
 def _resolve_output(target_path: Path, output: Path | None) -> tuple[str, str | None]:
@@ -322,6 +334,10 @@ class SandboxHost:
             "stderr": bytes.fromhex(response.get("stderr_hex", "")),
             "returncode": response.get("returncode"),
             "timed_out": response.get("timed_out", False),
+            # Capture-cap markers: True when the daemon discarded
+            # output beyond its per-stream retention ceiling.
+            "stdout_truncated": response.get("stdout_truncated", False),
+            "stderr_truncated": response.get("stderr_truncated", False),
             "wall_seconds": response.get("wall_seconds"),
         }
 
@@ -412,7 +428,7 @@ class SandboxHost:
             msg = f"header read failed: {e}"
             raise HostRPCError(msg) from e
         (length,) = struct.unpack("!I", hdr)
-        if length > 64 * 1024 * 1024:
+        if length > _MAX_REPLY_FRAME_BYTES:
             msg = f"daemon frame too large: {length}"
             raise HostRPCError(msg)
         try:
@@ -423,7 +439,10 @@ class SandboxHost:
         return json.loads(body.decode("utf-8"))
 
     def _read_exact(self, n: int, deadline: float) -> bytes:
-        buf = b""
+        # bytearray accumulator: bounded reply frames can run to
+        # hundreds of MiB (see _MAX_REPLY_FRAME_BYTES) and repeated
+        # bytes concatenation is quadratic at that size.
+        buf = bytearray()
         while len(buf) < n:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -438,7 +457,7 @@ class SandboxHost:
                 msg = "daemon EOF"
                 raise HostRPCError(msg)
             buf += chunk
-        return buf
+        return bytes(buf)
 
 
 # ---------------------------------------------------------------------

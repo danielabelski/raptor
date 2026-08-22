@@ -142,7 +142,12 @@ def _read_frame(fd: int) -> dict | None:
 def _write_frame(fd: int, payload: dict) -> None:
     body = json.dumps(payload).encode("utf-8")
     hdr = struct.pack("!I", len(body))
-    os.write(fd, hdr + body)
+    # Loop the write: a frame larger than the pipe buffer may be
+    # written partially, and a torn frame desyncs the whole channel.
+    view = memoryview(hdr + body)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
 
 
 # --------------------------------------------------------------------
@@ -297,12 +302,18 @@ def _render_compose(chunks, recvs):
     return bytes(out)
 
 
-def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
+def _recv_until(proc, terminator, per_recv_timeout: float,
+                max_bytes: int | None = None) -> bytes:
+    """Bounded step-recv; retains at most ``max_bytes`` (default
+    ``_MAX_CAPTURE_BYTES``). Reading stops at the cap — unread bytes
+    stay in the pipe for the end-of-request drain, which discards
+    them (bounded) and reports the truncation."""
+    cap = _MAX_CAPTURE_BYTES if max_bytes is None else max(max_bytes, 0)
     deadline = time.monotonic() + per_recv_timeout
     buf = b""
     fd = proc.stdout.fileno()
 
-    def _read_bounded(max_bytes: int) -> bytes | None:
+    def _read_bounded(max_chunk: int) -> bytes | None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
@@ -311,17 +322,17 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
             return None
         # Read the raw fd directly. Popen's default-buffered
         # ``proc.stdout.read1`` pulls a full buffer (8 KiB) from the
-        # kernel and returns at most ``max_bytes`` — the remainder sits
+        # kernel and returns at most ``max_chunk`` — the remainder sits
         # in the Python-level buffer where select() on the raw fd
         # cannot see it, so the next bounded read stalls a full
         # ``per_recv_timeout`` (or attributes the bytes to the wrong
         # step). Nothing else reads through ``proc.stdout`` until the
-        # final ``proc.communicate``, so its buffer stays empty and
-        # mixing fd-level reads here is safe.
-        return os.read(fd, max_bytes)
+        # final end-of-request drain (also raw-fd), so its buffer
+        # stays empty and mixing fd-level reads here is safe.
+        return os.read(fd, max_chunk)
 
     if isinstance(terminator, int):
-        want = terminator
+        want = min(terminator, cap)
         while len(buf) < want:
             chunk = _read_bounded(want - len(buf))
             if chunk is None or not chunk:
@@ -329,18 +340,170 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
             buf += chunk
         return buf
     if terminator == "newline":
-        while b"\n" not in buf:
-            chunk = _read_bounded(4096)
+        while b"\n" not in buf and len(buf) < cap:
+            chunk = _read_bounded(min(4096, cap - len(buf)))
             if chunk is None or not chunk:
                 break
             buf += chunk
         return buf
-    while True:
-        chunk = _read_bounded(4096)
+    while len(buf) < cap:
+        chunk = _read_bounded(min(4096, cap - len(buf)))
         if chunk is None or not chunk:
             break
         buf += chunk
     return buf
+
+
+def _communicate_capped(
+    proc: subprocess.Popen,
+    stdin_bytes: bytes,
+    timeout: float,
+    *,
+    stdout_cap: int | None = None,
+    stderr_cap: int | None = None,
+) -> tuple[bytes, bytes, bool, bool]:
+    """Bounded ``Popen.communicate`` stand-in.
+
+    Streams the child's stdout/stderr off the raw fds, retaining at
+    most ``*_cap`` bytes per stream (default ``_MAX_CAPTURE_BYTES``).
+    Bytes beyond a cap are still read — the child never blocks on a
+    full pipe — but discarded, and the per-stream truncated flag
+    reports the loss. ``communicate()`` had no ceiling: a target
+    could grow the daemon's buffers (and, hex-doubled, the reply
+    frame) without bound.
+
+    Returns ``(stdout, stderr, stdout_truncated, stderr_truncated)``.
+    Raises ``subprocess.TimeoutExpired`` at the deadline with the
+    capped buffers attached as ``output``/``stderr`` and the flags as
+    ``stdout_truncated``/``stderr_truncated`` attributes.
+    """
+    if stdout_cap is None:
+        stdout_cap = _MAX_CAPTURE_BYTES
+    if stderr_cap is None:
+        stderr_cap = _MAX_CAPTURE_BYTES
+    deadline = time.monotonic() + timeout
+    out_fd = err_fd = None
+    if proc.stdout is not None and not proc.stdout.closed:
+        out_fd = proc.stdout.fileno()
+    if proc.stderr is not None and not proc.stderr.closed:
+        err_fd = proc.stderr.fileno()
+    bufs: dict[int, bytearray] = {}
+    caps: dict[int, int] = {}
+    trunc: dict[int, bool] = {}
+    for fd, cap in ((out_fd, stdout_cap), (err_fd, stderr_cap)):
+        if fd is not None:
+            bufs[fd] = bytearray()
+            caps[fd] = max(cap, 0)
+            trunc[fd] = False
+    pending = set(bufs)
+
+    def _got(fd: int | None) -> bytes:
+        return bytes(bufs[fd]) if fd is not None else b""
+
+    def _truncated(fd: int | None) -> bool:
+        return fd is not None and trunc[fd]
+
+    def _timeout_exc() -> subprocess.TimeoutExpired:
+        exc = subprocess.TimeoutExpired(
+            proc.args, timeout, output=_got(out_fd), stderr=_got(err_fd),
+        )
+        exc.stdout_truncated = _truncated(out_fd)
+        exc.stderr_truncated = _truncated(err_fd)
+        return exc
+
+    in_file = proc.stdin if (
+        proc.stdin is not None and not proc.stdin.closed) else None
+    view = memoryview(stdin_bytes)
+
+    def _close_stdin() -> None:
+        nonlocal in_file
+        if in_file is not None:
+            try:
+                in_file.close()
+            except (BrokenPipeError, OSError):
+                pass
+            in_file = None
+
+    if in_file is not None:
+        if not view:
+            _close_stdin()
+        else:
+            # Non-blocking sends: a blocking >PIPE_BUF write could
+            # stall this loop while the child waits for its stdout to
+            # be drained — a mutual-blocking deadlock.
+            os.set_blocking(in_file.fileno(), False)
+
+    while pending or in_file is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _timeout_exc()
+        wlist = [in_file.fileno()] if in_file is not None else []
+        r, w, _ = select.select(list(pending), wlist, [], remaining)
+        if not r and not w:
+            raise _timeout_exc()
+        for fd in r:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                pending.discard(fd)
+                continue
+            room = caps[fd] - len(bufs[fd])
+            if room > 0:
+                bufs[fd] += chunk[:room]
+            if len(chunk) > room:
+                trunc[fd] = True
+        if w:
+            try:
+                n = os.write(in_file.fileno(), view[:65536])
+                view = view[n:]
+            except BlockingIOError:
+                pass
+            except (BrokenPipeError, OSError):
+                view = view[:0]
+            if not view:
+                _close_stdin()
+
+    try:
+        proc.wait(timeout=max(deadline - time.monotonic(), 0))
+    except subprocess.TimeoutExpired:
+        raise _timeout_exc() from None
+    return (_got(out_fd), _got(err_fd),
+            _truncated(out_fd), _truncated(err_fd))
+
+
+def _drain_target(
+    proc: subprocess.Popen, wait_seconds: float, stdout_cap: int,
+) -> tuple[bytes, bytes, bool, bool, bool]:
+    """Wait for a request target to exit, draining bounded output.
+
+    Returns ``(tail_stdout, stderr, stdout_truncated,
+    stderr_truncated, timed_out)``. On timeout the request's process
+    group is killed first, then a final short bounded drain collects
+    what the pipes still hold.
+    """
+    try:
+        out, err, ot, et = _communicate_capped(
+            proc, b"", wait_seconds, stdout_cap=stdout_cap,
+        )
+        return out, err, ot, et, False
+    except subprocess.TimeoutExpired as e:
+        _kill_request_group(proc)
+        out = e.stdout or b""
+        err = e.stderr or b""
+        ot = bool(getattr(e, "stdout_truncated", False))
+        et = bool(getattr(e, "stderr_truncated", False))
+        try:
+            t_out, t_err, t_ot, t_et = _communicate_capped(
+                proc, b"", 1.0,
+                stdout_cap=max(stdout_cap - len(out), 0),
+                stderr_cap=max(_MAX_CAPTURE_BYTES - len(err), 0),
+            )
+            out += t_out
+            err += t_err
+            ot = ot or t_ot
+            et = et or t_et
+        except subprocess.TimeoutExpired:
+            pass
+        return out, err, ot, et, True
 
 
 # --------------------------------------------------------------------
@@ -413,23 +576,41 @@ def _handle_spawn(payload: dict) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     try:
         try:
-            stdout, stderr = proc.communicate(stdin_bytes, timeout=timeout)
+            stdout, stderr, out_trunc, err_trunc = _communicate_capped(
+                proc, stdin_bytes, timeout,
+            )
             returncode: int | None = proc.returncode
             timed_out = False
         except subprocess.TimeoutExpired as e:
             # Kill the whole request group first so pipe-holding
             # descendants can't keep the drain below blocked.
             _kill_request_group(proc)
+            stdout = e.stdout or b""
+            stderr = e.stderr or b""
+            out_trunc = bool(getattr(e, "stdout_truncated", False))
+            err_trunc = bool(getattr(e, "stderr_truncated", False))
             try:
-                stdout, stderr = proc.communicate(timeout=1)
+                t_out, t_err, t_ot, t_et = _communicate_capped(
+                    proc, b"", 1.0,
+                    stdout_cap=max(_MAX_CAPTURE_BYTES - len(stdout), 0),
+                    stderr_cap=max(_MAX_CAPTURE_BYTES - len(stderr), 0),
+                )
+                stdout += t_out
+                stderr += t_err
+                out_trunc = out_trunc or t_ot
+                err_trunc = err_trunc or t_et
             except (subprocess.TimeoutExpired, ValueError, OSError):
-                stdout, stderr = e.stdout, e.stderr
+                pass
             returncode = None
             timed_out = True
         return {
             "ok": True,
-            "stdout_hex": (stdout or b"").hex(),
-            "stderr_hex": (stderr or b"").hex(),
+            "stdout_hex": stdout.hex(),
+            "stderr_hex": stderr.hex(),
+            "stdout_truncated": out_trunc,
+            "stderr_truncated": err_trunc,
+            "stdout_bytes_kept": len(stdout),
+            "stderr_bytes_kept": len(stderr),
             "returncode": returncode,
             "timed_out": timed_out,
             "wall_seconds": round(time.monotonic() - t0, 3),
@@ -462,6 +643,12 @@ def _handle_probe(payload: dict) -> dict:
     bindings: dict[str, Any] = {}
     recvs: list = []
     stdout_buf = b""
+    # Cumulative stdout retention budget for the whole request —
+    # bounds recvs, bindings, and the tail together (they all derive
+    # from stdout_buf's bytes).
+    stdout_budget = _MAX_CAPTURE_BYTES
+    stdout_trunc = False
+    stderr_trunc = False
     steps_completed = 0
     exit_class = "unknown"
     proc = _spawn_request_target(target_argv)
@@ -537,7 +724,9 @@ def _handle_probe(payload: dict) -> dict:
             recv_until = step.get("recv_until")
             got = b""
             if recv_until is not None:
-                got = _recv_until(proc, recv_until, per_recv_timeout)
+                got = _recv_until(proc, recv_until, per_recv_timeout,
+                                  max_bytes=stdout_budget)
+                stdout_budget -= len(got)
                 stdout_buf += got
                 name = step.get("bind_as")
                 if name:
@@ -551,11 +740,12 @@ def _handle_probe(payload: dict) -> dict:
             proc.stdin.close()
         except (BrokenPipeError, OSError):
             pass
-        try:
-            tail_stdout, target_stderr = proc.communicate(
-                timeout=total_wait_seconds,
-            )
-            stdout_buf += tail_stdout or b""
+        tail_stdout, target_stderr, stdout_trunc, stderr_trunc, timed_out = \
+            _drain_target(proc, total_wait_seconds, stdout_budget)
+        stdout_buf += tail_stdout
+        if timed_out:
+            exit_class = "timeout"
+        else:
             rc = proc.returncode
             if rc == 0:
                 exit_class = "clean"
@@ -563,14 +753,6 @@ def _handle_probe(payload: dict) -> dict:
                 exit_class = f"signal:{-rc}"
             else:
                 exit_class = f"exit:{rc}"
-        except subprocess.TimeoutExpired:
-            _kill_request_group(proc)
-            try:
-                tail_stdout, target_stderr = proc.communicate(timeout=1)
-                stdout_buf += tail_stdout or b""
-            except subprocess.TimeoutExpired:
-                target_stderr = b""
-            exit_class = "timeout"
     finally:
         _kill_request_group(proc)
 
@@ -600,6 +782,9 @@ def _handle_probe(payload: dict) -> dict:
                   for r in recvs],
         "target_stdout_tail": stdout_text[-2000:],
         "target_stderr_tail": stderr_text[-2000:],
+        "stdout_truncated": stdout_trunc,
+        "stderr_truncated": stderr_trunc,
+        "stdout_bytes_kept": len(stdout_buf),
         "target_exit": exit_class,
         "wall_seconds": wall,
     }
@@ -670,6 +855,11 @@ def _handle_conversation(payload: dict) -> dict:
 
     recvs: list[bytes] = []
     stdout_buf = b""
+    # Cumulative stdout retention budget for the whole request —
+    # bounds recvs (returned hex-doubled) and the tail together.
+    stdout_budget = _MAX_CAPTURE_BYTES
+    stdout_trunc = False
+    stderr_trunc = False
     exit_class = "unknown"
     target_stderr = b""
     proc = _spawn_request_target(target_argv)
@@ -698,7 +888,9 @@ def _handle_conversation(payload: dict) -> dict:
                 # Target already exited — subsequent recv still runs
                 # so any tail-of-stdout is captured.
                 pass
-            got = _recv_until(proc, terminator, per_recv_timeout)
+            got = _recv_until(proc, terminator, per_recv_timeout,
+                              max_bytes=stdout_budget)
+            stdout_budget -= len(got)
             recvs.append(got)
             stdout_buf += got
         if close_after:
@@ -706,11 +898,12 @@ def _handle_conversation(payload: dict) -> dict:
                 proc.stdin.close()
             except (BrokenPipeError, OSError):
                 pass
-        try:
-            tail_stdout, target_stderr = proc.communicate(
-                timeout=total_wait_seconds,
-            )
-            stdout_buf += tail_stdout or b""
+        tail_stdout, target_stderr, stdout_trunc, stderr_trunc, timed_out = \
+            _drain_target(proc, total_wait_seconds, stdout_budget)
+        stdout_buf += tail_stdout
+        if timed_out:
+            exit_class = "timeout"
+        else:
             rc = proc.returncode
             if rc == 0:
                 exit_class = "clean"
@@ -722,14 +915,6 @@ def _handle_conversation(payload: dict) -> dict:
                 exit_class = f"signal:{name}"
             else:
                 exit_class = f"exit:{rc}"
-        except subprocess.TimeoutExpired:
-            _kill_request_group(proc)
-            try:
-                tail_stdout, target_stderr = proc.communicate(timeout=1)
-                stdout_buf += tail_stdout or b""
-            except subprocess.TimeoutExpired:
-                target_stderr = b""
-            exit_class = "timeout"
         if _CANARY_ABORT_SIGNAL in (target_stderr or b""):
             exit_class = "stack_smashing"
     finally:
@@ -742,6 +927,9 @@ def _handle_conversation(payload: dict) -> dict:
         "recvs_hex": [r.hex() for r in recvs],
         "target_stdout_hex": stdout_buf.hex(),
         "target_stderr_text_tail": stderr_text[-2000:],
+        "stdout_truncated": stdout_trunc,
+        "stderr_truncated": stderr_trunc,
+        "stdout_bytes_kept": len(stdout_buf),
         "target_exit": exit_class,
         "wall_seconds": wall,
     }
@@ -757,6 +945,14 @@ _MAX_PER_RECV_TIMEOUT = 60.0
 _MAX_TOTAL_WAIT_SECONDS = 120.0
 _MAX_SPAWN_TIMEOUT = 300.0
 _MAX_STDIN_BYTES = 8 * 1024 * 1024   # 8 MiB per spawn stdin
+# Ceiling on captured child output the daemon RETAINS, per stream
+# (spawn stdout/stderr) or per request (probe/conversation cumulative
+# stdout). Output beyond the cap is still read — the child never
+# blocks on a full pipe — but discarded, with truncated=true + kept
+# byte counts in the result payload so callers can tell. Bounds the
+# hex expansion too: a reply frame carries at most two capped streams,
+# each hex-doubled (host.py sizes its reply-frame ceiling off this).
+_MAX_CAPTURE_BYTES = 64 * 1024 * 1024   # 64 MiB retained per stream
 
 
 def _cap(name: str, value, ceiling, fn=float):

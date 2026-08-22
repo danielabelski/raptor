@@ -45,7 +45,7 @@ What's parameterised:
     streaming through hundreds of megabytes after the wanted
     paths have all been found.
 
-Returns ``Dict[str, bytes]`` — consumers decode if they want
+Returns ``dict[str, bytes]`` — consumers decode if they want
 text. The byte-vs-text concern is the consumer's, not ours.
 """
 
@@ -129,7 +129,52 @@ class TarTotalBytesExceeded(Exception):
     cap doesn't bound the sum). Counts every member's header-declared size,
     kept OR skipped: in stream mode tarfile must decompress a member's data
     even to skip past it, so uncounted skipped members would leave a
-    gzip-bomb CPU DoS open. Always raises, never silently truncates."""
+    gzip-bomb CPU DoS open. Also counts metadata-record data (GNU
+    longname/longlink, pax headers) that CPython's tarfile materialises
+    IN MEMORY during header parsing — checked before the allocation, so
+    a 65 KB gzip bomb declaring a multi-hundred-MB longname aborts
+    instead of ballooning RSS. Always raises, never silently
+    truncates."""
+
+
+# Member types whose DATA CPython's tarfile reads wholesale into
+# memory inside ``tf.next()`` while parsing headers (the value never
+# surfaces as a returned member, so per-member accounting in the
+# iteration loop cannot see it).
+_METADATA_MEMBER_TYPES = frozenset({
+    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+    tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+})
+
+
+def _budgeted_tarinfo(budget: int, consumed: dict[str, int]) -> type:
+    """A per-call ``TarInfo`` subclass enforcing ``budget`` on bytes
+    tarfile consumes at HEADER-PARSE time.
+
+    ``tarfile`` materialises GNU longname / longlink and pax record
+    data in memory inside ``tf.next()`` — including the ``firstmember``
+    parse that happens inside ``tarfile.open`` itself, before any
+    caller-side wrapping could intervene. ``_proc_member`` runs after
+    the 512-byte header is read but BEFORE the record data is read, so
+    charging the declared size here (rounded up to whole blocks, plus
+    the header block so an unbounded chain of empty metadata records
+    is bounded too) aborts before the allocation. ``consumed`` is
+    shared with the iteration loop, which charges regular members'
+    declared sizes into the same budget.
+    """
+
+    class _BudgetedTarInfo(tarfile.TarInfo):
+        def _proc_member(self, tarobj):
+            if self.type in _METADATA_MEMBER_TYPES:
+                consumed["total"] += tarfile.BLOCKSIZE + self._block(
+                    max(0, self.size))
+                if consumed["total"] > budget:
+                    raise TarTotalBytesExceeded(
+                        f"tar metadata records exceed {budget} bytes "
+                        f"(bomb-shape); refusing")
+            return super()._proc_member(tarobj)
+
+    return _BudgetedTarInfo
 
 
 def extract_files_from_tar(
@@ -171,8 +216,17 @@ def extract_files_from_tar(
     found: dict[str, bytes] = {}
 
     fileobj = _to_fileobj(source)
+    # Shared budget accumulator: header-time metadata-record bytes
+    # (charged by the TarInfo subclass, possibly already during
+    # ``tarfile.open``'s firstmember parse) + regular members'
+    # declared sizes (charged in the loop below).
+    consumed = {"total": 0}
+    open_kwargs: dict[str, object] = {}
+    if max_total_bytes is not None:
+        open_kwargs["tarinfo"] = _budgeted_tarinfo(
+            max_total_bytes, consumed)
     try:
-        tf = tarfile.open(fileobj=fileobj, mode=mode)
+        tf = tarfile.open(fileobj=fileobj, mode=mode, **open_kwargs)
     except (tarfile.TarError, EOFError, OSError) as e:
         # ``TarError`` covers ReadError + CompressionError + other
         # malformed-archive cases. ``OSError`` covers truncated
@@ -182,7 +236,6 @@ def extract_files_from_tar(
         raise TarOpenError(f"not a readable tar archive: {e}") from e
 
     try:
-        total_bytes = 0
         count = 0
         for member in tf:
             count += 1
@@ -198,9 +251,12 @@ def extract_files_from_tar(
                 # not yet consumed) is what bounds the decompression
                 # work; counting only kept members would let a
                 # gzip-bomb member burn unbounded CPU while being
-                # "skipped".
-                total_bytes += member.size
-                if total_bytes > max_total_bytes:
+                # "skipped". Shares the accumulator with the header-
+                # time metadata charging (see _budgeted_tarinfo) so
+                # one budget bounds everything the stream makes
+                # tarfile consume.
+                consumed["total"] += member.size
+                if consumed["total"] > max_total_bytes:
                     msg = (
                         f"tar decompression exceeds {max_total_bytes} bytes "
                         f"(bomb-shape); refusing"

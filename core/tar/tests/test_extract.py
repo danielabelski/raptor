@@ -474,3 +474,91 @@ def test_expected_count_short_circuits_before_later_bomb():
         expected_count=1,
     )
     assert out == {"keep.txt": b"data"}
+
+
+# ---------------------------------------------------------------------------
+# Header-time metadata budget — GNU longname / pax record data is
+# materialised in memory inside tf.next() (and, for buffered modes,
+# inside tarfile.open's firstmember parse); max_total_bytes must bound
+# it BEFORE the allocation.
+# ---------------------------------------------------------------------------
+
+
+def _metadata_bomb(name_len: int, fmt: int) -> bytes:
+    """A gzipped tar whose FIRST member carries a huge name: GNU
+    format stores it as a longname record, pax format as an extended
+    header record — both are header-time in-memory allocations."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as tf:
+        info = tarfile.TarInfo(name="d/" + "a" * name_len)
+        info.size = 0
+        tf.addfile(info)
+    return gzip.compress(buf.getvalue())
+
+
+def test_gnu_longname_bomb_aborts_within_budget_stream_mode():
+    bomb = _metadata_bomb(8 * 1024 * 1024, tarfile.GNU_FORMAT)
+    assert len(bomb) < 64 * 1024  # tiny wire size, huge declared name
+    with pytest.raises(TarTotalBytesExceeded):
+        extract_files_from_tar(
+            bomb, selector=lambda m: m.name, mode="r|gz",
+            max_total_bytes=1024 * 1024,
+        )
+
+
+def test_gnu_longname_bomb_aborts_within_budget_buffered_mode():
+    """Buffered modes parse the first member inside tarfile.open
+    itself — the budget must already be armed there."""
+    bomb = _metadata_bomb(8 * 1024 * 1024, tarfile.GNU_FORMAT)
+    with pytest.raises(TarTotalBytesExceeded):
+        extract_files_from_tar(
+            bomb, selector=lambda m: m.name, mode="r:*",
+            max_total_bytes=1024 * 1024,
+        )
+
+
+def test_pax_header_bomb_aborts_within_budget():
+    bomb = _metadata_bomb(8 * 1024 * 1024, tarfile.PAX_FORMAT)
+    with pytest.raises(TarTotalBytesExceeded):
+        extract_files_from_tar(
+            bomb, selector=lambda m: m.name, mode="r|gz",
+            max_total_bytes=1024 * 1024,
+        )
+
+
+def test_longname_chain_of_empty_records_is_bounded():
+    """Each metadata record charges at least its header block, so an
+    archive that is nothing but longname records cannot spin the
+    parser unbudgeted."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w",
+                      format=tarfile.GNU_FORMAT) as tf:
+        for i in range(200):
+            info = tarfile.TarInfo(name=f"d{i}/" + "b" * 200)
+            info.size = 0
+            tf.addfile(info)
+    raw = gzip.compress(buf.getvalue())
+    with pytest.raises(TarTotalBytesExceeded):
+        extract_files_from_tar(
+            raw, selector=lambda m: m.name, mode="r|gz",
+            max_total_bytes=10_000,
+        )
+
+
+def test_legitimate_long_name_under_budget_extracts():
+    """The metadata budget must not refuse ordinary deep-path
+    archives: a 300-char name is a normal GNU longname record."""
+    long_name = "pkg/" + "sub/" * 60 + "leaf.txt"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w",
+                      format=tarfile.GNU_FORMAT) as tf:
+        info = tarfile.TarInfo(name=long_name)
+        content = b"payload"
+        info.size = len(content)
+        tf.addfile(info, io.BytesIO(content))
+    raw = gzip.compress(buf.getvalue())
+    found = extract_files_from_tar(
+        raw, selector=lambda m: m.name, mode="r|gz",
+        max_total_bytes=1024 * 1024,
+    )
+    assert found == {long_name: b"payload"}

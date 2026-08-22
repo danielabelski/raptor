@@ -238,7 +238,7 @@ class SageClient:
             get_proxy([host])
         except Exception as e:                          # noqa: BLE001
             logger.debug(
-                f"Could not register SAGE host {host!r} with egress proxy: {e}"
+                "Could not register SAGE host %r with egress proxy: %s", host, e
             )
 
     def is_available(self) -> bool:

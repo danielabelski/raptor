@@ -55,7 +55,7 @@ def analyse(
             options=options,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("sca.api.analyse failed: %s", exc, exc_info=True)
+        logger.exception("sca.api.analyse failed: %s", exc)
         return {"status": "error", "error": str(exc)}
 
     if sarif_dirs:

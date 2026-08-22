@@ -86,7 +86,7 @@ def default_trace_dispatch(
         provider = create_provider(model)
     except Exception as e:
         logger.warning(
-            f"trace: model {model.model_name} provider creation failed: {e}",
+            "trace: model %s provider creation failed: %s", model.model_name, e,
             exc_info=True,
         )
         return [{"error": f"provider construction failed: {type(e).__name__}: {e}"}]
@@ -137,7 +137,7 @@ def default_trace_dispatch(
         return [{"error": f"cost budget exceeded: {e}"}]
     except Exception as e:
         logger.warning(
-            f"trace: model {model.model_name} loop failed: {e}",
+            "trace: model %s loop failed: %s", model.model_name, e,
             exc_info=True,
         )
         persist_partial_from_exception(
@@ -181,9 +181,7 @@ def default_trace_dispatch(
         valid.append(v)
     if dropped:
         logger.info(
-            f"trace: model {model.model_name} returned {dropped} malformed "
-            f"verdict(s) (missing/invalid trace_id) — filtered"
-        )
+            "trace: model %s returned %s malformed verdict(s) (missing/invalid trace_id) — filtered", model.model_name, dropped)
     return valid
 
 

@@ -161,9 +161,7 @@ def _load_user_limits() -> dict:
                     # so `"nproc": true` doesn't silently become nproc=1.
                     if not isinstance(v, int) or isinstance(v, bool) or v < 0:
                         logger.warning(
-                            f"Sandbox: user limit {k}={v!r} in {_CONFIG_PATH} "
-                            f"is not a non-negative integer — ignoring, using "
-                            f"default {_DEFAULT_LIMITS[k]}."
+                            "Sandbox: user limit %s=%r in %s is not a non-negative integer — ignoring, using default %s.", k, v, _CONFIG_PATH, _DEFAULT_LIMITS[k]
                         )
                         continue
                     cleaned[k] = v
@@ -176,9 +174,7 @@ def _load_user_limits() -> dict:
                 return state._user_limits_cache
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             logger.warning(
-                f"Sandbox: could not parse {_CONFIG_PATH}: {e.__class__.__name__} "
-                f"— using default limits."
-            )
+                "Sandbox: could not parse %s: %s — using default limits.", _CONFIG_PATH, e.__class__.__name__)
         state._user_limits_cache = {}
         state._user_limits_cache_decided_at = time.time()
         return state._user_limits_cache

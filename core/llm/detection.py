@@ -842,9 +842,7 @@ def detect_llm_availability() -> LLMAvailability:
     )
 
     logger.debug(
-        f"LLM availability: external_llm={availability.external_llm}, "
-        f"claude_code={availability.claude_code}, "
-        f"llm_available={availability.llm_available}"
+        "LLM availability: external_llm=%s, claude_code=%s, llm_available=%s", availability.external_llm, availability.claude_code, availability.llm_available
     )
 
     # Warn about specific misconfigurations

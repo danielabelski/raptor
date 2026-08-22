@@ -341,9 +341,7 @@ class VulnerabilityContext:
                 content = f.read(_MAX_SOURCE_BYTES + 1)
             if len(content) > _MAX_SOURCE_BYTES:
                 logger.warning(
-                    f"Source file {file_path} exceeded "
-                    f"{_MAX_SOURCE_BYTES}-byte cap; analysis sees "
-                    f"truncated content"
+                    "Source file %s exceeded %s-byte cap; analysis sees truncated content", file_path, _MAX_SOURCE_BYTES
                 )
                 content = content[:_MAX_SOURCE_BYTES]
             lines = content.splitlines(keepends=True)
@@ -1089,8 +1087,7 @@ class AutonomousSecurityAgentV2:
                 if vuln.sanitizers_found:
                     slist = ", ".join(vuln.sanitizers_found)
                     logger.info(
-                        f"  ⚠️  Sanitizers detected: {slist}"
-                    )
+                        "  ⚠️  Sanitizers detected: %s", slist)
             else:
                 logger.warning("⚠️  Failed to extract dataflow path")
 
@@ -1241,7 +1238,7 @@ class AutonomousSecurityAgentV2:
                 sev = analysis.get("severity_assessment", "?")
                 vec = analysis.get("cvss_vector")
                 logger.info(
-                    f"  CVSS: {cvss} ({sev}) from {vec}"
+                    "  CVSS: %s (%s) from %s", cvss, sev, vec
                 )
             else:
                 logger.info(
@@ -1269,7 +1266,7 @@ class AutonomousSecurityAgentV2:
                         ) or ""
                     )[:100]
                     logger.info(
-                        f"    Bypass technique: {bypass}..."
+                        "    Bypass technique: %s...", bypass
                     )
                 logger.info(
                     "    Dataflow exploitable: %s",
@@ -1297,10 +1294,7 @@ class AutonomousSecurityAgentV2:
                 gate = self._tier1_pre_flight(vuln)
                 if gate == "refuted":
                     logger.info(
-                        f"⚠️  IRIS Tier 1 refuted dataflow for "
-                        f"{vuln.rule_id} at "
-                        f"{vuln.file_path}:{vuln.start_line} — "
-                        f"skipping LLM deep validation"
+                        "⚠️  IRIS Tier 1 refuted dataflow for %s at %s:%s — skipping LLM deep validation", vuln.rule_id, vuln.file_path, vuln.start_line
                     )
                     vuln.exploitable = False
                     vuln.exploitability_score = 0.0
@@ -1320,7 +1314,7 @@ class AutonomousSecurityAgentV2:
                         "is_exploitable": False,
                     }
                 else:
-                    logger.info("\n" + "─" * 70)
+                    logger.info("\n%s", "─" * 70)
                     logger.info("🔍 Performing DEEP DATAFLOW VALIDATION...")
                     logger.info("─" * 70)
 
@@ -1540,9 +1534,7 @@ class AutonomousSecurityAgentV2:
         gate = self._tier1_pre_flight(vuln)
         if gate == "refuted":
             logger.info(
-                f"⊘ Skipping exploit generation: IRIS Tier 1 refuted the "
-                f"dataflow claim for {vuln.rule_id} at "
-                f"{vuln.file_path}:{vuln.start_line}"
+                "⊘ Skipping exploit generation: IRIS Tier 1 refuted the dataflow claim for %s at %s:%s", vuln.rule_id, vuln.file_path, vuln.start_line
             )
             vuln.analysis = (vuln.analysis or {})
             vuln.analysis["exploit_skipped_reason"] = (
@@ -1561,9 +1553,7 @@ class AutonomousSecurityAgentV2:
         smt_gate = self._smt_pre_flight(vuln)
         if smt_gate == "refuted":
             logger.info(
-                f"⊘ Skipping exploit generation: SMT proved path "
-                f"conditions unsatisfiable for {vuln.rule_id} at "
-                f"{vuln.file_path}:{vuln.start_line}"
+                "⊘ Skipping exploit generation: SMT proved path conditions unsatisfiable for %s at %s:%s", vuln.rule_id, vuln.file_path, vuln.start_line
             )
             vuln.analysis = (vuln.analysis or {})
             vuln.analysis["exploit_skipped_reason"] = (
@@ -1801,8 +1791,7 @@ class AutonomousSecurityAgentV2:
             is_tp = vuln.analysis.get("is_true_positive")
             if is_tp is False:
                 logger.debug(
-                    f"   · Skipping intent-match for {vuln.finding_id} "
-                    "(analysis is_true_positive=False)"
+                    "   · Skipping intent-match for %s (analysis is_true_positive=False)", vuln.finding_id
                 )
                 return
 
@@ -1832,21 +1821,22 @@ class AutonomousSecurityAgentV2:
 
         if verdict.verdict == "matches":
             logger.info(
-                f"   ✓ Intent-match: matches "
-                f"(confidence={verdict.confidence:.2f}, "
-                f"used_llm={verdict.used_llm})"
+                "   ✓ Intent-match: matches "
+                "(confidence=%.2f, used_llm=%s)",
+                verdict.confidence,
+                verdict.used_llm,
             )
         elif verdict.verdict == "off_target":
             logger.info(
-                f"   ⚠ Intent-match: off_target "
-                f"(confidence={verdict.confidence:.2f}, "
-                f"used_llm={verdict.used_llm}) — "
-                "exploit may have hit a different bug"
+                "   ⚠ Intent-match: off_target "
+                "(confidence=%.2f, used_llm=%s) — "
+                "exploit may have hit a different bug",
+                verdict.confidence,
+                verdict.used_llm,
             )
         else:
             logger.info(
-                f"   · Intent-match: uncertain "
-                f"(used_llm={verdict.used_llm})"
+                "   · Intent-match: uncertain (used_llm=%s)", verdict.used_llm
             )
 
     def _guard_dominance_refute(self, finding: dict) -> dict | None:
@@ -1968,7 +1958,7 @@ class AutonomousSecurityAgentV2:
             outcomes = collect_outcomes(self.out_dir, project_root=project_root)
         except Exception as e:
             logger.debug(
-                f"verified-outcome collection skipped: {e}", exc_info=True,
+                "verified-outcome collection skipped: %s", e, exc_info=True,
             )
             outcomes = []
         self._verified_outcomes = outcomes
@@ -2038,13 +2028,11 @@ class AutonomousSecurityAgentV2:
             )
             self._witness_store.put(witness, data)
             logger.debug(
-                f"   · Recorded witness {witness.bytes_hash[:12]} "
-                f"({witness.bytes_len}B)"
+                "   · Recorded witness %s (%sB)", witness.bytes_hash[:12], witness.bytes_len
             )
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.warning(
-                f"   · Witness record failed for "
-                f"{vuln.finding_id}: {type(e).__name__}: {e}"
+                "   · Witness record failed for %s: %s: %s", vuln.finding_id, type(e).__name__, e
             )
 
     def generate_patch(self, vuln: VulnerabilityContext) -> bool:
@@ -2242,9 +2230,7 @@ class AutonomousSecurityAgentV2:
 
         skipped = len(data.get("findings", [])) - len(converted)
         logger.info(
-            f"Loaded {len(converted)} findings from "
-            f"{Path(findings_path).name} "
-            f"(skipped {skipped} ruled out/unlikely)"
+            "Loaded %s findings from %s (skipped %s ruled out/unlikely)", len(converted), Path(findings_path).name, skipped
         )
         return converted
 
@@ -2452,8 +2438,7 @@ class AutonomousSecurityAgentV2:
             dropped = before - len(unique_findings)
             if dropped and not is_prep_only:
                 logger.info(
-                    f"--exclude-dir filtered {dropped} of {before} "
-                    f"findings ({exclude_globs})"
+                    "--exclude-dir filtered %s of %s findings (%s)", dropped, before, exclude_globs
                 )
 
         # Prioritize findings with dataflow paths (for better validation coverage)
@@ -2491,9 +2476,7 @@ class AutonomousSecurityAgentV2:
             )
             if matched and not is_prep_only:
                 logger.info(
-                    f"attack-surface ranking ({prefer_source}): "
-                    f"{matched} of {total_before} findings match "
-                    f"{effective_globs} (sorted to front)"
+                    "attack-surface ranking (%s): %s of %s findings match %s (sorted to front)", prefer_source, matched, total_before, effective_globs
                 )
 
         if not is_prep_only:

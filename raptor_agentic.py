@@ -2554,15 +2554,16 @@ Examples:
                 joern_srv.stop()
         if reachability_prepass_result.ran:
             logger.info(
-                f"Reachability pre-pass marked "
-                f"{reachability_prepass_result.marked_count} dead-code "
-                f"function(s) priority=low "
-                f"(took {reachability_prepass_result.duration_s:.1f}s)"
+                "Reachability pre-pass marked "
+                "%s dead-code "
+                "function(s) priority=low "
+                "(took %.1fs)",
+                reachability_prepass_result.marked_count,
+                reachability_prepass_result.duration_s,
             )
         else:
             logger.debug(
-                "Reachability pre-pass skipped: "
-                f"{reachability_prepass_result.skipped_reason}"
+                "Reachability pre-pass skipped: %s", reachability_prepass_result.skipped_reason
             )
     except Exception:
         logger.warning(

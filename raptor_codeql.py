@@ -126,7 +126,7 @@ def run_autonomous_workflow(args):
             sys.exit(1)
         build_commands = {languages[0]: args.build_command}
     # PHASE 1: CodeQL Scanning
-    logger.info("\n" + "=" * 70)
+    logger.info("\n%s", "=" * 70)
     logger.info("PHASE 1: CODEQL SCANNING")
     logger.info("=" * 70)
 
@@ -176,7 +176,7 @@ def run_autonomous_workflow(args):
         return
 
     # PHASE 2: Autonomous Analysis
-    logger.info("\n" + "=" * 70)
+    logger.info("\n%s", "=" * 70)
     logger.info("PHASE 2: AUTONOMOUS VULNERABILITY ANALYSIS")
     logger.info("=" * 70)
 

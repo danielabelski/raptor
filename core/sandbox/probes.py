@@ -325,7 +325,7 @@ def _probe_net_available() -> bool:
             env=RaptorConfig.get_safe_env(),
         )
         if result.returncode != 0:
-            logger.debug(f"Sandbox: network test failed: {result.stderr.strip()}")
+            logger.debug("Sandbox: network test failed: %s", result.stderr.strip())
             return False
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False

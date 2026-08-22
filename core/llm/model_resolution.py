@@ -110,8 +110,7 @@ def resolve_anthropic(name: str, api_key: str | None) -> str:
                 _emit = False
         if _emit:
             logger.debug(
-                f"Resolved Anthropic model alias {name} -> {resolved} "
-                f"(from /v1/models inventory)"
+                "Resolved Anthropic model alias %s -> %s (from /v1/models inventory)", name, resolved
             )
     return resolved
 

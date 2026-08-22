@@ -355,27 +355,18 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                 # language servers, self-spawned test servers) fail to
                 # reach their own listener. Name the exact knob.
                 logger.info(
-                    f"Sandbox: TCP connect denied during: {cmd_display} "
-                    f"(rc={returncode}) — degraded-mode Landlock deny is "
-                    f"active (no namespace backend on this host) and it "
-                    f"covers loopback as well. Daemon-IPC tools are "
-                    f"auto-nudged to no-daemon mode where possible; if "
-                    f"this workload genuinely needs loopback TCP, pass "
-                    f"degraded_net_deny=False (accepts open egress on "
-                    f"this host)."
+                    "Sandbox: TCP connect denied during: %s (rc=%s) — degraded-mode Landlock deny is active (no namespace backend on this host) and it covers loopback as well. Daemon-IPC tools are auto-nudged to no-daemon mode where possible; if this workload genuinely needs loopback TCP, pass degraded_net_deny=False (accepts open egress on this host).", cmd_display, returncode
                 )
             else:
                 logger.info(
-                    f"Sandbox: outbound network blocked during: {cmd_display} "
-                    f"(rc={returncode})"
+                    "Sandbox: outbound network blocked during: %s (rc=%s)", cmd_display, returncode
                 )
             blocked_evidence.append("Attempted outbound network connection (blocked by sandbox)")
             record_denial(cmd_display, returncode, "network")
         elif category == "write":
             path_note = f" to {attempted_path}" if attempted_path else ""
             logger.info(
-                f"Sandbox: write outside allowed paths denied{path_note} "
-                f"during: {cmd_display} (rc={returncode})"
+                "Sandbox: write outside allowed paths denied%s during: %s (rc=%s)", path_note, cmd_display, returncode
             )
             if attempted_path:
                 blocked_evidence.append(f"Attempted write to {attempted_path} (blocked by sandbox)")
@@ -385,16 +376,7 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
                 record_denial(cmd_display, returncode, "write")
         elif category == "udp":
             logger.info(
-                f"Sandbox: UDP/loopback socket use denied during: "
-                f"{cmd_display} (rc={returncode}) — the active network "
-                f"policy denies it (Linux: the egress-proxy fallback "
-                f"tier's seccomp SOCK_DGRAM block on netns-incapable "
-                f"hosts; macOS: seatbelt's blanket network deny). JVM "
-                f"build tools (gradle) need a loopback UDP socket at "
-                f"startup and cannot run under this policy. On Linux "
-                f"netns-capable hosts the default proxy tier contains "
-                f"UDP topologically and they work; on macOS, JVM builds "
-                f"must run outside block_network."
+                "Sandbox: UDP/loopback socket use denied during: %s (rc=%s) — the active network policy denies it (Linux: the egress-proxy fallback tier's seccomp SOCK_DGRAM block on netns-incapable hosts; macOS: seatbelt's blanket network deny). JVM build tools (gradle) need a loopback UDP socket at startup and cannot run under this policy. On Linux netns-capable hosts the default proxy tier contains UDP topologically and they work; on macOS, JVM builds must run outside block_network.", cmd_display, returncode
             )
             blocked_evidence.append(
                 "UDP/loopback socket use denied by the sandbox network "
@@ -410,10 +392,7 @@ def _check_blocked(stderr: str, cmd_display: str, returncode: int = 0,
             if seccomp_profile == "full":
                 suggestion = "--sandbox debug (if gdb/rr) or " + suggestion
             logger.info(
-                f"Sandbox: 'Operation not permitted' seen in stderr during "
-                f"{cmd_display} (rc={returncode}) — this may be seccomp "
-                f"blocking a syscall (profile={seccomp_profile!r}). If the "
-                f"tool genuinely needs the syscall, try {suggestion}."
+                "Sandbox: 'Operation not permitted' seen in stderr during %s (rc=%s) — this may be seccomp blocking a syscall (profile=%r). If the tool genuinely needs the syscall, try %s.", cmd_display, returncode, seccomp_profile, suggestion
             )
             blocked_evidence.append(
                 f"Syscall denied by seccomp (profile={seccomp_profile!r}) — "

@@ -326,8 +326,7 @@ class AFLRunner:
         try:
             manifest = prepare_builtin_seed_corpus(corpus, profile=seed_profile)
             logger.info(
-                "Created built-in default corpus with "
-                f"{manifest['seed_count']} seeds (profile={seed_profile})"
+                "Created built-in default corpus with %s seeds (profile=%s)", manifest['seed_count'], seed_profile
             )
         except Exception as exc:  # noqa: BLE001 — best-effort: emergency seeds below
             logger.warning(
@@ -738,8 +737,7 @@ class AFLRunner:
                             )
                     else:
                         logger.warning(
-                            f"AFL instance {inst.name} exited unexpectedly with code {exit_code}; "
-                            f"stdout={inst.stdout_path} stderr={inst.stderr_path}"
+                            "AFL instance %s exited unexpectedly with code %s; stdout=%s stderr=%s", inst.name, exit_code, inst.stdout_path, inst.stderr_path
                         )
 
                 instances = running_instances

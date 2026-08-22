@@ -67,8 +67,7 @@ class WebScanner:
         self.ffuf = FfufRunner(base_url, out_dir, reveal_secrets=reveal_secrets) if ffuf_config else None
 
         logger.info(
-            f"Web scanner initialized for {base_url} "
-            f"(verify_ssl={verify_ssl}, max_depth={max_depth}, max_pages={max_pages})"
+            "Web scanner initialized for %s (verify_ssl=%s, max_depth=%s, max_pages=%s)", base_url, verify_ssl, max_depth, max_pages
         )
 
     def scan(self) -> dict[str, Any]:

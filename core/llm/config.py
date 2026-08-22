@@ -353,10 +353,7 @@ def _build_ollama_config() -> Optional['ModelConfig']:
     limits = MODEL_LIMITS.get(selected_model)
     if limits is None:
         logger.info(
-            f"Model '{selected_model}' not in MODEL_LIMITS — using defaults "
-            f"(max_context={_DEFAULT_MAX_CONTEXT_LOCAL}, "
-            f"max_output={_DEFAULT_MAX_OUTPUT_LOCAL}). "
-            f"Override in models.json if needed."
+            "Model '%s' not in MODEL_LIMITS — using defaults (max_context=%s, max_output=%s). Override in models.json if needed.", selected_model, _DEFAULT_MAX_CONTEXT_LOCAL, _DEFAULT_MAX_OUTPUT_LOCAL
         )
         max_output = _DEFAULT_MAX_OUTPUT_LOCAL
         max_context = _DEFAULT_MAX_CONTEXT_LOCAL
@@ -803,8 +800,7 @@ def _get_default_primary_model(
             and (prefer_set is None or thinking_model.provider in prefer_set)):
         if not getattr(_get_default_primary_model, "_logged", False):
             logger.info(
-                f"Using automatic thinking model: "
-                f"{thinking_model.provider}/{thinking_model.model_name}"
+                "Using automatic thinking model: %s/%s", thinking_model.provider, thinking_model.model_name
             )
             _get_default_primary_model._logged = True
         return thinking_model
@@ -817,9 +813,7 @@ def _get_default_primary_model(
             and (prefer_set is None or "bedrock" in prefer_set)):
         if not getattr(_get_default_primary_model, "_bedrock_logged", False):
             logger.info(
-                f"Using configured Bedrock model: "
-                f"{bedrock_primary.model_name} "
-                f"({bedrock_primary.bedrock_api})"
+                "Using configured Bedrock model: %s (%s)", bedrock_primary.model_name, bedrock_primary.bedrock_api
             )
             _get_default_primary_model._bedrock_logged = True
         return bedrock_primary
@@ -1650,8 +1644,7 @@ class LLMConfig:
             for mc in candidates:
                 if mc.model_name == resolved:
                     logger.info(
-                        f"Resolved shorthand '{model_id}' -> "
-                        f"'{mc.model_name}' from configured models"
+                        "Resolved shorthand '%s' -> '%s' from configured models", model_id, mc.model_name
                     )
                     return mc
 

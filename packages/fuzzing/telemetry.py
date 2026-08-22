@@ -233,8 +233,7 @@ class FuzzingTelemetry:
                 payload={"fuzzer": self.stats.fuzzer, "target": self.stats.target},
             ))
             logger.info(
-                f"Fuzzing campaign started: fuzzer={self.stats.fuzzer} "
-                f"target={self.stats.target}"
+                "Fuzzing campaign started: fuzzer=%s target=%s", self.stats.fuzzer, self.stats.target
             )
 
     def stop(self) -> None:
@@ -255,10 +254,14 @@ class FuzzingTelemetry:
                 json.dumps(self.stats.to_dict(), indent=2, default=str),
             )
             logger.info(
-                f"Fuzzing campaign complete: {self.stats.duration_s:.1f}s, "
-                f"{self.stats.total_executions} execs, "
-                f"{self.stats.crashes} crashes, "
-                f"{self.stats.paths_found} paths"
+                "Fuzzing campaign complete: %.1fs, "
+                "%s execs, "
+                "%s crashes, "
+                "%s paths",
+                self.stats.duration_s,
+                self.stats.total_executions,
+                self.stats.crashes,
+                self.stats.paths_found,
             )
 
     def record_payload(

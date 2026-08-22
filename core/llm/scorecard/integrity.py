@@ -92,14 +92,11 @@ def _key_path() -> Path:
 def _warn_once_suspect_key(path: Path, reason: str, remedy: str) -> None:
     key = str(path)
     if key in _warned_paths:
-        logger.debug(f"scorecard integrity: suspect key {path} ({reason})")
+        logger.debug("scorecard integrity: suspect key %s (%s)", path, reason)
         return
     _warned_paths.add(key)
     logger.warning(
-        f"scorecard integrity: refusing key {path} — {reason}. Scorecard "
-        f"provenance tokens will not mint or verify (trust surface clamps: "
-        f"no short-circuit, pins not honoured) until this is fixed: "
-        f"{remedy}"
+        "scorecard integrity: refusing key %s — %s. Scorecard provenance tokens will not mint or verify (trust surface clamps: no short-circuit, pins not honoured) until this is fixed: %s", path, reason, remedy
     )
 
 

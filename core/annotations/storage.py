@@ -473,9 +473,7 @@ def read_file_annotations(
             version = CURRENT_VERSION
         if version > CURRENT_VERSION:
             logger.warning(
-                f"annotation file {path} declares version {version} "
-                f"(reader supports up to {CURRENT_VERSION}); "
-                f"attempting to parse anyway"
+                "annotation file %s declares version %s (reader supports up to %s); attempting to parse anyway", path, version, CURRENT_VERSION
             )
     out: list[Annotation] = []
     for name, start, end in _split_sections(text):

@@ -1259,8 +1259,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                          if val]
             if discarded and not effectively_disabled:
                 logger.warning(
-                    f"Sandbox: profile={profile!r} ignores {discarded} — "
-                    f"Landlock is disabled under this profile."
+                    "Sandbox: profile=%r ignores %s — Landlock is disabled under this profile.", profile, discarded
                 )
             target = None
             output = None
@@ -1561,10 +1560,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     if block_network and allowed_tcp_ports and not effectively_disabled:  # noqa: SIM102
         if state.warn_once("_net_and_tcp_allowlist_warned"):
             logger.warning(
-                f"Sandbox: block_network=True makes allowed_tcp_ports="
-                f"{allowed_tcp_ports} unreachable — the namespace has no "
-                f"network interface for Landlock's TCP allow-rule to apply "
-                f"to. For a network allowlist, pass block_network=False."
+                "Sandbox: block_network=True makes allowed_tcp_ports=%s unreachable — the namespace has no network interface for Landlock's TCP allow-rule to apply to. For a network allowlist, pass block_network=False.", allowed_tcp_ports
             )
 
     # Skip the entire Landlock-availability warning block on macOS:
@@ -1593,25 +1589,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # silent coverage gap visible to the operator.
             if allowed_tcp_ports and abi < 4 and state.warn_once("_landlock_warned_abi_v4"):
                 logger.warning(
-                    f"Sandbox: allowed_tcp_ports={allowed_tcp_ports} requires "
-                    f"Landlock ABI v4 (kernel 6.7+); current ABI is {abi} — "
-                    f"TCP allowlist is NOT enforced. Pass block_network=True "
-                    f"for full network block, or upgrade the kernel."
+                    "Sandbox: allowed_tcp_ports=%s requires Landlock ABI v4 (kernel 6.7+); current ABI is %s — TCP allowlist is NOT enforced. Pass block_network=True for full network block, or upgrade the kernel.", allowed_tcp_ports, abi
                 )
             if abi < 3 and state.warn_once("_landlock_warned_abi_v3"):
                 logger.warning(
-                    f"Sandbox: Landlock ABI v3 (kernel 6.2+) adds TRUNCATE "
-                    f"coverage; current ABI is {abi} — existing files outside "
-                    f"the writable paths can still be truncated via O_TRUNC "
-                    f"(though DAC may still block it)."
+                    "Sandbox: Landlock ABI v3 (kernel 6.2+) adds TRUNCATE coverage; current ABI is %s — existing files outside the writable paths can still be truncated via O_TRUNC (though DAC may still block it).", abi
                 )
             if abi < 2 and state.warn_once("_landlock_warned_abi_v2"):
                 logger.warning(
-                    f"Sandbox: Landlock ABI v2 (kernel 5.19+) adds REFER "
-                    f"coverage; current ABI is {abi} — cross-directory "
-                    f"rename/hardlink is NOT blocked. A process with write "
-                    f"access to /tmp can rename files across writable "
-                    f"boundaries. Upgrade the kernel to close this."
+                    "Sandbox: Landlock ABI v2 (kernel 5.19+) adds REFER coverage; current ABI is %s — cross-directory rename/hardlink is NOT blocked. A process with write access to /tmp can rename files across writable boundaries. Upgrade the kernel to close this.", abi
                 )
 
     # Compute the effective read-allowlist when restrict_reads is on.
@@ -2094,8 +2080,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     kwargs["env"] = {k: v for k, v in kwargs["env"].items()
                                      if k not in RaptorConfig.DANGEROUS_ENV_VARS}
                     logger.info(
-                        f"Sandbox: strict_env=True — stripped DANGEROUS_ENV_VARS "
-                        f"from caller env: {sorted(_stripped)}"
+                        "Sandbox: strict_env=True — stripped DANGEROUS_ENV_VARS from caller env: %s", sorted(_stripped)
                     )
 
         # Egress-proxy env injection — overlays AFTER get_safe_env() so
@@ -2328,9 +2313,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             f"file inside the sandbox's allowed paths."
                         )
             logger.info(
-                f"Sandbox: caller passed pass_fds={kwargs['pass_fds']} "
-                f"for {' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd!r} — "
-                f"these FDs are inherited by the sandboxed child."
+                "Sandbox: caller passed pass_fds=%s for %r — these FDs are inherited by the sandboxed child.", kwargs['pass_fds'], ' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd
             )
 
         # Strip caller-supplied check= — both subprocess.run call sites

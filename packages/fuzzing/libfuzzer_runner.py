@@ -194,11 +194,7 @@ class LibFuzzerRunner:
 
         result = self._parse_result(stderr, stdout, elapsed)
         logger.info(
-            f"libFuzzer done (rc={returncode}): "
-            f"{result.stats.total_executions} execs, "
-            f"{result.stats.executions_per_second}/s, "
-            f"cov={result.stats.coverage_features} features, "
-            f"crashes={len(result.crashes)}"
+            "libFuzzer done (rc=%s): %s execs, %s/s, cov=%s features, crashes=%s", returncode, result.stats.total_executions, result.stats.executions_per_second, result.stats.coverage_features, len(result.crashes)
         )
         return result
 

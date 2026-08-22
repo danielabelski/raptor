@@ -111,8 +111,7 @@ class CorpusManager:
                     continue
                 if st.st_size > self._MAX_SEED_BYTES:
                     logger.warning(
-                        f"corpus_manager: skipping {fpath} "
-                        f"({st.st_size} bytes > {self._MAX_SEED_BYTES} cap)"
+                        "corpus_manager: skipping %s (%s bytes > %s cap)", fpath, st.st_size, self._MAX_SEED_BYTES
                     )
                     continue
                 dest = self.corpus_dir / fpath.relative_to(source)

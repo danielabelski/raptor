@@ -269,9 +269,7 @@ def apply_toolchain_env(env: dict[str, str],
             value = DETECTORS[name]()
         except expected_failures as e:
             logger.warning(
-                f"build toolchain: detector for {name} raised "
-                f"{type(e).__name__}: {e} — treating as not found."
-            )
+                "build toolchain: detector for %s raised %s: %s — treating as not found.", name, type(e).__name__, e)
             value = None
         except Exception as e:
             logger.exception(
@@ -283,11 +281,7 @@ def apply_toolchain_env(env: dict[str, str],
             value = None
         if value is None:
             logger.warning(
-                f"build toolchain: {name} not found on this host — "
-                f"the build step will likely fail with a missing-"
-                f"toolchain error. Install the toolchain or set "
-                f"{name} explicitly via --build-env-file (future flag) "
-                f"/ via your shell and the sandbox's env= kwarg."
+                "build toolchain: %s not found on this host — the build step will likely fail with a missing-toolchain error. Install the toolchain or set %s explicitly via --build-env-file (future flag) / via your shell and the sandbox's env= kwarg.", name, name
             )
             continue
         env[name] = value

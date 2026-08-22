@@ -221,7 +221,7 @@ def sha256_tree(
                 except OSError:
                     pass
     if skipped:
-        logger.debug(f"Skipped {len(skipped)} large files during hashing")
+        logger.debug("Skipped %s large files during hashing", len(skipped))
     if truncated_at is not None:
         # Domain-separate truncated digests: mix a marker plus the
         # relpath of the file that tripped the cap. NUL bytes cannot
@@ -233,9 +233,7 @@ def sha256_tree(
         h.update(truncated_at.encode(_FS_ENCODING, errors=_FS_ERRORS))
         h.update(b"]\x00")
         logger.warning(
-            f"sha256_tree: hit cumulative byte cap "
-            f"({cumulative_cap} bytes) on {root} at {truncated_at}; "
-            f"hash reflects partial tree only (truncation marker mixed in)"
+            "sha256_tree: hit cumulative byte cap (%s bytes) on %s at %s; hash reflects partial tree only (truncation marker mixed in)", cumulative_cap, root, truncated_at
         )
     return h.hexdigest()
 

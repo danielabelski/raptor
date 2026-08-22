@@ -648,7 +648,7 @@ class CrashAnalysisAgent:
                         reasoning_lines.append(line[:200])  # Truncate long lines
                 
                 if reasoning_lines:
-                    logger.info("  Reasoning: " + " | ".join(reasoning_lines[:3]))  # Show first 3 reasoning lines
+                    logger.info("  Reasoning: %s", " | ".join(reasoning_lines[:3]))  # Show first 3 reasoning lines
             
             # Log summary of LLM reasoning
             if full_response:
@@ -989,20 +989,21 @@ FULL LLM RESPONSE:
 
         if verdict.verdict == "matches":
             logger.info(
-                f"   ✓ Intent-match: matches "
-                f"(confidence={verdict.confidence:.2f}, "
-                f"used_llm={verdict.used_llm})"
+                "   ✓ Intent-match: matches "
+                "(confidence=%.2f, used_llm=%s)",
+                verdict.confidence,
+                verdict.used_llm,
             )
         elif verdict.verdict == "off_target":
             logger.info(
-                f"   ⚠ Intent-match: off_target "
-                f"(confidence={verdict.confidence:.2f}, "
-                f"used_llm={verdict.used_llm})"
+                "   ⚠ Intent-match: off_target "
+                "(confidence=%.2f, used_llm=%s)",
+                verdict.confidence,
+                verdict.used_llm,
             )
         else:
             logger.info(
-                f"   · Intent-match: uncertain "
-                f"(used_llm={verdict.used_llm})"
+                "   · Intent-match: uncertain (used_llm=%s)", verdict.used_llm
             )
 
     def _record_exploit_witness(
@@ -1089,13 +1090,11 @@ FULL LLM RESPONSE:
             )
             self._witness_store.put(witness, data)
             logger.debug(
-                f"   · Recorded witness {witness.bytes_hash[:12]} "
-                f"({witness.bytes_len}B)"
+                "   · Recorded witness %s (%sB)", witness.bytes_hash[:12], witness.bytes_len
             )
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.warning(
-                f"   · Witness record failed for "
-                f"{crash_context.crash_id}: {type(e).__name__}: {e}"
+                "   · Witness record failed for %s: %s: %s", crash_context.crash_id, type(e).__name__, e
             )
 
     @staticmethod

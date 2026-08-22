@@ -554,7 +554,7 @@ class BinaryUnderstand:
                 _saved_env = {k: _os.environ.get(k) for k in _env_overrides}
                 _os.environ.update(_env_overrides)
                 logger.info(
-                    f"radare2 analysis: opening {self.binary} (sandboxed)"
+                    "radare2 analysis: opening %s (sandboxed)", self.binary
                 )
                 r2 = r2pipe.open(str(self.binary), flags=self._r2_open_flags())  # -2: silence stderr
                 # Wrapper has spawned + read env. Restore parent env
@@ -624,10 +624,7 @@ class BinaryUnderstand:
                 _shutil.rmtree(_r2_scratch, ignore_errors=True)
 
         logger.info(
-            f"radare2 analysis: {len(ctx.interesting_functions)} interesting funcs, "
-            f"{len(ctx.dangerous_sinks)} dangerous sinks, "
-            f"{len(ctx.entry_points)} entry points, "
-            f"{len(ctx.fuzz_priorities)} fuzz priorities"
+            "radare2 analysis: %s interesting funcs, %s dangerous sinks, %s entry points, %s fuzz priorities", len(ctx.interesting_functions), len(ctx.dangerous_sinks), len(ctx.entry_points), len(ctx.fuzz_priorities)
         )
         return ctx
 
@@ -641,7 +638,7 @@ class BinaryUnderstand:
             ctx.binary_format = fmt
             ctx.image_base = int(bin_info.get("baddr", 0) or 0)
         except Exception as e:  # noqa: BLE001 — r2 output is hostile; degrade
-            logger.debug(f"metadata extraction failed: {e}")
+            logger.debug("metadata extraction failed: %s", e)
 
     def _extract_imports_exports(self, r2, ctx: BinaryContextMap) -> None:
         try:
@@ -650,7 +647,7 @@ class BinaryUnderstand:
                 str(i.get("name", "")) for i in imports_raw if i.get("name")
             ]
         except Exception as e:  # noqa: BLE001 — r2 output is hostile; degrade
-            logger.debug(f"imports extraction failed: {e}")
+            logger.debug("imports extraction failed: %s", e)
             ctx.imports = []
 
         try:
@@ -659,7 +656,7 @@ class BinaryUnderstand:
                 str(e.get("name", "")) for e in exports_raw if e.get("name")
             ]
         except Exception as e:  # noqa: BLE001 — r2 output is hostile; degrade
-            logger.debug(f"exports extraction failed: {e}")
+            logger.debug("exports extraction failed: %s", e)
             ctx.exports = []
 
     _MAX_FUNCTIONS = 10_000
@@ -1167,7 +1164,7 @@ class BinaryUnderstand:
                 ) or ""
                 fn.decompiled = src.strip()[:8192]
             except Exception as e:  # noqa: BLE001 — per-function isolation
-                logger.debug(f"decompile {fn.name} failed: {e}")
+                logger.debug("decompile %s failed: %s", fn.name, e)
                 fn.decompiled = ""
 
     def _heuristic_prioritise(self, ctx: BinaryContextMap) -> None:
@@ -1338,7 +1335,7 @@ class BinaryUnderstand:
             )
             priorities = (result or {}).get("priorities") or []
         except Exception as e:  # noqa: BLE001 — heuristic fallback path
-            logger.debug(f"LLM prioritisation failed: {e}")
+            logger.debug("LLM prioritisation failed: %s", e)
             self._heuristic_prioritise(ctx)
             return
 

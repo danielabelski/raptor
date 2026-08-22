@@ -1130,9 +1130,7 @@ class ModelScorecard:
                 # Log once and proceed lock-free; correctness in that
                 # environment depends on operator running serially.
                 logger.warning(
-                    f"scorecard: flock not available on "
-                    f"{lock_path} — concurrent updates may race "
-                    f"(error: {e})"
+                    "scorecard: flock not available on %s — concurrent updates may race (error: %s)", lock_path, e
                 )
             # Read the data file under lock. May not exist on cold
             # start; treat as empty. Doesn't matter that this is a
@@ -1154,8 +1152,7 @@ class ModelScorecard:
                         )
                 except (ValueError, TypeError) as e:
                     logger.warning(
-                        f"scorecard: corrupt JSON at {path} — "
-                        f"reading as empty (error: {e})"
+                        "scorecard: corrupt JSON at %s — reading as empty (error: %s)", path, e
                     )
                     self.data = {"version": SCHEMA_VERSION, "models": {}}
                 else:
@@ -1230,12 +1227,7 @@ class ModelScorecard:
             if str(path) not in _unverified_warned_paths:
                 _unverified_warned_paths.add(str(path))
                 logger.warning(
-                    f"scorecard: {path} failed integrity verification "
-                    f"(missing or invalid provenance token) — its "
-                    f"content will NOT steer model routing. Discarding "
-                    f"in memory; the file moves to {quarantine} on the "
-                    f"next write. If this is genuine pre-MAC history, "
-                    f"re-bless it with: raptor-llm-scorecard adopt"
+                    "scorecard: %s failed integrity verification (missing or invalid provenance token) — its content will NOT steer model routing. Discarding in memory; the file moves to %s on the next write. If this is genuine pre-MAC history, re-bless it with: raptor-llm-scorecard adopt", path, quarantine
                 )
             if self.write:
                 try:
@@ -1243,8 +1235,7 @@ class ModelScorecard:
                     _os.replace(path, quarantine)
                 except OSError as e:
                     logger.warning(
-                        f"scorecard: could not quarantine unverified "
-                        f"sidecar {path}: {e}"
+                        "scorecard: could not quarantine unverified sidecar %s: %s", path, e
                     )
             self.data = {"version": SCHEMA_VERSION, "models": {}}
             self.scorecard._last_read_trusted = True
@@ -1397,12 +1388,7 @@ class ModelScorecard:
             ec_display = round(events_correct)
             ei_display = round(events_incorrect)
             logger.info(
-                f"scorecard auto-GC: dropped {total_dropped} cells "
-                f"across {len(per_model_counts)} deprecated model(s) "
-                f"({per_model_str}); totals: "
-                f"{ec_display + ei_display} events purged "
-                f"({ec_display} correct, {ei_display} "
-                "incorrect)"
+                "scorecard auto-GC: dropped %s cells across %s deprecated model(s) (%s); totals: %s events purged (%s correct, %s incorrect)", total_dropped, len(per_model_counts), per_model_str, ec_display + ei_display, ec_display, ei_display
             )
 
 

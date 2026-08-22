@@ -1736,12 +1736,11 @@ class LLMClient:
                     self.config.enable_caching = False
             if failures >= _CACHE_WRITE_FAILURE_THRESHOLD:
                 logger.warning(
-                    f"Cache write error #{failures}: {e}. "
-                    f"Caching disabled for the remainder of this run."
+                    "Cache write error #%s: %s. Caching disabled for the remainder of this run.", failures, e
                 )
             else:
                 logger.warning(
-                    f"Cache write error #{failures}: {e}"
+                    "Cache write error #%s: %s", failures, e
                 )
             return
         self._maybe_evict_cache()
@@ -1863,12 +1862,11 @@ class LLMClient:
                     self.config.enable_caching = False
             if failures >= _CACHE_WRITE_FAILURE_THRESHOLD:
                 logger.warning(
-                    f"Structured cache write error #{failures}: {e}. "
-                    f"Caching disabled for the remainder of this run."
+                    "Structured cache write error #%s: %s. Caching disabled for the remainder of this run.", failures, e
                 )
             else:
                 logger.warning(
-                    f"Structured cache write error #{failures}: {e}"
+                    "Structured cache write error #%s: %s", failures, e
                 )
             return
         self._maybe_evict_cache()
@@ -2199,8 +2197,7 @@ class LLMClient:
         estimated_tokens = (len(prompt) + len(system_prompt or "")) // 4
         if estimated_tokens > model_config.max_context * 0.8:
             logger.warning(
-                f"Prompt ~{estimated_tokens} tokens may exceed {model_config.model_name} "
-                f"context window ({model_config.max_context})")
+                "Prompt ~%s tokens may exceed %s context window (%s)", estimated_tokens, model_config.model_name, model_config.max_context)
 
         # Check cache. Generation kwargs (temperature, max_tokens, …)
         # are part of the cache key — without that, two callers with
@@ -2700,8 +2697,7 @@ class LLMClient:
         estimated_tokens = (len(prompt) + len(system_prompt or "")) // 4
         if estimated_tokens > model_config.max_context * 0.8:
             logger.warning(
-                f"Prompt ~{estimated_tokens} tokens may exceed {model_config.model_name} "
-                f"context window ({model_config.max_context})")
+                "Prompt ~%s tokens may exceed %s context window (%s)", estimated_tokens, model_config.model_name, model_config.max_context)
 
         # Check cache. Key includes schema so two callers who share a
         # prompt but ask for different output shapes don't collide.
@@ -2731,8 +2727,7 @@ class LLMClient:
                     cached = None
             if cached is not None:
                 logger.debug(
-                    f"Using cached structured response for "
-                    f"{model_config.provider}/{model_config.model_name}"
+                    "Using cached structured response for %s/%s", model_config.provider, model_config.model_name
                 )
                 with self._stats_lock:
                     self.request_count += 1

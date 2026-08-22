@@ -89,7 +89,7 @@ def default_hunt_dispatch(
         provider = create_provider(model)
     except Exception as e:
         logger.warning(
-            f"hunt: model {model.model_name} provider creation failed: {e}",
+            "hunt: model %s provider creation failed: %s", model.model_name, e,
             exc_info=True,
         )
         return [{"error": f"provider construction failed: {type(e).__name__}: {e}"}]
@@ -137,7 +137,7 @@ def default_hunt_dispatch(
         return [{"error": f"cost budget exceeded: {e}"}]
     except Exception as e:
         logger.warning(
-            f"hunt: model {model.model_name} loop failed: {e}",
+            "hunt: model %s loop failed: %s", model.model_name, e,
             exc_info=True,
         )
         persist_partial_from_exception(
@@ -186,9 +186,7 @@ def default_hunt_dispatch(
         valid.append(v)
     if dropped:
         logger.info(
-            f"hunt: model {model.model_name} returned {dropped} malformed "
-            f"variant(s) (missing/invalid file or line) — filtered"
-        )
+            "hunt: model %s returned %s malformed variant(s) (missing/invalid file or line) — filtered", model.model_name, dropped)
     return valid
 
 

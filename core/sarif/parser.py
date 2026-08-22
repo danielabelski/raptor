@@ -807,7 +807,7 @@ def validate_sarif(
 
     if sarif_data.get("version") not in ["2.1.0", "2.0.0"]:
         logger.warning(
-            f"SARIF validation: unsupported version: {sarif_data.get('version')}"
+            "SARIF validation: unsupported version: %s", sarif_data.get('version')
         )
         return False
 
@@ -832,12 +832,11 @@ def validate_sarif(
                 full_validation_ran = True
             else:
                 logger.warning(
-                    f"SARIF validation: schema file unreadable: {schema_path}"
+                    "SARIF validation: schema file unreadable: %s", schema_path
                 )
         else:
             logger.debug(
-                f"SARIF validation: schema file not found at {schema_path}; "
-                "skipping full validation"
+                "SARIF validation: schema file not found at %s; skipping full validation", schema_path
             )
     except ImportError:
         logger.debug(

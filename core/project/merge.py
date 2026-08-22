@@ -315,8 +315,7 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
 
     if not verify_merge(merged, total_findings, unique_count):
         logger.warning(
-            f"Merge verification warning: {len(merged)} merged findings "
-            f"< {unique_count} unique IDs"
+            "Merge verification warning: %s merged findings < %s unique IDs", len(merged), unique_count
         )
 
     if merged:
@@ -439,8 +438,7 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
         findings_label = f"{len(merged)} findings ({vuln_count} vulns)"
 
     logger.info(
-        f"Merged {len(run_dirs)} runs: {findings_label}, "
-        f"{sarif_files_merged} SARIF files, {artefacts_preserved} artefacts"
+        "Merged %s runs: %s, %s SARIF files, %s artefacts", len(run_dirs), findings_label, sarif_files_merged, artefacts_preserved
     )
 
     return stats

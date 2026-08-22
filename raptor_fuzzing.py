@@ -742,7 +742,7 @@ Examples:
                     attribution = attribute_crashes(crashes, smt_manifest)
             except Exception as e:  # noqa: BLE001 — best-effort
                 logger.warning(
-                    f"SMT crash attribution failed: {type(e).__name__}: {e}"
+                    "SMT crash attribution failed: %s: %s", type(e).__name__, e
                 )
 
             recorded = 0
@@ -759,8 +759,7 @@ Examples:
                     recorded += 1
                 except Exception as e:  # noqa: BLE001 — best-effort
                     logger.warning(
-                        f"failed to record witness for crash "
-                        f"{crash.crash_id}: {type(e).__name__}: {e}"
+                        "failed to record witness for crash %s: %s: %s", crash.crash_id, type(e).__name__, e
                     )
             if recorded:
                 print(
@@ -780,8 +779,7 @@ Examples:
                     )
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.warning(
-                f"Witness-store setup failed: {type(e).__name__}: {e}; "
-                f"continuing without canonical Witness records"
+                "Witness-store setup failed: %s: %s; continuing without canonical Witness records", type(e).__name__, e
             )
 
         # Analyse crashes

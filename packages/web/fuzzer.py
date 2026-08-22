@@ -140,8 +140,7 @@ class WebFuzzer:
         )
 
         logger.info(
-            "Fuzzing parameter "
-            f"'{param_name}' at {redact_secrets(url, reveal_secrets=self.client.reveal_secrets)}"
+            "Fuzzing parameter '%s' at %s", param_name, redact_secrets(url, reveal_secrets=self.client.reveal_secrets)
         )
 
         findings = []

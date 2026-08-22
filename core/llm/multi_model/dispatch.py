@@ -135,8 +135,7 @@ def run_multi_model(
 
     if failed_models and len(failed_models) == len(models):
         logger.warning(
-            f"All {len(models)} model(s) failed: {failed_models}. "
-            f"Adapter will receive empty per-model results."
+            "All %s model(s) failed: %s. Adapter will receive empty per-model results.", len(models), failed_models
         )
 
     merged = adapter.merge(per_model_filtered)
@@ -181,8 +180,11 @@ def run_multi_model(
             ratio = cost_gate.budget_ratio()  # type: ignore[union-attr]
         except Exception as exc:
             logger.warning(
-                f"cost_gate.budget_ratio() raised {type(exc).__name__}: {exc} — "
-                f"suspending cost gating for {_GATE_RETRY_SECONDS:.0f}s",
+                "cost_gate.budget_ratio() raised %s: %s — "
+                "suspending cost gating for %.0fs",
+                type(exc).__name__,
+                exc,
+                _GATE_RETRY_SECONDS,
                 exc_info=True,
             )
             _gate_disabled_at[0] = time.monotonic()
@@ -193,9 +195,7 @@ def run_multi_model(
         # Type-contract violation → permanent disable (not transient).
         if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
             logger.warning(
-                f"cost_gate.budget_ratio() returned {type(ratio).__name__} "
-                f"({ratio!r}), expected float — permanently disabling cost "
-                f"gating for the rest of this run"
+                "cost_gate.budget_ratio() returned %s (%r), expected float — permanently disabling cost gating for the rest of this run", type(ratio).__name__, ratio
             )
             _gate_permanent_off[0] = True
             return False, None
@@ -205,8 +205,11 @@ def run_multi_model(
         skip, spend = over_budget(reviewer.cutoff_ratio)
         if skip:
             logger.info(
-                f"Skipping reviewer {reviewer.name!r} — over budget "
-                f"(spend={spend:.2f}, cutoff={reviewer.cutoff_ratio:.2f})"
+                "Skipping reviewer %r — over budget "
+                "(spend=%.2f, cutoff=%.2f)",
+                reviewer.name,
+                spend,
+                reviewer.cutoff_ratio,
             )
             continue
         merged = _apply_reviewer(merged, reviewer, adapter)
@@ -220,15 +223,17 @@ def run_multi_model(
         skip, spend = over_budget(aggregator.cutoff_ratio)
         if skip:
             logger.info(
-                f"Skipping aggregator — over budget "
-                f"(spend={spend:.2f}, cutoff={aggregator.cutoff_ratio:.2f})"
+                "Skipping aggregator — over budget "
+                "(spend=%.2f, cutoff=%.2f)",
+                spend,
+                aggregator.cutoff_ratio,
             )
         else:
             try:
                 result = aggregator.aggregate(merged, correlation)
             except Exception as exc:
                 logger.warning(
-                    f"Aggregator raised {type(exc).__name__}: {exc}",
+                    "Aggregator raised %s: %s", type(exc).__name__, exc,
                     exc_info=True,
                 )
                 aggregation = {}
@@ -237,9 +242,7 @@ def run_multi_model(
                     aggregation = {}
                 elif not isinstance(result, dict):
                     logger.warning(
-                        f"Aggregator returned {type(result).__name__}, expected "
-                        f"dict — treating as empty per the documented contract"
-                    )
+                        "Aggregator returned %s, expected dict — treating as empty per the documented contract", type(result).__name__)
                     aggregation = {}
                 else:
                     aggregation = result
@@ -421,7 +424,7 @@ def _dispatch_parallel(
                     results = future.result(timeout=timeout)
                 except Exception as exc:
                     logger.warning(
-                        f"Model {name!r} task raised: {exc}",
+                        "Model %r task raised: %s", name, exc,
                         exc_info=True,
                     )
                     per_model_raw[name] = []
@@ -430,10 +433,7 @@ def _dispatch_parallel(
 
                 if not isinstance(results, list):
                     logger.warning(
-                        f"Model {name!r} task returned "
-                        f"{type(results).__name__}, "
-                        f"expected list — treating as failure"
-                    )
+                        "Model %r task returned %s, expected list — treating as failure", name, type(results).__name__)
                     per_model_raw[name] = []
                     failed.append(name)
                     continue
@@ -445,11 +445,7 @@ def _dispatch_parallel(
                 ]
                 if non_dict:
                     logger.warning(
-                        f"Model {name!r} task returned non-dict "
-                        f"items ({non_dict[:3]}"
-                        f"{'...' if len(non_dict) > 3 else ''}"
-                        f") — treating as failure. Item contract"
-                        f" is List[Dict[str, Any]]."
+                        "Model %r task returned non-dict items (%s%s) — treating as failure. Item contract is List[Dict[str, Any]].", name, non_dict[:3], ('...' if len(non_dict) > 3 else '')
                     )
                     per_model_raw[name] = []
                     failed.append(name)
@@ -521,17 +517,14 @@ def _apply_reviewer(
             reviewed = reviewer.review(merged)
     except Exception as exc:
         logger.warning(
-            f"Reviewer {reviewer.name!r} raised {type(exc).__name__}: {exc} — "
-            f"skipping this reviewer's annotations",
+            "Reviewer %r raised %s: %s — skipping this reviewer's annotations", reviewer.name, type(exc).__name__, exc,
             exc_info=True,
         )
         return merged
 
     if not isinstance(reviewed, list):
         logger.warning(
-            f"Reviewer {reviewer.name!r} returned {type(reviewed).__name__}, "
-            f"expected list — skipping this reviewer's annotations"
-        )
+            "Reviewer %r returned %s, expected list — skipping this reviewer's annotations", reviewer.name, type(reviewed).__name__)
         return merged
 
     by_id: dict[str, dict[str, Any]] = {
@@ -540,9 +533,7 @@ def _apply_reviewer(
     for new_item in reviewed:
         if not isinstance(new_item, dict):
             logger.debug(
-                f"Reviewer {reviewer.name!r} returned non-dict item "
-                f"({type(new_item).__name__}) — ignored"
-            )
+                "Reviewer %r returned non-dict item (%s) — ignored", reviewer.name, type(new_item).__name__)
             continue
         try:
             new_id = adapter.item_id(new_item)
@@ -553,24 +544,18 @@ def _apply_reviewer(
             # drop that item — they must not crash the run (matches
             # the non-dict handling above).
             logger.debug(
-                f"Reviewer {reviewer.name!r} returned item without a "
-                f"usable id ({type(exc).__name__}) — ignored"
-            )
+                "Reviewer %r returned item without a usable id (%s) — ignored", reviewer.name, type(exc).__name__)
             continue
         if allowed_ids is not None and new_id not in allowed_ids:
             logger.debug(
-                f"ConditionalReviewer {reviewer.name!r} returned item "
-                f"{new_id!r} that wasn't in its applicable set — ignored "
-                f"(reviewers cannot widen their own scope)"
+                "ConditionalReviewer %r returned item %r that wasn't in its applicable set — ignored (reviewers cannot widen their own scope)", reviewer.name, new_id
             )
             continue
         if new_id in by_id:
             by_id[new_id] = new_item
         else:
             logger.debug(
-                f"Reviewer {reviewer.name!r} returned item with unknown id "
-                f"{new_id!r} — ignored"
-            )
+                "Reviewer %r returned item with unknown id %r — ignored", reviewer.name, new_id)
 
     # Preserve original input order.
     return [by_id[adapter.item_id(orig)] for orig in merged]

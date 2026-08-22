@@ -555,10 +555,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
         missing.append("ioctl")
     if missing and state.warn_once("_seccomp_arch_missing_warned"):
         logger.warning(
-            f"Sandbox: seccomp could not resolve syscall(s) {missing} on this "
-            f"architecture — those blocks are NOT installed. Likely harmless "
-            f"on x86_64/aarch64 (this should be empty); investigate on other "
-            f"architectures if any entries appear."
+            "Sandbox: seccomp could not resolve syscall(s) %s on this architecture — those blocks are NOT installed. Likely harmless on x86_64/aarch64 (this should be empty); investigate on other architectures if any entries appear.", missing
         )
     # Block AF_UNIX/NETLINK/PACKET via arg 0; block SOCK_RAW via arg 1.
     # "frida" profile: allow AF_UNIX (frida-helper uses Unix sockets for

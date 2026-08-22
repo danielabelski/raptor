@@ -693,8 +693,7 @@ def intent_match(
 
     if initial_verdict is not None:
         log.debug(
-            f"intent_match: heuristic-only verdict={initial_verdict} "
-            f"signals={signals}"
+            "intent_match: heuristic-only verdict=%s signals=%s", initial_verdict, signals
         )
         return IntentMatchVerdict(
             verdict=initial_verdict,
@@ -707,8 +706,7 @@ def intent_match(
     # Ambiguous → LLM tiebreak (if available).
     if llm_client is None:
         log.debug(
-            f"intent_match: heuristics ambiguous, no LLM available; "
-            f"signals={signals}"
+            "intent_match: heuristics ambiguous, no LLM available; signals=%s", signals
         )
         return IntentMatchVerdict(
             verdict=VERDICT_UNCERTAIN,
@@ -722,8 +720,7 @@ def intent_match(
         )
 
     log.debug(
-        f"intent_match: heuristics ambiguous ({reasoning}); "
-        f"escalating to LLM"
+        "intent_match: heuristics ambiguous (%s); escalating to LLM", reasoning
     )
     verdict, llm_confidence, llm_reasoning, cost_usd, llm_error = (
         _llm_tiebreak(

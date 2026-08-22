@@ -2057,8 +2057,7 @@ class EgressProxy:
                 )
             self.port = bound_port
             logger.debug(
-                f"egress proxy listening on 127.0.0.1:{self.port} "
-                f"(allowlist: {sorted(self._allowed_hosts)})"
+                "egress proxy listening on 127.0.0.1:%s (allowlist: %s)", self.port, sorted(self._allowed_hosts)
             )
             self._ready.set()
             self._loop.run_forever()
@@ -2151,8 +2150,7 @@ class EgressProxy:
                 self._active_tunnels += 1
         if full:
             logger.warning(
-                f"egress proxy: max tunnels ({self._max_tunnels}) reached — "
-                f"refusing new connection"
+                "egress proxy: max tunnels (%s) reached — refusing new connection", self._max_tunnels
             )
             try:
                 await self._write_error(writer, 429, "Too Many Tunnels")
@@ -2333,8 +2331,7 @@ class EgressProxy:
                 # deny even in audit mode: log-AND-deny semantics.
                 _action = "denying" if _enforce_now else "allowing"
                 logger.warning(
-                    f"egress proxy: AUDIT would-deny {host}:{port} — "
-                    f"{_reason} (audit mode: {_action})"
+                    "egress proxy: AUDIT would-deny %s:%s — %s (audit mode: %s)", host, port, _reason, _action
                 )
                 audit_event = {**event, "result": "would_deny_host",
                                "reason": f"{_reason} (audit mode)",
@@ -2349,8 +2346,7 @@ class EgressProxy:
                 # Fall through to the connect path (audit_enforce=False).
             else:
                 logger.warning(
-                    f"egress proxy: DENY {host}:{port} — {_reason}"
-                )
+                    "egress proxy: DENY %s:%s — %s", host, port, _reason)
                 event.update(result="denied_host", reason=_reason,
                              duration=time.monotonic() - t_start)
                 self._record(event)
@@ -2408,8 +2404,7 @@ class EgressProxy:
                 )
             except (OSError, asyncio.TimeoutError) as e:
                 logger.warning(
-                    f"egress proxy: upstream proxy unreachable "
-                    f"{up_host}:{up_port}: {e}"
+                    "egress proxy: upstream proxy unreachable %s:%s: %s", up_host, up_port, e
                 )
                 event.update(result="upstream_failed",
                              reason=f"upstream proxy connect: {e.__class__.__name__}: {e}",
@@ -2449,9 +2444,7 @@ class EgressProxy:
             status_parts = resp_str.split(None, 2)
             if len(status_parts) < 2 or status_parts[1] != "200":
                 logger.warning(
-                    f"egress proxy: upstream rejected CONNECT {host}:{port} "
-                    f"— {resp_str!r}"
-                )
+                    "egress proxy: upstream rejected CONNECT %s:%s — %r", host, port, resp_str)
                 up_writer.close()
                 event.update(result="upstream_failed",
                              reason=f"upstream returned: {resp_str!r}",
@@ -2630,13 +2623,12 @@ class EgressProxy:
                 result = "timed_out"
                 reason = sever_reason
                 logger.warning(
-                    f"egress proxy: TIMEOUT {host}:{port} "
-                    f"({sever_reason}; c2u={total['c2u']} u2c={total['u2c']})"
+                    "egress proxy: TIMEOUT %s:%s (%s; c2u=%s u2c=%s)", host, port, sever_reason, total['c2u'], total['u2c']
                 )
         except Exception as e:  # noqa: BLE001
             reason = f"relay ended: {e.__class__.__name__}"
             logger.debug(
-                f"egress proxy: relay ended {host}:{port}: {e.__class__.__name__}"
+                "egress proxy: relay ended %s:%s: %s", host, port, e.__class__.__name__
             )
         finally:
             # Upstream may already be gone (OSError); transport may be
@@ -2919,8 +2911,7 @@ def get_proxy(
             _install_sigterm_cleanup()
             if upstream:
                 logger.info(
-                    f"egress proxy: tunnelling via upstream {upstream} "
-                    f"(no_proxy={no_proxy or 'none'})"
+                    "egress proxy: tunnelling via upstream %s (no_proxy=%s)", upstream, no_proxy or 'none'
                 )
         else:
             _instance.add_hosts(allowed_hosts)

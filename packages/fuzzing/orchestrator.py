@@ -331,10 +331,7 @@ class FuzzingOrchestrator:
                         llm=self.llm,
                     )
                     logger.info(
-                        "binary evidence map written: "
-                        f"{len(binary_result.context_map.get('entry_points', []))} entry point candidates, "
-                        f"{len(binary_result.context_map.get('sink_details', []))} sinks, "
-                        f"{len(binary_result.context_map.get('candidate_flows', []))} candidate flows"
+                        "binary evidence map written: %s entry point candidates, %s sinks, %s candidate flows", len(binary_result.context_map.get('entry_points', [])), len(binary_result.context_map.get('sink_details', [])), len(binary_result.context_map.get('candidate_flows', []))
                     )
                 except Exception as e:  # noqa: BLE001 — non-fatal
                     logger.warning("Binary understand failed (non-fatal): %s", e)
@@ -358,8 +355,7 @@ class FuzzingOrchestrator:
                 )
                 if bundle is not None:
                     logger.info(
-                        "binary graph updated with fuzz evidence: "
-                        f"{len(bundle.crashes)} crash witnesses"
+                        "binary graph updated with fuzz evidence: %s crash witnesses", len(bundle.crashes)
                     )
             except Exception as e:  # noqa: BLE001 — non-fatal
                 logger.warning("Binary fuzz evidence append failed (non-fatal): %s", e)
@@ -458,8 +454,7 @@ class FuzzingOrchestrator:
         }
         (out_dir / "seed-corpus.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
         logger.info(
-            "Using RAPTOR built-in seed corpus: "
-            f"{manifest['seed_count']} seeds at {seed_dir}"
+            "Using RAPTOR built-in seed corpus: %s seeds at %s", manifest['seed_count'], seed_dir
         )
         return seed_dir, info
 

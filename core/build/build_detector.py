@@ -1078,9 +1078,7 @@ class BuildDetector:
         jars = sorted(str(p) for p in lib_dir.glob("*.jar"))
         if jars:
             logger.info(
-                f"  Java synthesised build: {len(jars)} jar(s) from "
-                f"lib/ added to classpath. If CodeQL semantics look "
-                f"wrong, inspect lib/ for stale/unused JARs."
+                "  Java synthesised build: %s jar(s) from lib/ added to classpath. If CodeQL semantics look wrong, inspect lib/ for stale/unused JARs.", len(jars)
             )
         return jars
 
@@ -1446,10 +1444,7 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
         )
         if not any(real_claude.startswith(p) for p in allowed_prefixes):
             logger.info(
-                f"  Skipping CC flag inference — `claude` resolves to {real_claude!r} "
-                "which is outside the install-location allowlist. "
-                "If this is a legitimate location, add it to "
-                "_cc_suggest_flags' `allowed_prefixes`."
+                "  Skipping CC flag inference — `claude` resolves to %r which is outside the install-location allowlist. If this is a legitimate location, add it to _cc_suggest_flags' `allowed_prefixes`.", real_claude
             )
             return None
 

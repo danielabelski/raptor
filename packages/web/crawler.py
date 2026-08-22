@@ -55,7 +55,7 @@ class WebCrawler:
         self._log_page_ids: dict[str, str] = {}
 
         logger.info(
-            f"Web crawler initialized (max_depth={max_depth}, max_pages={max_pages})"
+            "Web crawler initialized (max_depth=%s, max_pages=%s)", max_depth, max_pages
         )
 
     def _redact_url_for_artifact(self, url: object) -> str:
@@ -214,8 +214,7 @@ class WebCrawler:
 
         self.visited_urls.add(url)
         logger.info(
-            f"Crawling: {self._crawl_log_label(url)} "
-            f"(depth={depth}, pages={len(self.visited_urls)})"
+            "Crawling: %s (depth=%s, pages=%s)", self._crawl_log_label(url), depth, len(self.visited_urls)
         )
 
         try:
@@ -248,8 +247,7 @@ class WebCrawler:
 
             if response.status_code != 200:
                 logger.debug(
-                    f"Non-200 response for {self._crawl_log_label(url)}: "
-                    f"{response.status_code}"
+                    "Non-200 response for %s: %s", self._crawl_log_label(url), response.status_code
                 )
                 return
 
@@ -360,8 +358,7 @@ class WebCrawler:
 
         except Exception as e:
             logger.warning(
-                f"Error parsing HTML from {self._crawl_log_label(url)}: "
-                f"{type(e).__name__}"
+                "Error parsing HTML from %s: %s", self._crawl_log_label(url), type(e).__name__
             )
 
     def _process_json_response(self, url: str, response) -> None:
@@ -436,8 +433,7 @@ class WebCrawler:
         _MAX_JS_BYTES = 4 * 1024 * 1024
         if len(js_code) > _MAX_JS_BYTES:
             logger.debug(
-                f"JS body ({len(js_code)} chars) exceeds API-endpoint-scan "
-                f"cap ({_MAX_JS_BYTES}); truncating"
+                "JS body (%s chars) exceeds API-endpoint-scan cap (%s); truncating", len(js_code), _MAX_JS_BYTES
             )
             js_code = js_code[:_MAX_JS_BYTES]
 
@@ -482,7 +478,7 @@ class WebCrawler:
                                 and absolute_url not in self.visited_urls):
                             _queue.append((absolute_url, depth + 1))
                         logger.debug(
-                            f"Found API endpoint in JS: {self._crawl_log_label(absolute_url)}"
+                            "Found API endpoint in JS: %s", self._crawl_log_label(absolute_url)
                         )
 
     def get_results(self) -> dict:

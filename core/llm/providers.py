@@ -613,11 +613,7 @@ class LLMProvider(ABC):
                 return
             cls._warned_unknown_models.add(model_name)
         logger.warning(
-            f"cost tracking: model {model_name!r} not in MODEL_COSTS "
-            f"and no cost_per_1k_tokens set — every call records $0. "
-            f"Budget caps based on cumulative cost are NOT enforced "
-            f"for this model. Add a rate to model_data.MODEL_COSTS "
-            f"or pass cost_per_1k_tokens to the LLMConfig."
+            "cost tracking: model %r not in MODEL_COSTS and no cost_per_1k_tokens set — every call records $0. Budget caps based on cumulative cost are NOT enforced for this model. Add a rate to model_data.MODEL_COSTS or pass cost_per_1k_tokens to the LLMConfig.", model_name
         )
 
     def _init_instructor(self, make_client) -> None:
@@ -849,7 +845,7 @@ class LLMProvider(ABC):
             from core.security.prompt_output_sanitise import escape_nonprintable
             _safe_msg = escape_nonprintable(str(e))[:1024]
             logger.error(
-                f"Structured fallback failed (JSON parse or validation): {_safe_msg}"
+                "Structured fallback failed (JSON parse or validation): %s", _safe_msg
             )
             raise
 
@@ -1456,7 +1452,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 ),
             )
             logger.debug(
-                f"OpenAICompatibleProvider: direct SDK (no dispatcher) provider={config.provider}"
+                "OpenAICompatibleProvider: direct SDK (no dispatcher) provider=%s", config.provider
             )
 
         self._init_instructor(lambda: instructor.from_openai(self.client))
@@ -1735,8 +1731,7 @@ class OpenAICompatibleProvider(LLMProvider):
         """
         if _unused:
             logger.debug(
-                f"OpenAICompatibleProvider.turn: ignoring unrecognised "
-                f"kwargs: {sorted(_unused)}"
+                "OpenAICompatibleProvider.turn: ignoring unrecognised kwargs: %s", sorted(_unused)
             )
 
         # Already detected this provider rejects tool/function calling.
@@ -2805,8 +2800,7 @@ class AnthropicProvider(LLMProvider):
             )
         if _unused:
             logger.debug(
-                f"AnthropicProvider.turn: ignoring unrecognised "
-                f"kwargs: {sorted(_unused)}"
+                "AnthropicProvider.turn: ignoring unrecognised kwargs: %s", sorted(_unused)
             )
 
         # ---- system block --------------------------------------------
@@ -3053,17 +3047,7 @@ class AnthropicProvider(LLMProvider):
         if response.cache_read_tokens > 0 or response.cache_write_tokens > 0:
             return                                          # caching is working
         logger.warning(
-            f"AnthropicProvider: model {self.config.model_name!r} did not "
-            f"populate cache fields on a turn with cache_control opt-in "
-            f"and {response.input_tokens} input tokens — cache savings "
-            f"won't apply for requests this size. Common causes: (1) "
-            f"this model's de-facto cacheable-region minimum is higher "
-            f"than the documented 1024 tokens; (2) the cacheable subset "
-            f"(system + tools when those are opted in) is below the "
-            f"model's minimum even though total input is above 8192. "
-            f"Try a different model (claude-opus-4-7, "
-            f"claude-sonnet-4-5-20250929) or increase the cacheable "
-            f"region size. This warning fires once per provider instance."
+            "AnthropicProvider: model %r did not populate cache fields on a turn with cache_control opt-in and %s input tokens — cache savings won't apply for requests this size. Common causes: (1) this model's de-facto cacheable-region minimum is higher than the documented 1024 tokens; (2) the cacheable subset (system + tools when those are opted in) is below the model's minimum even though total input is above 8192. Try a different model (claude-opus-4-7, claude-sonnet-4-5-20250929) or increase the cacheable region size. This warning fires once per provider instance.", self.config.model_name, response.input_tokens
         )
         self._caching_warning_emitted = True
 
@@ -3410,7 +3394,7 @@ class GeminiProvider(LLMProvider):
         # {thread_id: Client} — bounded by live-thread reaping.
         self._clients: dict[int, Any] = {}
         logger.debug(
-            f"Initialized GeminiProvider: {config.model_name}"
+            "Initialized GeminiProvider: %s", config.model_name
         )
 
         # Pre-build safety settings once.  RAPTOR is a security research
@@ -4261,7 +4245,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
         except RuntimeError as exc:
             err_msg = f"subprocess error: {exc}"
-            logger.warning(f"ClaudeCodeLLMProvider.turn: {err_msg}")
+            logger.warning("ClaudeCodeLLMProvider.turn: %s", err_msg)
             return TurnResponse(
                 content=[],
                 stop_reason=StopReason.ERROR,
@@ -4359,7 +4343,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             )
         except subprocess.TimeoutExpired:
             err_msg = f"claude -p timed out after {self._timeout_s}s"
-            logger.warning(f"ClaudeCodeLLMProvider._turn_resumable: {err_msg}")
+            logger.warning("ClaudeCodeLLMProvider._turn_resumable: %s", err_msg)
             return TurnResponse(
                 content=[],
                 stop_reason=StopReason.ERROR,
@@ -4386,7 +4370,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
 
         if sr.error:
             err_msg = sr.error
-            logger.warning(f"ClaudeCodeLLMProvider._turn_resumable: {err_msg}")
+            logger.warning("ClaudeCodeLLMProvider._turn_resumable: %s", err_msg)
             if first_turn and sr.session_id:
                 self._session_id = sr.session_id
             if (

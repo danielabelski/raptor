@@ -926,8 +926,7 @@ def _read_regs(pid: int, arch_info: dict) -> bytes | None:
     # the partial read.
     if iov.iov_len < size:
         logger.debug(
-            f"tracer: PTRACE_GETREGSET({pid}) returned partial regset "
-            f"({iov.iov_len} of {size} bytes); refusing decode"
+            "tracer: PTRACE_GETREGSET(%s) returned partial regset (%s of %s bytes); refusing decode", pid, iov.iov_len, size
         )
         return None
     return bytes(buf)
@@ -1308,8 +1307,7 @@ def trace(target_pid: int, run_dir: Path,
     arch_info = _arch_info()
     if arch_info is None:
         logger.error(
-            f"tracer: unsupported arch {_ARCH} "
-            f"(supported: {sorted(_ARCH_INFO)})"
+            "tracer: unsupported arch %s (supported: %s)", _ARCH, sorted(_ARCH_INFO)
         )
         return 2
 
@@ -1415,8 +1413,7 @@ def trace(target_pid: int, run_dir: Path,
                 current_ppid = os.getppid()
                 if current_ppid != initial_ppid or current_ppid == 1:
                     logger.warning(
-                        f"tracer: parent died (ppid was {initial_ppid}, "
-                        f"now {current_ppid}); exiting"
+                        "tracer: parent died (ppid was %s, now %s); exiting", initial_ppid, current_ppid
                     )
                     return 0
 

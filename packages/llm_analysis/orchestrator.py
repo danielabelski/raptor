@@ -1060,11 +1060,7 @@ def orchestrate(
         collapsed = _detect_multi_model_collapse(results_by_id, n_analysis_models)
         if collapsed:
             logger.warning(
-                f"Multi-model collapse: {len(collapsed)}/"
-                f"{len(results_by_id)} finding(s) had fewer than "
-                f"{n_analysis_models} distinct contributors. Likely caused "
-                f"by silent fallback during model failure. First few: "
-                f"{collapsed[:3]}"
+                "Multi-model collapse: %s/%s finding(s) had fewer than %s distinct contributors. Likely caused by silent fallback during model failure. First few: %s", len(collapsed), len(results_by_id), n_analysis_models, collapsed[:3]
             )
 
     # --- IRIS-style dataflow validation (opt-in via --validate-dataflow) ---
@@ -1908,8 +1904,7 @@ def _drop_hallucinated_finding_ids(
         dropped = len(items) - len(kept)
         if dropped:
             logger.info(
-                f"Aggregate: dropped {dropped} item{'s' if dropped != 1 else ''} "
-                f"with unknown finding_id from {key}"
+                "Aggregate: dropped %s item%s with unknown finding_id from %s", dropped, ('s' if dropped != 1 else ''), key
             )
         aggregation[key] = kept
 

@@ -103,7 +103,13 @@ def test_stamped_smt_record_counts(tmp_path: Path) -> None:
     base = tmp_path / "run"
     base.mkdir(parents=True)
     path = {"finding_id": "F3", "path_conditions": ["x > 0"]}
-    record = {"feasible": False, "conditions_hash": "abc123"}
+    # conditions_hash must be the canonical hash of the path's OWN
+    # conditions — the verifier recomputes it as the path binding.
+    record = {
+        "feasible": False,
+        "conditions_hash": prov.smt_conditions_hash(
+            path["path_conditions"]),
+    }
     prov.stamp_smt_feasibility(path, record, base)
     path["smt_feasibility"] = record
     report = _write_siblings(base, [], [path])
@@ -118,8 +124,11 @@ def test_one_forged_path_blocks_the_refutation(tmp_path: Path) -> None:
     NOT mechanically refuted — every path must verify."""
     base = tmp_path / "run"
     base.mkdir(parents=True)
-    p1 = {"finding_id": "F3"}
-    r1 = {"feasible": False, "conditions_hash": "aa"}
+    p1 = {"finding_id": "F3", "path_conditions": ["x > 0"]}
+    r1 = {
+        "feasible": False,
+        "conditions_hash": prov.smt_conditions_hash(["x > 0"]),
+    }
     prov.stamp_smt_feasibility(p1, r1, base)
     p1["smt_feasibility"] = r1
     p2 = {"finding_id": "F3",
@@ -184,3 +193,62 @@ def test_verified_refutation_still_counts(tmp_path: Path) -> None:
         {"findings": [finding]}, tmp_path)
     assert stats["witness_stripped"] == 0
     assert _mechanical_disqualifier(finding, None) == "witness_refuted"
+
+
+def test_stamped_record_copied_onto_sibling_path_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Path binding (inverted proof-of-concept): a genuinely-stamped
+    feasible:false record copied onto a sibling SAT path of the SAME
+    finding must not verify there — the record's conditions_hash is
+    recomputed from the path's own path_conditions."""
+    from packages.exploitability_validation.smt_paths import (
+        sweep_attack_paths,
+    )
+
+    base = tmp_path / "run"
+    base.mkdir(parents=True)
+    p_unsat = {"finding_id": "F3", "path_conditions": ["x > 10", "x < 5"]}
+    p_sat = {"finding_id": "F3", "path_conditions": ["y == 1"]}
+
+    def fake_validate(conds, profile):
+        if len(conds) == 2:
+            return {"feasible": False, "unsatisfied": conds}
+        return {"feasible": True, "model": {"y": 1}}
+
+    sweep_attack_paths(
+        [p_unsat, p_sat], validate_fn=fake_validate, run_dir=base,
+    )
+    assert p_unsat["smt_feasibility"]["feasible"] is False
+    assert p_sat["smt_feasibility"]["feasible"] is True
+
+    # The forgery: overwrite the SAT path's record with the unsat
+    # path's genuinely-stamped one.
+    p_sat["smt_feasibility"] = dict(p_unsat["smt_feasibility"])
+    report = _write_siblings(base, [], [p_unsat, p_sat])
+
+    sib = _ValidationSiblings(report)
+    assert sib.smt_all_paths_infeasible("F3") is False
+    finding = {"id": "F3", "file": "a.c", "function": "h", "ruling": {}}
+    assert _mechanical_disqualifier(finding, sib) is None
+
+
+def test_record_on_conditionless_path_is_refused(tmp_path: Path) -> None:
+    """A stamped record grafted onto a path with NO path_conditions is
+    foreign by construction (the sweep only rules on condition-carrying
+    paths) and must not count."""
+    from core.witness.provenance import stamp_smt_feasibility
+
+    base = tmp_path / "run"
+    base.mkdir(parents=True)
+    donor = {"finding_id": "F4", "path_conditions": ["a > 1", "a < 0"]}
+    record = {
+        "feasible": False,
+        "conditions_hash": prov.smt_conditions_hash(
+            donor["path_conditions"]),
+    }
+    stamp_smt_feasibility(donor, record, base)
+    bare = {"finding_id": "F4", "smt_feasibility": dict(record)}
+    report = _write_siblings(base, [], [bare])
+    sib = _ValidationSiblings(report)
+    assert sib.smt_all_paths_infeasible("F4") is False

@@ -328,6 +328,31 @@ def iris_refutation_fields(
     }
 
 
+def smt_conditions_hash(conditions: Any) -> str:
+    """Canonical hash of an attack path's ``path_conditions``.
+
+    Single source of truth shared by the sweep writer (which stores it
+    in the record and inside the MAC) and the verifier (which
+    recomputes it from the path's OWN conditions). The MAC binds
+    ``(run, finding, feasible, conditions_hash)`` but two paths of the
+    same finding are otherwise indistinguishable to it — without the
+    verifier-side equality check, a genuinely-stamped
+    ``feasible: false`` record copied onto a sibling path the solver
+    ruled SAT would verify there. The recomputed hash ties each record
+    to the exact condition set it ruled on."""
+    if not isinstance(conditions, list) or not conditions:
+        # No conditions → the sweep never produced a record for this
+        # path; any record present is foreign. A non-matchable
+        # sentinel (not a hex prefix) guarantees inequality.
+        return "<no-conditions>"
+    import json as _json
+    try:
+        payload = _json.dumps(conditions, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        payload = repr(conditions)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 def smt_feasibility_fields(
     path: Mapping[str, Any],
     record: Mapping[str, Any],
@@ -337,7 +362,10 @@ def smt_feasibility_fields(
     on, in MAC form: ``feasible is False`` is the mechanical
     refutation signal, ``conditions_hash`` pins WHICH condition set
     the solver ruled on, and the path's finding id binds the verdict
-    to the finding it refutes."""
+    to the finding it refutes. The MAC alone cannot tell two paths of
+    the same finding apart, so ``verify_smt_feasibility`` ALSO checks
+    the record's ``conditions_hash`` against
+    :func:`smt_conditions_hash` of the path's own conditions."""
     return {
         "kind": _SMT_KIND,
         "run": run_binding(run_dir),
@@ -444,13 +472,25 @@ def verify_smt_feasibility(
     run_dir: Path | str,
 ) -> bool:
     """Whether the path's ``smt_feasibility`` record was produced by
-    the mechanical SMT sweep of THIS install in THIS run directory."""
+    the mechanical SMT sweep of THIS install in THIS run directory
+    FOR THIS PATH's condition set.
+
+    The final clause is the path binding: the MAC covers the
+    conditions hash the solver ruled on, and the path's own
+    ``path_conditions`` must hash to that same value — a
+    validly-stamped record copied from a sibling path of the same
+    finding carries the donor path's hash and fails here."""
     record = path.get("smt_feasibility") if isinstance(path, Mapping) else None
     if not isinstance(record, Mapping):
         return False
-    return verify(
+    if not verify(
         smt_feasibility_fields(path, record, run_dir),
         record.get(PROVENANCE_KEY),
+    ):
+        return False
+    return (
+        smt_conditions_hash(path.get("path_conditions"))
+        == str(record.get("conditions_hash") or "")
     )
 
 
@@ -629,6 +669,7 @@ __all__ = [
     "mint",
     "run_binding",
     "sanitise_findings_evidence",
+    "smt_conditions_hash",
     "smt_feasibility_fields",
     "stamp_feasibility",
     "stamp_iris_refutation",

@@ -1251,11 +1251,18 @@ class TestDowngradeReferee:
         ann_dir, audit_out = self._setup(tmp_path, ["semgrep"])
         # Sweep-stamped records — unstamped ones are ignored (see
         # test_feedback_sibling_provenance for the forged-record side).
-        from core.witness.provenance import stamp_smt_feasibility
+        from core.witness.provenance import (
+            smt_conditions_hash,
+            stamp_smt_feasibility,
+        )
         paths = []
-        for _ in range(2):
-            path = {"finding_id": "F-2"}
-            record = {"feasible": False}
+        for i in range(2):
+            conditions = [f"v{i} > 1", f"v{i} < 0"]
+            path = {"finding_id": "F-2", "path_conditions": conditions}
+            record = {
+                "feasible": False,
+                "conditions_hash": smt_conditions_hash(conditions),
+            }
             stamp_smt_feasibility(path, record, tmp_path)
             path["smt_feasibility"] = record
             paths.append(path)

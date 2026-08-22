@@ -112,6 +112,22 @@ MAX_CMD_LEN = 2048
 
 _denial_count: int = 0  # reset by set_active_run_dir per run
 
+# Parent-side memory of the audit-degraded markers THIS process wrote,
+# keyed by resolved run-dir path. The marker file lives in the
+# target-writable run root and is written BEFORE the (unaudited)
+# workload executes — the target can simply delete it. The parent
+# KNOWS the run degraded, so run finalisation re-asserts the marker
+# from this record (see reassert_audit_degraded). Entries are tiny and
+# per-process run counts are low, so no eviction is needed. Guarded by
+# _lock. Each entry: {"payload": <exact dict written>, "restored":
+# <bool — a re-assert found the on-disk marker missing/altered>}.
+_degraded_markers: dict[str, dict] = {}
+
+# Read bound for the marker file during re-assertion. An honest marker
+# is well under 4 KB; anything bigger at the target-writable path is a
+# planted object and reads as "altered".
+_MARKER_MAX_BYTES = 1024 * 1024
+
 # Read bound for the denials JSONL. An honest file is capped at
 # MAX_DENIALS_PER_RUN records of well-under-PIPE_BUF lines (~40 MB
 # absolute ceiling, KBs in practice); anything bigger at the
@@ -418,7 +434,124 @@ def record_audit_degraded(run_dir: Path, *, reason: str,
         # Catch programming-error-shaped failures too (a future payload
         # change with non-serialisable types would otherwise propagate
         # and abort the caller's cleanup path).
-        pass
+        return
+    # Remember what was written so run finalisation can re-assert it
+    # if the target deletes/alters the marker (the run root is
+    # target-writable while the workload runs). Registered only after
+    # a SUCCESSFUL write — an absence at re-assert time then genuinely
+    # means the file was removed after we wrote it. A pre-existing
+    # "restored" flag is preserved: tamper evidence from an earlier
+    # re-assert must not be washed out by a later degradation site
+    # re-writing the marker.
+    run_key = str(run_dir.resolve())
+    with _lock:
+        prev = _degraded_markers.get(run_key)
+        _degraded_markers[run_key] = {
+            "payload": payload,
+            "restored": bool(prev and prev.get("restored")),
+        }
+
+
+def _read_marker_bytes(path: Path) -> bytes | None:
+    """Bounded, symlink-refusing read of the audit-degraded marker.
+
+    The marker lives in the target-writable run root, so the same
+    discipline as triage._read_bounded applies: O_NOFOLLOW +
+    O_NONBLOCK at open, regular-file check on the opened inode,
+    size bound. Any refusal returns None — for the re-assert caller,
+    "unreadable" and "absent" both mean "not the marker we wrote".
+    """
+    try:
+        fd = os.open(
+            str(path),
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_size > _MARKER_MAX_BYTES:
+            return None
+        chunks = []
+        remaining = _MARKER_MAX_BYTES
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def reassert_audit_degraded(run_dir: Path) -> bool:
+    """Re-assert the audit-degraded marker after the workload exited.
+
+    ``record_audit_degraded`` writes the marker BEFORE the degraded
+    (unaudited) workload runs, into the target-writable run root — the
+    target can delete or alter it and thereby erase the only persisted
+    signal that its run went unaudited. The parent's own memory of the
+    degradation (``_degraded_markers``) is out of the target's reach,
+    so run finalisation (summarize_and_write, triage) calls this to
+    rewrite the exact original payload when the on-disk copy no longer
+    matches. Best-effort, never raises past its own guards.
+
+    Returns True when this run's marker was found missing/altered at
+    ANY re-assert so far (sticky — tamper evidence must survive the
+    restore itself; the first caller repairs the file, later callers
+    such as triage still need to see that a repair was necessary).
+    Returns False when no marker was recorded by this process for
+    ``run_dir`` or the on-disk copy is intact.
+    """
+    try:
+        run_key = str(Path(run_dir).resolve())
+    except OSError:
+        return False
+    with _lock:
+        entry = _degraded_markers.get(run_key)
+    if entry is None:
+        return False
+    expected = (
+        json.dumps(entry["payload"], indent=2, ensure_ascii=True) + "\n"
+    ).encode("utf-8")
+    current = _read_marker_bytes(Path(run_dir) / AUDIT_DEGRADED_FILE)
+    if current == expected:
+        return bool(entry.get("restored"))
+    entry["restored"] = True
+    logger.warning(
+        "AUDIT-DEGRADED MARKER TAMPER SUSPECTED in %s: the marker this "
+        "process wrote is %s — restoring it. The run dir is writable "
+        "by the sandboxed target; a removed degradation marker is "
+        "itself tamper evidence.",
+        run_dir, "missing" if current is None else "altered",
+    )
+    _log_security_event(
+        "sandbox_evidence_corrupt",
+        f"audit-degraded marker missing/altered under {run_dir}",
+        marker_missing=current is None,
+    )
+    try:
+        write_text_atomically(
+            Path(run_dir) / AUDIT_DEGRADED_FILE,
+            expected.decode("utf-8"),
+            tmp_prefix=".~audit-degraded-",
+        )
+    except OSError:
+        # Restore is best-effort; the True return (and the security
+        # event above) still carries the tamper evidence to triage.
+        logger.warning(
+            "reassert_audit_degraded: failed to restore marker under %s",
+            run_dir, exc_info=True,
+        )
+    return True
 
 
 def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
@@ -437,6 +570,13 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     """
     global _evidence_handle
     run_dir = Path(run_dir)
+    # Re-assert the audit-degraded marker FIRST: summarize_and_write is
+    # the parent-side hook every terminal-state transition runs
+    # (complete_run/fail_run/cancel_run), i.e. AFTER the workload has
+    # exited — a target-deleted marker must not stay deleted. Runs even
+    # when this function goes on to return None (no denials JSONL):
+    # a degraded run naturally produces exactly that artifact state.
+    reassert_audit_degraded(run_dir)
     # Finalise the held evidence fd for this run BEFORE the rename:
     # the inode verification fires here (loud warning on a swapped
     # file), and closing stops any later record_denial from appending

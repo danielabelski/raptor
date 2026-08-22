@@ -53,6 +53,7 @@ from core.sandbox.summary import (
     AUDIT_DEGRADED_FILE,
     MAX_DENIALS_PER_RUN,
     SUMMARY_FILE,
+    reassert_audit_degraded,
 )
 
 TRIAGE_FILE = "sandbox-triage.json"
@@ -359,10 +360,13 @@ def triage_run(run_dir: Path, *,
     """Classify a completed run's sandbox telemetry.
 
     Returns the triage dict (also written to <run_dir>/sandbox-triage.json),
-    or None if neither sandbox-summary.json nor proxy-events.jsonl exists
-    for this run_dir — mirrors summarize_and_write's "no denials → None, no
-    file written" convention so file-presence keeps meaning "something
-    happened" across every sibling run-dir artifact.
+    or None if none of sandbox-summary.json, proxy-events.jsonl, or the
+    sandbox-audit-degraded.json marker exists for this run_dir — mirrors
+    summarize_and_write's "no denials → None, no file written" convention
+    so file-presence keeps meaning "something happened" across every
+    sibling run-dir artifact. A marker-only run (audit degraded, no other
+    telemetry — exactly what an unaudited fallback produces) yields a
+    report carrying the degradation caveat, never silence.
 
     ``allow_legacy`` keeps the manual ``raptor-sandbox-triage`` surface
     able to re-triage old pre-provenance runs. Lifecycle callers MUST pass
@@ -389,6 +393,13 @@ def triage_run(run_dir: Path, *,
     run) — this is the same behaviour as before this parameter existed.
     """
     run_dir = Path(run_dir)
+    # Re-assert the audit-degraded marker before reading anything: the
+    # marker is written into the target-writable run root BEFORE the
+    # unaudited fallback executes, so the target can delete it. The
+    # parent's in-process record (core.sandbox.summary) is out of the
+    # target's reach; a True return means the on-disk marker had to be
+    # restored at some point this run — tamper evidence in itself.
+    marker_restored = reassert_audit_degraded(run_dir)
     raw_summary = _load_json(run_dir / SUMMARY_FILE)
     # The events JSONL streams (per-line MACs make incremental
     # verification safe) so honest chatty runs above the whole-file
@@ -410,12 +421,20 @@ def triage_run(run_dir: Path, *,
     count_present = _artifact_present(run_dir / PROXY_EVENTS_COUNT_FILENAME)
     summary_destroyed = summary_present and raw_summary is None
     events_destroyed = events_present and not raw_proxy_events
-    if raw_summary is None and not raw_proxy_events:
-        # A surviving count sidecar with the events file gone is the
-        # whole-file-deletion shape: events were written, then erased.
-        # It must drive a (tampered) report, never silence.
+    degraded_present = _artifact_present(run_dir / AUDIT_DEGRADED_FILE)
+    degraded_destroyed = degraded_present and raw_audit_degraded is None
+    # The audit-degraded marker joins the existence gate: an unaudited
+    # fallback naturally produces exactly "no summary, no proxy events,
+    # marker only", and returning None here would silently launder
+    # "audit failed, no other telemetry" into no-report. A marker-only
+    # run must yield a report carrying the degradation caveat.
+    # A surviving count sidecar with the events file gone is the
+    # whole-file-deletion shape: events were written, then erased.
+    # It must drive a (tampered) report, never silence.
+    if (raw_summary is None and not raw_proxy_events
+            and raw_audit_degraded is None and not marker_restored):
         if not allow_legacy and (summary_destroyed or events_destroyed
-                                 or count_present):
+                                 or degraded_destroyed or count_present):
             pass  # fall through: unusable artifacts drive a report
         else:
             if not allow_legacy:
@@ -490,6 +509,18 @@ def triage_run(run_dir: Path, *,
         if events_destroyed:
             destroyed.append("proxy_events")
             events_integrity = _INTEGRITY_TAMPERED
+        if degraded_destroyed:
+            destroyed.append("audit_degraded")
+            degraded_integrity = _INTEGRITY_TAMPERED
+    # A restored marker means the parent WROTE the degradation marker
+    # and something in the target-writable run dir later removed or
+    # altered it — deletion of tamper-relevant evidence, regardless of
+    # legacy mode (the restore record lives in parent memory, so it can
+    # only be genuine). The restored content itself still feeds the
+    # degradation caveat below; the integrity demotion carries the
+    # deletion signal.
+    if marker_restored:
+        degraded_integrity = _INTEGRITY_TAMPERED
 
     integrity = {
         "sandbox_summary": summary_integrity,
@@ -499,11 +530,18 @@ def triage_run(run_dir: Path, *,
     tampered = [name for name, state in integrity.items()
                 if state == _INTEGRITY_TAMPERED]
     if tampered:
+        restored = ["audit_degraded"] if marker_restored else []
         evidence = [f"{name}: provenance verification failed"
-                    for name in sorted(set(tampered) - set(destroyed))]
+                    for name in sorted(set(tampered) - set(destroyed)
+                                       - set(restored))]
         evidence += [
             f"{name}: file present but yielded no readable content "
             f"(destroyed/replaced)" for name in sorted(destroyed)]
+        if marker_restored:
+            evidence.append(
+                "audit_degraded: marker written by the parent was "
+                "missing/altered in the run dir and was restored from "
+                "parent memory (evidence deletion)")
         if rejected_events:
             evidence.append(
                 f"{rejected_events} proxy event(s) rejected "

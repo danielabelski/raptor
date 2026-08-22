@@ -2297,5 +2297,10 @@
     "count": 15,
     "kind": "literal",
     "note": "serializer field manifest for the reachability adjacency cache JSON format (persistence schema keys, not a learned name vocabulary; must stay in lockstep with _index_from_jsonable)"
+  },
+  "core/analysis/_reach_cache.py::_MANDATORY_INDEX_FIELDS": {
+    "count": 15,
+    "kind": "literal",
+    "note": "mandatory-field manifest for the reachability adjacency cache decode gate (same persistence schema keys as _index_to_jsonable; an index missing any of them is a cache miss, not a vocabulary)"
   }
 }

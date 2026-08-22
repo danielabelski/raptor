@@ -264,6 +264,17 @@ def _index_to_jsonable(index: "_AdjacencyIndex") -> dict[str, Any]:
     }
 
 
+# Every field _index_to_jsonable writes. A well-formed cache entry
+# carries all of them; anything less is foreign/corrupt → miss.
+_MANDATORY_INDEX_FIELDS = frozenset({
+    "forward", "reverse", "uncertain_callers_by_tail", "method_match",
+    "uncertain_callees", "has_method_dispatch", "definitions",
+    "class_of_method", "class_bases", "override_methods",
+    "framework_callable", "framework_registered",
+    "qualified_to_internal", "call_lines", "test_paths",
+})
+
+
 def _index_from_jsonable(data: dict[str, Any]) -> "_AdjacencyIndex":
     from .reachability import (
         ExternalFunction,
@@ -273,6 +284,15 @@ def _index_from_jsonable(data: dict[str, Any]) -> "_AdjacencyIndex":
 
     if not isinstance(data, dict):
         raise ValueError("index document must be a JSON object")
+    missing = _MANDATORY_INDEX_FIELDS - data.keys()
+    if missing:
+        # save_index always writes every field; a document without
+        # them (e.g. a bare ``{}`` planted under valid magic) is not a
+        # cache entry this module produced → miss, not a valid empty
+        # index.
+        raise ValueError(
+            f"index document missing mandatory fields: {sorted(missing)}"
+        )
 
     def dec_internal(v: Any) -> Any:
         if (
@@ -506,10 +526,14 @@ def load_index(fingerprint: str | None) -> _AdjacencyIndex | None:
     try:
         idx = _index_from_jsonable(json.loads(blob[len(_HEADER_MAGIC):]))
     except (json.JSONDecodeError, UnicodeDecodeError, AttributeError,
-            KeyError, IndexError, TypeError, ValueError) as exc:
+            KeyError, IndexError, TypeError, ValueError,
+            RecursionError) as exc:
         # Any decode or shape-validation failure — corruption, a
         # hand-edited file, a field renamed without a version bump —
         # is a cache miss; the consumer rebuilds and overwrites.
+        # RecursionError: deeply nested JSON (``[[[[…``) blows the
+        # interpreter stack inside json.loads — fail-to-miss, never
+        # crash the consuming reachability pipeline.
         logger.debug(
             "reach_cache: decode failed for %s: %s "
             "(treating as miss)", path, exc,
@@ -572,11 +596,19 @@ def _evict_oldest() -> None:
         return
     if len(entries) <= _MAX_CACHE_ENTRIES:
         return
-    # Sort by mtime ascending (oldest first).
-    try:
-        entries.sort(key=lambda p: p.stat().st_mtime)
-    except OSError:
-        return
+
+    # Sort by mtime ascending (oldest first). lstat + per-entry
+    # fallback: a dangling symlink squatting the cache dir made a
+    # plain ``p.stat()`` sort key raise, silently disabling eviction
+    # forever (the entry cap was never enforced again). An entry we
+    # cannot stat sorts oldest and gets evicted first.
+    def _entry_mtime(p: Path) -> float:
+        try:
+            return p.lstat().st_mtime
+        except OSError:
+            return 0.0
+
+    entries.sort(key=_entry_mtime)
     to_remove = len(entries) - _MAX_CACHE_ENTRIES
     for p in entries[:to_remove]:
         try:

@@ -396,3 +396,50 @@ def test_malformed_json_shapes_are_misses():
         import os
         os.chmod(path, 0o600)
         assert _reach_cache.load_index(fp) is None, payload
+
+
+def test_deeply_nested_json_is_a_miss_not_a_crash():
+    """~200KB of ``[[[[…`` under all gates raises RecursionError from
+    json.loads — must be a cache miss (fail-to-miss), never an
+    exception escaping into the consuming reachability pipeline."""
+    import os
+
+    fp = "6" * 64
+    _reach_cache._CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _reach_cache._cache_path_for(fp)
+    path.write_bytes(_reach_cache._HEADER_MAGIC + b"[" * 200_000)
+    os.chmod(path, 0o600)
+    assert _reach_cache.load_index(fp) is None
+
+
+def test_empty_object_under_valid_magic_is_a_miss():
+    """``{}`` decodes as a fully-valid EMPTY index (every field
+    optional) — a same-uid poisoning shape. save_index always writes
+    every field, so a document without them is foreign → miss."""
+    import os
+
+    fp = "7" * 64
+    _reach_cache._CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _reach_cache._cache_path_for(fp)
+    path.write_bytes(_reach_cache._HEADER_MAGIC + b"{}")
+    os.chmod(path, 0o600)
+    assert _reach_cache.load_index(fp) is None
+
+
+def test_dangling_symlink_does_not_jam_eviction(monkeypatch):
+    """One dangling ``.pickle`` symlink made the stat-based eviction
+    sort raise and return silently — the entry cap was then never
+    enforced again. lstat + per-entry fallback keeps eviction live."""
+    import os
+
+    monkeypatch.setattr(_reach_cache, "_MAX_CACHE_ENTRIES", 3)
+    _reach_cache._CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    for i in range(5):
+        p = _reach_cache._CACHE_DIR / (f"{i}" * 64 + ".json")
+        p.write_bytes(_reach_cache._HEADER_MAGIC + b"{}")
+        os.utime(p, (1000 + i, 1000 + i))
+    dangling = _reach_cache._CACHE_DIR / "stale.pickle"
+    dangling.symlink_to(_reach_cache._CACHE_DIR / "no-such-target")
+    _reach_cache._evict_oldest()
+    remaining = _reach_cache._cache_entries()
+    assert len(remaining) <= 3, [p.name for p in remaining]

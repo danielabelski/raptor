@@ -103,24 +103,65 @@ def resolve_read_path(run_dir, filename: str) -> Path:
     return new
 
 
-def ensure_audit_dir(run_dir) -> Path:
-    """Create ``<run_dir>/.audit`` mode 0700 if needed; return it.
+def ensure_audit_dirfd(run_dir) -> int:
+    """Create ``<run_dir>/.audit`` mode 0700 if needed and return an
+    ``O_DIRECTORY | O_NOFOLLOW`` fd pinning its identity.
 
-    Refuses a symlink at the ``.audit`` path — a pre-planted symlink
-    would redirect evidence into an attacker-chosen directory.
+    Refuses a symlink (ELOOP) or non-directory (ENOTDIR) at the
+    ``.audit`` path — a pre-planted symlink would redirect evidence
+    into an attacker-chosen directory. Returning the fd (rather than
+    validating by pathname and letting callers re-resolve the path
+    later) closes the check→use race: a hostile same-UID process
+    with run-dir write access could otherwise swap an intermediate
+    component between our validation and the caller's open. Callers
+    open evidence files RELATIVE to this fd (``dir_fd=``) so every
+    open lands in the directory that was actually validated. Caller
+    owns the fd and must close it.
     """
     d = audit_dir_path(run_dir)
     try:
         os.mkdir(d, 0o700)
     except FileExistsError:
-        st = os.lstat(d)
+        pass
+    # O_DIRECTORY refuses files/FIFOs (ENOTDIR), O_NOFOLLOW refuses a
+    # symlink in the final component (ELOOP/ENOTDIR). The fstat is on
+    # the fd, so the object checked is the object we hold.
+    try:
+        fd = os.open(str(d), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                     | os.O_CLOEXEC)
+    except OSError as e:
+        raise OSError(
+            f"evidence dir {d} failed the O_DIRECTORY|O_NOFOLLOW open "
+            f"({e.strerror}) — symlink or file planted? refusing to "
+            f"use it"
+        ) from None
+    try:
+        st = os.fstat(fd)
         if not _stat.S_ISDIR(st.st_mode):
-            msg = (
-                f"evidence dir {d} exists and is not a directory "
+            raise OSError(
+                f"evidence dir {d} is not a directory "
                 f"(symlink or file planted?) — refusing to use it"
             )
-            raise OSError(msg) from None
-    return d
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+    return fd
+
+
+def ensure_audit_dir(run_dir) -> Path:
+    """Create ``<run_dir>/.audit`` mode 0700 if needed; return it.
+
+    Pathname-returning convenience wrapper over
+    :func:`ensure_audit_dirfd` for callers that only need the
+    location (e.g. to interpolate into a Seatbelt profile). Callers
+    that go on to OPEN files in the directory must use
+    :func:`ensure_audit_dirfd` + ``dir_fd=`` instead — a returned
+    pathname re-resolves on every use and is raceable.
+    """
+    fd = ensure_audit_dirfd(run_dir)
+    os.close(fd)
+    return audit_dir_path(run_dir)
 
 
 class EvidenceFile:
@@ -149,34 +190,61 @@ class EvidenceFile:
         First choice is ``O_CREAT|O_EXCL`` — defeats pre-created files
         and symlinks planted before sandbox start. When the file
         already exists (a prior sandbox call in the same run created
-        it), it is re-opened without ``O_CREAT`` and accepted only if
+        it), it is re-opened with ``O_NONBLOCK`` and accepted only if
         it is a regular, non-hard-linked file owned by us with no
-        group/other write bits.
+        group/other write bits. ``O_NONBLOCK`` on the re-open is the
+        FIFO defence: a planted FIFO with no reader fails the open
+        with ENXIO instead of blocking the parent until a hostile
+        reader chooses to appear, and a FIFO WITH a reader passes the
+        open but fails the ``S_ISREG`` check — either way the fstat
+        runs on the object we actually hold, never on a pathname.
+        The flag is cleared after validation (it is meaningless on
+        regular files, but inheritors of the fd shouldn't see a
+        surprising flag state).
+
+        Both opens are RELATIVE to the validated ``.audit`` dirfd
+        (:func:`ensure_audit_dirfd`), so a raced swap of an
+        intermediate path component between directory validation and
+        file open cannot redirect evidence creation.
         """
-        ensure_audit_dir(run_dir)
+        if os.sep in filename or filename in (".", ".."):
+            raise ValueError(
+                f"evidence filename must be a bare name, got {filename!r}")
+        dirfd = ensure_audit_dirfd(run_dir)
         path = evidence_write_path(run_dir, filename)
         flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC
         try:
-            fd = os.open(str(path), flags | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            fd = os.open(str(path), flags)
-            st = os.fstat(fd)
-            ok = (
-                _stat.S_ISREG(st.st_mode)
-                and st.st_uid == os.getuid()
-                and st.st_nlink == 1
-                and not (st.st_mode & 0o022)
-            )
-            if not ok:
-                os.close(fd)
-                msg = (
-                    f"existing evidence file {path} failed validation "
-                    f"(mode={oct(st.st_mode)}, uid={st.st_uid}, "
-                    f"nlink={st.st_nlink}) — refusing to append"
+            try:
+                fd = os.open(filename, flags | os.O_CREAT | os.O_EXCL,
+                             0o600, dir_fd=dirfd)
+            except FileExistsError:
+                fd = os.open(filename, flags | os.O_NONBLOCK,
+                             dir_fd=dirfd)
+                st = os.fstat(fd)
+                ok = (
+                    _stat.S_ISREG(st.st_mode)
+                    and st.st_uid == os.getuid()
+                    and st.st_nlink == 1
+                    and not (st.st_mode & 0o022)
                 )
-                raise OSError(msg) from None
-            return cls(fd, path, st)
-        return cls(fd, path, os.fstat(fd))
+                if not ok:
+                    os.close(fd)
+                    raise OSError(
+                        f"existing evidence file {path} failed validation "
+                        f"(mode={oct(st.st_mode)}, uid={st.st_uid}, "
+                        f"nlink={st.st_nlink}) — refusing to append"
+                    ) from None
+                # Clear O_NONBLOCK now that we know it's a regular
+                # file (no-op semantically; keeps the fd's flag state
+                # unsurprising for inheritors like the tracer).
+                import fcntl as _fcntl
+                fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
+                _fcntl.fcntl(fd, _fcntl.F_SETFL, fl & ~os.O_NONBLOCK)
+                return cls(fd, path, st)
+            return cls(fd, path, os.fstat(fd))
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(dirfd)
 
     def write_line(self, line: str) -> bool:
         """Append one JSONL line through the held fd. Returns True on

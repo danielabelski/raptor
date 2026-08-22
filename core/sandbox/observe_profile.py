@@ -426,6 +426,17 @@ def _parse_connect_path(record: dict) -> ConnectTarget | None:
     return None
 
 
+# Bounds on the observe JSONL. Legitimate logs are budget-capped by
+# the tracer (AuditBudget hard ceilings) and stay far below these;
+# anything bigger is a planted artifact, and reading it unboundedly
+# hands the target a memory/CPU lever over the parent's parse. Same
+# discipline as triage._read_bounded.
+_MAX_OBSERVE_BYTES = 64 * 1024 * 1024
+# Cap on any single JSONL line/record. Tracer records are small
+# (paths + a few fields); a multi-megabyte line is planted.
+_MAX_RECORD_BYTES = 1 * 1024 * 1024
+
+
 def _iter_records(path: Path) -> Iterable[dict]:
     """Yield decoded JSONL records, skipping malformed lines.
 
@@ -434,40 +445,73 @@ def _iter_records(path: Path) -> Iterable[dict]:
     and continue — the alternative (raise) would lose every well-
     formed record before the bad line.
 
-    Symlink-TOCTOU defence: open with ``O_NOFOLLOW``. The audit
-    run dir is bind-mounted writable inside the sandbox; a hostile
-    target binary could replace ``.sandbox-observe.jsonl`` with a
-    symlink to ``/etc/passwd`` BEFORE audit engages, and a vanilla
-    ``open()`` would follow it and feed unrelated content to the
-    JSON parser. ``O_NOFOLLOW`` makes the open fail with ELOOP on
-    a symlink. The tracer's write side uses the same flag (see
-    ``tracer._write_record``); we mirror it on the read side so
-    the two ends agree on the trust contract.
+    Bounded-read discipline (the evidence pathname is child-mutable
+    on Landlock-only hosts — same rationale as triage._read_bounded):
+
+    * ``O_NOFOLLOW``: a planted symlink (e.g. to ``/etc/passwd``)
+      fails the open with ELOOP instead of feeding unrelated content
+      to the JSON parser. The tracer's write side uses the same flag;
+      the two ends agree on the trust contract.
+    * ``O_NONBLOCK`` + fstat ``S_ISREG`` on the OPENED fd: a planted
+      FIFO cannot park the parser until a hostile writer appears
+      (pre-fix a mkfifo at this path hung the parent indefinitely),
+      and devices/directories are refused outright.
+    * Byte caps: at most ``_MAX_OBSERVE_BYTES`` total (oversized
+      planted files are refused, matching triage's stance) and
+      ``_MAX_RECORD_BYTES`` per line (oversized lines are skipped
+      like malformed ones).
     """
     import os as _os
+    import stat as _stat_mod
     try:
-        fd = _os.open(str(path), _os.O_RDONLY | _os.O_NOFOLLOW)
+        fd = _os.open(str(path), _os.O_RDONLY | _os.O_NOFOLLOW
+                      | _os.O_NONBLOCK | _os.O_CLOEXEC)
     except OSError:
-        # Includes ELOOP (symlink rejected) and ENOENT (no log
-        # because audit didn't engage). Both → empty profile.
+        # Includes ELOOP (symlink rejected), ENOENT (no log because
+        # audit didn't engage), ENXIO. All → empty profile.
         return
     try:
-        f = _os.fdopen(fd, "r", encoding="utf-8")
-    except OSError:
+        st = _os.fstat(fd)
+        if not _stat_mod.S_ISREG(st.st_mode):
+            logger.warning(
+                "observe log %s is not a regular file "
+                "(mode=%o) — planted object? Refusing to parse.",
+                path, st.st_mode)
+            return
+        if st.st_size > _MAX_OBSERVE_BYTES:
+            logger.warning(
+                "observe log %s is %d bytes (> %d cap) — oversized "
+                "planted artifact? Refusing to parse.",
+                path, st.st_size, _MAX_OBSERVE_BYTES)
+            return
+        chunks = []
+        remaining = _MAX_OBSERVE_BYTES
+        while remaining > 0:
+            try:
+                chunk = _os.read(fd, min(remaining, 1 << 20))
+            except OSError:
+                return
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
         try:
             _os.close(fd)
         except OSError:
             pass
-        return
-    with f:
-        for raw in f:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except (ValueError, TypeError):
-                continue
+    for raw in data.split(b"\n"):
+        if len(raw) > _MAX_RECORD_BYTES:
+            # Oversized single record — treat like a malformed line.
+            continue
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line.decode("utf-8", errors="replace"))
+        except (ValueError, TypeError):
+            continue
 
 
 def parse_observe_log(run_dir, *,

@@ -122,6 +122,50 @@ class TestParseEmpty:
         assert profile == ObserveProfile()
 
 
+class TestBoundedReads:
+    """The evidence pathname is child-mutable
+    on Landlock-only hosts. _iter_records must never block on a
+    planted FIFO nor balloon on an oversized planted file."""
+
+    def test_planted_fifo_returns_empty_promptly(self, tmp_path):
+        """Pre-fix a mkfifo at the observe path hung the parent's
+        blocking open until a hostile writer appeared. The
+        nonblocking open + S_ISREG check refuses it immediately —
+        this test completing at all (with no writer on the FIFO) is
+        the regression proof."""
+        import os
+        os.mkfifo(tmp_path / OBSERVE_FILENAME)
+        profile = parse_observe_log(tmp_path)
+        assert profile == ObserveProfile()
+
+    def test_oversized_file_refused(self, tmp_path, monkeypatch, caplog):
+        # Shrink the cap so the fixture stays small.
+        monkeypatch.setattr(observe_profile_mod,
+                            "_MAX_OBSERVE_BYTES", 1024)
+        rec = _open_record("/etc/passwd")
+        line = json.dumps(rec) + "\n"
+        with (tmp_path / OBSERVE_FILENAME).open("w") as f:
+            for _ in range(1 + 1024 // len(line)):
+                f.write(line)
+        with caplog.at_level(logging.WARNING,
+                             logger="core.sandbox.observe_profile"):
+            profile = parse_observe_log(tmp_path)
+        assert profile.paths_read == []
+        assert any("oversized" in r.message.lower()
+                   or "cap" in r.message.lower()
+                   for r in caplog.records)
+
+    def test_oversized_single_line_skipped_others_parse(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(observe_profile_mod,
+                            "_MAX_RECORD_BYTES", 512)
+        good = _open_record("/etc/passwd")
+        huge = _open_record("/" + "A" * 2048)
+        _write_jsonl(tmp_path / OBSERVE_FILENAME, [huge, good])
+        profile = parse_observe_log(tmp_path)
+        assert profile.paths_read == ["/etc/passwd"]
+
+
 class TestParsePaths:
 
     def test_read_open_classified_as_read(self, tmp_path):

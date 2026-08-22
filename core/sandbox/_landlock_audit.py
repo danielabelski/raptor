@@ -843,12 +843,24 @@ def run_landlock_audit(
             stdout_out = stdout_bytes
             stderr_out = stderr_bytes
 
-        return subprocess.CompletedProcess(
+        # Finalise the evidence file now that both children are
+        # reaped: verify the on-disk path still names the inode
+        # created at spawn time (loud warning on a swap), close the
+        # fd, and PROPAGATE the verdict on the result instead of
+        # discarding it — consumers deciding whether to trust the
+        # on-disk JSONL (observe parsing, triage) can check
+        # ``getattr(result, "evidence_verified", True)`` rather than
+        # having to scrape the process log for the tamper warning.
+        # The finally-block close below becomes an idempotent no-op.
+        evidence_ok = evidence_file.close()
+        result = subprocess.CompletedProcess(
             args=list(cmd),
             returncode=target_rc,
             stdout=stdout_out if capture_output else None,
             stderr=stderr_out if capture_output else None,
         )
+        result.evidence_verified = evidence_ok
+        return result
     finally:
         _cleanup_fds()
         # _kill_and_reap only escapes with OSError (PermissionError on
@@ -862,7 +874,7 @@ def run_landlock_audit(
         # Release the anonymous config fd (normally already closed
         # right after the tracer fork; covers early-exit paths).
         _close_safely(config_fd)
-        # Finalise the evidence file AFTER both children are gone:
-        # verify the on-disk path still names the inode created at
-        # spawn time (loud warning on a swap), then close the fd.
+        # Finalise the evidence file (idempotent — the normal-return
+        # path already closed with verification; this covers
+        # exception paths, where verify() still logs loudly).
         evidence_file.close()

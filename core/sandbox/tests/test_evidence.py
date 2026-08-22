@@ -78,6 +78,30 @@ class TestPaths:
         with pytest.raises(OSError, match="refusing"):
             ev.ensure_audit_dir(tmp_path)
 
+    def test_ensure_audit_dirfd_pins_directory_identity(self, tmp_path):
+        """The returned dirfd must reference the
+        validated directory itself, so later openat calls cannot be
+        redirected by a path-component swap."""
+        fd = ev.ensure_audit_dirfd(tmp_path)
+        try:
+            st_fd = os.fstat(fd)
+            st_path = os.stat(tmp_path / ".audit")
+            assert (st_fd.st_dev, st_fd.st_ino) == (
+                st_path.st_dev, st_path.st_ino)
+        finally:
+            os.close(fd)
+
+    def test_ensure_audit_dirfd_refuses_symlink_and_file(self, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, tmp_path / ".audit")
+        with pytest.raises(OSError, match="refusing"):
+            ev.ensure_audit_dirfd(tmp_path)
+        os.unlink(tmp_path / ".audit")
+        (tmp_path / ".audit").write_text("plant")
+        with pytest.raises(OSError, match="refusing"):
+            ev.ensure_audit_dirfd(tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # EvidenceFile — O_EXCL create, held-fd appends, inode verification
@@ -131,6 +155,52 @@ class TestEvidenceFile:
         os.link(p, tmp_path / "alias")
         with pytest.raises(OSError, match="failed validation"):
             ev.EvidenceFile.open(tmp_path, "d.jsonl")
+
+    @linux_only
+    def test_planted_fifo_refused_promptly(self, tmp_path):
+        """The pre-fix FileExistsError branch
+        opened O_WRONLY before fstat — a planted FIFO with no reader
+        parked the parent until a hostile reader appeared. O_NONBLOCK
+        on the re-open turns that into an immediate ENXIO."""
+        import errno
+        d = ev.ensure_audit_dir(tmp_path)
+        os.mkfifo(d / "d.jsonl")
+        with pytest.raises(OSError) as exc_info:
+            ev.EvidenceFile.open(tmp_path, "d.jsonl")
+        assert exc_info.value.errno == errno.ENXIO
+
+    @linux_only
+    def test_planted_fifo_with_reader_refused(self, tmp_path):
+        """A FIFO WITH a live reader passes the nonblocking open but
+        must fail the S_ISREG validation."""
+        d = ev.ensure_audit_dir(tmp_path)
+        fifo = d / "d.jsonl"
+        os.mkfifo(fifo)
+        rd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            with pytest.raises(OSError, match="failed validation"):
+                ev.EvidenceFile.open(tmp_path, "d.jsonl")
+        finally:
+            os.close(rd)
+
+    def test_filename_with_separator_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="bare name"):
+            ev.EvidenceFile.open(tmp_path, "sub/dir.jsonl")
+
+    def test_open_lands_inside_validated_dirfd(self, tmp_path):
+        """The evidence file is opened relative to the pinned dirfd:
+        the created file's parent must be the exact directory the
+        dirfd validated (identity, not pathname)."""
+        f = ev.EvidenceFile.open(tmp_path, "d.jsonl")
+        try:
+            st_parent = os.stat(tmp_path / ".audit")
+            st_file = os.fstat(f.fd)
+            assert st_file.st_dev == st_parent.st_dev
+            recs_dir = os.stat(f.path.parent)
+            assert (recs_dir.st_dev, recs_dir.st_ino) == (
+                st_parent.st_dev, st_parent.st_ino)
+        finally:
+            f.close()
 
     def test_swapped_file_fires_loud_warning(self, tmp_path, caplog):
         f = ev.EvidenceFile.open(tmp_path, "d.jsonl")

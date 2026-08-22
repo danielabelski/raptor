@@ -30,6 +30,7 @@ from typing import Any
 # with __all__ below.
 _LAZY_EXPORTS = {
     "CacheEnvelope":          ("core.json.cache", "CacheEnvelope"),
+    "JsonBudgetExceededError": ("core.json.bounded", "JsonBudgetExceededError"),
     "JsonCache":              ("core.json.cache", "JsonCache"),
     # MISSING lives outside core.json.* so test_f046's sys.modules
     # reset doesn't replace the singleton — see core/sentinels/.
@@ -37,7 +38,9 @@ _LAZY_EXPORTS = {
     "TTL_FOREVER":            ("core.json.cache", "TTL_FOREVER"),
     "append_jsonl":           ("core.json.jsonl", "append_jsonl"),
     "load_json":              ("core.json.utils", "load_json"),
+    "load_json_bounded":      ("core.json.bounded", "load_json_bounded"),
     "load_jsonl":             ("core.json.jsonl", "load_jsonl"),
+    "loads_bounded":          ("core.json.bounded", "loads_bounded"),
     "save_json":              ("core.json.utils", "save_json"),
     "load_json_with_comments": ("core.json.utils", "load_json_with_comments"),
 }
@@ -75,10 +78,13 @@ __all__ = [
     "MISSING",
     "TTL_FOREVER",
     "CacheEnvelope",
+    "JsonBudgetExceededError",
     "JsonCache",
     "append_jsonl",
     "load_json",
+    "load_json_bounded",
     "load_json_with_comments",
     "load_jsonl",
+    "loads_bounded",
     "save_json",
 ]

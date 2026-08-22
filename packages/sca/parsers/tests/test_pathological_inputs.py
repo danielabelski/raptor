@@ -23,6 +23,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from packages.sca.models import PinStyle
 
 # ---------------------------------------------------------------------------
@@ -515,3 +517,129 @@ def test_csproj_oversized_is_refused(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     assert parse_msbuild_project(csproj) == []
+
+
+def test_package_json_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.package_json import parse
+
+    manifest = tmp_path / "package.json"
+    manifest.write_text(
+        '{"dependencies": {"left-pad": "^1.3.0"}}', encoding="utf-8",
+    )
+    deps = parse(manifest)
+    assert [d.name for d in deps] == ["left-pad"]
+
+    _tighten_read_cap(monkeypatch, 16)
+    assert parse(manifest) == []
+
+
+def test_package_lock_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.package_lock_json import parse
+
+    lock = tmp_path / "package-lock.json"
+    lock.write_text(
+        '{"packages": {"": {"dependencies": {"left-pad": "^1.3.0"}},'
+        ' "node_modules/left-pad": {"version": "1.3.0"}}}',
+        encoding="utf-8",
+    )
+    deps = parse(lock)
+    assert [d.name for d in deps] == ["left-pad"]
+
+    _tighten_read_cap(monkeypatch, 16)
+    assert parse(lock) == []
+
+
+def test_pipfile_lock_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.pipfile_lock import parse
+
+    lock = tmp_path / "Pipfile.lock"
+    lock.write_text(
+        '{"default": {"requests": {"version": "==2.31.0"}}}',
+        encoding="utf-8",
+    )
+    deps = parse(lock)
+    assert [d.name for d in deps] == ["requests"]
+
+    _tighten_read_cap(monkeypatch, 16)
+    assert parse(lock) == []
+
+
+def test_conan_lock_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.conan import parse_lock
+
+    lock = tmp_path / "conan.lock"
+    lock.write_text(
+        '{"requires": ["zlib/1.3.1#abc%1699999999.0"]}', encoding="utf-8",
+    )
+    deps = parse_lock(lock)
+    assert [d.name for d in deps] == ["zlib"]
+
+    _tighten_read_cap(monkeypatch, 16)
+    assert parse_lock(lock) == []
+
+
+def test_conanfile_txt_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.conan import parse_txt
+
+    manifest = tmp_path / "conanfile.txt"
+    manifest.write_text("[requires]\nzlib/1.3.1\n", encoding="utf-8")
+    deps = parse_txt(manifest)
+    assert [d.name for d in deps] == ["zlib"]
+
+    _tighten_read_cap(monkeypatch, 8)
+    assert parse_txt(manifest) == []
+
+
+def test_conanfile_py_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.conan import parse_py
+
+    manifest = tmp_path / "conanfile.py"
+    manifest.write_text(
+        'class Pkg:\n    requires = "zlib/1.3.1"\n', encoding="utf-8",
+    )
+    deps = parse_py(manifest)
+    assert [d.name for d in deps] == ["zlib"]
+
+    _tighten_read_cap(monkeypatch, 8)
+    assert parse_py(manifest) == []
+
+
+def test_vcpkg_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers.vcpkg import parse
+
+    manifest = tmp_path / "vcpkg.json"
+    manifest.write_text(
+        '{"dependencies": ["zlib"]}', encoding="utf-8",
+    )
+    deps = parse(manifest)
+    assert [d.name for d in deps] == ["zlib"]
+
+    _tighten_read_cap(monkeypatch, 8)
+    assert parse(manifest) == []
+
+
+def test_pnpm_workspace_package_json_oversized_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.sca.parsers._pnpm_catalog import _read_workspaces_field
+
+    pkg = tmp_path / "package.json"
+    pkg.write_text('{"workspaces": ["packages/*"]}', encoding="utf-8")
+    assert _read_workspaces_field(pkg) == ["packages/*"]
+
+    _tighten_read_cap(monkeypatch, 8)
+    assert _read_workspaces_field(pkg) is None

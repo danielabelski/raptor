@@ -231,13 +231,16 @@ def _read_workspaces_field(pkg_json: Path) -> list | None:
     the Yarn nohoist object form. ``None`` on missing field /
     unreadable / non-JSON / wrong-type."""
     import json as _json
-    try:
-        text = pkg_json.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+
+    from . import _safe_read
+    text = _safe_read.read_bounded(pkg_json, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason
+        # (oversize, unreadable, symlink escape, non-regular file).
         return None
     try:
         data = _json.loads(text)
-    except (_json.JSONDecodeError, UnicodeDecodeError):
+    except _json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
         return None

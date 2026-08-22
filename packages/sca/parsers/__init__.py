@@ -76,6 +76,18 @@ _PARSE_FAILURE_RE = re.compile(
     r"(?P<path>.+?):\s+(?P<reason>.+)$"
 )
 
+# Pattern matching ``_safe_read.read_bounded``'s refusal warnings
+# (``sca.parsers: refusing to read <path> (size=N > max=M) ...`` for
+# oversize manifests, and the non-regular-file variant). Without this
+# an over-cap manifest is warning-logged but invisible in the
+# structured ``parse_failures`` on the run report, while a malformed
+# sibling shows up — the operator would have no structured trace of
+# the skipped file.
+_READ_REFUSAL_RE = re.compile(
+    r"sca\.parsers:\s+refusing to read\s+"
+    r"(?P<path>.+?)\s+\((?P<reason>[^)]+)\)"
+)
+
 
 class _ParseFailureCollector(logging.Handler):
     """Logging handler that captures ``sca.parsers.*`` parse-failed
@@ -100,6 +112,8 @@ class _ParseFailureCollector(logging.Handler):
         except Exception:                               # noqa: BLE001
             return
         m = _PARSE_FAILURE_RE.search(msg)
+        if m is None:
+            m = _READ_REFUSAL_RE.search(msg)
         if m is None:
             return
         path_str = m.group("path").strip()

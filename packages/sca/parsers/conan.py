@@ -39,7 +39,7 @@ import logging
 import re
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -79,10 +79,10 @@ _TXT_SECTION_TO_SCOPE = {
 
 @register(filenames=["conanfile.txt"])
 def parse_txt(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.conan: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason
+        # (oversize, unreadable, symlink escape, non-regular file).
         return []
 
     out: list[Dependency] = []
@@ -121,10 +121,9 @@ _PY_ATTR_TO_SCOPE = {
 
 @register(filenames=["conanfile.py"])
 def parse_py(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.conan: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         tree = ast.parse(text)
@@ -185,10 +184,9 @@ def _refs_from_value(node: ast.AST) -> Iterable[str]:
 
 @register(filenames=["conan.lock"])
 def parse_lock(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.conan: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         data = json.loads(text)

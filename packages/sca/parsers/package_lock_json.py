@@ -31,7 +31,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,10 +50,10 @@ _ROOT_KEY_SCOPE: tuple[tuple[str, str], ...] = (
 
 
 def parse(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.package_lock: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason
+        # (oversize, unreadable, symlink escape, non-regular file).
         return []
     try:
         data = _json.loads(text)

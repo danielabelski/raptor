@@ -212,6 +212,17 @@ _DEFAULT_BUFFER_SIZE = 64 * 1024     # relay buffer per direction
 # DNS-rebinding attack window doesn't widen.
 _DNS_CACHE_TTL = 60.0
 
+# Hard bound on DNS cache entries. The cache key space is CLIENT-
+# controlled — audit-mode lanes resolve arbitrary hostnames, and even
+# enforcing lanes can mint per-port variants of allowlisted hosts —
+# so "natural diversity" is not a bound: a hostile child minting
+# distinct names would grow the proxy singleton's memory for the life
+# of the process. 4096 entries × a few hundred bytes ≈ ~1 MiB
+# worst-case, and is far above the handful-of-registry-hosts working
+# set of a legitimate scan burst, so legitimate workloads never see
+# an eviction-caused re-resolve.
+_DNS_CACHE_MAX_ENTRIES = 4096
+
 # Happy-eyeballs per-attempt budget. RFC 8305 recommends 250ms
 # before kicking off the next address family's attempt. We keep that
 # default — it matches the broad assumption Linux/macOS/Windows
@@ -1733,18 +1744,20 @@ class EgressProxy:
         result with `now + _DNS_CACHE_TTL` as expiry. Cache hit →
         return the stored addrinfo list directly.
 
-        Cache is bounded by the natural diversity of (host, port)
-        pairs the sandboxed children touch — typically a handful of
-        registry hosts per scan. We do not LRU-evict; entries simply
-        expire by TTL. If a future workload generates an unbounded
-        host set, add a max-entries cap here.
+        Bounded, because the key space is client-controlled (see
+        _DNS_CACHE_MAX_ENTRIES): the host is lowercased in the key
+        (DNS is case-insensitive — case variants of one name must not
+        mint distinct entries), expired entries are swept on every
+        insert (a dead entry no longer needs ITS key re-looked-up to
+        disappear), and when the cache is still full after the sweep
+        the oldest-expiring entries are evicted to make room.
 
         Errors are NOT cached — getaddrinfo failures are usually
         transient (DNS hiccup, brief network glitch) and caching
         NXDOMAIN would amplify the outage's impact for as long as the
         TTL.
         """
-        key = (host, port)
+        key = (host.lower(), port)
         now = time.monotonic()
         cached = self._dns_cache.get(key)
         if cached is not None and cached[0] > now:
@@ -1753,6 +1766,16 @@ class EgressProxy:
             self._loop.getaddrinfo(host, port, type=socket.SOCK_STREAM),
             timeout=_PROXY_READ_TIMEOUT_S,
         )
+        # Insert-time hygiene (single-threaded on the event loop; no
+        # awaits between here and the insert, so no interleaving).
+        expired = [k for k, (expires_at, _a) in self._dns_cache.items()
+                   if expires_at <= now]
+        for k in expired:
+            del self._dns_cache[k]
+        while len(self._dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
+            oldest = min(self._dns_cache,
+                         key=lambda k: self._dns_cache[k][0])
+            del self._dns_cache[oldest]
         self._dns_cache[key] = (now + _DNS_CACHE_TTL, addrinfo)
         return addrinfo
 

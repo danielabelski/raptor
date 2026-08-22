@@ -162,6 +162,287 @@ class TestRunBridges:
             srv._srv.close()
 
 
+def _unix_hold_echo_server(path: str) -> threading.Thread:
+    """Echo server that HOLDS each connection open (echoes every
+    chunk, closes only on client EOF) — for tests that need live
+    long-lived pairs."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(16)
+
+    def _serve_conn(conn):
+        with conn:
+            conn.settimeout(30)
+            try:
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        return
+                    conn.sendall(data)
+            except OSError:
+                return
+
+    def _serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=_serve_conn, args=(conn,),
+                             daemon=True).start()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    t._srv = srv
+    return t
+
+
+def _unix_flood_server(path: str, nbytes: int) -> threading.Thread:
+    """Server that blasts *nbytes* at every connection as soon as it
+    is accepted — for tests that need a peer's write side saturated."""
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(16)
+
+    def _blast(conn):
+        with conn:
+            conn.settimeout(30)
+            try:
+                conn.sendall(b"\x00" * nbytes)
+            except OSError:
+                return
+
+    def _serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=_blast, args=(conn,),
+                             daemon=True).start()
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    t._srv = srv
+    return t
+
+
+class TestForwarderBounds:
+    """Pair cap, idle sweep, and non-blocking writes — the forwarder
+    must never let one peer starve or stall the others."""
+
+    def test_pair_cap_refuses_excess_connections(self, short_sock_dir,
+                                                 monkeypatch):
+        import time as _time
+        monkeypatch.setattr(
+            "core.sandbox._proxy_bridge._MAX_PAIRS", 2)
+        path = str(short_sock_dir / "cap.sock")
+        srv = _unix_hold_echo_server(path)
+        port = _free_port()
+        death_r, death_w = os.pipe()
+        t = threading.Thread(
+            target=_run_bridges, args=(((port, path),), death_r),
+            daemon=True)
+        t.start()
+        held = []
+        try:
+            _wait_listening(port)
+            for i in range(2):
+                c = socket.create_connection(("127.0.0.1", port),
+                                             timeout=5)
+                c.settimeout(5)
+                c.sendall(b"hi%d" % i)
+                assert c.recv(4096) == b"hi%d" % i
+                held.append(c)
+            # Third pair is over the cap: accepted then immediately
+            # closed — the client reads EOF, no hang, no relay.
+            with socket.create_connection(("127.0.0.1", port),
+                                          timeout=5) as c3:
+                c3.settimeout(5)
+                assert c3.recv(4096) == b""
+            # Freeing a slot re-opens admission.
+            held.pop().close()
+            deadline = _time.monotonic() + 5
+            admitted = False
+            while _time.monotonic() < deadline and not admitted:
+                with socket.create_connection(("127.0.0.1", port),
+                                              timeout=5) as c4:
+                    c4.settimeout(1)
+                    try:
+                        c4.sendall(b"again")
+                        admitted = (c4.recv(4096) == b"again")
+                    except OSError:
+                        admitted = False
+                if not admitted:
+                    _time.sleep(0.1)
+            assert admitted, "slot freed by a closed pair never reopened"
+        finally:
+            for c in held:
+                c.close()
+            os.close(death_w)
+            t.join(timeout=5)
+            os.close(death_r)
+            srv._srv.close()
+
+    def test_idle_pairs_are_swept(self, short_sock_dir, monkeypatch):
+        import time as _time
+        monkeypatch.setattr(
+            "core.sandbox._proxy_bridge._PAIR_IDLE_TIMEOUT_S", 0.5)
+        path = str(short_sock_dir / "idle.sock")
+        srv = _unix_hold_echo_server(path)
+        port = _free_port()
+        death_r, death_w = os.pipe()
+        t = threading.Thread(
+            target=_run_bridges, args=(((port, path),), death_r),
+            daemon=True)
+        t.start()
+        try:
+            _wait_listening(port)
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            c.settimeout(5)
+            c.sendall(b"warm")
+            assert c.recv(4096) == b"warm"
+            # Go idle past the (shrunk) idle timeout; sweep granularity
+            # is one _SELECT_TIMEOUT (1s), so allow a couple of seconds.
+            t0 = _time.monotonic()
+            got = c.recv(4096)  # blocks until the sweep closes the pair
+            assert got == b"", "idle pair not swept (data instead of EOF)"
+            assert _time.monotonic() - t0 < 4.0, "idle sweep too late"
+            c.close()
+        finally:
+            os.close(death_w)
+            t.join(timeout=5)
+            os.close(death_r)
+            srv._srv.close()
+
+    def test_stalled_peer_does_not_block_other_pairs(
+        self, short_sock_dir, monkeypatch,
+    ):
+        """One peer that stops reading while its upstream floods must
+        neither park the select loop (head-of-line blocking every
+        other pair — the old synchronous _write_all did, for up to
+        60s) nor hold its pair forever: the stall deadline drops it."""
+        import time as _time
+        monkeypatch.setattr(
+            "core.sandbox._proxy_bridge._WRITE_STALL_TIMEOUT_S", 1.0)
+        flood_path = str(short_sock_dir / "flood.sock")
+        echo_path = str(short_sock_dir / "echo.sock")
+        flood_srv = _unix_flood_server(flood_path, 32 * 1024 * 1024)
+        echo_srv = _unix_hold_echo_server(echo_path)
+        flood_port, echo_port = _free_port(), _free_port()
+        death_r, death_w = os.pipe()
+        t = threading.Thread(
+            target=_run_bridges,
+            args=(((flood_port, flood_path), (echo_port, echo_path)),
+                  death_r),
+            daemon=True)
+        t.start()
+        stalled = None
+        try:
+            _wait_listening(echo_port)
+            # The stalling peer: tiny receive buffer, never reads.
+            stalled = socket.socket()
+            stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            stalled.connect(("127.0.0.1", flood_port))
+            _time.sleep(0.7)  # let the flood saturate every buffer
+
+            # Unrelated pair on the same forwarder must be unaffected.
+            with socket.create_connection(("127.0.0.1", echo_port),
+                                          timeout=5) as b:
+                b.settimeout(4)
+                t0 = _time.monotonic()
+                b.sendall(b"ping")
+                assert b.recv(4096) == b"ping", (
+                    "roundtrip failed while a sibling pair was stalled"
+                )
+                assert _time.monotonic() - t0 < 2.0, (
+                    "head-of-line blocking: sibling roundtrip stalled"
+                )
+
+            # And the stalled pair itself is dropped at the stall
+            # deadline (1s + sweep granularity), not held forever.
+            stalled.settimeout(6)
+            deadline = _time.monotonic() + 6
+            dropped = False
+            try:
+                while _time.monotonic() < deadline:
+                    if not stalled.recv(65536):
+                        dropped = True
+                        break
+            except OSError:
+                dropped = True  # reset by the forwarder — also a drop
+            assert dropped, "stalled pair was never dropped"
+        finally:
+            if stalled is not None:
+                stalled.close()
+            os.close(death_w)
+            t.join(timeout=5)
+            os.close(death_r)
+            flood_srv._srv.close()
+            echo_srv._srv.close()
+
+    def test_eof_with_pending_bytes_still_delivers_the_tail(
+        self, short_sock_dir,
+    ):
+        """A source that writes a burst and immediately closes must
+        not lose the tail: bytes queued in the pending buffer are
+        drained before the pair is torn down."""
+        path = str(short_sock_dir / "tail.sock")
+        # Burst server: to EVERY connection (including the
+        # _wait_listening probe), send 2 MiB then close — the EOF
+        # chases the data through the relay.
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        payload = os.urandom(2 * 1024 * 1024)
+
+        def _burst(conn):
+            with conn:
+                conn.settimeout(10)
+                try:
+                    conn.sendall(payload)
+                except OSError:
+                    pass
+
+        def _serve():
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                threading.Thread(target=_burst, args=(conn,),
+                                 daemon=True).start()
+
+        st = threading.Thread(target=_serve, daemon=True)
+        st.start()
+        port = _free_port()
+        death_r, death_w = os.pipe()
+        t = threading.Thread(
+            target=_run_bridges, args=(((port, path),), death_r),
+            daemon=True)
+        t.start()
+        try:
+            _wait_listening(port)
+            with socket.create_connection(("127.0.0.1", port),
+                                          timeout=5) as c:
+                c.settimeout(10)
+                got = bytearray()
+                while True:
+                    chunk = c.recv(65536)
+                    if not chunk:
+                        break
+                    got += chunk
+                assert bytes(got) == payload, (
+                    f"tail lost: received {len(got)} of "
+                    f"{len(payload)} bytes"
+                )
+        finally:
+            os.close(death_w)
+            t.join(timeout=5)
+            os.close(death_r)
+            srv.close()  # daemon accept-thread exits with the process
+
+
 class TestSandboxPolicyPlumbing:
 
     def test_bridges_require_egress_proxy(self):

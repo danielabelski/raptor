@@ -24,6 +24,31 @@ import struct
 _BUF_SIZE = 65536
 _SELECT_TIMEOUT = 1.0
 
+# Relay-pair bounds. The forwarder serves every proxy and credential
+# bridge of its run from ONE select loop, so an unbounded pairs dict
+# consumed forwarder fds and a single stalled peer used to
+# head-of-line-block every other pair (the old synchronous _write_all
+# parked the loop up to 60s per stalled write). Bounds:
+#
+# - _MAX_PAIRS: concurrent relay pairs; connections beyond it are
+#   accepted and immediately closed (the child sees EOF and fails
+#   fast, like the dead-upstream case). 128 is far above the
+#   handful of bridges x connection bursts a sandboxed child
+#   legitimately drives, and caps the forwarder at ~256 relay fds.
+# - _PAIR_IDLE_TIMEOUT_S: a pair with no traffic in either direction
+#   for this long is swept (the egress proxy's own 300s idle bound
+#   applied at this hop too, so parked connections release fds).
+# - _WRITE_STALL_TIMEOUT_S / _MAX_PENDING_BYTES: writes are now
+#   non-blocking with a per-fd bounded pending buffer drained via
+#   the select loop's writability set; once the buffer is full the
+#   pair's OTHER side stops being read (backpressure), and a peer
+#   that makes no drain progress for the stall timeout gets its pair
+#   dropped — instead of one os.write parking the whole loop.
+_MAX_PAIRS = 128
+_PAIR_IDLE_TIMEOUT_S = 300.0
+_WRITE_STALL_TIMEOUT_S = 60.0
+_MAX_PENDING_BYTES = 256 * 1024
+
 
 def _bring_up_loopback() -> None:
     """SIOCSIFFLAGS to set IFF_UP on lo inside the current netns."""
@@ -56,8 +81,16 @@ def _run_bridges(bridges, death_r) -> None:
     until death_r fires. Designed to run post-fork before
     Landlock/seccomp — the forwarder itself is unrestricted.
 
+    Never blocks on a single peer: writes go through per-fd bounded
+    pending buffers drained via the select loop's writability set,
+    pairs are capped at ``_MAX_PAIRS``, idle pairs are swept, and a
+    peer that stalls its drain past ``_WRITE_STALL_TIMEOUT_S`` gets
+    its pair dropped (see the constants above for the rationale).
+
     Uses only fork-safe primitives.
     """
+    import time
+
     # listener fd -> (listener socket, unix socket path).
     listeners = {}
     for listen_port, unix_socket_path in bridges:
@@ -75,28 +108,73 @@ def _run_bridges(bridges, death_r) -> None:
 
     # pairs maps every relay fd -> its partner fd.
     pairs: dict[int, int] = {}
-    all_fds = set(listeners) | {death_r}
+    # fd -> bytearray of bytes accepted from the partner but not yet
+    # written to fd (only grows while fd's kernel send buffer is
+    # full; bounded by _MAX_PENDING_BYTES via read backpressure).
+    pending: dict[int, bytearray] = {}
+    # fd -> monotonic instant its pending buffer last FAILED to fully
+    # drain (reset on progress, cleared when empty). Present only
+    # while pending[fd] is non-empty.
+    stall_since: dict[int, float] = {}
+    # fd -> monotonic instant of the pair's last byte movement in
+    # either direction (both fds of a pair carry the same value).
+    last_activity: dict[int, float] = {}
+    # fds whose pair must close once their pending buffer drains: the
+    # SOURCE side hit EOF with bytes still owed to this fd. Preserves
+    # the old synchronous semantics where an EOF was only processed
+    # after every previously read byte had been written through.
+    closing = set()
 
     def _close_pair(fd) -> None:
-        partner = pairs.pop(fd, None)
-        if partner is not None:
-            pairs.pop(partner, None)
-            all_fds.discard(partner)
+        for f in (pairs.pop(fd, None), fd):
+            if f is None:
+                continue
+            pairs.pop(f, None)
+            pending.pop(f, None)
+            stall_since.pop(f, None)
+            last_activity.pop(f, None)
+            closing.discard(f)
             try:
-                os.close(partner)
+                os.close(f)
             except OSError:
                 pass
-        all_fds.discard(fd)
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+
+    def _mark_activity(fd):
+        now = time.monotonic()
+        last_activity[fd] = now
+        partner = pairs.get(fd)
+        if partner is not None:
+            last_activity[partner] = now
 
     try:
         while True:
+            now = time.monotonic()
+            # Sweep idle and write-stalled pairs. Runs once per loop
+            # wake (<= _SELECT_TIMEOUT apart), so enforcement lags the
+            # nominal deadline by at most one select interval.
+            for fd in list(pairs):
+                if fd not in pairs:
+                    continue  # partner side already swept it
+                if now - last_activity.get(fd, now) > _PAIR_IDLE_TIMEOUT_S:
+                    _close_pair(fd)
+                elif (fd in stall_since
+                        and now - stall_since[fd] > _WRITE_STALL_TIMEOUT_S):
+                    _close_pair(fd)
+
+            read_fds = [death_r]
+            read_fds.extend(listeners)
+            for fd in pairs:
+                partner = pairs[fd]
+                if fd in closing or partner in closing:
+                    continue  # draining a dying pair; no more reads
+                if len(pending.get(partner, b"")) >= _MAX_PENDING_BYTES:
+                    continue  # backpressure: partner's buffer is full
+                read_fds.append(fd)
+            write_fds = [fd for fd in pairs if pending.get(fd)]
+
             try:
-                readable, _, _ = select.select(
-                    list(all_fds), [], [], _SELECT_TIMEOUT,
+                readable, writable, _ = select.select(
+                    read_fds, write_fds, [], _SELECT_TIMEOUT,
                 )
             except (ValueError, OSError):
                 break
@@ -104,6 +182,40 @@ def _run_bridges(bridges, death_r) -> None:
             if death_r in readable:
                 # Parent died or signalled shutdown.
                 return
+
+            # Drain pending writes FIRST so this iteration's reads see
+            # the freed buffer space. `writable` is a snapshot — the
+            # sweep above may already have closed an entry; `fd not in
+            # pairs` guards every stale case (no new fds exist yet:
+            # accepts are deferred to the end of the iteration).
+            for fd in writable:
+                if fd not in pairs:
+                    continue
+                buf = pending.get(fd)
+                if not buf:
+                    continue
+                try:
+                    n = os.write(fd, buf)
+                except OSError as e:
+                    if e.errno == errno.EAGAIN:
+                        continue
+                    _close_pair(fd)
+                    continue
+                if n <= 0:
+                    _close_pair(fd)
+                    continue
+                del buf[:n]
+                _mark_activity(fd)
+                if buf:
+                    # Partial drain still counts as progress —
+                    # restart the stall clock.
+                    stall_since[fd] = time.monotonic()
+                else:
+                    stall_since.pop(fd, None)
+                    if fd in closing:
+                        # Last owed byte delivered after the source's
+                        # EOF — now the pair can go.
+                        _close_pair(fd)
 
             accept_ready = []
             for fd in readable:
@@ -113,12 +225,12 @@ def _run_bridges(bridges, death_r) -> None:
 
                 # `readable` is a snapshot: an entry whose relay was
                 # torn down earlier in THIS iteration (its partner hit
-                # EOF/error first) is stale. Without this guard the
-                # stale fd would be read from / closed again — and if
-                # the fd number had been reused by a fresh connection,
-                # that unrelated connection would be corrupted or
-                # killed.
-                if fd not in all_fds:
+                # EOF/error first, or a sweep took it) is stale.
+                # Without this guard the stale fd would be read from /
+                # closed again — and if the fd number had been reused
+                # by a fresh connection, that unrelated connection
+                # would be corrupted or killed.
+                if fd not in pairs:
                     continue
 
                 partner = pairs.get(fd)
@@ -133,12 +245,32 @@ def _run_bridges(bridges, death_r) -> None:
                     _close_pair(fd)
                     continue
                 if not data:
-                    _close_pair(fd)
+                    # EOF. If bytes are still owed to the partner,
+                    # keep the pair draining (bounded by the stall
+                    # and idle sweeps); otherwise tear down now.
+                    if pending.get(partner):
+                        closing.add(partner)
+                        stall_since.setdefault(partner, time.monotonic())
+                    else:
+                        _close_pair(fd)
                     continue
-                try:
-                    _write_all(partner, data)
-                except OSError:
-                    _close_pair(fd)
+                buf = pending[partner]
+                if not buf:
+                    # Fast path: partner's buffer is empty, try the
+                    # write inline; only the unwritten tail is queued.
+                    try:
+                        n = os.write(partner, data)
+                    except OSError as e:
+                        if e.errno != errno.EAGAIN:
+                            _close_pair(fd)
+                            continue
+                        n = 0
+                    if n < len(data):
+                        buf += data[n:]
+                        stall_since.setdefault(partner, time.monotonic())
+                else:
+                    buf += data
+                _mark_activity(fd)
 
             # Accept LAST: fds created here (accept + unix connect)
             # can reuse numbers closed by _close_pair above. Deferring
@@ -150,6 +282,13 @@ def _run_bridges(bridges, death_r) -> None:
                 try:
                     client_sock, _ = listener.accept()
                 except OSError:
+                    continue
+                if len(pairs) // 2 >= _MAX_PAIRS:
+                    # Pair cap: refuse by immediate close — the child
+                    # sees EOF and fails fast (same shape as the
+                    # dead-upstream case) instead of the forwarder
+                    # accumulating unbounded fds.
+                    client_sock.close()
                     continue
                 client_sock.setblocking(False)
 
@@ -168,30 +307,14 @@ def _run_bridges(bridges, death_r) -> None:
                 u_fd = unix_sock.detach()
                 pairs[c_fd] = u_fd
                 pairs[u_fd] = c_fd
-                all_fds.add(c_fd)
-                all_fds.add(u_fd)
+                pending[c_fd] = bytearray()
+                pending[u_fd] = bytearray()
+                now = time.monotonic()
+                last_activity[c_fd] = now
+                last_activity[u_fd] = now
     finally:
-        for fd in all_fds:
-            if fd != death_r:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-
-
-def _write_all(fd, data, timeout=60.0) -> None:
-    """Write all of *data* to *fd*. Raises OSError on failure."""
-    import time
-    deadline = time.monotonic() + timeout
-    mv = memoryview(data)
-    while mv:
-        try:
-            n = os.write(fd, mv)
-        except BlockingIOError:
-            if time.monotonic() > deadline:
-                raise OSError(errno.ETIMEDOUT, "write timed out")
-            select.select([], [fd], [], 0.5)
-            continue
-        if n <= 0:
-            raise OSError(errno.EIO, "write returned <= 0")
-        mv = mv[n:]
+        for fd in set(listeners) | set(pairs):
+            try:
+                os.close(fd)
+            except OSError:
+                pass

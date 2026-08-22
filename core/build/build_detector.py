@@ -579,15 +579,77 @@ class BuildDetector:
                 return True
         return False
 
+    # package.json manifests are small (npm publishes reject >~1 MiB
+    # manifests); 2 MiB is a generous ceiling for the size gate below.
+    _PACKAGE_JSON_MAX_BYTES: ClassVar[int] = 2 * 1024 * 1024
+
     def _has_build_script(self, package_json: Path) -> bool:
-        """Check if package.json has a build script."""
+        """Check if package.json has a build script.
+
+        The manifest lives in the SCANNED (untrusted) repo and this
+        method runs in the unsandboxed parent, so the bytes are gated
+        BEFORE any parse: open with ``O_NOFOLLOW`` (a package.json
+        symlinked at /dev/zero would otherwise be slurped until OOM)
+        and ``O_NONBLOCK`` (a FIFO would otherwise block ``open``
+        forever), then require ``fstat`` to report a regular file
+        under the size cap. Anything failing the gate degrades to
+        "no build script", same as a malformed manifest.
+        """
+        import json
+        import stat as _stat
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
         try:
-            from core.json import load_json
-            data = load_json(package_json)
-            if data is None:
+            fd = os.open(str(package_json), flags)
+        except OSError as e:
+            logger.debug("Cannot open package.json: %s", e)
+            return False
+        try:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode):
+                logger.debug(
+                    "package.json at %s is not a regular file — ignoring",
+                    package_json,
+                )
+                return False
+            if st.st_size > self._PACKAGE_JSON_MAX_BYTES:
+                logger.debug(
+                    "package.json at %s is %d bytes (cap %d) — ignoring",
+                    package_json, st.st_size, self._PACKAGE_JSON_MAX_BYTES,
+                )
+                return False
+            chunks = []
+            remaining = self._PACKAGE_JSON_MAX_BYTES + 1
+            while remaining > 0:
+                buf = os.read(fd, min(remaining, 1 << 20))
+                if not buf:
+                    break
+                chunks.append(buf)
+                remaining -= len(buf)
+            if remaining <= 0:
+                # File grew past the cap between fstat and the reads.
+                logger.debug(
+                    "package.json at %s exceeded the size cap during "
+                    "read — ignoring", package_json,
+                )
+                return False
+            raw = b"".join(chunks)
+        except OSError as e:
+            logger.debug("Error reading package.json: %s", e)
+            return False
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            # utf-8-sig: transparently strip a UTF-8 BOM (same contract
+            # as core.json.load_json, which this replaced — load_json
+            # has no pre-parse size/file-type gate).
+            data = json.loads(raw.decode("utf-8-sig"))
+            if not isinstance(data, dict):
                 return False
             scripts = data.get("scripts", {})
-            return "build" in scripts
+            return isinstance(scripts, dict) and "build" in scripts
         except Exception as e:  # noqa: BLE001 — malformed manifest degrades to no-build-script
             logger.debug("Error parsing package.json: %s", e)
             return False

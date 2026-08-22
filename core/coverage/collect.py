@@ -17,6 +17,7 @@ failure yields ``{}``, never raises.
 from __future__ import annotations
 
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -38,11 +39,48 @@ def _safe_env() -> dict[str, str]:
         return dict(os.environ)
 
 
+# Per-.gcda cap on gcov report size. A legitimate report is
+# proportional to the source file; anything past this is a crafted
+# artifact — refuse rather than keep processing it.
+_MAX_GCOV_STDOUT = 64 * 1024 * 1024
+
+# A gcov text report starts each per-source section with the
+# ``Source:`` metadata row (lineno 0).
+_GCOV_SOURCE_ROW = re.compile(r"^\s*-:\s*0:Source:")
+
+
+def _split_gcov_sections(text: str) -> list:
+    """Split a concatenated ``gcov --stdout`` report into per-source
+    sections (one ``.gcda`` covers every source that contributed to
+    the object: the main file plus headers with inline functions)."""
+    sections: list = []
+    current: list = []
+    for line in text.splitlines(keepends=True):
+        if _GCOV_SOURCE_ROW.match(line) and current:
+            sections.append("".join(current))
+            current = []
+        current.append(line)
+    if current:
+        sections.append("".join(current))
+    return sections
+
+
 def collect_gcov(build_dir, env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """Run ``gcov`` on every ``.gcda`` under ``build_dir`` and parse the result.
-    Returns ``{source_path: set(executed_lines)}``. Runs gcov in each artifact
-    dir (so the compiled-in source path resolves), collects only the ``.gcov``
-    it newly produced, parses, and cleans those up."""
+    Returns ``{source_path: set(executed_lines)}``.
+
+    ``build_dir`` is ATTACKER-INFLUENCED (a hostile repo's build tree,
+    or artifacts it shipped), so gcov must never write into it: in
+    file mode gcov creates ``<src>.gcov`` outputs named after the
+    artifacts' recorded source names in its CWD, and a pre-planted
+    symlink at such a name redirects the write to an arbitrary host
+    path. Run gcov in stdout mode (``-t``) instead — the report goes
+    to the pipe and NOTHING lands on disk — one ``.gcda`` at a time
+    (absolute path, list args). The cwd stays at the artifact dir
+    purely so the recorded relative source paths resolve (without
+    source text gcov omits the per-line rows); with ``-t`` that cwd
+    is never written to. Sections are split per ``Source:`` header
+    and parsed from a private temp dir."""
     from .parsers import parse_gcov
 
     build = Path(build_dir)
@@ -51,25 +89,26 @@ def collect_gcov(build_dir, env: dict[str, str] | None = None) -> dict[str, set[
         return {}
     env = env or _safe_env()
     out: dict[str, set[int]] = {}
-    by_dir: dict[Path, list] = {}
     for f in gcda:
-        by_dir.setdefault(f.parent, []).append(f.name)
-    for d, names in by_dir.items():
-        pre = set(d.glob("*.gcov"))
         try:
-            subprocess.run(["gcov", *names], cwd=str(d), env=env,
-                           capture_output=True, timeout=_TIMEOUT, check=False)
+            r = subprocess.run(
+                ["gcov", "-t", "-o", str(f.parent), str(f)],
+                cwd=str(f.parent), env=env,
+                capture_output=True, timeout=_TIMEOUT, check=False)
         except (OSError, subprocess.SubprocessError):
             continue
-        produced = [g for g in d.glob("*.gcov") if g not in pre]
-        for g in produced:
-            for src, lines in parse_gcov(g).items():
+        if r.returncode != 0 or not r.stdout:
+            continue
+        if len(r.stdout) > _MAX_GCOV_STDOUT:
+            continue
+        text = r.stdout.decode("utf-8", "replace")
+        with tempfile.TemporaryDirectory(prefix="raptor-gcov-") as td:
+            tdp = Path(td)
+            for i, section in enumerate(_split_gcov_sections(text)):
+                (tdp / f"section-{i:04d}.gcov").write_text(
+                    section, encoding="utf-8")
+            for src, lines in parse_gcov(tdp).items():
                 out.setdefault(src, set()).update(lines)
-        for g in produced:                 # best-effort: don't pollute the build
-            try:
-                g.unlink()
-            except OSError:
-                pass
     return out
 
 

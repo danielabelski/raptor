@@ -231,3 +231,54 @@ def test_collect_gcov_live(tmp_path):
     assert 1 not in data["prog.c"]      # dead() never called
     # And it cleaned up the .gcov it produced.
     assert not list(tmp_path.glob("*.gcov"))
+
+
+@pytest.mark.skipif(not _HAVE_GCOV, reason="gcc/gcov not available")
+def test_collect_gcov_never_writes_into_the_build_tree(tmp_path):
+    """gcov must run in a private temp cwd: a pre-planted symlink at
+    the ``<src>.gcov`` output name in the (attacker-influenced) build
+    dir would otherwise redirect gcov's write to an arbitrary host
+    path."""
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "prog.c").write_text(
+        "int dead(void){ return -1; }\n"
+        "int main(void){ return 0; }\n")
+    subprocess.run(["gcc", "--coverage", "-O0", "-o", "prog", "prog.c"],
+                   cwd=build, check=True, capture_output=True)
+    subprocess.run(["./prog"], cwd=build, check=True, capture_output=True)
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+    # Attacker pre-plants the exact output name gcov would use.
+    (build / "prog.c.gcov").symlink_to(victim)
+
+    data = collect_gcov(build)
+
+    assert victim.read_text() == "precious", (
+        "gcov output followed a planted symlink out of the build tree"
+    )
+    # Collection itself still works from the private cwd.
+    assert "prog.c" in data
+    assert 2 in data["prog.c"]
+    assert 1 not in data["prog.c"]
+
+
+@pytest.mark.skipif(not _HAVE_GCOV, reason="gcc/gcov not available")
+def test_collect_gcov_attributes_multi_source_sections(tmp_path):
+    """One .gcda covers every source that fed the object (main file +
+    headers with inline functions); each section must be attributed
+    to its own Source: header, not merged into the last one."""
+    (tmp_path / "inl.h").write_text(
+        "int hh(int x);\n"
+        "static inline int inl(int x){ return x + 1; }\n")
+    (tmp_path / "m.c").write_text(
+        '#include "inl.h"\n'
+        "int main(void){ return inl(0) - 1; }\n")
+    subprocess.run(["gcc", "--coverage", "-O0", "-o", "m", "m.c"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["./m"], cwd=tmp_path, check=True, capture_output=True)
+
+    data = collect_gcov(tmp_path)
+    assert 2 in data.get("m.c", set())
+    assert 2 in data.get("inl.h", set())

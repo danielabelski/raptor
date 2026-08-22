@@ -35,6 +35,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.git import get_safe_git_env, safe_git_readonly_command
 from core.recall.manifest import SCHEMA_VERSION
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
@@ -96,9 +97,18 @@ class CvefixSpec:
 
 
 def _git(clone: Path, *args: str) -> str:
+    # The clone is INTERNET-SOURCED (the operator ran `git clone
+    # <repo_url>`), so its `.git/config` is untrusted: hostile
+    # entries (core.fsmonitor, core.pager, diff.external, hooksPath)
+    # execute attacker commands on ordinary git ops. Route through
+    # the strict read-only argv (per-invocation `-c` neutralisers +
+    # protocol.allow=never) with the sanitised git env. Every command
+    # this module issues is local plumbing over committed trees —
+    # no transport, no worktree re-hash.
     proc = subprocess.run(
-        ["git", "-C", str(clone), *args],
-        capture_output=True, text=True, timeout=120, check=False)
+        safe_git_readonly_command("-C", str(clone), *args),
+        capture_output=True, text=True, timeout=120, check=False,
+        env=get_safe_git_env())
     if proc.returncode != 0:
         msg = (
             f"git {' '.join(args[:2])} failed in {clone}: "
@@ -199,7 +209,11 @@ def generate_manifests(spec: CvefixSpec) -> tuple[dict, dict]:
         )
         raise CvefixManifestError(msg)
 
-    diff = _git(clone, "diff", f"{fix}^", fix)
+    # --no-ext-diff is REQUIRED under the hardened argv: the
+    # overrides pin diff.external to the empty string, which git
+    # treats as a command and fails on — deliberate fail-closed
+    # for diff call sites that forget to disable external drivers.
+    diff = _git(clone, "diff", "--no-ext-diff", f"{fix}^", fix)
     spans = parse_fix_hunks(diff, spec.file_suffixes)
     if not spec.include_tests:
         spans = [h for h in spans

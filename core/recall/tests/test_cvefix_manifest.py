@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -181,3 +182,41 @@ class TestGenerate:
             (out / "cve-2020-99999-postfix.json").read_text())
         assert pre["name"] == "cvefix-CVE-2020-99999"
         assert post["corpus_kind"] == "fp-only"
+
+
+class TestHostileCloneConfig:
+    @pytest.mark.skipif(
+        shutil.which("git") is None, reason="git not installed",
+    )
+    def test_hostile_diff_external_not_executed(self, tmp_path):
+        """A hostile clone's .git/config must not execute commands.
+
+        The clone is internet-sourced; its config can name arbitrary
+        programs (diff.external, core.fsmonitor, core.pager). The
+        bridge's git invocations must neutralise them — the canary
+        below fires if `git diff` honours the repo-configured
+        external diff driver.
+        """
+        repo, fix = _make_fix_repo(tmp_path)
+        canary = tmp_path / "canary"
+        evil = tmp_path / "evil.sh"
+        evil.write_text(
+            "#!/bin/sh\n"
+            f"touch '{canary}'\n"
+        )
+        evil.chmod(0o755)
+        for key in ("diff.external", "core.fsmonitor", "core.pager"):
+            subprocess.run(
+                ["git", "-C", str(repo), "config", key, str(evil)],
+                check=True)
+
+        recall_m, twin = generate_manifests(_spec(repo, fix))
+
+        assert not canary.exists(), (
+            "hostile .git/config command executed during manifest "
+            "generation"
+        )
+        # The hardening must not break the actual work: the fix diff
+        # still yields candidate labels.
+        assert recall_m["expected"]
+        assert twin["clean_regions"]

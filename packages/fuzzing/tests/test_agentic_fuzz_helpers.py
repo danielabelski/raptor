@@ -133,3 +133,32 @@ class TestPathsFoundKeysShared(unittest.TestCase):
                 {"fuzzer": "afl", "stats": stats}, None,
             )
             self.assertEqual(summary["paths_found"], 7, key)
+
+
+class TestCampaignFailedSummary:
+    """A dead campaign (runner verdict campaign_failed) must not read
+    as completed in the agentic phase summary — the summary previously
+    key-allowlisted the verdict away and reported completed: True for
+    a run that may have executed zero inputs."""
+
+    def test_failed_campaign_reports_not_completed(self):
+        summary = _build_fuzz_phase_summary({
+            "fuzzer": "afl",
+            "campaign_failed": True,
+            "crashes": 0,
+            "stats": {},
+            "telemetry": "/x/fuzz-summary.json",
+        }, None)
+        assert summary["completed"] is False
+        assert summary["campaign_failed"] is True
+        assert summary["fuzzer"] == "afl"
+
+    def test_healthy_campaign_unchanged(self):
+        summary = _build_fuzz_phase_summary({
+            "fuzzer": "afl",
+            "campaign_failed": False,
+            "crashes": 2,
+            "crashes_dir": None,
+            "stats": {"execs_done": "10"},
+        }, None)
+        assert summary["completed"] is True

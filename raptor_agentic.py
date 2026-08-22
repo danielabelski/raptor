@@ -1021,6 +1021,18 @@ def _safe_float(value) -> float | None:
 def _build_fuzz_phase_summary(fuzzing_result: dict | None, fuzz_out: Path | None) -> dict:
     if not fuzzing_result:
         return {"completed": False}
+    if fuzzing_result.get("campaign_failed"):
+        # Every AFL instance died without a clean exit and nothing was
+        # found — the campaign may have executed zero inputs. Reporting
+        # completed=True here would contradict the runner's own
+        # CAMPAIGN FAILED verdict (and its non-zero exit).
+        return {
+            "completed": False,
+            "campaign_failed": True,
+            "fuzzer": fuzzing_result.get("fuzzer"),
+            "crashes": 0,
+            "telemetry": fuzzing_result.get("telemetry"),
+        }
     stats = fuzzing_result.get("stats") or {}
     telemetry = {}
     telemetry_path = fuzzing_result.get("telemetry")

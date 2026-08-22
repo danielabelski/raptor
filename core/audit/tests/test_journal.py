@@ -529,3 +529,44 @@ def test_entry_round_trips_every_dataclass_field(tmp_path):
     append_entry(tmp_path, entry)
     (loaded,) = load_entries(tmp_path)
     assert dataclasses.asdict(loaded) == dataclasses.asdict(entry)
+
+
+def test_review_edges_folds_project_index(tmp_path, capsys, monkeypatch):
+    # Cross-run edge reuse journals verdicts in PRIOR runs; /review
+    # edges must show them, not "unreviewed".
+    import json as _json
+
+    from core.coverage.journal import (
+        ReviewJournalEntry,
+        append_entry,
+        merge_into_index,
+    )
+    project = tmp_path
+    run = project / "audit-1"
+    run.mkdir()
+    (run / ".raptor-run.json").write_text("{}")
+    rec = {"caller_file": "a.c", "caller": "f1", "callee_file": "b.c",
+           "callee": "g1", "call_line": 3, "reason": "boundary:x"}
+    (run / "edge-obligations.json").write_text(_json.dumps({
+        "schema_version": 1, "tier1": [rec], "tier2": [],
+        "blind_spots": [], "stats": {"degraded": []}}))
+    prior = project / "audit-0"
+    prior.mkdir()
+    append_entry(prior, ReviewJournalEntry(
+        ts="2026-08-22T00:00:00.000000Z", run_id="audit-0",
+        file="a.c", function="f1", verdict="clean",
+        source_hash="", edge_callee="b.c:g1"))
+    merge_into_index(project, prior)
+
+    mod = TestReviewDiffLive._cli()
+
+    run_s, project_s = str(run), str(project)
+
+    class _Args:
+        out = run_s
+        project = project_s
+        raw = False
+    mod.cmd_edges(_Args())
+    out = capsys.readouterr().out
+    assert "clean" in out
+    assert "unreviewed" not in out

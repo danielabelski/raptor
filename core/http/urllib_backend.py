@@ -52,7 +52,6 @@ import re
 import threading
 import time
 from collections.abc import Iterator
-from http.client import HTTPException as _HTTPException
 from typing import Any
 from urllib import parse as _urlparse
 
@@ -156,6 +155,52 @@ def _declared_gzip(resp) -> bool:
         token.strip() in ("gzip", "x-gzip")
         for token in ce.lower().split(",")
     )
+
+
+# Byte budget for draining a response before returning its connection
+# to the pool. Enough to clear real-world leftovers (error bodies,
+# the tail after a 512-byte snippet read); a remainder larger than
+# this is not worth reading — the connection is closed instead.
+_DRAIN_BUDGET_BYTES = 64 * 1024
+
+
+def _drain_bounded_or_close(resp) -> None:
+    """Clear at most ``_DRAIN_BUDGET_BYTES`` from ``resp`` so its
+    connection can be reused; close the connection when more remains.
+
+    Reusing a connection with unread bytes poisons the pool (the next
+    request sees the leftovers prepended to its own response), so the
+    remainder must be dealt with — but urllib3's ``drain_conn()``
+    reads to EOF with NO cap, which turned every abort path
+    (SizeLimitExceeded, timeout, 4xx snippet) into an unbounded read
+    of whatever the hostile peer still had to send, AFTER the
+    advertised limit had already fired. Budgeted drain first; if the
+    body still isn't exhausted, closing the connection (the pool
+    replaces closed connections) is strictly cheaper than reading a
+    hostile remainder.
+
+    Failures here only cost one pooled connection — never crash the
+    cleanup path.
+    """
+    try:
+        remaining = _DRAIN_BUDGET_BYTES
+        while remaining > 0:
+            # No decode_content override: urllib3 2.x refuses to
+            # switch decode modes mid-response.
+            chunk = resp.read(min(16 * 1024, remaining))
+            if not chunk:
+                return          # EOF — fully drained, safe to reuse
+            if not isinstance(chunk, (bytes, bytearray)) or not len(chunk):
+                # Non-bytes / zero-length-but-truthy reads mean an
+                # unknown response implementation (test doubles) —
+                # don't risk spinning; close instead of reusing.
+                resp.close()
+                return
+            remaining -= len(chunk)
+        resp.close()
+    except Exception:  # noqa: BLE001 — transport/state errors alike
+        with contextlib.suppress(Exception):
+            resp.close()
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -918,18 +963,15 @@ class UrllibClient:
                     raise TimeoutError(msg)
                 yield chunk
         finally:
-            # Same drain-then-release pattern as `_fetch_once`: a
-            # SizeLimitExceeded / TimeoutError raised mid-stream
-            # leaves bytes in the socket buffer. Releasing without
-            # draining poisons the pool — the next request that
-            # picks up the connection sees the leftover bytes
-            # prepended to its OWN response. Drain (urllib3 caps
-            # internally at ~64KB), then release. Transport errors
-            # only — a drain failure means we leak one connection,
-            # which beats crashing the cleanup path.
-            with contextlib.suppress(OSError, _U3HTTPError, _HTTPException):
-                if hasattr(resp, "drain_conn"):
-                    resp.drain_conn()
+            # Same bounded-drain-then-release pattern as
+            # `_fetch_once`: a SizeLimitExceeded / TimeoutError
+            # raised mid-stream leaves bytes in the socket buffer,
+            # and releasing without clearing them poisons the pool.
+            # urllib3's own drain_conn() reads to EOF UNBOUNDED, so
+            # a hostile remainder would be consumed after the abort
+            # fired — drain under a byte budget and close the
+            # connection instead when more remains.
+            _drain_bounded_or_close(resp)
             # Released whether the generator was fully consumed,
             # garbage-collected mid-stream, or .close()-d explicitly.
             resp.release_conn()
@@ -1449,30 +1491,20 @@ class UrllibClient:
                 url=final_url,
             )
         finally:
-            # Drain THEN release. Pre-fix the finally only called
-            # `resp.release_conn()`. release_conn returns the
-            # connection to the pool WITHOUT draining any
-            # remaining body bytes from the socket buffer. The
-            # next request that picks up the connection then saw
-            # the leftover bytes prepended to its OWN response —
-            # parser confusion, wrong status codes, occasional
-            # data leaks across requests sharing the pool.
-            #
-            # Two failure paths that left bytes in the buffer:
+            # Bounded drain THEN release. Two failure paths leave
+            # bytes in the socket buffer:
             #   * 4xx snippet branch reads only 512 bytes but a
             #     larger error body has more in flight.
             #   * SizeLimitExceeded raises mid-stream with the
             #     remainder of the body still on the socket.
-            #
-            # `drain_conn()` reads remaining bytes (up to a small
-            # cap inside urllib3, ~64KB by default) so the socket
-            # buffer is empty when release_conn returns the conn
-            # to the pool. If drain itself fails we fall through
-            # to release — better to leak a single connection
-            # than to crash the cleanup path. Transport errors only.
-            with contextlib.suppress(OSError, _U3HTTPError, _HTTPException):
-                if hasattr(resp, "drain_conn"):
-                    resp.drain_conn()
+            # Releasing without clearing them poisons the pool (the
+            # next request sees the leftovers prepended to its own
+            # response). urllib3's drain_conn() reads to EOF with NO
+            # cap, which handed a hostile peer an unbounded read
+            # AFTER the advertised limit aborted — so the drain runs
+            # under a byte budget and the connection is closed
+            # (pool replaces it) when more remains.
+            _drain_bounded_or_close(resp)
             resp.release_conn()
 
     @staticmethod

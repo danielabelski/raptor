@@ -1469,3 +1469,91 @@ class TestHostInNoProxy:
         assert not _host_in_no_proxy("notexample.com", ("example.com",))
         assert not _host_in_no_proxy("example.com", ())
         assert _host_in_no_proxy("169.254.169.254", ("169.254.169.254",))
+
+
+class TestBoundedDrainOnAbort:
+    """After an abort (SizeLimitExceeded, 4xx snippet), cleanup must
+    not read a hostile remainder to EOF — drain is budgeted and the
+    connection is closed when more remains."""
+
+    class _HostileResponse:
+        """Response with a huge remainder that tracks post-abort
+        reads. stream() raises the caller into the abort path after
+        the first chunk; read() then serves from a 10 MB remainder."""
+
+        def __init__(self, remainder_bytes: int = 10 * 1024 * 1024):
+            self.status = 200
+            self.reason = "OK"
+            self.headers = {}
+            self._remainder = remainder_bytes
+            self.bytes_drained = 0
+            self.closed = False
+            self.released = False
+
+        def stream(self, chunk_size, decode_content=None):
+            yield b"x" * 1024   # first chunk trips max_bytes below
+
+        def read(self, amt=None, decode_content=None):
+            if self.closed or self._remainder <= 0:
+                return b""
+            take = self._remainder if amt is None else min(amt, self._remainder)
+            self._remainder -= take
+            self.bytes_drained += take
+            return b"y" * take
+
+        def drain_conn(self):
+            # urllib3 2.x semantics: read to EOF, unbounded.
+            while self.read(2 ** 20):
+                pass
+
+        def geturl(self):
+            return ""
+
+        def close(self):
+            self.closed = True
+
+        def release_conn(self):
+            self.released = True
+
+    def test_size_limit_abort_does_not_drain_hostile_remainder(self):
+        resp = self._HostileResponse()
+        pool = MagicMock()
+        pool.request.return_value = resp
+        client = UrllibClient(_http=pool)
+        with pytest.raises(SizeLimitExceeded):
+            client.request("GET", "https://example.com/huge",
+                           max_bytes=512, retries=0)
+        # Budgeted: never reads the 10 MB remainder (pre-fix
+        # drain_conn consumed all of it), and the connection is
+        # closed rather than returned poisoned.
+        assert resp.bytes_drained <= 64 * 1024
+        assert resp.closed
+        assert resp.released
+
+    def test_stream_bytes_abort_does_not_drain_hostile_remainder(self):
+        resp = self._HostileResponse()
+        pool = MagicMock()
+        pool.request.return_value = resp
+        client = UrllibClient(_http=pool)
+        with pytest.raises(SizeLimitExceeded):
+            for _ in client.stream_bytes(
+                "https://example.com/huge", max_bytes=512,
+            ):
+                pass
+        assert resp.bytes_drained <= 64 * 1024
+        assert resp.closed
+        assert resp.released
+
+    def test_small_remainder_fully_drained_for_reuse(self):
+        """A remainder inside the budget is drained to EOF — the
+        connection stays reusable (not closed)."""
+        resp = self._HostileResponse(remainder_bytes=2048)
+        pool = MagicMock()
+        pool.request.return_value = resp
+        client = UrllibClient(_http=pool)
+        with pytest.raises(SizeLimitExceeded):
+            client.request("GET", "https://example.com/big",
+                           max_bytes=512, retries=0)
+        assert resp.bytes_drained == 2048
+        assert not resp.closed
+        assert resp.released

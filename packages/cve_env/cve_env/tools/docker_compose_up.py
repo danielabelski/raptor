@@ -232,8 +232,12 @@ def docker_compose_up_payload(
                 # ignore the result.
                 from cve_env.utils.run import run_with_timeout
 
+                # DANGLING images only — a global `docker system prune`
+                # would delete unrelated stopped containers, networks and
+                # build cache on a shared daemon (same scoping as the
+                # single-container launch retry).
                 run_with_timeout(
-                    ["docker", "system", "prune", "-f"],
+                    ["docker", "image", "prune", "-f"],
                     timeout=30,
                 )
             time.sleep(5)

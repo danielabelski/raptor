@@ -260,7 +260,11 @@ def launch_container(
                 "launch_container disk_full on %s; pruning + retrying in %ss",
                 image, _RETRY_BACKOFF_S,
             )
-            run_cli(["docker", "system", "prune", "-f"], timeout=30)
+            # DANGLING images only — a global `docker system prune` would
+            # delete unrelated stopped containers, networks and build cache
+            # on a shared daemon, triggerable by any target-selected
+            # oversized image that induces disk pressure.
+            run_cli(["docker", "image", "prune", "-f"], timeout=30)
         else:
             logger.info(
                 "launch_container %s on %s; retrying in %ss",

@@ -811,3 +811,28 @@ def test_up_stack_appends_pull_always(mock_run: MagicMock, tmp_path: Path) -> No
     assert "--pull" in up_args, f"missing --pull in up cmd: {up_args}"
     pull_idx = up_args.index("--pull")
     assert up_args[pull_idx + 1] == "missing", f"--pull value not 'missing': {up_args}"
+
+
+@patch("core.container.compose.run_compose")
+def test_disk_full_retry_prunes_dangling_images_only(
+    mock_run: MagicMock, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The compose-up disk_full retry prunes DANGLING IMAGES only —
+    never `docker system prune`, whose global blast radius (unrelated
+    stopped containers, networks, build cache) a target-selected
+    oversized stack could trigger on a shared daemon."""
+    mock_run.side_effect = ComposeError("boom",
+                                        stderr="no space left on device")
+    pruned: list[list[str]] = []
+
+    import cve_env.utils.run as run_mod
+    monkeypatch.setattr(run_mod, "run_with_timeout",
+                        lambda cmd, timeout=30: pruned.append(list(cmd)))
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(yaml.safe_dump({"services": {"web": {"image": "x"}}}))
+    result = docker_compose_up_payload(compose_yaml_path=str(compose),
+                                       cve_id="CVE-PRUNE")
+    assert result["ok"] is False
+    assert pruned == [["docker", "image", "prune", "-f"]]

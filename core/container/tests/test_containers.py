@@ -181,3 +181,27 @@ def test_inspect_state_folds_failures_to_error_key() -> None:
     with patch.object(cc, "run_cli", side_effect=broken):
         state = cc.inspect_state("cid")
     assert state == {"_error": "no such object"}
+
+
+def test_disk_full_retry_prunes_dangling_images_only() -> None:
+    """The disk_full retry path prunes DANGLING IMAGES only — never
+    `docker system prune`, which would delete unrelated stopped
+    containers/networks/build cache on a shared daemon."""
+    calls: list[list[str]] = []
+
+    def fake(cmd: list[str], **_kw: Any) -> RunOutcome:
+        calls.append(list(cmd))
+        if cmd[:3] == ["docker", "run", "-d"]:
+            return RunOutcome(returncode=1, stdout="",
+                              stderr="no space left on device",
+                              timed_out=False)
+        return RunOutcome(returncode=0, stdout="", stderr="",
+                          timed_out=False)
+
+    with patch.object(cc, "run_cli", side_effect=fake), \
+         patch.object(cc.time, "sleep"):
+        result = cc.launch_container(image="x:1", container_port=80)
+    assert not result.ok and result.reason_class == "disk_full"
+    prunes = [c for c in calls if "prune" in c]
+    assert prunes == [["docker", "image", "prune", "-f"]]
+    assert not any(c[:3] == ["docker", "system", "prune"] for c in calls)

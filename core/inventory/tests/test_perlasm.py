@@ -211,6 +211,68 @@ class TestGenerationAndCache:
         assert gap is None and cached is not None
         assert sorted(p.name for p in cache.iterdir()) == [cached.name]
 
+    def test_symlink_output_is_refused_not_cached(self, target,
+                                                   tmp_path,
+                                                   monkeypatch):
+        """A hostile generator that leaves out.S as a SYMLINK must be
+        refused: renaming an attacker-created symlink into the shared
+        cache turns every later consumer's normal open into an
+        arbitrary-host-path read (and the cache slot into a poisoning
+        primitive)."""
+        gen = detect_perlasm_generators(self._with_gen(target))[0]
+        cache = tmp_path / "cache"
+        secret = tmp_path / "secret.txt"
+        secret.write_text("HOST-FILE-CONTENT")
+
+        def _symlinker(cmd, **kwargs):
+            Path(cmd[3]).symlink_to(secret)
+
+            class _Proc:
+                returncode = 0
+                stderr = ""
+            return _Proc()
+
+        import core.sandbox.context as ctx
+        monkeypatch.setattr(ctx, "run_untrusted", _symlinker)
+        cached, gap = generate_asm(gen, "linux64", target, cache)
+        assert cached is None and gap is not None
+        assert all(not p.is_symlink() for p in cache.iterdir()), (
+            "an attacker-created symlink inode was published into "
+            "the shared cache"
+        )
+
+    def test_fifo_output_is_refused_without_blocking(self, target,
+                                                     tmp_path,
+                                                     monkeypatch):
+        """A generator-planted FIFO at out.S must neither hang the
+        parent nor reach the cache."""
+        import os as _os
+        import threading
+
+        gen = detect_perlasm_generators(self._with_gen(target))[0]
+        cache = tmp_path / "cache"
+
+        def _fifo(cmd, **kwargs):
+            _os.mkfifo(cmd[3])
+
+            class _Proc:
+                returncode = 0
+                stderr = ""
+            return _Proc()
+
+        import core.sandbox.context as ctx
+        monkeypatch.setattr(ctx, "run_untrusted", _fifo)
+        result: list = []
+        t = threading.Thread(
+            target=lambda: result.append(
+                generate_asm(gen, "linux64", target, cache)),
+            daemon=True)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive(), "generate_asm blocked on a FIFO output"
+        cached, gap = result[0]
+        assert cached is None and gap is not None
+
     def test_cache_key_varies_by_flavour_and_content(self, target):
         gen = detect_perlasm_generators(self._with_gen(target))[0]
         k1 = _cache_key(gen, "linux64")

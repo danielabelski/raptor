@@ -266,12 +266,69 @@ def generate_asm(gen: PerlasmGenerator, flavour: str, target: Path,
                 f"{gen.rel_path}: generator exited {proc.returncode} "
                 f"for flavour {flavour!r}: {tail}"
             )
-        if not tmp_path.is_file() or tmp_path.stat().st_size == 0:
+        # The generator is UNTRUSTED code and out.S is ITS artifact:
+        # a symlink-following is_file()/stat() probe followed by
+        # os.replace() would move a generator-planted symlink into
+        # the shared cache AS a symlink (rename never follows), and
+        # every later consumer opening the cache entry normally
+        # would read — or attribute asm to — an arbitrary host path.
+        # Open the output O_NOFOLLOW, require fstat to report a
+        # non-empty regular file, and copy the bytes through that fd
+        # into a FRESH regular file in the cache dir; an
+        # attacker-created inode is never renamed into the cache.
+        import stat as _stat
+        # O_NONBLOCK: a generator-planted FIFO at out.S would block
+        # the open forever; with it the open succeeds instantly and
+        # the S_ISREG gate refuses the inode.
+        _flags = (os.O_RDONLY | os.O_NOFOLLOW
+                  | getattr(os, "O_NONBLOCK", 0))
+        try:
+            fd = os.open(str(tmp_path), _flags)
+        except OSError:
             return None, (
                 f"{gen.rel_path}: generator produced no output for "
                 f"flavour {flavour!r}"
             )
-        os.replace(tmp_path, cached)
+        try:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode) or st.st_size == 0:
+                return None, (
+                    f"{gen.rel_path}: generator output for flavour "
+                    f"{flavour!r} is not a non-empty regular file — "
+                    "refusing to cache it"
+                )
+            out_fd, out_name = tempfile.mkstemp(
+                prefix=".perlasm-tmp-", dir=str(cache_dir))
+            try:
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    view = memoryview(chunk)
+                    written = 0
+                    while written < len(view):
+                        n = os.write(out_fd, view[written:])
+                        if n <= 0:
+                            raise OSError("short write to cache entry")
+                        written += n
+                os.close(out_fd)
+                out_fd = -1
+                os.replace(out_name, cached)
+            except OSError as exc:
+                if out_fd != -1:
+                    os.close(out_fd)
+                try:
+                    os.unlink(out_name)
+                except OSError:
+                    pass
+                return None, (
+                    f"{gen.rel_path}: caching generated asm failed: {exc}"
+                )
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         return cached, None
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

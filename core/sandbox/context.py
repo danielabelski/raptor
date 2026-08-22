@@ -1714,6 +1714,27 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 "gracefully (e.g. `--sandbox full`). RAPTOR will not "
                 "silently downgrade for you.",
             )
+        # strict's resolved profile requests a seccomp filter; when
+        # libseccomp is absent/broken the filter builder returns None
+        # and both spawn paths silently run FILTERLESS — the AF_UNIX
+        # blocklist, the io_uring/keyring/bpf blocks and the UDP
+        # block all vanish under a profile sold as fail-closed. The
+        # engagement report mentioned it; nothing aborted. Require a
+        # working libseccomp up front, like the namespace/mount gates
+        # above.
+        if (sys.platform != "darwin" and seccomp_profile
+                and not _seccomp.check_seccomp_available()):
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                "sandbox profile 'strict' requires a seccomp filter, "
+                "but libseccomp is unavailable or non-functional on "
+                "this host — the syscall blocklist would silently not "
+                "engage",
+                "install libseccomp (libseccomp2 package) so the "
+                "filter can load, or explicitly choose a profile that "
+                "degrades gracefully (e.g. `--sandbox full`). RAPTOR "
+                "will not silently downgrade for you.",
+            )
 
     if effectively_disabled and not state._cli_sandbox_disabled:
         logger.info("Sandbox disabled for this call")
@@ -4625,8 +4646,15 @@ def _require_userns_or_optin(entry: str, restrict_reads: bool=True) -> bool:
 
     Default: refuse loudly. RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 is the
     explicit operator acknowledgement that Landlock/seccomp-only
-    containment is acceptable on this host. macOS is exempt — the
-    seatbelt tier provides the isolation contract there.
+    containment is acceptable on this host. macOS is exempt from the
+    NAMESPACE requirement because the seatbelt tier provides the
+    isolation contract there — but only when seatbelt actually
+    engages: a missing/smoke-failing sandbox-exec would otherwise let
+    the default (non-strict) profile degrade to a bare subprocess
+    with a warn_once, silently violating the fail-closed contract the
+    Linux arm enforces. The darwin arm therefore requires
+    check_seatbelt_available() or the same explicit operator
+    override.
 
     Returns True when the override engaged degraded mode AND the read
     allowlist is in force — callers then pass omit_proc_reads=True so
@@ -4640,7 +4668,28 @@ def _require_userns_or_optin(entry: str, restrict_reads: bool=True) -> bool:
     exposure instead and False is returned.
     """
     if sys.platform == "darwin":
-        return False
+        if check_seatbelt_available():
+            return False
+        if os.environ.get(
+            "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "",
+        ).strip().lower() in ("1", "true", "yes", "on"):
+            logger.warning(
+                "%s: sandbox-exec unavailable or failed its smoke "
+                "test — running UNTRUSTED code with rlimits-only "
+                "containment (operator override "
+                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED).", entry,
+            )
+            return False
+        from .errors import SandboxSetupError
+        raise SandboxSetupError(
+            f"{entry}: the seatbelt tier provides the untrusted-"
+            f"execution contract on macOS, but sandbox-exec is "
+            f"unavailable or failed its smoke test on this host — "
+            f"refusing to run attacker-derived code unconfined.",
+            "verify /usr/bin/sandbox-exec exists and can run a "
+            "minimal profile, or set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 "
+            "to explicitly accept rlimits-only containment.",
+        )
     if check_net_available():
         return False
     if os.environ.get(

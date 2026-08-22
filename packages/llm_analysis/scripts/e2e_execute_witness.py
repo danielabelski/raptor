@@ -30,7 +30,6 @@ Run from the repo root:
 from __future__ import annotations
 
 import hashlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +43,8 @@ from pathlib import Path
 #   parents[3] = repo root
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
+
+from core.build.toolchain import has_libasan as _has_libasan  # noqa: E402
 
 
 _TARGET_SOURCE = """
@@ -59,23 +60,6 @@ int main(void) {
     return 0;
 }
 """
-
-
-def _has_libasan() -> bool:
-    if shutil.which("gcc") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["gcc", "-fsanitize=address", "-x", "c", "-",
-             "-o", "/dev/null"],
-            input="int main(void){return 0;}",
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def main() -> int:

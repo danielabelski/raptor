@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -291,3 +292,27 @@ def apply_toolchain_env(env: dict[str, str],
         env[name] = value
         logger.debug("build toolchain: %s=%s", name, value)
     return env
+
+
+def has_libasan() -> bool:
+    """True when this host can compile with ``-fsanitize=address``.
+
+    gcc may be present but libasan missing (common on minimal CI
+    images) — probe by compiling a no-op program. Used by the
+    exploit-verification harnesses to decide whether sanitizer-backed
+    execution witnesses are available; fail-closed on any surprise.
+    """
+    if shutil.which("gcc") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["gcc", "-fsanitize=address", "-x", "c", "-",
+             "-o", "/dev/null"],
+            input="int main(void){return 0;}",
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False

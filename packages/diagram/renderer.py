@@ -19,6 +19,7 @@ from . import (
     findings_summary,
     flow_trace,
     hypotheses,
+    edge_obligations,
 )
 from .sanitize import detect_id_collisions, sanitize as _sanitize
 
@@ -211,6 +212,23 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
                 ))
         except Exception as exc:  # noqa: BLE001
             sections.append(_section(title, f"> Could not render `{fname}`: {_err(exc)}"))
+
+    # --- Edge obligations (--edges) ---
+    eo_path = out_dir / "edge-obligations.json"
+    if eo_path.exists():
+        try:
+            data = _load_json(eo_path)
+            if data is None:
+                raise ValueError("failed to parse JSON")
+            diagram = edge_obligations.generate(data)
+            body = ("_Source: `edge-obligations.json`_\n\n"
+                    f"```mermaid\n{_fence(diagram)}\n```")
+            sections.append(_section(
+                "Edge Obligations (tier-1 solid, tier-2 dashed)", body))
+        except Exception as exc:  # noqa: BLE001
+            sections.append(_section(
+                "Edge Obligations",
+                f"> Could not render `edge-obligations.json`: {_err(exc)}"))
 
     # --- Flow traces ---
     trace_files = sorted(out_dir.glob(_FLOW_TRACE_GLOB))

@@ -119,3 +119,45 @@ class TestFileLinesCache:
         from core.audit.orchestrator import _read_raw_source
 
         assert _read_raw_source(tmp_path, "nope.c", 1, 2) == ""
+
+    def test_cache_byte_bounded(self, tmp_path, monkeypatch) -> None:
+        """Eviction is byte-weighted: many mid-size files must not pin
+        more than the byte budget even while the entry count is far
+        below the entry cap."""
+        import core.audit.orchestrator as orch
+
+        orch._file_lines_cache.clear()
+        orch._file_lines_cache_bytes = 0
+        monkeypatch.setattr(
+            orch, "_FILE_LINES_CACHE_MAX_BYTES", 4096, raising=False,
+        )
+        monkeypatch.setattr(
+            orch, "_FILE_LINES_CACHE_MAX_ENTRY_BYTES", 2048, raising=False,
+        )
+        body = "x" * 511 + "\n"  # 512 bytes per file
+        for i in range(32):
+            f = tmp_path / f"b{i}.c"
+            f.write_text(body, encoding="utf-8")
+            orch._read_raw_source(tmp_path, f"b{i}.c", 1, 1)
+        cached_bytes = sum(k[2] for k in orch._file_lines_cache)
+        assert cached_bytes <= 4096, (
+            f"cache pins {cached_bytes} bytes; byte budget is 4096"
+        )
+        orch._file_lines_cache.clear()
+        orch._file_lines_cache_bytes = 0
+
+    def test_oversized_file_served_uncached(self, tmp_path, monkeypatch) -> None:
+        import core.audit.orchestrator as orch
+
+        orch._file_lines_cache.clear()
+        orch._file_lines_cache_bytes = 0
+        monkeypatch.setattr(
+            orch, "_FILE_LINES_CACHE_MAX_ENTRY_BYTES", 256, raising=False,
+        )
+        f = tmp_path / "huge.c"
+        f.write_text("y" * 1024 + "\nsecond line\n", encoding="utf-8")
+        out = orch._read_raw_source(tmp_path, "huge.c", 2, 2)
+        assert out == "second line"
+        assert not orch._file_lines_cache, (
+            "files above the per-entry byte cap must not be cached"
+        )

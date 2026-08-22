@@ -13601,14 +13601,21 @@ def _run_prefilter_for_gap(
 
 # Keyed by (path, mtime, size) so a file rewritten mid-run (build
 # steps, generated sources, a second in-process run on a drifted
-# target) is re-read instead of served stale; LRU-bounded so a large
-# target cannot pin every source file's lines in memory for the whole
-# run. Guarded by a lock — async-path reviews call this from worker
+# target) is re-read instead of served stale; LRU-bounded BY BYTES as
+# well as entry count so a large target cannot pin every source file's
+# lines in memory for the whole run (a pure entry-count bound let 256
+# near-8MiB sources pin gigabytes). Entries are weighted by the file's
+# on-disk size (already carried in the key); files larger than
+# _FILE_LINES_CACHE_MAX_ENTRY_BYTES are served without being cached at
+# all. Guarded by a lock — async-path reviews call this from worker
 # threads.
 _FILE_LINES_CACHE_MAX = 256
+_FILE_LINES_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_FILE_LINES_CACHE_MAX_ENTRY_BYTES = _FILE_LINES_CACHE_MAX_BYTES // 4
 _file_lines_cache: OrderedDict[tuple[str, float, int], list | None] = (
     OrderedDict()
 )
+_file_lines_cache_bytes = 0
 _file_lines_cache_lock = _threading.Lock()
 
 # Same-file parse-wrapper names for the parsed-int contract screen,
@@ -13630,6 +13637,7 @@ def _read_raw_source(
     except OSError:
         return ""
     cache_key = (str(full_path), st.st_mtime, st.st_size)
+    global _file_lines_cache_bytes
     with _file_lines_cache_lock:
         if cache_key in _file_lines_cache:
             _file_lines_cache.move_to_end(cache_key)
@@ -13640,9 +13648,19 @@ def _read_raw_source(
                 lines = full_path.read_text(errors="replace").splitlines()
             except OSError:
                 lines = None
-            _file_lines_cache[cache_key] = lines
-            while len(_file_lines_cache) > _FILE_LINES_CACHE_MAX:
-                _file_lines_cache.popitem(last=False)
+            # Byte-weighted admission + eviction: the key's st_size is
+            # the entry's weight (splitlines memory is proportional to
+            # it). Oversized files are returned uncached.
+            if st.st_size <= _FILE_LINES_CACHE_MAX_ENTRY_BYTES:
+                _file_lines_cache[cache_key] = lines
+                _file_lines_cache_bytes += st.st_size
+                while _file_lines_cache and (
+                    len(_file_lines_cache) > _FILE_LINES_CACHE_MAX
+                    or _file_lines_cache_bytes
+                    > _FILE_LINES_CACHE_MAX_BYTES
+                ):
+                    evicted_key, _ = _file_lines_cache.popitem(last=False)
+                    _file_lines_cache_bytes -= evicted_key[2]
     if lines is None:
         return ""
     start = max(0, line_start - 1)

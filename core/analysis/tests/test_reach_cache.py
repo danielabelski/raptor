@@ -297,3 +297,102 @@ def test_cache_file_permissions_are_0600(tmp_path):
     path = _reach_cache._cache_path_for(fp)
     mode = _stat.S_IMODE(path.stat().st_mode)
     assert mode == 0o600
+
+
+# ---------------------------------------------------------------------------
+# Data-only format: restored bytes are never executed
+# ---------------------------------------------------------------------------
+
+def test_gate_passing_pickle_payload_is_never_executed(tmp_path):
+    """A poisoned entry that passes EVERY open-time gate (own UID,
+    mode 0600, regular file, size ok, correct magic) must still be a
+    cache miss, not code execution. Open-time gates cannot
+    authenticate the restored bytes — a poisoned cache restored from
+    an archive by the operator or CI arrives with clean metadata —
+    so the format itself must be data-only."""
+    import os
+    import pickle
+
+    canary = tmp_path / "canary"
+
+    class Exploit:
+        def __reduce__(self):
+            return (canary.write_text, ("PWNED",))
+
+    fp = "7" * 64
+    cache = _reach_cache._CACHE_DIR
+    cache.mkdir(parents=True, exist_ok=True)
+    os.chmod(cache, 0o700)
+    path = _reach_cache._cache_path_for(fp)
+    with open(path, "wb") as f:
+        f.write(_reach_cache._HEADER_MAGIC + pickle.dumps(Exploit()))
+    os.chmod(path, 0o600)  # every gate green
+
+    result = _reach_cache.load_index(fp)
+    assert not canary.exists(), (
+        "cache payload was executed despite passing the metadata gates"
+    )
+    assert result is None
+
+
+def test_full_index_round_trips_every_field():
+    """The data-only codec must round-trip every _AdjacencyIndex
+    field with identical values."""
+    from core.analysis.reachability import ExternalFunction
+
+    fn_a = InternalFunction(file_path="a.py", name="f", line=3)
+    fn_b = InternalFunction(file_path="b.py", name="g", line=7)
+    ext = ExternalFunction(qualified_name="os.path.join")
+
+    idx = _AdjacencyIndex(
+        forward={fn_a: {fn_b, ext}},
+        reverse={ext: {fn_a}, fn_b: {fn_a}},
+        uncertain_callers_by_tail={"g": {(fn_a, "wildcard-import")}},
+        method_match={"g": {(fn_a, "Cls"), (fn_b, None)}},
+        uncertain_callees={fn_a: {"pkg.mod.h"}},
+        has_method_dispatch={fn_a: True, fn_b: False},
+        definitions={("a.py", "f"): {fn_a}, ("b.py", "g"): {fn_b}},
+        class_of_method={fn_b: "Cls"},
+        class_bases={("b.py", "Cls"): ("Base", "Mixin")},
+        override_methods={("Cls", "g")},
+        framework_callable={fn_a},
+        framework_registered={fn_b},
+        qualified_to_internal={"pkg.b.Cls.g": fn_b},
+        call_lines={(fn_a, fn_b): (12, 27), (fn_a, ext): (4,)},
+        test_paths=frozenset({"tests/test_a.py"}),
+    )
+
+    fp = "6" * 64
+    _reach_cache.save_index(fp, idx)
+    restored = _reach_cache.load_index(fp)
+    assert restored is not None
+    for field_name in (
+        "forward", "reverse", "uncertain_callers_by_tail",
+        "method_match", "uncertain_callees", "has_method_dispatch",
+        "definitions", "class_of_method", "class_bases",
+        "override_methods", "framework_callable",
+        "framework_registered", "qualified_to_internal",
+        "call_lines", "test_paths",
+    ):
+        assert getattr(restored, field_name) == getattr(idx, field_name), (
+            f"field {field_name} did not round-trip"
+        )
+
+
+def test_malformed_json_shapes_are_misses():
+    """Parseable JSON with wrong shapes must degrade to a miss, not
+    surface a typed index that crashes consumers later."""
+    fp = "5" * 64
+    path_dir = _reach_cache._CACHE_DIR
+    path_dir.mkdir(parents=True, exist_ok=True)
+    path = _reach_cache._cache_path_for(fp)
+    for payload in (
+        b"[]",                                # not an object
+        b'{"forward": 3}',                    # field not a list
+        b'{"forward": [[["a.py","f","x"], []]]}',  # line not an int
+        b'{"definitions": [["a.py", "f", ["notanode"]]]}',
+    ):
+        path.write_bytes(_reach_cache._HEADER_MAGIC + payload)
+        import os
+        os.chmod(path, 0o600)
+        assert _reach_cache.load_index(fp) is None, payload

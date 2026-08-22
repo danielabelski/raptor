@@ -782,33 +782,140 @@ _SYSTEM_TOOLCHAIN_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/etc/", "/bin/", "/s
 # does not bound the parent's buffer). Streams are redirected to
 # tmpfiles and read back capped instead: head-only for stdout
 # (matching the existing head-slice truncation semantics), head+tail
-# for stderr (the harness pre-call sentinel prints at the start; a
-# sanitizer report prints at the end — both must survive the cap).
+# for stderr — PLUS marker-anchored windows (see ``anchors`` below):
+# positional head/tail capture alone let attacker-controlled padding
+# evict the harness sentinel and the sanitizer report from the window
+# classification sees, flipping genuine crashes to inconclusive from
+# stderr content alone.
 _CAPTURE_CAP_BYTES = 64 * 1024
 _TRUNCATION_MARKER = "\n...[output truncated]...\n"
 
+# Marker-anchored retention: the FULL stream is scanned with a
+# bounded incremental matcher and a context window around each marker
+# hit is retained for classification, in stream order, alongside the
+# positional head/tail diagnostics. Bounded memory: the scan carries
+# only max(len(marker))-1 bytes between chunks and records at most
+# the first/last _ANCHOR_HITS_KEPT hit offsets per marker (a hostile
+# stream spamming a marker cannot grow the offset lists — and the
+# harness sentinel carries the run's secret token, so it cannot be
+# spammed at all).
+_ANCHOR_PRE_CONTEXT = 256
+_ANCHOR_POST_CONTEXT = 4096
+_ANCHOR_HITS_KEPT = 4
+_ANCHOR_SCAN_CHUNK = 1 << 20
 
-def _read_capped(path: Path, *, keep_tail: bool) -> str:
-    """Read at most head (+ optional tail) of *path*, bounded."""
+# Sanitizer-report anchor: every family observe.py classifies spells
+# its name "...Sanitizer" (AddressSanitizer, UndefinedBehaviorSanitizer,
+# MemorySanitizer, ThreadSanitizer), and the post-sentinel ordering
+# check in _classify_native_output greps the same token.
+_SANITIZER_ANCHOR = b"Sanitizer"
+
+
+def _scan_anchor_offsets(
+    path: Path, anchors: tuple[bytes, ...],
+) -> list[int]:
+    """Offsets of anchor-marker hits across the FULL stream.
+
+    Incremental chunked scan (bounded memory); per marker only the
+    first and last ``_ANCHOR_HITS_KEPT`` hits are recorded so a stream
+    spamming a marker cannot balloon the result.
+    """
+    from collections import deque
+
+    firsts: dict[bytes, list[int]] = {m: [] for m in anchors}
+    lasts: dict[bytes, deque] = {
+        m: deque(maxlen=_ANCHOR_HITS_KEPT) for m in anchors
+    }
+    overlap = max(len(m) for m in anchors) - 1
+    carry = b""
+    pos = 0  # absolute offset of the next unread byte
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(_ANCHOR_SCAN_CHUNK)
+            if not block:
+                break
+            buf = carry + block
+            base = pos - len(carry)
+            for m in anchors:
+                start = 0
+                while True:
+                    i = buf.find(m, start)
+                    if i < 0:
+                        break
+                    # A match ending inside the carry region was fully
+                    # visible last round — skip the double-count.
+                    if i + len(m) > len(carry):
+                        off = base + i
+                        if len(firsts[m]) < _ANCHOR_HITS_KEPT:
+                            firsts[m].append(off)
+                        lasts[m].append(off)
+                    start = i + 1
+            pos += len(block)
+            carry = buf[-overlap:] if overlap > 0 else b""
+    offsets: set[int] = set()
+    for m in anchors:
+        for off in firsts[m]:
+            offsets.add(off)
+        for off in lasts[m]:
+            offsets.add(off)
+    return sorted(offsets)
+
+
+def _read_capped(
+    path: Path,
+    *,
+    keep_tail: bool,
+    anchors: tuple[bytes, ...] = (),
+) -> tuple[str, bool]:
+    """Read a bounded view of *path*: ``(text, truncated)``.
+
+    Retains the head (+ tail when ``keep_tail``) plus, when *anchors*
+    are given, a context window around each anchor-marker hit found by
+    scanning the FULL stream — all in stream order, gaps replaced by
+    ``_TRUNCATION_MARKER``. ``truncated`` is True when any byte of the
+    stream was dropped.
+    """
     try:
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size <= 2 * _CAPTURE_CAP_BYTES:
-                return f.read(2 * _CAPTURE_CAP_BYTES).decode(
+                text = f.read(2 * _CAPTURE_CAP_BYTES).decode(
                     "utf-8", errors="replace",
                 )
-            head = f.read(_CAPTURE_CAP_BYTES).decode(
-                "utf-8", errors="replace",
-            )
-            if not keep_tail:
-                return head + _TRUNCATION_MARKER
-            f.seek(size - _CAPTURE_CAP_BYTES)
-            tail = f.read(_CAPTURE_CAP_BYTES).decode(
-                "utf-8", errors="replace",
-            )
-            return head + _TRUNCATION_MARKER + tail
+                return text, False
+        intervals: list[tuple[int, int]] = [(0, _CAPTURE_CAP_BYTES)]
+        if keep_tail:
+            intervals.append((size - _CAPTURE_CAP_BYTES, size))
+        if anchors:
+            for off in _scan_anchor_offsets(path, anchors):
+                lo = max(0, off - _ANCHOR_PRE_CONTEXT)
+                hi = min(size, off + _ANCHOR_POST_CONTEXT)
+                intervals.append((lo, hi))
+        intervals.sort()
+        merged: list[list[int]] = []
+        for lo, hi in intervals:
+            if merged and lo <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        pieces: list[str] = []
+        covered = 0
+        with open(path, "rb") as f:
+            prev_end = 0
+            for lo, hi in merged:
+                if lo > prev_end:
+                    pieces.append(_TRUNCATION_MARKER)
+                f.seek(lo)
+                pieces.append(
+                    f.read(hi - lo).decode("utf-8", errors="replace"),
+                )
+                covered += hi - lo
+                prev_end = hi
+            if prev_end < size:
+                pieces.append(_TRUNCATION_MARKER)
+        return "".join(pieces), covered < size
     except OSError:
-        return ""
+        return "", False
 
 
 def _merge_capped_stderr_classification(proc, label: str) -> None:
@@ -864,6 +971,7 @@ def _sandbox_run_capped(
     cmd: list[str],
     *,
     cap_dir: Path,
+    stderr_anchors: tuple[bytes, ...] = (),
     **kwargs,
 ) -> subprocess.CompletedProcess:
     """sandbox_run with bounded on-disk capture instead of pipes.
@@ -879,10 +987,15 @@ def _sandbox_run_capped(
     and visible to the parent afterwards — the caller's ``output=``
     dir (the sandbox's designated writable channel). Returns the
     CompletedProcess with ``stdout``/``stderr`` set to the CAPPED text
-    and the stderr-derived ``sandbox_info`` keys re-merged. A runner
-    that captured inline anyway (stub/injected runner) keeps its own
-    already-in-memory text. Exceptions (TimeoutExpired etc.) propagate
-    exactly as before.
+    and the stderr-derived ``sandbox_info`` keys re-merged.
+    *stderr_anchors* are marker byte-strings whose surrounding context
+    must survive the cap (harness sentinel, sanitizer reports); the
+    full on-disk stream is scanned for them parent-side before the
+    capped read. ``proc.stderr_truncated`` records whether any stderr
+    byte was dropped so classification can refuse to conclude from a
+    truncated stream. A runner that captured inline anyway
+    (stub/injected runner) keeps its own already-in-memory text.
+    Exceptions (TimeoutExpired etc.) propagate exactly as before.
     """
     import shlex
 
@@ -896,9 +1009,12 @@ def _sandbox_run_capped(
     try:
         proc = sandbox_run(wrapped, **kwargs)
         if proc.stdout is None:
-            proc.stdout = _read_capped(out_path, keep_tail=False)
+            proc.stdout, _ = _read_capped(out_path, keep_tail=False)
         if proc.stderr is None:
-            proc.stderr = _read_capped(err_path, keep_tail=True)
+            proc.stderr, stderr_truncated = _read_capped(
+                err_path, keep_tail=True, anchors=stderr_anchors,
+            )
+            proc.stderr_truncated = stderr_truncated
             _merge_capped_stderr_classification(
                 proc,
                 str(kwargs.get("caller_label") or "audit-dark-verify"),
@@ -1151,6 +1267,16 @@ def _run_native_binary(
     sandbox_run = _import_sandbox_run()
     if sandbox_run is None:
         return _sandbox_refusal_result(spec, lang)
+    # Anchored capture: the harness sentinel (token-bearing — cannot be
+    # forged or spammed by the target) and the sanitizer-report family
+    # marker must survive the stderr cap regardless of how much padding
+    # the target prints around them; the eviction of either flipped
+    # genuine crashes to inconclusive from stderr content alone.
+    anchors: list[bytes] = [_SANITIZER_ANCHOR]
+    if expected_token:
+        anchors.insert(
+            0, (_CALL_MARKER_PREFIX + expected_token).encode(),
+        )
     cap_dir = Path(tempfile.mkdtemp(
         prefix="raptor_dark_cap_", dir=exec_workdir()))
     try:
@@ -1158,6 +1284,7 @@ def _run_native_binary(
             sandbox_run,
             [str(binary)],
             cap_dir=cap_dir,
+            stderr_anchors=tuple(anchors),
             block_network=True,
             restrict_reads=True,
             target=str(target_root),
@@ -1225,6 +1352,11 @@ def _classify_native_output(
 
     outcome, detail = outcome_from_sandbox_info(sandbox_info, proc.returncode)
 
+    stderr_full = proc.stderr or ""
+    stderr_truncated = bool(getattr(proc, "stderr_truncated", False)) or (
+        _TRUNCATION_MARKER in stderr_full
+    )
+
     call_reached = True
     sanitizer_after_call = True
     if expected_token:
@@ -1241,6 +1373,34 @@ def _classify_native_output(
             # inside the target call, after the sentinel.
             post = stderr_text[marker_at + len(marker):]
             sanitizer_after_call = "Sanitizer" in post
+
+    if stderr_truncated:
+        # A truncated stream may only classify when the markers the
+        # verdict hangs on demonstrably survived the cap. When the
+        # sentinel (or the predicted sanitizer report) was NOT found
+        # in the retained stream, its absence proves nothing — the
+        # marker may sit in the dropped bytes — so the answer is
+        # ``error`` (re-run with a larger capture cap), never a
+        # silent inconclusive/clean/refuted.
+        sentinel_lost = bool(expected_token) and not call_reached
+        sanitizer_lost = (
+            bool(spec.expected_sanitizer)
+            and outcome != WitnessOutcome.SANITIZER_REPORT
+            and "Sanitizer" not in stderr_full
+        )
+        if sentinel_lost or sanitizer_lost:
+            return DarkVerifyResult(
+                finding_key=spec.finding_key, verdict="error",
+                language=lang,
+                match_detail=(
+                    "stderr exceeded the capture cap and the "
+                    + ("harness sentinel" if sentinel_lost
+                       else "predicted sanitizer report")
+                    + " was not found in the retained stream — "
+                    "truncated output must not classify; re-run "
+                    "with a larger capture cap"
+                ),
+            )
 
     if outcome in (
         WitnessOutcome.SANITIZER_REPORT, WitnessOutcome.EXIT_SIGNAL,

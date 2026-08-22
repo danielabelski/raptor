@@ -2977,6 +2977,163 @@ class TestBoundedCapture:
         assert proc.stdout == '{"status": "ok"}'
 
 
+class TestAnchoredCapture:
+    """Marker-anchored stderr retention + truncation classification.
+
+    Positional head/tail capture alone let attacker-controlled stderr
+    padding evict the harness sentinel and the sanitizer report from
+    the window classification sees — flipping genuine crashes to
+    inconclusive (suppression direction) from stderr content alone.
+    The FULL stream is now scanned for the sentinel (token-bearing)
+    and the sanitizer-family marker, and a truncated stream missing
+    the markers a verdict hangs on classifies as ``error`` (re-run
+    with a larger cap), never a silent inconclusive/clean."""
+
+    _TOKEN = "feedface"
+
+    @staticmethod
+    def _passthrough_sandbox(cmd, **kwargs):
+        import subprocess as sp
+        return sp.run(cmd, check=False)  # noqa: S603 — test-local echo of the sandbox shape
+
+    def _classify(self, tmp_path, code, spec):
+        anchors = (
+            (ex._CALL_MARKER_PREFIX + self._TOKEN).encode(),
+            ex._SANITIZER_ANCHOR,
+        )
+        proc = ex._sandbox_run_capped(
+            self._passthrough_sandbox,
+            [sys.executable, "-c", code],
+            cap_dir=tmp_path,
+            stderr_anchors=anchors,
+        )
+        return ex._classify_native_output(
+            spec, proc, getattr(proc, "sandbox_info", None), "c",
+            expected_token=self._TOKEN,
+        )
+
+    def test_padding_cannot_evict_sentinel_or_report(self, tmp_path):
+        """>64KiB of target-printed padding before the sentinel and
+        around the ASan report pushed both into the evicted middle
+        window — a genuine crash read inconclusive."""
+        sentinel = ex._CALL_MARKER_PREFIX + self._TOKEN
+        code = (
+            "import sys, os\n"
+            "w = sys.stderr.write\n"
+            "w('P' * 200000)\n"
+            f"w('\\n{sentinel}\\n')\n"
+            "w('Q' * 200000)\n"
+            "w('\\nERROR: AddressSanitizer: heap-buffer-overflow "
+            "on address 0x0000\\n')\n"
+            "w('R' * 200000)\n"
+            "sys.stderr.flush()\n"
+            "os.abort()\n"
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_sanitizer="heap-buffer-overflow",
+        )
+        r = self._classify(tmp_path, code, spec)
+        assert r.verdict == "confirmed", r.match_detail
+
+    def test_truncation_without_sentinel_is_error(self, tmp_path):
+        """Truncated stream, sentinel nowhere in it: its absence
+        proves nothing — must be ``error``, not a silent
+        inconclusive."""
+        code = (
+            "import sys, os\n"
+            "sys.stderr.write('P' * 300000)\n"
+            "sys.stderr.flush()\n"
+            "os.abort()\n"
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_crash=True,
+        )
+        r = self._classify(tmp_path, code, spec)
+        assert r.verdict == "error", r.match_detail
+        assert "re-run" in r.match_detail
+
+    def test_truncated_stream_missing_predicted_sanitizer_is_error(self):
+        """Predicted sanitizer + truncated stream with no sanitizer
+        text anywhere: the report may sit in the dropped bytes —
+        ``error``, never a bare EXIT_SIGNAL inconclusive."""
+        stderr = (
+            "head" + ex._TRUNCATION_MARKER
+            + ex._CALL_MARKER_PREFIX + self._TOKEN + "\ntail"
+        )
+        proc = subprocess.CompletedProcess(
+            args=[], returncode=-6, stdout="", stderr=stderr,
+        )
+        proc.stderr_truncated = True
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_sanitizer="heap-buffer-overflow",
+        )
+        r = ex._classify_native_output(
+            spec, proc,
+            {"signal": "SIGABRT", "signal_num": 6, "crashed": True},
+            "c", expected_token=self._TOKEN,
+        )
+        assert r.verdict == "error", r.match_detail
+
+    def test_untruncated_missing_sentinel_stays_inconclusive(self):
+        """No truncation → the sentinel's absence is real evidence of
+        a setup-phase failure; the existing inconclusive stands."""
+        proc = subprocess.CompletedProcess(
+            args=[], returncode=-11, stdout="", stderr="short noise\n",
+        )
+        spec = DarkWitnessSpec(
+            finding_key="f1", file="a.c", function="f", language="c",
+            expected_crash=True,
+        )
+        r = ex._classify_native_output(
+            spec, proc,
+            {"signal": "SIGSEGV", "signal_num": 11, "crashed": True},
+            "c", expected_token=self._TOKEN,
+        )
+        assert r.verdict == "inconclusive"
+        assert "sentinel absent" in r.match_detail
+
+    def test_anchor_windows_bounded_under_marker_spam(self, tmp_path):
+        """A stream spamming the sanitizer marker cannot balloon the
+        retained text: only first/last hit windows are kept."""
+        stream = tmp_path / "err"
+        with open(stream, "wb") as f:
+            for _ in range(20000):
+                f.write(b"AddressSanitizer spam line\n")
+        text, truncated = ex._read_capped(
+            stream, keep_tail=True, anchors=(ex._SANITIZER_ANCHOR,),
+        )
+        assert truncated
+        budget = (
+            2 * ex._CAPTURE_CAP_BYTES
+            + 4 * ex._ANCHOR_HITS_KEPT
+            * (ex._ANCHOR_PRE_CONTEXT + ex._ANCHOR_POST_CONTEXT)
+            + 64 * len(ex._TRUNCATION_MARKER)
+        )
+        assert len(text) <= budget
+
+    def test_anchored_windows_survive_in_stream_order(self, tmp_path):
+        stream = tmp_path / "err"
+        sentinel = ex._CALL_MARKER_PREFIX + self._TOKEN
+        with open(stream, "wb") as f:
+            f.write(b"P" * 200000)
+            f.write(b"\n" + sentinel.encode() + b"\n")
+            f.write(b"Q" * 200000)
+            f.write(b"\nERROR: AddressSanitizer: heap-buffer-overflow\n")
+            f.write(b"R" * 200000)
+        text, truncated = ex._read_capped(
+            stream, keep_tail=True,
+            anchors=(sentinel.encode(), ex._SANITIZER_ANCHOR),
+        )
+        assert truncated
+        at_sentinel = text.find(sentinel)
+        at_report = text.find("ERROR: AddressSanitizer")
+        assert at_sentinel >= 0 and at_report >= 0
+        assert at_sentinel < at_report, "stream order must be preserved"
+
+
 class TestSandboxFailClosed:
     """No core.sandbox → error verdict, never a bare-subprocess fallback."""
 

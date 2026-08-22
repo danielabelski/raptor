@@ -1243,7 +1243,13 @@ for i, src in enumerate(FILES):
     # SECURITY: subprocess.run with list args — no shell, no injection.
     # Filenames are list elements passed directly to execve.
     if IS_JAVA:
-        cmd = [COMPILER] + FLAGS + ["-d", BUILD_DIR]
+        # SECURITY: -proc:none disables annotation processing. The
+        # classpath above includes repo-supplied lib/*.jar, and javac
+        # auto-discovers annotation processors on the classpath via
+        # ServiceLoader — without this flag a hostile jar's processor
+        # runs ATTACKER CODE inside every javac invocation. CodeQL
+        # only needs the compilation events, not processor output.
+        cmd = [COMPILER, "-proc:none"] + FLAGS + ["-d", BUILD_DIR]
         if JAVA_CP:
             cmd += ["-cp", JAVA_CP]
         cmd += [src]
@@ -1380,9 +1386,16 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
         # For C/C++, nothing to detect (CC/CXX resolved via PATH).
         from core.config import RaptorConfig
         env = RaptorConfig.get_safe_env()
+        # Extra read-allowed roots under restrict_reads: user-local
+        # toolchain installs (sdkman/asdf JDKs) live outside the
+        # default system-dirs allowlist.
+        readable: list[str] = []
         if language == "java":
             from core.build.toolchain import apply_toolchain_env
             apply_toolchain_env(env, ["JAVA_HOME"])
+            java_home = env.get("JAVA_HOME")
+            if java_home:
+                readable.append(java_home)
 
         try:
             repo_path = str(self.repo_path)
@@ -1391,9 +1404,16 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             result = _sandbox_run(
                 [sys.executable, str(script_path)],
                 block_network=True,
+                # The script compiles UNTRUSTED repo content, so it
+                # gets the read restriction the other build probes
+                # use: no $HOME credentials on Landlock-only hosts.
+                # Reads: system dirs + target (script + build dir
+                # live under repo_path) + toolchain roots.
+                restrict_reads=True,
                 target=repo_path, output=repo_path,
                 cwd=self.repo_path,
                 env=env,
+                readable_paths=readable or None,
                 tool_paths=_tps or None,
                 capture_output=True, text=True, timeout=300,
             )

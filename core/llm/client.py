@@ -794,7 +794,6 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
 
     from core.llm.config import (
         _PROVIDER_BUILDERS,
-        MODEL_LIMITS,
         ModelConfig,
         _get_configured_models,
     )
@@ -824,10 +823,8 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
     #      (the previous version silently skipped this path and produced
     #      auth failures when the operator's credentials lived only in
     #      the config file)
-    from core.llm.model_data import _strip_dated_alias
-    limits = MODEL_LIMITS.get(model_name) or MODEL_LIMITS.get(
-        _strip_dated_alias(model_name), {},
-    )
+    from core.llm.model_data import resolve_model_limits
+    limits = resolve_model_limits(model_name) or {}
     max_tokens = limits.get("max_output", 4096)
     max_context = limits.get("max_context", 32000)
 

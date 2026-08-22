@@ -362,6 +362,40 @@ def _strip_bedrock_provider(model: str) -> str:
 _DATED_ALIAS_RE = _re.compile(r"-\d{8}$")
 
 
+def _resolve_model_entry(table: dict, model: str) -> dict | None:
+    """Canonical table lookup: exact → dated alias → bedrock strip →
+    both. EVERY consumer of ``MODEL_COSTS`` / ``MODEL_LIMITS`` must
+    resolve through this chain (or the helpers below) — two independent
+    two-step lookups have now each caused a production failure for
+    Bedrock-form ids (``anthropic.claude-…``): $0 cost booking with
+    unenforced budget caps, and a 4096-token completion ceiling that
+    truncated every thinking-model structured response.
+    """
+    return (
+        table.get(model)
+        or table.get(_strip_dated_alias(model))
+        or table.get(_strip_bedrock_prefixes(model))
+        or table.get(_strip_dated_alias(_strip_bedrock_prefixes(model)))
+    )
+
+
+def resolve_model_limits(model: str) -> dict | None:
+    """``MODEL_LIMITS`` entry for *model* in any id form, or None."""
+    return _resolve_model_entry(MODEL_LIMITS, model)
+
+
+def resolve_model_costs(model: str) -> dict | None:
+    """``MODEL_COSTS`` entry for *model* in any id form (regional
+    Bedrock cost multiplier applied), or None."""
+    rates = _resolve_model_entry(MODEL_COSTS, model)
+    if not rates:
+        return None
+    multiplier = _bedrock_cost_multiplier(model)
+    if multiplier != 1.0:
+        rates = {k: v * multiplier for k, v in rates.items()}
+    return rates
+
+
 def _strip_dated_alias(model: str) -> str:
     """Strip Anthropic dated-alias suffix (``-YYYYMMDD``) so
     ``claude-haiku-4-5-20251001`` resolves to ``claude-haiku-4-5``."""

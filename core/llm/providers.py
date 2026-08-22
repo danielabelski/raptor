@@ -567,29 +567,14 @@ class LLMProvider(ABC):
         Use a class-level set so the warn-once persists across
         instances of the same provider.
         """
-        from .model_data import (
-            MODEL_COSTS,
-            _bedrock_cost_multiplier,
-            _strip_bedrock_prefixes,
-            _strip_dated_alias,
-        )
+        from .model_data import resolve_model_costs
         # Same four-step normalisation chain as ``context_window_for``:
         # exact -> dated alias -> bedrock strip -> both. Pre-fix the
         # bedrock steps were missing here, so a Bedrock-form id
         # (``anthropic.claude-mythos-5``) resolved limits but NOT
         # rates and fell into the $0 unknown-model path — budget caps
         # silently unenforced for every Bedrock-routed model.
-        name = self.config.model_name
-        rates = (
-            MODEL_COSTS.get(name)
-            or MODEL_COSTS.get(_strip_dated_alias(name))
-            or MODEL_COSTS.get(_strip_bedrock_prefixes(name))
-            or MODEL_COSTS.get(_strip_dated_alias(_strip_bedrock_prefixes(name)))
-        )
-        if rates:
-            multiplier = _bedrock_cost_multiplier(name)
-            if multiplier != 1.0:
-                rates = {k: v * multiplier for k, v in rates.items()}
+        rates = resolve_model_costs(self.config.model_name)
         if not rates:
             rate = self.config.cost_per_1k_tokens or 0.0
             # ``math.isclose`` with abs_tol collapses ±epsilon to

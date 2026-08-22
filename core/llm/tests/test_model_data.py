@@ -218,3 +218,29 @@ def test_every_model_has_rpm() -> None:
     parallel executor can derive a safe concurrency cap."""
     missing = [m for m, v in MODEL_LIMITS.items() if "rpm" not in v]
     assert not missing, f"MODEL_LIMITS entries missing rpm: {missing}"
+
+
+class TestCanonicalResolvers:
+    def test_limits_resolve_bedrock_forms(self):
+        from core.llm.model_data import MODEL_LIMITS, resolve_model_limits
+        bare = next(iter(MODEL_LIMITS))
+        for form in (bare, f"anthropic.{bare}", f"us.anthropic.{bare}"):
+            got = resolve_model_limits(form)
+            assert got == MODEL_LIMITS[bare], form
+
+    def test_costs_resolve_bedrock_forms_with_multiplier(self):
+        from core.llm.model_data import (
+            MODEL_COSTS,
+            _bedrock_cost_multiplier,
+            resolve_model_costs,
+        )
+        bare = next(iter(MODEL_COSTS))
+        for form in (f"anthropic.{bare}", f"us.anthropic.{bare}"):
+            got = resolve_model_costs(form)
+            mult = _bedrock_cost_multiplier(form)
+            assert got == {k: v * mult for k, v in MODEL_COSTS[bare].items()}, form
+
+    def test_unknown_model_resolves_none(self):
+        from core.llm.model_data import resolve_model_costs, resolve_model_limits
+        assert resolve_model_limits("no-such-model-xyz") is None
+        assert resolve_model_costs("no-such-model-xyz") is None

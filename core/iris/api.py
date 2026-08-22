@@ -279,10 +279,12 @@ def promote_spec_on_annotation(
 
     if promoted:
         meta = load_store_metadata(resolved)
-        from .store import assumptions_from_list
-        existing_assumptions = assumptions_from_list(
-            meta.get("assumptions", []),
-        )
+        # Public reader, not raw meta rows: load_assumptions floors
+        # tiers when the envelope's provenance token does not verify,
+        # so this re-save (which re-stamps) can never launder forged
+        # assumption tiers under a fresh token.
+        from .store import load_assumptions
+        existing_assumptions = load_assumptions(resolved)
         stored_target = meta.get("target_path")
         save_specs(
             resolved, specs,

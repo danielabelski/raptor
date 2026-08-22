@@ -160,3 +160,72 @@ def test_refined_tiers_survive_honest_merge(tmp_path: Path) -> None:
     )
     names = get_project_sanitisers(out_dir=run, target_path=target)
     assert "clean_it" in names
+
+
+def test_forged_assumption_tier_floors_on_load(tmp_path: Path) -> None:
+    """Assumptions ride the same envelope: an unstamped store's
+    assumption tiers floor to heuristic on read."""
+    from core.iris.store import load_assumptions
+
+    proj, run, target = _project(tmp_path)
+    env = _forged_envelope(target)
+    env["assumptions"] = [{
+        "target": "memcpy", "file": "a.c",
+        "assumption": "len checked upstream", "category": "validation",
+        "enforced_by": ["check_len"], "evidence_tier": "xref_backed",
+    }]
+    _write_store(proj, env)
+
+    rows = load_assumptions(run, target_path=target)
+    assert [a.evidence_tier for a in rows] == [EvidenceTier.HEURISTIC]
+
+
+def test_merge_does_not_launder_assumption_tiers(tmp_path: Path) -> None:
+    """persist_refined_specs merges assumptions 'higher tier wins' and
+    re-stamps — forged tiers in the pre-existing store must floor
+    BEFORE the merge, or the fresh stamp would make them durable."""
+    from core.iris.store import load_assumptions
+
+    proj, run, target = _project(tmp_path)
+    env = _forged_envelope(target)
+    env["assumptions"] = [{
+        "target": "memcpy", "file": "a.c",
+        "assumption": "len checked upstream", "category": "validation",
+        "enforced_by": ["check_len"], "evidence_tier": "xref_backed",
+    }]
+    _write_store(proj, env)
+    (target / "a.c").write_text("int x;\n")
+
+    persist_refined_specs(
+        run,
+        [TaintSpec(function="other", file="b.c", role="source",
+                   evidence_tier=EvidenceTier.HEURISTIC)],
+        target_path=target,
+    )
+    # Store is now validly stamped; the forged assumption tier must
+    # have floored, not been blessed.
+    rows = load_assumptions(run, target_path=target)
+    by_target = {a.target: a for a in rows}
+    assert by_target["memcpy"].evidence_tier == EvidenceTier.HEURISTIC
+
+
+def test_honest_assumption_tiers_round_trip(tmp_path: Path) -> None:
+    from core.iris.assumptions import AssumptionCategory, SafetyAssumption
+    from core.iris.store import load_assumptions
+
+    proj, run, target = _project(tmp_path)
+    save_specs(
+        run,
+        [TaintSpec(function="f", file="a.c", role="source",
+                   evidence_tier=EvidenceTier.HEURISTIC)],
+        target_path=target,
+        assumptions=[SafetyAssumption(
+            target="memcpy", file="a.c",
+            assumption="len checked upstream",
+            category=AssumptionCategory.VALIDATION,
+            enforced_by=["check_len"],
+            evidence_tier=EvidenceTier.XREF_BACKED,
+        )],
+    )
+    rows = load_assumptions(run, target_path=target)
+    assert rows[0].evidence_tier == EvidenceTier.XREF_BACKED

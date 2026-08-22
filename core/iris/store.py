@@ -91,29 +91,31 @@ def _store_path(out_dir: Path) -> Path:
 
 
 def _floor_unverified_tiers(
-    specs: list[TaintSpec], path: Path, reason: str,
-) -> list[TaintSpec]:
-    """Clamp every deserialised tier to heuristic (in place).
+    rows, path: Path, reason: str, *, kind: str = "spec",
+):
+    """Clamp every deserialised ``evidence_tier`` to heuristic (in
+    place; *rows* are TaintSpec or SafetyAssumption objects).
 
-    The tier is the suppression-direction authority
-    (``core.iris.api.SUPPRESSION_MIN_TIER``), so it is only honoured
-    from a store whose provenance token verifies. Floored specs keep
-    their prompt-direction value; the refine loop / operator
-    annotations re-corroborate legitimate ones."""
+    The tier is the trust-bearing field (specs:
+    ``core.iris.api.SUPPRESSION_MIN_TIER`` suppression authority;
+    assumptions: "higher tier wins" merge durability), so it is only
+    honoured from a store whose provenance token verifies. Floored
+    rows keep their prompt-direction value; the refine loop /
+    operator annotations re-corroborate legitimate ones."""
     floored = 0
     heuristic_rank = TIER_RANK.get(EvidenceTier.HEURISTIC, 0)
-    for spec in specs:
-        if TIER_RANK.get(spec.evidence_tier, 0) > heuristic_rank:
-            spec.evidence_tier = EvidenceTier.HEURISTIC
+    for row in rows:
+        if TIER_RANK.get(row.evidence_tier, 0) > heuristic_rank:
+            row.evidence_tier = EvidenceTier.HEURISTIC
             floored += 1
     if floored:
         logger.warning(
-            "iris.store: %s %s — floored %d stored evidence tier(s) "
-            "to heuristic (suppression-direction specs require a "
-            "verified store; the refine loop re-corroborates)",
-            path, reason, floored,
+            "iris.store: %s %s — floored %d stored %s evidence "
+            "tier(s) to heuristic (tier authority requires a verified "
+            "store; the refine loop re-corroborates)",
+            path, reason, floored, kind,
         )
-    return specs
+    return rows
 
 
 def _envelope_trusted(data: dict, *, target_path: "Path | None") -> str:
@@ -191,7 +193,12 @@ def load_assumptions(
                 stored_target, target_path,
             )
             return []
-    return assumptions_from_list(data.get("assumptions", []))
+    assumptions = assumptions_from_list(data.get("assumptions", []))
+    reason = _envelope_trusted(data, target_path=target_path)
+    if reason:
+        _floor_unverified_tiers(
+            assumptions, path, reason, kind="assumption")
+    return assumptions
 
 
 def load_store_metadata(out_dir: Path) -> dict[str, Any]:
@@ -364,6 +371,14 @@ def persist_refined_specs(
     from .assumptions import merge_assumptions
 
     existing_assumptions = assumptions_from_list(meta.get("assumptions", []))
+    if reason:
+        # Same never-launder rule as the specs above: the merge is
+        # "higher tier wins" and the merged envelope re-stamps, so an
+        # unverified store's assumption tiers must floor BEFORE they
+        # can become durable under a fresh token.
+        _floor_unverified_tiers(
+            existing_assumptions, _store_path(out_dir), reason,
+            kind="assumption")
     merged_assumptions = merge_assumptions(
         existing_assumptions, list(assumptions or []),
     )

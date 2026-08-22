@@ -2545,7 +2545,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # files, pipes, block devices, TTYs. Runtime cost: one fstat
         # per pass_fds entry.
         _pass_fds_declared = kwargs.pop("pass_fds_declared", False)
-        if kwargs.get("pass_fds"):
+        # stdin= carries a descriptor capability past every path-based
+        # layer exactly like a pass_fds entry: the spawn backends dup2
+        # it onto fd 0 unaudited, so a write-capable file fd, a dirfd
+        # (getdents/openat into unlisted trees) or a socket smuggled
+        # as stdin quietly bypassed the pass_fds gate below — whose
+        # own refusal text even recommended "pass stdin= directly".
+        # Audit it with the same policy (FIFO/tty/devnull exempt,
+        # pass_fds_declared parity, sockets always refused).
+        _stdin_kw = kwargs.get("stdin")
+        _stdin_audit_fd = None
+        if isinstance(_stdin_kw, int) and _stdin_kw >= 0:
+            _stdin_audit_fd = _stdin_kw
+        elif _stdin_kw is not None and hasattr(_stdin_kw, "fileno"):
+            try:
+                _stdin_audit_fd = _stdin_kw.fileno()
+            except (OSError, ValueError):
+                _stdin_audit_fd = None
+        if kwargs.get("pass_fds") or _stdin_audit_fd is not None:
             import fcntl as _fcntl
             import stat as _stat
 
@@ -2607,7 +2624,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             f"allowlist while restrict_reads is on")
                 return None
 
-            for fd in kwargs["pass_fds"]:
+            for fd in (kwargs.get("pass_fds") or ()):
                 try:
                     mode = os.fstat(fd).st_mode
                 except OSError as e:
@@ -2651,9 +2668,49 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             f"file inside the sandbox's allowed paths."
                         )
                         raise TypeError(msg_0)
-            logger.info(
-                "Sandbox: caller passed pass_fds=%s for %r — these FDs are inherited by the sandboxed child.", kwargs['pass_fds'], ' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd
-            )
+            if kwargs.get("pass_fds"):
+                logger.info(
+                    "Sandbox: caller passed pass_fds=%s for %r — these FDs are inherited by the sandboxed child.", kwargs['pass_fds'], ' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd
+                )
+            if _stdin_audit_fd is not None:
+                try:
+                    _stdin_mode = os.fstat(_stdin_audit_fd).st_mode
+                except OSError as e:
+                    raise TypeError(
+                        f"sandbox().run(): stdin= fd={_stdin_audit_fd} "
+                        f"is not a valid open file descriptor "
+                        f"({e.__class__.__name__}: {e})"
+                    ) from e
+                if _stat.S_ISSOCK(_stdin_mode):
+                    raise TypeError(
+                        f"sandbox().run(): stdin= fd={_stdin_audit_fd} "
+                        f"is a socket. Inherited sockets bypass the "
+                        f"seccomp socket() family filter — refusing "
+                        f"(same policy as pass_fds)."
+                    )
+                _stdin_problem = _fd_policy_problem(_stdin_audit_fd)
+                if _stdin_problem:
+                    if _pass_fds_declared:
+                        logger.warning(
+                            "Sandbox: stdin= fd=%d grants an "
+                            "out-of-policy capability (%s) — allowed "
+                            "because the caller declared it with "
+                            "pass_fds_declared=True.",
+                            _stdin_audit_fd, _stdin_problem,
+                        )
+                    else:
+                        raise TypeError(
+                            f"sandbox().run(): stdin= fd="
+                            f"{_stdin_audit_fd} grants an out-of-"
+                            f"policy capability: {_stdin_problem}. "
+                            f"The spawn backends dup2 caller stdin "
+                            f"onto fd 0, so it is a descriptor "
+                            f"capability exactly like a pass_fds "
+                            f"entry (fd 0 even survives pivot_root). "
+                            f"Use a pipe / input= for content, or "
+                            f"pass pass_fds_declared=True to declare "
+                            f"this grant explicitly."
+                        )
 
         # Strip caller-supplied check= — both subprocess.run call sites
         # below pass check=False explicitly (PLW1510), so a duplicate from
@@ -3321,6 +3378,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 capture_output=kwargs.get("capture_output", False),
                                 text=kwargs.get("text", False),
                                 stdin=kwargs.get("stdin"),
+                                stdout=kwargs.get("stdout"),
+                                stderr=kwargs.get("stderr"),
                                 audit_mode=nonlocal_audit_mode,
                                 audit_run_dir=_audit_run_dir,
                                 audit_required=audit_required,
@@ -4873,16 +4932,50 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     # pass start_new_session=False explicitly.
     if "start_new_session" not in kwargs:
         kwargs["start_new_session"] = True
-    return run(cmd, block_network=True, target=target, output=output,
-               limits=limits,
-               restrict_reads=restrict_reads,
-               readable_paths=readable_paths,
-               writable_paths=writable_paths,
-               fake_home=fake_home,
-               omit_proc_reads=_degraded_no_pidns,
-               strict_env=True,
-               strip_trust_markers=True,
-               **kwargs)
+    # fd 1/2 pass-through: the stdin/setsid defences above plug fd 0
+    # and /dev/tty, but when the caller doesn't capture, the child
+    # inherits the operator's terminal on fd 1/2 — and a PTY slave is
+    # opened O_RDWR, which setsid() does NOT revoke. A target that
+    # read()s its OWN stdout/stderr taps the operator's keystrokes:
+    # the exact channel the surrounding defences exist to close. Hand
+    # the child a WRITE-ONLY reopen of the same terminal instead
+    # (output identical; reads fail EBADF).
+    _wo_fds: list = []
+    if not kwargs.get("capture_output"):
+        for _name, _fd in (("stdout", 1), ("stderr", 2)):
+            if _name in kwargs:
+                continue
+            try:
+                if not os.isatty(_fd):
+                    continue
+                _wfd = os.open(os.ttyname(_fd),
+                               os.O_WRONLY | os.O_NOCTTY)
+            except OSError as _tty_exc:
+                logger.warning(
+                    "run_untrusted: could not reopen the %s tty "
+                    "write-only for the child (%s) — the inherited "
+                    "descriptor may be readable.", _name, _tty_exc,
+                )
+                continue
+            kwargs[_name] = _wfd
+            _wo_fds.append(_wfd)
+    try:
+        return run(cmd, block_network=True, target=target, output=output,
+                   limits=limits,
+                   restrict_reads=restrict_reads,
+                   readable_paths=readable_paths,
+                   writable_paths=writable_paths,
+                   fake_home=fake_home,
+                   omit_proc_reads=_degraded_no_pidns,
+                   strict_env=True,
+                   strip_trust_markers=True,
+                   **kwargs)
+    finally:
+        for _wfd in _wo_fds:
+            try:
+                os.close(_wfd)
+            except OSError:
+                pass
 
 
 def run_untrusted_networked(

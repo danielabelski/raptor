@@ -620,6 +620,8 @@ def run_sandboxed(
     capture_output: bool = True,
     text: bool = True,
     stdin=None,
+    stdout=None,
+    stderr=None,
     start_new_session: bool = True,
     audit_mode: bool = False,
     audit_run_dir: str | None = None,
@@ -1436,6 +1438,39 @@ def run_sandboxed(
             os.dup2(err_w, 2)
             os.close(out_w)
             os.close(err_w)
+        else:
+            # stdout=/stderr= redirects (int fd, file-like, DEVNULL,
+            # STDOUT for stderr). Pre-fix these kwargs were silently
+            # DROPPED on this path — the child inherited the parent's
+            # fd 1/2 regardless, which also defeated run_untrusted's
+            # write-only tty reopen (the child kept the O_RDWR pty
+            # slave and could read() the operator's keystrokes
+            # through its own stdout). PIPE is unsupported here, same
+            # as stdin: fail closed to /dev/null with a stderr note.
+            for _redir, _fdnum, _label in ((stdout, 1, b"stdout"),
+                                           (stderr, 2, b"stderr")):
+                if _redir is None:
+                    continue
+                if _redir == subprocess.PIPE:
+                    try:
+                        os.write(2, b"RAPTOR sandbox: %s=subprocess."
+                                    b"PIPE not supported via the "
+                                    b"mount-ns path; falling back to "
+                                    b"/dev/null.\n" % _label)
+                    except OSError:
+                        pass
+                    _redir = subprocess.DEVNULL
+                if _redir == subprocess.DEVNULL:
+                    _dn = os.open("/dev/null", os.O_WRONLY)
+                    os.dup2(_dn, _fdnum)
+                    os.close(_dn)
+                    continue
+                if _fdnum == 2 and _redir == subprocess.STDOUT:
+                    os.dup2(1, 2)
+                    continue
+                _rfd = _redir if isinstance(_redir, int) else _redir.fileno()
+                if _rfd != _fdnum:
+                    os.dup2(_rfd, _fdnum)
         # stdin: caller-supplied fd/file if any, else /dev/null (defence
         # against tty-based escapes — a child with an inherited tty can
         # TIOCSTI-inject or ^Z into the parent's job control). The

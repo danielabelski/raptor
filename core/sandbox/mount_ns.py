@@ -580,7 +580,27 @@ def setup_mount_ns(target: str | None, output: str | None,
     # evidence-file close still detects tampering after the fact.
     for _evdir_base in {p for p in (output, target) if p}:
         _evdir = f"{root}{_evdir_base}/.audit"
-        if not os.path.isdir(_evdir):
+        # lstat, never stat: the .audit entry inside the TARGET bind is
+        # attacker-authored content (a hostile repo can ship it). A
+        # relative symlink here would make isdir() follow it and the
+        # mount(2) below stack the ro-tmpfs onto an arbitrary in-root
+        # directory (e.g. {root}/usr — hiding the interpreter, forcing
+        # an X-status and the automatic backend retry: an attacker-
+        # triggerable posture-downgrade lever). Refuse symlinks and
+        # non-directories outright; the run proceeds WITHOUT the
+        # shadow and the evidence-file inode verification remains the
+        # (documented) tamper backstop.
+        try:
+            _evst = os.lstat(_evdir)
+        except OSError:
+            continue
+        if not stat_module.S_ISDIR(_evst.st_mode):
+            if stat_module.S_ISLNK(_evst.st_mode):
+                warn_post_fork(
+                    b"RAPTOR: mount_ns: refusing evidence-dir shadow "
+                    b"- .audit is a symlink (hostile-tree shape); "
+                    b"relying on evidence-file inode verification\n"
+                )
             continue
         try:
             _mount("tmpfs", _evdir, "tmpfs", 0, "mode=700")

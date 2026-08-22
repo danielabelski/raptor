@@ -3072,6 +3072,41 @@ class TestE2EEvidenceTamperResistanceMountNs(unittest.TestCase):
                 ev_file.close(verify=False)
 
 
+class TestE2EEvidenceShadowSymlinkRefused(unittest.TestCase):
+    """A hostile target tree shipping ``.audit`` as a relative symlink
+    must not steer the evidence-shadow tmpfs onto another in-root
+    directory (interpreter-hiding posture-downgrade lever): the shadow
+    is refused with a warning and the run proceeds unharmed."""
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        from core.sandbox._spawn import mount_ns_available
+        if not mount_ns_available():
+            self.skipTest("mount-ns not available on this host")
+
+    def test_symlinked_audit_dir_does_not_divert_shadow_mount(self):
+        with TemporaryDirectory() as tgt, TemporaryDirectory() as out:
+            # relative symlink that would resolve to {root}/usr from
+            # a /tmp-resident target bind inside the staged tree
+            os.symlink("../../usr", os.path.join(tgt, ".audit"))
+            r = sandbox_run(
+                ["/usr/bin/python3", "-B", "-c", "print('ALIVE')"],
+                block_network=True, target=tgt, output=out,
+                capture_output=True, text=True, timeout=30,
+            )
+            if not (getattr(r, "sandbox_info", None) or {}).get(
+                    "mount_ns_active"):
+                self.skipTest("run fell back below mount-ns")
+            self.assertEqual(r.returncode, 0, (
+                f"hostile .audit symlink broke the run (shadow mount "
+                f"steered): rc={r.returncode} stderr={r.stderr[-300:]!r}"
+            ))
+            self.assertIn("ALIVE", r.stdout)
+            self.assertIn("refusing evidence-dir shadow", r.stderr,
+                          "expected the loud symlink refusal warning")
+
+
 class TestE2EEvidenceTamperResistanceLandlockOnly(unittest.TestCase):
     """Evidence-placement tamper matrix, Landlock-only backend: when
     the evidence dir is not beneath any writable grant, Landlock

@@ -2259,5 +2259,10 @@
     "count": 14,
     "kind": "literal",
     "note": "ECMA-262 keywords after which a '/' token lexes as a regex literal (return, case, typeof, ...) \u2014 fixed language grammar for the JS dead-scope lexer, not an API vocabulary"
+  },
+  "core/audit/edge_obligations.py::build_edge_obligations": {
+    "count": 10,
+    "kind": "literal",
+    "note": "obligation-record field keys (ambiguous, boundary_functions, degraded, dispatch_resolved, ...) \u2014 a serialization schema consumed verbatim by the edge fold and /review, not an API vocabulary"
   }
 }

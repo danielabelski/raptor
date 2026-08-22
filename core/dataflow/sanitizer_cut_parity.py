@@ -38,10 +38,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
-    Dict,
-    List,
-    Optional,
-    Union,
 )
 
 
@@ -93,14 +89,14 @@ class ParityRecord:
     lexical_suppressed: bool
     value_bound_verdict: str
     value_bound_suppressed: bool
-    label: Optional[str] = None
-    timestamp: Optional[str] = None
+    label: str | None = None
+    timestamp: str | None = None
 
     @property
     def agree(self) -> bool:
         return self.lexical_suppressed == self.value_bound_suppressed
 
-    def to_json(self) -> Dict[str, Any]:
+    def to_json(self) -> dict[str, Any]:
         return {
             "finding_id": self.finding_id,
             "file": self.file,
@@ -117,7 +113,7 @@ class ParityRecord:
         }
 
     @classmethod
-    def from_json(cls, d: Dict[str, Any]) -> "ParityRecord":
+    def from_json(cls, d: dict[str, Any]) -> ParityRecord:
         verdict = d.get("value_bound_verdict", VERDICT_UNRESOLVED)
         return cls(
             finding_id=d["finding_id"],
@@ -151,8 +147,8 @@ def build_parity_record(
     kind: str,
     lexical_suppressed: bool,
     value_bound_verdict: str,
-    label: Optional[str] = None,
-    timestamp: Optional[str] = None,
+    label: str | None = None,
+    timestamp: str | None = None,
 ) -> ParityRecord:
     """Assemble a :class:`ParityRecord`. ``value_bound_suppressed`` is
     derived from ``value_bound_verdict`` so the two never drift."""
@@ -177,7 +173,7 @@ def build_parity_record(
 # ---------------------------------------------------------------------------
 
 
-def value_bound_verdict_for(finding: Dict[str, Any]) -> str:
+def value_bound_verdict_for(finding: dict[str, Any]) -> str:
     """Run the value-bound gate for one finding dict and return its
     verdict string. ``"unresolved"`` when the resolver can't normalise
     the finding (missing file, syntax error, unsupported language, …).
@@ -227,7 +223,7 @@ def value_bound_verdict_for(finding: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def append_parity_record(path: Union[str, Path], record: ParityRecord) -> None:
+def append_parity_record(path: str | Path, record: ParityRecord) -> None:
     """Append one record as a JSON line. Creates the file (and parent
     dirs) if absent. Best-effort: never raises on a write failure —
     telemetry must not break a real run."""
@@ -240,13 +236,13 @@ def append_parity_record(path: Union[str, Path], record: ParityRecord) -> None:
         pass
 
 
-def read_parity_records(path: Union[str, Path]) -> List[ParityRecord]:
+def read_parity_records(path: str | Path) -> list[ParityRecord]:
     """Read all records from a JSONL file. Skips malformed lines.
     Returns ``[]`` if the file doesn't exist."""
     p = Path(path)
     if not p.exists():
         return []
-    out: List[ParityRecord] = []
+    out: list[ParityRecord] = []
     for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -346,7 +342,7 @@ class ParitySummary:
     no_lexical_regression: bool
     # Per-kind breakdown of the agreement matrix for slicing the
     # window by the shape the lexical check targets.
-    by_kind: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    by_kind: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def _rate(successes: int, total: int) -> RateWithCI:
@@ -357,7 +353,7 @@ def _rate(successes: int, total: int) -> RateWithCI:
     )
 
 
-def _dedup_by_finding_id(records: List[ParityRecord]) -> List[ParityRecord]:
+def _dedup_by_finding_id(records: list[ParityRecord]) -> list[ParityRecord]:
     """Collapse repeated ``finding_id``s to their LAST record.
 
     Review #3 on PR #794: the parity log is append-only, and agentic
@@ -368,8 +364,8 @@ def _dedup_by_finding_id(records: List[ParityRecord]) -> List[ParityRecord]:
     removal. Keep the latest verdict per finding (the most recent run
     wins), preserving first-seen order for determinism. Records with no
     ``finding_id`` can't be keyed and are kept as-is."""
-    deduped: Dict[str, ParityRecord] = {}
-    unkeyed: List[ParityRecord] = []
+    deduped: dict[str, ParityRecord] = {}
+    unkeyed: list[ParityRecord] = []
     for r in records:
         if r.finding_id:
             # Reassigning an existing key keeps its insertion position
@@ -380,7 +376,7 @@ def _dedup_by_finding_id(records: List[ParityRecord]) -> List[ParityRecord]:
     return list(deduped.values()) + unkeyed
 
 
-def aggregate_parity(records: List[ParityRecord]) -> ParitySummary:
+def aggregate_parity(records: list[ParityRecord]) -> ParitySummary:
     """Aggregate a window of records into a :class:`ParitySummary`.
 
     Records are de-duplicated by ``finding_id`` first (keeping the last
@@ -392,7 +388,7 @@ def aggregate_parity(records: List[ParityRecord]) -> ParitySummary:
     windows before Phase 16 ships)."""
     records = _dedup_by_finding_id(records)
     both = lex_only = vb_only = neither = 0
-    by_kind: Dict[str, Dict[str, int]] = {}
+    by_kind: dict[str, dict[str, int]] = {}
     # Labelled tallies.
     ss_total = sns_total = 0
     lex_ss_supp = lex_sns_supp = 0
@@ -514,7 +510,7 @@ def render_parity_report(
     produce the committed first parity report and any subsequent
     window reports."""
     met = parity_criterion_met(summary)
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append(f"# {title}")
     lines.append("")
     lines.append(

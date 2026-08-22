@@ -27,7 +27,7 @@ dict, the 0-100 range, the sort order).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .models import Dependency, VulnFinding
 
@@ -144,8 +144,8 @@ _SCORE_MAX = 100.0
 def compute_risk_estimate(
     finding: VulnFinding, dep: Dependency,
     *,
-    overrides: Optional[Dict[str, float]] = None,
-) -> Tuple[float, Dict[str, Any]]:
+    overrides: dict[str, float] | None = None,
+) -> tuple[float, dict[str, Any]]:
     """Return ``(score, components)`` for the finding.
 
     ``score`` is a 0..100 float, deterministic from the finding's
@@ -192,7 +192,7 @@ def compute_risk_estimate(
     expo_range = o.get("_EXPO_RANGE_MULTIPLIER", _EXPO_RANGE_MULTIPLIER)
     depth_decay = o.get("_DEPTH_DECAY_BASE", _DEPTH_DECAY_BASE)
 
-    components: Dict[str, Any] = {}
+    components: dict[str, Any] = {}
 
     # 1. CVSS base — 0-10 → 0-100. Missing → severity-label
     # fallback via ``packages.cvss.score_for_label`` (paired
@@ -376,7 +376,7 @@ TUNABLE_CONSTANTS = (
 )
 
 
-def current_constants() -> Dict[str, float]:
+def current_constants() -> dict[str, float]:
     """Return the current values of all tunable multiplier
     constants. The refitter compares its proposed values against
     these."""
@@ -409,7 +409,7 @@ def current_constants() -> Dict[str, float]:
 # against these bounds. Cross-constant constraints (e.g.
 # EXPLOIT_EVIDENCE_MULTIPLIER must stay < KEV_MULTIPLIER) live in
 # `CROSS_CONSTRAINTS` below.
-CONSTANT_BOUNDS: Dict[str, Tuple[float, float]] = {
+CONSTANT_BOUNDS: dict[str, tuple[float, float]] = {
     "_KEV_FLOOR":                          (0.0, 100.0),
     "_KEV_MULTIPLIER":                     (1.0,   3.0),
     "_EXPLOIT_EVIDENCE_FLOOR":             (0.0, 100.0),
@@ -436,7 +436,7 @@ CONSTANT_BOUNDS: Dict[str, Tuple[float, float]] = {
 #
 # Naming convention: predicates are NAMED by the design rule they
 # enforce so a refit-report's rejection note is human-readable.
-def _ee_strictly_below_kev(values: Dict[str, float]) -> bool:
+def _ee_strictly_below_kev(values: dict[str, float]) -> bool:
     """EDB / MSF / PoC are weaker exploit signals than KEV
     (CISA-tracked active exploitation). The multiplier must stay
     strictly below KEV's, and the floor at most equal — otherwise
@@ -451,7 +451,7 @@ def _ee_strictly_below_kev(values: Dict[str, float]) -> bool:
     return ee_mult < kev_mult and ee_floor <= kev_floor
 
 
-def _ssvc_poc_strictly_below_active(values: Dict[str, float]) -> bool:
+def _ssvc_poc_strictly_below_active(values: dict[str, float]) -> bool:
     """SSVC ``poc`` (public exploit code exists) is a weaker
     signal than SSVC ``active`` (exploited in the wild). Same
     relationship KEV / EE carry — the PoC multiplier must stay
@@ -471,13 +471,13 @@ def _ssvc_poc_strictly_below_active(values: Dict[str, float]) -> bool:
     return poc_mult < active_mult and poc_floor <= active_floor
 
 
-CROSS_CONSTRAINTS: List[Tuple[str, Any]] = [
+CROSS_CONSTRAINTS: list[tuple[str, Any]] = [
     ("exploit_evidence_strictly_below_kev", _ee_strictly_below_kev),
     ("ssvc_poc_strictly_below_active", _ssvc_poc_strictly_below_active),
 ]
 
 
-def is_admissible(values: Dict[str, float]) -> Tuple[bool, Optional[str]]:
+def is_admissible(values: dict[str, float]) -> tuple[bool, str | None]:
     """Check absolute bounds + cross-constraints on a candidate.
 
     Returns ``(True, None)`` when admissible; ``(False, reason)``
@@ -524,7 +524,7 @@ def is_admissible(values: Dict[str, float]) -> Tuple[bool, Optional[str]]:
 # doesn't change between findings within a single SCA run.
 
 
-_CALIBRATION_STATUS_CACHE: Optional[str] = None
+_CALIBRATION_STATUS_CACHE: str | None = None
 
 
 def _calibration_status() -> str:

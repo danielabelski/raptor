@@ -9,7 +9,7 @@ that makes decisions based on fuzzing state and learned knowledge.
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.config import env_flag
 from core.logging import get_logger
@@ -71,13 +71,13 @@ class FuzzingState:
 
     # Strategy metrics
     current_strategy: str = "default"
-    successful_strategies: Dict[str, int] = field(default_factory=dict)
+    successful_strategies: dict[str, int] = field(default_factory=dict)
 
     # Goal state
-    target_goal: Optional[str] = None
+    target_goal: str | None = None
 
     # Binary characteristics
-    binary_path: Optional[Path] = None
+    binary_path: Path | None = None
     has_asan: bool = False
     has_afl_instrumentation: bool = False
 
@@ -108,7 +108,7 @@ class FuzzingPlanner:
     def __init__(
         self,
         memory=None,
-        sage_strategy_rows: Optional[List[Dict[str, Any]]] = None,
+        sage_strategy_rows: list[dict[str, Any]] | None = None,
     ):
         """
         Initialise the fuzzing planner.
@@ -118,7 +118,7 @@ class FuzzingPlanner:
             sage_strategy_rows: Raw SAGE recall rows for confidence-weighted defaults
         """
         self.memory = memory
-        self.sage_strategy_rows: List[Dict[str, Any]] = list(sage_strategy_rows or [])
+        self.sage_strategy_rows: list[dict[str, Any]] = list(sage_strategy_rows or [])
         self.decision_history = []
         logger.info("Autonomous Fuzzing Planner initialised")
 
@@ -192,7 +192,7 @@ class FuzzingPlanner:
         return action
 
     def should_continue_fuzzing(self, state: FuzzingState,
-                                target_duration: Optional[float] = None) -> bool:
+                                target_duration: float | None = None) -> bool:
         """
         Decide if fuzzing should continue or stop.
 
@@ -228,7 +228,7 @@ class FuzzingPlanner:
 
         return True
 
-    def recommend_crash_priority(self, crashes: List, state: FuzzingState) -> List:
+    def recommend_crash_priority(self, crashes: list, state: FuzzingState) -> list:
         """
         Intelligently prioritise which crashes to analyse first.
 
@@ -292,7 +292,7 @@ class FuzzingPlanner:
         # Return prioritised list
         return [c for c, s, f in crash_scores]
 
-    def select_fuzzing_strategy(self, state: FuzzingState) -> Dict[str, Any]:
+    def select_fuzzing_strategy(self, state: FuzzingState) -> dict[str, Any]:
         """
         Select optimal fuzzing strategy based on current state.
 
@@ -367,7 +367,7 @@ class FuzzingPlanner:
         logger.info("Selected strategy: %s", strategy['name'])
         return strategy
 
-    def get_decision_summary(self) -> Dict:
+    def get_decision_summary(self) -> dict:
         """Get summary of all decisions made."""
         return {
             "total_decisions": len(self.decision_history),

@@ -17,13 +17,12 @@ this, hardening-branch selectors misclassify safe-linking targets.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 _VERSION_RE = re.compile(r"^\s*(\d+)(?:\.(\d+))?(?:\.\d+)?\s*$")
 
 
-def parse_major_minor(raw: Optional[str]) -> Optional[tuple[int, int]]:
+def parse_major_minor(raw: str | None) -> tuple[int, int] | None:
     """Parse a glibc version string into ``(major, minor)``.
 
     Returns ``None`` for empty / malformed input. Patch-level components
@@ -44,7 +43,7 @@ def parse_major_minor(raw: Optional[str]) -> Optional[tuple[int, int]]:
 _SEARCH_RE = re.compile(r"(\d+)\.(\d+)", re.ASCII)
 
 
-def search_major_minor(text: Optional[str]) -> Optional[tuple[int, int]]:
+def search_major_minor(text: str | None) -> tuple[int, int] | None:
     """Extract ``(major, minor)`` from the first ``\\d+\\.\\d+``
     occurrence in ``text``.
 
@@ -113,9 +112,9 @@ def compare_versions(
 
 
 def resolve_greatest_leq(
-    target: Optional[tuple[int, int]],
+    target: tuple[int, int] | None,
     candidates: list[tuple[int, int]],
-) -> Optional[tuple[int, int]]:
+) -> tuple[int, int] | None:
     """Pick the greatest candidate ``≤ target``.
 
     Returns ``None`` when ``target`` is None (no filter) or no candidate
@@ -127,7 +126,7 @@ def resolve_greatest_leq(
     """
     if target is None or not candidates:
         return None
-    best: Optional[tuple[int, int]] = None
+    best: tuple[int, int] | None = None
     for c in candidates:
         if c > target:
             continue

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
 
 from core.inventory.sink_discovery import _is_dangerous
 
@@ -54,9 +53,9 @@ class CTaintApprox:
     """Taint approximation result for a single C/C++ function."""
 
     function: str
-    params: List[str]
-    direct_flows: Dict[int, List[Tuple[str, int]]] = field(default_factory=dict)
-    dangerous_flows: Dict[int, List[Tuple[str, int]]] = field(default_factory=dict)
+    params: list[str]
+    direct_flows: dict[int, list[tuple[str, int]]] = field(default_factory=dict)
+    dangerous_flows: dict[int, list[tuple[str, int]]] = field(default_factory=dict)
     has_opaque_flow: bool = False
 
     def has_dangerous_param(self, param_idx: int) -> bool:
@@ -81,7 +80,7 @@ class CTaintApprox:
         }
 
 
-def extract_taint_approx_c(content: str) -> Dict[str, CTaintApprox]:
+def extract_taint_approx_c(content: str) -> dict[str, CTaintApprox]:
     """Extract taint approximations for all functions in C source.
 
     Returns a dict keyed by function name. Each value is a CTaintApprox
@@ -103,12 +102,12 @@ def extract_taint_approx_c(content: str) -> Dict[str, CTaintApprox]:
         logger.debug("taint_approx: C parse failed")
         return {}
 
-    results: Dict[str, CTaintApprox] = {}
+    results: dict[str, CTaintApprox] = {}
     _walk_top_level(tree.root_node, results)
     return results
 
 
-def extract_taint_approx_cpp(content: str) -> Dict[str, CTaintApprox]:
+def extract_taint_approx_cpp(content: str) -> dict[str, CTaintApprox]:
     """Extract taint approximations for all functions in C++ source."""
     try:
         import tree_sitter_cpp as ts_cpp
@@ -124,14 +123,14 @@ def extract_taint_approx_cpp(content: str) -> Dict[str, CTaintApprox]:
         logger.debug("taint_approx: C++ parse failed")
         return {}
 
-    results: Dict[str, CTaintApprox] = {}
+    results: dict[str, CTaintApprox] = {}
     _walk_top_level(tree.root_node, results)
     return results
 
 
 def _walk_top_level(
     node,
-    results: Dict[str, CTaintApprox],
+    results: dict[str, CTaintApprox],
 ) -> None:
     """Walk top-level nodes looking for function definitions.
 
@@ -151,7 +150,7 @@ def _walk_top_level(
         stack.extend(reversed(cur.children))
 
 
-def _analyze_function(fn_node) -> Optional[CTaintApprox]:
+def _analyze_function(fn_node) -> CTaintApprox | None:
     """Analyze a single function definition for taint flows."""
     name = _function_name(fn_node)
     if name is None:
@@ -161,8 +160,8 @@ def _analyze_function(fn_node) -> Optional[CTaintApprox]:
     if not params:
         return CTaintApprox(function=name, params=[])
 
-    param_set: Set[str] = set(params)
-    param_index: Dict[str, int] = {p: i for i, p in enumerate(params)}
+    param_set: set[str] = set(params)
+    param_index: dict[str, int] = {p: i for i, p in enumerate(params)}
 
     approx = CTaintApprox(function=name, params=params)
 
@@ -176,7 +175,7 @@ def _analyze_function(fn_node) -> Optional[CTaintApprox]:
     return approx
 
 
-def _function_name(fn_def_node) -> Optional[str]:
+def _function_name(fn_def_node) -> str | None:
     """Extract the function name from a function_definition node."""
     for c in fn_def_node.children:
         if not c.is_named:
@@ -190,7 +189,7 @@ def _function_name(fn_def_node) -> Optional[str]:
     return None
 
 
-def _declarator_name(fn_declarator_node) -> Optional[str]:
+def _declarator_name(fn_declarator_node) -> str | None:
     """Get the identifier from a function_declarator."""
     for c in fn_declarator_node.children:
         if c.is_named and c.type == _IDENTIFIER:
@@ -198,7 +197,7 @@ def _declarator_name(fn_declarator_node) -> Optional[str]:
     return None
 
 
-def _find_function_declarator(node) -> Optional[object]:
+def _find_function_declarator(node) -> object | None:
     """Find the first function_declarator under pointer/paren wrappers
     (pre-order, iterative — depth is target-controlled)."""
     stack = [node]
@@ -212,7 +211,7 @@ def _find_function_declarator(node) -> Optional[object]:
     return None
 
 
-def _extract_params(fn_node) -> List[str]:
+def _extract_params(fn_node) -> list[str]:
     """Extract parameter names from a function definition."""
     decl = None
     for c in fn_node.children:
@@ -228,7 +227,7 @@ def _extract_params(fn_node) -> List[str]:
             return []
         decl = inner
 
-    params: List[str] = []
+    params: list[str] = []
     for c in decl.children:
         if c.type == _PARAMETER_LIST:
             for pc in c.children:
@@ -239,7 +238,7 @@ def _extract_params(fn_node) -> List[str]:
     return params
 
 
-def _param_name(param_decl) -> Optional[str]:
+def _param_name(param_decl) -> str | None:
     """Extract the parameter name from a parameter_declaration.
 
     Handles: int x, const char *buf, struct foo *ptr, etc.
@@ -261,7 +260,7 @@ def _param_name(param_decl) -> Optional[str]:
     return last_id
 
 
-def _find_identifier(node) -> Optional[str]:
+def _find_identifier(node) -> str | None:
     """Find the first identifier leaf in a subtree (pre-order,
     iterative — depth is target-controlled)."""
     stack = [node]
@@ -273,7 +272,7 @@ def _find_identifier(node) -> Optional[str]:
     return None
 
 
-def _find_body(fn_node) -> Optional[object]:
+def _find_body(fn_node) -> object | None:
     """Find the compound_statement (function body) in a function_definition."""
     for c in fn_node.children:
         if c.type == _COMPOUND_STATEMENT:
@@ -283,8 +282,8 @@ def _find_body(fn_node) -> Optional[object]:
 
 def _scan_calls(
     node,
-    param_set: Set[str],
-    param_index: Dict[str, int],
+    param_set: set[str],
+    param_index: dict[str, int],
     approx: CTaintApprox,
 ) -> None:
     """Scan for call_expressions, checking if any argument is a direct
@@ -304,9 +303,9 @@ def _scan_calls(
 
 def _check_arguments(
     call_node,
-    callee_chain: List[str],
-    param_set: Set[str],
-    param_index: Dict[str, int],
+    callee_chain: list[str],
+    param_set: set[str],
+    param_index: dict[str, int],
     approx: CTaintApprox,
 ) -> None:
     """Check each argument of a call for direct parameter usage."""
@@ -336,8 +335,8 @@ def _check_arguments(
 
 def _argument_is_param(
     arg_node,
-    param_set: Set[str],
-) -> Optional[str]:
+    param_set: set[str],
+) -> str | None:
     """Check if an argument node is a direct reference to a parameter.
 
     Returns the parameter name if it is, None otherwise.
@@ -351,7 +350,7 @@ def _argument_is_param(
     return None
 
 
-def _callee_chain(call_node) -> Optional[List[str]]:
+def _callee_chain(call_node) -> list[str] | None:
     """Resolve the callee of a call_expression to a name chain."""
     callee = None
     for c in call_node.children:
@@ -363,7 +362,7 @@ def _callee_chain(call_node) -> Optional[List[str]]:
     return _resolve_callee(callee)
 
 
-def _resolve_callee(node) -> Optional[List[str]]:
+def _resolve_callee(node) -> list[str] | None:
     """Resolve an expression node to a dotted name chain.
 
     Paren / pointer wrappers are unwrapped with a loop (not
@@ -383,7 +382,7 @@ def _resolve_callee(node) -> Optional[List[str]]:
         return [node.text.decode("utf-8", errors="replace")]
 
     if node.type == _FIELD_EXPRESSION:
-        parts: List[str] = []
+        parts: list[str] = []
         cur = node
         while cur is not None and cur.type == _FIELD_EXPRESSION:
             field_node = None
@@ -407,7 +406,7 @@ def _resolve_callee(node) -> Optional[List[str]]:
 
 def _scan_opaque_assignments(
     node,
-    param_set: Set[str],
+    param_set: set[str],
     approx: CTaintApprox,
 ) -> None:
     """Scan for assignments where a parameter flows through a non-trivial
@@ -466,7 +465,7 @@ def _scan_opaque_assignments(
 class TaintPath:
     """A single path from a parameter through intermediates to a dangerous sink."""
 
-    hops: List[str]       # [caller, intermediate, ..., sink]
+    hops: list[str]       # [caller, intermediate, ..., sink]
     sink_name: str        # the dangerous function at the end
     sink_arg: int         # which argument position at the sink
 
@@ -476,14 +475,14 @@ class TransitiveTaint:
     """Transitive taint result for a single function."""
 
     function: str
-    param_sinks: Dict[int, List[TaintPath]]  # param_idx → paths to sinks
+    param_sinks: dict[int, list[TaintPath]]  # param_idx → paths to sinks
 
 
 def compute_transitive_taint(
-    per_function: Dict[str, CTaintApprox],
-    call_edges: Optional[List[Dict[str, str]]] = None,
+    per_function: dict[str, CTaintApprox],
+    call_edges: list[dict[str, str]] | None = None,
     max_depth: int = 5,
-) -> Dict[str, TransitiveTaint]:
+) -> dict[str, TransitiveTaint]:
     """Follow taint across function boundaries to find transitive sink paths.
 
     Builds on per-function ``CTaintApprox`` results: for each function *F*
@@ -502,7 +501,7 @@ def compute_transitive_taint(
     # -- Build a supplementary adjacency set from call_edges ----------------
     # Maps caller → set of callees (bare names) so we can discover
     # cross-file edges that the intra-file direct_flows missed.
-    extra_edges: Dict[str, Set[str]] = {}
+    extra_edges: dict[str, set[str]] = {}
     if call_edges:
         for edge in call_edges:
             caller = edge.get("caller", "")
@@ -510,13 +509,13 @@ def compute_transitive_taint(
             if caller and callee:
                 extra_edges.setdefault(caller, set()).add(callee)
 
-    results: Dict[str, TransitiveTaint] = {}
+    results: dict[str, TransitiveTaint] = {}
 
     for func_name, approx in per_function.items():
-        param_sinks: Dict[int, List[TaintPath]] = {}
+        param_sinks: dict[int, list[TaintPath]] = {}
 
         for param_idx, flows in approx.direct_flows.items():
-            paths: List[TaintPath] = []
+            paths: list[TaintPath] = []
             for callee_name, arg_idx in flows:
                 _follow_taint(
                     callee_name,
@@ -543,12 +542,12 @@ def compute_transitive_taint(
 def _follow_taint(
     callee: str,
     arg_idx: int,
-    per_function: Dict[str, CTaintApprox],
-    extra_edges: Dict[str, Set[str]],
+    per_function: dict[str, CTaintApprox],
+    extra_edges: dict[str, set[str]],
     visited: frozenset,
-    hops_so_far: List[str],
+    hops_so_far: list[str],
     max_depth: int,
-    out_paths: List[TaintPath],
+    out_paths: list[TaintPath],
 ) -> None:
     """Recursive DFS following taint from *callee* param *arg_idx* to sinks.
 
@@ -663,7 +662,7 @@ def format_transitive_taint(tt: TransitiveTaint) -> str:
         - param index 0 reaches dangerous sink `memcpy` via: \
 parse_header -> copy_data -> memcpy (arg 0)
     """
-    lines: List[str] = [f"Function `{tt.function}`:"]
+    lines: list[str] = [f"Function `{tt.function}`:"]
     for param_idx in sorted(tt.param_sinks):
         for path in tt.param_sinks[param_idx]:
             chain = " -> ".join(path.hops)

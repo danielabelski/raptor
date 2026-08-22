@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -55,7 +55,7 @@ _SCOPE_MAP = {
 
 
 @register(filenames=["Cargo.toml"])
-def parse_manifest(path: Path) -> List[Dependency]:
+def parse_manifest(path: Path) -> list[Dependency]:
     """Parse a ``Cargo.toml`` and emit one Dependency per declared dep.
 
     Workspace-only manifests (``[workspace]`` section without
@@ -70,7 +70,7 @@ def parse_manifest(path: Path) -> List[Dependency]:
         logger.warning("sca.parsers.cargo: %s: %s", path, e)
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen_keys: set = set()
 
     # Top-level dep tables.
@@ -107,7 +107,7 @@ def parse_manifest(path: Path) -> List[Dependency]:
 
 
 @register(filenames=["Cargo.lock"])
-def parse_lockfile(path: Path) -> List[Dependency]:
+def parse_lockfile(path: Path) -> list[Dependency]:
     """Parse a ``Cargo.lock`` and emit one Dependency per resolved entry.
 
     The lockfile is the source of truth for resolved versions; the
@@ -127,7 +127,7 @@ def parse_lockfile(path: Path) -> List[Dependency]:
     if not isinstance(packages, list):
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen_keys: set = set()
     for entry in packages:
         if not isinstance(entry, dict):
@@ -178,22 +178,22 @@ def _build_dep(
     *,
     scope: str,
     declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     """Translate a Cargo dep spec — string OR table — into a Dependency."""
-    version: Optional[str] = None
+    version: str | None = None
     pin_style = PinStyle.UNKNOWN
-    git_url: Optional[str] = None
-    path_ref: Optional[str] = None
+    git_url: str | None = None
+    path_ref: str | None = None
     is_workspace_inherit = False
     # Feature-flag awareness: ``optional = true`` + ``features = [...]``.
     # An ``optional = true`` dep is feature-gated — operators only get
     # it installed if a ``[features]`` entry references it. CVEs in
     # such deps may not apply unless the gating feature is active.
     is_optional = False
-    declared_features: Optional[list] = None
+    declared_features: list | None = None
 
-    git_url: Optional[str] = None
-    path_ref: Optional[str] = None
+    git_url: str | None = None
+    path_ref: str | None = None
     if isinstance(spec, str):
         version = spec
         pin_style, normalised = _classify_version_spec(spec)
@@ -283,7 +283,7 @@ _VERSION_SPEC_OP_RE = re.compile(
 )
 
 
-def _classify_version_spec(spec: str) -> Tuple[PinStyle, Optional[str]]:
+def _classify_version_spec(spec: str) -> tuple[PinStyle, str | None]:
     """Return (pin_style, bare_version) for a Cargo version spec.
 
     Returns the bare version stripped of operator characters when one is
@@ -314,7 +314,7 @@ def _classify_version_spec(spec: str) -> Tuple[PinStyle, Optional[str]]:
     return PinStyle.UNKNOWN, None
 
 
-def _lockfile_pin_style(source: Optional[str]) -> PinStyle:
+def _lockfile_pin_style(source: str | None) -> PinStyle:
     """Resolved entries in Cargo.lock are exact versions; the *source*
     field tells us whether it came from registry / git / path."""
     if not source:
@@ -325,7 +325,7 @@ def _lockfile_pin_style(source: Optional[str]) -> PinStyle:
     return PinStyle.EXACT
 
 
-def _build_purl(name: str, version: Optional[str]) -> str:
+def _build_purl(name: str, version: str | None) -> str:
     base = f"pkg:{_PURL_TYPE}/{name}"
     if version:
         return f"{base}@{version}"

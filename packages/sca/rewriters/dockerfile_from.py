@@ -31,7 +31,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -55,8 +54,8 @@ def _is_dockerfile(path: Path) -> bool:
 
 @register(predicate=_is_dockerfile, filenames=None)
 def rewrite_dockerfile_from(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply FROM-image tag-bump edits to a Dockerfile in place.
 
     The Dockerfile-ARG rewriter ALSO registers against Dockerfile
@@ -72,9 +71,9 @@ def rewrite_dockerfile_from(
     ``/``) route to the FROM path, everything else to ARG. Mixed
     batches get split + reassembled.
     """
-    arg_edits: List[RewriteEdit] = []
-    from_edits: List[RewriteEdit] = []
-    inline_install_edits: List[RewriteEdit] = []
+    arg_edits: list[RewriteEdit] = []
+    from_edits: list[RewriteEdit] = []
+    inline_install_edits: list[RewriteEdit] = []
     for edit in edits:
         kind = (edit.extra or {}).get("kind")
         if kind == "from_image":
@@ -92,7 +91,7 @@ def rewrite_dockerfile_from(
             else:
                 arg_edits.append(edit)
 
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     if from_edits:
         results.extend(_apply_from_edits(path, from_edits))
     if arg_edits:
@@ -111,8 +110,8 @@ def rewrite_dockerfile_from(
 
 
 def _apply_from_edits(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply image-tag edits, atomic-writing the result.
 
     Each edit's locator is ``"{registry}/{repository}"`` (e.g.
@@ -128,7 +127,7 @@ def _apply_from_edits(
                 for e2 in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one_from(new_text, edit)
         results.append(result)
@@ -146,7 +145,7 @@ def _apply_from_edits(
 
 def _apply_one_from(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply one image-tag edit. Matches both canonical and
     short forms of the image ref."""
     locator = edit.locator

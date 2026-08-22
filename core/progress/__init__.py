@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional
 
 
 # Thread-local "last stage that ran" — readable by out-of-band
@@ -17,7 +16,7 @@ from typing import Optional
 _stage_local = threading.local()
 
 
-def last_stage_name() -> Optional[str]:
+def last_stage_name() -> str | None:
     """The most-recent stage name that any active or recent
     ``HackerProgressBar`` started, or ``None`` if no bar has
     started a stage in this process.
@@ -78,7 +77,7 @@ class HackerProgress:
     _CHECK = '✓' if _UNICODE_OK else '[OK]'
     _CROSS = '✗' if _UNICODE_OK else '[FAIL]'
 
-    def __init__(self, total: Optional[int] = None, operation: str = "Processing",
+    def __init__(self, total: int | None = None, operation: str = "Processing",
                  disabled: bool = False):
         self.total = total
         self.operation = operation
@@ -130,7 +129,7 @@ class HackerProgress:
             remaining = 0
         return self._format_time(remaining)
 
-    def update(self, current: Optional[int] = None, message: str = ""):
+    def update(self, current: int | None = None, message: str = ""):
         """Update progress display."""
         if self.disabled:
             return
@@ -290,8 +289,8 @@ class HackerProgressBar:
     _DONE_GLYPH = "✓" if _UNICODE_OK else "[OK]"
     _FLASH_GLYPH = "↳" if _UNICODE_OK else "->"
 
-    def __init__(self, *, target: Optional[str] = None,
-                 disabled: Optional[bool] = None,
+    def __init__(self, *, target: str | None = None,
+                 disabled: bool | None = None,
                  stream=None,
                  bar_width: int = 12):
         self._stream = stream if stream is not None else sys.stderr
@@ -318,8 +317,8 @@ class HackerProgressBar:
         self._target = str(target) if target is not None else None
         self._bar_width = bar_width
         # Per-stage state
-        self._stage: Optional[str] = None
-        self._stage_total: Optional[int] = None
+        self._stage: str | None = None
+        self._stage_total: int | None = None
         self._stage_done: int = 0
         self._stage_start: float = 0.0
         self._stage_detail: str = ""
@@ -351,7 +350,7 @@ class HackerProgressBar:
                                   if exc_type else self._stage_detail)
         return False
 
-    def stage(self, name: str, total: Optional[int] = None) -> None:
+    def stage(self, name: str, total: int | None = None) -> None:
         """Begin a new stage. Finalises any prior in-flight stage."""
         if self._stage is not None:
             self._finalise_stage(detail=self._stage_detail)
@@ -366,7 +365,7 @@ class HackerProgressBar:
         _stage_local.name = name
         self._render()
 
-    def tick(self, done: Optional[int] = None,
+    def tick(self, done: int | None = None,
              detail: str = "") -> None:
         """Advance progress within the current stage. Throttled."""
         if self._stage is None:
@@ -452,7 +451,7 @@ class HackerProgressBar:
         self._line_active = True
 
     def _format_line(self, *, final: bool,
-                     detail: Optional[str] = None) -> str:
+                     detail: str | None = None) -> str:
         name = self._stage or ""
         if final:
             text = detail or "..."

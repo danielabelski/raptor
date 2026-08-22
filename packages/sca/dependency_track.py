@@ -54,7 +54,8 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any
+from collections.abc import Sequence
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -81,8 +82,8 @@ def push_bom(
     project_version: str,
     auto_create: bool = True,
     timeout: int = _DEFAULT_TIMEOUT,
-    http: Optional[Any] = None,
-) -> Dict[str, Any]:
+    http: Any | None = None,
+) -> dict[str, Any]:
     """Push a CycloneDX BOM file to a Dependency-Track instance.
 
     ``url`` is the DT base URL (e.g. ``https://dt.example.com``) —
@@ -249,7 +250,7 @@ def _redact_url(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="raptor-sca dt-push",
         description=(

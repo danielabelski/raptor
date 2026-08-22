@@ -19,7 +19,8 @@ pre-check) can filter by rule.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any
+from collections.abc import Iterable
 
 from .models import SpatchResult
 
@@ -56,7 +57,7 @@ def _rel_to_repo(file_path: str, repo_path: Path) -> str:
 def results_to_sarif(
     results: Iterable[SpatchResult],
     repo_path: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Turn a sequence of per-rule ``SpatchResult`` into a SARIF 2.1.0
     document. Rules with no matches still appear in
     ``tool.driver.rules`` so operators see the rule corpus that ran;
@@ -66,10 +67,10 @@ def results_to_sarif(
 
     # Collect distinct rule definitions. ``rule`` is the rule's stem
     # (filename without .cocci), used as ``ruleId`` in results.
-    rule_defs: List[Dict[str, Any]] = []
+    rule_defs: list[dict[str, Any]] = []
     seen_rule_ids: set = set()
-    sarif_results: List[Dict[str, Any]] = []
-    notifications: List[Dict[str, Any]] = []
+    sarif_results: list[dict[str, Any]] = []
+    notifications: list[dict[str, Any]] = []
 
     for r in results:
         rule_id = r.rule or "(unnamed)"
@@ -121,7 +122,7 @@ def results_to_sarif(
                 "associatedRule": {"id": rule_id},
             })
 
-    run: Dict[str, Any] = {
+    run: dict[str, Any] = {
         "tool": {
             "driver": {
                 "name": _TOOL_NAME,

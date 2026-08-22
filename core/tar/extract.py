@@ -54,7 +54,7 @@ from __future__ import annotations
 import io
 import logging
 import tarfile
-from typing import Callable, Dict, Iterable, Optional, Union
+from collections.abc import Callable, Iterable
 
 from .safe_member import DEFAULT_MAX_MEMBER_BYTES, safe_member_reason
 
@@ -102,7 +102,7 @@ class _ChunkStream(io.RawIOBase):
             self._buf += chunk
 
 
-def _to_fileobj(source: Union[bytes, Iterable[bytes]]) -> io.IOBase:
+def _to_fileobj(source: bytes | Iterable[bytes]) -> io.IOBase:
     """Normalise the source into a file-like object."""
     if isinstance(source, (bytes, bytearray)):
         return io.BytesIO(bytes(source))
@@ -124,17 +124,17 @@ class TarTotalBytesExceeded(Exception):
 
 
 def extract_files_from_tar(
-    source: Union[bytes, Iterable[bytes]],
+    source: bytes | Iterable[bytes],
     *,
-    selector: Callable[[tarfile.TarInfo], Optional[str]],
+    selector: Callable[[tarfile.TarInfo], str | None],
     mode: str = "r|gz",
     max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
     allow_absolute_paths: bool = False,
-    expected_count: Optional[int] = None,
+    expected_count: int | None = None,
     unique_keys: bool = False,
-    max_total_bytes: Optional[int] = None,
-    max_entry_count: Optional[int] = 50_000,
-) -> Dict[str, bytes]:
+    max_total_bytes: int | None = None,
+    max_entry_count: int | None = 50_000,
+) -> dict[str, bytes]:
     """Walk ``source`` (a tar archive) and return selected members
     as a ``{key: bytes}`` dict.
 
@@ -159,7 +159,7 @@ def extract_files_from_tar(
     files they're after (targeted extraction), this avoids
     streaming through the rest of a multi-hundred-MB archive.
     """
-    found: Dict[str, bytes] = {}
+    found: dict[str, bytes] = {}
 
     fileobj = _to_fileobj(source)
     try:

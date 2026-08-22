@@ -37,7 +37,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List, Tuple
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -52,7 +51,7 @@ def _is_libs_versions_toml(path: Path) -> bool:
     return path.name == "libs.versions.toml"
 
 
-def _version_key_pattern(key: str) -> "re.Pattern":
+def _version_key_pattern(key: str) -> re.Pattern:
     """Match a ``[versions]`` table entry: ``key = "value"`` or
     ``key = 'value'``. The ``key`` is the TOML literal name from
     the catalog (e.g. ``spring-boot`` or ``junit``).
@@ -78,7 +77,7 @@ def _version_key_pattern(key: str) -> "re.Pattern":
     )
 
 
-def _inline_library_version_pattern(alias: str) -> "re.Pattern":
+def _inline_library_version_pattern(alias: str) -> re.Pattern:
     """Match ``alias = { ... version = "OLD" ... }`` in
     ``[libraries]``. Handles both single-line and (somewhat)
     multi-line inline-table forms.
@@ -105,7 +104,7 @@ def _inline_library_version_pattern(alias: str) -> "re.Pattern":
     )
 
 
-def _inline_library_string_pattern(alias: str) -> "re.Pattern":
+def _inline_library_string_pattern(alias: str) -> re.Pattern:
     """Match the string-shorthand library form:
     ``alias = "group:artifact:VERSION"``. Update only the
     version segment."""
@@ -120,7 +119,7 @@ def _inline_library_string_pattern(alias: str) -> "re.Pattern":
     )
 
 
-def _inline_plugin_version_pattern(alias: str) -> "re.Pattern":
+def _inline_plugin_version_pattern(alias: str) -> re.Pattern:
     """Match ``alias = { id = "...", version = "OLD" }`` in
     ``[plugins]``. Same brace-escape note as
     ``_inline_library_version_pattern``."""
@@ -135,7 +134,7 @@ def _inline_plugin_version_pattern(alias: str) -> "re.Pattern":
     )
 
 
-def _inline_plugin_string_pattern(alias: str) -> "re.Pattern":
+def _inline_plugin_string_pattern(alias: str) -> re.Pattern:
     """Match the string-shorthand plugin form:
     ``alias = "plugin.id:VERSION"``. Update only the
     version segment."""
@@ -152,8 +151,8 @@ def _inline_plugin_string_pattern(alias: str) -> "re.Pattern":
 
 @register(predicate=_is_libs_versions_toml)
 def rewrite_libs_versions_toml(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply ``[versions]`` / ``[libraries]`` / ``[plugins]``
     version edits to a Gradle version catalog.
 
@@ -169,7 +168,7 @@ def rewrite_libs_versions_toml(
                 for ed in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one(new_text, edit)
         results.append(result)
@@ -186,7 +185,7 @@ def rewrite_libs_versions_toml(
     return results
 
 
-def _apply_one(text: str, edit: RewriteEdit) -> Tuple[str, RewriteResult]:
+def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:
     section, _, key = edit.locator.partition(":")
     if not key:
         return text, RewriteResult(

@@ -32,7 +32,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class CheckerEntry:
         self.precision = self.tp_count / self.match_count if self.match_count else 1.0
         self.last_fired = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -81,24 +81,24 @@ class CheckerEntry:
 class CheckerLibrary:
     """The persistent checker store."""
 
-    entries: Dict[str, CheckerEntry] = field(default_factory=dict)
-    library_dir: Optional[Path] = None
+    entries: dict[str, CheckerEntry] = field(default_factory=dict)
+    library_dir: Path | None = None
 
     def add(self, entry: CheckerEntry) -> None:
         self.entries[entry.rule_id] = entry
         if self.library_dir:
             self._write_entry(entry)
 
-    def get(self, rule_id: str) -> Optional[CheckerEntry]:
+    def get(self, rule_id: str) -> CheckerEntry | None:
         return self.entries.get(rule_id)
 
-    def active_checkers(self, *, language: Optional[str] = None) -> List[CheckerEntry]:
+    def active_checkers(self, *, language: str | None = None) -> list[CheckerEntry]:
         result = [e for e in self.entries.values() if not e.retired]
         if language:
             result = [e for e in result if e.language == language or e.language == "*"]
         return result
 
-    def retire_low_precision(self) -> List[str]:
+    def retire_low_precision(self) -> list[str]:
         retired = []
         for entry in self.entries.values():
             if entry.retired:
@@ -206,7 +206,7 @@ _GRADUATION_MIN_MATCHES = 3
 def graduate_checkers(
     library: CheckerLibrary,
     engine_rules_dir: Path,
-) -> List[str]:
+) -> list[str]:
     """Promote high-confidence checkers to the shared engine rules directory.
 
     A rule graduates when it has confirmed true positives across multiple

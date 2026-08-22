@@ -20,7 +20,8 @@ import ast
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Sequence
 
 from .prompt_defence import sanitise_for_prompt
 
@@ -39,7 +40,7 @@ class TransformStep:
     line: int
     args_summary: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "call_name": self.call_name,
             "line": self.line,
@@ -54,15 +55,15 @@ class TransformSequence:
     file: str
     function: str
     variable: str
-    steps: List[TransformStep] = field(default_factory=list)
+    steps: list[TransformStep] = field(default_factory=list)
 
     @property
-    def line_span(self) -> Tuple[int, int]:
+    def line_span(self) -> tuple[int, int]:
         if not self.steps:
             return (0, 0)
         return (self.steps[0].line, self.steps[-1].line)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.file,
             "function": self.function,
@@ -79,16 +80,16 @@ class TransformOrderViolation:
     file: str
     function: str
     line: int
-    sequence: List[str]
+    sequence: list[str]
     violation: str
     fix: str
     confidence: str
-    catalog_rule: Optional[str] = None
+    catalog_rule: str | None = None
     siblings_correct: int = 0
-    sibling_locations: List[str] = field(default_factory=list)
+    sibling_locations: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "file": self.file,
             "function": self.function,
             "line": self.line,
@@ -113,8 +114,8 @@ class _OrderingRule:
     """A must-precede ordering constraint."""
 
     name: str
-    must_precede_patterns: List[re.Pattern[str]]
-    must_follow_patterns: List[re.Pattern[str]]
+    must_precede_patterns: list[re.Pattern[str]]
+    must_follow_patterns: list[re.Pattern[str]]
     reason: str
     fix_template: str
 
@@ -125,11 +126,11 @@ class _OrderingRule:
         return any(p.search(call_name) for p in self.must_follow_patterns)
 
 
-def _pat(*patterns: str) -> List[re.Pattern[str]]:
+def _pat(*patterns: str) -> list[re.Pattern[str]]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
 
 
-ORDERING_RULES: List[_OrderingRule] = [
+ORDERING_RULES: list[_OrderingRule] = [
     _OrderingRule(
         name="unicode_before_regex",
         must_precede_patterns=_pat(
@@ -271,7 +272,7 @@ ORDERING_RULES: List[_OrderingRule] = [
 # indicates potential double-encoding bypass: an intermediate security check
 # saw the still-encoded form while the final consumer sees the decoded form.
 
-_DOUBLE_ENCODE_CLASSES: List[Tuple[str, re.Pattern[str]]] = [
+_DOUBLE_ENCODE_CLASSES: list[tuple[str, re.Pattern[str]]] = [
     ("url_decode", re.compile(
         r"url.*decode|unquote|percent.*decode|decodeURI|"
         r"urllib.*unquote|url\.QueryUnescape|url\.PathUnescape",
@@ -297,7 +298,7 @@ _DOUBLE_ENCODE_CLASSES: List[Tuple[str, re.Pattern[str]]] = [
 
 def _check_duplicate_transforms(
     seq: TransformSequence,
-) -> List[TransformOrderViolation]:
+) -> list[TransformOrderViolation]:
     """Flag sequences where the same transform appears twice.
 
     Two detection modes:
@@ -306,7 +307,7 @@ def _check_duplicate_transforms(
     2. Exact-name: same function called twice on the same variable
        (likely copy-paste error or redundant processing).
     """
-    violations: List[TransformOrderViolation] = []
+    violations: list[TransformOrderViolation] = []
     step_names = [s.call_name for s in seq.steps]
 
     encoding_flagged: set = set()
@@ -338,7 +339,7 @@ def _check_duplicate_transforms(
             catalog_rule="double_encoding",
         ))
 
-    seen: Dict[str, int] = {}
+    seen: dict[str, int] = {}
     for i, name in enumerate(step_names):
         if i in encoding_flagged:
             continue
@@ -396,8 +397,8 @@ class _SequenceExtractor(ast.NodeVisitor):
         self.file = file
         self.func_name = func_name
         self.func_lineno = func_lineno
-        self.sequences: List[TransformSequence] = []
-        self._reassign_chains: Dict[str, List[TransformStep]] = {}
+        self.sequences: list[TransformSequence] = []
+        self._reassign_chains: dict[str, list[TransformStep]] = {}
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) != 1:
@@ -435,7 +436,7 @@ class _SequenceExtractor(ast.NodeVisitor):
                     ))
         self.generic_visit(node)
 
-    def _call_name(self, node: ast.expr) -> Tuple[str, str]:
+    def _call_name(self, node: ast.expr) -> tuple[str, str]:
         """Extract the call name and first-arg summary from an expression."""
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
@@ -462,9 +463,9 @@ class _SequenceExtractor(ast.NodeVisitor):
             parts.append(obj.id)
         return ".".join(reversed(parts))
 
-    def _extract_method_chain(self, node: ast.expr) -> Optional[TransformSequence]:
+    def _extract_method_chain(self, node: ast.expr) -> TransformSequence | None:
         """Extract a method chain like x.strip().lower().replace(...)."""
-        steps: List[TransformStep] = []
+        steps: list[TransformStep] = []
         var_name = ""
         current = node
 
@@ -500,7 +501,7 @@ class _SequenceExtractor(ast.NodeVisitor):
             self.sequences.append(chain)
         self.generic_visit(node)
 
-    def finalize(self) -> List[TransformSequence]:
+    def finalize(self) -> list[TransformSequence]:
         """Flush reassignment chains into sequences."""
         for var_name, steps in self._reassign_chains.items():
             if len(steps) >= 2:
@@ -515,14 +516,14 @@ class _SequenceExtractor(ast.NodeVisitor):
 
 def _extract_sequences_python(
     file_path: str, source: str,
-) -> List[TransformSequence]:
+) -> list[TransformSequence]:
     """Extract transform sequences from Python source via AST."""
     try:
         tree = ast.parse(source, filename=file_path)
     except SyntaxError:
         return []
 
-    all_seqs: List[TransformSequence] = []
+    all_seqs: list[TransformSequence] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             extractor = _SequenceExtractor(file_path, node.name, node.lineno)
@@ -556,7 +557,7 @@ _CALL_RE = re.compile(
 
 def _extract_sequences_c(
     file_path: str, source: str,
-) -> List[TransformSequence]:
+) -> list[TransformSequence]:
     """Extract transform sequences in C/Go/JS/TS/Java via tree-sitter.
 
     Falls back to regex when tree-sitter is unavailable.
@@ -570,7 +571,7 @@ def _extract_sequences_c(
     if chains is None:
         return _extract_sequences_c_regex(file_path, source)
 
-    all_seqs: List[TransformSequence] = []
+    all_seqs: list[TransformSequence] = []
     for chain in chains:
         steps = [
             TransformStep(
@@ -592,12 +593,12 @@ def _extract_sequences_c(
 
 def _extract_sequences_c_regex(
     file_path: str, source: str,
-) -> List[TransformSequence]:
+) -> list[TransformSequence]:
     """Regex fallback for transform-sequence extraction."""
-    all_seqs: List[TransformSequence] = []
+    all_seqs: list[TransformSequence] = []
     lines = source.splitlines()
     current_func = "<module>"
-    var_chains: Dict[str, List[TransformStep]] = {}
+    var_chains: dict[str, list[TransformStep]] = {}
 
     for lineno_0, line in enumerate(lines):
         lineno = lineno_0 + 1
@@ -652,15 +653,15 @@ def _extract_sequences_c_regex(
 
 def _check_sequence_against_catalog(
     seq: TransformSequence,
-) -> List[TransformOrderViolation]:
+) -> list[TransformOrderViolation]:
     """Check one sequence against all ordering rules."""
-    violations: List[TransformOrderViolation] = []
+    violations: list[TransformOrderViolation] = []
     step_names = [s.call_name for s in seq.steps]
 
     for rule in ORDERING_RULES:
         # Find all positions where must_precede and must_follow match
-        precede_positions: List[int] = []
-        follow_positions: List[int] = []
+        precede_positions: list[int] = []
+        follow_positions: list[int] = []
 
         for i, name in enumerate(step_names):
             if rule.matches_precede(name):
@@ -700,10 +701,10 @@ def _check_sequence_against_catalog(
 # ---------------------------------------------------------------------------
 
 def extract_transform_sequences(
-    source_text: Dict[str, str],
+    source_text: dict[str, str],
     *,
-    extra_security_names: Optional[frozenset] = None,
-) -> List[TransformSequence]:
+    extra_security_names: frozenset | None = None,
+) -> list[TransformSequence]:
     """Extract all multi-step transform sequences from source files.
 
     Returns sequences with ≥2 steps where at least 2 steps have
@@ -713,7 +714,7 @@ def extract_transform_sequences(
     security-relevant (e.g. from IRIS spec store).
     """
     extra = extra_security_names or frozenset()
-    all_seqs: List[TransformSequence] = []
+    all_seqs: list[TransformSequence] = []
 
     for file_path, source in source_text.items():
         if file_path.endswith(".py"):
@@ -736,10 +737,10 @@ def extract_transform_sequences(
 
 
 def detect_transform_order_violations(
-    source_text: Dict[str, str],
+    source_text: dict[str, str],
     *,
-    extra_security_names: Optional[frozenset] = None,
-) -> List[TransformOrderViolation]:
+    extra_security_names: frozenset | None = None,
+) -> list[TransformOrderViolation]:
     """Detect ordering violations in transform sequences.
 
     Runs all extraction heuristics and checks each sequence against
@@ -754,8 +755,8 @@ def detect_transform_order_violations(
     *extra_security_names*: passed through for future sequence
     filtering (currently ordering checks run on all sequences).
     """
-    all_seqs: List[TransformSequence] = []
-    violations: List[TransformOrderViolation] = []
+    all_seqs: list[TransformSequence] = []
+    violations: list[TransformOrderViolation] = []
 
     for file_path, source in source_text.items():
         if file_path.endswith(".py"):
@@ -777,8 +778,8 @@ def detect_transform_order_violations(
 
 
 def _annotate_sibling_counts(
-    violations: List[TransformOrderViolation],
-    all_seqs: List[TransformSequence],
+    violations: list[TransformOrderViolation],
+    all_seqs: list[TransformSequence],
 ) -> None:
     """Annotate each violation with the count of sibling sequences
     that apply the same rule's transforms in the correct order."""
@@ -793,7 +794,7 @@ def _annotate_sibling_counts(
         if rule is None:
             continue
 
-        correct: List[str] = []
+        correct: list[str] = []
         for seq in all_seqs:
             if seq.file == v.file and seq.function == v.function:
                 continue

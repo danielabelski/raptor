@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -67,7 +67,7 @@ _PURL_TYPE = "pypi"
 
 
 @register(filenames=["uv.lock"])
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -89,7 +89,7 @@ def parse(path: Path) -> List[Dependency]:
     if not isinstance(packages, list):
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for pkg in packages:
         dep = _build_dep(pkg, declared_in=path)
         if dep is not None:
@@ -99,7 +99,7 @@ def parse(path: Path) -> List[Dependency]:
 
 def _build_dep(
     pkg: Any, *, declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(pkg, dict):
         return None
     name = pkg.get("name")

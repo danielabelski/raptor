@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Iterator, List, Optional, Set
+from collections.abc import Iterator
 
 from .models import Manifest
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # These are package install dirs, build outputs, VCS metadata, editor
 # state. Skipping them is a 10-100x speedup on real repos and avoids
 # treating vendored copies as direct deps.
-EXCLUDED_DIR_NAMES: Set[str] = {
+EXCLUDED_DIR_NAMES: set[str] = {
     # Per-ecosystem package install dirs
     "node_modules",
     "vendor",
@@ -75,7 +75,7 @@ EXCLUDED_DIR_NAMES: Set[str] = {
 # Filenames that hint a directory is dependency-related junk we should
 # skip even when the dir name itself is innocuous.
 # (Reserved for future use; currently empty.)
-_TRIPWIRE_FILES: Set[str] = set()
+_TRIPWIRE_FILES: set[str] = set()
 
 # Map of filename -> ecosystem identifier.
 # Lockfile detection is a separate flag — see _is_lockfile.
@@ -178,7 +178,7 @@ PATTERN_FILENAMES = {
 }
 
 # Lockfile flag — these are resolved-version sources of truth.
-LOCKFILE_NAMES: Set[str] = {
+LOCKFILE_NAMES: set[str] = {
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
@@ -251,9 +251,9 @@ DEFAULT_MAX_DEPTH = 10
 def find_manifests(
     repo: Path,
     max_depth: int = DEFAULT_MAX_DEPTH,
-    extra_excludes: Optional[Set[str]] = None,
+    extra_excludes: set[str] | None = None,
     include_test_paths: bool = False,
-) -> List[Manifest]:
+) -> list[Manifest]:
     """Walk repo finding manifests + lockfiles.
 
     Args:
@@ -295,7 +295,7 @@ def find_manifests(
     _gvc.reset_cache()
 
     excludes = EXCLUDED_DIR_NAMES | (extra_excludes or set())
-    found: List[Manifest] = []
+    found: list[Manifest] = []
 
     # Test-path filtering is deferred until after classification so a
     # rejected path doesn't pay the parse-classification cost twice.
@@ -305,7 +305,7 @@ def find_manifests(
     else:
         is_test_path = None
 
-    sln_paths: List[Path] = []
+    sln_paths: list[Path] = []
     for path in _walk(repo, max_depth=max_depth, excludes=excludes):
         eco = _classify(path)
         if eco is None:
@@ -365,7 +365,7 @@ def find_manifests(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _walk(root: Path, max_depth: int, excludes: Set[str]) -> Iterator[Path]:
+def _walk(root: Path, max_depth: int, excludes: set[str]) -> Iterator[Path]:
     """Walk root yielding paths, honouring exclusions, no symlink follow."""
     root_str = str(root)
     root_depth = len(root.parts)
@@ -443,7 +443,7 @@ def _is_composite_actions_parent(cur: Path) -> bool:
     )
 
 
-def _should_skip_dir(name: str, excludes: Set[str]) -> bool:
+def _should_skip_dir(name: str, excludes: set[str]) -> bool:
     """Return True if a directory name matches an exclusion.
 
     Also matches the ephemeral PEP 668 venv directory left behind if a
@@ -455,7 +455,7 @@ def _should_skip_dir(name: str, excludes: Set[str]) -> bool:
     return name in excludes
 
 
-def _classify(path: Path) -> Optional[str]:
+def _classify(path: Path) -> str | None:
     """Return the ecosystem string for a path, or None if not a manifest."""
     name = path.name
     if name in MANIFEST_FILENAMES:

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import NamedTuple
 
 from core.dataflow.sanitizer_cut_parity import (
     LABEL_SHOULD_NOT_SUPPRESS,
@@ -52,11 +52,11 @@ class _Fixture(NamedTuple):
     sink_line: int
     cwe: str
     label: str
-    var_name: Optional[str] = None   # for charset_sub lexical check
+    var_name: str | None = None   # for charset_sub lexical check
 
 
 # Labelled baseline fixtures. Line numbers are 1-indexed into ``source``.
-_FIXTURES: List[_Fixture] = [
+_FIXTURES: list[_Fixture] = [
     # --- charset validator shape — lexical fires, value-bound doesn't ---
     _Fixture(
         name="validator_guard_safe",
@@ -170,9 +170,9 @@ def _lexical_decision(fx: _Fixture, path: str) -> bool:
     return False
 
 
-def build_baseline_records() -> List[ParityRecord]:
+def build_baseline_records() -> list[ParityRecord]:
     """Compute a :class:`ParityRecord` for each labelled fixture."""
-    records: List[ParityRecord] = []
+    records: list[ParityRecord] = []
     with tempfile.TemporaryDirectory() as tmp:
         for fx in _FIXTURES:
             path = str(Path(tmp) / f"{fx.name}.py")

@@ -16,7 +16,7 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.json import load_json_with_comments
 
@@ -331,7 +331,7 @@ def _validate_value(key: str, raw: Any):
     return None
 
 
-def _resolve(raw_config: Dict[str, Any]) -> Tuning:
+def _resolve(raw_config: dict[str, Any]) -> Tuning:
     """Resolve raw config dict into a validated Tuning instance."""
     for key in raw_config:
         if key not in _VALID_KEYS and key not in _DEPRECATED_KEYS:
@@ -347,7 +347,7 @@ def _resolve(raw_config: Dict[str, Any]) -> Tuning:
     return Tuning(**resolved)
 
 
-def _migrate_deprecated(raw: Dict[str, Any], path: Path) -> None:
+def _migrate_deprecated(raw: dict[str, Any], path: Path) -> None:
     """Strip deprecated keys from raw config and rewrite the file.
 
     Mutates ``raw`` in place. Rewrites the file atomically when at
@@ -366,7 +366,7 @@ def _migrate_deprecated(raw: Dict[str, Any], path: Path) -> None:
         logger.debug("could not rewrite %s after deprecation cleanup: %s", path, exc)
 
 
-def _rewrite_tuning(values: Dict[str, Any], path: Path) -> None:
+def _rewrite_tuning(values: dict[str, Any], path: Path) -> None:
     """Rewrite tuning.json preserving all current valid keys."""
     import json as _json
     base_keys = [k for k in _DEFAULTS if k not in _PASSTHROUGH_KEYS]
@@ -404,7 +404,7 @@ def _rewrite_tuning(values: Dict[str, Any], path: Path) -> None:
         raise
 
 
-def load_tuning(path: Optional[Path] = None) -> Tuning:
+def load_tuning(path: Path | None = None) -> Tuning:
     """Load and resolve tuning from disk. Falls back to defaults.
 
     If the file does not exist at the default location, it is
@@ -478,8 +478,8 @@ def _create_default_file(path: Path) -> None:
         pass
 
 
-_cached: Optional[Tuning] = None
-_cached_stat: Optional[tuple] = None  # (st_mtime_ns, st_size)
+_cached: Tuning | None = None
+_cached_stat: tuple | None = None  # (st_mtime_ns, st_size)
 # Lock around the cache check + update. Pre-fix `get_tuning` was
 # racy: two threads calling it concurrently could both see
 # `_cached is None`, both call `load_tuning()` (file I/O + JSON
@@ -489,7 +489,7 @@ _cached_stat: Optional[tuple] = None  # (st_mtime_ns, st_size)
 _cached_lock = threading.Lock()
 
 
-def _file_stat(path: Path) -> Optional[tuple]:
+def _file_stat(path: Path) -> tuple | None:
     try:
         s = path.stat()
         return (s.st_mtime_ns, s.st_size)

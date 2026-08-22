@@ -38,7 +38,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from ._atomic import atomic_write_text
 from .models import Dependency
@@ -57,8 +58,8 @@ def write_sbom_spdx_json(
     *,
     deps: Iterable[Dependency],
     target_name: str,
-    namespace_uri: Optional[str] = None,
-    project_license: Optional[str] = None,
+    namespace_uri: str | None = None,
+    project_license: str | None = None,
 ) -> None:
     """Render an SPDX 2.3 JSON SBOM and write it atomically."""
     doc = render_sbom_spdx(
@@ -73,9 +74,9 @@ def render_sbom_spdx(
     *,
     deps: Iterable[Dependency],
     target_name: str,
-    namespace_uri: Optional[str] = None,
-    project_license: Optional[str] = None,
-) -> Dict[str, Any]:
+    namespace_uri: str | None = None,
+    project_license: str | None = None,
+) -> dict[str, Any]:
     """Build the SPDX 2.3 document dict (does not write to disk).
 
     ``project_license`` — the scanned project's own manifest-declared
@@ -95,8 +96,8 @@ def render_sbom_spdx(
             f"{target_name}-{uuid.uuid4()}"
         )
 
-    packages: List[Dict[str, Any]] = []
-    relationships: List[Dict[str, str]] = [
+    packages: list[dict[str, Any]] = []
+    relationships: list[dict[str, str]] = [
         # SPDX requires a DESCRIBES relationship from the document
         # to its top-level package(s). Without a single "root"
         # package we DESCRIBE every dep — equivalent semantically.
@@ -149,9 +150,9 @@ def render_sbom_spdx(
     }
 
 
-def _package_block(dep: Dependency, spdx_id: str) -> Dict[str, Any]:
+def _package_block(dep: Dependency, spdx_id: str) -> dict[str, Any]:
     """Render one Dependency as an SPDX ``packages[]`` entry."""
-    pkg: Dict[str, Any] = {
+    pkg: dict[str, Any] = {
         "SPDXID": spdx_id,
         "name": dep.name,
         # SPDX requires either ``downloadLocation`` (URL) OR

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +71,14 @@ _STAB_RE = re.compile(
 )
 
 
-def _split(version: str) -> Tuple[List[int], int, int]:
+def _split(version: str) -> tuple[list[int], int, int]:
     """Return (numeric segments, stability rank, stability index)."""
     s = version.strip()
     m = _STAB_RE.match(s)
     if not m:
         raise ValueError(f"unparseable Composer version: {version!r}")
     base = m.group("base").lstrip("v")
-    nums: List[int] = []
+    nums: list[int] = []
     for piece in base.split("."):
         try:
             nums.append(int(piece))

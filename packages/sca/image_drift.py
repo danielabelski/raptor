@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.binary import (
     CapabilityFingerprint,
@@ -52,8 +52,8 @@ def detect_image_drift(
     *,
     oci_client,
     fingerprint_store_dir: Path,
-    out_fingerprints: Optional[Dict[str, CapabilityFingerprint]] = None,
-) -> List[SupplyChainFinding]:
+    out_fingerprints: dict[str, CapabilityFingerprint] | None = None,
+) -> list[SupplyChainFinding]:
     """Walk every image ref in ``target``, fingerprint each,
     compare against ``fingerprint_store_dir``'s baseline, return
     one finding per drifted ref.
@@ -79,7 +79,7 @@ def detect_image_drift(
     the fingerprint on each container component. Refs that fail
     to extract / fingerprint are not added.
     """
-    findings: List[SupplyChainFinding] = []
+    findings: list[SupplyChainFinding] = []
     try:
         ref_sources = find_all_image_refs(target)
     except Exception as e:                            # noqa: BLE001
@@ -121,7 +121,7 @@ def _drift_for_ref(
     oci_client,
     fingerprint_store_dir: Path,
     declared_in: Path,
-) -> "tuple[Optional[SupplyChainFinding], Optional[CapabilityFingerprint]]":
+) -> tuple[SupplyChainFinding | None, CapabilityFingerprint | None]:
     """Run the full drift check for one image ref. Returns a
     tuple ``(finding, fingerprint)`` so the caller can surface
     the fingerprint to the SBOM regardless of drift outcome.
@@ -187,7 +187,7 @@ def _drift_finding(
     metadata changes)."""
     severity: Severity = "high" if drift.high_severity() else "medium"
 
-    detail_parts: List[str] = []
+    detail_parts: list[str] = []
     if drift.new_buckets:
         detail_parts.append(
             "new dangerous-import buckets: "
@@ -222,7 +222,7 @@ def _drift_finding(
         ),
     )
 
-    evidence: Dict[str, Any] = {
+    evidence: dict[str, Any] = {
         "ref": ref,
         "new_dangerous_imports": drift.new_buckets,
         "removed_buckets": drift.removed_buckets,

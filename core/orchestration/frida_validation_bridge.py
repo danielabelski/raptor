@@ -14,7 +14,6 @@ import copy
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from core.logging import get_logger
 
@@ -36,13 +35,13 @@ class RuntimeEvidence:
 
     function_observed: bool
     call_count: int = 0
-    observed_args: Optional[list] = None
+    observed_args: list | None = None
     trace_id: str = ""
 
 
 def collect_runtime_evidence(
     search_dirs: list[Path],
-    target_path: Optional[str] = None,
+    target_path: str | None = None,
 ) -> dict[str, RuntimeEvidence]:
     """Discover frida evidence and build a function->RuntimeEvidence map.
 
@@ -202,7 +201,7 @@ _KEYWORDS = frozenset({
 })
 
 
-def _extract_function_name(step: dict) -> Optional[str]:
+def _extract_function_name(step: dict) -> str | None:
     """Extract a function name from an attack path step.
 
     Steps use varying formats: some have a ``function`` or ``name``

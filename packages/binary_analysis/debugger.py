@@ -28,7 +28,6 @@ from core.sandbox import run as _sandbox_run
 # is permitted so gdb can trace its target. Landlock is engaged with
 # target=output=<tempdir holding the gdb script + binary>.
 from pathlib import Path
-from typing import List, Optional
 
 from packages.binary_analysis._validators import (
     validate_byte_count,
@@ -47,7 +46,7 @@ class GDBDebugger:
         if not self.binary.exists():
             raise FileNotFoundError(f"Binary not found: {binary_path}")
 
-    def run_commands(self, commands: List[str], input_file: Optional[Path] = None, timeout: int = 30) -> str:
+    def run_commands(self, commands: list[str], input_file: Path | None = None, timeout: int = 30) -> str:
         """
         Run GDB with a list of commands.
 

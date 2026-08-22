@@ -59,7 +59,7 @@ the same constant; it composes with the conduit hook (both return
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 #: Synthetic key for list elements — every write governs every read.
 ALL_ELEMENTS = "*"
@@ -100,7 +100,7 @@ def _text(n) -> str:
     return n.text.decode("utf-8", errors="replace") if n is not None else ""
 
 
-def _decoded_string_literal(n) -> Optional[str]:
+def _decoded_string_literal(n) -> str | None:
     """Decoded value of a plain string literal; None for anything
     else (escape-carrying literals refuse — mis-decoding a key would
     conflate two distinct elements)."""
@@ -118,7 +118,7 @@ class _ElementWrite:
     rhs: Any                      # tree-sitter node (may be None)
 
 
-def _int_literal(n) -> Optional[int]:
+def _int_literal(n) -> int | None:
     """Decimal int literal value, else None."""
     u = _unwrap(n)
     if u is None or u.type != "decimal_integer_literal":
@@ -129,7 +129,7 @@ def _int_literal(n) -> Optional[int]:
         return None
 
 
-def _block_id(n) -> Optional[int]:
+def _block_id(n) -> int | None:
     """Start byte of the nearest enclosing block statement — the
     linearity token: positional simulation demands every op share
     one block, so recorded order IS execution order."""
@@ -148,19 +148,19 @@ class LocalCollectionIndex:
     failed (every query then refuses)."""
 
     ok: bool = False
-    _kind: Dict[str, str] = field(default_factory=dict)    # name → map|list
-    _violated: Set[str] = field(default_factory=set)
-    _writes: Dict[Tuple[str, str], List[_ElementWrite]] = field(
+    _kind: dict[str, str] = field(default_factory=dict)    # name → map|list
+    _violated: set[str] = field(default_factory=set)
+    _writes: dict[tuple[str, str], list[_ElementWrite]] = field(
         default_factory=dict)
     # (lineno, base_name) -> keys read there
-    _reads_at: Dict[Tuple[int, str], Set[str]] = field(default_factory=dict)
+    _reads_at: dict[tuple[int, str], set[str]] = field(default_factory=dict)
     # (lineno, lhs_name) -> (collection_name, key); dropped on multi-writer
-    _scalar_copies: Dict[Tuple[int, str], Tuple[str, str]] = field(
+    _scalar_copies: dict[tuple[int, str], tuple[str, str]] = field(
         default_factory=dict)
     # (lineno, lhs_name) -> writer count (declarators + assignments)
-    _lhs_writers: Dict[Tuple[int, str], int] = field(default_factory=dict)
+    _lhs_writers: dict[tuple[int, str], int] = field(default_factory=dict)
     # (lineno, col) of qualifying get-invocations -> (name, key)
-    _get_sites: Dict[Tuple[int, int], Tuple[str, str]] = field(
+    _get_sites: dict[tuple[int, int], tuple[str, str]] = field(
         default_factory=dict)
     _resolver: Any = None
 
@@ -174,14 +174,14 @@ class LocalCollectionIndex:
             return False
         return name in self._kind and name not in self._violated
 
-    def element_writes(self, name: str, key: str) -> List[_ElementWrite]:
+    def element_writes(self, name: str, key: str) -> list[_ElementWrite]:
         return list(self._writes.get((name, key), ()))
 
-    def element_reads_at(self, lineno: int, name: str) -> Optional[Set[str]]:
+    def element_reads_at(self, lineno: int, name: str) -> set[str] | None:
         got = self._reads_at.get((lineno, name))
         return set(got) if got else None
 
-    def scalar_copy(self, lineno: int, lhs: str) -> Optional[Tuple[str, str]]:
+    def scalar_copy(self, lineno: int, lhs: str) -> tuple[str, str] | None:
         """``(collection, key)`` when the ONLY write of ``lhs`` on
         ``lineno`` is ``lhs = <cast?> coll.get(key)``; None otherwise
         (same-line multi-writer hazard drops the entry)."""
@@ -189,7 +189,7 @@ class LocalCollectionIndex:
             return None
         return self._scalar_copies.get((lineno, lhs))
 
-    def get_site(self, lineno: int, col: int) -> Optional[Tuple[str, str]]:
+    def get_site(self, lineno: int, col: int) -> tuple[str, str] | None:
         """``(collection, key)`` for a qualifying ``get`` invocation at
         that position on a TRACKED collection; None otherwise."""
         got = self._get_sites.get((lineno, col))
@@ -198,7 +198,7 @@ class LocalCollectionIndex:
         return got
 
     def write_is_catalog_call(self, write: _ElementWrite,
-                              catalog_callables: Set[str]) -> bool:
+                              catalog_callables: set[str]) -> bool:
         """True iff the write's RHS is exactly one method invocation
         (casts/parens unwrapped) whose import-resolved name is in
         ``catalog_callables`` — byte-for-byte the array leg's rule."""
@@ -214,7 +214,7 @@ class LocalCollectionIndex:
         return name is not None and name in catalog_callables
 
 
-def _fresh_collection_kind(value) -> Optional[str]:
+def _fresh_collection_kind(value) -> str | None:
     """``"map"`` / ``"list"`` when ``value`` is an argument-free fresh
     ``new`` of an allowlisted concrete type; None otherwise."""
     v = _unwrap(value)
@@ -237,8 +237,8 @@ def _fresh_collection_kind(value) -> Optional[str]:
 
 
 def build_local_collection_index(
-    source_text: str, line_span: Tuple[int, int],
-) -> Optional[LocalCollectionIndex]:
+    source_text: str, line_span: tuple[int, int],
+) -> LocalCollectionIndex | None:
     """Build the index over ``line_span`` (inclusive, 1-based). None
     when the grammar is unavailable or parsing fails."""
     parser = _parser()
@@ -259,7 +259,7 @@ def build_local_collection_index(
     types, statics = build_import_map(tree.root_node)
     idx._resolver = _NameResolver(types, statics)
     lo, hi = line_span
-    consumed: Set[Tuple[int, int]] = set()
+    consumed: set[tuple[int, int]] = set()
 
     def line_of(n) -> int:
         return n.start_point[0] + 1
@@ -267,7 +267,7 @@ def build_local_collection_index(
     def in_span(n) -> bool:
         return not (n.start_point[0] + 1 > hi or n.end_point[0] + 1 < lo)
 
-    def named_args(call) -> List[Any]:
+    def named_args(call) -> list[Any]:
         args = call.child_by_field_name("arguments")
         return [c for c in (args.children if args is not None else ())
                 if c.is_named]
@@ -452,7 +452,7 @@ def build_local_collection_index(
     return idx
 
 
-def _bind_positional(idx: "LocalCollectionIndex") -> None:
+def _bind_positional(idx: LocalCollectionIndex) -> None:
     """Upgrade list reads to positional single-write keys when the
     whole op sequence is provably linear.
 

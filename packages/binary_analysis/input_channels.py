@@ -8,7 +8,8 @@ upgrade that to observed, but still do not invent taint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from core.evidence import BinaryEvidenceRecord, EvidenceTier, make_evidence
 

@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,8 @@ _MIN_FIELD_LEN = 3
 
 
 def build_index_from_source(
-    gaps: Sequence[Dict[str, Any]],
-) -> Dict[str, List[AccessorRecord]]:
+    gaps: Sequence[dict[str, Any]],
+) -> dict[str, list[AccessorRecord]]:
     """Build struct-field accessor index from function source code.
 
     Scans each function's source for ``->field`` / ``.field`` patterns
@@ -115,7 +116,7 @@ def build_index_from_source(
 
     Returns: ``{"field_name": [AccessorRecord, ...]}``
     """
-    index: Dict[str, List[AccessorRecord]] = {}
+    index: dict[str, list[AccessorRecord]] = {}
 
     for gap in gaps:
         func_name = gap.get("name", "")
@@ -146,7 +147,7 @@ def build_index_from_joern(
     server: Any,
     *,
     timeout: int = 90,
-) -> Dict[str, List[AccessorRecord]]:
+) -> dict[str, list[AccessorRecord]]:
     """Build struct-field accessor index via Joern CPG query.
 
     Queries the loaded CPG for all member access expressions,
@@ -173,7 +174,7 @@ def build_index_from_joern(
         )
         return {}
 
-    index: Dict[str, List[AccessorRecord]] = {}
+    index: dict[str, list[AccessorRecord]] = {}
     for row in (result.data or []):
         if not isinstance(row, (list, tuple)) or len(row) < 4:
             continue
@@ -199,13 +200,13 @@ def build_index_from_joern(
 
 
 def get_co_accessors(
-    index: Dict[str, List[AccessorRecord]],
+    index: dict[str, list[AccessorRecord]],
     function: str,
     file: str,
     *,
     min_accessors: int = 2,
     same_file_only: bool = False,
-) -> List[CoAccessorGroup]:
+) -> list[CoAccessorGroup]:
     """Find fields accessed by both the given function and others.
 
     Returns groups where the reviewed function and at least one other
@@ -251,10 +252,10 @@ def get_co_accessors(
 
 
 def format_co_accessor_context(
-    groups: List[CoAccessorGroup],
+    groups: list[CoAccessorGroup],
     *,
     max_groups: int = 5,
-) -> Optional[str]:
+) -> str | None:
     """Format co-accessor groups for injection into the LLM review context."""
     if not groups:
         return None
@@ -268,7 +269,7 @@ def format_co_accessor_context(
     return "\n".join(parts)
 
 
-def _extract_fields(source: str) -> Set[str]:
+def _extract_fields(source: str) -> set[str]:
     """Extract struct field names from ``->field`` and ``.field`` patterns."""
     fields: set[str] = set()
     for m in _FIELD_ACCESS_RE.finditer(source):
@@ -289,7 +290,7 @@ def _detect_lock(source: str) -> str:
     return lock_m.group(1)
 
 
-def _dedupe_accessors(records: List[AccessorRecord]) -> List[AccessorRecord]:
+def _dedupe_accessors(records: list[AccessorRecord]) -> list[AccessorRecord]:
     """Remove duplicate (function, file) entries, keep first."""
     seen: set[tuple[str, str]] = set()
     result: list[AccessorRecord] = []

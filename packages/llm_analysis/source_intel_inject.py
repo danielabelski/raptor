@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from core.security.prompt_envelope import UntrustedBlock
 
@@ -99,11 +99,11 @@ _SOURCE_INTEL_CWES = frozenset({
 # — the lock is held only around the dict reads/writes, never
 # during the filesystem-walking signature compute or the call to
 # ``_analyze`` (which can take minutes for a kernel-sized target).
-_SI_RESULT_CACHE: Dict[str, Tuple[str, Optional[Any]]] = {}
+_SI_RESULT_CACHE: dict[str, tuple[str, Any | None]] = {}
 _SI_LOCK = threading.RLock()
 
 def prepare_source_intel(
-    repo_path: Path, *, checklist: Optional[Dict[str, Any]] = None,
+    repo_path: Path, *, checklist: dict[str, Any] | None = None,
 ) -> None:
     """Pre-seed the source_intel result cache for ``repo_path``.
 
@@ -191,8 +191,8 @@ def prepare_source_intel(
 
 
 def evidence_blocks_for_finding(
-    finding: Dict[str, Any],
-) -> Tuple[UntrustedBlock, ...]:
+    finding: dict[str, Any],
+) -> tuple[UntrustedBlock, ...]:
     """Build the source_intel ``UntrustedBlock`` tuple for one finding.
 
     Returns ``()`` when any of:

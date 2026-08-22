@@ -25,7 +25,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List, Tuple
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -36,7 +35,7 @@ def _build_targets_predicate(path: Path) -> bool:
     return path.name == "Directory.Build.targets"
 
 
-def _build_inline_version_pattern(update_name: str) -> "re.Pattern":
+def _build_inline_version_pattern(update_name: str) -> re.Pattern:
     """``<PackageReference Update="X" Version="OLD" />`` — central-version
     override shape."""
     upd = re.escape(update_name)
@@ -52,7 +51,7 @@ def _build_inline_version_pattern(update_name: str) -> "re.Pattern":
     )
 
 
-def _build_version_override_pattern(update_name: str) -> "re.Pattern":
+def _build_version_override_pattern(update_name: str) -> re.Pattern:
     """``<PackageReference Update="X" VersionOverride="OLD" />``."""
     upd = re.escape(update_name)
     return re.compile(
@@ -67,7 +66,7 @@ def _build_version_override_pattern(update_name: str) -> "re.Pattern":
     )
 
 
-def _build_child_version_pattern(update_name: str) -> "re.Pattern":
+def _build_child_version_pattern(update_name: str) -> re.Pattern:
     """``<PackageReference Update="X"><Version>OLD</Version></PackageReference>``
     — older child-element shape."""
     upd = re.escape(update_name)
@@ -85,8 +84,8 @@ def _build_child_version_pattern(update_name: str) -> "re.Pattern":
 
 @register(predicate=_build_targets_predicate)
 def rewrite_directory_build_targets(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply ``<PackageReference Update=...>`` Version / VersionOverride
     edits to a Directory.Build.targets file. Preference order per edit:
     inline ``Version=`` → ``VersionOverride=`` → child ``<Version>`` element."""
@@ -98,7 +97,7 @@ def rewrite_directory_build_targets(
                 for ed in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one(new_text, edit)
         results.append(result)
@@ -115,7 +114,7 @@ def rewrite_directory_build_targets(
     return results
 
 
-def _apply_one(text: str, edit: RewriteEdit) -> Tuple[str, RewriteResult]:
+def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:
     for pattern_builder in (
         _build_inline_version_pattern,
         _build_version_override_pattern,

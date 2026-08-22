@@ -13,7 +13,6 @@ from __future__ import annotations
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 _HEADER_EXTENSIONS = frozenset({".h", ".hh", ".hpp", ".hxx"})
 
@@ -38,7 +37,7 @@ _SKIP_NAMES = frozenset({
 _MAX_BODY_LINES = 30
 _MAX_CACHE_ENTRIES = 16
 
-_cache: OrderedDict[str, Dict[str, Tuple[str, str]]] = OrderedDict()
+_cache: OrderedDict[str, dict[str, tuple[str, str]]] = OrderedDict()
 
 _C_STRING_OR_CHAR_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
 
@@ -48,7 +47,7 @@ def _count_braces(line: str) -> int:
     return cleaned.count("{") - cleaned.count("}")
 
 
-def _extract_function_body(lines: List[str], open_brace_line: int) -> Optional[str]:
+def _extract_function_body(lines: list[str], open_brace_line: int) -> str | None:
     """Extract function body from opening brace line to closing brace."""
     depth = 0
     start = open_brace_line
@@ -67,7 +66,7 @@ def _extract_function_body(lines: List[str], open_brace_line: int) -> Optional[s
 
 def build_header_function_index(
     target_path: Path,
-) -> Dict[str, Tuple[str, str]]:
+) -> dict[str, tuple[str, str]]:
     """Build name → (relative_path, source) index of header-defined functions.
 
     Only includes functions with bodies (definitions, not declarations).
@@ -79,7 +78,7 @@ def build_header_function_index(
         _cache.move_to_end(key)
         return _cache[key]
 
-    index: Dict[str, Tuple[str, str]] = {}
+    index: dict[str, tuple[str, str]] = {}
     try:
         for p in target_path.rglob("*"):
             if not p.is_file() or p.is_symlink() or p.suffix not in _HEADER_EXTENSIONS:
@@ -112,6 +111,6 @@ def build_header_function_index(
 
 def lookup_header_function(
     target_path: Path, name: str,
-) -> Optional[Tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Look up a function by name, returning (relative_path, source) or None."""
     return build_header_function_index(target_path).get(name)

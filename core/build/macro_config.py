@@ -32,7 +32,6 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +46,14 @@ class MacroConfig:
     and leave the arm untouched.
     """
 
-    defined: Dict[str, str] = field(default_factory=dict)
+    defined: dict[str, str] = field(default_factory=dict)
     undefined: frozenset = field(default_factory=frozenset)
     source: str = "absent"
 
     def __bool__(self) -> bool:
         return bool(self.defined or self.undefined)
 
-    def is_defined(self, name: str) -> Optional[bool]:
+    def is_defined(self, name: str) -> bool | None:
         """``True`` known-defined, ``False`` known-undefined, ``None``
         unknown (config-dependent / possibly header-defined)."""
         if name in self.defined:
@@ -63,7 +62,7 @@ class MacroConfig:
             return False
         return None
 
-    def value_of(self, name: str) -> Optional[str]:
+    def value_of(self, name: str) -> str | None:
         """Macro value if known-defined, else ``None``."""
         return self.defined.get(name)
 
@@ -85,7 +84,7 @@ _D_INLINE = re.compile(r"^-D(\w+)(?:=(.*))?$")
 _U_INLINE = re.compile(r"^-U(\w+)$")
 
 
-def _tokens(entry: dict) -> List[str]:
+def _tokens(entry: dict) -> list[str]:
     """Command tokens for one compile_commands entry (``arguments`` array
     preferred; ``command`` string shlex-split)."""
     if isinstance(entry.get("arguments"), list):
@@ -99,7 +98,7 @@ def _tokens(entry: dict) -> List[str]:
     return []
 
 
-def _scan_tokens(tokens: List[str], defined: Dict[str, str],
+def _scan_tokens(tokens: list[str], defined: dict[str, str],
                  undefined: set, conflict: set) -> None:
     """Accumulate -D/-U across one entry into the running union. A name seen
     both defined and undefined (here or in a prior entry) goes to
@@ -147,7 +146,7 @@ def _from_compile_commands(path: Path) -> MacroConfig:
         return MacroConfig(source="compile_commands.json")
     if not isinstance(entries, list) or not entries:
         return MacroConfig(source="compile_commands.json")
-    defined: Dict[str, str] = {}
+    defined: dict[str, str] = {}
     undefined: set = set()
     conflict: set = set()
     for entry in entries:
@@ -166,7 +165,7 @@ def _from_compile_commands(path: Path) -> MacroConfig:
 
 def _from_kconfig(path: Path) -> MacroConfig:
     text = path.read_text(encoding="utf-8", errors="replace")
-    defined: Dict[str, str] = {}
+    defined: dict[str, str] = {}
     undefined: set = set()
     for m in re.finditer(r"^(CONFIG_[A-Z0-9_]+)=([ym])\s*$", text, re.MULTILINE):
         defined[m.group(1)] = "1" if m.group(2) == "y" else "m"
@@ -182,7 +181,7 @@ def _from_kconfig(path: Path) -> MacroConfig:
                        source="kconfig")
 
 
-def _find_compile_commands(target: Path) -> Optional[Path]:
+def _find_compile_commands(target: Path) -> Path | None:
     for c in (target / "compile_commands.json",
               target / "build" / "compile_commands.json"):
         if c.is_file():
@@ -222,7 +221,7 @@ def extract_macro_config(target: Path) -> MacroConfig:
     return MacroConfig()
 
 
-def extract_build_tus(target: Path) -> Optional[frozenset]:
+def extract_build_tus(target: Path) -> frozenset | None:
     """Set of absolute translation-unit paths in ``target``'s
     ``compile_commands.json`` (resolved so they match the inventory builder's
     file paths), or ``None`` when there is no parseable, non-empty

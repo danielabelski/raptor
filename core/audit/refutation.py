@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, Optional, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,11 @@ class RefutationVerdict:
 def refute_hypothesis(
     outcome,  # ReviewOutcome — avoid circular import
     *,
-    domain_model: Optional[Dict[str, Any]],
-    checklist: Optional[Dict[str, Any]],
+    domain_model: dict[str, Any] | None,
+    checklist: dict[str, Any] | None,
     config,  # OrchestratorConfig
     joern_server=None,
-) -> Optional[RefutationVerdict]:
+) -> RefutationVerdict | None:
     """Run refutation gates in cost order.  Return verdict or None."""
     # Never refute a finding with mechanical tool confirmation.
     from .evidence_grade import is_tool_evidence
@@ -117,7 +117,7 @@ _SKIP_DIRS = frozenset({".git", "node_modules", "vendor", "third_party"})
 _VETO_SCAN_MAX_FILES = 2000
 _VETO_SCAN_MAX_BYTES = 256 * 1024
 
-_threading_seen_cache: Dict[str, bool] = {}
+_threading_seen_cache: dict[str, bool] = {}
 
 
 def _threading_primitives_seen(target_path) -> bool:
@@ -157,7 +157,7 @@ def _threading_primitives_seen(target_path) -> bool:
 
 
 def _is_single_threaded(
-    domain_model: Optional[Dict[str, Any]],
+    domain_model: dict[str, Any] | None,
     config,
 ) -> bool:
     """Determine if the target is single-threaded.
@@ -217,8 +217,8 @@ def _checklist_cache_put(cache: list, checklist: Any,
 
 
 def _signal_reachable_set(
-    checklist: Optional[Dict[str, Any]],
-) -> FrozenSet[str]:
+    checklist: dict[str, Any] | None,
+) -> frozenset[str]:
     """Build set of functions transitively reachable from signal handlers.
 
     Walks the call graph from any function registered via signal() or
@@ -238,7 +238,7 @@ def _signal_reachable_set(
     files = checklist.get("files", [])
 
     # Phase 1: find signal handler registrations
-    handler_names: Set[str] = set()
+    handler_names: set[str] = set()
     for fentry in files:
         calls = _get_calls(fentry)
         for c in calls:
@@ -272,8 +272,8 @@ def _signal_reachable_set(
 
     # Phase 3: transitive closure over call graph
     # Build caller→callees adjacency from all files
-    adjacency: Dict[str, Set[str]] = {}
-    func_to_file: Dict[str, str] = {}
+    adjacency: dict[str, set[str]] = {}
+    func_to_file: dict[str, str] = {}
     for fentry in files:
         path = fentry.get("path", "")
         for item in fentry.get("items", []):
@@ -288,7 +288,7 @@ def _signal_reachable_set(
                 adjacency.setdefault(caller, set()).update(chain)
 
     # BFS from handler names
-    visited: Set[str] = set()
+    visited: set[str] = set()
     queue = list(handler_names)
     while queue:
         func = queue.pop()
@@ -300,7 +300,7 @@ def _signal_reachable_set(
                 queue.append(callee)
 
     # Convert to file:function keys
-    result: Set[str] = set()
+    result: set[str] = set()
     for func in visited:
         fpath = func_to_file.get(func, "")
         if fpath:
@@ -315,10 +315,10 @@ def _signal_reachable_set(
 
 def _refute_by_architecture(
     outcome,
-    domain_model: Optional[Dict[str, Any]],
-    checklist: Optional[Dict[str, Any]],
+    domain_model: dict[str, Any] | None,
+    checklist: dict[str, Any] | None,
     config,
-) -> Optional[RefutationVerdict]:
+) -> RefutationVerdict | None:
     """Refute race-condition hypotheses in single-threaded targets."""
     cwes = _extract_all_cwes(outcome)
     matched = cwes & _RACE_CWES
@@ -372,7 +372,7 @@ _EVENT_LOOP_CALLS = frozenset({
 def _classify_lifecycle(
     function_name: str,
     file_path: str,
-    checklist: Dict[str, Any],
+    checklist: dict[str, Any],
 ) -> str:
     """Classify a function as init, request, shutdown, or unknown.
 
@@ -387,7 +387,7 @@ def _classify_lifecycle(
     # Build a global caller→[(callee, line)] map for indirect lookup.
     # Memoised per checklist identity — the gate runs per outcome and
     # the map only depends on the checklist.
-    caller_map: Dict[str, list[tuple[str, int]]] | None = (
+    caller_map: dict[str, list[tuple[str, int]]] | None = (
         _checklist_cache_get(_caller_map_cache, checklist)
     )
     if caller_map is None:
@@ -452,8 +452,8 @@ def _classify_lifecycle(
 
 def _refute_by_lifecycle(
     outcome,
-    checklist: Optional[Dict[str, Any]],
-) -> Optional[RefutationVerdict]:
+    checklist: dict[str, Any] | None,
+) -> RefutationVerdict | None:
     """Refute resource-leak findings in init-only functions."""
     if not checklist:
         return None
@@ -512,8 +512,8 @@ _DEFENDER_PROVENANCE = re.compile(
 
 def _refute_by_contract(
     outcome,
-    domain_model: Optional[Dict[str, Any]],
-) -> Optional[RefutationVerdict]:
+    domain_model: dict[str, Any] | None,
+) -> RefutationVerdict | None:
     """Refute when contract says input is defender-sourced."""
     if not domain_model:
         return None
@@ -559,7 +559,7 @@ def _refute_by_contract(
 # getchar/fgetc/tolower/toupper carry min = -1: they return EOF, and a
 # negative value is exactly what a CWE-191 underflow claim needs, so
 # they refute overflow (CWE-190) claims only.
-_KNOWN_RETURN_BOUNDS: Dict[str, tuple[str, int, int]] = {
+_KNOWN_RETURN_BOUNDS: dict[str, tuple[str, int, int]] = {
     "ntohs":    ("uint16_t", 0, 0xFFFF),
     "htons":    ("uint16_t", 0, 0xFFFF),
     "getchar":  ("int [0..255 or EOF]", -1, 0xFF),
@@ -600,7 +600,7 @@ _BUFFER_OVERFLOW_KW = re.compile(
 def _refute_by_known_return_type(
     outcome,
     config,
-) -> Optional[RefutationVerdict]:
+) -> RefutationVerdict | None:
     """Refute integer overflow claims when value comes from a bounded function.
 
     Checks if the hypothesis claims an integer overflow/wraparound on a
@@ -635,7 +635,7 @@ def _refute_by_known_return_type(
     # Check if any known-bounded function appears in the hypothesis.
     # When multiple match, pick the one closest to an overflow keyword
     # for audit trail clarity.
-    best: Optional[tuple[str, str, int, int]] = None  # (name, type, max, dist)
+    best: tuple[str, str, int, int] | None = None  # (name, type, max, dist)
     for func_name, (ret_type, min_val, max_val) in \
             _KNOWN_RETURN_BOUNDS.items():
         func_pos = hyp_lower.find(func_name)
@@ -728,7 +728,7 @@ _INT_CONTRACT_PRE_EVIDENCE = ("check-parsed-int-contract",
 # Mechanical detector families whose per-function receipt corroborates
 # a same-family hypothesis the reviewer raised then dismissed or
 # refuted. Keyed by the detector name's last path segment.
-_DETECTOR_FAMILY_HYP_RES: Dict[str, re.Pattern] = {
+_DETECTOR_FAMILY_HYP_RES: dict[str, re.Pattern] = {
     "uninitialized_return": re.compile(
         r"uninitiali[sz]|no default|left unset|garbage|indetermin|"
         r"without (?:being )?initiali[sz]", re.IGNORECASE,
@@ -764,14 +764,14 @@ _INT_FAMILY_HYP_RE = re.compile(
 def rescue_self_refuted(
     outcome,
     *,
-    domain_model: Optional[Dict[str, Any]] = None,
-    checklist: Optional[Dict[str, Any]] = None,
+    domain_model: dict[str, Any] | None = None,
+    checklist: dict[str, Any] | None = None,
     config=None,
-    negative_space: Optional[list] = None,
-    source: Optional[str] = None,
-    pre_evidence: Optional[str] = None,
-    detector_findings: Optional[list] = None,
-) -> Optional[RefutationVerdict]:
+    negative_space: list | None = None,
+    source: str | None = None,
+    pre_evidence: str | None = None,
+    detector_findings: list | None = None,
+) -> RefutationVerdict | None:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
     Fires when ALL of:
@@ -965,8 +965,8 @@ def rescue_self_refuted(
 def diagnose_rescue(
     outcome,
     *,
-    negative_space: Optional[list] = None,
-) -> Optional[Dict[str, Any]]:
+    negative_space: list | None = None,
+) -> dict[str, Any] | None:
     """Explain why :func:`rescue_self_refuted` did not fire.
 
     Mirrors the gate's precondition chain link by link and reports the
@@ -1005,7 +1005,7 @@ def diagnose_rescue(
         (h.get("confidence") or "").lower()
         for h in hypotheses if isinstance(h, dict)
     ]
-    base: Dict[str, Any] = {
+    base: dict[str, Any] = {
         "receipts": fn_receipts,
         "confidences": confidences,
     }
@@ -1073,7 +1073,7 @@ def _refute_by_callee_inheritance(
     outcome,
     source: str,
     callees: list,
-) -> Optional[RefutationVerdict]:
+) -> RefutationVerdict | None:
     """Refute when the hypothesis names a callee's bug, not ours.
 
     Fires when:
@@ -1135,7 +1135,7 @@ def _refute_by_callee_inheritance(
 _CWE_ID_RE = re.compile(r"CWE-\d+")
 
 
-def _extract_cwe(outcome) -> Optional[str]:
+def _extract_cwe(outcome) -> str | None:
     """Extract CWE ID(s) from outcome, falling back to hypothesis inference.
 
     LLMs return CWEs in many formats:
@@ -1169,7 +1169,7 @@ def _extract_cwe(outcome) -> Optional[str]:
         return None
 
 
-def _extract_all_cwes(outcome) -> FrozenSet[str]:
+def _extract_all_cwes(outcome) -> frozenset[str]:
     """Extract all CWE IDs from outcome as a frozenset.
 
     Used by gates that should fire when *any* listed CWE matches
@@ -1197,7 +1197,7 @@ def _extract_all_cwes(outcome) -> FrozenSet[str]:
     return frozenset()
 
 
-def _extract_cwes_from_text(text: str) -> FrozenSet[str]:
+def _extract_cwes_from_text(text: str) -> frozenset[str]:
     """Extract CWE IDs from free-form text (mechanism, hypothesis, etc.).
 
     Unlike ``_extract_all_cwes`` which reads from an outcome's
@@ -1218,7 +1218,7 @@ def _extract_cwes_from_text(text: str) -> FrozenSet[str]:
     return frozenset()
 
 
-def _get_calls(fentry: Dict[str, Any]) -> list:
+def _get_calls(fentry: dict[str, Any]) -> list:
     """Extract the calls list from a checklist file entry."""
     cg = fentry.get("call_graph", {})
     if isinstance(cg, dict):
@@ -1230,7 +1230,7 @@ def _get_calls(fentry: Dict[str, Any]) -> list:
 
 def _get_function_source_and_callees(
     outcome,
-    checklist: Optional[Dict[str, Any]],
+    checklist: dict[str, Any] | None,
 ) -> tuple:
     """Look up function source and callee names from checklist.
 

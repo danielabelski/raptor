@@ -37,7 +37,8 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterator
 
 from core.atomic_fs import write_text_atomically
 from core.logging import get_logger as _get_logger
@@ -54,7 +55,7 @@ except ImportError:                      # non-POSIX (Windows)
 COVERAGE_STORE_FILE = "coverage.json"
 SCHEMA_VERSION = 1
 
-Interval = List[int]  # [lo, hi], inclusive
+Interval = list[int]  # [lo, hi], inclusive
 
 
 @contextlib.contextmanager
@@ -90,12 +91,12 @@ def coverage_store_lock(coverage_path):
         os.close(fd)
 
 
-def _coalesce(intervals: List[Interval]) -> List[Interval]:
+def _coalesce(intervals: list[Interval]) -> list[Interval]:
     """Sort and merge overlapping or adjacent inclusive intervals."""
     if not intervals:
         return []
     ordered = sorted([lo, hi] if lo <= hi else [hi, lo] for lo, hi in intervals)
-    merged: List[Interval] = [list(ordered[0])]
+    merged: list[Interval] = [list(ordered[0])]
     for lo, hi in ordered[1:]:
         last = merged[-1]
         if lo <= last[1] + 1:          # overlapping or adjacent
@@ -105,11 +106,11 @@ def _coalesce(intervals: List[Interval]) -> List[Interval]:
     return merged
 
 
-def _covered_count(intervals: List[Interval]) -> int:
+def _covered_count(intervals: list[Interval]) -> int:
     return sum(hi - lo + 1 for lo, hi in intervals)
 
 
-def _overlap_count(intervals: List[Interval], lo: int, hi: int) -> int:
+def _overlap_count(intervals: list[Interval], lo: int, hi: int) -> int:
     """Lines in ``[lo, hi]`` already present in ``intervals``."""
     total = 0
     for a, b in intervals:
@@ -133,9 +134,9 @@ def _overlap_count(intervals: List[Interval], lo: int, hi: int) -> int:
 _BITMAP_THRESHOLD = 50
 
 
-def _set_to_intervals(lines: set) -> List[Interval]:
+def _set_to_intervals(lines: set) -> list[Interval]:
     """Coalesce a line-number set into sorted inclusive intervals."""
-    out: List[Interval] = []
+    out: list[Interval] = []
     for ln in sorted(lines):
         if out and ln <= out[-1][1] + 1:
             out[-1][1] = ln
@@ -144,7 +145,7 @@ def _set_to_intervals(lines: set) -> List[Interval]:
     return out
 
 
-def _cov_to_intervals(value) -> List[Interval]:
+def _cov_to_intervals(value) -> list[Interval]:
     """Normalise a coverage value (interval list or line set) to intervals."""
     if isinstance(value, set):
         return _set_to_intervals(value)
@@ -167,7 +168,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def content_identity(checklist: Dict[str, Any]) -> Optional[str]:
+def content_identity(checklist: dict[str, Any]) -> str | None:
     """A deterministic content-equivalence id over the inventory's analyzed
     source: ``sha256`` of the sorted ``(relpath, content_sha256)`` set.
 
@@ -190,8 +191,8 @@ def content_identity(checklist: Dict[str, Any]) -> Optional[str]:
 
 
 def iter_inventory_functions(
-    checklist: Dict[str, Any],
-) -> Iterator[Tuple[str, str, int, Optional[int], str]]:
+    checklist: dict[str, Any],
+) -> Iterator[tuple[str, str, int, int | None, str]]:
     """Yield ``(file, name, line_start, line_end, kind)`` for every inventory
     item.
 
@@ -224,9 +225,9 @@ class CoverageStore:
     def __init__(self, coverage_path: Path, target: str | None = None):
         self.path = Path(coverage_path)
         self.target = target
-        self.content_id: Optional[str] = None
+        self.content_id: str | None = None
         self.version = SCHEMA_VERSION
-        self._files: Dict[str, Dict[str, Any]] = {}
+        self._files: dict[str, dict[str, Any]] = {}
         if self.path.exists():
             # A corrupt / unreadable store must not crash every coverage
             # consumer — degrade to empty (the store is largely reconstructible
@@ -254,7 +255,7 @@ class CoverageStore:
 
     # --- mutation ---------------------------------------------------------
 
-    def _entry(self, file: str) -> Dict[str, Any]:
+    def _entry(self, file: str) -> dict[str, Any]:
         return self._files.setdefault(
             file,
             {
@@ -303,7 +304,7 @@ class CoverageStore:
         self,
         file: str,
         finding_id: str,
-        line: Optional[int] = None,
+        line: int | None = None,
         retained: bool = True,
     ) -> None:
         """Link a finding to a file.
@@ -339,20 +340,20 @@ class CoverageStore:
 
     # --- queries (file/line level; inventory-join queries come next step) -
 
-    def tool_provenance(self, file: str, tool: str) -> Dict[str, Any]:
+    def tool_provenance(self, file: str, tool: str) -> dict[str, Any]:
         """The provenance stamp for a ``(file, tool)`` contribution, or ``{}``."""
         entry = self._files.get(file)
         if not entry:
             return {}
         return dict(entry.get("provenance", {}).get(tool, {}))
 
-    def provenance_summary(self) -> Dict[str, Any]:
+    def provenance_summary(self) -> dict[str, Any]:
         """Aggregate provenance across the store for reporting: distinct engine
         versions per tool, distinct resolved models, and the newest run
         timestamp seen. ``{}``-ish when nothing is stamped."""
-        tools: Dict[str, set] = {}
+        tools: dict[str, set] = {}
         models: set = set()
-        newest: Optional[str] = None
+        newest: str | None = None
         for entry in self._files.values():
             for tool, p in entry.get("provenance", {}).items():
                 versions = tools.setdefault(tool, set())
@@ -369,7 +370,7 @@ class CoverageStore:
             "newest": newest,
         }
 
-    def who_checked(self, file: str, line: int) -> List[str]:
+    def who_checked(self, file: str, line: int) -> list[str]:
         """Tool labels whose intervals cover ``line`` of ``file``."""
         entry = self._files.get(file)
         if not entry:
@@ -379,7 +380,7 @@ class CoverageStore:
             if _cov_covers_line(value, line)
         )
 
-    def covered_lines(self, file: str) -> List[Interval]:
+    def covered_lines(self, file: str) -> list[Interval]:
         """Union of all tools' intervals for ``file`` (coalesced)."""
         entry = self._files.get(file)
         if not entry:
@@ -400,28 +401,28 @@ class CoverageStore:
             return 0.0
         return _covered_count(self.covered_lines(file)) / entry["total_lines"] * 100.0
 
-    def finding_ids(self, file: str) -> List[str]:
+    def finding_ids(self, file: str) -> list[str]:
         entry = self._files.get(file)
         return [f["id"] for f in entry["findings"]] if entry else []
 
-    def _findings(self, file: str) -> List[Dict[str, Any]]:
+    def _findings(self, file: str) -> list[dict[str, Any]]:
         entry = self._files.get(file)
         return entry["findings"] if entry else []
 
-    def files(self) -> List[str]:
+    def files(self) -> list[str]:
         return sorted(self._files)
 
     # --- inventory-join queries (function level) --------------------------
 
     def tool_coverage_of_range(
         self, file: str, lo: int, hi: int,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """``{tool: covered_line_count}`` over ``[lo, hi]`` (only tools that
         cover at least one line)."""
         entry = self._files.get(file)
         if not entry:
             return {}
-        out: Dict[str, int] = {}
+        out: dict[str, int] = {}
         for tool, value in entry["tools"].items():
             n = _cov_overlap(value, lo, hi)
             if n:
@@ -430,18 +431,18 @@ class CoverageStore:
 
     def who_checked_function(
         self, file: str, lo: int, hi: int,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """``{tool: 'full' | 'partial (N%)'}`` for a function's line range."""
         total = hi - lo + 1
         if total <= 0:                       # malformed range (hi < lo)
             return {}
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         for tool, n in self.tool_coverage_of_range(file, lo, hi).items():
             out[tool] = "full" if n >= total else f"partial ({n / total * 100:.0f}%)"
         return out
 
     def function_covered(
-        self, file: str, lo: int, hi: int, category: Optional[str] = None,
+        self, file: str, lo: int, hi: int, category: str | None = None,
     ) -> bool:
         """True if any tool covers a line of ``[lo, hi]``. When ``category``
         is given, only tools of that category count (e.g. ``"llm"`` -> has
@@ -452,13 +453,13 @@ class CoverageStore:
         return False
 
     def unchecked_functions(
-        self, checklist: Dict[str, Any], category: Optional[str] = None,
-    ) -> List[Tuple[str, str, int]]:
+        self, checklist: dict[str, Any], category: str | None = None,
+    ) -> list[tuple[str, str, int]]:
         """Inventory functions with no coverage (the gap). When ``category``
         is given, functions with no coverage *by that category* -- e.g.
         ``category="llm"`` is the gap ``/audit`` fills. Returns
         ``[(file, name, line_start)]``."""
-        gaps: List[Tuple[str, str, int]] = []
+        gaps: list[tuple[str, str, int]] = []
         for file, name, lo, hi, _kind in iter_inventory_functions(checklist):
             # No line_end -> probe the single declaration line.
             high = hi if hi is not None else lo
@@ -466,7 +467,7 @@ class CoverageStore:
                 gaps.append((file, name, lo))
         return gaps
 
-    def import_inventory_meta(self, checklist: Dict[str, Any]) -> None:
+    def import_inventory_meta(self, checklist: dict[str, Any]) -> None:
         """Populate per-file ``total_lines`` / ``sloc`` from the inventory so
         :meth:`file_coverage` is defined."""
         for fe in checklist.get("files", []):
@@ -474,7 +475,7 @@ class CoverageStore:
             if path:
                 self.set_file_meta(path, fe.get("lines"), fe.get("sloc"))
 
-    def set_content_id(self, checklist: Dict[str, Any]) -> Optional[str]:
+    def set_content_id(self, checklist: dict[str, Any]) -> str | None:
         """Set the store's content-equivalence id from the inventory (see
         :func:`content_identity`). Two acquisitions of identical source —
         a git checkout and a zip — get the same id, so coverage is recognised
@@ -518,18 +519,18 @@ class CoverageStore:
         return "clean"
 
     def function_verdicts(
-        self, checklist: Dict[str, Any],
-    ) -> List[Tuple[str, str, int, str]]:
+        self, checklist: dict[str, Any],
+    ) -> list[tuple[str, str, int, str]]:
         """``(file, name, line_start, verdict)`` for every inventory function."""
-        out: List[Tuple[str, str, int, str]] = []
+        out: list[tuple[str, str, int, str]] = []
         for file, name, lo, hi, _kind in iter_inventory_functions(checklist):
             high = hi if hi is not None else lo
             out.append((file, name, lo, self.function_verdict(file, lo, high)))
         return out
 
     def review_gap(
-        self, checklist: Dict[str, Any],
-    ) -> List[Tuple[str, str, int, str]]:
+        self, checklist: dict[str, Any],
+    ) -> list[tuple[str, str, int, str]]:
         """Functions needing (re-)review: ``unexamined`` or ``found_then_lost``.
 
         Returns ``(file, name, line_start, verdict)``. ``found_then_lost`` is
@@ -543,11 +544,11 @@ class CoverageStore:
 
     # --- persistence ------------------------------------------------------
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         # Normalise any in-memory line-set ("bitmap") back to intervals so the
         # on-disk form is always intervals (stable schema; JSON-serialisable;
         # validated by schema.py). Does not mutate the live store.
-        files_out: Dict[str, Any] = {}
+        files_out: dict[str, Any] = {}
         for path, entry in self._files.items():
             tools = entry.get("tools", {})
             if any(isinstance(v, set) for v in tools.values()):

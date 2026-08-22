@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from collections.abc import Iterator
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -82,7 +82,7 @@ _URL_REF_RE = re.compile(
 
 
 @register(filenames=["CMakeLists.txt"])
-def parse_cmake_lists(path: Path) -> List[Dependency]:
+def parse_cmake_lists(path: Path) -> list[Dependency]:
     """Parse a ``CMakeLists.txt`` for ``FetchContent_Declare`` blocks.
 
     Returns one Dependency per declaration; the project's own
@@ -96,7 +96,7 @@ def parse_cmake_lists(path: Path) -> List[Dependency]:
                       path, e)
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for name, args_text in _iter_declarations(text):
         dep = _build_dep(name, args_text, declared_in=path)
         if dep is not None:
@@ -104,7 +104,7 @@ def parse_cmake_lists(path: Path) -> List[Dependency]:
     return out
 
 
-def _iter_declarations(text: str) -> Iterator[Tuple[str, str]]:
+def _iter_declarations(text: str) -> Iterator[tuple[str, str]]:
     """Yield ``(name, args_block)`` per matching declaration."""
     for m in _FETCHCONTENT_RE.finditer(text):
         yield m.group("name"), m.group("args")
@@ -112,7 +112,7 @@ def _iter_declarations(text: str) -> Iterator[Tuple[str, str]]:
 
 def _build_dep(
     name: str, args_text: str, *, declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     """Map a parsed declaration to a Dependency row.
 
     The ``args_text`` is the inside of the parentheses minus the
@@ -127,7 +127,7 @@ def _build_dep(
 
     ecosystem: str
     canonical_name: str
-    version: Optional[str]
+    version: str | None
     pin_style: PinStyle
     purl: str
 
@@ -245,14 +245,14 @@ def _parse_kv(args_text: str) -> dict:
     return out
 
 
-def _tokenise(text: str) -> List[str]:
+def _tokenise(text: str) -> list[str]:
     """Whitespace-split with quoted-string awareness.
 
     CMake's quote rules are simple — ``"..."`` produces a single
     token preserving inner whitespace. Anything else splits on
     whitespace.
     """
-    tokens: List[str] = []
+    tokens: list[str] = []
     i = 0
     while i < len(text):
         c = text[i]

@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def write_build_outcome(
     try:
         if outcome.get("status") != "success":
             return False
-        cve_id: Optional[str] = outcome.get("cve_id")
+        cve_id: str | None = outcome.get("cve_id")
         if not cve_id:
             return False
 

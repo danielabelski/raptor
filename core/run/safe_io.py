@@ -36,7 +36,6 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Union
 
 from core.logging import get_logger
 
@@ -47,7 +46,7 @@ class UnsafeRunDirError(PermissionError):
     """Raised when an output dir cannot be created or used safely."""
 
 
-def safe_run_mkdir(path: Union[Path, str]) -> None:
+def safe_run_mkdir(path: Path | str) -> None:
     """Create *path* if absent, or accept it if already present and safe.
 
     Behaviour:

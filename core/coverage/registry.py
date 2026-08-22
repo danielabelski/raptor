@@ -16,7 +16,6 @@ deep coverage. The mapping is intentionally small and easy to extend.
 
 from __future__ import annotations
 
-from typing import Tuple
 
 CATEGORY_STATIC = "static"
 CATEGORY_LLM = "llm"
@@ -78,14 +77,14 @@ _REGISTRY = {
     "coverage": (CATEGORY_RUNTIME, DEPTH_RUNTIME),
     "pytest": (CATEGORY_RUNTIME, DEPTH_RUNTIME),
 }
-_DEFAULT: Tuple[str, str] = (CATEGORY_UNKNOWN, DEPTH_SCANNED)
+_DEFAULT: tuple[str, str] = (CATEGORY_UNKNOWN, DEPTH_SCANNED)
 
 
 def _base(tool_label: str) -> str:
     return tool_label.split(":", 1)[0]
 
 
-def classify(tool_label: str) -> Tuple[str, str]:
+def classify(tool_label: str) -> tuple[str, str]:
     """Return ``(category, depth)`` for a tool label."""
     return _REGISTRY.get(_base(tool_label), _DEFAULT)
 

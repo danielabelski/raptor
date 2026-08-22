@@ -4,10 +4,10 @@ Pure-Python aggregation of per-model analysis results. Produces agreement
 matrix, clusters, unique insights, and confidence signals. No LLM calls.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 
-def correlate_results(results_by_id: Dict[str, Dict]) -> Dict[str, Any]:
+def correlate_results(results_by_id: dict[str, dict]) -> dict[str, Any]:
     """Correlate multi-model analysis results for all findings.
 
     Only processes findings that have multi_model_analyses (i.e., were
@@ -23,9 +23,9 @@ def correlate_results(results_by_id: Dict[str, Dict]) -> Dict[str, Any]:
             abstentions never count as votes)
         summary: {agreed, disputed, total, models}
     """
-    matrix: Dict[str, Dict[str, Dict]] = {}
-    confidence: Dict[str, str] = {}
-    unique: List[Dict] = []
+    matrix: dict[str, dict[str, dict]] = {}
+    confidence: dict[str, str] = {}
+    unique: list[dict] = []
 
     models_seen: set[str] = set()
 
@@ -135,15 +135,15 @@ def correlate_results(results_by_id: Dict[str, Dict]) -> Dict[str, Any]:
 
 
 def _build_clusters(
-    matrix: Dict[str, Dict[str, Dict]],
-    results_by_id: Dict[str, Dict],
-) -> List[Dict]:
+    matrix: dict[str, dict[str, dict]],
+    results_by_id: dict[str, dict],
+) -> list[dict]:
     """Group findings by agreement pattern.
 
     Findings where the same set of models agree on the same verdict pattern
     are clustered together.
     """
-    pattern_groups: Dict[str, List[str]] = {}
+    pattern_groups: dict[str, list[str]] = {}
 
     for fid, per_model in matrix.items():
         verdicts = tuple(

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from urllib.parse import quote as _urlquote
 
 from core.http import HttpError
@@ -44,7 +44,7 @@ _USER_AGENT = "cve-diff-gitlab/0.1"
 
 
 @functools.lru_cache(maxsize=1)
-def _client() -> "EgressClient":
+def _client() -> EgressClient:
     """Allowlisted egress client (curated GitLab hosts only).
 
     Pre-2026-05-04 this returned a bare UrllibClient with no host
@@ -83,7 +83,7 @@ _GITLAB_HOST_RE = re.compile(
 )
 
 
-def _gitlab_host_and_slug(repo_url: str) -> tuple[Optional[str], Optional[str]]:
+def _gitlab_host_and_slug(repo_url: str) -> tuple[str | None, str | None]:
     """Return ``(host, slug)`` for a GitLab URL, or ``(None, None)``.
 
     Recognises ``gitlab.com`` and self-hosted GitLab (any host whose

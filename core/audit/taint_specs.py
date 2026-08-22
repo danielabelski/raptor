@@ -29,7 +29,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +72,16 @@ class TaintSpec:
     file: str
     role: TaintRole
     trust_level: TrustLevel = TrustLevel.UNTRUSTED
-    threat_classes: List[str] = field(default_factory=list)
-    params_affected: List[str] = field(default_factory=list)
+    threat_classes: list[str] = field(default_factory=list)
+    params_affected: list[str] = field(default_factory=list)
     return_affected: bool = False
     taint_class: str = ""
     taint_class_change: str = ""
     confidence: str = "medium"
     reasoning: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "function": self.function,
             "file": self.file,
             "role": self.role.value,
@@ -106,30 +107,30 @@ class TaintSpec:
 class TaintSpecSet:
     """Collection of taint specs for a project."""
 
-    specs: List[TaintSpec] = field(default_factory=list)
+    specs: list[TaintSpec] = field(default_factory=list)
 
     def add(self, spec: TaintSpec) -> None:
         self.specs.append(spec)
 
-    def sources(self) -> List[TaintSpec]:
+    def sources(self) -> list[TaintSpec]:
         return [s for s in self.specs if s.role == TaintRole.SOURCE]
 
-    def sinks(self) -> List[TaintSpec]:
+    def sinks(self) -> list[TaintSpec]:
         return [s for s in self.specs if s.role == TaintRole.SINK]
 
-    def sanitisers(self) -> List[TaintSpec]:
+    def sanitisers(self) -> list[TaintSpec]:
         return [s for s in self.specs if s.role == TaintRole.SANITISER]
 
-    def propagators(self) -> List[TaintSpec]:
+    def propagators(self) -> list[TaintSpec]:
         return [s for s in self.specs if s.role == TaintRole.PROPAGATOR]
 
-    def by_file(self, file_path: str) -> List[TaintSpec]:
+    def by_file(self, file_path: str) -> list[TaintSpec]:
         return [s for s in self.specs if s.file == file_path]
 
-    def by_function(self, function_name: str) -> List[TaintSpec]:
+    def by_function(self, function_name: str) -> list[TaintSpec]:
         return [s for s in self.specs if s.function == function_name]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "specs": [s.to_dict() for s in self.specs],
             "summary": {
@@ -141,7 +142,7 @@ class TaintSpecSet:
             },
         }
 
-    def merge(self, other: "TaintSpecSet") -> None:
+    def merge(self, other: TaintSpecSet) -> None:
         existing = {(s.function, s.file, s.role) for s in self.specs}
         for spec in other.specs:
             key = (spec.function, spec.file, spec.role)
@@ -214,7 +215,7 @@ _SANITISER_PATTERNS = frozenset({
 })
 
 
-def classify_role_heuristic(function_name: str) -> Optional[TaintRole]:
+def classify_role_heuristic(function_name: str) -> TaintRole | None:
     """Heuristic role classification based on function name."""
     name_lower = function_name.lower()
 
@@ -236,8 +237,8 @@ def classify_role_heuristic(function_name: str) -> Optional[TaintRole]:
 def spec_from_summary(
     function: str,
     file: str,
-    summary: Dict[str, Any],
-) -> Optional[TaintSpec]:
+    summary: dict[str, Any],
+) -> TaintSpec | None:
     """Extract a taint spec from a function summary if the function
     is a plausible source, sink, or sanitiser.
 
@@ -430,8 +431,8 @@ class TaintFinding:
     cwe: str = ""
     confidence: str = "medium"
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "check": self.check,
             "title": self.title,
             "description": self.description,
@@ -447,8 +448,8 @@ class TaintFinding:
 
 
 def _read_gap_source(
-    gap: Dict[str, Any],
-    target_path: Optional[Path],
+    gap: dict[str, Any],
+    target_path: Path | None,
 ) -> str:
     """Read source text for a gap from disk using its line span."""
     if not target_path:
@@ -484,9 +485,9 @@ _CACHE_KEY_RE = re.compile(
 )
 
 
-def _extract_storage_names(source: str) -> Set[str]:
+def _extract_storage_names(source: str) -> set[str]:
     """Extract table, model, and cache key names from source."""
-    names: Set[str] = set()
+    names: set[str] = set()
     for m in _TABLE_NAME_RE.finditer(source):
         names.add(m.group(1).lower())
     for m in _MODEL_NAME_RE.finditer(source):
@@ -499,20 +500,20 @@ def _extract_storage_names(source: str) -> Set[str]:
 
 
 def check_stored_taint(
-    gaps: Sequence[Dict[str, Any]],
+    gaps: Sequence[dict[str, Any]],
     *,
-    target_path: Optional[Path] = None,
-) -> List[TaintFinding]:
+    target_path: Path | None = None,
+) -> list[TaintFinding]:
     """Detect persistence-layer taint gaps across function boundaries.
 
     Links writer functions to reader functions via shared table/model/cache
     names, then flags readers that render stored data without sanitization.
     """
-    writers: List[Dict[str, Any]] = []
-    readers: List[Dict[str, Any]] = []
-    writer_names: Dict[str, Set[str]] = {}
-    reader_names: Dict[str, Set[str]] = {}
-    resolved_source: Dict[str, str] = {}
+    writers: list[dict[str, Any]] = []
+    readers: list[dict[str, Any]] = []
+    writer_names: dict[str, set[str]] = {}
+    reader_names: dict[str, set[str]] = {}
+    resolved_source: dict[str, str] = {}
 
     for gap in gaps:
         source = gap.get("source", "") or _read_gap_source(gap, target_path)
@@ -535,11 +536,11 @@ def check_stored_taint(
     if not writers or not readers:
         return []
 
-    all_written_names: Set[str] = set()
+    all_written_names: set[str] = set()
     for names in writer_names.values():
         all_written_names |= names
 
-    findings: List[TaintFinding] = []
+    findings: list[TaintFinding] = []
     for reader in readers:
         rkey = f"{reader.get('file', '')}:{reader.get('name', '')}"
         source = resolved_source.get(rkey, "")
@@ -614,12 +615,12 @@ _SECURITY_DECISION_PATTERNS = [
 
 
 def check_config_dependent(
-    gaps: Sequence[Dict[str, Any]],
+    gaps: Sequence[dict[str, Any]],
     *,
-    target_path: Optional[Path] = None,
-) -> List[TaintFinding]:
+    target_path: Path | None = None,
+) -> list[TaintFinding]:
     """Detect security decisions controlled by external configuration."""
-    findings: List[TaintFinding] = []
+    findings: list[TaintFinding] = []
 
     for gap in gaps:
         source = gap.get("source", "") or _read_gap_source(gap, target_path)

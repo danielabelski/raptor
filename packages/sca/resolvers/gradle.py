@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
-from typing import List, Optional
 
 from . import ResolverResult, _check_tool, _run
 
@@ -145,14 +144,14 @@ def _has_wrapper(project_dir: Path) -> bool:
     return (project_dir / "gradlew").exists()
 
 
-def _resolve_gradle_cmd(project_dir: Path) -> List[str]:
+def _resolve_gradle_cmd(project_dir: Path) -> list[str]:
     """Prefer ``./gradlew`` (project-pinned version) over a system gradle."""
     if _has_wrapper(project_dir):
         return ["./gradlew"]
     return ["gradle"]
 
 
-def _read_if_exists(p: Path) -> Optional[bytes]:
+def _read_if_exists(p: Path) -> bytes | None:
     try:
         return p.read_bytes()
     except OSError:

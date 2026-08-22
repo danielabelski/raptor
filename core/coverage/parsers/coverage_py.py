@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Set
 
 
-def parse_coverage_py(path) -> Dict[str, Set[int]]:
+def parse_coverage_py(path) -> dict[str, set[int]]:
     """Return ``{source_path: set(executed_line_numbers)}`` from a coverage.json
     report (or a directory containing one). Tolerant: bad/missing pieces are
     skipped, never raised."""
@@ -28,7 +27,7 @@ def parse_coverage_py(path) -> Dict[str, Set[int]]:
     files = data.get("files") if isinstance(data, dict) else None
     if not isinstance(files, dict):
         return {}
-    out: Dict[str, Set[int]] = {}
+    out: dict[str, set[int]] = {}
     for src, info in files.items():
         if not isinstance(src, str) or not isinstance(info, dict):
             continue

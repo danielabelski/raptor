@@ -7,7 +7,7 @@ Collects and deduplicates crashes from AFL output.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from core.hash import sha256_file
 from core.logging import get_logger
@@ -20,10 +20,10 @@ class Crash:
     """Represents a unique crash."""
     crash_id: str
     input_file: Path
-    signal: Optional[str] = None
-    stack_hash: Optional[str] = None
+    signal: str | None = None
+    stack_hash: str | None = None
     size: int = 0
-    timestamp: Optional[float] = None
+    timestamp: float | None = None
 
     def __repr__(self):
         return f"Crash(id={self.crash_id}, signal={self.signal}, size={self.size})"
@@ -39,9 +39,9 @@ class CrashCollector:
 
     def collect_crashes(
         self,
-        max_crashes: Optional[int] = None,
-        stack_hasher: Optional[Callable[[Path], Optional[str]]] = None,
-    ) -> List[Crash]:
+        max_crashes: int | None = None,
+        stack_hasher: Callable[[Path], str | None] | None = None,
+    ) -> list[Crash]:
         """
         Collect unique crashes from AFL output.
 
@@ -144,7 +144,7 @@ class CrashCollector:
         """Short SHA-256 hash of file (first 16 hex chars)."""
         return sha256_file(file_path)[:16]
 
-    def rank_crashes_by_exploitability(self, crashes: List[Crash]) -> List[Crash]:
+    def rank_crashes_by_exploitability(self, crashes: list[Crash]) -> list[Crash]:
         """
         Rank crashes by likely exploitability.
 
@@ -173,7 +173,7 @@ class CrashCollector:
 
         return ranked
 
-    def _signal_name(self, signal: Optional[str]) -> str:
+    def _signal_name(self, signal: str | None) -> str:
         """Convert signal number to name."""
         signal_names = {
             "04": "SIGILL (Illegal Instruction)",

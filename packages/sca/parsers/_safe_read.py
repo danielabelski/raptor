@@ -37,7 +37,6 @@ import os
 import stat as _stat
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 # refuse links that escape it (``composer.lock -> /etc/shadow``).
 # Contextvar (not a module global) so parallel scans in one process
 # can't leak each other's roots.
-_SCAN_ROOT: contextvars.ContextVar[Optional[Path]] = contextvars.ContextVar(
+_SCAN_ROOT: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "sca_parser_scan_root", default=None,
 )
 
@@ -70,7 +69,7 @@ _MAX_PARSER_BYTES = 50 * 1024 * 1024
 def read_bounded(
     path: Path, *, max_bytes: int = _MAX_PARSER_BYTES,
     follow_symlinks: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Read ``path`` as UTF-8 text, capped at ``max_bytes``.
 
     Returns ``None`` and logs at warning level when:

@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.evidence import EvidenceTier
 
@@ -41,8 +41,8 @@ class TaintSpec:
     function: str
     file: str
     role: str
-    taint_classes: List[str] = field(default_factory=list)
-    params_affected: List[int] = field(default_factory=list)
+    taint_classes: list[str] = field(default_factory=list)
+    params_affected: list[int] = field(default_factory=list)
     return_tainted: bool = False
     confidence: float = 0.5
     evidence_tier: EvidenceTier = EvidenceTier.HEURISTIC
@@ -51,8 +51,8 @@ class TaintSpec:
     # interchangeable across the refine loop / store merge seam.
     source: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "function": self.function,
             "file": self.file,
             "role": self.role,
@@ -82,12 +82,12 @@ class CandidateFunction:
 
 
 def identify_candidates(
-    gaps: List[Dict[str, Any]],
+    gaps: list[dict[str, Any]],
     *,
-    taint_chain_callees: Optional[set] = None,
-    stock_sinks: Optional[set] = None,
-    stock_sources: Optional[set] = None,
-) -> List[CandidateFunction]:
+    taint_chain_callees: set | None = None,
+    stock_sinks: set | None = None,
+    stock_sources: set | None = None,
+) -> list[CandidateFunction]:
     """Identify functions that are candidates for taint spec synthesis.
 
     Candidates are functions that:
@@ -123,7 +123,7 @@ def identify_candidates(
     return candidates
 
 
-def parse_spec_response(raw: str) -> List[TaintSpec]:
+def parse_spec_response(raw: str) -> list[TaintSpec]:
     """Parse structured taint specs from an LLM response.
 
     Expects JSON objects with role, function, taint_classes, etc.
@@ -167,7 +167,7 @@ def parse_spec_response(raw: str) -> List[TaintSpec]:
     return specs
 
 
-def _parse_one_spec(data: Dict[str, Any]) -> Optional[TaintSpec]:
+def _parse_one_spec(data: dict[str, Any]) -> TaintSpec | None:
     """Parse a single spec from a dict."""
     role = data.get("role", "")
     if role not in ("source", "sink", "sanitiser", "sanitizer", "propagator"):
@@ -185,7 +185,7 @@ def _parse_one_spec(data: Dict[str, Any]) -> Optional[TaintSpec]:
     )
 
 
-def compile_joern_config(specs: List[TaintSpec]) -> str:
+def compile_joern_config(specs: list[TaintSpec]) -> str:
     """Generate CPGQL source/sink/sanitiser definitions from specs.
 
     The output is a Scala snippet that can be prepended to Joern queries
@@ -229,7 +229,7 @@ def compile_joern_config(specs: List[TaintSpec]) -> str:
     return "\n".join(lines)
 
 
-def compile_codeql_config(specs: List[TaintSpec]) -> str:
+def compile_codeql_config(specs: list[TaintSpec]) -> str:
     """Generate CodeQL extensible predicate definitions from specs.
 
     Produces a QL module that extends the taint-tracking library with
@@ -326,12 +326,12 @@ def _escape_scala(name: str) -> str:
     return escaped.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def specs_to_json(specs: List[TaintSpec]) -> str:
+def specs_to_json(specs: list[TaintSpec]) -> str:
     """Serialise specs to JSON for caching."""
     return json.dumps([s.to_dict() for s in specs], indent=2)
 
 
-def specs_from_json(raw: str) -> List[TaintSpec]:
+def specs_from_json(raw: str) -> list[TaintSpec]:
     """Deserialise specs from cached JSON."""
     try:
         data = json.loads(raw)

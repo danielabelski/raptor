@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ class ImageManifest:
     so package state from later layers wins on path collisions.
     """
     config_digest: str
-    layers: List[LayerDescriptor]
+    layers: list[LayerDescriptor]
     media_type: str
 
 
@@ -90,9 +89,9 @@ class IndexEntry:
     digest: str
     size: int
     media_type: str
-    os: Optional[str]
-    architecture: Optional[str]
-    variant: Optional[str]              # e.g. "v8" for arm64v8
+    os: str | None
+    architecture: str | None
+    variant: str | None              # e.g. "v8" for arm64v8
 
 
 def is_image_index(media_type: str) -> bool:
@@ -119,7 +118,7 @@ def parse_image_manifest(parsed: dict) -> ImageManifest:
             "manifest missing config.digest — cannot identify image",
         )
     layers_raw = parsed.get("layers") or []
-    layers: List[LayerDescriptor] = []
+    layers: list[LayerDescriptor] = []
     for layer in layers_raw:
         if not isinstance(layer, dict):
             continue
@@ -138,11 +137,11 @@ def parse_image_manifest(parsed: dict) -> ImageManifest:
     )
 
 
-def parse_image_index(parsed: dict) -> List[IndexEntry]:
+def parse_image_index(parsed: dict) -> list[IndexEntry]:
     """Convert a parsed image-index JSON into a list of
     :class:`IndexEntry`. Caller picks one and fetches that
     manifest separately."""
-    out: List[IndexEntry] = []
+    out: list[IndexEntry] = []
     for entry in parsed.get("manifests") or []:
         if not isinstance(entry, dict):
             continue
@@ -166,12 +165,12 @@ def parse_image_index(parsed: dict) -> List[IndexEntry]:
 
 
 def select_platform(
-    entries: List[IndexEntry],
+    entries: list[IndexEntry],
     *,
     os: str = DEFAULT_PLATFORM_OS,
     architecture: str = DEFAULT_PLATFORM_ARCH,
-    variant: Optional[str] = None,
-) -> Optional[IndexEntry]:
+    variant: str | None = None,
+) -> IndexEntry | None:
     """Pick the entry matching ``(os, architecture[, variant])``.
 
     Behaviour:

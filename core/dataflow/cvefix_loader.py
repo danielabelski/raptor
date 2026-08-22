@@ -24,7 +24,7 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class CveFixPair:
     parent_hash: str    # its single parent — pre-fix (BEFORE) state
 
 
-def _single_parent(parents_repr: Optional[str]) -> Optional[str]:
+def _single_parent(parents_repr: str | None) -> str | None:
     """Extract the lone parent hash from the list-repr string; None for merges
     (≥2 parents), roots (0), or anything unparseable."""
     if not parents_repr:
@@ -72,8 +72,8 @@ def load_pairs(
     *,
     cwes: Sequence[str] = INJECTION_CWES,
     languages: Sequence[str] = CODEQL_LANGUAGES,
-    limit: Optional[int] = None,
-) -> List[CveFixPair]:
+    limit: int | None = None,
+) -> list[CveFixPair]:
     """Return CodeQL-buildable before/after CVE fix-commit pairs."""
     cwe_ph = ",".join("?" * len(cwes))
     lang_ph = ",".join("?" * len(languages))
@@ -95,7 +95,7 @@ def load_pairs(
     finally:
         con.close()
 
-    pairs: List[CveFixPair] = []
+    pairs: list[CveFixPair] = []
     for cve_id, cwe, repo_url, lang, fix_hash, parents in rows:
         parent = _single_parent(parents)
         if parent is None:
@@ -153,8 +153,8 @@ def load_pairs_from_cve_diff_runs(
     *,
     cwes: Sequence[str] = INJECTION_CWES,
     languages: Sequence[str] = CODEQL_LANGUAGES,
-    limit: Optional[int] = None,
-) -> List[CveFixPair]:
+    limit: int | None = None,
+) -> list[CveFixPair]:
     """Return CveFixPairs parsed from /cve-diff output directories.
 
     Acceptance contract mirrors :func:`load_pairs`: GitHub-hosted repos,
@@ -171,7 +171,7 @@ def load_pairs_from_cve_diff_runs(
         load_cve_run,
     )
 
-    pairs: List[CveFixPair] = []
+    pairs: list[CveFixPair] = []
     for run_dir in run_dirs:
         try:
             rec = load_cve_run(run_dir)

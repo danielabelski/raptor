@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path, PurePosixPath
-from typing import List, Optional, Set
 
 from core.security.log_sanitisation import escape_nonprintable
 
@@ -60,8 +59,8 @@ _PROJECT_SUFFIXES = {".csproj", ".fsproj", ".vbproj"}
 
 
 def find_sln_referenced_csprojs(
-    sln_path: Path, *, repo_root: Optional[Path] = None,
-) -> List[Path]:
+    sln_path: Path, *, repo_root: Path | None = None,
+) -> list[Path]:
     """Read a ``.sln`` file and return absolute paths to every
     referenced csproj / fsproj / vbproj.
 
@@ -117,7 +116,7 @@ def find_sln_referenced_csprojs(
             repo_root = repo_root.resolve()
         except OSError:
             repo_root = None
-    found: Set[Path] = set()
+    found: set[Path] = set()
     for match in _PROJECT_LINE_RE.finditer(text):
         rel = match.group("path").replace("\\", "/").strip()
         if not rel:

@@ -1,6 +1,6 @@
 """Coverage tracking with checked_by labels."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 
 def _get_items(file_info):
@@ -9,10 +9,10 @@ def _get_items(file_info):
 
 
 def update_coverage(
-    inventory: Dict[str, Any],
-    checked_functions: List[Dict[str, str]],
+    inventory: dict[str, Any],
+    checked_functions: list[dict[str, str]],
     source_label: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Mark functions as checked by a specific tool/stage.
 
     Args:
@@ -77,7 +77,7 @@ def update_coverage(
     return inventory
 
 
-def get_coverage_stats(inventory: Dict[str, Any]) -> Dict[str, Any]:
+def get_coverage_stats(inventory: dict[str, Any]) -> dict[str, Any]:
     """Compute coverage statistics from an inventory.
 
     Returns:
@@ -86,8 +86,8 @@ def get_coverage_stats(inventory: Dict[str, Any]) -> Dict[str, Any]:
     """
     total = 0
     checked = 0
-    by_source: Dict[str, int] = {}
-    by_kind: Dict[str, Dict[str, int]] = {}  # kind -> {total, checked}
+    by_source: dict[str, int] = {}
+    by_kind: dict[str, dict[str, int]] = {}  # kind -> {total, checked}
 
     for file_info in inventory.get('files', []):
         for item in _get_items(file_info):
@@ -121,7 +121,7 @@ def get_coverage_stats(inventory: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def format_coverage_summary(inventory: Dict[str, Any]) -> str:
+def format_coverage_summary(inventory: dict[str, Any]) -> str:
     """Format a human-readable coverage summary.
 
     Returns a multi-line string for printing to stdout.

@@ -49,17 +49,16 @@ import ast
 import logging
 import re
 from collections import Counter
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
 # A dead scope is reported as an inclusive ``(start_line, end_line)``
 # 1-indexed range. A function whose ``line_start`` falls within any
 # returned range is lexically dead.
-DeadRange = Tuple[int, int]
+DeadRange = tuple[int, int]
 
 
-def detect_dead_scopes(language: str, content: str) -> List[DeadRange]:
+def detect_dead_scopes(language: str, content: str) -> list[DeadRange]:
     """Per-language dispatch. Returns inclusive 1-indexed line ranges
     of lexically dead scopes, or ``[]`` when none found (or the
     language has no detector wired).
@@ -92,7 +91,7 @@ def detect_dead_scopes(language: str, content: str) -> List[DeadRange]:
 # ---------------------------------------------------------------------------
 
 
-def _detect_python(content: str) -> List[DeadRange]:
+def _detect_python(content: str) -> list[DeadRange]:
     import warnings
     try:
         with warnings.catch_warnings():
@@ -100,7 +99,7 @@ def _detect_python(content: str) -> List[DeadRange]:
             tree = ast.parse(content)
     except SyntaxError:
         return []
-    ranges: List[DeadRange] = []
+    ranges: list[DeadRange] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.If, ast.While)) and _py_test_is_false(
             node.test
@@ -148,11 +147,11 @@ def _py_end_line(stmt: ast.stmt) -> int:
 _JS_DEAD_IF = re.compile(r"\bif\s*\(\s*(?:false|0)\s*\)\s*\{")
 
 
-def _detect_javascript(content: str) -> List[DeadRange]:
+def _detect_javascript(content: str) -> list[DeadRange]:
     from core.inventory.js_lexer import blank_js_noncode
 
     stripped = blank_js_noncode(content)
-    ranges: List[DeadRange] = []
+    ranges: list[DeadRange] = []
     for m in _JS_DEAD_IF.finditer(stripped):
         brace_pos = m.end() - 1
         close = _match_brace(stripped, brace_pos)
@@ -191,8 +190,8 @@ _RUST_ITEM_AFTER_CFG = re.compile(
 )
 
 
-def _detect_rust(content: str) -> List[DeadRange]:
-    ranges: List[DeadRange] = []
+def _detect_rust(content: str) -> list[DeadRange]:
+    ranges: list[DeadRange] = []
     # ``if false { … }`` blocks.
     for m in _RUST_DEAD_IF.finditer(content):
         brace_pos = m.end() - 1
@@ -326,15 +325,15 @@ _C_SCAN_BUDGET_FACTOR = 8
 _C_MAX_PARAM_SCAN = 16 * 1024
 
 
-def _detect_c(content: str) -> List[DeadRange]:
+def _detect_c(content: str) -> list[DeadRange]:
     stripped = _c_strip_comments_and_strings(content)
-    ranges: List[DeadRange] = []
+    ranges: list[DeadRange] = []
     budget = _C_SCAN_BUDGET_FACTOR * len(stripped)
     # Whole-word occurrence count for every identifier, computed once —
     # a per-candidate re.findall over the full file is the other half of
     # the O(candidates x file-size) blowup. Built lazily: most files have
     # no static-function candidates at all.
-    counts: "Counter[str] | None" = None
+    counts: Counter[str] | None = None
 
     for m in re.finditer(r"\bstatic\b", stripped):
         if budget <= 0:
@@ -410,7 +409,7 @@ def _detect_c(content: str) -> List[DeadRange]:
 # ---------------------------------------------------------------------------
 
 
-def _match_brace(source: str, open_pos: int) -> "int | None":
+def _match_brace(source: str, open_pos: int) -> int | None:
     """Given the index of an opening ``{``, return the index of the
     matching ``}``. Skips string / template / char literals and line
     comments so braces inside them don't unbalance the count. Returns
@@ -461,7 +460,7 @@ def _match_brace(source: str, open_pos: int) -> "int | None":
     return None
 
 
-def _skip_string(source: str, start: int) -> "int | None":
+def _skip_string(source: str, start: int) -> int | None:
     """Advance past a string / template / char literal starting at
     ``start``. Handles backslash escapes."""
     quote = source[start]
@@ -563,8 +562,8 @@ def _php_strip_comments_and_strings(content: str) -> str:
 
 
 def _php_blank_heredoc(
-    out: "list[str]", content: str, start: int,
-) -> "int | None":
+    out: list[str], content: str, start: int,
+) -> int | None:
     """Blank a heredoc/nowdoc starting at ``start`` (the ``<<<``).
     Returns the index just past the closing identifier, or ``None``
     when ``<<<`` isn't followed by a valid opener (caller skips it).
@@ -614,13 +613,13 @@ def _php_blank_heredoc(
     return end
 
 
-def _detect_php(content: str) -> List[DeadRange]:
+def _detect_php(content: str) -> list[DeadRange]:
     # Strip comments AND string literals in a single pass (the JS
     # detector's two-phase regex approach would let a comment marker
     # inside a string eat the closing quote) so neither a keyword in a
     # comment nor an ``if (false) {`` in a string misleads the matcher.
     stripped = _php_strip_comments_and_strings(content)
-    ranges: List[DeadRange] = []
+    ranges: list[DeadRange] = []
     for m in _PHP_DEAD_IF.finditer(stripped):
         close = _match_brace(stripped, m.end() - 1)
         if close is None:
@@ -669,9 +668,9 @@ def _strip_ruby_comment(line: str) -> str:
     return line
 
 
-def _detect_ruby(content: str) -> List[DeadRange]:
+def _detect_ruby(content: str) -> list[DeadRange]:
     lines = [_strip_ruby_comment(ln) for ln in content.split("\n")]
-    ranges: List[DeadRange] = []
+    ranges: list[DeadRange] = []
     for i, line in enumerate(lines):
         m = _RB_DEAD_IF.match(line)
         if not m:

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import FrozenSet, List, Set
 
 from .lifecycle_model import Guard, LifecycleFinding, StateField
 
@@ -49,7 +48,7 @@ def _guard_covers(read_guard: Guard, write_guard: Guard) -> bool:
 
 
 def _read_site_covers_guard(
-    read_guards: FrozenSet[Guard],
+    read_guards: frozenset[Guard],
     write_guard: Guard,
 ) -> bool:
     """Check if any read-site guard covers a write-site guard."""
@@ -58,7 +57,7 @@ def _read_site_covers_guard(
 
 def check_coverage(
     field: StateField,
-) -> List[LifecycleFinding]:
+) -> list[LifecycleFinding]:
     """Check all read sites against all write-site preconditions.
 
     For each read site, computes the set of write-site guards that
@@ -66,9 +65,9 @@ def check_coverage(
     If any write-site guard is missing at a read site, emits a
     LifecycleFinding.
     """
-    findings: List[LifecycleFinding] = []
+    findings: list[LifecycleFinding] = []
 
-    all_write_guards: Set[Guard] = set()
+    all_write_guards: set[Guard] = set()
     for ws in field.write_sites:
         all_write_guards.update(ws.guards)
 
@@ -79,7 +78,7 @@ def check_coverage(
         if not rs.security_relevant:
             continue
 
-        missing: Set[str] = set()
+        missing: set[str] = set()
         for wg in all_write_guards:
             if not _read_site_covers_guard(rs.guards, wg):
                 missing.add(wg.condition)
@@ -101,7 +100,7 @@ def check_coverage_with_cfg(
     cfg,
     *,
     cfg_file: str = "",
-) -> List[LifecycleFinding]:
+) -> list[LifecycleFinding]:
     """Check read sites using the structured guard-bypass query.
 
     When a CFG is available, uses path enumeration from entry to
@@ -121,9 +120,9 @@ def check_coverage_with_cfg(
     if not hasattr(cfg, "entry") or not hasattr(cfg, "nodes"):
         return check_coverage(field)
 
-    findings: List[LifecycleFinding] = []
+    findings: list[LifecycleFinding] = []
 
-    all_write_guards: Set[Guard] = set()
+    all_write_guards: set[Guard] = set()
     for ws in field.write_sites:
         all_write_guards.update(ws.guards)
 
@@ -136,7 +135,7 @@ def check_coverage_with_cfg(
         if not rs.security_relevant:
             continue
 
-        missing: Set[str] = set()
+        missing: set[str] = set()
         for wg in all_write_guards:
             covered_structurally = check_guard_coverage(
                 cfg, rs.line, wg.condition,
@@ -158,15 +157,15 @@ def check_coverage_with_cfg(
 
 
 def check_all_fields(
-    fields: List[StateField],
+    fields: list[StateField],
     cfgs=None,
-) -> List[LifecycleFinding]:
+) -> list[LifecycleFinding]:
     """Check all state fields and return all findings.
 
     When cfgs is provided (dict mapping file_path to CFG), uses
     structural guard-bypass queries for read sites in those files.
     """
-    all_findings: List[LifecycleFinding] = []
+    all_findings: list[LifecycleFinding] = []
     for field in fields:
         if cfgs:
             checked_sites: set = set()

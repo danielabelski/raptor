@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import datetime
 from copy import deepcopy
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from .observe_profile import ObserveProfile
 
@@ -56,7 +56,7 @@ def _now_iso() -> str:
 
 
 def _matches_path(observed: str, ep_or_sink: dict,
-                  target_dir: Optional[str] = None) -> bool:
+                  target_dir: str | None = None) -> bool:
     """Decide whether an observed absolute path corresponds to an
     entry point or sink record in the context map.
 
@@ -107,7 +107,7 @@ def _matches_path(observed: str, ep_or_sink: dict,
 
 def _correlate_entry_points(profile: ObserveProfile,
                             entry_points: Iterable[dict],
-                            target_dir: Optional[str] = None) -> list:
+                            target_dir: str | None = None) -> list:
     """Return entry-point IDs whose file appears in paths_read.
 
     Caller passes the context map's ``entry_points`` list and (when
@@ -130,7 +130,7 @@ def _correlate_entry_points(profile: ObserveProfile,
 
 def _correlate_sinks(profile: ObserveProfile,
                      sink_details: Iterable[dict],
-                     target_dir: Optional[str] = None) -> list:
+                     target_dir: str | None = None) -> list:
     """Return sink IDs whose file appears in paths_written.
 
     Same shape as _correlate_entry_points but on the write side.
@@ -164,10 +164,10 @@ def merge_observation_into_context_map(
     context_map: dict,
     profile: ObserveProfile,
     *,
-    target_dir: Optional[str] = None,
-    binary: Optional[str] = None,
-    command: Optional[Iterable[str]] = None,
-    captured_at: Optional[str] = None,
+    target_dir: str | None = None,
+    binary: str | None = None,
+    command: Iterable[str] | None = None,
+    captured_at: str | None = None,
 ) -> dict:
     """Return a new context map with runtime observation merged in.
 

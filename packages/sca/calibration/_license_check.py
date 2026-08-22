@@ -27,7 +27,6 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import List
 
 # Field names that would indicate raw exploit content. Any
 # calibration JSON containing a key that matches (case-insensitive)
@@ -54,10 +53,10 @@ _REQUIRED_SOURCE_FIELDS = frozenset({"license", "url"})
 _GENERATED_REPORT_SUBTREES = frozenset({"refit", "validation"})
 
 
-def check(corpus_dir: Path, attribution_md: Path) -> List[str]:
+def check(corpus_dir: Path, attribution_md: Path) -> list[str]:
     """Return a list of violation strings (empty when corpus is
     compliant)."""
-    violations: List[str] = []
+    violations: list[str] = []
     if not corpus_dir.is_dir():
         violations.append(
             f"calibration dir not found: {corpus_dir}"
@@ -123,8 +122,8 @@ def check(corpus_dir: Path, attribution_md: Path) -> List[str]:
     return violations
 
 
-def _walk_for_forbidden(node, path: tuple) -> List[tuple]:
-    out: List[tuple] = []
+def _walk_for_forbidden(node, path: tuple) -> list[tuple]:
+    out: list[tuple] = []
     if isinstance(node, dict):
         for k, v in node.items():
             if isinstance(k, str) and k.lower() in _FORBIDDEN_FIELDS:

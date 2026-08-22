@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 from .schema import AnyEvidence, AnyEvent, AnyObservation
 from .schema.common import EvidenceSource
@@ -177,7 +177,7 @@ class EvidenceStore:
     _FROM_JSON_MAX_BYTES = 100 * 1024 * 1024
 
     @classmethod
-    def from_json(cls, json_str: str) -> "EvidenceStore":
+    def from_json(cls, json_str: str) -> EvidenceStore:
         """Create store from JSON string."""
         if len(json_str) > cls._FROM_JSON_MAX_BYTES:
             raise ValueError(
@@ -190,7 +190,7 @@ class EvidenceStore:
         return cls([load_evidence_from_json(item) for item in data])
 
     @classmethod
-    def load(cls, path: str | Path) -> "EvidenceStore":
+    def load(cls, path: str | Path) -> EvidenceStore:
         """Load store from JSON file.
 
         Explicit `encoding="utf-8-sig"` so:
@@ -210,7 +210,7 @@ class EvidenceStore:
         """
         return cls.from_json(Path(path).read_text(encoding="utf-8-sig"))
 
-    def merge(self, other: "EvidenceStore") -> None:
+    def merge(self, other: EvidenceStore) -> None:
         """Merge another store into this one."""
         self.add_all(list(other))
 

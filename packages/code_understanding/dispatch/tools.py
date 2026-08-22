@@ -45,7 +45,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any
+from collections.abc import Callable
 
 
 # Output caps — generous but bounded. A hunt that exceeds these is
@@ -75,7 +76,7 @@ class SandboxedTools:
     repo_root: Path
 
     @classmethod
-    def for_repo(cls, repo_path: str | Path) -> "SandboxedTools":
+    def for_repo(cls, repo_path: str | Path) -> SandboxedTools:
         # Symmetric with _resolve_inside: NUL byte → clean error.
         if isinstance(repo_path, str) and "\x00" in repo_path:
             raise ValueError("repo_path contains NUL byte")
@@ -191,9 +192,9 @@ class SandboxedTools:
         except re.error as e:
             return json.dumps({"error": f"invalid regex: {e}"})
 
-        matches: List[Dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
         scanned = 0
-        skipped_large: List[str] = []
+        skipped_large: list[str] = []
         truncated = False
 
         for f in self._walk_files(search_root):
@@ -281,7 +282,7 @@ class SandboxedTools:
         # avoid (matches the convention in code_understanding.adapters).
         pat = pattern.removeprefix("/").removeprefix("./")
 
-        results: List[str] = []
+        results: list[str] = []
         scanned = 0
         truncated = False
         for f in self._walk_files(self.repo_root):

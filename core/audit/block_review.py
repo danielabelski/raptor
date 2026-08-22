@@ -24,7 +24,7 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,11 @@ class BlockTaintState:
     block_id: int
     lineno: int
     label: str
-    tainted_at_entry: List[str] = field(default_factory=list)
-    calls_dangerous: List[str] = field(default_factory=list)
-    calls_sanitizer: List[str] = field(default_factory=list)
-    defs: List[str] = field(default_factory=list)
-    uses: List[str] = field(default_factory=list)
+    tainted_at_entry: list[str] = field(default_factory=list)
+    calls_dangerous: list[str] = field(default_factory=list)
+    calls_sanitizer: list[str] = field(default_factory=list)
+    defs: list[str] = field(default_factory=list)
+    uses: list[str] = field(default_factory=list)
     is_branch: bool = False
     branch_involves_tainted: bool = False
 
@@ -77,8 +77,8 @@ class BlockReviewPlan:
     function: str
     file: str
     profile: ComplexityProfile
-    blocks: List[BlockTaintState] = field(default_factory=list)
-    source_lines: List[str] = field(default_factory=list)
+    blocks: list[BlockTaintState] = field(default_factory=list)
+    source_lines: list[str] = field(default_factory=list)
 
 
 def compute_cyclomatic_complexity(cfg) -> int:
@@ -104,7 +104,7 @@ def _is_branch_node(cfg, node) -> bool:
     return len(list(cfg.successors(node))) > 1
 
 
-def _get_dangerous_targets() -> FrozenSet[str]:
+def _get_dangerous_targets() -> frozenset[str]:
     """Import the dangerous target set from sink_discovery."""
     try:
         from core.inventory.sink_discovery import DANGEROUS_TARGETS
@@ -118,7 +118,7 @@ def _get_dangerous_targets() -> FrozenSet[str]:
         })
 
 
-def _get_sanitizer_callables(cwe: str, language: str) -> FrozenSet[str]:
+def _get_sanitizer_callables(cwe: str, language: str) -> frozenset[str]:
     """Import the sanitizer catalog for a CWE class."""
     try:
         from core.analysis.sanitizer_cut import sanitizer_callables_for_cwe
@@ -158,7 +158,7 @@ def analyze_complexity(
     taint_branch_count = 0
     dangerous_call_count = 0
 
-    tainted_names: Set[str] = set()
+    tainted_names: set[str] = set()
     if taint_approx is not None:
         params = getattr(taint_approx, "params", [])
         if params:
@@ -194,8 +194,8 @@ def analyze_complexity(
 def _count_paths_to_dangerous(
     cfg,
     nodes: list,
-    dangerous: FrozenSet[str],
-    tainted_names: Set[str],
+    dangerous: frozenset[str],
+    tainted_names: set[str],
 ) -> int:
     """Count distinct tainted paths reaching a dangerous call.
 
@@ -222,7 +222,7 @@ def _count_paths_to_dangerous(
     if entry is None:
         return 0
 
-    stack: List[Tuple[Any, Set[str], Set[int]]] = [
+    stack: list[tuple[Any, set[str], set[int]]] = [
         (entry, set(tainted_names), set()),
     ]
     max_visits = 100_000
@@ -263,7 +263,7 @@ def build_block_review_plan(
     source: str = "",
     cwe: str = "",
     language: str = "",
-) -> Optional[BlockReviewPlan]:
+) -> BlockReviewPlan | None:
     """Build a block-level review plan for a complex function.
 
     Returns None if the function doesn't qualify for block-level review.
@@ -288,19 +288,19 @@ def build_block_review_plan(
         return None
 
     dangerous = _get_dangerous_targets()
-    sanitizers: FrozenSet[str] = frozenset()
+    sanitizers: frozenset[str] = frozenset()
     if cwe and language:
         sanitizers = _get_sanitizer_callables(cwe, language)
 
-    tainted_names: Set[str] = set()
+    tainted_names: set[str] = set()
     if taint_approx is not None:
         params = getattr(taint_approx, "params", [])
         if params:
             tainted_names.update(params)
 
-    blocks: List[BlockTaintState] = []
+    blocks: list[BlockTaintState] = []
     nodes = list(cfg.nodes())
-    current_taint: Dict[int, Set[str]] = {}
+    current_taint: dict[int, set[str]] = {}
 
     entry = cfg.entry if hasattr(cfg, "entry") else getattr(cfg, "entry_node", None)
     if entry is not None:
@@ -391,7 +391,7 @@ def _bfs_traversal(cfg, nodes: list) -> list:
     if entry is None:
         return nodes
 
-    visited: Set[int] = set()
+    visited: set[int] = set()
     order: list = []
 
     stack = deque([entry])
@@ -482,7 +482,7 @@ def try_build_cfg(
     function_name: str,
     target_path: Path,
     source: str = "",
-) -> Optional[Any]:
+) -> Any | None:
     """Build a CFG for a function, auto-detecting the language.
 
     Returns a PythonCFG or CPPCFG, or None if the language is

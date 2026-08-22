@@ -18,7 +18,7 @@ import atexit
 import contextlib
 import os
 from pathlib import Path
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 from .auth import CredentialStore, seed_from_config
 from .server import LLMDispatcher
@@ -50,9 +50,9 @@ _INPROCESS_TOKEN_TTL_S = 7 * 24 * 60 * 60
 def dispatcher_for_run(
     run_dir: Path,
     *,
-    token_ttl_s: Optional[int] = None,
-    token_budget: Optional[int] = None,
-    creds: Optional[CredentialStore] = None,
+    token_ttl_s: int | None = None,
+    token_budget: int | None = None,
+    creds: CredentialStore | None = None,
 ) -> LLMDispatcher:
     """Return a fresh ``LLMDispatcher`` whose audit log lives inside
     ``run_dir`` and whose ``run_id`` matches the run dir name.
@@ -90,9 +90,9 @@ def dispatcher_for_run(
 def llm_dispatcher_in_run(
     run_dir: Path,
     *,
-    token_ttl_s: Optional[int] = None,
-    token_budget: Optional[int] = None,
-    creds: Optional[CredentialStore] = None,
+    token_ttl_s: int | None = None,
+    token_budget: int | None = None,
+    creds: CredentialStore | None = None,
 ) -> Iterator[LLMDispatcher]:
     """Context-manager flavour: dispatcher lives only inside the
     ``with`` block. Preferred when the dispatching scope is bounded
@@ -113,7 +113,7 @@ def llm_dispatcher_in_run(
 
 def ensure_inprocess_dispatcher_env(
     label: str = "inprocess",
-) -> Optional[LLMDispatcher]:
+) -> LLMDispatcher | None:
     """Start a dispatcher and export its route into THIS process's env
     (``RAPTOR_LLM_SOCKET`` + ``RAPTOR_LLM_TOKEN_FD``) so same-process
     SDK clients (``make_*_client`` with no explicit socket/token) can
@@ -158,7 +158,7 @@ def ensure_route_for_model_configs(
     model_configs,
     *,
     label: str = "inprocess",
-) -> Optional[LLMDispatcher]:
+) -> LLMDispatcher | None:
     """Self-serve an in-process dispatcher when any resolved model is
     dispatcher-only (Bedrock) and no route exists yet.
 

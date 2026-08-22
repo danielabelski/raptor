@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -47,10 +47,10 @@ _EXTERN_RE = re.compile(
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{normalised_crate: [(file, line, is_test), ...]}``."""
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for rs_file in _walk_rust_sources(target, max_depth=max_depth):
         is_test = _is_test_file(rs_file, target)
         try:
@@ -66,9 +66,9 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> Reachability:
     """Look up ``dep_name`` in the scan; return a Reachability verdict."""
     key = _normalise(dep_name)
@@ -111,7 +111,7 @@ def _normalise(name: str) -> str:
     return re.sub(r"[-_]+", "-", name).lower()
 
 
-def _imports_in(text: str) -> Iterable[Tuple[str, int]]:
+def _imports_in(text: str) -> Iterable[tuple[str, int]]:
     for m in _USE_RE.finditer(text):
         yield m.group(1), text.count("\n", 0, m.start()) + 1
     for m in _EXTERN_RE.finditer(text):
@@ -147,12 +147,12 @@ def _is_test_file(path: Path, target: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path],
+    target: Path | None,
     cap: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for f, line, _ in hits[:cap]:
         rel = (f.relative_to(target) if target and target in f.parents
                 else f)

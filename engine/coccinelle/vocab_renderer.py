@@ -20,7 +20,7 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, FrozenSet
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ _SCRIPT_BLOCK_RE = re.compile(
 )
 
 
-def _get_bucket(vocab: Any, bucket_name: str) -> FrozenSet[str]:
+def _get_bucket(vocab: Any, bucket_name: str) -> frozenset[str]:
     bucket_attr = _BUCKET_MAP.get(bucket_name)
     if bucket_attr is None:
         logger.warning(
@@ -85,7 +85,7 @@ def _get_bucket(vocab: Any, bucket_name: str) -> FrozenSet[str]:
     return safe
 
 
-def _extend_alternation(line: str, names: FrozenSet[str]) -> str:
+def _extend_alternation(line: str, names: frozenset[str]) -> str:
     """Extend ``\\(a\\|b\\)`` with extra names."""
     if not names:
         return line
@@ -93,7 +93,7 @@ def _extend_alternation(line: str, names: FrozenSet[str]) -> str:
     return line.replace(r"\)", suffix + r"\)", 1)
 
 
-def _extend_identifier_list(line: str, names: FrozenSet[str]) -> str:
+def _extend_identifier_list(line: str, names: frozenset[str]) -> str:
     """Extend ``identifier fn = {a, b, ...};`` with extra names."""
     if not names:
         return line
@@ -101,7 +101,7 @@ def _extend_identifier_list(line: str, names: FrozenSet[str]) -> str:
     return line.replace("};", f", {extra}}};", 1)
 
 
-def _extend_python_set(line: str, names: FrozenSet[str]) -> str:
+def _extend_python_set(line: str, names: frozenset[str]) -> str:
     """Extend ``{"a", "b", ...}`` with extra quoted names."""
     if not names:
         return line
@@ -113,7 +113,7 @@ def _extend_python_set(line: str, names: FrozenSet[str]) -> str:
 
 
 def _extend_when_block(
-    lines: list[str], start: int, names: FrozenSet[str],
+    lines: list[str], start: int, names: frozenset[str],
 ) -> list[str]:
     """Insert extra ``when != name(...)`` lines after the last when clause."""
     if not names:
@@ -136,7 +136,7 @@ def _extend_when_block(
 
 
 def _extend_disjunction(
-    lines: list[str], start: int, tmpl: str, names: FrozenSet[str],
+    lines: list[str], start: int, tmpl: str, names: frozenset[str],
 ) -> list[str]:
     """Insert new ``|`` entries into a ``( ... | ... )`` disjunction block."""
     if not names:

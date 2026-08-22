@@ -33,7 +33,7 @@ case (release vs pre-release, simple numeric ordering) correctly.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple, Union
+from typing import Union
 
 # Well-known qualifier ordering (lower = older; SNAPSHOT/alpha/beta/rc <
 # release, sp > release).
@@ -63,10 +63,10 @@ _TOKEN_RE = re.compile(r"(\d+|[A-Za-z]+|[.\-_])")
 Token = Union[int, str]
 
 
-def _tokenise(version: str) -> List[Token]:
+def _tokenise(version: str) -> list[Token]:
     """Tokenise a Maven version string into ints, qualifier strings, and
     separators."""
-    out: List[Token] = []
+    out: list[Token] = []
     for m in _TOKEN_RE.finditer(version.strip().lower()):
         tok = m.group(1)
         if tok.isdigit():
@@ -76,10 +76,10 @@ def _tokenise(version: str) -> List[Token]:
     return out
 
 
-def _items(version: str) -> List[Tuple[str, Union[int, str]]]:
+def _items(version: str) -> list[tuple[str, int | str]]:
     """Convert tokens to (kind, value) pairs, where kind is one of
     'int', 'str' (qualifier), or 'sep'."""
-    pairs: List[Tuple[str, Union[int, str]]] = []
+    pairs: list[tuple[str, int | str]] = []
     for tok in _tokenise(version):
         if isinstance(tok, int):
             pairs.append(("int", tok))
@@ -117,8 +117,8 @@ def compare(a: str, b: str) -> int:
     return _compare_extra(ia[len(ib):])
 
 
-def _compare_tokens(ta: Tuple[str, Union[int, str]],
-                    tb: Tuple[str, Union[int, str]]) -> int:
+def _compare_tokens(ta: tuple[str, int | str],
+                    tb: tuple[str, int | str]) -> int:
     ka, va = ta
     kb, vb = tb
     if ka == "int" and kb == "int":
@@ -150,7 +150,7 @@ def _compare_tokens(ta: Tuple[str, Union[int, str]],
     return -1 if va < vb else 1
 
 
-def _compare_extra(extras: List[Tuple[str, Union[int, str]]]) -> int:
+def _compare_extra(extras: list[tuple[str, int | str]]) -> int:
     """When two versions differ in length, decide ordering from the extra
     tokens of the longer one. Extra zeros don't matter; extra qualifiers
     typically make it less.
@@ -173,8 +173,8 @@ def _compare_extra(extras: List[Tuple[str, Union[int, str]]]) -> int:
     return 0
 
 
-def _strip_trivial_tail(items: List[Tuple[str, Union[int, str]]]
-                         ) -> List[Tuple[str, Union[int, str]]]:
+def _strip_trivial_tail(items: list[tuple[str, int | str]]
+                         ) -> list[tuple[str, int | str]]:
     """Strip trailing tokens that don't affect ordering (e.g., '.0', '-ga')."""
     out = list(items)
     while out:

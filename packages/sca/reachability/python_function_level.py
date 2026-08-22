@@ -67,7 +67,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Reachability
 
@@ -75,8 +76,8 @@ logger = logging.getLogger(__name__)
 
 
 def build_pypi_symbol_map(
-    osv_results: Optional[Iterable[Any]],
-) -> Dict[str, List[str]]:
+    osv_results: Iterable[Any] | None,
+) -> dict[str, list[str]]:
     """Extract per-dep affected-function lists from OSV results.
 
     Returns ``{dep_key: [function_name, ...]}``. Empty when no
@@ -84,14 +85,14 @@ def build_pypi_symbol_map(
     """
     if not osv_results:
         return {}
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for r in osv_results:
         if not hasattr(r, "advisories"):
             continue
         dep_key = getattr(r, "dep_key", None)
         if not dep_key or not dep_key.startswith("PyPI:"):
             continue
-        funcs: List[str] = []
+        funcs: list[str] = []
         for adv in r.advisories:
             funcs.extend(_extract_function_names(adv))
         if funcs:
@@ -100,13 +101,13 @@ def build_pypi_symbol_map(
     return {k: list(dict.fromkeys(v)) for k, v in out.items()}
 
 
-def _extract_function_names(advisory: Any) -> List[str]:
+def _extract_function_names(advisory: Any) -> list[str]:
     """Pull function names out of an Advisory object.
 
     Tries every shape we've seen in real OSV PyPI records,
     deduplicating across them.
     """
-    out: List[str] = []
+    out: list[str] = []
     es = getattr(advisory, "ecosystem_specific", None) or {}
     ds = getattr(advisory, "database_specific", None) or {}
     # ``imports[].symbols`` shape (mirrors Go convention).
@@ -134,12 +135,12 @@ def _extract_function_names(advisory: Any) -> List[str]:
 
 
 def refine_pypi_verdicts(
-    deps: List[Dependency],
-    out: Dict[str, Reachability],
+    deps: list[Dependency],
+    out: dict[str, Reachability],
     *,
     target: Path,
-    pypi_symbol_map: Dict[str, List[str]],
-    inventory: Optional[Dict[str, Any]] = None,
+    pypi_symbol_map: dict[str, list[str]],
+    inventory: dict[str, Any] | None = None,
 ) -> None:
     """For PyPI deps in ``pypi_symbol_map`` whose current verdict is
     ``imported``, run the function-level resolver and update ``out``
@@ -150,7 +151,7 @@ def refine_pypi_verdicts(
     skipped entirely when no PyPI dep needs the function-level
     pass — preserves the cost guarantee documented at module top.
     """
-    candidates: List[Dependency] = []
+    candidates: list[Dependency] = []
     for d in deps:
         if d.ecosystem != "PyPI":
             continue

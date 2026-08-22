@@ -26,7 +26,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from . import ResolverResult, _check_tool, _run
 
@@ -124,7 +123,7 @@ class BundlerResolver:
             )
 
 
-def _read_if_exists(p: Path) -> Optional[bytes]:
+def _read_if_exists(p: Path) -> bytes | None:
     try:
         return p.read_bytes()
     except OSError:

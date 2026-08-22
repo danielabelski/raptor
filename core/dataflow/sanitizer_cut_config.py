@@ -41,7 +41,6 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
-from typing import Optional
 
 VALID_MODES = ("off", "on", "strict", "shadow")
 
@@ -79,12 +78,12 @@ class SanitizerCutConfig:
     mode: str
     value_bound_enabled: bool
     lexical_fallback_enabled: bool
-    parity_log_path: Optional[str]
-    audit_dir: Optional[str] = None
+    parity_log_path: str | None
+    audit_dir: str | None = None
 
 
 # Module-level explicit configuration. None means "fall back to env".
-_active: Optional[SanitizerCutConfig] = None
+_active: SanitizerCutConfig | None = None
 
 
 def _truthy(value: str) -> bool:
@@ -92,8 +91,8 @@ def _truthy(value: str) -> bool:
 
 
 def _resolve_parity_log(
-    raw: Optional[str], run_dir: Optional[str], *, want_default: bool,
-) -> Optional[str]:
+    raw: str | None, run_dir: str | None, *, want_default: bool,
+) -> str | None:
     """Resolve a parity-log path.
 
     A boolean-style value (``1`` / ``true`` / ``on`` / ``yes``) or
@@ -117,8 +116,8 @@ def _resolve_parity_log(
 def config_for_mode(
     mode: str,
     *,
-    parity_log: Optional[str] = None,
-    run_dir: Optional[str] = None,
+    parity_log: str | None = None,
+    run_dir: str | None = None,
 ) -> SanitizerCutConfig:
     """Build a :class:`SanitizerCutConfig` for ``mode``.
 
@@ -218,8 +217,8 @@ def _export_to_env(c: SanitizerCutConfig) -> None:
 def configure(
     mode: str,
     *,
-    parity_log: Optional[str] = None,
-    run_dir: Optional[str] = None,
+    parity_log: str | None = None,
+    run_dir: str | None = None,
     export_env: bool = False,
 ) -> SanitizerCutConfig:
     """Install an explicit configuration (from a CLI flag). Returns the
@@ -259,18 +258,18 @@ def lexical_fallback_enabled() -> bool:
     return current().lexical_fallback_enabled
 
 
-def parity_log_path() -> Optional[str]:
+def parity_log_path() -> str | None:
     return current().parity_log_path
 
 
-def audit_dir() -> Optional[str]:
+def audit_dir() -> str | None:
     return current().audit_dir
 
 
 _PERSIST_NAME = "sanitizer-cut-config.json"
 
 
-def persist(run_dir: str) -> Optional[str]:
+def persist(run_dir: str) -> str | None:
     """Write the active config to ``<run_dir>/sanitizer-cut-config.json``
     so a multi-process pipeline (``/validate`` runs each stage as its
     own process) can reload it. Returns the path written, or None if
@@ -302,7 +301,7 @@ def persist(run_dir: str) -> Optional[str]:
 
 def load_persisted(
     run_dir: str, *, export_env: bool = True,
-) -> Optional[SanitizerCutConfig]:
+) -> SanitizerCutConfig | None:
     """Reload a config persisted by :func:`persist` and install it
     (with env export by default). No-op returning None when the file is
     absent or unreadable — the env fallback stays active."""
@@ -360,8 +359,8 @@ def add_cli_arguments(parser) -> None:
 
 
 def configure_from_args(
-    args, *, run_dir: Optional[str] = None, export_env: bool = False,
-) -> Optional[SanitizerCutConfig]:
+    args, *, run_dir: str | None = None, export_env: bool = False,
+) -> SanitizerCutConfig | None:
     """Apply parsed argparse values. No-op (returns None, leaving the
     env fallback active) when ``--sanitizer-cut`` was not passed.
 

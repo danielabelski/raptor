@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -48,14 +48,14 @@ _PHP_USE_RE = re.compile(
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{namespace: [(file, line, is_test), ...]}``.
 
     ``namespace`` is the full ``Vendor\\Class\\...`` chain from the
     ``use`` statement.
     """
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for php_file in _walk_php_sources(target, max_depth=max_depth):
         is_test = _is_test_file(php_file, target)
         try:
@@ -71,9 +71,9 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> Reachability:
     """Match a Composer ``vendor/pkg`` dep against namespaces in the scan.
 
@@ -93,8 +93,8 @@ def resolve_dep(
     vendor_pascal = _to_pascal(vendor)
     pkg_pascal = _to_pascal(pkg)
 
-    pkg_matches: List[Tuple[Path, int, bool]] = []
-    vendor_only_matches: List[Tuple[Path, int, bool]] = []
+    pkg_matches: list[tuple[Path, int, bool]] = []
+    vendor_only_matches: list[tuple[Path, int, bool]] = []
     for ns, hits in scan.items():
         head = ns.split("\\", 1)[0]
         if head.lower() != vendor_pascal.lower():
@@ -155,7 +155,7 @@ def resolve_dep(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _imports_in(text: str) -> Iterable[Tuple[str, int]]:
+def _imports_in(text: str) -> Iterable[tuple[str, int]]:
     for m in _PHP_USE_RE.finditer(text):
         yield m.group(1), text.count("\n", 0, m.start()) + 1
 
@@ -190,12 +190,12 @@ def _is_test_file(path: Path, target: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path],
+    target: Path | None,
     cap: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for f, line, _ in hits[:cap]:
         rel = (f.relative_to(target) if target and target in f.parents
                 else f)

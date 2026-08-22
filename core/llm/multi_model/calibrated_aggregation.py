@@ -25,7 +25,7 @@ Design constraints:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Mapping, Optional, Tuple
+from collections.abc import Mapping
 
 from core.llm.multi_model.dawid_skene import (
     FindingPosterior,
@@ -55,22 +55,22 @@ class CalibratedVerdict:
     names here are the on-disk schema.
     """
     posterior_true_positive: float
-    credible_interval: Tuple[float, float]
+    credible_interval: tuple[float, float]
     n_models: int
     decision_class: str
     aggregation_method: str  # METHOD_DAWID_SKENE | METHOD_VOTE
-    aggregation_fallback_reason: Optional[str]
+    aggregation_fallback_reason: str | None
     converged: bool
     # Per-model inferred reliability for this decision class. Empty list
     # when method == METHOD_VOTE. Useful for explainability surfaces and
     # for Phase 4's posterior-weighted scorecard updates.
-    model_reliabilities: List[Dict[str, float]] = field(default_factory=list)
+    model_reliabilities: list[dict[str, float]] = field(default_factory=list)
     # The Beta prior the EM ran under ({alpha, beta, mean}). The biggest
     # interpretive caveat on the posterior is whether it was computed
     # under the default uniform prior or an audit-derived per-class
     # prior — emit it so the JSON is self-describing. None when method
     # == METHOD_VOTE (no prior involved).
-    class_prior: Optional[Dict[str, float]] = None
+    class_prior: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ class CalibratedVerdict:
 def _records_from_finding(
     finding_id: str, finding: Mapping, *,
     decision_class_prefix: str,
-) -> List[PanelRecord]:
+) -> list[PanelRecord]:
     """Extract panel records from one finding's ``multi_model_analyses``.
 
     Mirrors the validity filter in ``panel_log._extract_records_from_finding``
@@ -94,7 +94,7 @@ def _records_from_finding(
     decision_class = _decision_class_for(
         finding.get("rule_id"), decision_class_prefix,
     )
-    out: List[PanelRecord] = []
+    out: list[PanelRecord] = []
     for entry in analyses:
         if not isinstance(entry, dict) or "error" in entry:
             continue
@@ -150,11 +150,11 @@ def _vote_fallback_verdict(
 def calibrate_results(
     results_by_id: Mapping[str, Mapping],
     *,
-    default_prior: Optional[BetaPrior] = None,
-    priors_by_class: Optional[Mapping[str, BetaPrior]] = None,
+    default_prior: BetaPrior | None = None,
+    priors_by_class: Mapping[str, BetaPrior] | None = None,
     decision_class_prefix: str = DEFAULT_DECISION_CLASS_PREFIX,
     **estimate_kwargs,
-) -> Dict[str, CalibratedVerdict]:
+) -> dict[str, CalibratedVerdict]:
     """Run calibrated aggregation across every finding in
     ``results_by_id``.
 
@@ -180,8 +180,8 @@ def calibrate_results(
     priors_by_class = dict(priors_by_class or {})
 
     # Step 1: split findings into D–S-eligible vs vote-fallback.
-    panel_records: List[PanelRecord] = []
-    fallback_reasons: Dict[str, str] = {}
+    panel_records: list[PanelRecord] = []
+    fallback_reasons: dict[str, str] = {}
     eligible_finding_ids: set = set()
     for fid, finding in results_by_id.items():
         recs = _records_from_finding(
@@ -197,16 +197,16 @@ def calibrate_results(
             )
 
     # Step 2: run D–S across all eligible records, partitioned by class.
-    out: Dict[str, CalibratedVerdict] = {}
+    out: dict[str, CalibratedVerdict] = {}
     if panel_records:
         ds_results = estimate_partitioned(
             panel_records, priors_by_class,
             default_prior=prior, **estimate_kwargs,
         )
-        ds_index: Dict[str, FindingPosterior] = {}
-        ds_convergence: Dict[str, bool] = {}
-        ds_reliabilities: Dict[str, List[Dict[str, float]]] = {}
-        ds_class_prior: Dict[str, Dict[str, float]] = {}
+        ds_index: dict[str, FindingPosterior] = {}
+        ds_convergence: dict[str, bool] = {}
+        ds_reliabilities: dict[str, list[dict[str, float]]] = {}
+        ds_class_prior: dict[str, dict[str, float]] = {}
         for ds_result in ds_results:
             prior_payload = {
                 "alpha": ds_result.class_prior.alpha,

@@ -19,7 +19,7 @@ DIRECTORY — never into the rules tree, never registry content.
 from __future__ import annotations
 
 import json
-from typing import Iterable, List, Sequence
+from collections.abc import Iterable, Sequence
 
 #: Sink/sanitizer blocks mirrored from in-repo rules. Origin:
 #: engine/semgrep/rules/injection/xss.yaml (raptor.injection.xss.taint.java)
@@ -154,8 +154,8 @@ TRUST_BOUNDARY_SINKS: Sequence[str] = (
 )
 
 
-def _source_patterns(summaries) -> List[str]:
-    out: List[str] = []
+def _source_patterns(summaries) -> list[str]:
+    out: list[str] = []
     seen = set()
     for s in summaries:
         # Both typed-receiver spellings: semgrep's type matching is

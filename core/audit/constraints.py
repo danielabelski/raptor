@@ -24,7 +24,7 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ._util import find_function_lines, safe_join
 
@@ -74,18 +74,18 @@ class Constraint:
     source_hash: str = ""
     status: str = "open"
     depth_reached: int = 0
-    propagation_chain: List[str] = field(default_factory=list)
+    propagation_chain: list[str] = field(default_factory=list)
 
     @property
     def identity(self) -> str:
         """Merge key: same function+kind+target = same constraint."""
         return f"{self.file}:{self.function}:{self.kind}:{self.target}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> Constraint:
+    def from_dict(cls, d: dict[str, Any]) -> Constraint:
         known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in d.items() if k in known}
         return cls(**filtered)
@@ -95,7 +95,7 @@ class Constraint:
         return self.kind == "parameter"
 
 
-def load_constraints(out_dir: Path) -> List[Constraint]:
+def load_constraints(out_dir: Path) -> list[Constraint]:
     """Load constraints from constraints.json."""
     path = out_dir / "constraints.json"
     if not path.exists():
@@ -112,7 +112,7 @@ def load_constraints(out_dir: Path) -> List[Constraint]:
 
 
 def save_constraints(
-    constraints: List[Constraint], out_dir: Path,
+    constraints: list[Constraint], out_dir: Path,
 ) -> None:
     """Atomically write constraints to constraints.json."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -132,9 +132,9 @@ def save_constraints(
 
 
 def merge_constraint(
-    existing: List[Constraint],
+    existing: list[Constraint],
     new: Constraint,
-) -> List[Constraint]:
+) -> list[Constraint]:
     """Merge a new constraint into an existing list by identity.
 
     Same identity (file:function:kind:target) -> replace with the new
@@ -144,8 +144,8 @@ def merge_constraint(
     Uses a dict keyed by identity for O(1) lookup instead of O(n)
     linear scan per merge.
     """
-    by_id: Dict[str, Constraint] = {}
-    order: List[str] = []
+    by_id: dict[str, Constraint] = {}
+    order: list[str] = []
     for c in existing:
         cid = c.identity
         if cid not in by_id:
@@ -161,10 +161,10 @@ def merge_constraint(
 
 
 def refresh_constraint_statuses(
-    constraints: List[Constraint],
+    constraints: list[Constraint],
     target_path: Path,
-    checklist: Optional[Dict[str, Any]] = None,
-) -> List[Constraint]:
+    checklist: dict[str, Any] | None = None,
+) -> list[Constraint]:
     """Mark stale constraints based on source hash changes.
 
     Uses checklist line numbers for accurate re-hashing when available.
@@ -218,7 +218,7 @@ def refresh_constraint_statuses(
     return refreshed
 
 
-def open_constraints(constraints: List[Constraint]) -> List[Constraint]:
+def open_constraints(constraints: list[Constraint]) -> list[Constraint]:
     """Filter to propagation-eligible constraints."""
     return [
         c for c in constraints
@@ -227,12 +227,12 @@ def open_constraints(constraints: List[Constraint]) -> List[Constraint]:
 
 
 def extract_constraints_from_review(
-    review_result: Dict[str, Any],
+    review_result: dict[str, Any],
     file_path: str,
     function_name: str,
     source_hash: str = "",
     source_review: str = "",
-) -> List[Constraint]:
+) -> list[Constraint]:
     """Extract Constraint objects from an LLM review result.
 
     The review result is expected to have a 'constraints' key with a

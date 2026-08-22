@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -50,10 +50,10 @@ _VB_IMPORTS_RE = re.compile(
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{namespace: [(file, line, is_test), ...]}``."""
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for src in _walk_dotnet_sources(target, max_depth=max_depth):
         is_test = _is_test_file(src, target)
         try:
@@ -68,9 +68,9 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> Reachability:
     """Match ``dep_name`` as a namespace prefix in the scan.
 
@@ -78,7 +78,7 @@ def resolve_dep(
     sub-namespace. Confidence is ``medium`` for matches because
     NuGet package id ↔ namespace correspondence isn't guaranteed.
     """
-    matches: List[Tuple[Path, int, bool]] = []
+    matches: list[tuple[Path, int, bool]] = []
     for ns, hits in scan.items():
         if ns == dep_name or ns.startswith(dep_name + "."):
             matches.extend(hits)
@@ -117,7 +117,7 @@ def resolve_dep(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _imports_in(suffix: str, text: str) -> Iterable[Tuple[str, int]]:
+def _imports_in(suffix: str, text: str) -> Iterable[tuple[str, int]]:
     if suffix == ".cs":
         regex = _CS_USING_RE
     elif suffix == ".fs":
@@ -155,12 +155,12 @@ def _is_test_file(path: Path, target: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path],
+    target: Path | None,
     cap: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for f, line, _ in hits[:cap]:
         rel = (f.relative_to(target) if target and target in f.parents
                 else f)

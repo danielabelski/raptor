@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict
 
 
 class RefitApplyError(RuntimeError):
@@ -51,7 +50,7 @@ _CONSTANT_LINE_RE = re.compile(
 
 
 def apply_refit_to_risk_py(
-    proposed_values: Dict[str, float],
+    proposed_values: dict[str, float],
     risk_py_path: Path,
 ) -> int:
     """Rewrite each constant in ``proposed_values`` to its new
@@ -72,7 +71,7 @@ def apply_refit_to_risk_py(
     text = risk_py_path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
-    found: Dict[str, int] = {}
+    found: dict[str, int] = {}
     for i, line in enumerate(lines):
         m = _CONSTANT_LINE_RE.match(line)
         if m and m.group("name") in proposed_values:

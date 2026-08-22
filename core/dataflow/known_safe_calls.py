@@ -18,7 +18,6 @@ Lookup contract:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -45,12 +44,12 @@ class KnownSafeCall:
     """
     library_call: str
     sink_class: str
-    languages: Tuple[str, ...]
+    languages: tuple[str, ...]
     input_arg_kind: str            # "transform" | "validate"
     soundness_note: str
 
 
-_TABLE: Tuple[KnownSafeCall, ...] = (
+_TABLE: tuple[KnownSafeCall, ...] = (
     # ------------------------------------------------------------------
     # pathtrav — path-traversal safe joiners / validators
     # ------------------------------------------------------------------
@@ -360,7 +359,7 @@ _TABLE: Tuple[KnownSafeCall, ...] = (
 )
 
 
-def find(library_call: str, sink_class: str, language: str) -> Optional[KnownSafeCall]:
+def find(library_call: str, sink_class: str, language: str) -> KnownSafeCall | None:
     """Look up a known-safe call entry.  Returns the matching entry or
     None.  Exact match on ``library_call`` and ``sink_class``; language
     must be in the entry's ``languages`` tuple."""
@@ -372,7 +371,7 @@ def find(library_call: str, sink_class: str, language: str) -> Optional[KnownSaf
     return None
 
 
-def all_entries() -> Tuple[KnownSafeCall, ...]:
+def all_entries() -> tuple[KnownSafeCall, ...]:
     """Diagnostic accessor — returns the full table for testing /
     audit-rendering."""
     return _TABLE

@@ -12,7 +12,7 @@ This module enables RAPTOR to work towards user-specified goals:
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.logging import get_logger
 
@@ -33,7 +33,7 @@ class Goal:
     """A high-level goal to achieve."""
     goal_type: GoalType
     description: str  # Human-readable description
-    target_value: Optional[str] = None  # Target value (e.g., "heap_overflow")
+    target_value: str | None = None  # Target value (e.g., "heap_overflow")
 
     # Progress tracking
     progress: float = 0.0  # 0.0 to 1.0
@@ -41,7 +41,7 @@ class Goal:
     start_time: float = field(default_factory=time.time)
 
     # Strategy adjustments for this goal
-    strategy_hints: Dict[str, Any] = field(default_factory=dict)
+    strategy_hints: dict[str, Any] = field(default_factory=dict)
 
 
 class GoalPlanner:
@@ -54,8 +54,8 @@ class GoalPlanner:
 
     def __init__(self):
         """Initialize goal planner."""
-        self.current_goal: Optional[Goal] = None
-        self.goal_history: List[Goal] = []
+        self.current_goal: Goal | None = None
+        self.goal_history: list[Goal] = []
         logger.info("Goal-directed planner initialized")
 
     def set_goal(self, goal: Goal):
@@ -177,7 +177,7 @@ class GoalPlanner:
                 }
             )
 
-    def adapt_fuzzing_strategy(self, base_strategy: Dict) -> Dict:
+    def adapt_fuzzing_strategy(self, base_strategy: dict) -> dict:
         """
         Adapt fuzzing strategy based on current goal.
 
@@ -218,7 +218,7 @@ class GoalPlanner:
 
         return adapted
 
-    def prioritize_crashes_for_goal(self, crashes: List) -> List:
+    def prioritize_crashes_for_goal(self, crashes: list) -> list:
         """
         Prioritize crashes based on current goal.
 
@@ -330,7 +330,7 @@ class GoalPlanner:
         # Default: continue
         return True
 
-    def get_summary(self) -> Dict:
+    def get_summary(self) -> dict:
         """Get summary of goals and progress."""
         return {
             "current_goal": {

@@ -44,7 +44,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Set, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -60,7 +61,7 @@ _PURL_TYPE = "oci"
 # YAML keyword list). Filtering them out prevents emitting "deps"
 # for ``image:`` / ``services:`` / ``variables:`` / etc. as if they
 # were jobs with sub-image fields.
-_RESERVED_KEYS: Set[str] = {
+_RESERVED_KEYS: set[str] = {
     "image", "services", "variables", "stages", "default",
     "include", "before_script", "after_script", "workflow",
     "cache", "artifacts", "pages", "trigger",
@@ -68,7 +69,7 @@ _RESERVED_KEYS: Set[str] = {
 
 
 @register(filenames=[".gitlab-ci.yml", ".gitlab-ci.yaml"])
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -96,7 +97,7 @@ def parse(path: Path) -> List[Dependency]:
     if not isinstance(data, dict):
         return []
 
-    refs: List[Tuple[str, str]] = []
+    refs: list[tuple[str, str]] = []
     # ``(image_ref, source_context)`` — context goes into
     # source_extra so operators see "from top-level image" vs
     # "from job test:image".
@@ -138,8 +139,8 @@ def parse(path: Path) -> List[Dependency]:
     # Dedup by (image_ref, source_context) so the same ref used in
     # multiple places emits one row per usage location — preserves
     # provenance.
-    seen: Set[Tuple[str, str]] = set()
-    out: List[Dependency] = []
+    seen: set[tuple[str, str]] = set()
+    out: list[Dependency] = []
     for image_ref, ctx in refs:
         key = (image_ref, ctx)
         if key in seen:
@@ -155,7 +156,7 @@ def parse(path: Path) -> List[Dependency]:
 
 def _extract_image(
     block: Any, *, label: str,
-) -> Iterable[Tuple[str, str]]:
+) -> Iterable[tuple[str, str]]:
     """Pull an ``image:`` field from a job or top-level block."""
     if not isinstance(block, dict):
         return
@@ -171,7 +172,7 @@ def _extract_image(
 
 def _extract_services(
     block: Any, *, label: str,
-) -> Iterable[Tuple[str, str]]:
+) -> Iterable[tuple[str, str]]:
     """Pull each entry from a ``services:`` array."""
     if not isinstance(block, dict):
         return
@@ -192,7 +193,7 @@ def _build_dep(
     image_ref: str,
     context: str,
     declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     name, version = _split_image_ref(image_ref)
     if not name:
         return None
@@ -223,7 +224,7 @@ def _build_dep(
 _FLOATING_TAGS = frozenset({"latest", "stable", "edge", "nightly", "dev", "beta", "alpha", "rc", "canary", "main", "master"})
 
 
-def _classify_pin_style(version: Optional[str]) -> PinStyle:
+def _classify_pin_style(version: str | None) -> PinStyle:
     if not version:
         return PinStyle.WILDCARD
     if version.startswith("sha256:"):

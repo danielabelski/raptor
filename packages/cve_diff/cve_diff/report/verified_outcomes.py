@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from cve_diff.core.models import DiffBundle
@@ -35,7 +35,7 @@ _MIN_AGREEMENT = 2
 
 
 def _consensus_matches_bundle(consensus: dict[str, Any],
-                              bundle: "DiffBundle") -> bool:
+                              bundle: DiffBundle) -> bool:
     """The consensus pointer must name the commit the pipeline actually
     extracted — agreement on some OTHER pointer refutes rather than
     confirms the run."""
@@ -66,9 +66,9 @@ def _consensus_matches_bundle(consensus: dict[str, Any],
 
 def write_consensus_outcome(
     output_dir: Path,
-    bundle: "DiffBundle",
+    bundle: DiffBundle,
     *,
-    cwe_id: Optional[str] = None,
+    cwe_id: str | None = None,
 ) -> bool:
     """Append one Oracle.CONSENSUS record when the run qualifies.
 

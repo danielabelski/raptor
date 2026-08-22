@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 
 _USAGE_EX = 64       # EX_USAGE
@@ -151,7 +151,7 @@ def _profile_to_json(profile) -> str:
     return profile.to_json()
 
 
-def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
+def _cli_main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 

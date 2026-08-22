@@ -9,7 +9,7 @@ answer as evidence.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import logging
 
@@ -24,7 +24,7 @@ def validate_constraint_file(
     path: Path,
     *,
     binary_sha256: str,
-) -> tuple[Optional[dict[str, Any]], list[BinaryEvidenceRecord]]:
+) -> tuple[dict[str, Any] | None, list[BinaryEvidenceRecord]]:
     payload = load_json(Path(path))
     if not isinstance(payload, dict):
         raise ValueError(f"constraint file is not a JSON object: {path}")

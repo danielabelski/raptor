@@ -54,14 +54,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
-    Dict,
-    FrozenSet,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Tuple,
 )
+from collections.abc import Iterable
 
 from core.analysis.cfg_builder import (
     ENTRY_LINENO,
@@ -122,10 +116,10 @@ class CPPCFGNode:
     kind: str          # "entry" | "exit" | "stmt"
     lineno: int
     label: str
-    calls: FrozenSet[str] = frozenset()
-    defs: FrozenSet[str] = frozenset()
-    uses: FrozenSet[str] = frozenset()
-    call_sites: Tuple[CallSite, ...] = ()
+    calls: frozenset[str] = frozenset()
+    defs: frozenset[str] = frozenset()
+    uses: frozenset[str] = frozenset()
+    call_sites: tuple[CallSite, ...] = ()
     may_escape: bool = False
 
     def __repr__(self) -> str:                              # pragma: no cover
@@ -157,9 +151,9 @@ class CPPCFG:
     language: str
     entry_node: CPPCFGNode
     exit_node: CPPCFGNode
-    _nodes: Tuple[CPPCFGNode, ...]
-    _adjacency: Dict[CPPCFGNode, Tuple[CPPCFGNode, ...]]
-    params: Tuple[str, ...] = ()
+    _nodes: tuple[CPPCFGNode, ...]
+    _adjacency: dict[CPPCFGNode, tuple[CPPCFGNode, ...]]
+    params: tuple[str, ...] = ()
 
     @property
     def entry(self) -> CPPCFGNode:
@@ -286,7 +280,7 @@ def _node_text(n) -> str:
     return n.text.decode("utf-8", errors="replace") if n is not None else ""
 
 
-def _innermost_ident(n) -> Optional[str]:
+def _innermost_ident(n) -> str | None:
     """Leftmost identifier under ``n`` — pierces pointer declarators,
     parenthesised declarators, field expressions. Returns the bare
     base name only; field selectors aren't recorded."""
@@ -306,7 +300,7 @@ def _innermost_ident(n) -> Optional[str]:
     return None
 
 
-def _resolve_callable_name(callee) -> Optional[str]:
+def _resolve_callable_name(callee) -> str | None:
     """Dotted-or-arrow callable name from a ``call_expression``'s
     ``function`` field. ``foo`` → ``"foo"``; ``obj.method`` →
     ``"obj.method"``; ``obj->method`` → ``"obj.method"`` (arrow
@@ -334,7 +328,7 @@ def _resolve_callable_name(callee) -> Optional[str]:
     return None
 
 
-def _arg_surface_names(call_node) -> FrozenSet[str]:
+def _arg_surface_names(call_node) -> frozenset[str]:
     """Conservative bare-name extraction for one call's arguments.
 
     Mirrors :func:`core.analysis.cfg_builder._arg_surface_names`:
@@ -346,7 +340,7 @@ def _arg_surface_names(call_node) -> FrozenSet[str]:
     args = call_node.child_by_field_name("arguments")
     if args is None:
         return frozenset()
-    names: Set[str] = set()
+    names: set[str] = set()
     for child in args.children:
         if not child.is_named:
             continue
@@ -388,7 +382,7 @@ def _unwrap_value_expr(n):
         return cur
 
 
-def _walk_subtree_for_uses(n, *, exclude: Optional[set] = None) -> FrozenSet[str]:
+def _walk_subtree_for_uses(n, *, exclude: set | None = None) -> frozenset[str]:
     """Every identifier appearing in load position inside ``n``,
     excluding identifiers that are the callee position of a
     ``call_expression`` (those become call_sites, not uses) and
@@ -401,7 +395,7 @@ def _walk_subtree_for_uses(n, *, exclude: Optional[set] = None) -> FrozenSet[str
     """
     if exclude is None:
         exclude = set()
-    out: Set[str] = set()
+    out: set[str] = set()
     stack = [n]
     while stack:
         cur = stack.pop()
@@ -433,8 +427,8 @@ def _walk_subtree_for_uses(n, *, exclude: Optional[set] = None) -> FrozenSet[str
 
 
 def _walk_subtree_for_call_sites(
-    n, *, assigned_for_root: FrozenSet[str] = frozenset(),
-) -> Tuple[CallSite, ...]:
+    n, *, assigned_for_root: frozenset[str] = frozenset(),
+) -> tuple[CallSite, ...]:
     """Every ``call_expression`` inside ``n`` as :class:`CallSite`
     records, in source order.
 
@@ -452,7 +446,7 @@ def _walk_subtree_for_call_sites(
     # is the syntactic OUTERMOST call. The Phase 11 resolver's
     # outermost-pick uses ``call_sites[-1]``; both languages now
     # agree.
-    out: List[Tuple[int, int, CallSite]] = []
+    out: list[tuple[int, int, CallSite]] = []
     root_id = id(_unwrap_value_expr(n)) if n is not None else None
 
     def visit(node) -> None:
@@ -489,12 +483,12 @@ def _walk_subtree_for_call_sites(
     return tuple(cs for _, _, cs in out)
 
 
-def _walk_subtree_for_calls(n) -> FrozenSet[str]:
+def _walk_subtree_for_calls(n) -> frozenset[str]:
     """Set of dotted callable names referenced anywhere in ``n``.
     Equivalent to ``{cs.name for cs in
     _walk_subtree_for_call_sites(n)}`` but without the position
     plumbing; used to populate the back-compat ``calls`` field."""
-    out: Set[str] = set()
+    out: set[str] = set()
     stack = [n] if n is not None else []
     while stack:
         cur = stack.pop()
@@ -547,18 +541,18 @@ def _subtree_has_indirection(n) -> bool:
     return False
 
 
-def _payload_from_declaration(decl) -> Tuple[FrozenSet[str], FrozenSet[str],
-                                              FrozenSet[str], Tuple[CallSite, ...]]:
+def _payload_from_declaration(decl) -> tuple[frozenset[str], frozenset[str],
+                                              frozenset[str], tuple[CallSite, ...]]:
     """``int x = f(y);`` and ``int x;`` etc.
 
     Returns ``(calls, defs, uses, call_sites)``. Init declarators
     contribute their LHS as a def and their RHS as the surface for
     uses / call_sites. Plain declarations contribute only defs.
     """
-    defs: Set[str] = set()
-    uses_acc: Set[str] = set()
-    calls_acc: Set[str] = set()
-    cs_acc: List[CallSite] = []
+    defs: set[str] = set()
+    uses_acc: set[str] = set()
+    calls_acc: set[str] = set()
+    cs_acc: list[CallSite] = []
     for child in decl.children:
         if not child.is_named:
             continue
@@ -589,8 +583,8 @@ def _payload_from_declaration(decl) -> Tuple[FrozenSet[str], FrozenSet[str],
             tuple(cs_acc))
 
 
-def _payload_from_assignment(expr) -> Tuple[FrozenSet[str], FrozenSet[str],
-                                             FrozenSet[str], Tuple[CallSite, ...]]:
+def _payload_from_assignment(expr) -> tuple[frozenset[str], frozenset[str],
+                                             frozenset[str], tuple[CallSite, ...]]:
     """``x = f(y);`` / ``x += f(y);`` — defs={x}, RHS feeds uses + call_sites.
 
     Compound LHSes (``a.b = ...``, ``arr[i] = ...``) contribute the
@@ -602,9 +596,9 @@ def _payload_from_assignment(expr) -> Tuple[FrozenSet[str], FrozenSet[str],
     op = _node_text(op_node) if op_node is not None else "="
     lhs_name = _innermost_ident(lhs) if lhs is not None else None
     defs = frozenset({lhs_name}) if lhs_name is not None else frozenset()
-    uses_acc: Set[str] = set()
-    calls_acc: Set[str] = set()
-    cs_acc: List[CallSite] = []
+    uses_acc: set[str] = set()
+    calls_acc: set[str] = set()
+    cs_acc: list[CallSite] = []
     # Compound assignment (``+=``, ``-=``, ...) reads the LHS too.
     if op != "=" and lhs_name is not None:
         uses_acc.add(lhs_name)
@@ -622,8 +616,8 @@ def _payload_from_assignment(expr) -> Tuple[FrozenSet[str], FrozenSet[str],
     return (frozenset(calls_acc), defs, frozenset(uses_acc), tuple(cs_acc))
 
 
-def _payload_from_subtree(n) -> Tuple[FrozenSet[str], FrozenSet[str],
-                                       FrozenSet[str], Tuple[CallSite, ...]]:
+def _payload_from_subtree(n) -> tuple[frozenset[str], frozenset[str],
+                                       frozenset[str], tuple[CallSite, ...]]:
     """Fall-through payload extractor for expression-only statements:
     ``return f(x);``, ``if (cond)``, plain expression statements,
     switch subjects, etc. No defs (no LHS); every identifier feeds
@@ -667,7 +661,7 @@ def _find_function_definition(root, function_name: str):
     return None
 
 
-def _function_name(fn_def) -> Optional[str]:
+def _function_name(fn_def) -> str | None:
     """Pull the function identifier from a ``function_definition``.
 
     Walks through pointer / parenthesised declarator wrappers until
@@ -687,7 +681,7 @@ def _function_name(fn_def) -> Optional[str]:
     return None
 
 
-def _function_params(fn_def) -> Tuple[str, ...]:
+def _function_params(fn_def) -> tuple[str, ...]:
     """Ordered tuple of parameter names declared in the function's
     signature. C-style ``void`` and unnamed parameters yield no
     entry — they have no symbol to bind in the body."""
@@ -703,7 +697,7 @@ def _function_params(fn_def) -> Tuple[str, ...]:
     params = fn_decl.child_by_field_name("parameters")
     if params is None:
         return ()
-    names: List[str] = []
+    names: list[str] = []
     for child in params.children:
         if not child.is_named:
             continue
@@ -743,22 +737,22 @@ class _CPPCFGBuilder:
             kind="exit", lineno=EXIT_LINENO,
             label=f"EXIT:{function_name}",
         )
-        self._adjacency: Dict[CPPCFGNode, List[CPPCFGNode]] = {}
-        self._all_nodes: List[CPPCFGNode] = [self.entry, self.exit]
+        self._adjacency: dict[CPPCFGNode, list[CPPCFGNode]] = {}
+        self._all_nodes: list[CPPCFGNode] = [self.entry, self.exit]
         # Loop context stack: (break_target, continue_target).
-        self._loop_stack: List[Tuple[CPPCFGNode, CPPCFGNode]] = []
+        self._loop_stack: list[tuple[CPPCFGNode, CPPCFGNode]] = []
         # switch context stack: (break_target, fallthrough-from-prev-case)
         # The break target is the join AFTER the switch.
-        self._switch_stack: List[CPPCFGNode] = []
+        self._switch_stack: list[CPPCFGNode] = []
         # Unified break-target stack tracks nesting order so break
         # targets the innermost enclosing loop or switch.
-        self._break_stack: List[CPPCFGNode] = []
+        self._break_stack: list[CPPCFGNode] = []
         # Goto resolution: collect (goto_node, label_text) for a
         # post-pass once all labels are known. Conservative: every
         # labeled_statement with a matching label receives an edge
         # from the goto.
-        self._gotos: List[Tuple[CPPCFGNode, str]] = []
-        self._labels: Dict[str, CPPCFGNode] = {}
+        self._gotos: list[tuple[CPPCFGNode, str]] = []
+        self._labels: dict[str, CPPCFGNode] = {}
         # Unique-id counter for nodes whose (kind, lineno, label,
         # defs, uses, call_sites) would otherwise collide. Frozen
         # dataclasses hash on all fields; two empty straight-line
@@ -777,10 +771,10 @@ class _CPPCFGBuilder:
 
     def _make_node(
         self, *, kind: str, lineno: int, label: str,
-        calls: FrozenSet[str] = frozenset(),
-        defs: FrozenSet[str] = frozenset(),
-        uses: FrozenSet[str] = frozenset(),
-        call_sites: Tuple[CallSite, ...] = (),
+        calls: frozenset[str] = frozenset(),
+        defs: frozenset[str] = frozenset(),
+        uses: frozenset[str] = frozenset(),
+        call_sites: tuple[CallSite, ...] = (),
         may_escape: bool = False,
     ) -> CPPCFGNode:
         # Append a tie-breaker tag only when a node with identical
@@ -810,8 +804,8 @@ class _CPPCFGBuilder:
         return text[:60] + ("…" if len(text) > 60 else "")
 
     def _build_stmts(
-        self, body, incoming: List[CPPCFGNode],
-    ) -> List[CPPCFGNode]:
+        self, body, incoming: list[CPPCFGNode],
+    ) -> list[CPPCFGNode]:
         """Walk a ``compound_statement`` body, a list of pre-extracted
         statement nodes (switch's case-body grouping), or a single
         statement (a bare ``if (...) break;`` consequence without
@@ -832,8 +826,8 @@ class _CPPCFGBuilder:
         return cursor
 
     def _build_stmt(
-        self, stmt, incoming: List[CPPCFGNode],
-    ) -> List[CPPCFGNode]:
+        self, stmt, incoming: list[CPPCFGNode],
+    ) -> list[CPPCFGNode]:
         t = stmt.type
         if t == _IF:
             return self._build_if(stmt, incoming)
@@ -917,7 +911,7 @@ class _CPPCFGBuilder:
         # that points either at the else-body compound_statement or
         # at an ``else_clause`` node — handle both shapes.
         if else_body is None:
-            else_out: List[CPPCFGNode] = [cond_node]
+            else_out: list[CPPCFGNode] = [cond_node]
         elif else_body.type == "else_clause":
             # else_clause's first named child is the body / nested if
             inner = None
@@ -941,7 +935,7 @@ class _CPPCFGBuilder:
             may_escape=_subtree_has_indirection(cond),
         )
         self._link_many(incoming, header)
-        after_loop: List[CPPCFGNode] = [header]
+        after_loop: list[CPPCFGNode] = [header]
         self._loop_stack.append((header, header))
         self._break_stack.append(header)
         body = stmt.child_by_field_name("body")
@@ -1065,11 +1059,11 @@ class _CPPCFGBuilder:
         # case label. Each case_statement becomes a "branch" entry
         # from the header. Fallthrough = predecessors of stmt N+1
         # include stmt N when there's no break.
-        case_groups: List[List[Any]] = []   # list of (stmt nodes)
-        case_entries: List[List[Any]] = []  # case label statements
+        case_groups: list[list[Any]] = []   # list of (stmt nodes)
+        case_entries: list[list[Any]] = []  # case label statements
         if body is not None:
-            current_group: List[Any] = []
-            current_labels: List[Any] = []
+            current_group: list[Any] = []
+            current_labels: list[Any] = []
             for child in body.children:
                 if not child.is_named:
                     continue
@@ -1091,11 +1085,11 @@ class _CPPCFGBuilder:
                 case_groups.append(current_group)
                 case_entries.append(current_labels)
         # Now build each case.
-        prev_out: List[CPPCFGNode] = []
-        outs: List[CPPCFGNode] = []
+        prev_out: list[CPPCFGNode] = []
+        outs: list[CPPCFGNode] = []
         for labels, group in zip(case_entries, case_groups, strict=True):
             # case label node(s) — model as one node per label.
-            entry: List[CPPCFGNode] = [header] + prev_out
+            entry: list[CPPCFGNode] = [header] + prev_out
             for label_stmt in labels:
                 ln = self._make_node(
                     kind="stmt",
@@ -1167,7 +1161,7 @@ class _CPPCFGBuilder:
         self._link_many(incoming, ln)
         self._labels.setdefault(label_name, ln)
         # Inner stmt — tree-sitter exposes it as the next named child.
-        inner: Optional[Any] = None
+        inner: Any | None = None
         for c in stmt.children:
             if c.is_named and c is not label_node:
                 inner = c
@@ -1195,11 +1189,11 @@ class _CPPCFGBuilder:
                 # Unknown label — goto becomes a no-op flowing to exit
                 # so the function isn't a sink-trap for analysis.
                 self._link(goto_node, self.exit)
-        adjacency: Dict[CPPCFGNode, Tuple[CPPCFGNode, ...]] = {
+        adjacency: dict[CPPCFGNode, tuple[CPPCFGNode, ...]] = {
             k: tuple(v) for k, v in self._adjacency.items()
         }
         seen: set = set()
-        ordered: List[CPPCFGNode] = []
+        ordered: list[CPPCFGNode] = []
         for n in self._all_nodes:
             if n not in seen:
                 seen.add(n)
@@ -1223,7 +1217,7 @@ class _CPPCFGBuilder:
 
 def build_cpp_intraproc_cfg(
     source: str | Path, function_name: str, *, language: str = "c",
-) -> Optional[CPPCFG]:
+) -> CPPCFG | None:
     """Build the CFG for one named C/C++ function.
 
     ``source`` is a :class:`Path` (read from disk) or a ``str`` of

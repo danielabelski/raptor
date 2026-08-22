@@ -27,7 +27,8 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from core.coverage.edges import item_spans
 from core.coverage.journal import encode_key_file, make_function_key

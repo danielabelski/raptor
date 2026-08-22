@@ -41,7 +41,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Reachability
 
@@ -49,8 +50,8 @@ logger = logging.getLogger(__name__)
 
 
 def build_npm_symbol_map(
-    osv_results: Optional[Iterable[Any]],
-) -> Dict[str, List[str]]:
+    osv_results: Iterable[Any] | None,
+) -> dict[str, list[str]]:
     """Extract per-dep affected-function lists from npm OSV results.
 
     Returns ``{dep_key: [function_name, ...]}``. Empty when no
@@ -58,14 +59,14 @@ def build_npm_symbol_map(
     """
     if not osv_results:
         return {}
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for r in osv_results:
         if not hasattr(r, "advisories"):
             continue
         dep_key = getattr(r, "dep_key", None)
         if not dep_key or not dep_key.startswith("npm:"):
             continue
-        funcs: List[str] = []
+        funcs: list[str] = []
         for adv in r.advisories:
             funcs.extend(_extract_function_names(adv))
         if funcs:
@@ -74,7 +75,7 @@ def build_npm_symbol_map(
     return {k: list(dict.fromkeys(v)) for k, v in out.items()}
 
 
-def _extract_function_names(advisory: Any) -> List[str]:
+def _extract_function_names(advisory: Any) -> list[str]:
     """Pull function names out of an Advisory object.
 
     Tries every shape we've seen in real OSV npm records,
@@ -83,7 +84,7 @@ def _extract_function_names(advisory: Any) -> List[str]:
     ``ecosystem_specific.imports[].symbols`` mirroring Go's
     convention, others inline structured data.
     """
-    out: List[str] = []
+    out: list[str] = []
     es = getattr(advisory, "ecosystem_specific", None) or {}
     ds = getattr(advisory, "database_specific", None) or {}
     # ``imports[].symbols`` shape (mirrors Go convention).
@@ -111,12 +112,12 @@ def _extract_function_names(advisory: Any) -> List[str]:
 
 
 def refine_npm_verdicts(
-    deps: List[Dependency],
-    out: Dict[str, Reachability],
+    deps: list[Dependency],
+    out: dict[str, Reachability],
     *,
     target: Path,
-    npm_symbol_map: Dict[str, List[str]],
-    inventory: Optional[Dict[str, Any]] = None,
+    npm_symbol_map: dict[str, list[str]],
+    inventory: dict[str, Any] | None = None,
 ) -> None:
     """For npm deps in ``npm_symbol_map`` whose current verdict is
     ``imported``, run the function-level resolver and update
@@ -126,7 +127,7 @@ def refine_npm_verdicts(
     tier already built one); otherwise built locally. Building is
     skipped when no npm dep needs the function-level pass.
     """
-    candidates: List[Dependency] = []
+    candidates: list[Dependency] = []
     for d in deps:
         if d.ecosystem != "npm":
             continue
@@ -212,7 +213,7 @@ def refine_npm_verdicts(
             )
 
 
-def _qualified_name(dep_name: str, fn: str) -> Optional[str]:
+def _qualified_name(dep_name: str, fn: str) -> str | None:
     """Build the dotted qualified name for the resolver.
 
     Plain ``lodash`` + ``get`` → ``lodash.get``.

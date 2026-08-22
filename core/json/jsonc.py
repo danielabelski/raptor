@@ -19,7 +19,7 @@ is a *value* character in JSONC, not a comment.
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import Any
 
 
 def strip_jsonc_comments(text: str) -> str:
@@ -29,7 +29,7 @@ def strip_jsonc_comments(text: str) -> str:
     marker inside a quoted value — e.g. the ``//`` in ``"https://..."`` — is
     left untouched. A regex can't do this safely.
     """
-    out: List[str] = []
+    out: list[str] = []
     i, n = 0, len(text)
     in_str = False
     while i < n:
@@ -67,7 +67,7 @@ def strip_jsonc_comments(text: str) -> str:
 
 def _strip_trailing_commas(text: str) -> str:
     """Remove trailing commas before ``}`` or ``]``, but only outside strings."""
-    out: List[str] = []
+    out: list[str] = []
     i, n = 0, len(text)
     in_str = False
     while i < n:

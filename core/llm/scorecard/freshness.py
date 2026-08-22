@@ -21,7 +21,7 @@ See the design memo.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Mapping, Tuple, Union
+from collections.abc import Mapping
 
 # A very large age (days) assigned to an unparseable bucket key so it decays to
 # ~0 under any positive half-life rather than raising. Defensive: a hand-edited
@@ -33,7 +33,7 @@ _UNPARSEABLE_AGE_DAYS = 1.0e9
 _MEAN_MONTH_DAYS = 30.44
 
 
-def bucket_key(when: Union[str, datetime]) -> str:
+def bucket_key(when: str | datetime) -> str:
     """Return the ``"YYYY-MM"`` bucket for an ISO-8601 timestamp or datetime.
 
     A bare ``str`` is parsed as ISO-8601; anything unparseable falls back to
@@ -73,7 +73,7 @@ def bucket_age_days(bucket: str, now: datetime) -> float:
     return months * _MEAN_MONTH_DAYS
 
 
-def decay_weight(age_days: float, half_life_days: Union[float, None]) -> float:
+def decay_weight(age_days: float, half_life_days: float | None) -> float:
     """Exponential decay ``0.5 ** (age_days / half_life_days)``.
 
     ``half_life_days`` of ``None`` or ``<= 0`` disables decay (returns 1.0):
@@ -101,7 +101,7 @@ def _coerce_count(value: object) -> float:
 
 def flatten_counts(
     buckets: Mapping[str, object],
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Sum ``(correct, incorrect)`` across all buckets, unweighted. The
     decay-disabled / back-compat read path. Defensive: a flat v1-shaped
     ``{"correct", "incorrect"}`` that slips past migration is returned as-is
@@ -127,9 +127,9 @@ def flatten_counts(
 
 def weighted_counts(
     buckets: Mapping[str, Mapping[str, object]],
-    half_life_days: Union[float, None],
+    half_life_days: float | None,
     now: datetime,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Decay-weighted ``(correct, incorrect)`` sums over age buckets.
 
     With ``half_life_days`` None/<=0 this equals :func:`flatten_counts` (every

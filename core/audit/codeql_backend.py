@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def build_sink_results(
         logger.debug("sink discovery failed", exc_info=True)
         return None
 
-    call_graphs: Optional[Dict[str, Any]] = None
+    call_graphs: dict[str, Any] | None = None
     if checklist:
         call_graphs = {}
         for fi in checklist.get("files", []):
@@ -181,7 +181,7 @@ def _path_in_scope_dirs(p, scope_dirs) -> bool:
 def build_taint_summary(
     target_path,
     scope=None,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Build taint summaries for all supported languages."""
     if not target_path or not Path(target_path).is_dir():
         return None
@@ -191,7 +191,7 @@ def build_taint_summary(
         tuple(str((target_path / s).resolve()) for s in scope)
         if scope else None
     )
-    results: Dict[str, Any] = {}
+    results: dict[str, Any] = {}
 
     def _in_scope(p):
         return _path_in_scope_dirs(p, scope_dirs)

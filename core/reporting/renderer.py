@@ -1,6 +1,5 @@
 """Markdown renderer for ReportSpec."""
 
-from typing import List, Tuple
 
 from .spec import ReportSpec
 
@@ -90,7 +89,7 @@ def render_report(spec: ReportSpec, separator: str = "---") -> str:
     return "\n".join(lines)
 
 
-def _render_table(columns: List[str], rows: List[Tuple]) -> str:
+def _render_table(columns: list[str], rows: list[tuple]) -> str:
     """Render a markdown table."""
     lines = []
     lines.append("| " + " | ".join(columns) + " |")

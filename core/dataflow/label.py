@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, Mapping, Optional
+from typing import Any
+from collections.abc import Mapping
 
 
 SCHEMA_VERSION = 1
@@ -25,7 +26,7 @@ SCHEMA_VERSION = 1
 
 VERDICT_TRUE_POSITIVE = "true_positive"
 VERDICT_FALSE_POSITIVE = "false_positive"
-VALID_VERDICTS: FrozenSet[str] = frozenset(
+VALID_VERDICTS: frozenset[str] = frozenset(
     {VERDICT_TRUE_POSITIVE, VERDICT_FALSE_POSITIVE}
 )
 
@@ -36,7 +37,7 @@ FP_FRAMEWORK_MITIGATION = "framework_mitigation"
 FP_DEAD_CODE = "dead_code"
 FP_TYPE_CONSTRAINT = "type_constraint"
 FP_REFLECTION_IMPRECISION = "reflection_imprecision"
-VALID_FP_CATEGORIES: FrozenSet[str] = frozenset(
+VALID_FP_CATEGORIES: frozenset[str] = frozenset(
     {
         FP_MISSING_SANITIZER_MODEL,
         FP_INFEASIBLE_BRANCH,
@@ -48,7 +49,7 @@ VALID_FP_CATEGORIES: FrozenSet[str] = frozenset(
 )
 
 
-_GROUND_TRUTH_KEYS: FrozenSet[str] = frozenset(
+_GROUND_TRUTH_KEYS: frozenset[str] = frozenset(
     {
         "schema_version",
         "finding_id",
@@ -62,7 +63,7 @@ _GROUND_TRUTH_KEYS: FrozenSet[str] = frozenset(
 )
 
 
-_LIFECYCLE_PRECONDITION_KEYS: FrozenSet[str] = frozenset(
+_LIFECYCLE_PRECONDITION_KEYS: frozenset[str] = frozenset(
     {"field", "write_site_guard", "read_site_lacks_guard", "notes"}
 )
 
@@ -84,7 +85,7 @@ class LifecyclePrecondition:
     field: str
     write_site_guard: str
     read_site_lacks_guard: bool
-    notes: Optional[str] = None
+    notes: str | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty("LifecyclePrecondition.field", self.field)
@@ -96,8 +97,8 @@ class LifecyclePrecondition:
                 "LifecyclePrecondition.read_site_lacks_guard must be bool"
             )
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "field": self.field,
             "write_site_guard": self.write_site_guard,
             "read_site_lacks_guard": self.read_site_lacks_guard,
@@ -107,7 +108,7 @@ class LifecyclePrecondition:
         return d
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "LifecyclePrecondition":
+    def from_dict(cls, data: Mapping[str, Any]) -> LifecyclePrecondition:
         _check_extra_fields(
             "LifecyclePrecondition", data, _LIFECYCLE_PRECONDITION_KEYS
         )
@@ -122,7 +123,7 @@ class LifecyclePrecondition:
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: FrozenSet[str]) -> None:
+def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: frozenset[str]) -> None:
     extras = set(data.keys()) - allowed
     if extras:
         raise ValueError(f"unknown fields in {name} JSON: {sorted(extras)}")
@@ -152,11 +153,11 @@ class GroundTruth:
     rationale: str
     labeler: str
     labeled_at: str
-    fp_category: Optional[str] = None
+    fp_category: str | None = None
     #: Optional forward-compatible annotation for CWE-476 / CWE-416
     #: fixtures (and structurally-related logic bugs). v1 source_intel
     #: directly. See `LifecyclePrecondition` for shape.
-    lifecycle_precondition: Optional[LifecyclePrecondition] = None
+    lifecycle_precondition: LifecyclePrecondition | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty("GroundTruth.finding_id", self.finding_id)
@@ -186,8 +187,8 @@ class GroundTruth:
                     f"{sorted(VALID_FP_CATEGORIES)!r}"
                 )
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "finding_id": self.finding_id,
             "verdict": self.verdict,
@@ -201,7 +202,7 @@ class GroundTruth:
         return d
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "GroundTruth":
+    def from_dict(cls, data: Mapping[str, Any]) -> GroundTruth:
         _check_extra_fields("GroundTruth", data, _GROUND_TRUTH_KEYS)
         version = data["schema_version"]
         if version != SCHEMA_VERSION:
@@ -222,7 +223,7 @@ class GroundTruth:
             ),
         )
 
-    def to_json(self, *, indent: Optional[int] = None) -> str:
+    def to_json(self, *, indent: int | None = None) -> str:
         """Render as JSON. Explicit ``indent`` signature replaces
         a catch-all ``**kwargs`` — the only kwarg any caller ever
         passes is ``indent=2`` (corpus generator + handlabel_seed
@@ -231,5 +232,5 @@ class GroundTruth:
         return json.dumps(self.to_dict(), indent=indent)
 
     @classmethod
-    def from_json(cls, text: str) -> "GroundTruth":
+    def from_json(cls, text: str) -> GroundTruth:
         return cls.from_dict(json.loads(text))

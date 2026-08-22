@@ -49,7 +49,6 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from core.atomic_fs import write_text_atomically
 
@@ -236,12 +235,12 @@ class DefenseTelemetry:
                 )
 
     @staticmethod
-    def _rejection_rate(stats: _ModelStats) -> Optional[float]:
+    def _rejection_rate(stats: _ModelStats) -> float | None:
         if stats.responses == 0:
             return None
         return (stats.schema_retry_failed + stats.schema_failed) / stats.responses
 
-    def _preflight_hit_rate(self) -> Optional[float]:
+    def _preflight_hit_rate(self) -> float | None:
         if self._preflight.checked == 0:
             return None
         return self._preflight.hits / self._preflight.checked

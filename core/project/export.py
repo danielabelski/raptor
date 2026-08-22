@@ -8,7 +8,6 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 from core.hash import sha256_file
 from core.logging import get_logger
@@ -17,12 +16,12 @@ from core.zip import DEFAULT_MAX_ENTRIES, peek_total_entries
 logger = get_logger()
 
 
-def _check_zip_entries(infolist) -> List[str]:
+def _check_zip_entries(infolist) -> list[str]:
     """Check zip entries for path traversal, absolute paths, and symlinks.
 
     Returns a list of warning strings. Empty means safe.
     """
-    warnings: List[str] = []
+    warnings: list[str] = []
     for info in infolist:
         name = info.filename
         # Pre-fix the absolute-path + traversal checks tested
@@ -106,7 +105,7 @@ def _enforce_zip_entry_cap(zip_path: Path) -> None:
         )
 
 
-def _collect_bounded_infolist(zf: zipfile.ZipFile) -> List[zipfile.ZipInfo]:
+def _collect_bounded_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     """Materialise ``zf.infolist()`` with the ``_MAX_ENTRIES`` cap enforced.
 
     The EOCD pre-flight at ``_enforce_zip_entry_cap`` rejects archives
@@ -125,7 +124,7 @@ def _collect_bounded_infolist(zf: zipfile.ZipFile) -> List[zipfile.ZipInfo]:
     Raises ``_ZipBombShapeError`` on over-cap; callers translate
     per their error model.
     """
-    entries: List[zipfile.ZipInfo] = []
+    entries: list[zipfile.ZipInfo] = []
     for i, info in enumerate(zf.infolist()):
         if i >= _MAX_ENTRIES:
             raise _ZipBombShapeError(
@@ -137,7 +136,7 @@ def _collect_bounded_infolist(zf: zipfile.ZipFile) -> List[zipfile.ZipInfo]:
     return entries
 
 
-def validate_zip_contents(zip_path: Path) -> Tuple[bool, List[str]]:
+def validate_zip_contents(zip_path: Path) -> tuple[bool, list[str]]:
     """Check a zip file for path traversal, absolute paths, and symlinks.
 
     Args:
@@ -202,7 +201,7 @@ def _is_transient_artefact(path: Path) -> bool:
 
 def export_project(project_output_dir: Path, dest_path: Path,
                    project_json_path: Path = None,
-                   force: bool = False) -> Dict[str, str]:
+                   force: bool = False) -> dict[str, str]:
     """Zip a project output directory, skipping symlinks.
 
     Args:
@@ -343,7 +342,7 @@ def _demote_stampless_imported_annotations(output_dir: Path) -> None:
 
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
-                   output_base: Path = None) -> Dict[str, str]:
+                   output_base: Path = None) -> dict[str, str]:
     """Import a zipped project.
 
     Validates the zip, extracts output data to output_base/<name>/,

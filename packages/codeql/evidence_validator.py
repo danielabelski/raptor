@@ -21,7 +21,7 @@ the rule-id-driven SMT profile heuristic falls back to defaults.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from core.dataflow.finding import Finding, Step
 from core.dataflow.llm_bridge import make_evidence_collector
@@ -58,19 +58,19 @@ class CodeQLEvidenceValidator:
     def __init__(
         self,
         llm_client: Any = None,
-        repo_root: Optional[Path] = None,
-        cache: Optional[Dict[str, Tuple[CandidateValidator, ...]]] = None,
+        repo_root: Path | None = None,
+        cache: dict[str, tuple[CandidateValidator, ...]] | None = None,
     ) -> None:
         self._injected_llm_client = llm_client
         self._repo_root = repo_root or _DEFAULT_REPO_ROOT
-        self._cache: Dict[str, Tuple[CandidateValidator, ...]] = (
+        self._cache: dict[str, tuple[CandidateValidator, ...]] = (
             cache if cache is not None else {}
         )
         # Lazy: the LLMClient (default-constructed) brings up the
         # egress proxy at __init__ time. Defer until we actually need
         # to call the LLM, so importing this module + zero-arg
         # construction stays cheap.
-        self._validator: Optional[DataflowValidator] = None
+        self._validator: DataflowValidator | None = None
 
     def _get_dataflow_validator(self) -> DataflowValidator:
         if self._validator is None:

@@ -7,7 +7,6 @@ the terminal banner. No logic, no checks, no side effects.
 import random
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
 
@@ -55,14 +54,14 @@ def read_random_quote() -> str:
 def format_banner(
     logo: str,
     quote: str,
-    tool_results: List[Tuple[str, bool]],
-    tool_warnings: List[str],
-    llm_lines: List[str],
-    llm_warnings: List[str],
-    env_parts: List[str],
-    env_warnings: List[str],
-    project_line: Optional[str] = None,
-    lang_line: Optional[str] = None,
+    tool_results: list[tuple[str, bool]],
+    tool_warnings: list[str],
+    llm_lines: list[str],
+    llm_warnings: list[str],
+    env_parts: list[str],
+    env_warnings: list[str],
+    project_line: str | None = None,
+    lang_line: str | None = None,
 ) -> str:
     """Format the startup banner from gathered data.
 

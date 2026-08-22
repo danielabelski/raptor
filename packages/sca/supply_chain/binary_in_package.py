@@ -68,7 +68,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 from ..discovery import EXCLUDED_DIR_NAMES
 from ..models import Confidence, Dependency, Manifest
@@ -143,7 +143,7 @@ _MAX_WALKED_FILES: int = 50_000
 
 
 # Lazy-loaded allowlist data.
-_ALLOWLIST: Optional[dict] = None
+_ALLOWLIST: dict | None = None
 
 
 def _allowlist_path() -> Path:
@@ -195,7 +195,7 @@ class BinaryHit:
     manifest_declares_native: bool = False
 
 
-def _classify_magic(head: bytes) -> Optional[str]:
+def _classify_magic(head: bytes) -> str | None:
     """Return ``"elf"``/``"pe"``/``"macho"``/``"wasm"`` or None.
 
     Disambiguates the ``\\xca\\xfe\\xba\\xbe`` collision: Mach-O fat
@@ -295,7 +295,7 @@ def _glob_to_regex(glob: str) -> str:
     ``**`` (path-traversal semantics conflict with its purer
     path-shape API), so we translate to regex ourselves.
     """
-    parts: List[str] = ["^"]
+    parts: list[str] = ["^"]
     i = 0
     n = len(glob)
     while i < n:
@@ -377,7 +377,7 @@ def _walk_for_binaries(
             yield p
 
 
-def _classify_or_none(path: Path) -> Optional[tuple]:
+def _classify_or_none(path: Path) -> tuple | None:
     """Return ``(family, head_bytes)`` for files that look like
     executable payloads, otherwise None.  Reads only first 256 bytes.
 
@@ -409,7 +409,7 @@ def scan_target(
     target: Path,
     manifests: Sequence[Manifest],
     deps: Sequence[Dependency] = (),
-) -> List[BinaryHit]:
+) -> list[BinaryHit]:
     """Walk ``target`` for files that look like executable binaries
     and aren't in the allowlist.  Emits one ``BinaryHit`` per such
     file.
@@ -440,7 +440,7 @@ def scan_target(
     # Per-manifest declaration answers, computed lazily so each
     # manifest body is parsed at most once regardless of hit count.
     declares_cache: dict = {}
-    out: List[BinaryHit] = []
+    out: list[BinaryHit] = []
     for path in _walk_for_binaries(target):
         result = _classify_or_none(path)
         if result is None:
@@ -535,12 +535,12 @@ def _forensic_evidence(path: Path, family: str) -> dict:
 def _closest_manifest(
     path: Path,
     manifests: Sequence[Manifest],
-) -> Optional[Manifest]:
+) -> Manifest | None:
     """Return the manifest whose directory most closely dominates
     ``path`` (same containment walk as :func:`_closest_dep`, without
     requiring a declared dep).  None when no manifest dominates."""
     best_depth = -1
-    best: Optional[Manifest] = None
+    best: Manifest | None = None
     for m in manifests:
         m_dir = m.path.parent.resolve()
         try:
@@ -558,12 +558,12 @@ def _closest_dep(
     path: Path,
     manifests: Sequence[Manifest],
     deps: Sequence[Dependency],
-) -> Optional[Dependency]:
+) -> Dependency | None:
     """Return the dep declared by the manifest closest to ``path``
     in the directory tree.  Returns None when no manifest dominates
     the file (caller falls back to a placeholder)."""
     best_depth = -1
-    best: Optional[Dependency] = None
+    best: Dependency | None = None
     for m in manifests:
         m_dir = m.path.parent.resolve()
         try:

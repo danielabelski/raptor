@@ -27,7 +27,6 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 # Repo root comes from the launcher-set RAPTOR_DIR — the ONLY
 # path ever added to sys.path (hard lookup; KeyError if the
@@ -51,12 +50,12 @@ class SeedEntry:
     fixture_path: str
     source_line: int
     sink_line: int
-    intermediate_lines: Tuple[int, ...]
+    intermediate_lines: tuple[int, ...]
     producer: str
     rule_id: str
     message: str
     verdict: str
-    fp_category: Optional[str]
+    fp_category: str | None
     rationale: str
 
 
@@ -70,7 +69,7 @@ _LABELED_AT = "2026-05-10"
 
 _JS = "out/dataflow-corpus-fixtures/juice-shop/data/static/codefixes"
 
-JUICE_SHOP: Tuple[SeedEntry, ...] = (
+JUICE_SHOP: tuple[SeedEntry, ...] = (
     # SQL injection: string concatenation into raw query.
     SeedEntry(
         fixture_path=f"{_JS}/dbSchemaChallenge_1.ts",
@@ -210,7 +209,7 @@ JUICE_SHOP: Tuple[SeedEntry, ...] = (
 
 _WG = "out/dataflow-corpus-fixtures/webgoat/src/main/java/org/owasp/webgoat/lessons"
 
-WEBGOAT: Tuple[SeedEntry, ...] = (
+WEBGOAT: tuple[SeedEntry, ...] = (
     # SqlInjectionLesson2: classic executeQuery on tainted string.
     SeedEntry(
         fixture_path=f"{_WG}/sqlinjection/introduction/SqlInjectionLesson2.java",
@@ -318,7 +317,7 @@ WEBGOAT: Tuple[SeedEntry, ...] = (
 )
 
 
-def _load_lines(repo_root: Path, fixture_path: str) -> List[str]:
+def _load_lines(repo_root: Path, fixture_path: str) -> list[str]:
     full = repo_root / fixture_path
     return full.read_text(encoding="utf-8").splitlines() if full.exists() else []
 
@@ -347,7 +346,7 @@ def _step(
 
 def _entry_to_pair(
     entry: SeedEntry, source_label: str, repo_root: Path
-) -> Tuple[Finding, GroundTruth]:
+) -> tuple[Finding, GroundTruth]:
     src = _step(entry.fixture_path, entry.source_line, "source", repo_root)
     sink = _step(entry.fixture_path, entry.sink_line, "sink", repo_root)
     intermediate = tuple(
@@ -397,7 +396,7 @@ def write_seed(out_dir: Path, repo_root: Path) -> int:
     return n
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out-dir",

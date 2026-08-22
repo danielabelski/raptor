@@ -22,7 +22,6 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 from core.config import RaptorConfig
 from core.logging import get_logger
@@ -51,12 +50,12 @@ class LibFuzzerResult:
     """Final result of a libFuzzer campaign."""
 
     target: str
-    crashes: List[Path] = field(default_factory=list)
-    timeouts: List[Path] = field(default_factory=list)
-    oom_inputs: List[Path] = field(default_factory=list)
+    crashes: list[Path] = field(default_factory=list)
+    timeouts: list[Path] = field(default_factory=list)
+    oom_inputs: list[Path] = field(default_factory=list)
     stats: LibFuzzerStats = field(default_factory=LibFuzzerStats)
-    output_dir: Optional[Path] = None
-    corpus_dir: Optional[Path] = None
+    output_dir: Path | None = None
+    corpus_dir: Path | None = None
 
     def total_findings(self) -> int:
         return len(self.crashes) + len(self.timeouts) + len(self.oom_inputs)
@@ -72,9 +71,9 @@ class LibFuzzerRunner:
     def __init__(
         self,
         harness_path: Path,
-        corpus_dir: Optional[Path] = None,
-        output_dir: Optional[Path] = None,
-        dict_path: Optional[Path] = None,
+        corpus_dir: Path | None = None,
+        output_dir: Path | None = None,
+        dict_path: Path | None = None,
         max_total_time: int = 600,
         max_len: int = 4096,
         timeout_seconds: int = 25,
@@ -203,7 +202,7 @@ class LibFuzzerRunner:
         )
         return result
 
-    def _readable_paths(self) -> List[str]:
+    def _readable_paths(self) -> list[str]:
         paths = [str(self.harness.parent), str(self.corpus_dir), str(self.output_dir)]
         if self.source_corpus_dir:
             paths.append(str(self.source_corpus_dir))
@@ -258,7 +257,7 @@ class LibFuzzerRunner:
                 elif "crash" in basename:
                     telemetry.record_crash(path, signal="libfuzzer")
 
-    def _build_command(self) -> List[str]:
+    def _build_command(self) -> list[str]:
         cmd = [str(self.harness)]
         cmd.append(str(self.corpus_dir))
         cmd.extend([

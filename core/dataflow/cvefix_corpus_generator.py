@@ -35,7 +35,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable, Iterator, Mapping
 
 from core.dataflow.adapters.codeql import from_sarif_result
 from core.dataflow.finding import Finding
@@ -63,7 +64,7 @@ def _iter_results(sarif: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
             yield result
 
 
-def _path_touches(f: Finding, files: FrozenSet[str]) -> bool:
+def _path_touches(f: Finding, files: frozenset[str]) -> bool:
     """True if any step on the finding's path lives in a fix-changed file."""
     steps = [f.source, *f.intermediate_steps, f.sink]
     return any(s.file_path in files for s in steps)
@@ -73,9 +74,9 @@ def _findings_from_sarif(
     sarif: Mapping[str, Any],
     *,
     id_prefix: str,
-    touched: Optional[FrozenSet[str]] = None,
-) -> List[Finding]:
-    out: List[Finding] = []
+    touched: frozenset[str] | None = None,
+) -> list[Finding]:
+    out: list[Finding] = []
     for idx, result in enumerate(_iter_results(sarif)):
         fid = f"{id_prefix}__{idx:03d}"
         try:
@@ -105,8 +106,8 @@ def generate_from_sarif(
     cwe: str,
     labeled_at: str,
     labeler: str = _DEFAULT_LABELER,
-    fix_touched_files: Optional[Iterable[str]] = None,
-) -> List[Tuple[Finding, GroundTruth]]:
+    fix_touched_files: Iterable[str] | None = None,
+) -> list[tuple[Finding, GroundTruth]]:
     """Build (Finding, GroundTruth) pairs from one CVE fix-commit pair.
 
     ``before_sarif`` / ``after_sarif`` are parsed CodeQL SARIF dicts from
@@ -120,7 +121,7 @@ def generate_from_sarif(
     Omitting it is appropriate only for single-finding / synthetic inputs.
     """
     cve = _slug(cve_id)
-    touched: Optional[FrozenSet[str]] = (
+    touched: frozenset[str] | None = (
         frozenset(fix_touched_files) if fix_touched_files is not None else None
     )
     if touched is None:
@@ -128,7 +129,7 @@ def generate_from_sarif(
             "generate_from_sarif(%s): no fix_touched_files — labels are "
             "position-only and may mislabel CVE-unrelated findings.", cve_id,
         )
-    pairs: List[Tuple[Finding, GroundTruth]] = []
+    pairs: list[tuple[Finding, GroundTruth]] = []
 
     # Post-fix findings the producer still emits = FP candidates (the
     # added sanitizer isn't modelled). This is the trust sound-tier target.

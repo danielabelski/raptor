@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, Iterable, Set
+from collections.abc import Iterable
 
 from core.tar import extract_files_from_tar
 
@@ -45,10 +45,10 @@ DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 def extract_files_from_layer(
     layer_chunks: Iterable[bytes],
-    wanted_paths: Set[str],
+    wanted_paths: set[str],
     *,
     max_entry_bytes: int = DEFAULT_MAX_ENTRY_BYTES,
-) -> Dict[str, bytes]:
+) -> dict[str, bytes]:
     """Pull specific files out of a streamed layer blob.
 
     ``layer_chunks`` is the raw gzipped-tar byte stream (from

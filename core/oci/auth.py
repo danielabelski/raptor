@@ -37,7 +37,6 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
 
 from core.json import load_json
 
@@ -67,7 +66,7 @@ class BasicCredentials:
         return token
 
 
-def lookup_credentials(registry: str) -> Optional[BasicCredentials]:
+def lookup_credentials(registry: str) -> BasicCredentials | None:
     """Find credentials for ``registry`` via the documented chain.
 
     Returns ``None`` when no credentials are configured — the caller
@@ -97,7 +96,7 @@ def lookup_credentials(registry: str) -> Optional[BasicCredentials]:
     return None
 
 
-def _from_env(registry: str) -> Optional[BasicCredentials]:
+def _from_env(registry: str) -> BasicCredentials | None:
     """Per-registry env var lookup. Host is uppercased and ``.`` is
     replaced with ``_`` so ``ghcr.io`` → ``RAPTOR_OCI_GHCR_IO_*``,
     ``registry-1.docker.io`` → ``RAPTOR_OCI_REGISTRY_1_DOCKER_IO_*``.
@@ -111,7 +110,7 @@ def _from_env(registry: str) -> Optional[BasicCredentials]:
     return None
 
 
-def _from_docker_config(registry: str) -> Optional[BasicCredentials]:
+def _from_docker_config(registry: str) -> BasicCredentials | None:
     """Read ``~/.docker/config.json`` inline ``auths`` only.
 
     Honoured fields:
@@ -189,7 +188,7 @@ def _from_docker_config(registry: str) -> Optional[BasicCredentials]:
     return None
 
 
-def _entry_to_credentials(entry: dict) -> Optional[BasicCredentials]:
+def _entry_to_credentials(entry: dict) -> BasicCredentials | None:
     """Convert a single ``auths.<host>`` entry to credentials.
     Tries the inline ``auth`` (base64 ``user:password``) first, then
     falls back to explicit ``username``/``password`` fields."""
@@ -232,7 +231,7 @@ _WWW_AUTH_PARAM_RE = re.compile(
 )
 
 
-def parse_www_authenticate(header: str) -> Tuple[str, dict]:
+def parse_www_authenticate(header: str) -> tuple[str, dict]:
     """Parse a ``WWW-Authenticate`` header value into
     ``(scheme, params)``.
 

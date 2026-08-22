@@ -53,7 +53,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
+from collections.abc import Iterator
 
 from core.atomic_fs import write_text_atomically
 from core.binary.fingerprint import (
@@ -80,7 +80,7 @@ def _ref_filename(ref: str) -> str:
 
 def save_fingerprint(
     store_dir: Path, ref: str, fingerprint: CapabilityFingerprint,
-) -> Optional[Path]:
+) -> Path | None:
     """Atomically write ``fingerprint`` to ``store_dir`` keyed
     by ``ref``. Replaces any previous entry for the same ref.
 
@@ -127,7 +127,7 @@ def save_fingerprint(
 
 def load_fingerprint(
     store_dir: Path, ref: str,
-) -> Optional[CapabilityFingerprint]:
+) -> CapabilityFingerprint | None:
     """Load the most recently stored fingerprint for ``ref``.
 
     Returns ``None`` when:
@@ -192,7 +192,7 @@ def load_fingerprint(
 
 def iter_refs(
     store_dir: Path,
-) -> Iterator[Tuple[str, CapabilityFingerprint]]:
+) -> Iterator[tuple[str, CapabilityFingerprint]]:
     """Yield ``(ref, fingerprint)`` for every entry in the store.
 
     Useful for store-wide audits / CI gates / drift-detection

@@ -28,7 +28,8 @@ holds the sentinel" so the negative entry serves correctly.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 from core.json import JsonCache, MISSING
 
@@ -64,7 +65,7 @@ def log_fetch_failure(
 
 
 def fetch_or_negative_cache(
-    cache: Optional[JsonCache],
+    cache: JsonCache | None,
     key: str,
     ttl_seconds: int,
     fetch: Callable[[], Any],

@@ -68,15 +68,8 @@ import logging
 from dataclasses import dataclass
 from typing import (
     Any,
-    Dict,
-    FrozenSet,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Set,
-    Tuple,
 )
+from collections.abc import Iterable, Mapping
 
 from core.analysis.cfg_builder import (
     ENTRY_LINENO,
@@ -99,10 +92,10 @@ class JavaCFGNode:
     kind: str          # "entry" | "exit" | "stmt"
     lineno: int
     label: str
-    calls: FrozenSet[str] = frozenset()
-    defs: FrozenSet[str] = frozenset()
-    uses: FrozenSet[str] = frozenset()
-    call_sites: Tuple[CallSite, ...] = ()
+    calls: frozenset[str] = frozenset()
+    defs: frozenset[str] = frozenset()
+    uses: frozenset[str] = frozenset()
+    call_sites: tuple[CallSite, ...] = ()
     may_escape: bool = False
 
     def __repr__(self) -> str:                              # pragma: no cover
@@ -121,13 +114,13 @@ class JavaCFG:
     language: str
     entry_node: JavaCFGNode
     exit_node: JavaCFGNode
-    _nodes: Tuple[JavaCFGNode, ...]
-    _adjacency: Dict[JavaCFGNode, Tuple[JavaCFGNode, ...]]
-    params: Tuple[str, ...] = ()
+    _nodes: tuple[JavaCFGNode, ...]
+    _adjacency: dict[JavaCFGNode, tuple[JavaCFGNode, ...]]
+    params: tuple[str, ...] = ()
     # Mechanism telemetry: which optional modelling steps fired
     # ("switch:constant-resolved", "switch:all-branches", …). Additive
     # — consumers must tolerate an empty tuple.
-    build_notes: Tuple[str, ...] = ()
+    build_notes: tuple[str, ...] = ()
 
     @property
     def entry(self) -> JavaCFGNode:
@@ -222,7 +215,7 @@ def _node_text(n) -> str:
     return n.text.decode("utf-8", errors="replace") if n is not None else ""
 
 
-def build_import_map(root) -> Tuple[Mapping[str, str], Mapping[str, str]]:
+def build_import_map(root) -> tuple[Mapping[str, str], Mapping[str, str]]:
     """Parse the compilation unit's import declarations.
 
     Returns ``(type_imports, static_imports)``:
@@ -235,8 +228,8 @@ def build_import_map(root) -> Tuple[Mapping[str, str], Mapping[str, str]]:
     Wildcard imports are skipped — an unresolvable simple name stays
     unresolved and can never match a catalog FQN (conservative).
     """
-    types: Dict[str, str] = {}
-    statics: Dict[str, str] = {}
+    types: dict[str, str] = {}
+    statics: dict[str, str] = {}
     for child in root.children:
         if child.type != "import_declaration":
             continue
@@ -287,7 +280,7 @@ def _unwrap_value_expr(n):
     return n
 
 
-def _base_ident(n) -> Optional[str]:
+def _base_ident(n) -> str | None:
     """Leftmost identifier: ``a.b.c`` → ``a``; ``arr[i]`` → ``arr``."""
     if n is None:
         return None
@@ -305,7 +298,7 @@ def _base_ident(n) -> Optional[str]:
     return None
 
 
-def _dotted_chain(n) -> Optional[str]:
+def _dotted_chain(n) -> str | None:
     """Render an identifier / field_access chain as a dotted string.
     ``org.owasp.esapi.ESAPI`` (parsed as nested field_access) →
     ``"org.owasp.esapi.ESAPI"``. Anything else → None."""
@@ -336,7 +329,7 @@ class _NameResolver:
             return f"{fqn}.{rest}" if rest else fqn
         return chain
 
-    def callable_name(self, invocation) -> Optional[str]:
+    def callable_name(self, invocation) -> str | None:
         """Resolved dotted name for one ``method_invocation`` (or
         ``object_creation_expression`` → ``new <Type>``)."""
         if invocation.type == _OBJECT_CREATION:
@@ -378,7 +371,7 @@ class _NameResolver:
         return f"{self._resolve_chain(chain)}.{simple}"
 
 
-def _arg_surface_names(invocation) -> FrozenSet[str]:
+def _arg_surface_names(invocation) -> frozenset[str]:
     """Bare-name surface of a call's arguments — identifiers and the
     base of field / array accesses; nested calls, literals, binary
     expressions contribute nothing (same under-count rationale as the
@@ -386,7 +379,7 @@ def _arg_surface_names(invocation) -> FrozenSet[str]:
     args = invocation.child_by_field_name("arguments")
     if args is None:
         return frozenset()
-    names: Set[str] = set()
+    names: set[str] = set()
     for child in args.children:
         if not child.is_named:
             continue
@@ -400,7 +393,7 @@ def _arg_surface_names(invocation) -> FrozenSet[str]:
     return frozenset(names)
 
 
-def _arg_deep_names(invocation, resolver) -> FrozenSet[str]:
+def _arg_deep_names(invocation, resolver) -> frozenset[str]:
     """Names referenced anywhere inside the call's argument subtrees —
     the sink-arg fallback surface (see CallSite.arg_deep_names).
     Reuses the load-position walker, so callee names are excluded and
@@ -408,19 +401,19 @@ def _arg_deep_names(invocation, resolver) -> FrozenSet[str]:
     args = invocation.child_by_field_name("arguments")
     if args is None:
         return frozenset()
-    names: Set[str] = set()
+    names: set[str] = set()
     for child in args.children:
         if child.is_named:
             names |= _walk_uses(child, resolver)
     return frozenset(names)
 
 
-def _walk_uses(n, resolver, *, exclude: Optional[set] = None) -> FrozenSet[str]:
+def _walk_uses(n, resolver, *, exclude: set | None = None) -> frozenset[str]:
     """Identifiers in load position: callee names are excluded (they
     become call sites), field/array accesses contribute their base."""
     if exclude is None:
         exclude = set()
-    out: Set[str] = set()
+    out: set[str] = set()
     stack = [n] if n is not None else []
     while stack:
         cur = stack.pop()
@@ -463,12 +456,12 @@ def _walk_uses(n, resolver, *, exclude: Optional[set] = None) -> FrozenSet[str]:
 
 
 def _walk_call_sites(
-    n, resolver, *, assigned_for_root: FrozenSet[str] = frozenset(),
-) -> Tuple[CallSite, ...]:
+    n, resolver, *, assigned_for_root: frozenset[str] = frozenset(),
+) -> tuple[CallSite, ...]:
     """Every call in ``n`` as :class:`CallSite`, sorted so
     ``call_sites[-1]`` is the syntactic outermost (end-byte order,
     matching both existing builders)."""
-    out: List[Tuple[int, int, CallSite]] = []
+    out: list[tuple[int, int, CallSite]] = []
     root_id = id(_unwrap_value_expr(n)) if n is not None else None
 
     def visit(node) -> None:
@@ -551,10 +544,10 @@ def _subtree_has_refused(n) -> bool:
 
 
 def _payload_from_local_var_decl(decl, resolver):
-    defs: Set[str] = set()
-    uses: Set[str] = set()
-    calls: Set[str] = set()
-    css: List[CallSite] = []
+    defs: set[str] = set()
+    uses: set[str] = set()
+    calls: set[str] = set()
+    css: list[CallSite] = []
     for child in decl.children:
         if child.type != _VAR_DECLARATOR:
             continue
@@ -579,8 +572,8 @@ def _payload_from_assignment(expr, resolver):
     op = _node_text(op_node) if op_node is not None else "="
     lhs_name = _base_ident(lhs) if lhs is not None else None
     defs = frozenset({lhs_name}) if lhs_name else frozenset()
-    uses: Set[str] = set()
-    css: List[CallSite] = []
+    uses: set[str] = set()
+    css: list[CallSite] = []
     if op != "=" and lhs_name:
         uses.add(lhs_name)
     if rhs is not None:
@@ -615,16 +608,16 @@ def _payload_from_subtree(n, resolver):
 # ---------------------------------------------------------------------------
 
 
-def _method_name(decl) -> Optional[str]:
+def _method_name(decl) -> str | None:
     n = decl.child_by_field_name("name")
     return _node_text(n) if n is not None else None
 
 
-def _method_params(decl) -> Tuple[str, ...]:
+def _method_params(decl) -> tuple[str, ...]:
     params = decl.child_by_field_name("parameters")
     if params is None:
         return ()
-    out: List[str] = []
+    out: list[str] = []
     for p in params.children:
         if p.type not in ("formal_parameter", "spread_parameter"):
             continue
@@ -643,7 +636,7 @@ def _method_params(decl) -> Tuple[str, ...]:
 
 def find_enclosing_method(
     source_text: str, source_line: int, sink_line: int,
-) -> Tuple[Optional[str], int]:
+) -> tuple[str | None, int]:
     """Smallest method / constructor declaration spanning
     [source_line, sink_line]. Returns ``(name, header_line)`` or
     ``(None, 0)``."""
@@ -652,7 +645,7 @@ def find_enclosing_method(
         return None, 0
     tree = parser.parse(source_text.encode("utf-8", errors="replace"))
     lo, hi = min(source_line, sink_line), max(source_line, sink_line)
-    best: Optional[Tuple[int, str, int]] = None
+    best: tuple[int, str, int] | None = None
     stack = [tree.root_node]
     while stack:
         cur = stack.pop()
@@ -696,25 +689,25 @@ class _JavaCFGBuilder:
             kind="exit", lineno=EXIT_LINENO,
             label=f"EXIT:{function_name}",
         )
-        self._adjacency: Dict[JavaCFGNode, List[JavaCFGNode]] = {}
-        self._all_nodes: List[JavaCFGNode] = [self.entry, self.exit]
-        self._loop_stack: List[Tuple[JavaCFGNode, JavaCFGNode]] = []
+        self._adjacency: dict[JavaCFGNode, list[JavaCFGNode]] = {}
+        self._all_nodes: list[JavaCFGNode] = [self.entry, self.exit]
+        self._loop_stack: list[tuple[JavaCFGNode, JavaCFGNode]] = []
         # Unlabeled ``break`` targets: loops push their header,
         # switches push their join node — Java's break exits the
         # innermost of EITHER, unlike continue which is loop-only.
-        self._break_targets: List[JavaCFGNode] = []
+        self._break_targets: list[JavaCFGNode] = []
         # Ambient catch entries for liberal try-edge wiring.
-        self._catch_entry_stack: List[List[JavaCFGNode]] = []
+        self._catch_entry_stack: list[list[JavaCFGNode]] = []
         self._dedupe_counter = 0
         # (cond_node, disc_ts_node, [(entry, label_nodes, is_default)],
         #  join_node) per modelled switch — consumed by the post-build
         # constant-discriminant refinement.
-        self._switch_records: List[Tuple] = []
+        self._switch_records: list[tuple] = []
         # (cond_node, cond_ts_node, catch_succ_snapshot,
         #  then_entries, else_entries, has_alt) per modelled if —
         # consumed by the post-build constant-condition refinement.
-        self._if_records: List[Tuple] = []
-        self.build_notes: List[str] = []
+        self._if_records: list[tuple] = []
+        self.build_notes: list[str] = []
 
     # ----- plumbing -----
 
@@ -999,7 +992,7 @@ class _JavaCFGBuilder:
         finally_clause = next(
             (c for c in stmt.children if c.type == "finally_clause"), None)
         # Catch entry nodes first, so try-body statements can link.
-        catch_entries: List[JavaCFGNode] = []
+        catch_entries: list[JavaCFGNode] = []
         for cl in catches:
             param = next(
                 (c for c in cl.children if c.type == "catch_formal_parameter"),
@@ -1044,7 +1037,7 @@ class _JavaCFGBuilder:
         self._catch_entry_stack.pop()
 
         # Catch bodies.
-        catch_outs: List[JavaCFGNode] = []
+        catch_outs: list[JavaCFGNode] = []
         for cl, entry in zip(catches, catch_entries):
             cbody = cl.child_by_field_name("body")
             outs = self._build_stmts(cbody, [entry]) \
@@ -1124,7 +1117,7 @@ class _JavaCFGBuilder:
             labels = [c for c in u.children if c.type == _SWITCH_LABEL]
             if not labels:
                 raise _RefusedConstruct("switch label shape")
-            exprs: List = []
+            exprs: list = []
             is_default = False
             for lab in labels:
                 named = [c for c in lab.children if c.is_named]
@@ -1154,9 +1147,9 @@ class _JavaCFGBuilder:
             self._link(cond_node, join)
             return [join]
 
-        entries: List[Tuple[JavaCFGNode, Tuple, bool]] = []
+        entries: list[tuple[JavaCFGNode, tuple, bool]] = []
         has_default = False
-        prev_tails: Optional[List[JavaCFGNode]] = None
+        prev_tails: list[JavaCFGNode] | None = None
         for u, labels, exprs, is_default in parsed:
             has_default = has_default or is_default
             entry = self._make_node(
@@ -1196,8 +1189,8 @@ def build_java_intraproc_cfg(
     source_text: str,
     function_name: str,
     *,
-    line_hint: Optional[Tuple[int, int]] = None,
-) -> Optional[JavaCFG]:
+    line_hint: tuple[int, int] | None = None,
+) -> JavaCFG | None:
     """Build the CFG for one Java method / constructor.
 
     ``line_hint`` — when given, the declaration selected is the
@@ -1261,8 +1254,8 @@ def build_java_intraproc_cfg(
         return None
     builder._link_many(tails, builder.exit)
 
-    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
-    notes: List[str] = list(builder.build_notes)
+    pruned: set[tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: list[str] = list(builder.build_notes)
     substrate = None
     if builder._switch_records or builder._if_records:
         try:
@@ -1319,8 +1312,8 @@ def build_java_intraproc_cfg(
 def _refinement_substrate(
     builder: _JavaCFGBuilder,
     source_text: str,
-    params: Tuple[str, ...],
-) -> Tuple[Any, Any, Any, Any]:
+    params: tuple[str, ...],
+) -> tuple[Any, Any, Any, Any]:
     """Shared proof substrate for the post-build branch refinements:
     (interim unpruned CFG, its reaching defs, the constant index, the
     optional table resolver). Computed once — the switch and if
@@ -1352,8 +1345,8 @@ def _refinement_substrate(
 
 def _refine_constant_switches(
     builder: _JavaCFGBuilder,
-    substrate: Tuple[Any, Any, Any, Any],
-) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
+    substrate: tuple[Any, Any, Any, Any],
+) -> tuple[set[tuple[JavaCFGNode, JavaCFGNode]], list[str]]:
     """Prune condition→group edges of switches whose discriminant and
     every case label fold to compile-time constants.
 
@@ -1370,8 +1363,8 @@ def _refine_constant_switches(
         fold_expr_at,
     )
 
-    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
-    notes: List[str] = []
+    pruned: set[tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: list[str] = []
     _interim, rd, index, table_resolver = substrate
 
     def _refuse_names(_name: str, _depth: int):
@@ -1379,7 +1372,7 @@ def _refine_constant_switches(
 
     for cond_node, disc, entries, join, has_default in \
             builder._switch_records:
-        label_vals: List[List] = []
+        label_vals: list[list] = []
         ok = True
         for _entry, exprs, _is_default in entries:
             vals = []
@@ -1430,9 +1423,9 @@ def _refine_constant_switches(
 
 def _refine_constant_ifs(
     builder: _JavaCFGBuilder,
-    substrate: Tuple[Any, Any, Any, Any],
-    already_pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]],
-) -> Tuple[Set[Tuple[JavaCFGNode, JavaCFGNode]], List[str]]:
+    substrate: tuple[Any, Any, Any, Any],
+    already_pruned: set[tuple[JavaCFGNode, JavaCFGNode]],
+) -> tuple[set[tuple[JavaCFGNode, JavaCFGNode]], list[str]]:
     """Prune the dead branch of ``if`` statements whose condition
     folds to a compile-time BOOLEAN — the statement-level analog of
     the dead-branch ternary and of ``switch`` constant resolution.
@@ -1464,13 +1457,13 @@ def _refine_constant_ifs(
     from core.analysis.const_fold_java import REFUSE, fold_expr_at
 
     _interim, rd, index, table_resolver = substrate
-    pruned: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
-    notes: List[str] = []
+    pruned: set[tuple[JavaCFGNode, JavaCFGNode]] = set()
+    notes: list[str] = []
 
     # Predecessor map over the adjacency as pruned SO FAR (switch
     # refinement first): the join guard must not count an edge that
     # an earlier proof already removed.
-    preds: Dict[JavaCFGNode, Set[JavaCFGNode]] = {}
+    preds: dict[JavaCFGNode, set[JavaCFGNode]] = {}
     for n, dsts in builder._adjacency.items():
         for d in dsts:
             if (n, d) in already_pruned:
@@ -1487,7 +1480,7 @@ def _refine_constant_ifs(
         if val is REFUSE or not isinstance(val, bool):
             notes.append("if:all-branches")
             continue
-        local: Set[Tuple[JavaCFGNode, JavaCFGNode]] = set()
+        local: set[tuple[JavaCFGNode, JavaCFGNode]] = set()
         if val:
             for e in else_entries:
                 local.add((cond_node, e))

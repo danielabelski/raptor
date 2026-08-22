@@ -33,18 +33,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import (
-    Callable,
-    Dict,
     Generic,
-    Hashable,
-    Iterable,
-    List,
-    Optional,
     Protocol,
-    Set,
     TypeVar,
     runtime_checkable,
 )
+from collections.abc import Callable, Hashable, Iterable
 
 
 logger = logging.getLogger(__name__)
@@ -95,9 +89,9 @@ class DomTree(Generic[N]):
     # entry itself by convention (a node "dominates itself" but
     # has no proper immediate dominator). Unreachable nodes from
     # entry are NOT present in this map.
-    idoms: Dict[N, N]
+    idoms: dict[N, N]
 
-    def idom(self, node: N) -> Optional[N]:
+    def idom(self, node: N) -> N | None:
         """Immediate dominator of ``node``. Returns ``None`` for
         ``entry`` (which has no proper dominator) and for any node
         that wasn't reachable from ``entry`` during construction."""
@@ -117,7 +111,7 @@ class DomTree(Generic[N]):
         dominates itself."""
         if a not in self.idoms or b not in self.idoms:
             return False
-        cur: Optional[N] = b
+        cur: N | None = b
         while cur is not None:
             if cur == a:
                 return True
@@ -128,14 +122,14 @@ class DomTree(Generic[N]):
             cur = nxt
         return False
 
-    def dominators_of(self, node: N) -> List[N]:
+    def dominators_of(self, node: N) -> list[N]:
         """All dominators of ``node`` from ``entry`` (inclusive)
         down to ``node`` (inclusive). Returns ``[]`` for unreachable
         nodes."""
         if node not in self.idoms:
             return []
-        path: List[N] = []
-        cur: Optional[N] = node
+        path: list[N] = []
+        cur: N | None = node
         while cur is not None:
             path.append(cur)
             nxt = self.idoms[cur]
@@ -158,7 +152,7 @@ class DomTree(Generic[N]):
 
 def _dfs_number(
     entry: N, successors: Callable[[N], Iterable[N]],
-) -> tuple[List[N], Dict[N, int], Dict[N, N]]:
+) -> tuple[list[N], dict[N, int], dict[N, N]]:
     """Iterative DFS numbering.
 
     Returns:
@@ -171,10 +165,10 @@ def _dfs_number(
     pathological CFGs (long try-with chains in big Python files)
     hits the default 1000-frame recursion limit on cpython.
     """
-    vertex: List[N] = []
-    dfnum: Dict[N, int] = {}
-    parent: Dict[N, N] = {}
-    stack: List[tuple[N, Optional[N], Iterable[N]]] = [
+    vertex: list[N] = []
+    dfnum: dict[N, int] = {}
+    parent: dict[N, N] = {}
+    stack: list[tuple[N, N | None, Iterable[N]]] = [
         (entry, None, iter(successors(entry))),
     ]
     dfnum[entry] = 0
@@ -205,10 +199,10 @@ class _UnionFind(Generic[N]):
     path-compresses while tracking the minimum-semi label.
     """
 
-    def __init__(self, semi: Dict[N, int]):
+    def __init__(self, semi: dict[N, int]):
         self._semi = semi
-        self._ancestor: Dict[N, Optional[N]] = {}
-        self._label: Dict[N, N] = {}
+        self._ancestor: dict[N, N | None] = {}
+        self._label: dict[N, N] = {}
 
     def make(self, node: N) -> None:
         self._ancestor[node] = None
@@ -221,8 +215,8 @@ class _UnionFind(Generic[N]):
         # Iterative compression: build the path up to a root, then
         # rewrite each ancestor[u] = root and pick the
         # minimum-semi label along the way.
-        path: List[N] = []
-        cur: Optional[N] = v
+        path: list[N] = []
+        cur: N | None = v
         while cur is not None and self._ancestor.get(cur) is not None:
             path.append(cur)
             cur = self._ancestor[cur]
@@ -273,13 +267,13 @@ def build_dom_tree(graph: Graph[N]) -> DomTree[N]:
     if n == 0:
         return DomTree(entry=entry, idoms={})
     # ``semi[v]`` is the DFS number of v's semidominator; initially v itself.
-    semi: Dict[N, int] = {v: dfnum[v] for v in vertex}
+    semi: dict[N, int] = {v: dfnum[v] for v in vertex}
     # ``bucket[w]`` collects vertices whose semidominator is ``w``.
-    bucket: Dict[N, Set[N]] = {v: set() for v in vertex}
+    bucket: dict[N, set[N]] = {v: set() for v in vertex}
     # ``dom`` is the immediate dominator under construction.
-    dom: Dict[N, N] = {entry: entry}
+    dom: dict[N, N] = {entry: entry}
     # Pre-compute predecessor edges via one successor walk over reachable nodes.
-    preds: Dict[N, List[N]] = {v: [] for v in vertex}
+    preds: dict[N, list[N]] = {v: [] for v in vertex}
     reachable = set(vertex)
     for v in vertex:
         for s in graph.successors(v):
@@ -347,10 +341,10 @@ class AdjacencyGraph(Generic[N]):
     """
 
     entry: N
-    adjacency: Dict[N, List[N]]
+    adjacency: dict[N, list[N]]
 
     def nodes(self) -> Iterable[N]:
-        seen: Set[N] = set()
+        seen: set[N] = set()
         for k, vs in self.adjacency.items():
             if k not in seen:
                 seen.add(k)

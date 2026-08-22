@@ -10,7 +10,7 @@ import logging
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from core.atomic_fs import write_text_atomically
 
@@ -56,11 +56,11 @@ def _reject_non_finite(token: str) -> Any:
 
 
 def load_json(
-    path: Union[str, Path],
+    path: str | Path,
     strict: bool = False,
     *,
     allow_non_finite: bool = False,
-) -> Optional[Any]:
+) -> Any | None:
     """Load a JSON file.
 
     Returns None if the file does not exist. If the file exists but is
@@ -159,7 +159,7 @@ def _strip_json_comments(text: str) -> str:
     return '\n'.join(result)
 
 
-def load_json_with_comments(path: Union[str, Path]) -> Optional[Any]:
+def load_json_with_comments(path: str | Path) -> Any | None:
     """Load a JSON file that may contain ``//`` or ``#`` comments.
 
     Strips full-line and inline comments before parsing, while
@@ -234,7 +234,7 @@ def _reject_non_finite_floats(data: Any) -> None:
             stack.extend(obj)
 
 
-def save_json(path: Union[str, Path], data: Any, mode: int = None) -> None:
+def save_json(path: str | Path, data: Any, mode: int = None) -> None:
     """Save data as pretty-printed JSON. Handles Path/datetime serialization.
 
     Non-finite floats (NaN, Infinity) raise ``ValueError`` on BOTH

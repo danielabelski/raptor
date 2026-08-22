@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Set
 
 
 def _coerce_int(value: object, default: int) -> int:
@@ -26,7 +25,7 @@ class JoernCPG:
 
     path: Path
     target: Path
-    languages: Set[str] = field(default_factory=set)
+    languages: set[str] = field(default_factory=set)
     build_time_ms: int = 0
 
     def exists(self) -> bool:
@@ -71,7 +70,7 @@ class TaintFlow:
     source_param: str
     sink_call: str
     sink_arg_idx: int
-    steps: List[FlowStep] = field(default_factory=list)
+    steps: list[FlowStep] = field(default_factory=list)
     is_inter_procedural: bool = False
 
     @classmethod
@@ -105,9 +104,9 @@ class JoernMethodSummary:
     """Summary of taint rules, preconditions, and return properties for a method."""
 
     method: str
-    taint_rules: List[str] = field(default_factory=list)
-    preconditions: List[str] = field(default_factory=list)
-    returns: List[str] = field(default_factory=list)
+    taint_rules: list[str] = field(default_factory=list)
+    preconditions: list[str] = field(default_factory=list)
+    returns: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -123,11 +122,11 @@ class JoernResult:
     """Structured result from a Joern query execution."""
 
     query: str
-    flows: List[TaintFlow] = field(default_factory=list)
+    flows: list[TaintFlow] = field(default_factory=list)
     raw_output: str = ""
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
-    dark_methods: List[str] = field(default_factory=list)
+    dark_methods: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class ResourceLimits:
     network_deny: bool = True
     fs_read_only: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "timeout_seconds": self.timeout_seconds,
             "memory_limit_mb": self.memory_limit_mb,
@@ -33,10 +33,10 @@ class ResourceLimits:
         }
 
 
-def _build_limits_from_policy() -> Dict[str, ResourceLimits]:
+def _build_limits_from_policy() -> dict[str, ResourceLimits]:
     """Derive resource limits from sandbox_policy (single source of truth)."""
     from .sandbox_policy import all_policies
-    limits: Dict[str, ResourceLimits] = {}
+    limits: dict[str, ResourceLimits] = {}
     for policy in all_policies():
         if policy.timeout_seconds or policy.memory_limit_mb:
             limits[policy.tool] = ResourceLimits(
@@ -48,10 +48,10 @@ def _build_limits_from_policy() -> Dict[str, ResourceLimits]:
     return limits
 
 
-_TOOL_LIMITS: Optional[Dict[str, ResourceLimits]] = None
+_TOOL_LIMITS: dict[str, ResourceLimits] | None = None
 
 
-def get_resource_limits(tool: str) -> Optional[ResourceLimits]:
+def get_resource_limits(tool: str) -> ResourceLimits | None:
     global _TOOL_LIMITS
     if _TOOL_LIMITS is None:
         _TOOL_LIMITS = _build_limits_from_policy()
@@ -67,7 +67,7 @@ class OutputSizeLimit:
     description: str
 
 
-_OUTPUT_LIMITS: Dict[str, OutputSizeLimit] = {
+_OUTPUT_LIMITS: dict[str, OutputSizeLimit] = {
     "joern_query": OutputSizeLimit(
         tool="joern_query", max_results=100,
         description="Joern query results",
@@ -87,12 +87,12 @@ _OUTPUT_LIMITS: Dict[str, OutputSizeLimit] = {
 }
 
 
-def get_output_limit(tool: str) -> Optional[OutputSizeLimit]:
+def get_output_limit(tool: str) -> OutputSizeLimit | None:
     return _OUTPUT_LIMITS.get(tool.lower())
 
 
 def truncate_output(
-    items: List[Any],
+    items: list[Any],
     tool: str,
 ) -> tuple:
     """Truncate tool output to the configured limit.

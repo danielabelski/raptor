@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
 
 
 # Tool display ordering — most-likely-to-fire first so the block
@@ -34,7 +33,7 @@ _TOOL_LABELS = {
 }
 
 
-def _load_coverage_record(out_dir: Path, tool: str) -> Optional[Dict]:
+def _load_coverage_record(out_dir: Path, tool: str) -> dict | None:
     """Read ``coverage-<tool>.json`` from ``out_dir``. Best-effort —
     missing file / malformed JSON returns ``None`` (tool didn't run
     or its coverage emit failed; both fold to ''no record to render''
@@ -48,7 +47,7 @@ def _load_coverage_record(out_dir: Path, tool: str) -> Optional[Dict]:
         return None
 
 
-def _findings_for_tool(metrics: Dict, tool: str) -> int:
+def _findings_for_tool(metrics: dict, tool: str) -> int:
     """Count findings attributable to ``tool``.
 
     Prefers the authoritative ``findings_by_tool`` dict (keyed by
@@ -82,7 +81,7 @@ def _findings_for_tool(metrics: Dict, tool: str) -> int:
     return total
 
 
-def render_scan_coverage(out_dir: Path) -> Optional[str]:
+def render_scan_coverage(out_dir: Path) -> str | None:
     """Render the operator-facing tool-execution coverage block for
     a /scan run. Returns ``None`` when no per-tool coverage files
     exist — caller suppresses the section entirely rather than
@@ -100,7 +99,7 @@ def render_scan_coverage(out_dir: Path) -> Optional[str]:
     # scan_metrics.json gives per-tool finding counts via the
     # findings_by_rule namespace split. Best-effort: missing /
     # malformed metrics falls back to ''— findings'' on each line.
-    metrics: Dict = {}
+    metrics: dict = {}
     metrics_path = out_dir / "scan_metrics.json"
     if metrics_path.is_file():
         try:
@@ -108,7 +107,7 @@ def render_scan_coverage(out_dir: Path) -> Optional[str]:
         except (OSError, json.JSONDecodeError):
             metrics = {}
 
-    rendered_lines: List[str] = []
+    rendered_lines: list[str] = []
     for tool in _TOOL_ORDER:
         rec = _load_coverage_record(out_dir, tool)
         if rec is None:
@@ -130,11 +129,11 @@ def render_scan_coverage(out_dir: Path) -> Optional[str]:
         # failure field surfaced today; codeql / cocci failures
         # surface through their own pipeline — extend as those
         # detectors grow).
-        failed_packs: List = []
+        failed_packs: list = []
         if tool == "semgrep":
             failed_packs = metrics.get("semgrep_failed_packs") or []
 
-        detail_parts: List[str] = []
+        detail_parts: list[str] = []
         if rule_count is not None:
             detail_parts.append(
                 f"{rule_count} rule group{'s' if rule_count != 1 else ''}"

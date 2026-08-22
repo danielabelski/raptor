@@ -21,15 +21,15 @@ off the ``CompletedProcess`` (``result.sandbox_info``) and pass it in.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from core.witness.types import WitnessOutcome
 
 
 def outcome_from_sandbox_info(
-    sandbox_info: Optional[Dict[str, Any]],
-    returncode: Optional[int] = None,
-) -> Tuple[WitnessOutcome, Dict[str, Any]]:
+    sandbox_info: dict[str, Any] | None,
+    returncode: int | None = None,
+) -> tuple[WitnessOutcome, dict[str, Any]]:
     """Classify a sandboxed execution as a ``(WitnessOutcome, detail)`` pair.
 
     Precedence (most-informative wins):
@@ -84,7 +84,7 @@ def outcome_from_sandbox_info(
         (absent → omitted, matching the rest of the Witness
         outcome_detail convention).
     """
-    detail: Dict[str, Any] = {}
+    detail: dict[str, Any] = {}
     if returncode is not None:
         detail["returncode"] = returncode
 

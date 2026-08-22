@@ -239,7 +239,7 @@ def verify(fields: Mapping[str, object], token: str | None) -> bool:
         return False
 
 
-def run_binding(run_dir: "Path | str") -> str:
+def run_binding(run_dir: Path | str) -> str:
     """Canonical per-run binding baked into every MAC field set.
 
     Without it, any token this install ever minted verifies in ANY

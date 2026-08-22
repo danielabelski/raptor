@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from ..models import (
     Confidence, Dependency, Manifest,
@@ -40,10 +40,10 @@ class CargoBuildScriptFinding:
 def scan_manifests(
     manifests: Iterable[Manifest],
     deps: Iterable[Dependency],
-) -> List[CargoBuildScriptFinding]:
+) -> list[CargoBuildScriptFinding]:
     """Walk every Cargo.toml; for each, scan sibling build.rs with
     the shared hook-pattern substrate."""
-    out: List[CargoBuildScriptFinding] = []
+    out: list[CargoBuildScriptFinding] = []
     deps_list = list(deps)
     for m in manifests:
         if m.path.name != "Cargo.toml" or m.is_lockfile:
@@ -99,7 +99,7 @@ def scan_manifests(
     return out
 
 
-def _host_dep(deps: List[Dependency], m: Manifest) -> Dependency:
+def _host_dep(deps: list[Dependency], m: Manifest) -> Dependency:
     """Find a Dependency to anchor the finding on — first
     Cargo-eco dep from the same dir, else a synthetic one."""
     for d in deps:

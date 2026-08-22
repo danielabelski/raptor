@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -40,7 +40,7 @@ _REQUIRE_RE = re.compile(
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{require_target: [(file, line, is_test), ...]}``.
 
     Each ``require_target`` is the literal first-segment of the require
@@ -48,7 +48,7 @@ def scan_imports(
     ``rails`` matches.
     """
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for rb_file in _walk_ruby_sources(target, max_depth=max_depth):
         is_test = _is_test_file(rb_file, target)
         try:
@@ -65,9 +65,9 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> Reachability:
     """Look up ``dep_name`` in the scan, trying both the gem name and a
     ``-`` → ``_`` normalised variant."""
@@ -76,7 +76,7 @@ def resolve_dep(
         candidates.add(dep_name.replace("-", "_"))
     elif "_" in dep_name:
         candidates.add(dep_name.replace("_", "-"))
-    matches: List[Tuple[Path, int, bool]] = []
+    matches: list[tuple[Path, int, bool]] = []
     for cand in candidates:
         matches.extend(scan.get(cand, []))
 
@@ -114,7 +114,7 @@ def resolve_dep(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _requires_in(text: str) -> Iterable[Tuple[str, int]]:
+def _requires_in(text: str) -> Iterable[tuple[str, int]]:
     for m in _REQUIRE_RE.finditer(text):
         yield m.group(2), text.count("\n", 0, m.start()) + 1
 
@@ -142,12 +142,12 @@ def _is_test_file(path: Path, target: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path],
+    target: Path | None,
     cap: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for f, line, _ in hits[:cap]:
         rel = (f.relative_to(target) if target and target in f.parents
                 else f)

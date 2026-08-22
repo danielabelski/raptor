@@ -5,7 +5,7 @@ SBOM / PR-comment renderers pick them up automatically."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from packages.sca.models import (
     Confidence, Dependency, PinStyle, SupplyChainFinding,
@@ -15,14 +15,14 @@ from packages.sca.transitive_drop.detector import DropOnBumpFinding
 
 def to_supply_chain_findings(
     drops: Iterable[DropOnBumpFinding],
-) -> List[SupplyChainFinding]:
+) -> list[SupplyChainFinding]:
     """One ``SupplyChainFinding`` per droppable transitive.
 
     Severity matches the underlying issue's severity: an HIGH/
     CRITICAL vuln on the transitive yields an HIGH finding (this
     IS a real remediation path), while LOW/INFO yields INFO.
     """
-    out: List[SupplyChainFinding] = []
+    out: list[SupplyChainFinding] = []
     for d in drops:
         out.append(_make_finding(d))
     return out

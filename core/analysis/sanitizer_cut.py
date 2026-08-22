@@ -52,15 +52,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
-    Dict,
-    FrozenSet,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Set,
-    Tuple,
 )
+from collections.abc import Iterable, Mapping
 
 from core.dataflow.sanitizer_catalog import (
     SanitizerBinding,
@@ -156,11 +149,11 @@ class SanitizerCutResult:
     """
     suppress: bool
     reason: str
-    cut_set: FrozenSet
-    candidate_callables: FrozenSet[str]
+    cut_set: frozenset
+    candidate_callables: frozenset[str]
     verdict: str = ""
-    value_bound_bindings: FrozenSet[SanitizerBinding] = frozenset()
-    all_matched_bindings: FrozenSet[SanitizerBinding] = frozenset()
+    value_bound_bindings: frozenset[SanitizerBinding] = frozenset()
+    all_matched_bindings: frozenset[SanitizerBinding] = frozenset()
     sink_arg: str = ""
 
     def __post_init__(self) -> None:
@@ -190,8 +183,8 @@ class SanitizerCutResult:
 def _bfs_reachable_excluding(
     graph,
     sources: Iterable,
-    excluded: Set,
-) -> Set:
+    excluded: set,
+) -> set:
     """BFS from each source over ``graph``, skipping every node in
     ``excluded``. Returns the set of nodes reached. The excluded set
     IS removed: edges into excluded nodes are never traversed, edges
@@ -199,7 +192,7 @@ def _bfs_reachable_excluding(
 
     Pure function; does not mutate ``graph``.
     """
-    seen: Set = set()
+    seen: set = set()
     queue: deque = deque()
     for s in sources:
         if s not in excluded and s not in seen:
@@ -233,7 +226,7 @@ def sanitizer_cuts_source_to_sink(
     :func:`evaluate_finding`) is responsible for constructing
     ``cut_set`` from the sanitizer catalog.
     """
-    cut: Set = set(cut_set)
+    cut: set = set(cut_set)
     if sink in cut:
         # Sink itself is a sanitizer — by convention we still call
         # this "cut": removing the sink from the graph trivially
@@ -247,7 +240,7 @@ def _may_escape_on_path(
     graph,
     sources: Iterable,
     sink,
-    excluded: Set,
+    excluded: set,
 ) -> bool:
     """Phase 10 — True iff any node with ``may_escape=True`` lies on
     a source→sink path in ``graph``, after removing ``excluded`` (the
@@ -267,8 +260,8 @@ def _may_escape_nodes_on_path(
     graph,
     sources: Iterable,
     sink,
-    excluded: Set,
-) -> List:
+    excluded: set,
+) -> list:
     """The ``may_escape`` nodes lying on a source→sink path — the
     evidence set behind :func:`_may_escape_on_path`. The
     element-sensitive exemption inspects each node's line: a
@@ -276,10 +269,10 @@ def _may_escape_nodes_on_path(
     (its escape triggers are all tracked-array accesses; see
     :meth:`core.analysis.java_array_escape.LocalArrayIndex.exempt_line`).
     """
-    excl: Set = set(excluded) if excluded else set()
+    excl: set = set(excluded) if excluded else set()
 
     # Forward BFS from sources.
-    forward: Set = set()
+    forward: set = set()
     queue: deque = deque()
     for s in sources:
         if s not in excl and s not in forward:
@@ -297,7 +290,7 @@ def _may_escape_nodes_on_path(
     # exposes successors(), so we build a one-shot reverse index over
     # the forward-reachable set (everything else is irrelevant — a
     # node not in ``forward`` can't be on a source→sink path).
-    predecessors: Dict[Any, List[Any]] = {}
+    predecessors: dict[Any, list[Any]] = {}
     for n in forward:
         for succ in graph.successors(n):
             if succ in forward:
@@ -309,7 +302,7 @@ def _may_escape_nodes_on_path(
     # only if it is.
     if sink not in forward:
         return []
-    backward: Set = {sink}
+    backward: set = {sink}
     rqueue: deque = deque([sink])
     while rqueue:
         node = rqueue.popleft()
@@ -328,7 +321,7 @@ def _propagate_taint(
     rd: ReachingDefs,
     source_nodes: Iterable,
     source_symbols: Iterable[str],
-) -> Mapping[Any, FrozenSet[str]]:
+) -> Mapping[Any, frozenset[str]]:
     """Compute the tainted-symbol set at every node's IN.
 
     Per-def taint is recorded in ``taint[(node, symbol)]``:
@@ -356,16 +349,16 @@ def _propagate_taint(
     if not src_syms:
         return {n: frozenset() for n in graph.nodes()}
 
-    taint: Dict[Tuple[Any, str], bool] = {}
+    taint: dict[tuple[Any, str], bool] = {}
 
     # Seed: source_symbols at source nodes (body sources) and the
     # virtual entry defs for param sources.
     entry = getattr(graph, "entry", None)
-    params: Tuple[str, ...] = tuple(getattr(graph, "params", ()) or ())
+    params: tuple[str, ...] = tuple(getattr(graph, "params", ()) or ())
     for n in graph.nodes():
         if n not in sources_set:
             continue
-        node_defs: FrozenSet[str] = getattr(n, "defs", frozenset())
+        node_defs: frozenset[str] = getattr(n, "defs", frozenset())
         for s in node_defs & src_syms:
             taint[(n, s)] = True
         if n is entry:
@@ -388,13 +381,13 @@ def _propagate_taint(
             break
         changed = False
         for n in graph.nodes():
-            tainted_in: Set[str] = set()
+            tainted_in: set[str] = set()
             for sym, definers in rd.all_at(n).items():
                 for d in definers:
                     if taint.get((d, sym), False):
                         tainted_in.add(sym)
                         break
-            uses: FrozenSet[str] = getattr(n, "uses", frozenset())
+            uses: frozenset[str] = getattr(n, "uses", frozenset())
             if not (uses & tainted_in):
                 continue
             node_defs = getattr(n, "defs", frozenset())
@@ -404,9 +397,9 @@ def _propagate_taint(
                     changed = True
 
     # Project to per-node IN tainted symbol sets.
-    result: Dict[Any, FrozenSet[str]] = {}
+    result: dict[Any, frozenset[str]] = {}
     for n in graph.nodes():
-        tainted: Set[str] = set()
+        tainted: set[str] = set()
         for sym, definers in rd.all_at(n).items():
             for d in definers:
                 if taint.get((d, sym), False):
@@ -419,10 +412,10 @@ def _propagate_taint(
 def _binding_satisfies_value_gate(
     binding: SanitizerBinding,
     rd: ReachingDefs,
-    tainted_at: Mapping[Any, FrozenSet[str]],
+    tainted_at: Mapping[Any, frozenset[str]],
     sink: Any,
     sink_arg: str,
-    sanitizer_output_nodes: Set,
+    sanitizer_output_nodes: set,
 ) -> bool:
     """Phase 4 conditions 2 and 3 for one binding.
 
@@ -461,8 +454,8 @@ def _binding_satisfies_value_gate(
 
 
 def _fold_stack(graph, java_source_text: str,
-                java_file_path: Optional[str] = None,
-                repo_root: Optional[str] = None):
+                java_file_path: str | None = None,
+                repo_root: str | None = None):
     """Assemble the composed constant-fold context (const index +
     table/config resolvers + the conduit/collection invocation hook)
     over the graph's line span. None on any failure — every consumer
@@ -540,7 +533,7 @@ def _fold_stack(graph, java_source_text: str,
         return None
 
 
-def _union_member_check(cwe: Optional[str]):
+def _union_member_check(cwe: str | None):
     """Danger predicate (str list -> bool) for taint-free union and
     helper-summary members of a ``cwe``-classified finding, or None
     when no class is known — the union then refuses any merge with a
@@ -566,7 +559,7 @@ def _union_member_check(cwe: Optional[str]):
 def _finite_value_set_reason(
     rd, sink, sink_arg: str, index, cwe: str,
     table_resolver, config_resolver, invocation_hook,
-) -> Optional[str]:
+) -> str | None:
     """Reason string when ``sink_arg``'s reaching definers fold to a
     FINITE SET of compile-time constants whose every string member
     clears the CWE's danger models; None otherwise. The set semantics
@@ -606,11 +599,11 @@ def _finite_value_set_reason(
 def _sink_arg_constant_reason(
     graph, sources_set, sink, sink_arg: str,
     source_symbols, java_source_text: str,
-    java_file_path: Optional[str] = None,
-    repo_root: Optional[str] = None,
-    cwe: Optional[str] = None,
+    java_file_path: str | None = None,
+    repo_root: str | None = None,
+    cwe: str | None = None,
     ban_tf_system_reads: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """Reason string when the Java constant-folder proves every
     reaching definer of ``sink_arg`` constant AND no other name in
     the sink call's arguments is tainted; None otherwise.
@@ -861,7 +854,7 @@ def _element_exclusive_reason(
     source_symbols,
     candidate_callables,
     array_index,
-) -> Optional[str]:
+) -> str | None:
     """Reason string when the value the sink consumes is an element of
     a tracked local array whose every write is a catalog-sanitizer
     call; None otherwise.
@@ -887,7 +880,7 @@ def _element_exclusive_reason(
     if array_index is None or not array_index.ok:
         return None
     sink_lineno = getattr(sink, "lineno", 0)
-    targets: List[Tuple[str, int]] = []
+    targets: list[tuple[str, int]] = []
     direct = array_index.element_reads_at(sink_lineno, sink_arg)
     if direct:
         targets = [(sink_arg, i) for i in sorted(direct)]
@@ -1057,11 +1050,11 @@ def _whole_array_taint_free_reason(
     source_symbols,
     candidate_callables,
     java_source_text: str,
-    java_file_path: Optional[str] = None,
-    repo_root: Optional[str] = None,
+    java_file_path: str | None = None,
+    repo_root: str | None = None,
     ban_tf_system_reads: bool = False,
     union_member_check=None,
-) -> Optional[str]:
+) -> str | None:
     """Reason string when the sink consumes a WHOLE local array whose
     every element is provably taint-free; None otherwise.
 
@@ -1182,7 +1175,7 @@ def _collection_exclusive_reason(
     source_symbols,
     candidate_callables,
     collection_index,
-) -> Optional[str]:
+) -> str | None:
     """Reason string when the value the sink consumes is an element of
     a tracked local collection whose every write to the consumed key
     is a catalog-sanitizer call; None otherwise. The b19 array rule's
@@ -1203,7 +1196,7 @@ def _collection_exclusive_reason(
     if collection_index is None or not collection_index.ok:
         return None
     sink_lineno = getattr(sink, "lineno", 0)
-    targets: List[Tuple[str, str]] = []
+    targets: list[tuple[str, str]] = []
     direct = collection_index.element_reads_at(sink_lineno, sink_arg)
     if direct:
         targets = [(sink_arg, k) for k in sorted(direct)]
@@ -1256,7 +1249,7 @@ def _conduit_transparent_result(
     java_source_text: str,
     candidate_callables,
     array_index,
-) -> Optional[SanitizerCutResult]:
+) -> SanitizerCutResult | None:
     """Conduit-transparency extension of condition 3 (b27). None when
     it can't strengthen the flat gate's answer.
 
@@ -1318,7 +1311,7 @@ def _conduit_transparent_result(
 
     # CFG definition sites that are conduit calls: (node id, symbol) →
     # (summary, positional arg identifiers).
-    conduit_defs: Dict[Tuple[int, str], Tuple[Any, Tuple]] = {}
+    conduit_defs: dict[tuple[int, str], tuple[Any, tuple]] = {}
     for node in graph.nodes():
         for cs in getattr(node, "call_sites", ()) or ():
             entry = calls.get((cs.lineno, cs.col_offset))
@@ -1338,7 +1331,7 @@ def _conduit_transparent_result(
     except Exception:  # noqa: BLE001
         fold_hook = None
 
-    sanitizer_nodes_by_symbol: Dict[str, Set] = {}
+    sanitizer_nodes_by_symbol: dict[str, set] = {}
     for b in matched_bindings:
         for sym in b.output_symbols:
             sanitizer_nodes_by_symbol.setdefault(sym, set()).add(b.node)
@@ -1357,13 +1350,13 @@ def _conduit_transparent_result(
             return False
         return v is not REFUSE
 
-    def _walk(sym: str, at, depth: int, visiting: Set) -> Optional[Set]:
+    def _walk(sym: str, at, depth: int, visiting: set) -> set | None:
         if depth > _CONDUIT_CHAIN_DEPTH_CAP:
             return None
         defs = rd.at(at, sym)
         if not defs:
             return None
-        feeders: Set = set()
+        feeders: set = set()
         for d in defs:
             if d in sanitizer_nodes_by_symbol.get(sym, ()):
                 feeders.add(d)
@@ -1479,12 +1472,12 @@ def evaluate_finding(
     *,
     cwe: str,
     language: str,
-    source_symbols: Optional[Iterable[str]] = None,
-    sink_arg: Optional[str] = None,
-    extra_bindings: Optional[Iterable[SanitizerBinding]] = None,
-    java_source_text: Optional[str] = None,
-    java_file_path: Optional[str] = None,
-    repo_root: Optional[str] = None,
+    source_symbols: Iterable[str] | None = None,
+    sink_arg: str | None = None,
+    extra_bindings: Iterable[SanitizerBinding] | None = None,
+    java_source_text: str | None = None,
+    java_file_path: str | None = None,
+    repo_root: str | None = None,
     ban_tf_system_reads: bool = False,
 ) -> SanitizerCutResult:
     """Phase 4 suppression decision for one finding.
@@ -1930,7 +1923,7 @@ def evaluate_finding(
 # ---------------------------------------------------------------------------
 
 
-def _binding_to_json(b: SanitizerBinding) -> Dict[str, Any]:
+def _binding_to_json(b: SanitizerBinding) -> dict[str, Any]:
     """Serialise one :class:`SanitizerBinding` for the JSONL audit
     record. Frozensets become sorted lists so the JSON is stable
     across runs (sets have no inherent ordering)."""
@@ -1944,7 +1937,7 @@ def _binding_to_json(b: SanitizerBinding) -> Dict[str, Any]:
 
 def record_sanitizer_cut_suppression(
     out_dir: Path,
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     result: SanitizerCutResult,
     *,
     enforce: bool = False,
@@ -2050,7 +2043,7 @@ def record_sanitizer_cut_suppression(
         result.value_bound_bindings, key=lambda b: (b.lineno, b.callable),
     )
 
-    extra: Dict[str, Any] = {
+    extra: dict[str, Any] = {
         "sink_arg": result.sink_arg,
         "bindings": [_binding_to_json(b) for b in value_bindings],
         "catalog_matches": [_binding_to_json(b) for b in catalog_matches],

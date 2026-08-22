@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from .base import ToolAdapter, ToolCapability, ToolEvidence
 
@@ -55,7 +55,7 @@ from .base import ToolAdapter, ToolCapability, ToolEvidence
 # under engine/coccinelle/source_intel/. ``compile_time`` is separate
 # from ``attrs`` so a query for ``no_sanitize`` doesn't fall under the
 # attribute interpretation rules.
-_VALID_AXES: Set[str] = {
+_VALID_AXES: set[str] = {
     "attrs",          # axis 1
     "aborts",         # axis 2 — abort-class call proximity
     "allocations",    # axis 3 — unchecked alloc / paired free / double free
@@ -102,7 +102,7 @@ class SourceIntelAdapter(ToolAdapter):
             function is itself the sandboxed entry point.
     """
 
-    def __init__(self, *, cache: Optional[Any] = None, sandbox: bool = True):
+    def __init__(self, *, cache: Any | None = None, sandbox: bool = True):
         self._cache = cache
         self._sandbox = sandbox
 
@@ -158,7 +158,7 @@ class SourceIntelAdapter(ToolAdapter):
         target: Path,
         *,
         timeout: int = 300,
-        env: Optional[Dict[str, str]] = None,
+        env: dict[str, str] | None = None,
     ) -> ToolEvidence:
         """Execute a structured KB query against source_intel.
 
@@ -242,7 +242,7 @@ class SourceIntelAdapter(ToolAdapter):
                     ),
                 )
 
-            matches: List[Dict[str, Any]] = []
+            matches: list[dict[str, Any]] = []
             for axis in axes_req:
                 matches.extend(
                     self._collect_axis(
@@ -311,12 +311,12 @@ class SourceIntelAdapter(ToolAdapter):
         axis: str,
         result,
         function_name: str,
-        kind_filter: Optional[str],
-        file_filter: Optional[str],
+        kind_filter: str | None,
+        file_filter: str | None,
         target: Path,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Materialise one axis's observations matching the query."""
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
 
         if axis == "attrs":
             for ev in result.attributes:

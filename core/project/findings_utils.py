@@ -6,7 +6,7 @@ to avoid duplication across diff.py, merge.py, and coverage.
 
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.json import load_json
 from core.logging import get_logger
@@ -14,7 +14,7 @@ from core.logging import get_logger
 logger = get_logger()
 
 
-def get_finding_id(finding: Dict[str, Any]) -> Optional[str]:
+def get_finding_id(finding: dict[str, Any]) -> str | None:
     """Extract finding ID, checking both 'id' and 'finding_id' fields."""
     return finding.get("id") or finding.get("finding_id")
 
@@ -40,7 +40,7 @@ def safe_run_mtime(path: Path) -> float:
         return 0.0
 
 
-def finding_file(finding: Dict[str, Any]) -> str:
+def finding_file(finding: dict[str, Any]) -> str:
     """File path for a finding, tolerant of both serialised shapes.
 
     Scan-shaped findings carry ``file``; orchestrated /agentic results
@@ -60,7 +60,7 @@ def finding_file(finding: Dict[str, Any]) -> str:
     return str(PurePosixPath(fp))
 
 
-def dedup_key(finding: Dict[str, Any]) -> Tuple[str, str, int]:
+def dedup_key(finding: dict[str, Any]) -> tuple[str, str, int]:
     """Dedup key for a finding: (file, function, line). More stable than ID.
 
     Uses :func:`finding_file` so scan-shaped (``file``) and orchestrated
@@ -69,7 +69,7 @@ def dedup_key(finding: Dict[str, Any]) -> Tuple[str, str, int]:
     return (finding_file(finding), finding.get("function", ""), finding.get("line") or 0)
 
 
-def group_key(finding: Dict[str, Any]) -> Tuple[str, str, str]:
+def group_key(finding: dict[str, Any]) -> tuple[str, str, str]:
     """Semantic group key: (file, function, vuln_type).
 
     Findings with the same group key are likely the same logical bug
@@ -82,7 +82,7 @@ def group_key(finding: Dict[str, Any]) -> Tuple[str, str, str]:
     )
 
 
-def group_findings(findings: List[Dict[str, Any]]) -> Dict[Tuple, List[Dict[str, Any]]]:
+def group_findings(findings: list[dict[str, Any]]) -> dict[tuple, list[dict[str, Any]]]:
     """Group findings by (file, function, vuln_type).
 
     Returns:
@@ -90,18 +90,18 @@ def group_findings(findings: List[Dict[str, Any]]) -> Dict[Tuple, List[Dict[str,
         Single-finding groups represent unique vulns.
         Multi-finding groups represent one logical vuln with multiple locations.
     """
-    groups: Dict[Tuple, List[Dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
     for f in findings:
         groups[group_key(f)].append(f)
     return dict(groups)
 
 
-def count_vulns(findings: List[Dict[str, Any]]) -> int:
+def count_vulns(findings: list[dict[str, Any]]) -> int:
     """Count logical vulns (semantic groups) rather than raw findings."""
     return len(group_findings(findings))
 
 
-def load_findings_from_dir(run_dir: Path) -> List[Dict[str, Any]]:
+def load_findings_from_dir(run_dir: Path) -> list[dict[str, Any]]:
     """Load findings list from a run directory's findings.json."""
     data = load_json(run_dir / "findings.json")
     if data is None:
@@ -114,7 +114,7 @@ def load_findings_from_dir(run_dir: Path) -> List[Dict[str, Any]]:
     return []
 
 
-def load_sca_findings_from_dir(run_dir: Path) -> List[Dict[str, Any]]:
+def load_sca_findings_from_dir(run_dir: Path) -> list[dict[str, Any]]:
     """Load SCA findings from a run's ``sca/findings.json`` subdir.
 
     ``/sca`` and ``/agentic`` write dependency findings to
@@ -137,7 +137,7 @@ def load_sca_findings_from_dir(run_dir: Path) -> List[Dict[str, Any]]:
     return []
 
 
-def merge_sca_findings(run_dirs: List[Path]) -> List[Dict[str, Any]]:
+def merge_sca_findings(run_dirs: list[Path]) -> list[dict[str, Any]]:
     """Collect + dedup SCA findings across runs.
 
     Dedup by stable finding id, falling back to ``dedup_key``
@@ -146,7 +146,7 @@ def merge_sca_findings(run_dirs: List[Path]) -> List[Dict[str, Any]]:
     matching :func:`core.project.merge.merge_findings` semantics for
     code findings.
     """
-    merged: Dict[Any, Dict[str, Any]] = {}
+    merged: dict[Any, dict[str, Any]] = {}
     for run_dir in run_dirs:
         for finding in load_sca_findings_from_dir(Path(run_dir)):
             # SCA rows always carry a stable finding_id, so the fallback

@@ -16,7 +16,8 @@ adapter is sandbox-free because it never spawns a subprocess.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Callable
 
 
 @dataclass
@@ -44,10 +45,10 @@ class ToolCapability:
     """
 
     name: str
-    good_for: List[str] = field(default_factory=list)
-    bad_for: List[str] = field(default_factory=list)
+    good_for: list[str] = field(default_factory=list)
+    bad_for: list[str] = field(default_factory=list)
     syntax_example: str = ""
-    languages: List[str] = field(default_factory=list)
+    languages: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -91,7 +92,7 @@ class ToolInvocation:
     tool: str
     rule: str
     target: str
-    args: Dict[str, Any] = field(default_factory=dict)
+    args: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -114,7 +115,7 @@ class ToolEvidence:
     tool: str
     rule: str
     success: bool
-    matches: List[Dict[str, Any]] = field(default_factory=list)
+    matches: list[dict[str, Any]] = field(default_factory=list)
     summary: str = ""
     error: str = ""
 
@@ -137,7 +138,7 @@ class ToolEvidence:
 def make_sandbox_runner(
     *,
     target: Path,
-    output: Optional[Path] = None,
+    output: Path | None = None,
     block_network: bool = True,
     caller_label: str = "hypothesis-validation",
 ) -> Callable:
@@ -231,7 +232,7 @@ class ToolAdapter(ABC):
         target: Path,
         *,
         timeout: int = 300,
-        env: Optional[Dict[str, str]] = None,
+        env: dict[str, str] | None = None,
     ) -> ToolEvidence:
         """Run a rule against a target and return evidence.
 

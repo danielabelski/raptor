@@ -33,7 +33,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 
 # Convention from ``core/llm/scorecard/consensus.py:135``. Reused so the
@@ -58,7 +58,7 @@ class PanelRecord:
     verdict: bool
 
 
-def _decision_class_for(rule_id: Optional[str], prefix: str) -> str:
+def _decision_class_for(rule_id: str | None, prefix: str) -> str:
     """``prefix:rule_id`` — matches ``consensus.py`` exactly. Findings
     with no ``rule_id`` are bucketed under ``prefix:unknown`` rather
     than dropped so the bucket count is honest about coverage gaps."""
@@ -68,7 +68,7 @@ def _decision_class_for(rule_id: Optional[str], prefix: str) -> str:
 
 def _extract_records_from_finding(
     finding: dict, *, decision_class_prefix: str,
-) -> List[PanelRecord]:
+) -> list[PanelRecord]:
     """Return one PanelRecord per (finding, model) with a usable verdict.
 
     Empty list when the finding has fewer than 2 valid model records —
@@ -83,7 +83,7 @@ def _extract_records_from_finding(
     decision_class = _decision_class_for(
         finding.get("rule_id"), decision_class_prefix,
     )
-    records: List[PanelRecord] = []
+    records: list[PanelRecord] = []
     for entry in analyses:
         if not isinstance(entry, dict):
             continue
@@ -111,7 +111,7 @@ def _extract_records_from_finding(
 def load_from_orchestrated_report(
     path: Path, *,
     decision_class_prefix: str = DEFAULT_DECISION_CLASS_PREFIX,
-) -> List[PanelRecord]:
+) -> list[PanelRecord]:
     """Walk one ``orchestrated_report.json`` and return every usable
     panel record. Missing file → empty list with no error (the caller
     decides whether absence is fatal); malformed JSON → ``ValueError``
@@ -130,7 +130,7 @@ def load_from_orchestrated_report(
     results = payload.get("results")
     if not isinstance(results, list):
         return []
-    out: List[PanelRecord] = []
+    out: list[PanelRecord] = []
     for finding in results:
         if isinstance(finding, dict):
             out.extend(_extract_records_from_finding(
@@ -142,7 +142,7 @@ def load_from_orchestrated_report(
 def load_from_paths(
     paths: Iterable[Path], *,
     decision_class_prefix: str = DEFAULT_DECISION_CLASS_PREFIX,
-) -> List[PanelRecord]:
+) -> list[PanelRecord]:
     """Concatenate records from multiple report files in path order.
 
     Duplicate ``finding_id`` across files is allowed and preserved —
@@ -150,7 +150,7 @@ def load_from_paths(
     panels, and D–S should see all of them (each panel is an
     independent observation event).
     """
-    out: List[PanelRecord] = []
+    out: list[PanelRecord] = []
     for p in paths:
         out.extend(load_from_orchestrated_report(
             p, decision_class_prefix=decision_class_prefix,
@@ -158,7 +158,7 @@ def load_from_paths(
     return out
 
 
-def discover_reports(root: Path) -> List[Path]:
+def discover_reports(root: Path) -> list[Path]:
     """Find every ``orchestrated_report.json`` under ``root``. Sorted
     for determinism. Symlinked DIRECTORIES are never traversed — that
     both forecloses symlink-cycle hangs and keeps discovery inside the
@@ -172,7 +172,7 @@ def discover_reports(root: Path) -> List[Path]:
     """
     if not root.is_dir():
         return []
-    found: List[Path] = []
+    found: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         if "orchestrated_report.json" in filenames:
             found.append(Path(dirpath) / "orchestrated_report.json")
@@ -211,7 +211,7 @@ def group_by_decision_class(
     return grouped
 
 
-def distinct_models(records: Sequence[PanelRecord]) -> List[str]:
+def distinct_models(records: Sequence[PanelRecord]) -> list[str]:
     """Sorted list of distinct model names across all records.
     The EM allocates a confusion-matrix slot per name."""
     return sorted({r.model for r in records})

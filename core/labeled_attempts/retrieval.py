@@ -35,7 +35,6 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from .store import read_all
 from .types import FailureMode, LabeledAttempt
@@ -273,12 +272,12 @@ def _render(record: LabeledAttempt) -> RetrievedExemplar:
 def retrieve_exemplars(
     *,
     cwe: str,
-    project_dir: Optional[Path] = None,
+    project_dir: Path | None = None,
     k: int = 3,
     include_bundled: bool = True,
     include_global: bool = False,
     recency_half_life_days: float = 90.0,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> list[RetrievedExemplar]:
     """L3 retrieval entry point.
 
@@ -374,12 +373,12 @@ def retrieve_exemplars(
 def retrieve_cross_cwe_probe(
     *,
     exclude_cwe: str,
-    project_dir: Optional[Path] = None,
+    project_dir: Path | None = None,
     include_bundled: bool = True,
     include_global: bool = False,
     recency_half_life_days: float = 90.0,
-    now: Optional[datetime] = None,
-) -> Optional[RetrievedExemplar]:
+    now: datetime | None = None,
+) -> RetrievedExemplar | None:
     """Return one exemplar from a CWE class DIFFERENT from
     ``exclude_cwe`` — the sycophancy probe per v3 design §4.
 
@@ -435,11 +434,11 @@ def retrieve_cross_cwe_probe(
 def recent_failure_summary(
     cwe: str,
     *,
-    project_dir: Optional[Path] = None,
+    project_dir: Path | None = None,
     window_days: float = 30.0,
     include_bundled: bool = True,
     include_global: bool = False,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
 ) -> dict[FailureMode, int]:
     """Count classified failure modes for a CWE within a recency window.
 

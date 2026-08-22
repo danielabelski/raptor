@@ -58,7 +58,7 @@ file with tree-sitter and any internal failure reads as "not tracked"
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 
 _INT_LITERAL = "decimal_integer_literal"
@@ -102,25 +102,25 @@ class LocalArrayIndex:
     failed (every query then refuses)."""
 
     ok: bool = False
-    _fresh: Set[str] = field(default_factory=set)
+    _fresh: set[str] = field(default_factory=set)
     # Names whose single sink-line whole-array occurrence was exempted
     # (see build_local_array_index's sink_exempt).
-    _whole_pass_names: Set[str] = field(default_factory=set)
-    _violated: Set[str] = field(default_factory=set)
+    _whole_pass_names: set[str] = field(default_factory=set)
+    _violated: set[str] = field(default_factory=set)
     _global_refuse: bool = False
-    _writes: Dict[Tuple[str, int], List[_ElementWrite]] = field(
+    _writes: dict[tuple[str, int], list[_ElementWrite]] = field(
         default_factory=dict)
     # (lineno, base_name) -> set of int indices read there
-    _reads_at: Dict[Tuple[int, str], Set[int]] = field(default_factory=dict)
+    _reads_at: dict[tuple[int, str], set[int]] = field(default_factory=dict)
     # (lineno, lhs_name) -> (array_name, index); dropped on multi-writer
-    _scalar_copies: Dict[Tuple[int, str], Tuple[str, int]] = field(
+    _scalar_copies: dict[tuple[int, str], tuple[str, int]] = field(
         default_factory=dict)
     # (lineno, lhs_name) -> writer count (declarators + assignments)
-    _lhs_writers: Dict[Tuple[int, str], int] = field(default_factory=dict)
+    _lhs_writers: dict[tuple[int, str], int] = field(default_factory=dict)
     # lineno -> escape-trigger classification flags
-    _line_flags: Dict[int, Set[str]] = field(default_factory=dict)
+    _line_flags: dict[int, set[str]] = field(default_factory=dict)
     # per-line array bases touched, finalized into _line_flags
-    _line_bases: Dict[int, Set[str]] = field(default_factory=dict)
+    _line_bases: dict[int, set[str]] = field(default_factory=dict)
     _resolver: Any = None
 
     # ----- queries ---------------------------------------------------
@@ -137,16 +137,16 @@ class LocalArrayIndex:
             return False
         return name in self._fresh and name not in self._violated
 
-    def element_writes(self, name: str, index: int) -> List[_ElementWrite]:
+    def element_writes(self, name: str, index: int) -> list[_ElementWrite]:
         return list(self._writes.get((name, index), ()))
 
-    def element_reads_at(self, lineno: int, name: str) -> Optional[Set[int]]:
+    def element_reads_at(self, lineno: int, name: str) -> set[int] | None:
         """Indices of ``name`` read on ``lineno``; None when the line
         carries no recorded element read of that name."""
         got = self._reads_at.get((lineno, name))
         return set(got) if got else None
 
-    def scalar_copy(self, lineno: int, lhs: str) -> Optional[Tuple[str, int]]:
+    def scalar_copy(self, lineno: int, lhs: str) -> tuple[str, int] | None:
         """``(array, index)`` when the ONLY write of ``lhs`` on
         ``lineno`` is ``lhs = array[index]``; None otherwise (including
         the same-line-multi-writer hazard: ``if (c) bar = a[0]; else
@@ -171,7 +171,7 @@ class LocalArrayIndex:
         return bool(flags) and flags <= {"tracked_array"}
 
     def write_is_catalog_call(self, write: _ElementWrite,
-                              catalog_callables: Set[str]) -> bool:
+                              catalog_callables: set[str]) -> bool:
         """True iff the write's RHS is exactly one method invocation
         (casts/parens unwrapped) whose import-resolved name is in
         ``catalog_callables``."""
@@ -188,9 +188,9 @@ class LocalArrayIndex:
 
 
 def build_local_array_index(
-    source_text: str, line_span: Tuple[int, int],
-    sink_exempt: Optional[Tuple[int, str]] = None,
-) -> Optional[LocalArrayIndex]:
+    source_text: str, line_span: tuple[int, int],
+    sink_exempt: tuple[int, str] | None = None,
+) -> LocalArrayIndex | None:
     """Build the index over ``line_span`` (inclusive, 1-based — the
     method body's line range). None when the grammar is unavailable
     or parsing fails.
@@ -218,7 +218,7 @@ def build_local_array_index(
     lo, hi = line_span
     # Byte ranges of identifier nodes consumed by a permitted
     # appearance (declarator names, tracked-access bases).
-    consumed: Set[Tuple[int, int]] = set()
+    consumed: set[tuple[int, int]] = set()
 
     def line_of(n) -> int:
         return n.start_point[0] + 1
@@ -251,7 +251,7 @@ def build_local_array_index(
         name = _text(base)
         consumed.add((base.start_byte, base.end_byte))
         idx._line_bases.setdefault(ln, set()).add(name)
-        const_index: Optional[int] = None
+        const_index: int | None = None
         if index_node is not None and index_node.type == _INT_LITERAL:
             try:
                 const_index = int(_text(index_node))

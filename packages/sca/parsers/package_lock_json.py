@@ -29,7 +29,7 @@ from __future__ import annotations
 import json as _json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 ECOSYSTEM = "npm"
 
 # Root-package keys → scope.
-_ROOT_KEY_SCOPE: Tuple[Tuple[str, str], ...] = (
+_ROOT_KEY_SCOPE: tuple[tuple[str, str], ...] = (
     ("dependencies", "main"),
     ("devDependencies", "dev"),
     ("peerDependencies", "peer"),
@@ -47,7 +47,7 @@ _ROOT_KEY_SCOPE: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -74,11 +74,11 @@ def parse(path: Path) -> List[Dependency]:
 # v2 / v3 — flat "packages" map
 # ---------------------------------------------------------------------------
 
-def _parse_v2_or_v3(data: Dict[str, Any], path: Path) -> List[Dependency]:
+def _parse_v2_or_v3(data: dict[str, Any], path: Path) -> list[Dependency]:
     packages = data["packages"]
     direct_names = _direct_names_from_root(packages.get("", {}))
 
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
     for key, entry in packages.items():
         if key == "":
             # Project root — already harvested for direct-name set.
@@ -115,10 +115,10 @@ def _parse_v2_or_v3(data: Dict[str, Any], path: Path) -> List[Dependency]:
     return deps
 
 
-def _direct_names_from_root(root_entry: Dict[str, Any]) -> Set[str]:
+def _direct_names_from_root(root_entry: dict[str, Any]) -> set[str]:
     if not isinstance(root_entry, dict):
         return set()
-    names: Set[str] = set()
+    names: set[str] = set()
     for key, _scope in _ROOT_KEY_SCOPE:
         block = root_entry.get(key)
         if isinstance(block, dict):
@@ -126,7 +126,7 @@ def _direct_names_from_root(root_entry: Dict[str, Any]) -> Set[str]:
     return names
 
 
-def _name_from_packages_key(key: str, entry: Dict[str, Any]) -> Optional[str]:
+def _name_from_packages_key(key: str, entry: dict[str, Any]) -> str | None:
     """Extract the package name from a packages-map key.
 
     npm uses install-path keys like ``"node_modules/foo"`` or
@@ -144,7 +144,7 @@ def _name_from_packages_key(key: str, entry: Dict[str, Any]) -> Optional[str]:
     return key[idx + len(marker):]
 
 
-def _scope_from_packages_entry(entry: Dict[str, Any]) -> str:
+def _scope_from_packages_entry(entry: dict[str, Any]) -> str:
     if entry.get("dev") is True:
         return "dev"
     if entry.get("peer") is True:
@@ -159,8 +159,8 @@ def _scope_from_packages_entry(entry: Dict[str, Any]) -> str:
 
 
 def _classify_packages_entry(
-    entry: Dict[str, Any], version: Optional[str]
-) -> Tuple[PinStyle, Optional[str]]:
+    entry: dict[str, Any], version: str | None
+) -> tuple[PinStyle, str | None]:
     """Classify pin style for a v2/v3 entry."""
     resolved = entry.get("resolved")
     if isinstance(resolved, str):
@@ -180,9 +180,9 @@ def _classify_packages_entry(
 # v1 — recursive "dependencies" tree
 # ---------------------------------------------------------------------------
 
-def _parse_v1(data: Dict[str, Any], path: Path) -> List[Dependency]:
-    out: List[Dependency] = []
-    direct_names: Set[str] = set()
+def _parse_v1(data: dict[str, Any], path: Path) -> list[Dependency]:
+    out: list[Dependency] = []
+    direct_names: set[str] = set()
 
     # The v1 root carries "dependencies" only — no separate dev/peer
     # arrays. Per-entry "dev" / "optional" flags drive scope.
@@ -196,12 +196,12 @@ def _parse_v1(data: Dict[str, Any], path: Path) -> List[Dependency]:
 
 
 def _walk_v1(
-    deps_block: Dict[str, Any],
+    deps_block: dict[str, Any],
     path: Path,
     *,
     depth: int,
-    direct_names: Set[str],
-    out: List[Dependency],
+    direct_names: set[str],
+    out: list[Dependency],
 ) -> None:
     if depth > 64:
         # Pathological depth; npm-real trees rarely exceed 30. Stop
@@ -256,14 +256,14 @@ def _walk_v1(
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _build_purl(name: str, version: Optional[str]) -> str:
+def _build_purl(name: str, version: str | None) -> str:
     base = f"pkg:npm/{name}"
     if version:
         return f"{base}@{version}"
     return base
 
 
-def _confidence(pin_style: PinStyle, version: Optional[str]) -> Confidence:
+def _confidence(pin_style: PinStyle, version: str | None) -> Confidence:
     if pin_style is PinStyle.GIT:
         return Confidence("medium", reason="package-lock.json git source")
     if pin_style is PinStyle.PATH:

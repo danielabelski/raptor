@@ -21,14 +21,14 @@ import struct
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any
 
 from core.coverage.store import CoverageStore
 
 _TIMEOUT = 300
 
 
-def _safe_env() -> Dict[str, str]:
+def _safe_env() -> dict[str, str]:
     try:
         from core.config import RaptorConfig
         return RaptorConfig.get_safe_env()
@@ -36,7 +36,7 @@ def _safe_env() -> Dict[str, str]:
         return dict(os.environ)
 
 
-def collect_gcov(build_dir, env: Optional[Dict[str, str]] = None) -> Dict[str, Set[int]]:
+def collect_gcov(build_dir, env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """Run ``gcov`` on every ``.gcda`` under ``build_dir`` and parse the result.
     Returns ``{source_path: set(executed_lines)}``. Runs gcov in each artifact
     dir (so the compiled-in source path resolves), collects only the ``.gcov``
@@ -48,8 +48,8 @@ def collect_gcov(build_dir, env: Optional[Dict[str, str]] = None) -> Dict[str, S
     if not gcda:
         return {}
     env = env or _safe_env()
-    out: Dict[str, Set[int]] = {}
-    by_dir: Dict[Path, list] = {}
+    out: dict[str, set[int]] = {}
+    by_dir: dict[Path, list] = {}
     for f in gcda:
         by_dir.setdefault(f.parent, []).append(f.name)
     for d, names in by_dir.items():
@@ -71,7 +71,7 @@ def collect_gcov(build_dir, env: Optional[Dict[str, str]] = None) -> Dict[str, S
     return out
 
 
-def collect_llvm(binary, profdata, env: Optional[Dict[str, str]] = None) -> Dict[str, Set[int]]:
+def collect_llvm(binary, profdata, env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """Run ``llvm-cov export -format=lcov`` for an instrumented ``binary`` +
     ``.profdata`` and parse the emitted lcov. Returns
     ``{source_path: set(executed_lines)}``."""
@@ -104,7 +104,7 @@ def _chunks(seq, n):
         yield seq[i:i + n]
 
 
-def collect_addr2line(binary, addresses, env: Optional[Dict[str, str]] = None) -> Dict[str, Set[int]]:
+def collect_addr2line(binary, addresses, env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """Resolve a set of runtime ``addresses`` to source lines via the binary's
     DWARF debug info (``addr2line``). Returns ``{source_path: set(lines)}``.
 
@@ -119,7 +119,7 @@ def collect_addr2line(binary, addresses, env: Optional[Dict[str, str]] = None) -
     if not addrs:
         return {}
     env = env or _safe_env()
-    out: Dict[str, Set[int]] = {}
+    out: dict[str, set[int]] = {}
     for chunk in _chunks(addrs, 1000):          # avoid arg-length limits
         args = ["addr2line", "-e", str(binary)] + [
             hex(a) if isinstance(a, int) else str(a) for a in chunk]
@@ -145,7 +145,7 @@ def collect_addr2line(binary, addresses, env: Optional[Dict[str, str]] = None) -
 
 
 def import_addresses(
-    store: CoverageStore, binary, addresses, checklist: Dict[str, Any],
+    store: CoverageStore, binary, addresses, checklist: dict[str, Any],
     tool: str = "bincov",
 ) -> int:
     """Resolve binary-coverage ``addresses`` to source (DWARF) and mark them.
@@ -155,7 +155,7 @@ def import_addresses(
     return mark_runtime(store, collect_addr2line(binary, addresses), checklist, tool)
 
 
-def parse_drcov(path) -> Dict[str, Dict[str, Any]]:
+def parse_drcov(path) -> dict[str, dict[str, Any]]:
     """Parse a drcov coverage file (DynamoRIO / Frida / AFL-QEMU / Lighthouse).
 
     Returns ``{module_path: {"base": int, "offsets": set(bb_start_offsets)}}`` —
@@ -170,7 +170,7 @@ def parse_drcov(path) -> Dict[str, Dict[str, Any]]:
     idx = raw.find(marker)
     if idx < 0:
         return {}
-    modules: Dict[int, tuple] = {}                 # id -> (base, path)
+    modules: dict[int, tuple] = {}                 # id -> (base, path)
     in_mod = False
     for line in raw[:idx].decode("utf-8", "replace").splitlines():
         s = line.strip()
@@ -198,7 +198,7 @@ def parse_drcov(path) -> Dict[str, Dict[str, Any]]:
     blob = raw[eol + 1:]
     avail = len(blob) // 8
     n = avail if count is None else min(count, avail)
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for i in range(n):
         start, _size, mid = struct.unpack_from("<IHH", blob, i * 8)
         if mid in modules:
@@ -207,7 +207,7 @@ def parse_drcov(path) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def collect_drcov(drcov_path, binary, env: Optional[Dict[str, str]] = None) -> Dict[str, Set[int]]:
+def collect_drcov(drcov_path, binary, env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """drcov file + binary → ``{source_path: set(lines)}`` via DWARF.
 
     Picks the module matching ``binary`` (by basename) — or all modules if none
@@ -220,7 +220,7 @@ def collect_drcov(drcov_path, binary, env: Optional[Dict[str, str]] = None) -> D
         return {}
     binname = Path(binary).name
     picked = {p: v for p, v in mods.items() if Path(p).name == binname} or mods
-    addrs: Set[int] = set()
+    addrs: set[int] = set()
     for v in picked.values():
         base = v["base"]
         for o in v["offsets"]:
@@ -230,7 +230,7 @@ def collect_drcov(drcov_path, binary, env: Optional[Dict[str, str]] = None) -> D
 
 
 def import_drcov(
-    store: CoverageStore, drcov_path, binary, checklist: Dict[str, Any],
+    store: CoverageStore, drcov_path, binary, checklist: dict[str, Any],
     tool: str = "drcov",
 ) -> int:
     """Resolve a drcov file against ``binary`` (DWARF) and mark it."""
@@ -243,7 +243,7 @@ _SANCOV_MAGIC64 = 0xC0BFFFFFFFFFFF64
 _SANCOV_MAGIC32 = 0xC0BFFFFFFFFFFF32
 
 
-def parse_sancov(path) -> Set[int]:
+def parse_sancov(path) -> set[int]:
     """Parse an LLVM ``.sancov`` file (``-fsanitize-coverage=trace-pc-guard``
     dump) into its set of covered PCs. 8-byte magic selects 64/32-bit PC width;
     the remainder is a flat little-endian PC array."""
@@ -260,14 +260,14 @@ def parse_sancov(path) -> Set[int]:
         width, fmt = 4, "<I"
     else:
         return set()
-    pcs: Set[int] = set()
+    pcs: set[int] = set()
     for off in range(8, 8 + ((len(raw) - 8) // width) * width, width):
         pcs.add(struct.unpack_from(fmt, raw, off)[0])
     return pcs
 
 
 def collect_sancov(sancov_path, binary, base: int = 0,
-                   env: Optional[Dict[str, str]] = None) -> Dict[str, Set[int]]:
+                   env: dict[str, str] | None = None) -> dict[str, set[int]]:
     """sancov file + binary → ``{source_path: set(lines)}`` via DWARF.
 
     sancov records absolute PCs. For a non-PIE binary the PC is the file vaddr
@@ -277,7 +277,7 @@ def collect_sancov(sancov_path, binary, base: int = 0,
     pcs = parse_sancov(sancov_path)
     if not pcs:
         return {}
-    addrs: Set[int] = set()
+    addrs: set[int] = set()
     for p in pcs:
         addrs.add(p)
         if base and p >= base:
@@ -286,7 +286,7 @@ def collect_sancov(sancov_path, binary, base: int = 0,
 
 
 def import_sancov(
-    store: CoverageStore, sancov_path, binary, checklist: Dict[str, Any],
+    store: CoverageStore, sancov_path, binary, checklist: dict[str, Any],
     base: int = 0, tool: str = "sancov",
 ) -> int:
     """Resolve a .sancov file against ``binary`` (DWARF) and mark it."""
@@ -295,7 +295,7 @@ def import_sancov(
 
 
 def import_gcov_build(
-    store: CoverageStore, build_dir, checklist: Dict[str, Any], tool: str = "gcov",
+    store: CoverageStore, build_dir, checklist: dict[str, Any], tool: str = "gcov",
 ) -> int:
     """Collect gcov coverage from a build dir and mark it into the store."""
     from .importer import mark_runtime
@@ -303,7 +303,7 @@ def import_gcov_build(
 
 
 def import_llvm(
-    store: CoverageStore, binary, profdata, checklist: Dict[str, Any],
+    store: CoverageStore, binary, profdata, checklist: dict[str, Any],
     tool: str = "llvm-cov",
 ) -> int:
     """Collect llvm-cov coverage for a binary + profdata and mark it."""

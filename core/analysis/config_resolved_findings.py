@@ -28,7 +28,6 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from core.analysis.config_resolve_java import (
     ConfigResolver,
@@ -47,7 +46,7 @@ _FILE_CAP = 5000
 # growth must come from learned vocabulary, never by editing this
 # table (repo doctrine: learn vocab, don't hardcode project APIs;
 # these are JDK platform names, the sanctioned hardcoding class).
-_API_CLASSES: Dict[str, str] = {
+_API_CLASSES: dict[str, str] = {
     "MessageDigest": "hash",
     "Cipher": "cipher",
     "SecureRandom": "prng",
@@ -56,20 +55,20 @@ _API_CLASSES: Dict[str, str] = {
 # Known-weak algorithm names per selector family (seed sets <= 9,
 # same growth rule as above). Cipher transformations match on the
 # leading algorithm segment ("DES/ECB/..." -> DES).
-_WEAK: Dict[str, frozenset] = {
+_WEAK: dict[str, frozenset] = {
     "hash": frozenset({"MD2", "MD4", "MD5", "SHA1", "SHA-1"}),
     "cipher": frozenset({"DES", "DESEDE", "RC2", "RC4"}),
     "prng": frozenset({"SHA1PRNG"}),
 }
 
-_RULES: Dict[str, Tuple[str, str]] = {
+_RULES: dict[str, tuple[str, str]] = {
     "hash": ("raptor.config-resolved.weak-hash", "cwe-328"),
     "cipher": ("raptor.config-resolved.weak-cipher", "cwe-327"),
     "prng": ("raptor.config-resolved.weak-prng", "cwe-338"),
 }
 
 
-def _selector_family(node) -> Optional[str]:
+def _selector_family(node) -> str | None:
     """Family name when this method_invocation is a getInstance call
     on a seed selector class (bare or fully-qualified receiver)."""
     meth = node.child_by_field_name("name")
@@ -119,7 +118,7 @@ def _weak_class(family: str, value: str) -> bool:
 
 
 def scan_java_source(source_text: str, file_path: str,
-                     repo_root: str, stats: Counter) -> List[dict]:
+                     repo_root: str, stats: Counter) -> list[dict]:
     """Config-resolved weak-selector findings for one Java file."""
     parser = _parser()
     if parser is None:
@@ -131,7 +130,7 @@ def scan_java_source(source_text: str, file_path: str,
         stats["parse_failed"] += 1
         return []
     resolver = ConfigResolver(source_text, file_path, repo_root)
-    findings: List[dict] = []
+    findings: list[dict] = []
     stack = [tree.root_node]
     while stack:
         node = stack.pop()
@@ -195,12 +194,12 @@ def scan_java_source(source_text: str, file_path: str,
     return findings
 
 
-def to_sarif(findings: List[dict], repo_root: str) -> dict:
+def to_sarif(findings: list[dict], repo_root: str) -> dict:
     """SARIF 2.1.0 document; distinct tool.driver.name keeps this a
     separate run in combined.sarif (graduated-stage precedent)."""
-    rule_defs: List[dict] = []
+    rule_defs: list[dict] = []
     seen: set = set()
-    results: List[dict] = []
+    results: list[dict] = []
     for f in findings:
         if f["rule_id"] not in seen:
             rule_defs.append({
@@ -248,7 +247,7 @@ def to_sarif(findings: List[dict], repo_root: str) -> dict:
 
 
 def run_config_resolved_stage(
-        repo_path: Path, out_dir: Path) -> Tuple[Optional[Path], dict]:
+        repo_path: Path, out_dir: Path) -> tuple[Path | None, dict]:
     """Scan the repo, write ``config-resolved.sarif`` into ``out_dir``.
 
     Returns (sarif_path_or_None, stats). Never raises — the stage can
@@ -256,9 +255,9 @@ def run_config_resolved_stage(
     the run records that the stage executed.
     """
     stats: Counter = Counter()
-    findings: List[dict] = []
+    findings: list[dict] = []
     try:
-        java_files: List[Path] = []
+        java_files: list[Path] = []
         for p in repo_path.rglob("*.java"):
             if any(part in (".git", "node_modules", "target", "build")
                    for part in p.parts):

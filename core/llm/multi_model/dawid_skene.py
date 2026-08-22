@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from collections.abc import Sequence
 
 from core.llm.scorecard.priors import BetaPrior, posterior_update
 from core.llm.multi_model.panel_log import PanelRecord
@@ -84,7 +84,7 @@ class FindingPosterior:
     finding_id: str
     decision_class: str
     posterior: float  # P(truly exploitable | panel)
-    credible_interval: Tuple[float, float]
+    credible_interval: tuple[float, float]
     n_models: int
 
 
@@ -92,8 +92,8 @@ class FindingPosterior:
 class DawidSkeneResult:
     """Outcome of one EM run over a single decision-class partition."""
     decision_class: str
-    findings: List[FindingPosterior]
-    model_reliabilities: List[ModelReliability]
+    findings: list[FindingPosterior]
+    model_reliabilities: list[ModelReliability]
     iterations: int
     converged: bool
     class_prior: BetaPrior
@@ -125,8 +125,8 @@ def _clip(x: float, eps: float) -> float:
 
 
 def _e_step_one_finding(
-    verdicts_by_model: Dict[str, bool],
-    reliabilities: Dict[str, Tuple[float, float]],
+    verdicts_by_model: dict[str, bool],
+    reliabilities: dict[str, tuple[float, float]],
     fixed_class_rate: float,
     eps: float,
 ) -> float:
@@ -154,10 +154,10 @@ def _e_step_one_finding(
 
 def _m_step_one_model(
     model: str,
-    posteriors_by_finding: Dict[str, float],
-    verdicts_by_finding: Dict[str, Dict[str, bool]],
+    posteriors_by_finding: dict[str, float],
+    verdicts_by_finding: dict[str, dict[str, bool]],
     prior: BetaPrior,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Update one model's (α_m, β_m) using all findings where it voted.
 
     Posterior-mean update under Beta prior:
@@ -189,7 +189,7 @@ def _m_step_one_model(
 
 def _credible_interval_for_posterior(
     p_i: float, n_models: int, prior: BetaPrior, level: float = 0.95,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Variational Beta CI on the latent-label posterior.
 
     Sources of uncertainty:
@@ -255,21 +255,21 @@ def estimate(
         )
 
     # ----- 1. Index records by finding and model ------------------------
-    verdicts_by_finding: Dict[str, Dict[str, bool]] = {}
+    verdicts_by_finding: dict[str, dict[str, bool]] = {}
     for r in records:
         verdicts_by_finding.setdefault(r.finding_id, {})[r.model] = r.verdict
     finding_ids = list(verdicts_by_finding.keys())
     model_names = sorted({r.model for r in records})
 
     # ----- 2. Initialise model reliabilities ----------------------------
-    reliabilities: Dict[str, Tuple[float, float]] = {
+    reliabilities: dict[str, tuple[float, float]] = {
         m: (initial_reliability, initial_reliability)
         for m in model_names
     }
     fixed_class_rate = prior.mean
 
     # ----- 3. EM loop ---------------------------------------------------
-    posteriors: Dict[str, float] = {fid: fixed_class_rate
+    posteriors: dict[str, float] = {fid: fixed_class_rate
                                     for fid in finding_ids}
     iterations = 0
     converged = False
@@ -277,7 +277,7 @@ def estimate(
         iterations = iteration
 
         # E-step: update p_i for each finding.
-        new_posteriors: Dict[str, float] = {}
+        new_posteriors: dict[str, float] = {}
         for fid in finding_ids:
             new_posteriors[fid] = _e_step_one_finding(
                 verdicts_by_finding[fid], reliabilities,
@@ -286,7 +286,7 @@ def estimate(
         posteriors = new_posteriors
 
         # M-step: update each model's (α_m, β_m).
-        new_reliabilities: Dict[str, Tuple[float, float]] = {}
+        new_reliabilities: dict[str, tuple[float, float]] = {}
         for model in model_names:
             new_reliabilities[model] = _m_step_one_model(
                 model, posteriors, verdicts_by_finding, prior,
@@ -304,7 +304,7 @@ def estimate(
             break
 
     # ----- 4. Materialise output ---------------------------------------
-    findings: List[FindingPosterior] = []
+    findings: list[FindingPosterior] = []
     for fid in finding_ids:
         p_i = posteriors[fid]
         n_models = len(verdicts_by_finding[fid])
@@ -337,11 +337,11 @@ def estimate(
 
 def estimate_partitioned(
     records: Sequence[PanelRecord],
-    priors: Dict[str, BetaPrior],
+    priors: dict[str, BetaPrior],
     *,
     default_prior: BetaPrior,
     **estimate_kwargs,
-) -> List[DawidSkeneResult]:
+) -> list[DawidSkeneResult]:
     """Run :func:`estimate` separately for each ``decision_class``.
 
     ``priors`` keys are decision-class identifiers (``"agentic:<rule>"``
@@ -352,10 +352,10 @@ def estimate_partitioned(
     Results returned in sorted decision-class order for deterministic
     downstream serialisation.
     """
-    by_class: Dict[str, List[PanelRecord]] = {}
+    by_class: dict[str, list[PanelRecord]] = {}
     for r in records:
         by_class.setdefault(r.decision_class, []).append(r)
-    out: List[DawidSkeneResult] = []
+    out: list[DawidSkeneResult] = []
     for decision_class in sorted(by_class):
         prior = priors.get(decision_class, default_prior)
         out.append(estimate(

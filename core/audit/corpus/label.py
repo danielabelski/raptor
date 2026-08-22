@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 SCHEMA_VERSION = 1
@@ -113,7 +113,7 @@ class FunctionLabel:
     cve: str = ""
     expected_mechanism: str = ""
     excerpt_scope: str = "function"
-    expected_mode_results: Dict[str, str] = field(default_factory=dict)
+    expected_mode_results: dict[str, str] = field(default_factory=dict)
     # Optional per-engine exact-rule expectations for the mechanical
     # rule-verification runner (``rule_eval``): engine name -> list of
     # rule ids that should hit this label.  When an engine is pinned
@@ -121,7 +121,7 @@ class FunctionLabel:
     # engine; engines left unpinned fall back to class/CWE targeting.
     # Validation is deliberately lenient — shape only — so labels can
     # pin rules from engines (or rule sets) this checkout doesn't ship.
-    expected_rule_hits: Dict[str, List[str]] = field(default_factory=dict)
+    expected_rule_hits: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.bug_class not in VALID_BUG_CLASSES:
@@ -165,7 +165,7 @@ class FunctionLabel:
                     f"must be a list of non-empty rule-id strings"
                 )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -191,9 +191,9 @@ def load_label(path: Path) -> FunctionLabel:
 
 
 def load_all_labels(
-    corpus_dir: Optional[Path] = None,
-    bug_class: Optional[str] = None,
-) -> List[FunctionLabel]:
+    corpus_dir: Path | None = None,
+    bug_class: str | None = None,
+) -> list[FunctionLabel]:
     """Load all labels from the corpus, optionally filtered by class.
 
     Duplicate ``function_id`` values are an error: results, splices,
@@ -203,8 +203,8 @@ def load_all_labels(
     if corpus_dir is None:
         corpus_dir = Path(__file__).parent / "labels"
     labels = []
-    seen: Dict[str, Path] = {}
-    duplicates: List[str] = []
+    seen: dict[str, Path] = {}
+    duplicates: list[str] = []
     for label_file in sorted(corpus_dir.rglob("*.label.json")):
         label = load_label(label_file)
         prev = seen.get(label.function_id)

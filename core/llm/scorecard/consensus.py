@@ -39,7 +39,7 @@ the family stay in lock-step.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -48,11 +48,11 @@ logger = logging.getLogger(__name__)
 
 
 def record_consensus_outcomes(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
-    correlation: Dict[str, Any],
-    results_by_id: Dict[str, Dict],
-    per_finding_results: Optional[Dict[str, Any]] = None,
+    correlation: dict[str, Any],
+    results_by_id: dict[str, dict],
+    per_finding_results: dict[str, Any] | None = None,
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Walk a correlation result; record one
@@ -99,7 +99,7 @@ def record_consensus_outcomes(
         if confidence.get(fid) != "disputed":
             continue
 
-        verdicts: Dict[str, bool] = {}
+        verdicts: dict[str, bool] = {}
         for model, mr in per_model.items():
             v = mr.get("is_exploitable")
             if v is None:

@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
-from typing import List
 
 from . import ResolverResult, _check_tool, _run
 
@@ -118,7 +117,7 @@ def _has_wrapper(project_dir: Path) -> bool:
     return (project_dir / "mvnw").exists()
 
 
-def _resolve_mvn_cmd(project_dir: Path) -> List[str]:
+def _resolve_mvn_cmd(project_dir: Path) -> list[str]:
     """Prefer ``./mvnw`` (project-pinned version) over a system mvn."""
     if _has_wrapper(project_dir):
         return ["./mvnw"]

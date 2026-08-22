@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -54,7 +54,7 @@ _PURL_TYPE = "helm"
 
 
 @register(filenames=["Chart.yaml", "Chart.lock"])
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -88,7 +88,7 @@ def parse(path: Path) -> List[Dependency]:
 
     is_lockfile = path.name == "Chart.lock"
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for entry in deps_raw:
         dep = _build_dep(entry, declared_in=path, is_lockfile=is_lockfile)
         if dep is not None:
@@ -98,7 +98,7 @@ def parse(path: Path) -> List[Dependency]:
 
 def _build_dep(
     entry: Any, *, declared_in: Path, is_lockfile: bool,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(entry, dict):
         return None
     name = entry.get("name")
@@ -154,7 +154,7 @@ def _classify_version(version: str) -> PinStyle:
     return PinStyle.UNKNOWN
 
 
-def chart_repository_hosts(target: Path) -> List[str]:
+def chart_repository_hosts(target: Path) -> list[str]:
     """Return the union of Helm-repo hostnames referenced by every
     ``Chart.yaml`` under ``target``.
 

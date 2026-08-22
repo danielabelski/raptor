@@ -15,7 +15,7 @@ Adapter lives here in ``packages/fuzzing/`` rather than in
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from core.hash import sha256_file
 from core.witness import Witness, WitnessOutcome, WitnessSource
@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 
 def witness_from_crash(
     crash: Crash,
-    target_binary_path: Optional[Path] = None,
-    target_source_hash: Optional[str] = None,
+    target_binary_path: Path | None = None,
+    target_source_hash: str | None = None,
     produced_by: str = "afl++",
-    smt_attribution: Optional["CrashAttribution"] = None,
+    smt_attribution: CrashAttribution | None = None,
 ) -> tuple[Witness, bytes]:
     """Wrap an AFL++ ``Crash`` as a ``Witness`` + the raw bytes.
 
@@ -73,7 +73,7 @@ def witness_from_crash(
         outcome_detail["smt_seed"] = smt_attribution.seed_name
         outcome_detail["smt_attribution"] = "exact-lineage"
 
-    target_binary_hash: Optional[str] = None
+    target_binary_hash: str | None = None
     if target_binary_path is not None and target_binary_path.is_file():
         target_binary_hash = sha256_file(target_binary_path)
 

@@ -12,7 +12,6 @@ Reference: https://learn.microsoft.com/en-us/nuget/concepts/package-versioning
 
 from __future__ import annotations
 
-from typing import List, Tuple
 
 
 def compare(a: str, b: str) -> int:
@@ -37,7 +36,7 @@ def compare(a: str, b: str) -> int:
     return _cmp_prerelease(qa, qb)
 
 
-def _split(version: str) -> Tuple[List[int], List[str]]:
+def _split(version: str) -> tuple[list[int], list[str]]:
     """Split a version into ``(numeric_segments, prerelease_segments)``.
 
     Strips leading ``v`` and any ``+build`` metadata.
@@ -48,7 +47,7 @@ def _split(version: str) -> Tuple[List[int], List[str]]:
         base, pre = s.split("-", 1)
     else:
         base, pre = s, ""
-    nums: List[int] = []
+    nums: list[int] = []
     for piece in base.split("."):
         try:
             nums.append(int(piece))
@@ -62,7 +61,7 @@ def _split(version: str) -> Tuple[List[int], List[str]]:
     return nums, pre_segs
 
 
-def _cmp_prerelease(a: List[str], b: List[str]) -> int:
+def _cmp_prerelease(a: list[str], b: list[str]) -> int:
     """SemVer pre-release comparison: per-segment, numeric < non-numeric;
     longer wins on tie."""
     for sa, sb in zip(a, b, strict=False):

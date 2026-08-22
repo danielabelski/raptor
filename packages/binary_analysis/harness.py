@@ -25,7 +25,7 @@ import hashlib
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.json import load_json, save_json
 
@@ -103,7 +103,7 @@ def _load_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
 def _select_ingress(
     context: dict[str, Any],
     investigation: dict[str, Any],
-    ingress_id: Optional[str],
+    ingress_id: str | None,
 ) -> dict[str, Any]:
     ingress = [
         item for item in context.get("external_ingress_candidates", [])
@@ -336,10 +336,10 @@ def _write_generated_source(
 def generate_binary_harness(
     run_dir: Path,
     *,
-    ingress_id: Optional[str] = None,
-    abi: Optional[str] = None,
-    device: Optional[str] = None,
-    ioctl_code: Optional[str] = None,
+    ingress_id: str | None = None,
+    abi: str | None = None,
+    device: str | None = None,
+    ioctl_code: str | None = None,
 ) -> dict[str, Any]:
     """Write a binary harness plan and optional candidate source."""
     run_dir = Path(run_dir).resolve()

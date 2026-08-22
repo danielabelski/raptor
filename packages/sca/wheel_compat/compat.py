@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from packages.sca.platform_matrix import PlatformPair, ProjectPlatformMatrix
 from packages.sca.platform_matrix.glibc_db import LibcVersion
@@ -55,7 +54,7 @@ class CompatVerdict:
     pair: PlatformPair
     verdict: str                       # "ok" | "arch_gap" | "libc_too_new" | …
     reason: str                        # human-readable
-    matching_wheel: Optional[str] = None  # filename of best fit when ok
+    matching_wheel: str | None = None  # filename of best fit when ok
 
 
 @dataclass
@@ -65,7 +64,7 @@ class WheelMatrix:
 
     name: str
     version: str
-    wheel_tags: List[WheelTag]
+    wheel_tags: list[WheelTag]
     has_sdist: bool
 
     def __bool__(self) -> bool:
@@ -74,7 +73,7 @@ class WheelMatrix:
 
 def wheel_matrix_for_version(
     pypi_client, name: str, version: str,
-) -> Optional[WheelMatrix]:
+) -> WheelMatrix | None:
     """Build the wheel matrix for ``name==version`` by fetching
     its PyPI metadata + parsing each release-file's wheel name.
 
@@ -96,7 +95,7 @@ def wheel_matrix_for_version(
     if not isinstance(files, list) or not files:
         return None
 
-    wheel_tags: List[WheelTag] = []
+    wheel_tags: list[WheelTag] = []
     has_sdist = False
     for f in files:
         filename = f.get("filename") if isinstance(f, dict) else None
@@ -115,8 +114,8 @@ def wheel_matrix_for_version(
 
 
 def _best_match(
-    pair: PlatformPair, wheel_tags: List[WheelTag],
-) -> Optional[WheelTag]:
+    pair: PlatformPair, wheel_tags: list[WheelTag],
+) -> WheelTag | None:
     """For one (arch, libc) project pair, return the wheel-tag
     that best satisfies it, or None if none does.
 
@@ -327,7 +326,7 @@ def _verdict_for_pair(
 def check_compat(
     matrix: ProjectPlatformMatrix,
     wm: WheelMatrix,
-) -> List[CompatVerdict]:
+) -> list[CompatVerdict]:
     """For every project pair, decide the compat verdict against
     the wheel matrix."""
     return [_verdict_for_pair(pair, wm) for pair in matrix]
@@ -342,19 +341,19 @@ def check_compat(
 # the same answer. Key omits ``PlatformPair.source`` (diagnostic-only
 # text that varies between matrix builds but doesn't affect the
 # recommendation).
-_RECOMMENDATION_CACHE: Dict[
-    Tuple[
+_RECOMMENDATION_CACHE: dict[
+    tuple[
         str,
-        FrozenSet[
-            Tuple[str, Optional["LibcVersion"], Optional[Tuple[int, int]]]
+        frozenset[
+            tuple[str, LibcVersion | None, tuple[int, int] | None]
         ],
     ],
-    Optional[str],
+    str | None,
 ] = {}
 
 
-def _matrix_cache_key(matrix: ProjectPlatformMatrix) -> FrozenSet[
-    Tuple[str, Optional[LibcVersion], Optional[Tuple[int, int]]]
+def _matrix_cache_key(matrix: ProjectPlatformMatrix) -> frozenset[
+    tuple[str, LibcVersion | None, tuple[int, int] | None]
 ]:
     """Build a cache key that ignores ``PlatformPair.source``.
 
@@ -388,7 +387,7 @@ def find_compatible_version(
     matrix: ProjectPlatformMatrix,
     *,
     max_versions_walked: int = 20,
-) -> Optional[str]:
+) -> str | None:
     """Walk a package's PyPI release history newest → oldest and
     return the highest version with NO platform-compat findings
     against ``matrix``. Returns None if no compatible version is

@@ -19,7 +19,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -35,8 +34,8 @@ def _is_chart_yaml(path: Path) -> bool:
 
 @register(predicate=_is_chart_yaml)
 def rewrite_chart_yaml(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply chart-version edits to a Chart.yaml in place."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -46,7 +45,7 @@ def rewrite_chart_yaml(
                 for e2 in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one_chart(new_text, edit)
         results.append(result)
@@ -64,7 +63,7 @@ def rewrite_chart_yaml(
 
 def _apply_one_chart(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply one chart-version edit.
 
     Strategy: find ``- name: <locator>`` inside the

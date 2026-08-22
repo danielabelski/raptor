@@ -10,7 +10,7 @@ producing findings in the same internal dict shape that
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import unquote
 
 from core.logging import get_logger
@@ -23,7 +23,7 @@ logger = get_logger()
 # CWE inference from rule_id / message text
 # ---------------------------------------------------------------------------
 
-_CWE_MESSAGE_PATTERNS: List[tuple] = [
+_CWE_MESSAGE_PATTERNS: list[tuple] = [
     (re.compile(r"sql.?inject", re.I), "CWE-89"),
     (re.compile(r"command.?inject|os.?command|shell.?inject", re.I), "CWE-78"),
     (re.compile(r"cross.?site.?script|xss", re.I), "CWE-79"),
@@ -48,7 +48,7 @@ _CWE_MESSAGE_PATTERNS: List[tuple] = [
 _CWE_RE = re.compile(r"CWE-(\d+)", re.I)
 
 
-def _infer_cwe(rule_id: str, message: str) -> Optional[str]:
+def _infer_cwe(rule_id: str, message: str) -> str | None:
     """Infer CWE from rule_id keywords or finding message text.
 
     Returns ``"CWE-NNN"`` or None.  Tries the vuln-type reverse map
@@ -113,7 +113,7 @@ _DEPENDENCY_MANIFEST_NAMES = frozenset({
 })
 
 
-def _is_sca_finding(finding: Dict[str, Any]) -> bool:
+def _is_sca_finding(finding: dict[str, Any]) -> bool:
     tool = (finding.get("tool") or "").lower().strip()
     if any(kw in tool for kw in _SCA_TOOL_KEYWORDS):
         return True
@@ -130,13 +130,13 @@ _SKIP_DIRS = frozenset({
 })
 
 
-def _build_file_index(source_root: Path) -> Dict[str, List[Path]]:
+def _build_file_index(source_root: Path) -> dict[str, list[Path]]:
     """Map basename → list of relative paths under *source_root*.
 
     Skips well-known non-source directories to keep the index small
     and the walk fast on large repos.
     """
-    index: Dict[str, List[Path]] = {}
+    index: dict[str, list[Path]] = {}
 
     def _walk(directory: Path) -> None:
         try:
@@ -173,9 +173,9 @@ def _is_under_root(source_root: Path, candidate: str) -> bool:
 def _resolve_uri(
     uri: str,
     source_root: Path,
-    file_index: Dict[str, List[Path]],
-    depth_cache: List[Optional[int]],
-) -> Optional[str]:
+    file_index: dict[str, list[Path]],
+    depth_cache: list[int | None],
+) -> str | None:
     """Resolve a SARIF URI to a relative path under *source_root*.
 
     Tries progressively shorter prefixes until a match is found.
@@ -226,7 +226,7 @@ _SNIPPET_CONTEXT_LINES = 3
 
 def _synthesize_snippet(
     source_root: Path, rel_path: str,
-    start_line: int, end_line: Optional[int],
+    start_line: int, end_line: int | None,
 ) -> str:
     """Read the finding's source lines plus trailing context.
 
@@ -267,8 +267,8 @@ class ImportStats:
 
 @dataclass
 class ImportResult:
-    findings: List[Dict[str, Any]] = field(default_factory=list)
-    warnings: List[ImportWarning] = field(default_factory=list)
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[ImportWarning] = field(default_factory=list)
     stats: ImportStats = field(default_factory=ImportStats)
 
 
@@ -277,7 +277,7 @@ class ImportResult:
 # ---------------------------------------------------------------------------
 
 def normalize_imported_findings(
-    findings: List[Dict[str, Any]],
+    findings: list[dict[str, Any]],
     source_root: Path,
     original_tool: str = "external",
 ) -> ImportResult:
@@ -295,7 +295,7 @@ def normalize_imported_findings(
     source_root = source_root.resolve()
 
     file_index = _build_file_index(source_root)
-    depth_cache: List[Optional[int]] = [None]
+    depth_cache: list[int | None] = [None]
 
     for idx, finding in enumerate(findings):
         uri = finding.get("file") or ""
@@ -388,7 +388,7 @@ def normalize_imported_findings(
     return result
 
 
-def format_import_summary(result: ImportResult, sarif_files: List[str]) -> str:
+def format_import_summary(result: ImportResult, sarif_files: list[str]) -> str:
     """Format a human-readable import summary for the operator."""
     s = result.stats
     lines = [
@@ -428,7 +428,7 @@ def format_import_summary(result: ImportResult, sarif_files: List[str]) -> str:
     return "\n".join(lines)
 
 
-def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+def findings_to_sarif(findings: list[dict[str, Any]]) -> dict[str, Any]:
     """Convert normalized finding dicts back to a valid SARIF 2.1.0 structure.
 
     Groups findings by tool name and produces one run per tool.
@@ -436,8 +436,8 @@ def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
     synthesized snippets) so downstream consumers that re-parse from disk
     see the same data the in-memory pipeline does.
     """
-    runs_by_tool: Dict[str, list] = {}
-    rules_by_tool: Dict[str, Dict[str, dict]] = {}
+    runs_by_tool: dict[str, list] = {}
+    rules_by_tool: dict[str, dict[str, dict]] = {}
 
     for f in findings:
         tool = f.get("tool") or "external"
@@ -446,7 +446,7 @@ def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         rule_id = f.get("rule_id") or "unknown"
 
-        region: Dict[str, Any] = {}
+        region: dict[str, Any] = {}
         if f.get("startLine"):
             region["startLine"] = f["startLine"]
         if f.get("endLine"):
@@ -454,7 +454,7 @@ def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         if f.get("snippet"):
             region["snippet"] = {"text": f["snippet"]}
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "ruleId": rule_id,
             "level": f.get("level") or "warning",
             "message": {"text": f.get("message") or ""},
@@ -481,13 +481,13 @@ def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         runs_by_tool[tool].append(result)
 
         if rule_id not in rules_by_tool[tool]:
-            rule_entry: Dict[str, Any] = {"id": rule_id}
+            rule_entry: dict[str, Any] = {"id": rule_id}
             cwe = f.get("cwe_id")
             if cwe:
                 rule_entry["properties"] = {"cwe": [cwe]}
             rules_by_tool[tool][rule_id] = rule_entry
 
-    sarif: Dict[str, Any] = {
+    sarif: dict[str, Any] = {
         "version": "2.1.0",
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "runs": [],
@@ -508,14 +508,14 @@ def findings_to_sarif(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def import_provenance_block(
     result: ImportResult,
-    sarif_files: List[str],
-    tools: List[str],
+    sarif_files: list[str],
+    tools: list[str],
     source_type: str = "directory",
-    archive_sha256: Optional[str] = None,
-) -> Dict[str, Any]:
+    archive_sha256: str | None = None,
+) -> dict[str, Any]:
     """Build the provenance block for the run manifest."""
     s = result.stats
-    block: Dict[str, Any] = {
+    block: dict[str, Any] = {
         "sarif_files": sarif_files,
         "tools": tools,
         "total_imported": s.total_imported,

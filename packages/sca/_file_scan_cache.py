@@ -28,7 +28,8 @@ serialise/deserialise as appropriate.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 from core.json import JsonCache, TTL_FOREVER
 
@@ -41,7 +42,7 @@ def file_sha256(text: str) -> str:
 
 
 def cached_per_file(
-    cache: Optional[JsonCache],
+    cache: JsonCache | None,
     consumer: str,
     text: str,
     compute: Callable[[], Any],

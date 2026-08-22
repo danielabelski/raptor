@@ -19,11 +19,12 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
-_CWE_PRIMITIVE: Dict[str, str] = {
+_CWE_PRIMITIVE: dict[str, str] = {
     "CWE-120": "write",
     "CWE-121": "write",
     "CWE-122": "write",
@@ -52,7 +53,7 @@ _CWE_PRIMITIVE: Dict[str, str] = {
     "CWE-362": "race",
 }
 
-_COMPOSABLE_PAIRS: Dict[tuple, str] = {
+_COMPOSABLE_PAIRS: dict[tuple, str] = {
     ("info_leak", "write"): "ASLR bypass + memory corruption",
     ("info_leak", "execute"): "leak-assisted code execution",
     ("auth_bypass", "execute"): "pre-auth code execution",
@@ -71,7 +72,7 @@ _MAX_CHAIN_LENGTH = 5
 # Output→input type compatibility for chain step stitching.
 # Maps (output_primitive, input_primitive) to a description of the data
 # flowing between them.  A pair NOT in this table is a type mismatch.
-_STEP_OUTPUT_INPUT: Dict[tuple, str] = {
+_STEP_OUTPUT_INPUT: dict[tuple, str] = {
     ("info_leak", "write"): "leaked address feeds ASLR bypass for write",
     ("info_leak", "execute"): "leaked address feeds ASLR bypass for execute",
     ("auth_bypass", "execute"): "bypass provides access for execution",
@@ -87,7 +88,7 @@ _STEP_OUTPUT_INPUT: Dict[tuple, str] = {
     ("write", "execute"): "memory corruption enables code execution",
 }
 
-_IMPACT_SEVERITY: Dict[str, str] = {
+_IMPACT_SEVERITY: dict[str, str] = {
     "pre-auth code execution": "critical",
     "ASLR bypass + memory corruption": "critical",
     "leak-assisted code execution": "critical",
@@ -107,7 +108,7 @@ class AttackPrimitive:
 
     kind: str
     description: str
-    constraints: List[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -115,17 +116,17 @@ class AttackChain:
     """A composed attack from multiple findings."""
 
     chain_id: str
-    finding_keys: List[str]
-    primitives: List[AttackPrimitive]
+    finding_keys: list[str]
+    primitives: list[AttackPrimitive]
     combined_impact: str
     severity: str
     narrative: str
     chain_status: str = "confirmed"
-    constraint_failures: List[str] = field(default_factory=list)
-    mitigations: List[str] = field(default_factory=list)
+    constraint_failures: list[str] = field(default_factory=list)
+    mitigations: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "chain_id": self.chain_id,
             "finding_keys": self.finding_keys,
             "primitives": [
@@ -172,8 +173,8 @@ def classify_primitive(outcome: Any) -> AttackPrimitive:
 
 def group_by_reachability(
     outcomes: Sequence[Any],
-    context_map: Optional[Dict[str, Any]] = None,
-) -> List[List[int]]:
+    context_map: dict[str, Any] | None = None,
+) -> list[list[int]]:
     """Group finding indices by shared entry points or call paths.
 
     Falls back to file-proximity grouping when no context map is available.
@@ -189,7 +190,7 @@ def group_by_reachability(
     if len(finding_indices) < 2:
         return [finding_indices] if finding_indices else []
 
-    entry_map: Dict[str, List[int]] = {}
+    entry_map: dict[str, list[int]] = {}
 
     if context_map:
         entry_points = context_map.get("entry_points", [])
@@ -225,17 +226,17 @@ def group_by_reachability(
 
 def synthesize_chains(
     outcomes: Sequence[Any],
-    context_map: Optional[Dict[str, Any]] = None,
-) -> List[AttackChain]:
+    context_map: dict[str, Any] | None = None,
+) -> list[AttackChain]:
     """Synthesize attack chains from review outcomes.
 
     Groups findings by reachability, classifies primitives, checks
     composability, and verifies cross-finding constraints.
     """
     groups = group_by_reachability(outcomes, context_map)
-    primitives_cache: Dict[int, AttackPrimitive] = {}
+    primitives_cache: dict[int, AttackPrimitive] = {}
 
-    chains: List[AttackChain] = []
+    chains: list[AttackChain] = []
     chain_counter = 0
 
     for group in groups:
@@ -393,9 +394,9 @@ def format_chains_summary(chains: Sequence[AttackChain]) -> str:
 
 def _build_multi_step_chains(
     outcomes: Sequence[Any],
-    pairwise_chains: List[AttackChain],
-    primitives_cache: Dict[int, AttackPrimitive],
-    group_indices: List[int],
+    pairwise_chains: list[AttackChain],
+    primitives_cache: dict[int, AttackPrimitive],
+    group_indices: list[int],
     chain_counter: int,
 ) -> tuple:
     """Extend pairwise chains to multi-step chains (3-5 steps).
@@ -409,7 +410,7 @@ def _build_multi_step_chains(
         return [], chain_counter
 
     # Build an adjacency map: for each primitive kind, which indices produce it?
-    kind_to_indices: Dict[str, List[int]] = {}
+    kind_to_indices: dict[str, list[int]] = {}
     for idx in group_indices:
         prim = primitives_cache.get(idx)
         if prim:
@@ -417,15 +418,15 @@ def _build_multi_step_chains(
 
     # Seed with pairwise chains (as index lists).
     # Each seed is a list of outcome indices forming the chain.
-    seeds: List[List[int]] = []
+    seeds: list[list[int]] = []
     for chain in pairwise_chains:
         # Recover the indices from finding_keys.
         idxs = _recover_chain_indices(chain, outcomes, group_indices)
         if len(idxs) == 2:
             seeds.append(idxs)
 
-    multi_chains: List[AttackChain] = []
-    seen_key_sets: Set[frozenset] = set()
+    multi_chains: list[AttackChain] = []
+    seen_key_sets: set[frozenset] = set()
 
     # BFS-style extension: grow each seed by one step at a time.
     queue = list(seeds)
@@ -469,10 +470,10 @@ def _build_multi_step_chains(
 def _recover_chain_indices(
     chain: AttackChain,
     outcomes: Sequence[Any],
-    group_indices: List[int],
-) -> List[int]:
+    group_indices: list[int],
+) -> list[int]:
     """Map a chain's finding_keys back to outcome indices."""
-    indices: List[int] = []
+    indices: list[int] = []
     for fk in chain.finding_keys:
         for idx in group_indices:
             o = outcomes[idx]
@@ -484,11 +485,11 @@ def _recover_chain_indices(
 
 
 def _assemble_multi_step_chain(
-    index_list: List[int],
+    index_list: list[int],
     outcomes: Sequence[Any],
-    primitives_cache: Dict[int, AttackPrimitive],
+    primitives_cache: dict[int, AttackPrimitive],
     counter: int,
-) -> "AttackChain | None":
+) -> AttackChain | None:
     """Assemble an AttackChain from an ordered list of outcome indices."""
     primitives = [primitives_cache[i] for i in index_list]
     finding_keys = [
@@ -497,7 +498,7 @@ def _assemble_multi_step_chain(
     ]
 
     # Verify step-to-step output→input compatibility.
-    constraint_failures: List[str] = []
+    constraint_failures: list[str] = []
     for step in range(len(primitives) - 1):
         src = primitives[step]
         dst = primitives[step + 1]
@@ -587,7 +588,7 @@ def _infer_primitive_from_hypothesis(hypothesis: str) -> str:
     return ""
 
 
-def _extract_constraints(outcome: Any) -> List[str]:
+def _extract_constraints(outcome: Any) -> list[str]:
     """Extract exploitation constraints from a finding."""
     constraints = []
     review = getattr(outcome, "review_result", None) or {}
@@ -605,7 +606,7 @@ def _find_reachable_entries(
     key: str,
     entry_points: list,
     call_edges: dict,
-) -> List[str]:
+) -> list[str]:
     """Find which entry points can reach a given function."""
     ep_names = set()
     for ep in entry_points:
@@ -619,7 +620,7 @@ def _find_reachable_entries(
         return [key]
 
     reachable = []
-    visited: Set[str] = set()
+    visited: set[str] = set()
 
     def _walk_callers(k: str) -> None:
         if k in visited:
@@ -641,7 +642,7 @@ def _check_chain_constraints(
     outcome_b: Any,
     prim_a: AttackPrimitive,
     prim_b: AttackPrimitive,
-) -> List[str]:
+) -> list[str]:
     """Check whether two findings can compose into a chain.
 
     Returns a list of constraint failures (empty = composable).
@@ -705,7 +706,7 @@ def _build_narrative(
     )
 
 
-_PRIMITIVE_MITIGATIONS: Dict[str, List[str]] = {
+_PRIMITIVE_MITIGATIONS: dict[str, list[str]] = {
     "write": ["ASLR", "stack canaries", "CFI", "safe heap allocator"],
     "info_leak": ["ASLR (partial mitigation)", "address-space isolation"],
     "execute": ["input validation", "sandboxing", "least-privilege execution"],
@@ -717,7 +718,7 @@ _PRIMITIVE_MITIGATIONS: Dict[str, List[str]] = {
     "input_control": ["input validation", "allowlist enforcement"],
 }
 
-_CHAIN_MITIGATIONS: Dict[str, List[str]] = {
+_CHAIN_MITIGATIONS: dict[str, list[str]] = {
     "ASLR bypass + memory corruption": [
         "PIE + full ASLR", "CFI/shadow stack", "safe heap allocator",
     ],
@@ -743,13 +744,13 @@ def _infer_chain_mitigations(
     prim_a: AttackPrimitive,
     prim_b: AttackPrimitive,
     combined_impact: str,
-) -> List[str]:
+) -> list[str]:
     """Infer what mitigations could break the chain."""
     chain_specific = _CHAIN_MITIGATIONS.get(combined_impact, [])
     if chain_specific:
         return list(chain_specific)
 
-    mitigations: List[str] = []
+    mitigations: list[str] = []
     for prim in (prim_a, prim_b):
         for m in _PRIMITIVE_MITIGATIONS.get(prim.kind, []):
             if m not in mitigations:

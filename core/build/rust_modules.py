@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +49,11 @@ def _strip_comments(text: str) -> str:
     return _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", text))
 
 
-def _crate_roots(target: Path) -> List[Path]:
+def _crate_roots(target: Path) -> list[Path]:
     """Default-layout crate roots. Path overrides in Cargo.toml and workspace
     members are not resolved (best-effort); missing a root only causes
     conservative noise, never a false negative."""
-    roots: List[Path] = []
+    roots: list[Path] = []
     src = target / "src"
     for name in ("lib.rs", "main.rs"):
         p = src / name
@@ -99,7 +98,7 @@ def _in_root(cand: Path, root: Path) -> bool:
 
 
 def _resolve_child(parent_file: Path, mod_name: str,
-                   path_attr: Optional[str], root: Path) -> Optional[Path]:
+                   path_attr: str | None, root: Path) -> Path | None:
     if path_attr:
         cand = parent_file.parent / path_attr
         return cand if _in_root(cand, root) and cand.is_file() else None
@@ -110,7 +109,7 @@ def _resolve_child(parent_file: Path, mod_name: str,
     return None
 
 
-def _file_mods(file: Path) -> List[Tuple[Optional[str], str]]:
+def _file_mods(file: Path) -> list[tuple[str | None, str]]:
     try:
         text = _strip_comments(file.read_text(encoding="utf-8", errors="replace"))
     except OSError:
@@ -118,7 +117,7 @@ def _file_mods(file: Path) -> List[Tuple[Optional[str], str]]:
     return [(m.group(1), m.group(2)) for m in _MOD_DECL.finditer(text)]
 
 
-def extract_rust_crate_modules(target: Path) -> Optional[frozenset]:
+def extract_rust_crate_modules(target: Path) -> frozenset | None:
     """Set of absolute ``.rs`` paths compiled into the crate(s) under
     ``target`` (resolved to match the inventory builder's paths), or ``None``
     when membership is unknown (no ``Cargo.toml`` / no crate root found)."""
@@ -133,7 +132,7 @@ def extract_rust_crate_modules(target: Path) -> Optional[frozenset]:
     if not roots:
         return None
     reachable = set()
-    queue: List[Path] = list(roots)
+    queue: list[Path] = list(roots)
     while queue:
         f = queue.pop()
         try:

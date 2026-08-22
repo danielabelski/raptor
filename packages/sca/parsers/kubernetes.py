@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -71,7 +71,7 @@ _WORKLOAD_KINDS = {
 
 
 @register(predicate=lambda p: _is_k8s_manifest(p))
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -107,7 +107,7 @@ def parse(path: Path) -> List[Dependency]:
         )
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for doc in documents:
         if not isinstance(doc, dict):
             continue
@@ -165,7 +165,7 @@ def _is_k8s_manifest(path: Path) -> bool:
 
 def _extract_images(
     doc: dict, *, kind: str,
-) -> Iterable[Tuple[str, str, Optional[str]]]:
+) -> Iterable[tuple[str, str, str | None]]:
     """Yield ``(image_ref, kind_context, container_name)`` for each
     container image found in this workload doc.
 
@@ -225,9 +225,9 @@ def _build_dep(
     *,
     image_ref: str,
     kind_ctx: str,
-    container_name: Optional[str],
+    container_name: str | None,
     declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     name, version = _split_image_ref(image_ref)
     if not name:
         return None
@@ -260,7 +260,7 @@ def _build_dep(
     )
 
 
-def _classify_pin_style(version: Optional[str]) -> PinStyle:
+def _classify_pin_style(version: str | None) -> PinStyle:
     """Classify an OCI tag's pin style."""
     if not version:
         return PinStyle.WILDCARD

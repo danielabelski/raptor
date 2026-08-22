@@ -30,7 +30,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 

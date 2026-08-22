@@ -27,7 +27,7 @@ attacker-controlled package metadata.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.llm.task_types import TaskType
 from ..models import Dependency
@@ -46,11 +46,11 @@ logger = logging.getLogger(__name__)
 def assess_slopsquat(
     client,
     dep: Dependency,
-    heuristic_reasons: List[str],
+    heuristic_reasons: list[str],
     heuristic_score: float,
-    suspected_root: Optional[str],
-    metadata: Dict[str, Any],
-) -> Optional[SlopsquatVerdict]:
+    suspected_root: str | None,
+    metadata: dict[str, Any],
+) -> SlopsquatVerdict | None:
     """Run the LLM on heuristic + registry data for one suspect.
 
     ``heuristic_reasons`` is the tag list from
@@ -128,14 +128,14 @@ def assess_slopsquat(
 
 def assess_batch(
     client,
-    suspects: List[tuple],
-) -> Dict[str, Optional[SlopsquatVerdict]]:
+    suspects: list[tuple],
+) -> dict[str, SlopsquatVerdict | None]:
     """Assess multiple suspects, keyed by ``dep.key()``.
 
     ``suspects`` is a list of
     ``(dep, heuristic_reasons, heuristic_score, suspected_root,
     metadata)`` tuples."""
-    results: Dict[str, Optional[SlopsquatVerdict]] = {}
+    results: dict[str, SlopsquatVerdict | None] = {}
     for dep, reasons, score, root, meta in suspects:
         results[dep.key()] = assess_slopsquat(
             client, dep, reasons, score, root, meta,
@@ -149,9 +149,9 @@ def assess_batch(
 
 def _format_heuristic(
     dep: Dependency,
-    reasons: List[str],
+    reasons: list[str],
     score: float,
-    suspected_root: Optional[str],
+    suspected_root: str | None,
 ) -> str:
     lines = [
         f"Package: {dep.ecosystem}/{dep.name}",
@@ -166,7 +166,7 @@ def _format_heuristic(
 
 
 def _format_metadata(
-    dep: Dependency, meta: Dict[str, Any],
+    dep: Dependency, meta: dict[str, Any],
 ) -> str:
     """Render registry-side metadata into a structured block.
 

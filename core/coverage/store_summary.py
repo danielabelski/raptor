@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any
+from collections.abc import Iterable
 
 from .registry import DEPTH_SCANNED, category_of, depth_of
 from .store import CoverageStore, iter_inventory_functions
@@ -28,7 +29,7 @@ _CATEGORIES = ("static", "llm", "runtime")
 _REVIEWABLE_KINDS = ("function", "top_level")
 
 
-def file_level_view(run_dirs: Iterable[Path]) -> Dict[str, Any]:
+def file_level_view(run_dirs: Iterable[Path]) -> dict[str, Any]:
     """File-level coverage for the no-inventory case: per-tool files-examined
     from the coverage records, plus run provenance from each ``.raptor-run.json``.
 
@@ -45,8 +46,8 @@ def file_level_view(run_dirs: Iterable[Path]) -> Dict[str, Any]:
 
     from .record import load_records
 
-    tools: Dict[str, Dict[str, Any]] = {}
-    runs: List[Dict[str, Any]] = []
+    tools: dict[str, dict[str, Any]] = {}
+    runs: list[dict[str, Any]] = []
     for rd in run_dirs:
         rd = Path(rd)
         md = load_run_metadata(rd)
@@ -89,7 +90,7 @@ def file_level_view(run_dirs: Iterable[Path]) -> Dict[str, Any]:
     }
 
 
-def read_tracking_status(run_dirs) -> Dict[str, Any]:
+def read_tracking_status(run_dirs) -> dict[str, Any]:
     """Health of the LLM read-tracking leg across these runs.
 
     The capture chain has several silent failure points (plugin loads
@@ -120,7 +121,7 @@ def read_tracking_status(run_dirs) -> Dict[str, Any]:
     }
 
 
-def format_read_tracking(status: Dict[str, Any]) -> "str | None":
+def format_read_tracking(status: dict[str, Any]) -> str | None:
     """One operator-facing line; None when there is nothing to say."""
     if not status.get("runs"):
         return None
@@ -140,7 +141,7 @@ def format_read_tracking(status: Dict[str, Any]) -> "str | None":
             "a running run")
 
 
-def format_progress_trend(store_path) -> "str | None":
+def format_progress_trend(store_path) -> str | None:
     """Reviewed-count movement across the last completed runs.
 
     Reads the sibling ``coverage-progress.jsonl`` the run lifecycle
@@ -183,7 +184,7 @@ def format_progress_trend(store_path) -> "str | None":
 
 def render_coverage(
     run_dirs, checklist, store_path, annotations_base=None, detailed=False,
-) -> "str | None":
+) -> str | None:
     """The unified coverage report — the single rendering path for every
     surface (/project coverage, standalone /scan, /agentic, raptor-coverage-summary).
 
@@ -264,11 +265,11 @@ def coverage_view(run_dirs, checklist, store_path, annotations_base=None):
         _build_store(run_dirs, checklist, store_path, annotations_base), checklist)
 
 
-def file_breakdown(store: CoverageStore, checklist: Dict[str, Any]) -> List[Dict[str, Any]]:
+def file_breakdown(store: CoverageStore, checklist: dict[str, Any]) -> list[dict[str, Any]]:
     """Per-file rollup for the ``--detailed`` view: item count, llm-reviewed
     reviewable units, examined items, findings, and file coverage %. Sorted
     worst-first by LLM-review ratio so files needing attention surface first."""
-    files: Dict[str, Dict[str, Any]] = {}
+    files: dict[str, dict[str, Any]] = {}
     for f, _name, lo, hi, kind in iter_inventory_functions(checklist):
         high = hi if hi is not None else lo
         row = files.setdefault(f, {
@@ -292,7 +293,7 @@ def file_breakdown(store: CoverageStore, checklist: Dict[str, Any]) -> List[Dict
                        r["path"]))
 
 
-def format_file_breakdown(rows: List[Dict[str, Any]], max_files: int = 40) -> str:
+def format_file_breakdown(rows: list[dict[str, Any]], max_files: int = 40) -> str:
     """Render :func:`file_breakdown` as a per-file table ('' if empty)."""
     if not rows:
         return ""
@@ -313,7 +314,7 @@ def format_file_breakdown(rows: List[Dict[str, Any]], max_files: int = 40) -> st
     return "\n".join(lines)
 
 
-def render_run_coverage(run_dir) -> "str | None":
+def render_run_coverage(run_dir) -> str | None:
     """Single-run convenience wrapper over :func:`render_coverage` (used by
     /agentic and standalone /scan end-of-run printing). Read-only."""
     from core.json import load_json
@@ -325,7 +326,7 @@ def render_run_coverage(run_dir) -> "str | None":
     )
 
 
-def store_llm_coverage_percent(view: Dict[str, Any]) -> float:
+def store_llm_coverage_percent(view: dict[str, Any]) -> float:
     """Percent of REVIEWABLE units (function/top_level) with LLM coverage."""
     total = view.get("llm_reviewable", 0)
     if not total:
@@ -334,11 +335,11 @@ def store_llm_coverage_percent(view: Dict[str, Any]) -> float:
     return max(0.0, min(100.0, reviewed / total * 100))
 
 
-def store_coverage_threshold_met(view: Dict[str, Any], fail_under: float) -> bool:
+def store_coverage_threshold_met(view: dict[str, Any], fail_under: float) -> bool:
     return store_llm_coverage_percent(view) >= fail_under
 
 
-def format_store_threshold_result(view: Dict[str, Any], fail_under: float) -> str:
+def format_store_threshold_result(view: dict[str, Any], fail_under: float) -> str:
     pct = store_llm_coverage_percent(view)
     status = "PASS" if pct >= fail_under else "FAIL"
     return (
@@ -347,7 +348,7 @@ def format_store_threshold_result(view: Dict[str, Any], fail_under: float) -> st
     )
 
 
-def format_file_level_view(view: Dict[str, Any], max_files: int = 20) -> str:
+def format_file_level_view(view: dict[str, Any], max_files: int = 20) -> str:
     """Render :func:`file_level_view` as an operator-facing section."""
     lines = ["Coverage (file-level — no function inventory)"]
     runs = view.get("runs") or []
@@ -377,7 +378,7 @@ def format_file_level_view(view: Dict[str, Any], max_files: int = 20) -> str:
     return "\n".join(lines)
 
 
-def store_view(store: CoverageStore, checklist: Dict[str, Any]) -> Dict[str, Any]:
+def store_view(store: CoverageStore, checklist: dict[str, Any]) -> dict[str, Any]:
     """Function-level coverage rollup from the store, against the inventory.
 
     One store query per inventory function. Returns a JSON-friendly dict.
@@ -387,11 +388,11 @@ def store_view(store: CoverageStore, checklist: Dict[str, Any]) -> Dict[str, Any
     reviewable_total = 0
     reviewed_count = 0
     by_category = {c: 0 for c in _CATEGORIES}
-    by_kind: Dict[str, int] = {}
-    llm_gap: List[Dict[str, Any]] = []
+    by_kind: dict[str, int] = {}
+    llm_gap: list[dict[str, Any]] = []
     total_gap = 0
     verdicts = {"clean": 0, "open": 0, "found_then_lost": 0, "unexamined": 0}
-    review_gap: List[Dict[str, Any]] = []
+    review_gap: list[dict[str, Any]] = []
 
     for file, name, lo, hi, kind in iter_inventory_functions(checklist):
         total += 1
@@ -467,7 +468,7 @@ def _pct(n: int, total: int) -> float:
     return (n / total * 100.0) if total else 0.0
 
 
-def format_store_view(view: Dict[str, Any], max_gap: int = 15) -> str:
+def format_store_view(view: dict[str, Any], max_gap: int = 15) -> str:
     """Render :func:`store_view` output as an operator-facing section."""
     total = view["total_functions"]
     target_label = view.get("target") or view.get("content_id") or "unknown"

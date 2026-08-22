@@ -51,7 +51,7 @@ import sys
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from collections.abc import Sequence
 
 from core.llm.multi_model.dawid_skene import (
     DawidSkeneResult,
@@ -85,7 +85,7 @@ class FindingComparison:
     """Per-finding before/after the calibrated estimator."""
     finding_id: str
     decision_class: str
-    recorded_is_exploitable: Optional[bool]   # the original verdict
+    recorded_is_exploitable: bool | None   # the original verdict
     posterior_true_positive: float
     credible_interval_lo: float
     credible_interval_hi: float
@@ -102,23 +102,23 @@ class ClassSummary:
     n_flips_to_not_exploitable: int
     converged: bool
     iterations: int
-    model_reliabilities: List[Dict[str, float]] = field(default_factory=list)
+    model_reliabilities: list[dict[str, float]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ReplayReport:
-    sources: List[str]
+    sources: list[str]
     total_panels: int
     total_findings_with_panel: int
-    distinct_models: List[str]
-    distinct_decision_classes: List[str]
-    findings: List[FindingComparison]
-    class_summaries: List[ClassSummary]
+    distinct_models: list[str]
+    distinct_decision_classes: list[str]
+    findings: list[FindingComparison]
+    class_summaries: list[ClassSummary]
     # Aggregate metrics — the headline numbers an operator scans first.
     flip_rate: float
     flip_to_exploitable_rate: float
     flip_to_not_exploitable_rate: float
-    posterior_distribution: Dict[str, float]  # bin -> count
+    posterior_distribution: dict[str, float]  # bin -> count
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ class ReplayReport:
 
 def _recorded_verdict_index(
     report_paths: Sequence[Path],
-) -> Dict[str, Optional[bool]]:
+) -> dict[str, bool | None]:
     """Read each report and extract ``{finding_id: is_exploitable}``.
 
     The replay needs this to compute flip rates. Stored separately
@@ -136,7 +136,7 @@ def _recorded_verdict_index(
     is per-model verdicts; the *aggregate* recorded verdict is a
     different artefact).
     """
-    out: Dict[str, Optional[bool]] = {}
+    out: dict[str, bool | None] = {}
     for path in report_paths:
         if not path.is_file():
             continue
@@ -171,7 +171,7 @@ def _recorded_verdict_index(
 # ---------------------------------------------------------------------------
 
 
-def _flip_tag(recorded: Optional[bool], posterior: float) -> str:
+def _flip_tag(recorded: bool | None, posterior: float) -> str:
     if recorded is None:
         return NO_FLIP  # nothing to flip from
     posterior_says_exploitable = posterior > 0.5
@@ -194,7 +194,7 @@ _POSTERIOR_BINS = [
 ]
 
 
-def _bin_posteriors(posteriors: Sequence[float]) -> Dict[str, float]:
+def _bin_posteriors(posteriors: Sequence[float]) -> dict[str, float]:
     counts: Counter = Counter()
     for p in posteriors:
         for lo, hi, label in _POSTERIOR_BINS:
@@ -213,7 +213,7 @@ def _bin_posteriors(posteriors: Sequence[float]) -> Dict[str, float]:
 def replay(
     report_paths: Sequence[Path],
     *,
-    prior: Optional[BetaPrior] = None,
+    prior: BetaPrior | None = None,
     decision_class_prefix: str = DEFAULT_DECISION_CLASS_PREFIX,
 ) -> ReplayReport:
     """Re-aggregate panel records from historical reports and compare
@@ -248,12 +248,12 @@ def replay(
         )
 
     # Run D–S per decision class.
-    ds_results: List[DawidSkeneResult] = estimate_partitioned(
+    ds_results: list[DawidSkeneResult] = estimate_partitioned(
         panel_records, priors={}, default_prior=prior,
     )
 
-    findings: List[FindingComparison] = []
-    class_summaries: List[ClassSummary] = []
+    findings: list[FindingComparison] = []
+    class_summaries: list[ClassSummary] = []
     for ds_result in ds_results:
         n_to_pos = 0
         n_to_neg = 0
@@ -316,7 +316,7 @@ def replay(
 
 
 def render_markdown(report: ReplayReport) -> str:
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("# Panel-log replay")
     lines.append("")
     lines.append(
@@ -369,8 +369,8 @@ def render_markdown(report: ReplayReport) -> str:
     if report.class_summaries:
         lines.append("## Inferred per-model reliability (averaged across classes)")
         lines.append("")
-        per_model_alpha: Dict[str, List[float]] = {}
-        per_model_beta: Dict[str, List[float]] = {}
+        per_model_alpha: dict[str, list[float]] = {}
+        per_model_beta: dict[str, list[float]] = {}
         for s in report.class_summaries:
             for r in s.model_reliabilities:
                 per_model_alpha.setdefault(r["model"], []).append(r["alpha"])
@@ -397,7 +397,7 @@ def render_json(report: ReplayReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="panel-replay",
         description=(
@@ -443,7 +443,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    paths: List[Path] = list(args.paths)
+    paths: list[Path] = list(args.paths)
     if args.root:
         paths.extend(discover_reports(args.root))
     if not paths:

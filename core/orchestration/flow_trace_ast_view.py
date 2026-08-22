@@ -75,7 +75,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +88,10 @@ _DEFINITION_RE = re.compile(r"^(.+):(\d+)$")
 
 
 def enrich_with_ast_view(
-    trace: Dict[str, Any],
+    trace: dict[str, Any],
     target_path: Path,
     *,
-    inventory: Optional[Dict[str, Any]] = None,
+    inventory: dict[str, Any] | None = None,
 ) -> int:
     """Walk ``trace["steps"]`` and attach an ``ast_view`` field to
     each step whose ``definition`` resolves to an in-inventory
@@ -186,7 +186,7 @@ def enrich_with_ast_view(
     return enriched
 
 
-def _parse_definition(definition: str) -> Optional[Tuple[str, int]]:
+def _parse_definition(definition: str) -> tuple[str, int] | None:
     """Parse a step's ``definition`` field into ``(file_path, line)``.
 
     Returns None for unparseable input — module-level entries (no

@@ -59,7 +59,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from packages.sca.platform_matrix.glibc_db import (
     LibcVersion,
@@ -82,7 +82,7 @@ class PlatformPair:
     """
 
     arch: str                  # "x86_64" | "aarch64" | "armv7l" | "i686" | …
-    libc: Optional[LibcVersion]
+    libc: LibcVersion | None
     # Source-trace for diagnostics ("Dockerfile FROM python:3.13-bookworm",
     # "GHA runs-on: ubuntu-22.04", etc.). Not used by the compat
     # checker; surfaces in operator-facing reports so a flagged
@@ -92,7 +92,7 @@ class PlatformPair:
     # project on a macos-13 runner has macos_version=(13, 0); a wheel
     # tagged ``macosx_14_0_arm64`` is too new and gets refused. ``None``
     # for non-macOS pairs.
-    macos_version: Optional[Tuple[int, int]] = None
+    macos_version: tuple[int, int] | None = None
 
     def as_str(self) -> str:
         if self.macos_version is not None:
@@ -105,7 +105,7 @@ class PlatformPair:
 class ProjectPlatformMatrix:
     """The set of (arch, libc) pairs the project supports."""
 
-    pairs: Set[PlatformPair] = field(default_factory=set)
+    pairs: set[PlatformPair] = field(default_factory=set)
 
     def add(self, pair: PlatformPair) -> None:
         self.pairs.add(pair)
@@ -155,7 +155,7 @@ _FROM_RE = re.compile(
 )
 
 
-def _from_image_to_distro(image_ref: str) -> Optional[str]:
+def _from_image_to_distro(image_ref: str) -> str | None:
     """Strip digest + reduce to a distro-lookup key.
 
     Examples:
@@ -581,7 +581,7 @@ _MACOS_RUNNER_LATEST = (14, 0)
 _MACOS_RUNNER_RE = re.compile(r"^macos-(\d+)(?:\.(\d+))?$")
 
 
-def _parse_macos_runner_version(runner_ref: str) -> Optional[Tuple[int, int]]:
+def _parse_macos_runner_version(runner_ref: str) -> tuple[int, int] | None:
     """Map a GHA macOS runner label to its (major, minor) macOS
     version. Returns ``None`` for unrecognised labels — let the
     wheel-compat check fall back to "no version constraint" rather

@@ -31,7 +31,6 @@ only — judge events do NOT shift the prefilter gate.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -40,10 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 def record_judge_outcomes(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
-    results_by_id: Dict[str, Dict],
-    primary_verdicts_before_judge: Dict[str, bool],
+    results_by_id: dict[str, dict],
+    primary_verdicts_before_judge: dict[str, bool],
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Walk results that ran through ``JudgeTask``; record one
@@ -139,9 +138,9 @@ def _record_one(
     decision_class: str,
     model: str,
     outcome: str,
-    sample_reasoning: Optional[str],
+    sample_reasoning: str | None,
     other_summary: str,
-    model_version: Optional[str] = None,
+    model_version: str | None = None,
 ) -> bool:
     sample = None
     if outcome == "incorrect" and sample_reasoning is not None:

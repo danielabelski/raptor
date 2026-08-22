@@ -33,7 +33,7 @@ import os
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.atomic_fs import write_text_atomically
 from core.sandbox import telemetry_mac
@@ -112,7 +112,7 @@ def _report_sha256(report: dict) -> str:
     ).hexdigest()
 
 
-def verify_triage_report(report: Optional[dict], run_dir: Path) -> str:
+def verify_triage_report(report: dict | None, run_dir: Path) -> str:
     """Provenance state of a loaded sandbox-triage.json for downstream
     consumers: 'verified' / 'legacy' (no token) / 'tampered'.
 
@@ -134,7 +134,7 @@ def verify_triage_report(report: Optional[dict], run_dir: Path) -> str:
             else _INTEGRITY_TAMPERED)
 
 
-def _denials_sha256(denials: List[dict]) -> str:
+def _denials_sha256(denials: list[dict]) -> str:
     return hashlib.sha256(
         json.dumps(denials, sort_keys=True, ensure_ascii=True)
         .encode("utf-8")
@@ -142,8 +142,8 @@ def _denials_sha256(denials: List[dict]) -> str:
 
 
 def _verify_proxy_events(
-        events: List[dict], run: str, *, allow_legacy: bool = True,
-        ) -> Tuple[List[dict], int, str]:
+        events: list[dict], run: str, *, allow_legacy: bool = True,
+        ) -> tuple[list[dict], int, str]:
     """Partition proxy events by provenance. Returns
     ``(usable_events, rejected_count, integrity)``."""
     if not events:
@@ -184,8 +184,8 @@ def _verify_proxy_events(
 
 
 def _verify_summary(
-        summary: Optional[dict], run: str, *, allow_legacy: bool = True,
-        ) -> Tuple[Optional[dict], str]:
+        summary: dict | None, run: str, *, allow_legacy: bool = True,
+        ) -> tuple[dict | None, str]:
     """Returns ``(usable_summary, integrity)`` — a summary that fails
     verification is dropped entirely (its denials are untrusted as a
     whole; there is no per-record salvage). A summary the WRITER
@@ -223,8 +223,8 @@ def _verify_summary(
 
 
 def _verify_audit_degraded(
-        marker: Optional[dict], run: str, *, allow_legacy: bool = True,
-        ) -> Tuple[Optional[dict], str]:
+        marker: dict | None, run: str, *, allow_legacy: bool = True,
+        ) -> tuple[dict | None, str]:
     if marker is None:
         return None, _INTEGRITY_VERIFIED
     token = marker.get("mac")
@@ -238,7 +238,7 @@ def _verify_audit_degraded(
     return None, _INTEGRITY_TAMPERED
 
 
-def _cap_evidence(items: List[str]) -> List[str]:
+def _cap_evidence(items: list[str]) -> list[str]:
     capped = [
         item if len(item) <= _MAX_EVIDENCE_ITEM_LEN
         else item[:_MAX_EVIDENCE_ITEM_LEN]
@@ -252,9 +252,9 @@ def _cap_evidence(items: List[str]) -> List[str]:
 
 
 def triage_run(run_dir: Path, *,
-                host_recon_threshold: Optional[int] = None,
+                host_recon_threshold: int | None = None,
                 allow_legacy: bool = True,
-                ) -> Optional[Dict[str, Any]]:
+                ) -> dict[str, Any] | None:
     """Classify a completed run's sandbox telemetry.
 
     Returns the triage dict (also written to <run_dir>/sandbox-triage.json),
@@ -352,7 +352,7 @@ def triage_run(run_dir: Path, *,
             default=DEFAULT_HOST_RECON_THRESHOLD,
         )
 
-    signals: List[Dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
     signals += _check_escape_primitive(enforcement_denials)
     signals += _check_hostile_syscall_args(enforcement_denials)
     signals += _check_seccomp_unattributed(enforcement_denials)
@@ -413,7 +413,7 @@ def triage_run(run_dir: Path, *,
 
     verdict = _derive_verdict(signals)
 
-    report: Dict[str, Any] = {
+    report: dict[str, Any] = {
         "run_dir": str(run_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "verdict": verdict,
@@ -454,7 +454,7 @@ def triage_run(run_dir: Path, *,
 
 # ---- signal checks (each returns a list of 0 or 1 signal dicts) --------
 
-def _check_escape_primitive(denials: List[dict]) -> List[dict]:
+def _check_escape_primitive(denials: list[dict]) -> list[dict]:
     hits = [d for d in denials
             if d.get("syscall") in ESCAPE_PRIMITIVE_SYSCALLS]
     if not hits:
@@ -467,7 +467,7 @@ def _check_escape_primitive(denials: List[dict]) -> List[dict]:
     }]
 
 
-def _check_hostile_syscall_args(denials: List[dict]) -> List[dict]:
+def _check_hostile_syscall_args(denials: list[dict]) -> list[dict]:
     # socket()/ioctl() are argument-filtered by seccomp; the generic
     # syscall name alone cannot distinguish a TIOCSTI tty-injection or
     # SOCK_RAW attempt from ordinary AF_UNIX noise. Decode from the
@@ -491,7 +491,7 @@ def _check_hostile_syscall_args(denials: List[dict]) -> List[dict]:
     }]
 
 
-def _check_seccomp_unattributed(denials: List[dict]) -> List[dict]:
+def _check_seccomp_unattributed(denials: list[dict]) -> list[dict]:
     hits = [d for d in denials
             if d.get("type") == "seccomp" and "syscall" not in d]
     if not hits:
@@ -507,7 +507,7 @@ def _check_seccomp_unattributed(denials: List[dict]) -> List[dict]:
     }]
 
 
-def _check_resolved_ip_screened(proxy_events: List[dict]) -> List[dict]:
+def _check_resolved_ip_screened(proxy_events: list[dict]) -> list[dict]:
     # ANY occurrence — doc-confirmed purely-attack pattern (see
     # docs/sandbox.md's audit-mode section), not threshold-based. Read
     # from proxy-events.jsonl rather than sandbox-summary.json's mirrored
@@ -528,7 +528,7 @@ def _check_resolved_ip_screened(proxy_events: List[dict]) -> List[dict]:
     }]
 
 
-def _check_host_recon(proxy_events: List[dict], threshold: int) -> List[dict]:
+def _check_host_recon(proxy_events: list[dict], threshold: int) -> list[dict]:
     hosts = {e.get("host") for e in proxy_events
              if e.get("result") in ("denied_host", "would_deny_host")
              and e.get("host")}
@@ -542,7 +542,7 @@ def _check_host_recon(proxy_events: List[dict], threshold: int) -> List[dict]:
     }]
 
 
-def _check_credential_path_touch(denials: List[dict]) -> List[dict]:
+def _check_credential_path_touch(denials: list[dict]) -> list[dict]:
     hits = []
     for d in denials:
         path = d.get("path")
@@ -560,8 +560,8 @@ def _check_credential_path_touch(denials: List[dict]) -> List[dict]:
     }]
 
 
-def _check_volume_anomaly(summary: Optional[dict],
-                           budget_markers: List[dict]) -> List[dict]:
+def _check_volume_anomaly(summary: dict | None,
+                           budget_markers: list[dict]) -> list[dict]:
     evidence = []
     total = (summary or {}).get("total_denials", 0)
     cap_threshold = int(MAX_DENIALS_PER_RUN * _VOLUME_ANOMALY_CAP_FRACTION)
@@ -583,7 +583,7 @@ def _check_volume_anomaly(summary: Optional[dict],
     }]
 
 
-def _derive_verdict(signals: List[dict]) -> str:
+def _derive_verdict(signals: list[dict]) -> str:
     if any(s["severity"] == SEVERITY_HIGH for s in signals):
         return VERDICT_SUSPICIOUS
     if signals:
@@ -601,7 +601,7 @@ def _derive_verdict(signals: List[dict]) -> str:
 _MAX_INPUT_BYTES = 64 * 1024 * 1024
 
 
-def _read_bounded(path: Path) -> Optional[bytes]:
+def _read_bounded(path: Path) -> bytes | None:
     """Open-and-read a triage input with the same discipline the
     writers use (see context._persist_proxy_events): the run dir is
     target-writable, so a plain ``open()`` here would follow a
@@ -641,7 +641,7 @@ def _read_bounded(path: Path) -> Optional[bytes]:
         os.close(fd)
 
 
-def _load_json(path: Path) -> Optional[dict]:
+def _load_json(path: Path) -> dict | None:
     data = _read_bounded(path)
     if data is None:
         return None
@@ -665,11 +665,11 @@ def _artifact_present(path: Path) -> bool:
         return False
 
 
-def _load_jsonl(path: Path) -> List[dict]:
+def _load_jsonl(path: Path) -> list[dict]:
     data = _read_bounded(path)
     if data is None:
         return []
-    out: List[dict] = []
+    out: list[dict] = []
     for line in data.decode("utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
@@ -717,7 +717,7 @@ def _remove_stale_triage_report(run_dir: Path) -> None:
         pass
 
 
-def _cli_main(argv: Optional[list] = None) -> int:
+def _cli_main(argv: list | None = None) -> int:
     import argparse
     import sys
 

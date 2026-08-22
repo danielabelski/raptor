@@ -19,7 +19,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 from core.config import RaptorConfig
 from core.run.workdir import exec_workdir
@@ -38,27 +37,27 @@ class CapabilityReport:
     is_linux: bool
 
     # Tools
-    afl_fuzz: Optional[str] = None
-    afl_cc: Optional[str] = None        # afl-clang-fast or afl-gcc
-    afl_cxx: Optional[str] = None
-    afl_showmap: Optional[str] = None
-    afl_cmin: Optional[str] = None
-    afl_tmin: Optional[str] = None
-    afl_cov: Optional[str] = None
+    afl_fuzz: str | None = None
+    afl_cc: str | None = None        # afl-clang-fast or afl-gcc
+    afl_cxx: str | None = None
+    afl_showmap: str | None = None
+    afl_cmin: str | None = None
+    afl_tmin: str | None = None
+    afl_cov: str | None = None
 
-    clang: Optional[str] = None
-    clang_xx: Optional[str] = None
-    gcc: Optional[str] = None
+    clang: str | None = None
+    clang_xx: str | None = None
+    gcc: str | None = None
 
-    lcov: Optional[str] = None
-    gcov: Optional[str] = None
-    llvm_cov: Optional[str] = None
+    lcov: str | None = None
+    gcov: str | None = None
+    llvm_cov: str | None = None
 
-    gdb: Optional[str] = None
-    rr: Optional[str] = None
+    gdb: str | None = None
+    rr: str | None = None
 
     # Binary analysis
-    radare2: Optional[str] = None
+    radare2: str | None = None
     has_r2pipe: bool = False
     has_r2ghidra: bool = False
 
@@ -70,15 +69,15 @@ class CapabilityReport:
     has_thread_sanitizer: bool = False
 
     # Platform-specific issues
-    afl_shmem_ok: Optional[bool] = None    # macOS: True/False/None=untested
+    afl_shmem_ok: bool | None = None    # macOS: True/False/None=untested
     macos_afl_warning: str = ""
 
     # Versions (best effort)
     afl_version: str = ""
     clang_version: str = ""
 
-    issues: List[str] = field(default_factory=list)
-    recommendations: List[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
 
     def has_afl(self) -> bool:
         return self.afl_fuzz is not None and self.afl_shmem_ok is not False
@@ -89,7 +88,7 @@ class CapabilityReport:
     def has_any_fuzzer(self) -> bool:
         return self.has_afl() or self.has_clang_fuzzer()
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         d = dict(self.__dict__)
         d["has_afl"] = self.has_afl()
         d["has_clang_fuzzer"] = self.has_clang_fuzzer()
@@ -302,7 +301,7 @@ def probe() -> CapabilityReport:
     return report
 
 
-def _probe_version(binary: str, args: List[str]) -> str:
+def _probe_version(binary: str, args: list[str]) -> str:
     """Best-effort version extraction. Returns first non-empty version-looking line."""
     try:
         result = subprocess.run(
@@ -438,8 +437,8 @@ def select_fuzzer(
     report: CapabilityReport,
     target_kind: str = "binary",
     *,
-    prefer: Optional[str] = None,
-) -> Optional[str]:
+    prefer: str | None = None,
+) -> str | None:
     """Pick the right fuzzer for a target.
 
     target_kind:

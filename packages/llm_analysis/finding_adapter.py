@@ -14,7 +14,7 @@ Schema mapping:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from core.llm.multi_model import BaseVerdictAdapter
 
@@ -25,7 +25,7 @@ class FindingAdapter(BaseVerdictAdapter):
     Items are dicts with at minimum ``finding_id`` and ``is_exploitable``.
     """
 
-    def item_id(self, item: Dict[str, Any]) -> str:
+    def item_id(self, item: dict[str, Any]) -> str:
         fid = item.get("finding_id")
         if not isinstance(fid, str) or not fid:
             raise ValueError(
@@ -34,7 +34,7 @@ class FindingAdapter(BaseVerdictAdapter):
             )
         return fid
 
-    def normalize_verdict(self, item: Dict[str, Any]) -> str:
+    def normalize_verdict(self, item: dict[str, Any]) -> str:
         # Mirror legacy ``_select_primary_result``'s truthy check:
         # ``r.get("is_exploitable", False)`` defaults missing to False
         # (negative-equivalent). The substrate's BaseVerdictAdapter
@@ -44,8 +44,8 @@ class FindingAdapter(BaseVerdictAdapter):
         return "positive" if item.get("is_exploitable") else "negative"
 
     def extract_analysis_record(
-        self, result: Dict[str, Any], model_name: str,
-    ) -> Dict[str, Any]:
+        self, result: dict[str, Any], model_name: str,
+    ) -> dict[str, Any]:
         """Per-model record stored under ``multi_model_analyses``.
 
         Matches /agentic's existing inline shape (preserved verbatim
@@ -66,8 +66,8 @@ class FindingAdapter(BaseVerdictAdapter):
         }
 
     def select_primary_with_error_fallback(
-        self, model_results: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        self, model_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         """Filter error entries, then ``select_primary``.
 
         /agentic's caller may pass result lists that contain error
@@ -102,8 +102,8 @@ class FindingAdapter(BaseVerdictAdapter):
     _PRIMARY_QUALITY_FLOOR = 0.3
 
     def select_primary(
-        self, model_results: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        self, model_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         """Mirror ``_select_primary_result`` behaviour with a
         quality floor on primary promotion.
 
@@ -132,7 +132,7 @@ class FindingAdapter(BaseVerdictAdapter):
         if not model_results:
             raise ValueError("select_primary called with empty list")
 
-        def sort_key(r: Dict[str, Any]):
+        def sort_key(r: dict[str, Any]):
             # _quality defaults to 1.0 (legacy quirk)
             q_raw = r.get("_quality", 1.0)
             quality = q_raw if isinstance(q_raw, (int, float)) and not isinstance(q_raw, bool) else 0.0

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +143,10 @@ def _fallback_compare(a: str, b: str) -> int:
     return -1 if tup_safe(ka) < tup_safe(kb) else 1
 
 
-def _fallback_parse(v: str) -> Tuple[Tuple[int, ...],
-                                      Optional[Tuple[str, int]],
-                                      Optional[int],
-                                      Optional[int]]:
+def _fallback_parse(v: str) -> tuple[tuple[int, ...],
+                                      tuple[str, int] | None,
+                                      int | None,
+                                      int | None]:
     """Best-effort parse for the X.Y.Z[aN|bN|rcN][.postN][.devN] subset."""
     m = _FALLBACK_RE.match(v.strip())
     if not m:

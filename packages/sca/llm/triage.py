@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.llm.task_types import TaskType
 from . import (
@@ -42,9 +42,9 @@ _MAX_FINDING_JSON_CHARS = 120_000
 
 def triage_findings(
     client,
-    sca_findings: List[Dict[str, Any]],
-    cross_tool_findings: Optional[List[Dict[str, Any]]] = None,
-) -> Optional[TriageResult]:
+    sca_findings: list[dict[str, Any]],
+    cross_tool_findings: list[dict[str, Any]] | None = None,
+) -> TriageResult | None:
     """Rank SCA findings into priority buckets.
 
     Args:
@@ -104,9 +104,9 @@ def triage_findings(
     return result.model  # type: ignore[return-value]
 
 
-def _dominant_ecosystem(rows: List[Dict[str, Any]]) -> str:
+def _dominant_ecosystem(rows: list[dict[str, Any]]) -> str:
     """Most-frequent ecosystem across findings, for exemplar selection."""
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for row in rows:
         eco = (row.get("sca") or {}).get("ecosystem", "")
         if eco:
@@ -117,9 +117,9 @@ def _dominant_ecosystem(rows: List[Dict[str, Any]]) -> str:
 
 
 def _trim_for_llm(
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     limit: int = _MAX_FINDINGS_FOR_LLM,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Reduce finding rows to the fields the LLM needs, capped."""
     keep_keys = {
         "id", "finding_id", "vuln_type", "severity", "description",

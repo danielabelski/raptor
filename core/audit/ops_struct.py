@@ -7,7 +7,6 @@ identifies them so the reachability gate does not suppress findings.
 """
 
 import re
-from typing import Dict, List, Set
 
 _STRUCT_INIT_RE = re.compile(
     r"(?:static\s+)?(?:const\s+)?struct\s+(\w+)\s+\w+\s*=\s*\{"
@@ -22,12 +21,12 @@ _NON_FUNC_VALUES = frozenset({
 def extract_ops_registrations(
     source: str,
     file_path: str,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Extract function-pointer registrations from struct initialisers.
 
     Returns a list of dicts with keys: struct_type, field, function, file.
     """
-    registrations: List[Dict[str, str]] = []
+    registrations: list[dict[str, str]] = []
     in_initialiser = False
     struct_type = ""
     depth = 0
@@ -70,14 +69,14 @@ def extract_ops_registrations(
 
 
 def collect_ops_entry_points(
-    source_texts: Dict[str, str],
-) -> Set[str]:
+    source_texts: dict[str, str],
+) -> set[str]:
     """Scan all source files for ops-struct registrations.
 
     Returns a set of "file:function" keys suitable for merging into
     the entry_points set.
     """
-    entry_points: Set[str] = set()
+    entry_points: set[str] = set()
     for fp, src in source_texts.items():
         if not any(fp.endswith(ext) for ext in (".c", ".h", ".cpp", ".cc")):
             continue

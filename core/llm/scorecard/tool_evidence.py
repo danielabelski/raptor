@@ -32,7 +32,8 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -41,14 +42,14 @@ logger = logging.getLogger(__name__)
 
 
 def record_tool_evidence_outcome(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
     model: str,
     rule_id: str,
     analysis_verdict: bool,
-    validation_verdict: Optional[bool],
-    finding_id: Optional[str] = None,
-    analysis_reasoning: Optional[str] = None,
+    validation_verdict: bool | None,
+    finding_id: str | None = None,
+    analysis_reasoning: str | None = None,
     decision_class_prefix: str = "agentic",
 ) -> bool:
     """Record one ``TOOL_EVIDENCE`` event when downstream validation
@@ -137,9 +138,9 @@ def record_tool_evidence_outcome(
 
 
 def record_tool_evidence_outcomes(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
-    records: Iterable[Dict[str, Any]],
+    records: Iterable[dict[str, Any]],
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Bulk variant. Each record is a dict with keys:
@@ -202,7 +203,7 @@ __all__ = [
 def auto_back_prop_from_validate_run(
     validate_output_dir: Any,
     *,
-    scorecard: Optional[ModelScorecard] = None,
+    scorecard: ModelScorecard | None = None,
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Auto-record ``TOOL_EVIDENCE`` outcomes from a completed ``/validate``
@@ -238,7 +239,7 @@ def auto_back_prop_from_validate_run(
         return 0
 
     # Build {finding_id: validation_verdict_bool}; inconclusive → skip.
-    val_by_id: Dict[str, bool] = {}
+    val_by_id: dict[str, bool] = {}
     for vf in (validation.get("findings") or validation.get("results") or []):
         if not isinstance(vf, dict):
             continue

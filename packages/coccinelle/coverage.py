@@ -1,12 +1,11 @@
 """Coverage record builder for Coccinelle — same shape as Semgrep/CodeQL records."""
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from .models import SpatchResult
 
 
-def to_coverage_record(results: List[SpatchResult]) -> Optional[Dict]:
+def to_coverage_record(results: list[SpatchResult]) -> dict | None:
     """Build a coverage-coccinelle.json record from spatch results.
 
     Returns None if no files were examined.
@@ -25,7 +24,7 @@ def to_coverage_record(results: List[SpatchResult]) -> Optional[Dict]:
     if not files:
         return None
 
-    record: Dict = {
+    record: dict = {
         "tool": "coccinelle",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "files_examined": sorted(files),

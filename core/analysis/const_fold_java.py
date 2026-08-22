@@ -38,7 +38,7 @@ wrong in exactly the false-suppression direction).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from core.analysis.threat_model_java import (
     NON_SOURCE_JVM_CONSTANT_FIELDS,
@@ -150,10 +150,10 @@ class JavaConstIndex:
     """
 
     def __init__(self, source_text: str,
-                 line_span: Tuple[int, int],
-                 java_file_path: Optional[str] = None,
-                 repo_root: Optional[str] = None) -> None:
-        self._defs: Dict[Tuple[int, str], Any] = {}
+                 line_span: tuple[int, int],
+                 java_file_path: str | None = None,
+                 repo_root: str | None = None) -> None:
+        self._defs: dict[tuple[int, str], Any] = {}
         # (lineno, name) keys that hold MORE THAN ONE write on the
         # line (one-liner if/else arms, chained statements).  A
         # line-keyed lookup cannot tell the reaching-defs oracle's
@@ -162,11 +162,11 @@ class JavaConstIndex:
         # false suppression when a one-liner if/else discriminant
         # folded to its first arm and pruned the tainted switch arm
         # (b42 trap fixture).  Such keys refuse.
-        self._multi_write_lines: Set[Tuple[int, str]] = set()
-        self._compound_writers: Set[str] = set()
+        self._multi_write_lines: set[tuple[int, str]] = set()
+        self._compound_writers: set[str] = set()
         # name -> exact created class, poisoned to None on any
         # non-creation or differently-typed definition.
-        self._creation_types: Dict[str, Optional[str]] = {}
+        self._creation_types: dict[str, str | None] = {}
         self.xfile = None
         if java_file_path:
             # repo_root may be absent: the resolver then serves only
@@ -242,7 +242,7 @@ class JavaConstIndex:
         else:
             self._creation_types[name] = cls
 
-    def receiver_type(self, name: str) -> Optional[str]:
+    def receiver_type(self, name: str) -> str | None:
         if name in self._compound_writers:
             return None
         return self._creation_types.get(name)
@@ -288,7 +288,7 @@ def fold_expr(node, resolve_name, array_resolver=None,
 REFUSE = _REFUSE
 
 
-def _receiver_chain(node) -> Optional[str]:
+def _receiver_chain(node) -> str | None:
     """Dotted text of an identifier/field_access chain (``Utils`` /
     ``org.owasp.benchmark.helpers.Utils``); None for anything else."""
     if node is None:
@@ -553,7 +553,7 @@ def _fold_xfile_call(node, ext) -> Any:
     argc = len([c for c in (args_node.children if args_node else ())
                 if c.is_named])
     method = name_node.text.decode("utf-8", "replace")
-    cls: Optional[str] = None
+    cls: str | None = None
     if obj.type == "object_creation_expression":
         ty = obj.child_by_field_name("type")
         if ty is not None:
@@ -614,7 +614,7 @@ def _fold_pure_call(node, resolve_name, depth: int,
         return _REFUSE
     receiver = _fold(obj, resolve_name, depth + 1, array_resolver,
                      config_resolver, conduit_resolver, ext)
-    folded_args: List[Any] = []
+    folded_args: list[Any] = []
     for a in args:
         av = _fold(a, resolve_name, depth + 1, array_resolver,
                    config_resolver, conduit_resolver, ext)
@@ -706,7 +706,7 @@ def _fold_binop(op: str, left: Any, right: Any) -> Any:
     return _REFUSE
 
 
-def _index_ext(index: "JavaConstIndex", allow_taint_free: bool):
+def _index_ext(index: JavaConstIndex, allow_taint_free: bool):
     """The fold-extension context an index carries: the cross-file
     resolver (when the index was built with a file path and repo root)
     plus the exact-creation receiver-type oracle. None when neither
@@ -731,7 +731,7 @@ def _make_point_resolver(rd, index: JavaConstIndex, array_resolver=None,
     """
 
     def resolve_at(node, name: str, depth: int,
-                   visiting: Set[Tuple[int, str]]) -> Any:
+                   visiting: set[tuple[int, str]]) -> Any:
         if depth > _MAX_DEPTH:
             return _REFUSE
         try:
@@ -740,7 +740,7 @@ def _make_point_resolver(rd, index: JavaConstIndex, array_resolver=None,
             return _REFUSE
         if not defs:
             return _REFUSE
-        values: List[Any] = []
+        values: list[Any] = []
         for d in defs:
             lineno = getattr(d, "lineno", 0)
             key = (lineno, name)
@@ -831,7 +831,7 @@ def fold_expr_at(rd, at_node, expr_node, index: JavaConstIndex,
     resolve_at = _make_point_resolver(rd, index, array_resolver,
                                       config_resolver, conduit_resolver,
                                       ext)
-    visiting: Set[Tuple[int, str]] = set()
+    visiting: set[tuple[int, str]] = set()
     val = _fold(
         expr_node,
         lambda nm, dp: resolve_at(at_node, nm, dp, visiting),
@@ -913,7 +913,7 @@ def definer_fold_values(
     config_resolver=None,
     conduit_resolver=None,
     max_definers: int = 8,
-) -> Optional[Tuple[Any, ...]]:
+) -> tuple[Any, ...] | None:
     """The folded VALUE of every reaching definer of ``name`` at
     ``at_node``, or None when any definer refuses. Values need not
     agree — this is the finite-value-set consumer (b40): a variable
@@ -972,7 +972,7 @@ def all_definers_constant(
     conduit_resolver=None,
     ban_tf_system_reads: bool = False,
     union_member_check=None,
-) -> Optional[str]:
+) -> str | None:
     """None when the constancy proof fails; a short reason string when
     every reaching definition of ``sink_arg`` at ``sink`` folds to the
     same compile-time constant (the reason names the value's type, not

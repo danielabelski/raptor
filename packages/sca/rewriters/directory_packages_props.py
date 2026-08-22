@@ -37,7 +37,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List, Tuple
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -54,7 +53,7 @@ logger = logging.getLogger(__name__)
 #
 # The include attribute is matched with quotes that can be either
 # style (``"`` or ``'``); MSBuild allows both.
-def _build_attr_pattern(include_name: str) -> "re.Pattern":
+def _build_attr_pattern(include_name: str) -> re.Pattern:
     """Compile a per-package pattern that matches BOTH the
     ``<PackageVersion>`` and ``<GlobalPackageReference>`` shapes
     with the supplied Include value (case-insensitive — NuGet
@@ -80,7 +79,7 @@ def _build_attr_pattern(include_name: str) -> "re.Pattern":
     )
 
 
-def _build_child_pattern(include_name: str) -> "re.Pattern":
+def _build_child_pattern(include_name: str) -> re.Pattern:
     """Compile a per-package pattern matching the child-element
     Version shape: ``<PackageVersion Include="X"><Version>OLD</Version></PackageVersion>``."""
     inc = re.escape(include_name)
@@ -98,8 +97,8 @@ def _build_child_pattern(include_name: str) -> "re.Pattern":
 
 @register(filenames=["Directory.Packages.props"])
 def rewrite_directory_packages_props(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply ``<PackageVersion>`` / ``<GlobalPackageReference>``
     version edits to a Directory.Packages.props file.
 
@@ -117,7 +116,7 @@ def rewrite_directory_packages_props(
                 for ed in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one(new_text, edit)
         results.append(result)
@@ -134,7 +133,7 @@ def rewrite_directory_packages_props(
     return results
 
 
-def _apply_one(text: str, edit: RewriteEdit) -> Tuple[str, RewriteResult]:
+def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:
     """Try the attribute-shape rewrite first; fall back to the
     child-element shape. Operators don't mix shapes in practice
     (one file usually picks a convention) but we tolerate

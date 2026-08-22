@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Set, Tuple
+from typing import Any
+from collections.abc import Callable
 
 from core.evidence import EvidenceTier
 
@@ -28,7 +29,7 @@ _MAX_CALLEES = 20
 
 # -- Dangerous sinks per language --
 
-_JAVA_SINKS: Set[str] = {
+_JAVA_SINKS: set[str] = {
     "Runtime.exec", "ProcessBuilder", "exec",
     "Statement.execute", "Statement.executeQuery", "Statement.executeUpdate",
     "PreparedStatement.execute", "executeQuery", "executeUpdate",
@@ -43,7 +44,7 @@ _JAVA_SINKS: Set[str] = {
     "Runtime.getRuntime",
 }
 
-_JS_SINKS: Set[str] = {
+_JS_SINKS: set[str] = {
     "eval", "Function", "setTimeout", "setInterval",
     "exec", "execSync", "spawn", "spawnSync", "fork",
     "child_process.exec", "child_process.spawn",
@@ -56,7 +57,7 @@ _JS_SINKS: Set[str] = {
     "crypto.createCipher",
 }
 
-_GO_SINKS: Set[str] = {
+_GO_SINKS: set[str] = {
     "exec.Command", "exec.CommandContext",
     "os.Create", "os.OpenFile", "os.WriteFile",
     "ioutil.WriteFile", "os.Remove",
@@ -70,7 +71,7 @@ _GO_SINKS: Set[str] = {
     "unsafe.Pointer",
 }
 
-_RUST_SINKS: Set[str] = {
+_RUST_SINKS: set[str] = {
     "Command::new", "process::Command",
     "File::create", "File::open", "fs::write",
     "std::fs::remove_file", "std::fs::remove_dir",
@@ -125,14 +126,14 @@ def _extract_summaries_generic(
     content: str,
     file_path: str,
     extract_functions: Callable,
-    sinks: Set[str],
+    sinks: set[str],
     extract_preconditions: Callable,
     extract_callees: Callable,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Shared extraction logic for all language extractors."""
     from core.analysis.summaries import FunctionSummary, TaintRule, Precondition
 
-    results: Dict[str, FunctionSummary] = {}
+    results: dict[str, FunctionSummary] = {}
 
     for func_name, params, body_start, body_end in extract_functions(content):
         body = content[body_start:body_end]
@@ -175,7 +176,7 @@ def _extract_summaries_generic(
     return results
 
 
-def extract_java_summaries(content: str, file_path: str) -> Dict[str, Any]:
+def extract_java_summaries(content: str, file_path: str) -> dict[str, Any]:
     """Extract taint summaries from Java source."""
     return _extract_summaries_generic(
         content, file_path, _extract_java_functions, _JAVA_SINKS,
@@ -183,7 +184,7 @@ def extract_java_summaries(content: str, file_path: str) -> Dict[str, Any]:
     )
 
 
-def extract_js_summaries(content: str, file_path: str) -> Dict[str, Any]:
+def extract_js_summaries(content: str, file_path: str) -> dict[str, Any]:
     """Extract taint summaries from JavaScript/TypeScript source."""
     return _extract_summaries_generic(
         content, file_path, _extract_js_functions, _JS_SINKS,
@@ -191,7 +192,7 @@ def extract_js_summaries(content: str, file_path: str) -> Dict[str, Any]:
     )
 
 
-def extract_go_summaries(content: str, file_path: str) -> Dict[str, Any]:
+def extract_go_summaries(content: str, file_path: str) -> dict[str, Any]:
     """Extract taint summaries from Go source."""
     return _extract_summaries_generic(
         content, file_path, _extract_go_functions, _GO_SINKS,
@@ -199,7 +200,7 @@ def extract_go_summaries(content: str, file_path: str) -> Dict[str, Any]:
     )
 
 
-def extract_rust_summaries(content: str, file_path: str) -> Dict[str, Any]:
+def extract_rust_summaries(content: str, file_path: str) -> dict[str, Any]:
     """Extract taint summaries from Rust source."""
     return _extract_summaries_generic(
         content, file_path, _extract_rust_functions, _RUST_SINKS,
@@ -211,17 +212,17 @@ def extract_rust_summaries(content: str, file_path: str) -> Dict[str, Any]:
 
 
 def _find_flows_to_sinks(
-    params: List[str],
+    params: list[str],
     body: str,
-    sinks: Set[str],
-) -> List[Tuple[int, str, int]]:
+    sinks: set[str],
+) -> list[tuple[int, str, int]]:
     """Find parameter→sink flows in a function body.
 
     Returns (param_index, sink_name, arg_position) tuples.
     Uses simple regex-based tracking: if a parameter name appears
     as an argument to a known sink call, record the flow.
     """
-    flows: List[Tuple[int, str, int]] = []
+    flows: list[tuple[int, str, int]] = []
 
     for sink in sinks:
         sink_short = sink.split(".")[-1] if "." in sink else sink
@@ -236,7 +237,7 @@ def _find_flows_to_sinks(
                     if re.search(rf"\b{re.escape(param)}\b", arg):
                         flows.append((param_idx, sink, arg_idx))
 
-    seen: Set[Tuple[int, str, int]] = set()
+    seen: set[tuple[int, str, int]] = set()
     deduped = []
     for flow in flows:
         if flow not in seen:
@@ -250,7 +251,7 @@ def _find_flows_to_sinks(
 
 def _extract_java_functions(
     content: str,
-) -> List[Tuple[str, List[str], int, int]]:
+) -> list[tuple[str, list[str], int, int]]:
     """Extract Java function definitions with bodies."""
     results = []
     for match in _JAVA_FUNC.finditer(content):
@@ -264,7 +265,7 @@ def _extract_java_functions(
     return results
 
 
-def _parse_java_params(params_str: str) -> List[str]:
+def _parse_java_params(params_str: str) -> list[str]:
     """Parse Java parameter list into parameter names."""
     params = []
     for part in params_str.split(","):
@@ -283,9 +284,9 @@ def _parse_java_params(params_str: str) -> List[str]:
 
 
 def _extract_java_preconditions(
-    params: List[str],
+    params: list[str],
     body: str,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Extract precondition patterns from Java function body."""
     preconditions = []
     for match in _JAVA_NULL_CHECK.finditer(body):
@@ -299,11 +300,11 @@ def _extract_java_preconditions(
     return preconditions
 
 
-def _extract_callees_java(body: str) -> List[str]:
+def _extract_callees_java(body: str) -> list[str]:
     """Extract method calls from Java function body."""
     pattern = re.compile(r"(?:(\w+)\.)?(\w+)\s*\(")
-    callees: List[str] = []
-    seen: Set[str] = set()
+    callees: list[str] = []
+    seen: set[str] = set()
     for match in pattern.finditer(body):
         obj = match.group(1) or ""
         method = match.group(2)
@@ -321,7 +322,7 @@ def _extract_callees_java(body: str) -> List[str]:
 
 def _extract_js_functions(
     content: str,
-) -> List[Tuple[str, List[str], int, int]]:
+) -> list[tuple[str, list[str], int, int]]:
     """Extract JS/TS function definitions."""
     results = []
 
@@ -360,7 +361,7 @@ def _extract_js_functions(
     return results
 
 
-def _parse_js_params(params_str: str) -> List[str]:
+def _parse_js_params(params_str: str) -> list[str]:
     """Parse JS parameter list into names."""
     params = []
     for part in params_str.split(","):
@@ -375,9 +376,9 @@ def _parse_js_params(params_str: str) -> List[str]:
 
 
 def _extract_js_preconditions(
-    params: List[str],
+    params: list[str],
     body: str,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Extract precondition patterns from JS function body."""
     preconditions = []
     for match in _JS_NULL_CHECK.finditer(body):
@@ -391,11 +392,11 @@ def _extract_js_preconditions(
     return preconditions
 
 
-def _extract_callees_js(body: str) -> List[str]:
+def _extract_callees_js(body: str) -> list[str]:
     """Extract function/method calls from JS body."""
     pattern = re.compile(r"(?:(\w+(?:\.\w+)*))\s*\(")
-    callees: List[str] = []
-    seen: Set[str] = set()
+    callees: list[str] = []
+    seen: set[str] = set()
     for match in pattern.finditer(body):
         callee = match.group(1)
         if callee in ("if", "for", "while", "switch", "catch", "return",
@@ -412,7 +413,7 @@ def _extract_callees_js(body: str) -> List[str]:
 
 def _extract_go_functions(
     content: str,
-) -> List[Tuple[str, List[str], int, int]]:
+) -> list[tuple[str, list[str], int, int]]:
     """Extract Go function definitions."""
     results = []
     for match in _GO_FUNC.finditer(content):
@@ -430,7 +431,7 @@ def _extract_go_functions(
     return results
 
 
-def _parse_go_params(params_str: str) -> List[str]:
+def _parse_go_params(params_str: str) -> list[str]:
     """Parse Go parameter list into names."""
     params = []
     for part in params_str.split(","):
@@ -448,9 +449,9 @@ def _parse_go_params(params_str: str) -> List[str]:
 
 
 def _extract_go_preconditions(
-    params: List[str],
+    params: list[str],
     body: str,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Extract precondition patterns from Go function body."""
     preconditions = []
     for match in _GO_NIL_CHECK.finditer(body):
@@ -464,11 +465,11 @@ def _extract_go_preconditions(
     return preconditions
 
 
-def _extract_callees_go(body: str) -> List[str]:
+def _extract_callees_go(body: str) -> list[str]:
     """Extract function calls from Go body."""
     pattern = re.compile(r"(\w+(?:\.\w+)*)\s*\(")
-    callees: List[str] = []
-    seen: Set[str] = set()
+    callees: list[str] = []
+    seen: set[str] = set()
     for match in pattern.finditer(body):
         callee = match.group(1)
         if callee in ("if", "for", "switch", "select", "go", "defer",
@@ -486,7 +487,7 @@ def _extract_callees_go(body: str) -> List[str]:
 
 def _extract_rust_functions(
     content: str,
-) -> List[Tuple[str, List[str], int, int]]:
+) -> list[tuple[str, list[str], int, int]]:
     """Extract Rust function definitions."""
     results = []
     for match in _RUST_FUNC.finditer(content):
@@ -504,7 +505,7 @@ def _extract_rust_functions(
     return results
 
 
-def _parse_rust_params(params_str: str) -> List[str]:
+def _parse_rust_params(params_str: str) -> list[str]:
     """Parse Rust parameter list into names."""
     params = []
     for part in params_str.split(","):
@@ -522,9 +523,9 @@ def _parse_rust_params(params_str: str) -> List[str]:
 
 
 def _extract_rust_preconditions(
-    params: List[str],
+    params: list[str],
     body: str,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Extract precondition patterns from Rust function body."""
     preconditions = []
     # assert! / debug_assert!
@@ -541,11 +542,11 @@ def _extract_rust_preconditions(
     return preconditions
 
 
-def _extract_callees_rust(body: str) -> List[str]:
+def _extract_callees_rust(body: str) -> list[str]:
     """Extract function/method calls from Rust body."""
     pattern = re.compile(r"(\w+(?:::\w+)*)\s*[!(]\s*")
-    callees: List[str] = []
-    seen: Set[str] = set()
+    callees: list[str] = []
+    seen: set[str] = set()
     for match in pattern.finditer(body):
         callee = match.group(1)
         if callee in ("if", "for", "while", "loop", "match", "return",
@@ -607,7 +608,7 @@ def _find_brace_end(content: str, open_pos: int) -> int:
 # -- Dispatch --
 
 
-_LANG_EXTENSIONS: Dict[str, str] = {
+_LANG_EXTENSIONS: dict[str, str] = {
     ".java": "java",
     ".js": "javascript",
     ".jsx": "javascript",
@@ -622,7 +623,7 @@ _LANG_EXTENSIONS: Dict[str, str] = {
 def extract_summaries_for_file(
     content: str,
     file_path: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Dispatch to the appropriate language extractor based on file extension."""
     ext = Path(file_path).suffix.lower()
     lang = _LANG_EXTENSIONS.get(ext)

@@ -1,16 +1,15 @@
 """Coverage record builder for Semgrep — same shape as Coccinelle/CodeQL records."""
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from .models import SemgrepResult
 
 
 def to_coverage_record(
-    results: List[SemgrepResult],
+    results: list[SemgrepResult],
     *,
-    rules_applied: Optional[List[str]] = None,
-) -> Optional[Dict]:
+    rules_applied: list[str] | None = None,
+) -> dict | None:
     """Build a coverage-semgrep.json record from in-memory SemgrepResult objects.
 
     Aggregates files_examined and files_failed across all results. Returns
@@ -27,9 +26,9 @@ def to_coverage_record(
         or None if there's nothing to record.
     """
     files = set()
-    failures: List[Dict[str, str]] = []
+    failures: list[dict[str, str]] = []
     versions = []
-    derived_rules: List[str] = []
+    derived_rules: list[str] = []
 
     for r in results:
         files.update(r.files_examined)
@@ -49,7 +48,7 @@ def to_coverage_record(
     if not files:
         return None
 
-    record: Dict = {
+    record: dict = {
         "tool": "semgrep",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "files_examined": sorted(files),

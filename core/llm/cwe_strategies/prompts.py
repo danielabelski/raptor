@@ -28,7 +28,7 @@ already rejected the most pathological structural inputs.)
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from .models import Exemplar, Strategy
 
@@ -61,7 +61,7 @@ def render_strategy(
     truncation logic in ``render_strategies`` drop sub-sections
     progressively when the budget is tight.
     """
-    parts: List[str] = []
+    parts: list[str] = []
     parts.append(f"## Strategy: {strategy.name}")
     if strategy.description:
         # Description may already be multi-line from YAML | block.
@@ -96,7 +96,7 @@ def _byte_len(text: str) -> int:
 def render_strategies(
     strategies: Iterable[Strategy],
     *,
-    max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    max_bytes: int | None = DEFAULT_MAX_BYTES,
 ) -> str:
     """Render multiple strategies as a single markdown block.
 

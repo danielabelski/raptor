@@ -29,7 +29,7 @@ fold to an in-range integer. Every refusal returns
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from core.analysis.const_fold_java import REFUSE, fold_expr
 
@@ -49,7 +49,7 @@ def _parser():
     return _get_parser()
 
 
-def _initializer_elements(value_node) -> Optional[List]:
+def _initializer_elements(value_node) -> list | None:
     """Element nodes of ``{…}`` or ``new T[]{…}``; None otherwise."""
     if value_node is None:
         return None
@@ -71,10 +71,10 @@ class ArrayTableIndex:
     """Per-file index of constant-table candidates (see module doc)."""
 
     def __init__(self, source_text: str,
-                 line_span: Tuple[int, int]) -> None:
+                 line_span: tuple[int, int]) -> None:
         self.ok = False
-        self._elements: Dict[str, List[Any]] = {}
-        self._refused: Set[str] = set()
+        self._elements: dict[str, list[Any]] = {}
+        self._refused: set[str] = set()
         parser = _parser()
         if parser is None:
             return
@@ -86,7 +86,7 @@ class ArrayTableIndex:
         # tree-sitter recreates Python node wrappers on every access,
         # so cross-traversal comparisons key on byte spans, never
         # object identity.
-        declarator_name_spans: Set[Tuple[int, int]] = set()
+        declarator_name_spans: set[tuple[int, int]] = set()
 
         # Pass 1 — collect candidate tables.
         stack = [tree.root_node]
@@ -157,7 +157,7 @@ class ArrayTableIndex:
             return True
         return False
 
-    def elements(self, name: str) -> Optional[List[Any]]:
+    def elements(self, name: str) -> list[Any] | None:
         """Element nodes for a qualified table; None = refused/unknown."""
         if name in self._refused:
             return None
@@ -216,7 +216,7 @@ def make_array_resolver(table_index: ArrayTableIndex, fold):
 
 
 def build_table_resolver(source_text: str,
-                         line_span: Tuple[int, int]):
+                         line_span: tuple[int, int]):
     """Index + self-referential fold hook in one call.
 
     Returns the resolver (with ``.hits``) or ``None`` when the parser
@@ -228,7 +228,7 @@ def build_table_resolver(source_text: str,
     if not index.ok:
         return None
 
-    box: Dict[str, Any] = {}
+    box: dict[str, Any] = {}
 
     def _fold_hooked(node, resolve_name, _depth: int) -> Any:
         return fold_expr(node, resolve_name, box.get("r"))

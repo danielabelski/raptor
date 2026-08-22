@@ -189,8 +189,8 @@ def run_sandboxed(cmd: list[str], *,
                   # handled by subprocess's own communicate machinery.
                   # Caller fds are unioned with the shim's status/death
                   # pipe fds at the run call.
-                  pass_fds: "Iterable[int] | None" = None,
-                  input: "bytes | str | None" = None,  # noqa: A002 — subprocess parity
+                  pass_fds: Iterable[int] | None = None,
+                  input: bytes | str | None = None,  # noqa: A002 — subprocess parity
                   audit_mode: bool = False,
                   audit_run_dir: str | None = None,
                   audit_required: bool = False,

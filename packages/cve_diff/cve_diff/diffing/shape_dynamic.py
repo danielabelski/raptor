@@ -24,11 +24,12 @@ Behaviour:
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 from cve_diff.diffing import shape as static_shape
 
-LanguagesFetcher = Callable[[str], Optional[dict[str, Any]]]
+LanguagesFetcher = Callable[[str], dict[str, Any] | None]
 
 _EXT_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",

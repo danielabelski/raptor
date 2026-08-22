@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class PathCondition:
     negated: bool = False
     source: str = ""
 
-    def to_smt_condition(self) -> Union[str, Dict[str, Any]]:
+    def to_smt_condition(self) -> str | dict[str, Any]:
         if self.negated:
             return {"text": self.text, "negated": True}
         return self.text
@@ -41,15 +42,15 @@ class PathCondition:
 
 @dataclass
 class FeasibilityResult:
-    feasible: Optional[bool] = None
-    conditions: List[PathCondition] = field(default_factory=list)
+    feasible: bool | None = None
+    conditions: list[PathCondition] = field(default_factory=list)
     reasoning: str = ""
     error: str = ""
 
 
 def extract_conditions_from_flow_trace(
-    trace: Dict[str, Any],
-) -> List[PathCondition]:
+    trace: dict[str, Any],
+) -> list[PathCondition]:
     """Extract branch conditions from a flow trace's steps.
 
     Flow traces from /understand --trace may carry per-step
@@ -90,7 +91,7 @@ def extract_conditions_from_flow_trace(
 
 def extract_conditions_from_hypothesis(
     hypothesis: str,
-) -> List[PathCondition]:
+) -> list[PathCondition]:
     """Best-effort extraction of branch conditions from LLM hypothesis text.
 
     Looks for patterns like:
@@ -138,9 +139,9 @@ def extract_conditions_from_hypothesis(
 
 
 def extract_conditions_from_annotation(
-    annotation_metadata: Dict[str, str],
+    annotation_metadata: dict[str, str],
     annotation_body: str = "",
-) -> List[PathCondition]:
+) -> list[PathCondition]:
     """Extract conditions from annotation metadata and body."""
     conditions = []
 
@@ -162,7 +163,7 @@ def extract_conditions_from_annotation(
 def check_path_feasibility(
     conditions: Sequence[PathCondition],
     *,
-    profile: Optional[Dict[str, Any]] = None,
+    profile: dict[str, Any] | None = None,
 ) -> FeasibilityResult:
     """Check whether a set of path conditions are jointly satisfiable.
 
@@ -185,7 +186,7 @@ def check_path_feasibility(
     try:
         from .sweep import run_smt_sweep
 
-        smt_args: Dict[str, Any] = {"conditions": smt_conditions}
+        smt_args: dict[str, Any] = {"conditions": smt_conditions}
         if profile:
             smt_args["profile"] = profile
 
@@ -225,9 +226,9 @@ def check_path_feasibility(
 
 
 def check_flow_trace_feasibility(
-    trace: Dict[str, Any],
+    trace: dict[str, Any],
     *,
-    profile: Optional[Dict[str, Any]] = None,
+    profile: dict[str, Any] | None = None,
 ) -> FeasibilityResult:
     """Check feasibility of a single flow trace's path conditions."""
     conditions = extract_conditions_from_flow_trace(trace)

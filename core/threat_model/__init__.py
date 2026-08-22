@@ -14,7 +14,8 @@ import hashlib
 import heapq
 import logging
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from core.json import load_json, save_json
 from core.security.log_sanitisation import escape_nonprintable
@@ -132,7 +133,7 @@ def _clip_str_list(values: Any) -> list[str]:
     return capped
 
 
-def _resolve_inside(path: Path, project_out: Path) -> Optional[Path]:
+def _resolve_inside(path: Path, project_out: Path) -> Path | None:
     """Return ``path.resolve()`` only if it lives inside
     ``project_out.resolve()``. Defends against attacker-tampered
     ``project.threat_model_path`` pointing at ``/etc/shadow`` or
@@ -227,7 +228,7 @@ class ThreatModel:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ThreatModel":
+    def from_dict(cls, data: dict[str, Any]) -> ThreatModel:
         def _list(key: str) -> list[str]:
             # Caps each entry's byte length AND the total entry
             # count. Defends against hostile JSON inputs of
@@ -525,7 +526,7 @@ def derive_focus_areas(entry_points: Iterable[str], sinks: Iterable[str]) -> lis
     return _dedup(out)
 
 
-def load_model(path: Path) -> Optional[ThreatModel]:
+def load_model(path: Path) -> ThreatModel | None:
     data = load_json(path)
     if not isinstance(data, dict):
         return None
@@ -537,7 +538,7 @@ def save_model(
     json_path: Path,
     markdown_path: Path,
     *,
-    expected_mtime: Optional[float] = None,
+    expected_mtime: float | None = None,
 ) -> None:
     """Persist the model to disk. When ``expected_mtime`` is
     provided, refuses to write if the on-disk file's mtime has
@@ -572,8 +573,8 @@ def save_report(
     model: ThreatModel,
     report_path: Path,
     *,
-    lint: Optional[list[dict[str, Any]]] = None,
-    drift: Optional[dict[str, Any]] = None,
+    lint: list[dict[str, Any]] | None = None,
+    drift: dict[str, Any] | None = None,
 ) -> None:
     """Write the richer operator report for a model."""
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -627,8 +628,8 @@ def render_markdown(model: ThreatModel) -> str:
 def render_report(
     model: ThreatModel,
     *,
-    lint: Optional[list[dict[str, Any]]] = None,
-    drift: Optional[dict[str, Any]] = None,
+    lint: list[dict[str, Any]] | None = None,
+    drift: dict[str, Any] | None = None,
 ) -> str:
     """Render a higher-signal threat-model report for assessment output."""
     lint = lint if lint is not None else lint_model(model)
@@ -995,7 +996,7 @@ def link_verified_outcomes(model: ThreatModel, outcomes: Iterable[Any]) -> Threa
     return model
 
 
-def load_for_target(target: Path) -> Optional[ThreatModel]:
+def load_for_target(target: Path) -> ThreatModel | None:
     """Find the project-owned threat model for ``target`` if one exists."""
     try:
         from core.project.project import ProjectManager
@@ -1017,7 +1018,7 @@ def load_for_target(target: Path) -> Optional[ThreatModel]:
         return None
 
 
-def _project_threat_model_json_path(project: Any) -> Optional[Path]:
+def _project_threat_model_json_path(project: Any) -> Path | None:
     """Resolve the threat-model JSON path for ``project`` with
     containment defence.
 

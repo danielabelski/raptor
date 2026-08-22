@@ -20,7 +20,7 @@ build does. Don't bypass the envelope.
 
 import json
 import re
-from typing import Any, Dict, List, Union
+from typing import Any, Union
 
 from core.security.prompt_envelope import UntrustedBlock
 
@@ -28,7 +28,7 @@ from core.security.prompt_envelope import UntrustedBlock
 # with deterministic ordering. Tuples and similar arbitrary types are rejected
 # rather than silently coerced.
 _JsonScalar = Union[str, int, float, bool, None]
-_JsonValue = Union[_JsonScalar, Dict[str, Any], List[Any]]
+_JsonValue = Union[_JsonScalar, dict[str, Any], list[Any]]
 
 
 def wrap_model_output(

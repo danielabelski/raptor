@@ -51,7 +51,6 @@ import ast
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ class ModuleLoadAbort:
 
 def detect_module_load_abort(
     language: str, content: str,
-) -> Optional[ModuleLoadAbort]:
+) -> ModuleLoadAbort | None:
     """Per-language dispatch. Returns a detected unconditional abort,
     or ``None`` when no abort is detected (or the language has no
     detector wired). Detectors are best-effort and may examine only
@@ -119,7 +118,7 @@ _PY_ABORT_EXCEPTIONS = frozenset({
 })
 
 
-def _detect_python(content: str) -> Optional[ModuleLoadAbort]:
+def _detect_python(content: str) -> ModuleLoadAbort | None:
     try:
         tree = ast.parse(content)
     except SyntaxError:
@@ -197,7 +196,7 @@ _JS_THROW_NEW = re.compile(
 _JS_STMT_BOUNDARY = frozenset({";", "{", "}"})
 
 
-def _detect_javascript(content: str) -> Optional[ModuleLoadAbort]:
+def _detect_javascript(content: str) -> ModuleLoadAbort | None:
     # Blank ALL non-code text (comments, strings, template literals,
     # regex literals) in one shared-lexer pass, preserving newlines so
     # the line-number report stays valid. Comment-only or string-only
@@ -245,7 +244,7 @@ def _detect_javascript(content: str) -> Optional[ModuleLoadAbort]:
     return None
 
 
-def _js_skip_string(source: str, start: int) -> Optional[int]:
+def _js_skip_string(source: str, start: int) -> int | None:
     """Advance past a JS string / template / char literal beginning at
     ``start``. Returns the index just past the closing quote, or
     ``None`` on an unterminated literal. Handles backslash escapes;
@@ -331,7 +330,7 @@ def _go_strip_comments_and_strings(content: str) -> str:
     return "".join(out)
 
 
-def _detect_go(content: str) -> Optional[ModuleLoadAbort]:
+def _detect_go(content: str) -> ModuleLoadAbort | None:
     # Sanitize once up front: comments and string/rune interiors are
     # blanked so neither the init-header search, the panic search, nor
     # the depth walkers below can be steered by comment/string content.
@@ -362,7 +361,7 @@ def _detect_go(content: str) -> Optional[ModuleLoadAbort]:
     )
 
 
-def _go_find_matching_brace(source: str, open_pos: int) -> Optional[int]:
+def _go_find_matching_brace(source: str, open_pos: int) -> int | None:
     """Given index of an opening ``{``, return index of the
     matching closing ``}``. Returns None on malformed input."""
     if open_pos < 0 or open_pos >= len(source) or source[open_pos] != "{":
@@ -397,7 +396,7 @@ def _go_find_matching_brace(source: str, open_pos: int) -> Optional[int]:
     return None
 
 
-def _go_skip_string(source: str, start: int) -> Optional[int]:
+def _go_skip_string(source: str, start: int) -> int | None:
     """Advance past a Go string literal starting at ``start``.
     Handles both interpreted (``"…"``) and raw (`` `…` ``) strings.
     """
@@ -468,7 +467,7 @@ _RUST_COMPILE_ERROR = re.compile(
 )
 
 
-def _detect_rust(content: str) -> Optional[ModuleLoadAbort]:
+def _detect_rust(content: str) -> ModuleLoadAbort | None:
     # Naive but effective: examine only the FIRST compile_error! at
     # line start (after any leading whitespace). If that occurrence
     # is attribute-gated, report nothing — later occurrences are not
@@ -568,8 +567,8 @@ _PHP_ABORT = re.compile(r"throw\s+new\s+([A-Za-z_\\][\w\\]*)|die\b|exit\b")
 _PHP_STMT_BOUNDARY = frozenset({";", "{", "}"})
 
 
-def _detect_php(content: str) -> Optional[ModuleLoadAbort]:
-    def _spaces(m: "re.Match[str]") -> str:
+def _detect_php(content: str) -> ModuleLoadAbort | None:
+    def _spaces(m: re.Match[str]) -> str:
         return re.sub(r"[^\n]", " ", m.group(0))
     # HTML/text outside the PHP tags is output, not code — blank it
     # before any matching so prose containing ``die`` / ``exit`` can
@@ -645,7 +644,7 @@ _RB_ABORT = re.compile(r"^(raise\s+\S|abort\b|exit!|exit\b|fail\s+\S|Kernel\.(ab
 _RB_MODIFIER = re.compile(r"\b(if|unless|while|until|rescue)\b")
 
 
-def _detect_ruby(content: str) -> Optional[ModuleLoadAbort]:
+def _detect_ruby(content: str) -> ModuleLoadAbort | None:
     depth = 0
     for idx, raw in enumerate(content.splitlines()):
         # Strip trailing line comment (best-effort; a ``#`` inside a string

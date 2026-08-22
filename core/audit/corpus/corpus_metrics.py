@@ -34,7 +34,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 @dataclass
@@ -53,17 +53,17 @@ class ClassMetrics:
     error: int = 0
 
     @property
-    def precision(self) -> Optional[float]:
+    def precision(self) -> float | None:
         d = self.tp + self.fp
         return None if d == 0 else self.tp / d
 
     @property
-    def recall(self) -> Optional[float]:
+    def recall(self) -> float | None:
         d = self.tp + self.fn
         return None if d == 0 else self.tp / d
 
     @property
-    def f1(self) -> Optional[float]:
+    def f1(self) -> float | None:
         p, r = self.precision, self.recall
         if p is None or r is None or (p + r) == 0:
             return None
@@ -109,8 +109,8 @@ def _classify(expected: str, actual: str) -> str:
 
 
 def compute_metrics(
-    rows: List[Dict[str, Any]],
-) -> Tuple[ClassMetrics, Dict[str, ClassMetrics], int]:
+    rows: list[dict[str, Any]],
+) -> tuple[ClassMetrics, dict[str, ClassMetrics], int]:
     """Compute aggregate and per-class metrics from result rows.
 
     Returns ``(aggregate, per_class, skipped_count)``.  Rows skipped by
@@ -119,7 +119,7 @@ def compute_metrics(
     count is surfaced so a run that never reached the LLM is visible.
     """
     aggregate = ClassMetrics()
-    per_class: Dict[str, ClassMetrics] = defaultdict(ClassMetrics)
+    per_class: dict[str, ClassMetrics] = defaultdict(ClassMetrics)
     skipped_count = 0
 
     for row in rows:
@@ -137,7 +137,7 @@ def compute_metrics(
     return aggregate, dict(per_class), skipped_count
 
 
-def error_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def error_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rows the pipeline never adjudicated."""
     return [r for r in rows if r.get("actual") == "error"]
 
@@ -161,9 +161,9 @@ def status_matches(expected: str, actual: str) -> bool:
 class AttributionSummary:
     """Three-way verdict x mechanism scoring across a run."""
 
-    cells: Dict[str, int]
-    misattributed: List[Dict[str, Any]]
-    unattributed: List[Dict[str, Any]]
+    cells: dict[str, int]
+    misattributed: list[dict[str, Any]]
+    unattributed: list[dict[str, Any]]
     checked: int  # rows carrying an expected_mechanism
 
     @property
@@ -171,7 +171,7 @@ class AttributionSummary:
         return self.cells.get("attributed", 0)
 
 
-def compute_attribution(rows: List[Dict[str, Any]]) -> AttributionSummary:
+def compute_attribution(rows: list[dict[str, Any]]) -> AttributionSummary:
     """Score verdict-match x mechanism-match per row.
 
     Rows already annotated by the runner (``attribution`` field) are
@@ -181,9 +181,9 @@ def compute_attribution(rows: List[Dict[str, Any]]) -> AttributionSummary:
     """
     from .attribution import ATTRIBUTION_CELLS, attribute_row
 
-    cells: Dict[str, int] = {c: 0 for c in ATTRIBUTION_CELLS}
-    misattributed: List[Dict[str, Any]] = []
-    unattributed: List[Dict[str, Any]] = []
+    cells: dict[str, int] = {c: 0 for c in ATTRIBUTION_CELLS}
+    misattributed: list[dict[str, Any]] = []
+    unattributed: list[dict[str, Any]] = []
     checked = 0
 
     for row in rows:
@@ -263,8 +263,8 @@ def format_attribution_report(summary: AttributionSummary) -> str:
 
 
 def compute_mode_mismatches(
-    rows: List[Dict[str, Any]],
-) -> Tuple[int, List[Dict[str, str]]]:
+    rows: list[dict[str, Any]],
+) -> tuple[int, list[dict[str, str]]]:
     """Check per-mode expectations where per-mode actuals exist.
 
     A label's ``expected_mode_results`` maps review mode -> expected
@@ -276,12 +276,12 @@ def compute_mode_mismatches(
     Returns ``(checked_count, mismatches)``.
     """
     checked = 0
-    mismatches: List[Dict[str, str]] = []
+    mismatches: list[dict[str, str]] = []
     for row in rows:
         emr = row.get("expected_mode_results") or {}
         if not emr or row.get("actual") == "error":
             continue
-        actuals: Dict[str, str] = {}
+        actuals: dict[str, str] = {}
         if row.get("mode"):
             actuals[str(row["mode"])] = row.get("actual", "")
         if row.get("security_actual") is not None:
@@ -305,7 +305,7 @@ def compute_mode_mismatches(
 
 def format_mode_report(
     checked: int,
-    mismatches: List[Dict[str, str]],
+    mismatches: list[dict[str, str]],
 ) -> str:
     """Human-readable per-mode expectation block."""
     lines = [
@@ -322,12 +322,12 @@ def format_mode_report(
 
 def check_gate(
     aggregate: ClassMetrics,
-    per_class: Dict[str, ClassMetrics],
-    rows: List[Dict[str, Any]],
+    per_class: dict[str, ClassMetrics],
+    rows: list[dict[str, Any]],
     *,
     precision_floor: float = 0.0,
     max_error_fraction: float = 0.1,
-) -> List[str]:
+) -> list[str]:
     """Check regression gates.  Returns list of failure messages."""
     failures = []
 
@@ -428,7 +428,7 @@ def check_gate(
     return failures
 
 
-def _label_rationales(function_ids: List[str]) -> Dict[str, str]:
+def _label_rationales(function_ids: list[str]) -> dict[str, str]:
     """Best-effort ``function_id -> rationale`` join from the
     committed labels (what the trap actually is).  Results predating
     the labels, or a missing labels checkout, degrade to no rationale
@@ -449,7 +449,7 @@ def _label_rationales(function_ids: List[str]) -> Dict[str, str]:
 
 def format_report(
     aggregate: ClassMetrics,
-    per_class: Dict[str, ClassMetrics],
+    per_class: dict[str, ClassMetrics],
     *,
     model: str = "",
     skipped: int = 0,
@@ -487,8 +487,8 @@ def format_report(
 
 
 def diff_runs(
-    before: List[Dict[str, Any]],
-    after: List[Dict[str, Any]],
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
 ) -> str:
     """Show functions that changed classification between runs."""
     before_map = {r["function_id"]: r for r in before}
@@ -520,11 +520,11 @@ def diff_runs(
     return f"{len(lines)} function(s) changed:\n" + "\n".join(lines)
 
 
-def _pct(v: Optional[float]) -> str:
+def _pct(v: float | None) -> str:
     return "  n/a" if v is None else f"{v:.0%}"
 
 
-def _read_results(path: Path) -> List[Dict[str, Any]]:
+def _read_results(path: Path) -> list[dict[str, Any]]:
     """Read result rows from a run_corpus JSON file or a legacy CSV.
 
     JSON may be a bare list of rows or the ``{"meta": ..., "results":
@@ -544,7 +544,7 @@ def _read_results(path: Path) -> List[Dict[str, Any]]:
     )
 
 
-def _enrich_from_labels(rows: List[Dict[str, Any]]) -> int:
+def _enrich_from_labels(rows: list[dict[str, Any]]) -> int:
     """Fill label-derived expectation fields missing from old rows.
 
     Results written before attribution landed carry no
@@ -578,7 +578,7 @@ def _enrich_from_labels(rows: List[Dict[str, Any]]) -> int:
     return enriched
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compute /audit corpus calibration metrics",
     )

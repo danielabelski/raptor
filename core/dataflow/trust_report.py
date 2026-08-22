@@ -20,12 +20,11 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import FrozenSet, Optional
 
 # FP categories whose root cause is "taint neutralised on the path" — the
 # slice a trust witness can act on. (Reachability owns dead_code; SMT owns
 # infeasible_branch.) Callers can narrow this for corpus-specific exclusions.
-TRUST_FP_CATEGORIES: FrozenSet[str] = frozenset(
+TRUST_FP_CATEGORIES: frozenset[str] = frozenset(
     {"missing_sanitizer_model", "framework_mitigation", "type_constraint"}
 )
 
@@ -46,15 +45,15 @@ class TrustReport:
     suppressed_on_fp: int      # of those, how many were real FPs
 
     @property
-    def coverage(self) -> Optional[float]:
+    def coverage(self) -> float | None:
         return None if self.trust_fp == 0 else self.coverage_n / self.trust_fp
 
     @property
-    def false_suppression_rate(self) -> Optional[float]:
+    def false_suppression_rate(self) -> float | None:
         return None if self.tp == 0 else self.false_suppression_n / self.tp
 
     @property
-    def suppression_precision(self) -> Optional[float]:
+    def suppression_precision(self) -> float | None:
         return None if self.suppressed_total == 0 else self.suppressed_on_fp / self.suppressed_total
 
     @property
@@ -65,7 +64,7 @@ class TrustReport:
 
 
 def report(
-    csv_path: Path, *, trust_categories: FrozenSet[str] = TRUST_FP_CATEGORIES
+    csv_path: Path, *, trust_categories: frozenset[str] = TRUST_FP_CATEGORIES
 ) -> TrustReport:
     total = tp = trust_fp = 0
     coverage_n = false_suppression_n = defer_n = 0
@@ -99,7 +98,7 @@ def report(
 
 
 def render(r: TrustReport) -> str:
-    def pct(x: Optional[float]) -> str:
+    def pct(x: float | None) -> str:
         return "n/a" if x is None else f"{x * 100:.0f}%"
 
     lines = [

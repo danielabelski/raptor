@@ -51,7 +51,8 @@ signal, not an error.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 from core.witness.types import Witness, WitnessOutcome, WitnessSource
 
@@ -92,8 +93,8 @@ def _outcome_priority(outcome: WitnessOutcome) -> int:
 
 def score_witness_for_finding(
     witness: Witness,
-    finding: Dict[str, Any],
-) -> Tuple[int, str]:
+    finding: dict[str, Any],
+) -> tuple[int, str]:
     """Return ``(score, reason)`` for one witness against one
     finding. Consumers loop this over a witness list and pick
     the maxima via :func:`best_match_for_finding`."""
@@ -130,9 +131,9 @@ def score_witness_for_finding(
 
 
 def best_match_for_finding(
-    witnesses: Iterable[Tuple[Any, Witness]],
-    finding: Dict[str, Any],
-) -> Optional[WitnessMatch]:
+    witnesses: Iterable[tuple[Any, Witness]],
+    finding: dict[str, Any],
+) -> WitnessMatch | None:
     """Pick the best-ranked witness for ``finding`` from an
     iterable of ``(store_root, Witness)`` pairs.
 
@@ -142,7 +143,7 @@ def best_match_for_finding(
     Tie-break order: source > outcome > bytes_hash. See module
     docstring for rationale.
     """
-    candidates: List[WitnessMatch] = []
+    candidates: list[WitnessMatch] = []
     for store_root, w in witnesses:
         score, reason = score_witness_for_finding(w, finding)
         if score == 0:

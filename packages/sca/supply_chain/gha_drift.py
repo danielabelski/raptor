@@ -29,7 +29,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 
@@ -69,14 +69,14 @@ class GhaDriftFinding:
 def scan_target(
     target: Path,
     manifests: Iterable[Manifest],
-) -> List[GhaDriftFinding]:
+) -> list[GhaDriftFinding]:
     """Walk ``.github/workflows/`` and flag mutable refs."""
     target = target.resolve()
     workflows_dir = target / ".github" / "workflows"
     if not workflows_dir.exists():
         return []
     manifests_list = list(manifests)
-    out: List[GhaDriftFinding] = []
+    out: list[GhaDriftFinding] = []
     for path in sorted(workflows_dir.iterdir()):
         if not path.is_file():
             continue
@@ -103,7 +103,7 @@ def _scan_text(
     text: str,
     path: Path,
     target: Path,
-    manifests: List[Manifest],
+    manifests: list[Manifest],
 ) -> Iterable[GhaDriftFinding]:
     for line_no, line in enumerate(text.splitlines(), start=1):
         m = _USES_RE.match(line)
@@ -160,12 +160,12 @@ def _classify_ref(ref: str) -> str:
 
 
 def _project_host_dep(
-    manifests: List[Manifest], path: Path, target: Path,
+    manifests: list[Manifest], path: Path, target: Path,
 ) -> Dependency:
     """Anchor the finding to whichever manifest sits closest to the
     workflow file. For most projects this'll be the root pyproject /
     package.json / pom.xml — fine for the report's source column."""
-    closest: "Manifest | None" = None
+    closest: Manifest | None = None
     for m in manifests:
         if m.is_lockfile:
             continue

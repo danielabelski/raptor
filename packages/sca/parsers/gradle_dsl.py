@@ -34,7 +34,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -124,7 +123,7 @@ _PLUGIN_ACCESSOR_RE = re.compile(
 
 
 @register(filenames=["build.gradle", "build.gradle.kts"])
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     """Parse a Gradle build script and emit one Dependency per
     recognised dependency declaration."""
     try:
@@ -133,7 +132,7 @@ def parse(path: Path) -> List[Dependency]:
         logger.warning("sca.parsers.gradle_dsl: %s: %s", path, e)
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     seen: set = set()
 
     for m in _SINGLE_STRING_RE.finditer(text):
@@ -302,13 +301,13 @@ def _resolve_catalog(build_script_path: Path):
 # ---------------------------------------------------------------------------
 
 def _build_dep(
-    group: str, name: str, version: Optional[str],
+    group: str, name: str, version: str | None,
     *, scope: str, declared_in: Path,
     source_origin: str = "gradle_inline",
-    catalog_path: Optional[str] = None,
-    catalog_alias: Optional[str] = None,
-    version_ref_name: Optional[str] = None,
-) -> Optional[Dependency]:
+    catalog_path: str | None = None,
+    catalog_alias: str | None = None,
+    version_ref_name: str | None = None,
+) -> Dependency | None:
     """Build a Gradle Dependency carrying source-origin metadata
     for the bumper.
 
@@ -366,7 +365,7 @@ def _build_dep(
     )
 
 
-def _classify_version(version: Optional[str]) -> PinStyle:
+def _classify_version(version: str | None) -> PinStyle:
     if version is None:
         return PinStyle.WILDCARD
     if "$" in version:
@@ -384,7 +383,7 @@ def _classify_version(version: Optional[str]) -> PinStyle:
     return PinStyle.EXACT
 
 
-def _build_purl(group: str, name: str, version: Optional[str]) -> str:
+def _build_purl(group: str, name: str, version: str | None) -> str:
     base = f"pkg:{_PURL_TYPE}/{group}/{name}"
     if version:
         return f"{base}@{version}"

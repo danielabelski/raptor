@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 from . import _hook_patterns
@@ -58,7 +58,7 @@ class PythonLifecycleHit:
 
     script_key: str             # "setup.py" / "pyproject.toml:build-system"
     script_body: str            # body text (truncated downstream)
-    reasons: List[str]
+    reasons: list[str]
     reads_credentials: bool
     has_publish_action: bool
 
@@ -77,7 +77,7 @@ class PythonLifecycleFinding:
 def scan_manifests(
     manifests: Iterable[Manifest],
     deps: Iterable[Dependency],
-) -> List[PythonLifecycleFinding]:
+) -> list[PythonLifecycleFinding]:
     """Inspect every Python project's ``setup.py`` and emit findings.
 
     ``pyproject.toml`` lifecycle scanning is out of scope here —
@@ -85,7 +85,7 @@ def scan_manifests(
     HOOK-shaped risk lives in ``setup.py`` (still required for
     sdist + legacy compatibility on most packages today).
     """
-    out: List[PythonLifecycleFinding] = []
+    out: list[PythonLifecycleFinding] = []
     deps_list = list(deps)
     seen_dirs: set = set()
     for m in manifests:
@@ -102,7 +102,7 @@ def scan_manifests(
 
 def _scan_setup_py(
     manifest_dir: Path, host: Dependency,
-) -> List[PythonLifecycleFinding]:
+) -> list[PythonLifecycleFinding]:
     setup_py = manifest_dir / "setup.py"
     if not setup_py.is_file():
         return []
@@ -157,8 +157,8 @@ def _scan_setup_py(
 
 
 def _host_dep(
-    deps: List[Dependency], manifest: Manifest,
-) -> Optional[Dependency]:
+    deps: list[Dependency], manifest: Manifest,
+) -> Dependency | None:
     for d in deps:
         if d.declared_in == manifest.path:
             return d

@@ -91,7 +91,7 @@ def _store_path(out_dir: Path) -> Path:
 
 
 def load_specs(
-    out_dir: Path, *, target_path: "Path | None" = None,
+    out_dir: Path, *, target_path: Path | None = None,
 ) -> list[TaintSpec]:
     """Load specs from the project-level store.
 
@@ -125,7 +125,7 @@ def load_specs(
 def load_assumptions(
     out_dir: Path,
     *,
-    target_path: "Path | None" = None,
+    target_path: Path | None = None,
 ) -> list[SafetyAssumption]:
     """Load safety assumptions from the project-level store."""
     path = _store_path(out_dir)
@@ -171,7 +171,7 @@ def save_specs(
     cl_sha: str = "",
     round_num: int = 0,
     history: list[dict[str, Any]] | None = None,
-    target_path: "Path | None" = None,
+    target_path: Path | None = None,
     assumptions: list[SafetyAssumption] | None = None,
 ) -> Path:
     """Persist specs atomically to the project-level store.
@@ -248,8 +248,8 @@ def persist_refined_specs(
     cl_sha: str = "",
     history: list[dict[str, Any]] | None = None,
     assumptions: list[SafetyAssumption] | None = None,
-    target_path: "Path | None" = None,
-) -> "Path | None":
+    target_path: Path | None = None,
+) -> Path | None:
     """Merge refine-loop output into the project store.
 
     The caller-persist step for ``refine_loop``: loads the existing

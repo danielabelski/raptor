@@ -17,7 +17,6 @@ must NOT be scoped with this helper.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
 
 __all__ = ["enclosing_method_span"]
 
@@ -34,7 +33,7 @@ def _get_parser():
 
 def enclosing_method_span(
     source_text: str, lineno: int,
-) -> Optional[Tuple[str, int, int]]:
+) -> tuple[str, int, int] | None:
     """Smallest method/constructor declaration containing *lineno*.
 
     Returns ``(name, start_line, end_line)`` (1-based, inclusive) or
@@ -48,7 +47,7 @@ def enclosing_method_span(
     if parser is None:
         return None
     tree = parser.parse(source_text.encode("utf-8", errors="replace"))
-    best: Optional[Tuple[int, str, int, int]] = None
+    best: tuple[int, str, int, int] | None = None
     stack = [tree.root_node]
     while stack:
         node = stack.pop()

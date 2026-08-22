@@ -3,7 +3,7 @@ Verification Service - Verify evidence against original sources.
 """
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 from ..clients.gharchive import GHArchiveClient
 from ..clients.github import GitHubClient

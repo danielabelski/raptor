@@ -48,7 +48,6 @@ Public API:
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Set
 
 
 _TOKEN_RE = re.compile(r"\w+")
@@ -72,7 +71,7 @@ _DEFAULT_MIN_MODELS = 3
 _MIN_TOKENS_PER_DOC = 8
 
 
-def _tokenize(text: str) -> Set[str]:
+def _tokenize(text: str) -> set[str]:
     """Lowercase, regex-extract word tokens, dedupe.
 
     No stem, no stopword removal. For technical security text the
@@ -85,7 +84,7 @@ def _tokenize(text: str) -> Set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
 
 
-def _jaccard_distance(a: Set[str], b: Set[str]) -> float:
+def _jaccard_distance(a: set[str], b: set[str]) -> float:
     """Jaccard distance: ``1 - |a ∩ b| / |a ∪ b|``. Range ``[0, 1]``.
 
     Two empty sets are considered identical (distance 0). One empty
@@ -100,11 +99,11 @@ def _jaccard_distance(a: Set[str], b: Set[str]) -> float:
 
 
 def divergence(
-    reasonings: Dict[str, str],
+    reasonings: dict[str, str],
     *,
     min_chars: int = _DEFAULT_MIN_CHARS,
     min_models: int = _DEFAULT_MIN_MODELS,
-) -> Optional[Dict[str, object]]:
+) -> dict[str, object] | None:
     """Compute reasoning divergence over a multi-model panel.
 
     Args:
@@ -150,8 +149,8 @@ def divergence(
         return None
 
     n = len(models)
-    pairwise: List[List[float]] = [[0.0] * n for _ in range(n)]
-    distances: List[float] = []
+    pairwise: list[list[float]] = [[0.0] * n for _ in range(n)]
+    distances: list[float] = []
     for i in range(n):
         for j in range(i + 1, n):
             d = _jaccard_distance(token_sets[i], token_sets[j])
@@ -161,7 +160,7 @@ def divergence(
 
     # Per-model: mean distance to all OTHER models on the panel.
     # Self-distance is excluded (would dilute toward 0).
-    per_model: Dict[str, float] = {}
+    per_model: dict[str, float] = {}
     for i, m in enumerate(models):
         peer_distances = [pairwise[i][j] for j in range(n) if j != i]
         per_model[m] = sum(peer_distances) / len(peer_distances) if peer_distances else 0.0
@@ -191,7 +190,7 @@ def pairwise_distance(
     b: str,
     *,
     min_chars: int = _DEFAULT_MIN_CHARS,
-) -> Optional[float]:
+) -> float | None:
     """Jaccard distance between two reasoning strings.
 
     The N=2 specialisation of :func:`divergence`. Use this from

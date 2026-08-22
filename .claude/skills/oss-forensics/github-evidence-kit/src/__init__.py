@@ -25,7 +25,7 @@ For schema types (type hints, manual construction):
     from src.schema import CommitObservation, IOC, EvidenceSource
 """
 
-from typing import Annotated, Union
+from typing import Annotated
 
 from pydantic import Field, TypeAdapter
 
@@ -69,20 +69,12 @@ AnyEvidence = AnyEvent | AnyObservation
 
 # Pydantic discriminated unions for efficient JSON deserialization
 _EventUnion = Annotated[
-    Union[
-        PushEvent, PullRequestEvent, IssueEvent, IssueCommentEvent,
-        CreateEvent, DeleteEvent, ForkEvent, WorkflowRunEvent,
-        ReleaseEvent, WatchEvent, MemberEvent, PublicEvent,
-    ],
+    PushEvent | PullRequestEvent | IssueEvent | IssueCommentEvent | CreateEvent | DeleteEvent | ForkEvent | WorkflowRunEvent | ReleaseEvent | WatchEvent | MemberEvent | PublicEvent,
     Field(discriminator="event_type"),
 ]
 
 _ObservationUnion = Annotated[
-    Union[
-        CommitObservation, IssueObservation, FileObservation, ForkObservation,
-        BranchObservation, TagObservation, ReleaseObservation, SnapshotObservation,
-        IOC, ArticleObservation,
-    ],
+    CommitObservation | IssueObservation | FileObservation | ForkObservation | BranchObservation | TagObservation | ReleaseObservation | SnapshotObservation | IOC | ArticleObservation,
     Field(discriminator="observation_type"),
 ]
 

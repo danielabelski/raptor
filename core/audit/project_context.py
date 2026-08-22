@@ -37,7 +37,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ VALID_CATEGORIES = frozenset({
 @dataclass
 class ProjectContext:
     version: int = _SCHEMA_VERSION
-    learnings: List[Learning] = field(default_factory=list)
+    learnings: list[Learning] = field(default_factory=list)
 
     def add(self, learning: Learning) -> bool:
         """Add a learning if not already present (dedup by text hash)."""
@@ -88,11 +88,11 @@ class ProjectContext:
     def query(
         self,
         *,
-        file: Optional[str] = None,
-        function: Optional[str] = None,
-        category: Optional[str] = None,
-        strategy: Optional[str] = None,
-    ) -> List[Learning]:
+        file: str | None = None,
+        function: str | None = None,
+        category: str | None = None,
+        strategy: str | None = None,
+    ) -> list[Learning]:
         """Filter learnings by optional scope."""
         results = []
         for lrn in self.learnings:
@@ -107,7 +107,7 @@ class ProjectContext:
             results.append(lrn)
         return results
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "learnings": [asdict(lrn) for lrn in self.learnings],
@@ -211,7 +211,7 @@ def add_learning(
     file: str = "",
     function: str = "",
     strategy: str = "",
-) -> Optional[Learning]:
+) -> Learning | None:
     """Add a learning to the project context. Returns the Learning if added."""
     if category not in VALID_CATEGORIES:
         raise ValueError(

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ class CrossFunctionVerdict:
     verified: bool
     verifier_name: str
     evidence: str
-    details: Optional[dict] = None
+    details: dict | None = None
 
 
-_VERIFIER_DISPATCH: List[Tuple[re.Pattern, str]] = []
+_VERIFIER_DISPATCH: list[tuple[re.Pattern, str]] = []
 
 
 def _init_dispatch() -> None:
@@ -95,7 +95,7 @@ def _init_dispatch() -> None:
     ]
 
 
-def _safe_name(value: str) -> Optional[str]:
+def _safe_name(value: str) -> str | None:
     """Validate and escape a name for Joern query interpolation."""
     try:
         from packages.joern.runner import (
@@ -114,7 +114,7 @@ def _safe_name(value: str) -> Optional[str]:
     return _escape_scala_string(value)
 
 
-def _run_query(server: Any, query: str) -> Optional[list]:
+def _run_query(server: Any, query: str) -> list | None:
     """Run a Joern query, delegating to condition_cpg's parser."""
     from .condition_cpg import _run_query as cpg_run_query
     return cpg_run_query(server, query)
@@ -126,7 +126,7 @@ def _verify_unchecked_return(
     function_name: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Check if a callee's return value is ignored (not in a control structure).
 
     Extracts the callee name from the hypothesis, then queries whether
@@ -180,7 +180,7 @@ def _verify_unchecked_return(
     )
 
 
-def _extract_callee_from_hypothesis(hypothesis: str) -> Optional[str]:
+def _extract_callee_from_hypothesis(hypothesis: str) -> str | None:
     """Extract a callee function name from hypothesis text."""
     patterns = [
         re.compile(r"ignor\w+\s+(?:the\s+)?(?:return|error|failure)\s+(?:value\s+)?(?:of\s+)?[`'\"]?(\w+)[`'\"]?"),
@@ -204,7 +204,7 @@ def _verify_taint_source_sink(
     function_name: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Check if unsanitised input reaches a sensitive sink via reachableByFlows."""
     safe_fn = _safe_name(function_name)
     if safe_fn is None:
@@ -255,7 +255,7 @@ def _verify_taint_source_sink(
     )
 
 
-def _extract_sinks_from_hypothesis(hypothesis: str) -> List[str]:
+def _extract_sinks_from_hypothesis(hypothesis: str) -> list[str]:
     """Extract sink function/method names from hypothesis text."""
     explicit = re.findall(
         r"[`'\"](\w+(?:\.\w+)?)[`'\"]", hypothesis,
@@ -285,7 +285,7 @@ def _verify_caller_constraint(
     function_name: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Check whether all callers hold a required lock or call a guard before F.
 
     Extracts the required guard/lock from the hypothesis, then checks
@@ -372,7 +372,7 @@ def _verify_caller_constraint(
     )
 
 
-def _extract_guard_from_hypothesis(hypothesis: str) -> Optional[str]:
+def _extract_guard_from_hypothesis(hypothesis: str) -> str | None:
     """Extract required guard/lock function name from hypothesis."""
     patterns = [
         re.compile(r"without\s+(?:holding|acquiring)\s+(?:the\s+)?(?:necessary\s+)?[`'\"]?(\w+)[`'\"]?"),
@@ -398,7 +398,7 @@ def _verify_taint_to_arithmetic(
     function_name: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Check if user-controlled data flows through arithmetic to a size/alloc.
 
     Uses reachableByFlows from parameters to allocation/size calls,
@@ -477,7 +477,7 @@ def _verify_incomplete_cleanup(
     function_name: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Check if a teardown function cleans some resource lists but not all.
 
     Finds all struct field accesses and all fields passed to cleanup
@@ -579,7 +579,7 @@ def _verify_incomplete_cleanup(
     return None
 
 
-def _extract_leaked_field_from_hypothesis(hypothesis: str) -> Optional[str]:
+def _extract_leaked_field_from_hypothesis(hypothesis: str) -> str | None:
     """Extract the specific field/list name that the hypothesis says leaks."""
     patterns = [
         re.compile(r"[`'\"](?:fpq->|req->|dev->|obj->)?(\w+)[`'\"]?\s+(?:list|queue|buffer)"),
@@ -612,7 +612,7 @@ def cross_function_verify(
     file_path: str,
     hypothesis: str,
     server: Any,
-) -> Optional[CrossFunctionVerdict]:
+) -> CrossFunctionVerdict | None:
     """Dispatch cross-function verifiers based on hypothesis keywords.
 
     Tries up to _MAX_VERIFIERS_PER_FUNCTION matching verifiers in

@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +60,10 @@ DEFAULT_MAX_DEPTH = 10
 
 
 def enrich_with_forward_reachable(
-    context_map: Dict[str, Any],
+    context_map: dict[str, Any],
     target_path: Path,
     *,
-    inventory: Optional[Dict[str, Any]] = None,
+    inventory: dict[str, Any] | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_names_per_list: int = MAX_NAMES_PER_LIST,
 ) -> int:
@@ -162,10 +162,10 @@ def enrich_with_forward_reachable(
 
 
 def enrich_with_call_edges(
-    context_map: Dict[str, Any],
-    checklist_path: Optional[Path] = None,
+    context_map: dict[str, Any],
+    checklist_path: Path | None = None,
     *,
-    checklist: Optional[Dict[str, Any]] = None,
+    checklist: dict[str, Any] | None = None,
 ) -> int:
     """Add a ``call_edges`` array to the context map from checklist call graphs.
 
@@ -186,7 +186,7 @@ def enrich_with_call_edges(
         except Exception:
             return 0
 
-    func_to_file: Dict[str, str] = {}
+    func_to_file: dict[str, str] = {}
     for fi in checklist.get("files", []):
         path = fi.get("path", "")
         for item in fi.get("items", []):

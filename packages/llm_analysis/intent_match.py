@@ -42,7 +42,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +62,10 @@ class IntentMatchVerdict:
     verdict: str  # "matches" | "off_target" | "uncertain"
     confidence: float  # 0.0 – 1.0
     reasoning: str  # human-readable summary
-    signals: dict[str, Optional[bool]] = field(default_factory=dict)
+    signals: dict[str, bool | None] = field(default_factory=dict)
     used_llm: bool = False
     cost_usd: float = 0.0
-    llm_error: Optional[str] = None  # if LLM call failed/skipped
+    llm_error: str | None = None  # if LLM call failed/skipped
 
 
 # Verdict string constants — use these instead of bare strings so a
@@ -86,7 +87,7 @@ SIGNAL_COMPILE_ERROR_ANCHOR = "compile_error_anchor"
 # ---------------------------------------------------------------------------
 
 
-def _file_overlap(finding_file_path: Optional[str], exploit_code: str) -> bool:
+def _file_overlap(finding_file_path: str | None, exploit_code: str) -> bool:
     """Does the exploit text mention the finding's file path?
 
     Matches either the full path (substring) or the basename (word-
@@ -106,7 +107,7 @@ def _file_overlap(finding_file_path: Optional[str], exploit_code: str) -> bool:
 
 
 def _function_overlap(
-    function_name: Optional[str], exploit_code: str,
+    function_name: str | None, exploit_code: str,
 ) -> bool:
     """Does the exploit text mention the finding's function name?
 
@@ -120,8 +121,8 @@ def _function_overlap(
 
 
 def _compile_error_anchor(
-    finding_file_path: Optional[str],
-    exploit_compile_errors: Optional[list[str]],
+    finding_file_path: str | None,
+    exploit_compile_errors: list[str] | None,
 ) -> bool:
     """Do the compile errors mention the finding's file?
 
@@ -289,7 +290,7 @@ _CWE_DETECTORS: dict[str, Callable[[str], bool]] = {
 }
 
 
-def _cwe_shape(cwe_id: Optional[str], exploit_code: str) -> Optional[bool]:
+def _cwe_shape(cwe_id: str | None, exploit_code: str) -> bool | None:
     """Per-CWE shape match. Returns None when no detector exists.
 
     The None return is semantically distinct from False — it lets
@@ -317,7 +318,7 @@ _THRESHOLD_OFF_TARGET_NO_LLM = 0  # 0 → off_target without LLM
 # ≥ 2 evaluated), which is matches at reduced confidence, no LLM.
 
 
-def _count_signals(signals: dict[str, Optional[bool]]) -> tuple[int, int]:
+def _count_signals(signals: dict[str, bool | None]) -> tuple[int, int]:
     """Returns (matched_count, evaluated_count) — abstain (None) is
     excluded from both. Lets the verdict logic adapt to how many
     heuristics had data to evaluate."""
@@ -327,8 +328,8 @@ def _count_signals(signals: dict[str, Optional[bool]]) -> tuple[int, int]:
 
 
 def _initial_verdict(
-    signals: dict[str, Optional[bool]],
-) -> tuple[Optional[str], float, str]:
+    signals: dict[str, bool | None],
+) -> tuple[str | None, float, str]:
     """Decide the verdict from heuristics alone.
 
     Returns ``(verdict, confidence, reasoning)``. A ``None`` verdict
@@ -450,10 +451,10 @@ def _build_describe_prompt(exploit_code: str) -> tuple[str, str]:
 
 def _build_judge_prompt(
     description: str,
-    finding_file_path: Optional[str],
-    finding_function_name: Optional[str],
-    finding_cwe: Optional[str],
-    finding_message: Optional[str],
+    finding_file_path: str | None,
+    finding_function_name: str | None,
+    finding_cwe: str | None,
+    finding_message: str | None,
 ) -> tuple[str, str]:
     """Build the judge prompt: given the description, decide match."""
     from core.security.prompt_envelope import (
@@ -524,12 +525,12 @@ def _parse_judge_response(content: str) -> tuple[str, str]:
 def _llm_tiebreak(
     llm_client: Any,
     exploit_code: str,
-    finding_file_path: Optional[str],
-    finding_function_name: Optional[str],
-    finding_cwe: Optional[str],
-    finding_message: Optional[str],
+    finding_file_path: str | None,
+    finding_function_name: str | None,
+    finding_cwe: str | None,
+    finding_message: str | None,
     log: logging.Logger,
-) -> tuple[str, float, str, float, Optional[str]]:
+) -> tuple[str, float, str, float, str | None]:
     """2-step LLM tiebreak: describe-then-judge.
 
     Returns ``(verdict, confidence, reasoning, cost_usd, error_msg)``.
@@ -642,13 +643,13 @@ def _llm_tiebreak(
 
 def intent_match(
     exploit_code: str,
-    finding_file_path: Optional[str] = None,
-    finding_function_name: Optional[str] = None,
-    finding_cwe: Optional[str] = None,
-    finding_message: Optional[str] = None,
-    exploit_compile_errors: Optional[list[str]] = None,
+    finding_file_path: str | None = None,
+    finding_function_name: str | None = None,
+    finding_cwe: str | None = None,
+    finding_message: str | None = None,
+    exploit_compile_errors: list[str] | None = None,
     llm_client: Any = None,
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger | None = None,
 ) -> IntentMatchVerdict:
     """Decide whether an exploit hit the intended bug.
 
@@ -675,7 +676,7 @@ def intent_match(
         )
 
     # Run all 4 heuristics. ``None`` from cwe_shape indicates abstain.
-    signals: dict[str, Optional[bool]] = {
+    signals: dict[str, bool | None] = {
         SIGNAL_FILE_OVERLAP: _file_overlap(
             finding_file_path, exploit_code,
         ),

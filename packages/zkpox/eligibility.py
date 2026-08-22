@@ -18,7 +18,6 @@ docstring (``packages/zkpox/__init__.py``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from core.witness.types import Witness, WitnessOutcome
 
@@ -159,7 +158,7 @@ def render_eligibility_summary(
     witnesses,
     *,
     indent: str = "   ",
-) -> Optional[str]:
+) -> str | None:
     """Console block for the free end-of-run surfacing; ``None``
     when there are no witnesses (caller skips printing a header).
 

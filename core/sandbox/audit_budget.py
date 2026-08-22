@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Dict, Optional, Tuple
+from collections.abc import Callable
 
 # Shared opt-out for the live stderr escalation banner both backends
 # (tracer.py's per-syscall-event hook, seatbelt_audit.py's
@@ -264,13 +264,13 @@ class AuditBudget:
 
     def __init__(self,
                  *,
-                 global_cap: Optional[int] = None,
-                 category_caps: Optional[Dict[str, int]] = None,
-                 pid_cap: Optional[int] = None,
-                 refill_rates: Optional[Dict[str, float]] = None,
-                 sampling_rates: Optional[Dict[str, int]] = None,
-                 categorise: Optional[Callable[[str], str]] = None,
-                 clock: Optional[Callable[[], float]] = None,
+                 global_cap: int | None = None,
+                 category_caps: dict[str, int] | None = None,
+                 pid_cap: int | None = None,
+                 refill_rates: dict[str, float] | None = None,
+                 sampling_rates: dict[str, int] | None = None,
+                 categorise: Callable[[str], str] | None = None,
+                 clock: Callable[[], float] | None = None,
                  ):
         # Defaults — copy so external dicts can't be mutated through
         # ours and vice versa.
@@ -331,20 +331,20 @@ class AuditBudget:
         # since Python 3.7 so we get LRU semantics on `_pid_counts`
         # for free (move_to_end on access).
         self._record_count = 0
-        self._category_counts: Dict[str, int] = {}
-        self._pid_counts: Dict[int, int] = {}
-        self._dropped: Dict[str, int] = {}
+        self._category_counts: dict[str, int] = {}
+        self._pid_counts: dict[int, int] = {}
+        self._dropped: dict[str, int] = {}
         self._cat_marker_emitted: set = set()
         self._pid_marker_emitted: set = set()
         # Token bucket: per-category (current_tokens, last_refill_ts).
         # Initialised lazily on first event in each category so the
         # bucket starts at full capacity.
-        self._buckets: Dict[str, Tuple[float, float]] = {}
+        self._buckets: dict[str, tuple[float, float]] = {}
         # Sampling counter: per-category modular counter so 1-in-N
         # is deterministic (caller knows exactly which Nth event
         # leaked through). Starts at 0; sampled records emitted on
         # _sampling_counter % N == 0.
-        self._sampling_counters: Dict[str, int] = {}
+        self._sampling_counters: dict[str, int] = {}
         # PID dict cap. A fork-bomb-style target spawning millions
         # of distinct short-lived PIDs would otherwise grow
         # _pid_counts unbounded (~120 bytes/entry; 1M PIDs ≈ 120MB
@@ -405,20 +405,20 @@ class AuditBudget:
         return self._record_count + sampled_keeps
 
     @property
-    def category_counts(self) -> Dict[str, int]:
+    def category_counts(self) -> dict[str, int]:
         return dict(self._category_counts)
 
     @property
-    def dropped_by_category(self) -> Dict[str, int]:
+    def dropped_by_category(self) -> dict[str, int]:
         return dict(self._dropped)
 
     @property
-    def pid_counts(self) -> Dict[int, int]:
+    def pid_counts(self) -> dict[int, int]:
         return dict(self._pid_counts)
 
     # ----- core decision -------------------------------------------
 
-    def evaluate(self, action: str, pid: int) -> Tuple[str, Optional[dict]]:
+    def evaluate(self, action: str, pid: int) -> tuple[str, dict | None]:
         """Decide whether to keep or drop a record.
 
         Returns ``(KEEP, marker)`` or ``(DROP, marker)``. The marker

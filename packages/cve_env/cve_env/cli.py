@@ -28,7 +28,7 @@ from cve_env.tools.arch import detect_host_arch
 _CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
 
 
-def _attempt_replay(cve: "CveRecord", prefill_from: str | None):
+def _attempt_replay(cve: CveRecord, prefill_from: str | None):
     """Provision + verify a previously recorded replay spec, or None.
 
     Returns a success ``Outcome`` only when the verify DAG passed on the

@@ -51,7 +51,6 @@ pinned in the corpus battery regardless.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
 
 __all__ = [
     "TfHelperIndex",
@@ -79,11 +78,11 @@ class TfHelperIndex:
 
     def __init__(self) -> None:
         self.ok: bool = False
-        self.taint_free: Set[Tuple[str, int]] = set()
+        self.taint_free: set[tuple[str, int]] = set()
         # Mutable counters: the gate attributes suppressions from
         # ``hits``; ``refused`` feeds telemetry.
-        self.hits: List[str] = []
-        self.refused: Dict[str, int] = {}
+        self.hits: list[str] = []
+        self.refused: dict[str, int] = {}
         # b42 x b40 composition: every concrete string value observed
         # flowing toward a claimed helper's return, keyed like
         # ``taint_free``.  A summary is only a TAINT-freedom claim —
@@ -91,7 +90,7 @@ class TfHelperIndex:
         # itself, so the resolver must clear these members through the
         # caller's danger predicate before claiming (mirrors the
         # definer union's ``union_member_check``).
-        self.str_members: Dict[Tuple[str, int], frozenset] = {}
+        self.str_members: dict[tuple[str, int], frozenset] = {}
 
     def _refuse(self, reason: str) -> None:
         self.refused[reason] = self.refused.get(reason, 0) + 1
@@ -106,7 +105,7 @@ def _iter_methods(root):
         stack.extend(n.children)
 
 
-def _method_key(m) -> Optional[Tuple[str, int]]:
+def _method_key(m) -> tuple[str, int] | None:
     name = m.child_by_field_name("name")
     params = m.child_by_field_name("parameters")
     if name is None or params is None:
@@ -119,9 +118,9 @@ def _method_key(m) -> Optional[Tuple[str, int]]:
     return name.text.decode(), arity
 
 
-def _param_names(m) -> Set[str]:
+def _param_names(m) -> set[str]:
     params = m.child_by_field_name("parameters")
-    out: Set[str] = set()
+    out: set[str] = set()
     if params is None:
         return out
     for c in params.children:
@@ -142,8 +141,8 @@ def _collect_writes_and_returns(body):
     entry.  Bare declarations without initializer write nothing (Java
     definite assignment guarantees a later write before any read).
     """
-    writes: Dict[str, List[object]] = {}
-    returns: List[object] = []
+    writes: dict[str, list[object]] = {}
+    returns: list[object] = []
     count = 0
     stack = [body]
     while stack:
@@ -208,7 +207,7 @@ def derive_tf_helpers(source_text: str, span=None) -> TfHelperIndex:
     if len(methods) > _MAX_HELPERS:
         idx._refuse("too-many-methods")
         return idx
-    by_key: Dict[Tuple[str, int], List[object]] = {}
+    by_key: dict[tuple[str, int], list[object]] = {}
     for m in methods:
         key = _method_key(m)
         if key is None:
@@ -233,11 +232,11 @@ def derive_tf_helpers(source_text: str, span=None) -> TfHelperIndex:
             idx._refuse("no-value-return")
             continue
 
-        strs: Set[str] = set()
+        strs: set[str] = set()
 
         def make_resolve(_writes, _params, _strs):
             def resolve(name: str, depth: int,
-                        _visiting: Optional[Set[str]] = None):
+                        _visiting: set[str] | None = None):
                 # Union resolution over ALL writes to the local.
                 # Params, fields, and unknown names refuse; cycles
                 # refuse via the visiting set.

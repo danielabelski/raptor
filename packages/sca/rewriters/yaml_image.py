@@ -24,7 +24,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -87,8 +86,8 @@ def _is_yaml_image_target(path: Path) -> bool:
 
 @register(predicate=_is_yaml_image_target)
 def rewrite_yaml_image(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply image-tag edits to YAML ``image:`` lines in place.
 
     Each edit's locator is ``"{registry}/{repository}"``; we
@@ -103,7 +102,7 @@ def rewrite_yaml_image(
                 for e2 in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one_image(new_text, edit)
         results.append(result)
@@ -121,7 +120,7 @@ def rewrite_yaml_image(
 
 def _apply_one_image(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply one ``image: <ref>:<tag>`` edit.
 
     Locator forms accepted in the file:

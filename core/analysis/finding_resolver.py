@@ -51,13 +51,9 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    FrozenSet,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
     Union,
 )
+from collections.abc import Mapping
 
 from core.analysis.cfg_builder import (
     PyCFGNode,
@@ -109,15 +105,15 @@ class ResolvedFinding:
     file: str
     enclosing_function: str
     source_lineno: int
-    source_symbols: FrozenSet[str]
+    source_symbols: frozenset[str]
     sink_lineno: int
     sink_arg: str
     cwe: str
     language: str
-    cfg: Union[PythonCFG, CPPCFG, "JavaCFG"]
+    cfg: PythonCFG | CPPCFG | JavaCFG
     source_node: Any
     sink_node: Any
-    inter_proc_bindings: FrozenSet = frozenset()
+    inter_proc_bindings: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -149,7 +145,7 @@ class _ParsedFinding:
     language: str
     source_lineno: int
     sink_lineno: int
-    sink_arg_hint: Optional[str] = None
+    sink_arg_hint: str | None = None
 
 
 def resolve_finding(finding: Mapping[str, Any]) -> Resolution:
@@ -178,7 +174,7 @@ def resolve_finding(finding: Mapping[str, Any]) -> Resolution:
 
 def _parse_input_format(
     finding: Mapping[str, Any],
-) -> Union[_ParsedFinding, ResolutionFailure]:
+) -> _ParsedFinding | ResolutionFailure:
     if "ruleId" in finding and "codeFlows" in finding:
         return _parse_sarif(finding)
     if "check_id" in finding and "extra" in finding:
@@ -190,7 +186,7 @@ def _parse_input_format(
     return ResolutionFailure(reason="unknown input format")
 
 
-def _parse_sarif(finding: Mapping[str, Any]) -> Union[_ParsedFinding, ResolutionFailure]:
+def _parse_sarif(finding: Mapping[str, Any]) -> _ParsedFinding | ResolutionFailure:
     rule_tags = (finding.get("properties") or {}).get("tags") or []
     cwe = ""
     from core.cve.cwe import format_cwe
@@ -251,7 +247,7 @@ def _sarif_physical_location(loc_entry: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _parse_semgrep(
     finding: Mapping[str, Any],
-) -> Union[_ParsedFinding, ResolutionFailure]:
+) -> _ParsedFinding | ResolutionFailure:
     extra = finding.get("extra") or {}
     cwes = (extra.get("metadata") or {}).get("cwe") or []
     cwe = ""
@@ -297,7 +293,7 @@ def _parse_semgrep(
     )
 
 
-def _semgrep_extract_line(trace: Any) -> Optional[int]:
+def _semgrep_extract_line(trace: Any) -> int | None:
     """Semgrep's ``taint_source`` / ``taint_sink`` can be a dict
     with a single location or a list with the chain. Pull the
     first ``location.start.line`` we find."""
@@ -320,7 +316,7 @@ def _semgrep_extract_line(trace: Any) -> Optional[int]:
 
 def _parse_raptor_native(
     finding: Mapping[str, Any],
-) -> Union[_ParsedFinding, ResolutionFailure]:
+) -> _ParsedFinding | ResolutionFailure:
     file = finding["file_path"]
     return _ParsedFinding(
         file=file,
@@ -354,7 +350,7 @@ def _detect_language(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _read_finding_source(file: str) -> Union[str, ResolutionFailure]:
+def _read_finding_source(file: str) -> str | ResolutionFailure:
     """Containment-checked read of the source file named by a finding.
 
     The path comes verbatim from externally-produced analyser output
@@ -475,10 +471,10 @@ def _resolve_from_parsed_python(parsed: _ParsedFinding) -> Resolution:
 
 def _inter_proc_bindings_python(
     source_text: str,
-    fn: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
     cfg: PythonCFG,
     cwe: str,
-) -> FrozenSet:
+) -> frozenset:
     """Phase 14 — compute inter-procedural synthetic sanitizer
     bindings for a Python finding's enclosing function.
 
@@ -602,14 +598,14 @@ def _resolve_from_parsed_cpp(parsed: _ParsedFinding) -> Resolution:
 
 def _find_enclosing_function(
     tree: ast.AST, source_line: int, sink_line: int,
-) -> Optional[Union[ast.FunctionDef, ast.AsyncFunctionDef]]:
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     """Smallest FunctionDef containing both source and sink lines.
 
     "Smallest" by end-line span so a nested helper wins over its
     enclosing function when both contain the lines.
     """
-    candidates: List[
-        Tuple[int, Union[ast.FunctionDef, ast.AsyncFunctionDef]]
+    candidates: list[
+        tuple[int, ast.FunctionDef | ast.AsyncFunctionDef]
     ] = []
     lo = min(source_line, sink_line)
     hi = max(source_line, sink_line)
@@ -627,7 +623,7 @@ def _find_enclosing_function(
 
 
 def _function_end_line(
-    fn: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int:
     end = fn.lineno
     for child in ast.walk(fn):
@@ -639,9 +635,9 @@ def _function_end_line(
 
 def _resolve_source(
     cfg: PythonCFG,
-    fn: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
     source_line: int,
-) -> Tuple[Optional[PyCFGNode], FrozenSet[str]]:
+) -> tuple[PyCFGNode | None, frozenset[str]]:
     """Resolve source location to ``(cfg_node, source_symbols)``.
 
     Cases:
@@ -743,8 +739,8 @@ def _receiver_hop_sink_java(cfg, node):
 def _resolve_sink(
     cfg: PythonCFG,
     sink_line: int,
-    sink_arg_hint: Optional[str],
-) -> Tuple[Optional[PyCFGNode], str]:
+    sink_arg_hint: str | None,
+) -> tuple[PyCFGNode | None, str]:
     """Resolve sink location to ``(cfg_node, sink_arg)``.
 
     Locate the CFG node at ``sink_line``. Inspect its call_sites:
@@ -783,7 +779,7 @@ def _resolve_sink(
     return None, ""
 
 
-def _node_at_lineno(cfg: PythonCFG, lineno: int) -> Optional[PyCFGNode]:
+def _node_at_lineno(cfg: PythonCFG, lineno: int) -> PyCFGNode | None:
     for n in cfg.nodes():
         if not isinstance(n, PyCFGNode):
             continue
@@ -807,7 +803,7 @@ _JAVA_STMT_TYPES = frozenset({
 
 def _java_statement_start_line(
     source_text: str, lineno: int,
-) -> Optional[int]:
+) -> int | None:
     """Start line of the smallest Java STATEMENT spanning ``lineno``.
 
     Findings frequently flag a continuation line of a multi-line
@@ -827,7 +823,7 @@ def _java_statement_start_line(
     if parser is None:
         return None
     tree = parser.parse(source_text.encode("utf-8", errors="replace"))
-    best: Optional[Tuple[int, int]] = None      # (span, start_line)
+    best: tuple[int, int] | None = None      # (span, start_line)
     stack = [tree.root_node]
     while stack:
         cur = stack.pop()
@@ -922,13 +918,13 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
             ),
         )
 
-    def node_at(lineno: int) -> Optional[JavaCFGNode]:
+    def node_at(lineno: int) -> JavaCFGNode | None:
         for n in cfg.nodes():
             if isinstance(n, JavaCFGNode) and n.lineno == lineno:
                 return n
         return None
 
-    def node_at_or_statement_start(lineno: int) -> Optional[JavaCFGNode]:
+    def node_at_or_statement_start(lineno: int) -> JavaCFGNode | None:
         """Exact-line node, retargeted to the enclosing statement's
         start line when the flagged line is a continuation line of a
         multi-line statement (exact node missing, or present but
@@ -1062,10 +1058,10 @@ def _resolve_from_parsed_java(parsed: _ParsedFinding) -> Resolution:
 
 def _inter_proc_bindings_java(
     source_text: str,
-    cfg: "JavaCFG",
-    line_hint: Tuple[int, int],
+    cfg: JavaCFG,
+    line_hint: tuple[int, int],
     cwe: str,
-) -> FrozenSet:
+) -> frozenset:
     """Java analog of :func:`_inter_proc_bindings_python` — one-level
     same-class wrapper summaries
     (:mod:`core.analysis.java_wrapper_summaries`) synthesised into
@@ -1089,7 +1085,7 @@ def _inter_proc_bindings_java(
 
 def _find_enclosing_function_cpp(
     source_text: str, language: str, source_line: int, sink_line: int,
-) -> Tuple[Optional[str], int]:
+) -> tuple[str | None, int]:
     """Smallest C / C++ function_definition spanning [source, sink].
 
     Returns ``(function_name, header_line)`` on success, ``(None, 0)``
@@ -1117,7 +1113,7 @@ def _find_enclosing_function_cpp(
     tree = parser.parse(source_text.encode("utf-8", errors="replace"))
     lo = min(source_line, sink_line)
     hi = max(source_line, sink_line)
-    best: Optional[Tuple[int, str, int]] = None   # (span, name, header_line)
+    best: tuple[int, str, int] | None = None   # (span, name, header_line)
     stack = [tree.root_node]
     while stack:
         cur = stack.pop()
@@ -1140,7 +1136,7 @@ def _find_enclosing_function_cpp(
 
 def _resolve_source_cpp(
     cfg: CPPCFG, fn_start_line: int, source_line: int,
-) -> Tuple[Optional[CPPCFGNode], FrozenSet[str]]:
+) -> tuple[CPPCFGNode | None, frozenset[str]]:
     """C / C++ analog of :func:`_resolve_source`.
 
     * ``source_line == fn_start_line`` → the source is the function
@@ -1159,8 +1155,8 @@ def _resolve_source_cpp(
 
 
 def _resolve_sink_cpp(
-    cfg: CPPCFG, sink_line: int, sink_arg_hint: Optional[str],
-) -> Tuple[Optional[CPPCFGNode], str]:
+    cfg: CPPCFG, sink_line: int, sink_arg_hint: str | None,
+) -> tuple[CPPCFGNode | None, str]:
     """C / C++ analog of :func:`_resolve_sink`. Same algorithm:
     locate the CFG node at ``sink_line``, consult its ``call_sites``,
     pick the hint match or fall back to the outermost call's first
@@ -1188,7 +1184,7 @@ def _resolve_sink_cpp(
     return None, ""
 
 
-def _cpp_node_at_lineno(cfg: CPPCFG, lineno: int) -> Optional[CPPCFGNode]:
+def _cpp_node_at_lineno(cfg: CPPCFG, lineno: int) -> CPPCFGNode | None:
     for n in cfg.nodes():
         if not isinstance(n, CPPCFGNode):
             continue

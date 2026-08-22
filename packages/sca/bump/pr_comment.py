@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import heapq
 from io import StringIO
-from typing import List, Optional
 
 from .orchestrator import (
     BumpReport, BumpResult,
@@ -48,7 +47,7 @@ from .orchestrator import (
 
 def render_pr_comment(
     report: BumpReport, *,
-    repo_label: Optional[str] = None,
+    repo_label: str | None = None,
     truncate_table_at: int = 30,
 ) -> str:
     """Return the bumper report as GitHub-flavoured Markdown."""
@@ -83,8 +82,8 @@ def render_pr_comment(
         # Dedup by (kind, locator, current, target). Same shape
         # as the text-mode render_report so PR comment + terminal
         # output match.
-        groups: "dict[tuple, List[BumpResult]]" = {}
-        order: List[tuple] = []
+        groups: dict[tuple, list[BumpResult]] = {}
+        order: list[tuple] = []
         for r in report.results:
             key = (
                 r.candidate.kind, r.candidate.locator,
@@ -206,7 +205,7 @@ def _truncate_one_line(text: str, max_len: int) -> str:
     return flat[: max_len - 1].rstrip() + "…"
 
 
-def _notes_for_group(group: List[BumpResult], n_files: int) -> str:
+def _notes_for_group(group: list[BumpResult], n_files: int) -> str:
     """Pack the per-group notes into one comment cell.
 
     Surfaces:
@@ -216,7 +215,7 @@ def _notes_for_group(group: List[BumpResult], n_files: int) -> str:
       a Block verdict.
     * File count when >1 (deduped across files).
     """
-    bits: List[str] = []
+    bits: list[str] = []
     seen_kinds: set = set()
     seen_cves: set = set()
     for member in group:

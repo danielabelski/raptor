@@ -11,7 +11,8 @@ from __future__ import annotations
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from core.binary.fingerprint import bucket_imports
 from core.hash import sha256_file
@@ -58,8 +59,8 @@ class BinaryManifest:
     capability_buckets: dict[str, list[str]] = field(default_factory=dict)
     runtime_signals: list[RuntimeSignal] = field(default_factory=list)
     slices: list[MachOSlice] = field(default_factory=list)
-    analysed_slice: Optional[MachOSlice] = None
-    app_bundle: Optional[AppBundleMetadata] = None
+    analysed_slice: MachOSlice | None = None
+    app_bundle: AppBundleMetadata | None = None
     evidence: list[BinaryEvidenceRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,7 +98,7 @@ class BinaryManifest:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BinaryManifest":
+    def from_dict(cls, data: dict[str, Any]) -> BinaryManifest:
         return cls(
             schema_version=int(data.get("schema_version", 1)),
             binary_path=str(data.get("binary_path") or ""),
@@ -270,9 +271,9 @@ def _runtime_signals(
 
 def build_manifest(
     binary_path: Path,
-    context: Optional[Any] = None,
+    context: Any | None = None,
     *,
-    requested_slice_arch: Optional[str] = None,
+    requested_slice_arch: str | None = None,
 ) -> BinaryManifest:
     binary = Path(binary_path).resolve()
     digest = sha256_file(binary)
@@ -287,7 +288,7 @@ def build_manifest(
     )
     slices: list[MachOSlice] = []
     slice_evidence: list[BinaryEvidenceRecord] = []
-    app_bundle: Optional[AppBundleMetadata] = None
+    app_bundle: AppBundleMetadata | None = None
     bundle_evidence: list[BinaryEvidenceRecord] = []
     if target.kind == "macho":
         slices, slice_evidence = inspect_macho_slices(binary, digest)

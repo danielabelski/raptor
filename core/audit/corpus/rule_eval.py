@@ -59,7 +59,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ DEFAULT_SPATCH_TIMEOUT = 300
 # Deliberately unmapped: ``clean`` (no finding labels — targeting is
 # moot) and ``trap`` (heterogeneous by design; its labels carry
 # explicit ``cwe`` fields where one applies).
-BUG_CLASS_CWES: Dict[str, FrozenSet[str]] = {
+BUG_CLASS_CWES: dict[str, frozenset[str]] = {
     "aliasing": frozenset({"CWE-415", "CWE-416", "CWE-825"}),
     "auth": frozenset({"CWE-285", "CWE-287", "CWE-306", "CWE-862",
                        "CWE-863"}),
@@ -136,8 +137,8 @@ class RuleInfo:
     engine: str
     rule_id: str
     path: str
-    cwes: FrozenSet[str] = frozenset()
-    languages: FrozenSet[str] = frozenset()
+    cwes: frozenset[str] = frozenset()
+    languages: frozenset[str] = frozenset()
     # "shipped" — the in-repo rule inventories; "graduated" — a
     # synthesized checker that RuleLibrary.graduate promoted into the
     # project's engine-rules dir. Scored as separate populations:
@@ -169,8 +170,8 @@ class EngineOutcome:
     engine: str
     available: bool = True
     skipped_reason: str = ""
-    hits: List[RuleHit] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
+    hits: list[RuleHit] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     invocations: int = 0
     elapsed_s: float = 0.0
     # Wall time per engine invocation, keyed at the engine's spend
@@ -179,7 +180,7 @@ class EngineOutcome:
     # ``category_<dir>``), codeql runs one query-suite pass (key =
     # ``custom-queries``). Recorded in the results JSON so slow rules
     # are visible and boundable (--spatch-timeout).
-    rule_timings: Dict[str, float] = field(default_factory=dict)
+    rule_timings: dict[str, float] = field(default_factory=dict)
 
     @property
     def ran(self) -> bool:
@@ -193,7 +194,7 @@ class EngineOutcome:
 _EXCLUDED_SEMGREP_RULE_DIRS = frozenset({"registry-cache"})
 
 
-def semgrep_config_dirs() -> List[Path]:
+def semgrep_config_dirs() -> list[Path]:
     """Shipped semgrep rule dirs, enumerated exactly like the scanner.
 
     Mirrors ``packages/static-analysis/scanner.py``: every subdirectory
@@ -211,8 +212,8 @@ def semgrep_config_dirs() -> List[Path]:
 
 
 def discover_semgrep_rules(
-    config_dirs: Optional[List[Path]] = None,
-) -> Tuple[List[RuleInfo], List[str]]:
+    config_dirs: list[Path] | None = None,
+) -> tuple[list[RuleInfo], list[str]]:
     """Parse rule id / languages / CWE metadata from the shipped YAMLs.
 
     Returns ``(rules, errors)`` — a YAML that fails to parse is an
@@ -221,8 +222,8 @@ def discover_semgrep_rules(
     import yaml
 
     dirs = semgrep_config_dirs() if config_dirs is None else config_dirs
-    rules: List[RuleInfo] = []
-    errors: List[str] = []
+    rules: list[RuleInfo] = []
+    errors: list[str] = []
     for d in dirs:
         for yf in sorted(list(d.glob("*.yaml")) + list(d.glob("*.yml"))):
             try:
@@ -261,7 +262,7 @@ def discover_semgrep_rules(
     return rules, errors
 
 
-def cocci_rules_dir() -> Optional[Path]:
+def cocci_rules_dir() -> Path | None:
     """Shipped Coccinelle rules dir — same location the scanner runs."""
     from core.config import RaptorConfig
 
@@ -270,8 +271,8 @@ def cocci_rules_dir() -> Optional[Path]:
 
 
 def discover_cocci_rules(
-    rules_dir: Optional[Path] = None,
-) -> List[RuleInfo]:
+    rules_dir: Path | None = None,
+) -> list[RuleInfo]:
     """Inventory the shipped .cocci rules.
 
     Rule id is the file stem (matching ``SpatchResult.rule``); CWEs are
@@ -282,7 +283,7 @@ def discover_cocci_rules(
         rules_dir = cocci_rules_dir()
     if rules_dir is None or not rules_dir.is_dir():
         return []
-    rules: List[RuleInfo] = []
+    rules: list[RuleInfo] = []
     for path in sorted(rules_dir.glob("*.cocci")):
         cwes: set = set()
         try:
@@ -313,7 +314,7 @@ def discover_cocci_rules(
 _CODEQL_LANG_FOR = {"c": "cpp", "cpp": "cpp", "java": "java"}
 
 
-def codeql_query_dir(language: str) -> Optional[Path]:
+def codeql_query_dir(language: str) -> Path | None:
     """Shipped custom-query dir for one CodeQL language, if any."""
     from core.config import RaptorConfig
 
@@ -321,7 +322,7 @@ def codeql_query_dir(language: str) -> Optional[Path]:
     return candidate if candidate.is_dir() else None
 
 
-def discover_codeql_rules() -> List[RuleInfo]:
+def discover_codeql_rules() -> list[RuleInfo]:
     """Inventory the shipped custom CodeQL queries.
 
     Rule id is the query's ``@id`` metadata (what SARIF ``ruleId``
@@ -335,7 +336,7 @@ def discover_codeql_rules() -> List[RuleInfo]:
         return []
     lang_sources = {"cpp": frozenset({"c", "cpp"}),
                     "java": frozenset({"java"})}
-    rules: List[RuleInfo] = []
+    rules: list[RuleInfo] = []
     for lang_dir in sorted(p for p in base.iterdir() if p.is_dir()):
         languages = lang_sources.get(lang_dir.name,
                                      frozenset({lang_dir.name}))
@@ -361,10 +362,10 @@ def discover_codeql_rules() -> List[RuleInfo]:
     return rules
 
 
-def discover_rules(engines: List[str]) -> Tuple[List[RuleInfo], List[str]]:
+def discover_rules(engines: list[str]) -> tuple[list[RuleInfo], list[str]]:
     """Discover the shipped inventories for the requested engines."""
-    rules: List[RuleInfo] = []
-    errors: List[str] = []
+    rules: list[RuleInfo] = []
+    errors: list[str] = []
     if "semgrep" in engines:
         sg_rules, sg_errors = discover_semgrep_rules()
         rules.extend(sg_rules)
@@ -383,7 +384,7 @@ def discover_rules(engines: List[str]) -> Tuple[List[RuleInfo], List[str]]:
 # ---------------------------------------------------------------------------
 
 
-def graduated_semgrep_dir(base: Path) -> Optional[Path]:
+def graduated_semgrep_dir(base: Path) -> Path | None:
     """Graduated semgrep rules dir under one engine-rules base."""
     candidate = base / "semgrep" / "rules"
     if candidate.is_dir() and (
@@ -393,7 +394,7 @@ def graduated_semgrep_dir(base: Path) -> Optional[Path]:
     return None
 
 
-def graduated_cocci_dir(base: Path) -> Optional[Path]:
+def graduated_cocci_dir(base: Path) -> Path | None:
     """Graduated coccinelle rules dir under one engine-rules base."""
     candidate = base / "coccinelle"
     if candidate.is_dir() and any(candidate.glob("*.cocci")):
@@ -402,9 +403,9 @@ def graduated_cocci_dir(base: Path) -> Optional[Path]:
 
 
 def find_engine_rules_base(
-    out_dir: Optional[Path],
+    out_dir: Path | None,
     fixture_roots: Iterable[Path] = (),
-) -> Optional[Path]:
+) -> Path | None:
     """Locate the project's graduated engine-rules base directory.
 
     Mirrors ``packages/static-analysis/scanner.py``'s
@@ -419,7 +420,7 @@ def find_engine_rules_base(
     a pinned fixture tree is rejected, so third-party corpus source
     can never plant rule files that run as trusted engine config.
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     if out_dir is not None:
         out_resolved = Path(out_dir).resolve()
         candidates.append(out_resolved.parent / "engine-rules")
@@ -466,9 +467,9 @@ def find_engine_rules_base(
 
 
 def discover_graduated_rules(
-    engines: List[str],
-    base: Optional[Path],
-) -> Tuple[List[RuleInfo], List[str]]:
+    engines: list[str],
+    base: Path | None,
+) -> tuple[list[RuleInfo], list[str]]:
     """Inventory graduated rules under one engine-rules base.
 
     Only semgrep and coccinelle — the two engines checker synthesis
@@ -477,8 +478,8 @@ def discover_graduated_rules(
     """
     import dataclasses
 
-    rules: List[RuleInfo] = []
-    errors: List[str] = []
+    rules: list[RuleInfo] = []
+    errors: list[str] = []
     if base is None:
         return rules, errors
     if "semgrep" in engines:
@@ -498,9 +499,9 @@ def discover_graduated_rules(
 
 
 def merge_inventories(
-    shipped: List[RuleInfo],
-    graduated: List[RuleInfo],
-) -> Tuple[List[RuleInfo], List[str]]:
+    shipped: list[RuleInfo],
+    graduated: list[RuleInfo],
+) -> tuple[list[RuleInfo], list[str]]:
     """Concatenate inventories, dropping graduated key collisions.
 
     Engine hits carry only ``engine:rule_id``, so a graduated rule
@@ -510,7 +511,7 @@ def merge_inventories(
     """
     seen = {r.key for r in shipped}
     merged = list(shipped)
-    errors: List[str] = []
+    errors: list[str] = []
     for rule in graduated:
         if rule.key in seen:
             errors.append(
@@ -563,7 +564,7 @@ def _strip_semgrep_prefix(rule_id: str, config_dir: Path) -> str:
 def run_semgrep_engine(
     excerpt: Path,
     *,
-    config_dirs: Optional[List[Path]] = None,
+    config_dirs: list[Path] | None = None,
     timeout: int = 900,
     label_prefix: str = "category",
 ) -> EngineOutcome:
@@ -625,7 +626,7 @@ def _has_c_sources(excerpt: Path) -> bool:
 def run_cocci_engine(
     excerpt: Path,
     *,
-    rules_dir: Optional[Path] = None,
+    rules_dir: Path | None = None,
     timeout_per_rule: int = DEFAULT_SPATCH_TIMEOUT,
 ) -> EngineOutcome:
     """Run the shipped .cocci rules over the excerpt tree.
@@ -698,7 +699,7 @@ def merge_engine_outcomes(
     return a
 
 
-def _label_languages(labels: List[Any]) -> set:
+def _label_languages(labels: list[Any]) -> set:
     return {
         lang for lang in (
             _EXT_LANG.get(Path(label.source.file).suffix.lower())
@@ -708,7 +709,7 @@ def _label_languages(labels: List[Any]) -> set:
     }
 
 
-def codeql_feasibility(labels: List[Any]) -> Tuple[str, str]:
+def codeql_feasibility(labels: list[Any]) -> tuple[str, str]:
     """Decide whether CodeQL can honestly run for one repo's labels.
 
     Returns ``(codeql_language, "")`` when feasible, or ``("", reason)``
@@ -750,10 +751,10 @@ def codeql_feasibility(labels: List[Any]) -> Tuple[str, str]:
 
 def run_codeql_engine(
     excerpt: Path,
-    labels: List[Any],
+    labels: list[Any],
     out_dir: Path,
     *,
-    db_root: Optional[Path] = None,
+    db_root: Path | None = None,
 ) -> EngineOutcome:
     """Run the shipped custom CodeQL queries where extraction is feasible.
 
@@ -847,12 +848,12 @@ def hit_joins_label(hit: RuleHit, label: Any, slop: int = DEFAULT_SLOP) -> bool:
     return h_lo <= hi and h_hi >= lo
 
 
-def _expected_rule_ids(label: Any) -> Dict[str, List[str]]:
+def _expected_rule_ids(label: Any) -> dict[str, list[str]]:
     """Optional per-engine exact-rule pins on the label (else empty)."""
     return getattr(label, "expected_rule_hits", None) or {}
 
 
-def _label_cwes(label: Any) -> FrozenSet[str]:
+def _label_cwes(label: Any) -> frozenset[str]:
     explicit = _normalise_cwe(getattr(label, "cwe", "") or "")
     if explicit:
         return frozenset({explicit})
@@ -883,12 +884,12 @@ def rule_targets_label(rule: RuleInfo, label: Any) -> bool:
 
 
 def evaluate(
-    labels: List[Any],
-    repo_outcomes: Dict[str, Dict[str, EngineOutcome]],
-    inventory: List[RuleInfo],
+    labels: list[Any],
+    repo_outcomes: dict[str, dict[str, EngineOutcome]],
+    inventory: list[RuleInfo],
     *,
     slop: int = DEFAULT_SLOP,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Join engine hits to labels and score against ground truth.
 
     ``repo_outcomes`` maps repo_key -> engine -> EngineOutcome.  A
@@ -903,10 +904,10 @@ def evaluate(
         return outcome is not None and outcome.ran
 
     # Join hits per label.
-    label_rows: List[Dict[str, Any]] = []
-    joined: Dict[Tuple[str, str], List[RuleHit]] = {}
+    label_rows: list[dict[str, Any]] = []
+    joined: dict[tuple[str, str], list[RuleHit]] = {}
     for label in labels:
-        row_hits: List[RuleHit] = []
+        row_hits: list[RuleHit] = []
         for engine, outcome in repo_outcomes.get(
                 label.source.repo, {}).items():
             if not outcome.ran:
@@ -948,13 +949,13 @@ def evaluate(
         })
 
     # Per-rule scoring.
-    per_rule: List[Dict[str, Any]] = []
+    per_rule: list[dict[str, Any]] = []
     for rule in inventory:
-        tp: List[str] = []
-        fp: List[str] = []
-        misses: List[str] = []
-        untargeted: List[str] = []
-        dormant_hits: List[str] = []
+        tp: list[str] = []
+        fp: list[str] = []
+        misses: list[str] = []
+        untargeted: list[str] = []
+        dormant_hits: list[str] = []
         for label in labels:
             if not exposed(label, rule.engine):
                 continue
@@ -992,7 +993,7 @@ def evaluate(
             })
 
     # Per-class rollup.
-    per_class: Dict[str, Dict[str, int]] = {}
+    per_class: dict[str, dict[str, int]] = {}
     for label in labels:
         cls = per_class.setdefault(label.bug_class, {
             "finding_total": 0, "finding_detected": 0,
@@ -1017,7 +1018,7 @@ def evaluate(
                 cls["clean_false_alarmed"] += 1
 
     # Rule-coverage gaps — the actionable list for rule authoring.
-    gaps: List[Dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
     for label in labels:
         if label.expected_status != "finding":
             continue
@@ -1055,10 +1056,10 @@ _SUMMARY_SLOWEST_N = 5
 _SUMMARY_SLOW_FLOOR_S = 5.0
 
 
-def format_summary(report: Dict[str, Any]) -> str:
+def format_summary(report: dict[str, Any]) -> str:
     """Human-readable summary block."""
     meta = report.get("meta", {})
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("=" * 70)
     lines.append("Rule verification run complete")
     lines.append(f"  Engines: {', '.join(meta.get('engines', []))}")
@@ -1190,7 +1191,7 @@ def format_summary(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _write_report(report: Dict[str, Any], out_dir: Path) -> Path:
+def _write_report(report: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "rule-eval-results.json"
     with open(results_path, "w") as f:
@@ -1206,7 +1207,7 @@ def _write_report(report: Dict[str, Any], out_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run the shipped deterministic rules over the "
                     "/audit calibration corpus and score against "
@@ -1294,14 +1295,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     # fixture roots to enforce its containment check.
     source_dirs = _resolve_source_dirs(labels, do_fetch=args.fetch)
 
-    shipped_rules: List[RuleInfo] = []
-    discovery_errors: List[str] = []
+    shipped_rules: list[RuleInfo] = []
+    discovery_errors: list[str] = []
     run_shipped = args.provenance in ("all", "shipped")
     if run_shipped:
         shipped_rules, discovery_errors = discover_rules(engines)
 
-    graduated_base: Optional[Path] = None
-    graduated_rules: List[RuleInfo] = []
+    graduated_base: Path | None = None
+    graduated_rules: list[RuleInfo] = []
     if args.provenance in ("all", "graduated"):
         # Explicit dir is an operator trust assertion; the candidate
         # walk enforces the fixture-containment check itself.
@@ -1330,8 +1331,8 @@ def main(argv: Optional[List[str]] = None) -> int:
           f"shipped + {n_graduated} graduated "
           f"({len(discovery_errors)} discovery error(s))")
 
-    evaluable: List[Any] = []
-    skipped_rows: List[Dict[str, str]] = []
+    evaluable: list[Any] = []
+    skipped_rows: list[dict[str, str]] = []
     for label in labels:
         status, detail = _label_source_status(label, source_dirs)
         if status == "ok":
@@ -1379,7 +1380,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = args.out or Path(f"out/rule-eval-{int(time.time())}")
 
     t0 = time.monotonic()
-    repo_outcomes: Dict[str, Dict[str, EngineOutcome]] = {}
+    repo_outcomes: dict[str, dict[str, EngineOutcome]] = {}
     grad_semgrep = (
         graduated_semgrep_dir(graduated_base)
         if graduated_base is not None else None
@@ -1394,11 +1395,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             repo_labels = [
                 lb for lb in evaluable if lb.source.repo == repo_key
             ]
-            outcomes: Dict[str, EngineOutcome] = {}
+            outcomes: dict[str, EngineOutcome] = {}
             for engine in engines:
                 print(f"  {repo_key}: running {engine}...", flush=True)
                 if engine == "semgrep":
-                    o: Optional[EngineOutcome] = None
+                    o: EngineOutcome | None = None
                     if run_shipped:
                         o = run_semgrep_engine(excerpt)
                     if grad_semgrep is not None:
@@ -1475,8 +1476,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     report = evaluate(evaluable, repo_outcomes, inventory, slop=args.slop)
     report["skipped"] = skipped_rows
 
-    engine_notes: List[str] = []
-    engine_errors: List[str] = list(discovery_errors)
+    engine_notes: list[str] = []
+    engine_errors: list[str] = list(discovery_errors)
     for repo_key in sorted(repo_outcomes):
         for engine, outcome in sorted(repo_outcomes[repo_key].items()):
             if outcome.skipped_reason:

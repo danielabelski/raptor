@@ -29,11 +29,11 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_WRAPPER_NAME_PATTERNS: List[re.Pattern[str]] = [
+_WRAPPER_NAME_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(?:^|_)(?:exec|execute|run|eval|do_query)(?:$|_)", re.I),
     re.compile(r"(?:^|_)(?:query|sql|db_|database)(?:$|_)", re.I),
     re.compile(r"(?:^|_)(?:render|template|format_html)(?:$|_)", re.I),
@@ -44,7 +44,7 @@ _WRAPPER_NAME_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"(?:^|_)(?:run_command|shell|spawn|popen)(?:$|_)", re.I),
 ]
 
-_SIDE_EFFECT_TARGETS: FrozenSet[str] = frozenset({
+_SIDE_EFFECT_TARGETS: frozenset[str] = frozenset({
     "fopen", "fwrite", "fread", "open", "write", "read",
     "send", "recv", "sendto", "recvfrom", "connect", "bind",
     "system", "popen", "exec", "execve", "execvp",
@@ -64,11 +64,11 @@ class DiscoveredSink:
     function: str
     reason: str
     confidence: str
-    wraps: List[str] = field(default_factory=list)
+    wraps: list[str] = field(default_factory=list)
     caller_count: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "file": self.file,
             "function": self.function,
             "reason": self.reason,
@@ -85,12 +85,12 @@ class DiscoveredSink:
 class SinkHeuristicsResult:
     """Result of project-specific sink discovery."""
 
-    discovered: List[DiscoveredSink] = field(default_factory=list)
+    discovered: list[DiscoveredSink] = field(default_factory=list)
     wrapper_count: int = 0
     naming_count: int = 0
     side_effect_count: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "discovered_sinks": [s.to_dict() for s in self.discovered],
             "counts": {
@@ -104,11 +104,11 @@ class SinkHeuristicsResult:
 
 def discover_project_sinks(
     sink_results: Any,
-    call_graphs: Optional[Dict[str, Any]] = None,
-    taint_approx: Optional[Dict[str, Any]] = None,
+    call_graphs: dict[str, Any] | None = None,
+    taint_approx: dict[str, Any] | None = None,
     *,
     min_callers_for_wrapper: int = 2,
-    entry_points: Optional[Set[Tuple[str, str]]] = None,
+    entry_points: set[tuple[str, str]] | None = None,
 ) -> SinkHeuristicsResult:
     """Discover project-specific sinks from call-graph structure.
 
@@ -137,7 +137,7 @@ def discover_project_sinks(
     direct_sink_targets = _extract_direct_sink_targets(sink_results)
     forward_edges, reverse_edges = _build_edge_maps(call_graphs)
 
-    seen: Set[Tuple[str, str]] = set()
+    seen: set[tuple[str, str]] = set()
 
     _discover_wrappers(
         result, sink_results, forward_edges, reverse_edges,
@@ -168,9 +168,9 @@ def discover_project_sinks(
 
 def _extract_taxonomy_keys(
     sink_results: Any,
-) -> Set[Tuple[str, str]]:
+) -> set[tuple[str, str]]:
     """Get the set of (file, function) already identified by taxonomy."""
-    keys: Set[Tuple[str, str]] = set()
+    keys: set[tuple[str, str]] = set()
     if sink_results is None:
         return keys
     if hasattr(sink_results, "direct_sinks"):
@@ -181,9 +181,9 @@ def _extract_taxonomy_keys(
 
 def _extract_direct_sink_targets(
     sink_results: Any,
-) -> Dict[Tuple[str, str], List[str]]:
+) -> dict[tuple[str, str], list[str]]:
     """Map (file, function) → list of dangerous targets called."""
-    targets: Dict[Tuple[str, str], List[str]] = {}
+    targets: dict[tuple[str, str], list[str]] = {}
     if sink_results is None:
         return targets
     if hasattr(sink_results, "direct_sinks"):
@@ -201,14 +201,14 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _build_edge_maps(
-    call_graphs: Optional[Dict[str, Any]],
-) -> Tuple[
-    Dict[Tuple[str, str], Set[Tuple[str, str]]],
-    Dict[Tuple[str, str], Set[Tuple[str, str]]],
+    call_graphs: dict[str, Any] | None,
+) -> tuple[
+    dict[tuple[str, str], set[tuple[str, str]]],
+    dict[tuple[str, str], set[tuple[str, str]]],
 ]:
     """Build forward and reverse call edges from call graphs."""
-    forward: Dict[Tuple[str, str], Set[Tuple[str, str]]] = {}
-    reverse: Dict[Tuple[str, str], Set[Tuple[str, str]]] = {}
+    forward: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    reverse: dict[tuple[str, str], set[tuple[str, str]]] = {}
     if call_graphs is None:
         return forward, reverse
 
@@ -231,13 +231,13 @@ def _build_edge_maps(
 def _discover_wrappers(
     result: SinkHeuristicsResult,
     sink_results: Any,
-    forward_edges: Dict[Tuple[str, str], Set[Tuple[str, str]]],
-    reverse_edges: Dict[Tuple[str, str], Set[Tuple[str, str]]],
-    direct_sink_targets: Dict[Tuple[str, str], List[str]],
-    taxonomy_keys: Set[Tuple[str, str]],
-    taint_approx: Optional[Dict[str, Any]],
+    forward_edges: dict[tuple[str, str], set[tuple[str, str]]],
+    reverse_edges: dict[tuple[str, str], set[tuple[str, str]]],
+    direct_sink_targets: dict[tuple[str, str], list[str]],
+    taxonomy_keys: set[tuple[str, str]],
+    taint_approx: dict[str, Any] | None,
     min_callers: int,
-    seen: Set[Tuple[str, str]],
+    seen: set[tuple[str, str]],
 ) -> None:
     """Find functions that wrap taxonomy sinks and are widely called."""
     if not direct_sink_targets:
@@ -280,10 +280,10 @@ def _discover_wrappers(
 
 
 def _count_callers_by_name(
-    reverse_edges: Dict[Tuple[str, str], Set[Tuple[str, str]]],
-) -> Dict[str, int]:
+    reverse_edges: dict[tuple[str, str], set[tuple[str, str]]],
+) -> dict[str, int]:
     """Count how many callers each function name has across all files."""
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for (_, callee_name), callers in reverse_edges.items():
         counts[callee_name] = counts.get(callee_name, 0) + len(callers)
     return counts
@@ -291,10 +291,10 @@ def _count_callers_by_name(
 
 def _discover_by_naming(
     result: SinkHeuristicsResult,
-    call_graphs: Optional[Dict[str, Any]],
-    taxonomy_keys: Set[Tuple[str, str]],
-    direct_sink_targets: Dict[Tuple[str, str], List[str]],
-    seen: Set[Tuple[str, str]],
+    call_graphs: dict[str, Any] | None,
+    taxonomy_keys: set[tuple[str, str]],
+    direct_sink_targets: dict[tuple[str, str], list[str]],
+    seen: set[tuple[str, str]],
 ) -> None:
     """Find functions with security-suggestive names."""
     if call_graphs is None:
@@ -302,8 +302,8 @@ def _discover_by_naming(
 
     for filepath, graph in call_graphs.items():
         calls = _get(graph, "calls", [])
-        callers_in_file: Set[str] = set()
-        callee_map: Dict[str, Set[str]] = {}
+        callers_in_file: set[str] = set()
+        callee_map: dict[str, set[str]] = {}
 
         for call in calls:
             caller = _get(call, "caller") or "<module>"
@@ -339,12 +339,12 @@ def _discover_by_naming(
 
 def _discover_side_effect_wrappers(
     result: SinkHeuristicsResult,
-    call_graphs: Optional[Dict[str, Any]],
-    taxonomy_keys: Set[Tuple[str, str]],
-    seen: Set[Tuple[str, str]],
+    call_graphs: dict[str, Any] | None,
+    taxonomy_keys: set[tuple[str, str]],
+    seen: set[tuple[str, str]],
     *,
-    entry_points: Optional[Set[Tuple[str, str]]] = None,
-    reverse_edges: Optional[Dict[Tuple[str, str], Set[Tuple[str, str]]]] = None,
+    entry_points: set[tuple[str, str]] | None = None,
+    reverse_edges: dict[tuple[str, str], set[tuple[str, str]]] | None = None,
 ) -> None:
     """Find functions that call side-effecting system APIs.
 
@@ -357,13 +357,13 @@ def _discover_side_effect_wrappers(
     if call_graphs is None:
         return
 
-    reachable: Optional[Set[Tuple[str, str]]] = None
+    reachable: set[tuple[str, str]] | None = None
     if entry_points and reverse_edges:
         reachable = _compute_reachable_from_entries(entry_points, reverse_edges)
 
     for filepath, graph in call_graphs.items():
         calls = _get(graph, "calls", [])
-        func_callees: Dict[str, Set[str]] = {}
+        func_callees: dict[str, set[str]] = {}
 
         for call in calls:
             caller = _get(call, "caller") or "<module>"
@@ -396,22 +396,22 @@ def _discover_side_effect_wrappers(
 
 
 def _compute_reachable_from_entries(
-    entry_points: Set[Tuple[str, str]],
-    reverse_edges: Dict[Tuple[str, str], Set[Tuple[str, str]]],
+    entry_points: set[tuple[str, str]],
+    reverse_edges: dict[tuple[str, str], set[tuple[str, str]]],
     *,
     max_depth: int = 20,
-) -> Set[Tuple[str, str]]:
+) -> set[tuple[str, str]]:
     """BFS forward from entry points through reverse_edges (caller→callee)."""
-    forward: Dict[Tuple[str, str], Set[Tuple[str, str]]] = {}
+    forward: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for callee, callers in reverse_edges.items():
         for caller in callers:
             forward.setdefault(caller, set()).add(callee)
 
-    reachable: Set[Tuple[str, str]] = set(entry_points)
+    reachable: set[tuple[str, str]] = set(entry_points)
     frontier = list(entry_points)
     depth = 0
     while frontier and depth < max_depth:
-        next_frontier: List[Tuple[str, str]] = []
+        next_frontier: list[tuple[str, str]] = []
         for node in frontier:
             for child in forward.get(node, ()):
                 if child not in reachable:

@@ -36,7 +36,7 @@ import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from core.http import HttpClient
 from core.zip import extract_files_from_zip
@@ -88,13 +88,13 @@ class OsvOfflineDB:
         self,
         db_path: Path,
         *,
-        http: Optional[HttpClient] = None,
+        http: HttpClient | None = None,
         ttl_seconds: int = _DEFAULT_TTL,
     ) -> None:
         self._db_path = db_path
         self._http = http
         self._ttl = ttl_seconds
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -102,13 +102,13 @@ class OsvOfflineDB:
 
     def ensure_fresh(
         self, ecosystems: Iterable[str], *, force: bool = False,
-    ) -> List[_IngestStats]:
+    ) -> list[_IngestStats]:
         """Ensure each requested ecosystem has fresh data in the DB.
 
         ``force=True`` re-downloads even if the cached zip is fresh.
         """
         self._init_db()
-        out: List[_IngestStats] = []
+        out: list[_IngestStats] = []
         for eco in sorted(set(ecosystems)):
             bucket = _BUCKET_NAME.get(eco)
             if bucket is None:
@@ -124,8 +124,8 @@ class OsvOfflineDB:
         return out
 
     def query(
-        self, ecosystem: str, name: str, version: Optional[str],
-    ) -> List[Advisory]:
+        self, ecosystem: str, name: str, version: str | None,
+    ) -> list[Advisory]:
         """Return advisories matching (ecosystem, name) at ``version``.
 
         ``version=None`` returns every advisory for that name (the
@@ -137,7 +137,7 @@ class OsvOfflineDB:
         if not rows:
             return []
 
-        out: List[Advisory] = []
+        out: list[Advisory] = []
         for raw_json in rows:
             try:
                 record = json.loads(raw_json)
@@ -192,7 +192,7 @@ class OsvOfflineDB:
         age = int(time.time()) - int(row[0])
         return age < self._ttl
 
-    def _lookup_rows(self, ecosystem: str, name: str) -> List[str]:
+    def _lookup_rows(self, ecosystem: str, name: str) -> list[str]:
         assert self._conn is not None
         # Per-ecosystem name canonicalisation for matching.
         canon = _canonical_name(ecosystem, name)
@@ -205,7 +205,7 @@ class OsvOfflineDB:
 
     def _ingest_ecosystem(
         self, ecosystem: str, bucket: str,
-    ) -> Optional[_IngestStats]:
+    ) -> _IngestStats | None:
         if self._http is None:
             logger.warning(
                 "sca.osv_offline: no HttpClient supplied; cannot refresh %s",
@@ -294,7 +294,7 @@ class OsvOfflineDB:
         )
 
     def _insert_record(
-        self, ecosystem: str, record: Dict, *, raw_json: str,
+        self, ecosystem: str, record: dict, *, raw_json: str,
     ) -> int:
         """Insert one advisory; returns # of (eco, name) rows written.
 
@@ -307,7 +307,7 @@ class OsvOfflineDB:
         affected = record.get("affected") or []
         if not isinstance(affected, list):
             return 0
-        rows: List[Tuple[str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str]] = []
         for blk in affected:
             if not isinstance(blk, dict):
                 continue
@@ -356,7 +356,7 @@ def _canonical_name(ecosystem: str, name: str) -> str:
     return name
 
 
-def _our_ecosystem(osv_value: str) -> Optional[str]:
+def _our_ecosystem(osv_value: str) -> str | None:
     """Reverse-map OSV's ecosystem-string (``crates.io``) to ours
     (``Cargo``). Returns the OSV value unchanged when no mapping needed."""
     reverse = {
@@ -366,8 +366,8 @@ def _our_ecosystem(osv_value: str) -> Optional[str]:
 
 
 def _record_matches_version(
-    record: Dict, ecosystem: str, version: str,
-    name: Optional[str] = None,
+    record: dict, ecosystem: str, version: str,
+    name: str | None = None,
 ) -> bool:
     """True if ``version`` falls inside any of the record's affected
     ranges for this ecosystem (and package ``name`` when given)."""
@@ -403,7 +403,7 @@ def _record_matches_version(
     return False
 
 
-def discover_ecosystems_from_deps(deps) -> Set[str]:
+def discover_ecosystems_from_deps(deps) -> set[str]:
     """Helper: collect the unique ecosystems present in a dep set."""
     return {d.ecosystem for d in deps if d.ecosystem}
 

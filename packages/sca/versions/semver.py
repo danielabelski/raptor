@@ -14,7 +14,6 @@ is lexicographically ordered by spec.
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
 
 
 # v-prefixed (Go), or plain semver, with optional pre-release and build.
@@ -36,7 +35,7 @@ _SEMVER_RE = re.compile(
 )
 
 
-def parse(version: str) -> Tuple[int, int, int, Optional[List[str]]]:
+def parse(version: str) -> tuple[int, int, int, list[str] | None]:
     """Parse version into (major, minor, patch, pre).
 
     Missing minor / patch default to 0. pre is a list of dot-separated
@@ -110,14 +109,14 @@ def _compare_identifier(a: str, b: str) -> int:
 # Range bounds extraction (SCA bounded-pinning: corridor floor/ceiling)
 # ---------------------------------------------------------------------------
 
-def _loose_components(operand: str) -> Optional[Tuple[int, int, int, int]]:
+def _loose_components(operand: str) -> tuple[int, int, int, int] | None:
     """Parse a possibly-partial version into ``(major, minor, patch,
     ncomp)`` where ``ncomp`` is the count of leading concrete numeric
     components. ``x`` / ``X`` / ``*`` and missing trailing components are
     treated as absent (default 0). Returns None for a bare wildcard or
     anything non-numeric (caller treats as 'no bound')."""
     core = re.split(r"[-+]", operand.strip().lstrip("v"), maxsplit=1)[0]
-    nums: List[int] = []
+    nums: list[int] = []
     for part in core.split("."):
         if part in ("x", "X", "*", ""):
             break
@@ -132,11 +131,11 @@ def _loose_components(operand: str) -> Optional[Tuple[int, int, int, int]]:
             len(nums))
 
 
-def _join(c: Tuple[int, int, int, int]) -> str:
+def _join(c: tuple[int, int, int, int]) -> str:
     return f"{c[0]}.{c[1]}.{c[2]}"
 
 
-def _caret_ceiling(c: Tuple[int, int, int, int]) -> str:
+def _caret_ceiling(c: tuple[int, int, int, int]) -> str:
     """Exclusive upper bound for ``^`` per node-semver (allow changes that
     don't modify the left-most non-zero element)."""
     major, minor, patch, ncomp = c
@@ -147,7 +146,7 @@ def _caret_ceiling(c: Tuple[int, int, int, int]) -> str:
     return f"0.0.{patch + 1}"          # ^0.0.3 -> <0.0.4
 
 
-def _tilde_ceiling(c: Tuple[int, int, int, int]) -> str:
+def _tilde_ceiling(c: tuple[int, int, int, int]) -> str:
     """Exclusive upper bound for ``~``."""
     major, minor, _patch, ncomp = c
     if ncomp >= 2:                     # ~1.2.3 / ~1.2 -> <1.(minor+1).0
@@ -155,7 +154,7 @@ def _tilde_ceiling(c: Tuple[int, int, int, int]) -> str:
     return f"{major + 1}.0.0"          # ~1 -> <2.0.0
 
 
-def _tightest(versions: List[str], want_max: bool) -> str:
+def _tightest(versions: list[str], want_max: bool) -> str:
     best = versions[0]
     for v in versions[1:]:
         c = compare(v, best)
@@ -164,7 +163,7 @@ def _tightest(versions: List[str], want_max: bool) -> str:
     return best
 
 
-def bounds(spec: str) -> Tuple[Optional[str], Optional[str]]:
+def bounds(spec: str) -> tuple[str | None, str | None]:
     """Best-effort ``(floor, ceiling)`` for an npm/Cargo semver range.
 
     ``floor`` = tightest inclusive lower bound; ``ceiling`` = tightest
@@ -198,10 +197,10 @@ def bounds(spec: str) -> Tuple[Optional[str], Optional[str]]:
             ceiling = f"{c_hi[0] + 1}.0.0"
         return floor, ceiling
 
-    lowers: List[str] = []
-    uppers: List[str] = []
+    lowers: list[str] = []
+    uppers: list[str] = []
     raw_toks = spec.split()
-    toks: List[str] = []
+    toks: list[str] = []
     i = 0
     while i < len(raw_toks):
         t = raw_toks[i]

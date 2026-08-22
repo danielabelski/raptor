@@ -23,10 +23,9 @@ operator can run /describe for the full breakdown.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 
-def format_start_line(target_path: Path) -> Optional[str]:
+def format_start_line(target_path: Path) -> str | None:
     """Compose a one-line start-of-run target summary. Returns
     None when /describe substrate is unavailable (caller falls
     back to the bare cost estimate).
@@ -80,8 +79,8 @@ def format_start_line(target_path: Path) -> Optional[str]:
 
 
 def _scorecard_estimate_clause(
-    target_path: Path, target_type: Optional[str],
-) -> Optional[str]:
+    target_path: Path, target_type: str | None,
+) -> str | None:
     """Return a compact estimate string from scorecard data, or None."""
     try:
         from core.run.target_types import load as _load_catalog

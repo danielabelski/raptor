@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Set, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 from core.dataflow.adapters.codeql import from_sarif_result
 
@@ -37,9 +38,9 @@ class FindingDiff:
     data-extensions approach wins.
     """
 
-    suppressed_ids: Tuple[str, ...]
-    still_flagged_ids: Tuple[str, ...]
-    new_ids: Tuple[str, ...]
+    suppressed_ids: tuple[str, ...]
+    still_flagged_ids: tuple[str, ...]
+    new_ids: tuple[str, ...]
     baseline_count: int
     augmented_count: int
 
@@ -121,10 +122,10 @@ def diff_sarif_files(
     return diff_sarif_data(baseline, augmented)
 
 
-def _sarif_finding_ids(sarif: Mapping[str, Any]) -> Set[str]:
+def _sarif_finding_ids(sarif: Mapping[str, Any]) -> set[str]:
     """Return the set of stable ``finding_id``s for every dataflow
     result in the SARIF document."""
-    ids: Set[str] = set()
+    ids: set[str] = set()
     for run in sarif.get("runs", []) or []:
         for result in run.get("results", []) or []:
             try:

@@ -919,7 +919,7 @@ class LLMDispatcher:
         return None
 
     def _book_child_usage(
-        self, rec: _TokenRecord, scanner: "_UsageScanner",
+        self, rec: _TokenRecord, scanner: _UsageScanner,
         *, aborted: bool,
     ) -> None:
         """Book upstream-reported usage onto the token's spend ledger.

@@ -19,14 +19,13 @@ per-ecosystem version selection (``versions.compare("Debian", ...)``).
 
 from __future__ import annotations
 
-from typing import Tuple
 
 
 def _isascii_digit(c: str) -> bool:
     return c in "0123456789"
 
 
-def _split(version: str) -> Tuple[int, str, str]:
+def _split(version: str) -> tuple[int, str, str]:
     """Split into ``(epoch, upstream_version, debian_revision)``.
 
     Epoch is everything before the first ``:`` (must be numeric); the

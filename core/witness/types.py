@@ -31,7 +31,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 def _safe_int(v, default: int = 0) -> int:
@@ -138,10 +138,10 @@ class Witness:
 
     # Optional / pipeline-specific
     bytes_len: int = 0
-    target_binary_hash: Optional[str] = None
-    target_source_hash: Optional[str] = None
+    target_binary_hash: str | None = None
+    target_source_hash: str | None = None
     outcome_detail: dict[str, Any] = field(default_factory=dict)
-    produced_by: Optional[str] = None
+    produced_by: str | None = None
     timestamp: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -184,7 +184,7 @@ class Witness:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Witness":
+    def from_dict(cls, data: dict[str, Any]) -> Witness:
         """Inverse of :meth:`to_dict`. Tolerant of extra keys —
         unknown fields are dropped silently so a future schema
         version writing extra metadata doesn't break old loaders."""

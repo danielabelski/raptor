@@ -21,7 +21,6 @@ transform so producers of new status values aren't blocked on a
 table update.
 """
 
-from typing import Optional
 
 
 # Alias map: any legacy/mixed-case variant → canonical snake_case.
@@ -60,7 +59,7 @@ _STATUS_ALIASES = {
 }
 
 
-def normalize_status(value: Optional[str]) -> Optional[str]:
+def normalize_status(value: str | None) -> str | None:
     """Normalize any status/verdict string to canonical snake_case.
 
     Handles ALL_CAPS, Title Case, and snake_case inputs.

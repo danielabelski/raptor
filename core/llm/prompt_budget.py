@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +55,11 @@ class PromptSection:
 
 
 def fit_to_budget(
-    sections: List[PromptSection],
+    sections: list[PromptSection],
     budget_tokens: int,
     *,
     reserve_tokens: int = 0,
-) -> Tuple[List[PromptSection], List[PromptSection]]:
+) -> tuple[list[PromptSection], list[PromptSection]]:
     """Keep sections that fit within *budget_tokens*, shedding the rest.
 
     Returns ``(kept, shed)`` — both in original order.
@@ -118,7 +117,7 @@ def shed_blocks(
     content_attr: str = "content",
     kind_attr: str = "kind",
     priority_prefixes: list = None,
-) -> Tuple[list, list]:
+) -> tuple[list, list]:
     """Shed UntrustedBlock-like objects by priority.
 
     Works with any object that has a *content_attr* (text) and

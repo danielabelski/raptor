@@ -22,13 +22,13 @@ machinery — the producer-side shim hands in an already-computed result.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # type-only — no runtime dep on packages.source_intel
     from packages.source_intel import SourceIntelResult
 
 
-def _relativize(path: Optional[str], repo_root: Optional[Path]) -> Optional[str]:
+def _relativize(path: str | None, repo_root: Path | None) -> str | None:
     """Make a site's file path relative to the run target.
 
     source_intel emits ABSOLUTE paths; the context-map convention (and the
@@ -47,16 +47,16 @@ def _relativize(path: Optional[str], repo_root: Optional[Path]) -> Optional[str]
     return path
 
 
-def _loc(ev: Any) -> Tuple[Optional[str], Optional[int]]:
+def _loc(ev: Any) -> tuple[str | None, int | None]:
     loc = getattr(ev, "location", None)
     if isinstance(loc, (tuple, list)) and len(loc) == 2:
         return loc[0], loc[1]
     return None, None
 
 
-def _site(kind: str, ev: Any, **extra: Any) -> Dict[str, Any]:
+def _site(kind: str, ev: Any, **extra: Any) -> dict[str, Any]:
     file_, line = _loc(ev)
-    site: Dict[str, Any] = {
+    site: dict[str, Any] = {
         "kind": kind,
         "file": file_,
         "line": line,
@@ -68,9 +68,9 @@ def _site(kind: str, ev: Any, **extra: Any) -> Dict[str, Any]:
     return site
 
 
-def build_ownership_model(si: "SourceIntelResult") -> List[Dict[str, Any]]:
+def build_ownership_model(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Alloc / checked-alloc / paired-free / double-free sites, in order."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for a in getattr(si, "allocations", ()) or ():
         out.append(_site("alloc", a, allocator=getattr(a, "allocator", None)))
     for a in getattr(si, "checked_allocations", ()) or ():
@@ -92,9 +92,9 @@ def build_ownership_model(si: "SourceIntelResult") -> List[Dict[str, Any]]:
     return out
 
 
-def build_privilege_model(si: "SourceIntelResult") -> List[Dict[str, Any]]:
+def build_privilege_model(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Capability-check + LSM-hook sites."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for c in getattr(si, "capabilities", ()) or ():
         out.append(_site(
             "capability", c,
@@ -106,14 +106,14 @@ def build_privilege_model(si: "SourceIntelResult") -> List[Dict[str, Any]]:
     return out
 
 
-def build_shared_state(si: "SourceIntelResult") -> List[Dict[str, Any]]:
+def build_shared_state(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Lock acquire / release sites — spin / mutex / rw / pthread.
 
     Site `kind` is `<lock_kind>_<op>` (e.g. `spin_acquire`, `mutex_release`)
     so consumers can filter on a single field. The concrete function
     (`fn`) and lock expression (`lock_var`) ride alongside.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for ls in getattr(si, "lock_sites", ()) or ():
         kind = f"{getattr(ls, 'kind', '')}_{getattr(ls, 'op', '')}"
         out.append(_site(
@@ -124,7 +124,7 @@ def build_shared_state(si: "SourceIntelResult") -> List[Dict[str, Any]]:
     return out
 
 
-def build_crypto_inventory(si: "SourceIntelResult") -> List[Dict[str, Any]]:
+def build_crypto_inventory(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Cryptographic primitive call + RNG-source sites.
 
     Site `kind` is the call kind directly (`primitive_call` or
@@ -132,7 +132,7 @@ def build_crypto_inventory(si: "SourceIntelResult") -> List[Dict[str, Any]]:
     libsodium/libc) and the concrete function (`fn`) ride alongside so
     consumers can filter without re-parsing the kind string.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for cc in getattr(si, "crypto_calls", ()) or ():
         out.append(_site(
             getattr(cc, "kind", "crypto"), cc,
@@ -143,9 +143,9 @@ def build_crypto_inventory(si: "SourceIntelResult") -> List[Dict[str, Any]]:
 
 
 def enrich_context_map_with_sites(
-    cmap: Dict[str, Any], si: "SourceIntelResult",
-    *, repo_root: Optional[Union[str, Path]] = None,
-) -> Dict[str, int]:
+    cmap: dict[str, Any], si: SourceIntelResult,
+    *, repo_root: str | Path | None = None,
+) -> dict[str, int]:
     """Inject ``ownership_model`` / ``privilege_model`` into ``cmap`` from a
     SourceIntelResult.
 

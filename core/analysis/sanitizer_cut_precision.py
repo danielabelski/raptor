@@ -42,7 +42,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 LABEL_MUST_NOT_SUPPRESS = "must_not_suppress"
 LABEL_MAY_SUPPRESS = "may_suppress"
@@ -70,7 +70,7 @@ class CutFixture:
     # Sidecar files written beside the fixture source (relative path →
     # content) — the config-resolution battery ships .properties files
     # the resolver must locate under the fixture's directory.
-    aux_files: Dict[str, str] = field(default_factory=dict)
+    aux_files: dict[str, str] = field(default_factory=dict)
     # Cross-file batteries (b37): root the fixture in its own
     # subdirectory and pass it as the finding's repo_root, so the
     # cross-file resolver sees exactly the fixture's aux .java files —
@@ -103,20 +103,20 @@ class PrecisionReport:
     """Corpus-level result, binary_oracle_precision report style."""
     corpus_name: str
     n_fixtures: int
-    measurements: List[FixtureMeasurement] = field(default_factory=list)
-    verdict_counts: Dict[str, int] = field(default_factory=dict)
-    false_suppressions: List[str] = field(default_factory=list)
-    missed_suppressions: List[str] = field(default_factory=list)
+    measurements: list[FixtureMeasurement] = field(default_factory=list)
+    verdict_counts: dict[str, int] = field(default_factory=dict)
+    false_suppressions: list[str] = field(default_factory=list)
+    missed_suppressions: list[str] = field(default_factory=list)
     # cross_tab[sink_class][label][verdict] = count
-    cross_tab: Dict[str, Dict[str, Dict[str, int]]] = field(
+    cross_tab: dict[str, dict[str, dict[str, int]]] = field(
         default_factory=dict)
     n_must_not: int = 0
     # 3/n rule-of-three 95% upper bound on the false-suppress rate,
     # meaningful only when false_suppressions is empty.
-    rule_of_three_95_ub: Optional[float] = None
-    toolchain: Dict[str, str] = field(default_factory=dict)
+    rule_of_three_95_ub: float | None = None
+    toolchain: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "corpus": self.corpus_name,
             "n_fixtures": self.n_fixtures,
@@ -153,7 +153,7 @@ def _fx(name, sink_class, cwe, shape, label, source, src_ln, sink_ln,
 
 
 def _class_fixtures(sink_class, cwe, sanitizer, wrong_sanitizer,
-                    sink) -> List[CutFixture]:
+                    sink) -> list[CutFixture]:
     """The per-class fixture template: safe shapes + the adversarial
     battery, instantiated with the class's catalog sanitizer, a
     catalog sanitizer of a DIFFERENT class (the wrong-class case),
@@ -223,7 +223,7 @@ def _class_fixtures(sink_class, cwe, sanitizer, wrong_sanitizer,
     ]
 
 
-def _java_fixtures() -> List[CutFixture]:
+def _java_fixtures() -> list[CutFixture]:
     """The Java adversarial battery (b13 leg) — b11's shapes
     re-instantiated in Java plus the Java-specific hazards: the
     wrong-class URLEncoder case (a URL encoder before an HTML sink
@@ -376,7 +376,7 @@ def _java_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_wrapper_fixtures() -> List[CutFixture]:
+def _java_wrapper_fixtures() -> list[CutFixture]:
     """b19 wrapper-summary battery. Adversarial shapes first — every
     way a helper can LOOK like a sanitizer without being one must
     refuse: a non-sanitizing body, a two-level wrapper (depth cap), a
@@ -505,7 +505,7 @@ def _java_wrapper_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_array_fixtures() -> List[CutFixture]:
+def _java_array_fixtures() -> list[CutFixture]:
     """b19 element-sensitivity battery. Adversarial shapes first —
     every way per-element reasoning can be broken must refuse: element
     rebind with taint, element mismatch trusted via base-name kills,
@@ -645,7 +645,7 @@ def _java_array_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_switch_fixtures() -> List[CutFixture]:
+def _java_switch_fixtures() -> list[CutFixture]:
     """Switch battery: constant-resolved selection may suppress; every
     variation where the model could hide a live path — non-constant
     discriminant, the fold selecting the tainted branch, fall-through
@@ -727,7 +727,7 @@ def _java_switch_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_valueset_fixtures() -> List[CutFixture]:
+def _java_valueset_fixtures() -> list[CutFixture]:
     """Constant-table battery: a provably-unmodified literal table read
     by a constant index may suppress; stores, aliases (assignment or
     call argument), tainted elements, out-of-bounds and non-constant
@@ -831,7 +831,7 @@ def _marked(name, sink_class, cwe, shape, label, source,
                src_ln, sink_ln, language="java", suffix=".java")
 
 
-def _java_b21_fixtures() -> List[CutFixture]:
+def _java_b21_fixtures() -> list[CutFixture]:
     """The b21 battery: cross-class/depth-2 wrapper shapes and
     constant-collection membership guards. MUST-NOT entries split into
     genuinely-unsafe shapes and deliberate refusal pins (genuinely safe
@@ -844,7 +844,7 @@ def _java_b21_fixtures() -> List[CutFixture]:
 
     handle = ("    public void handle(String x, "
               "java.io.PrintWriter out) {\n")
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
 
     # ---- Mechanism 1: wrapper summaries v2 ----
     j.append(_marked(
@@ -1082,7 +1082,7 @@ def _java_b21_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_b40_fixtures() -> List[CutFixture]:
+def _java_b40_fixtures() -> list[CutFixture]:
     """Dead-branch if-pruning + finite value-set battery (b40).
 
     Both payoff directions ride the constant machinery, so every
@@ -1184,7 +1184,7 @@ def _java_b40_fixtures() -> List[CutFixture]:
     return j
 
 
-def build_corpus() -> List[CutFixture]:
+def build_corpus() -> list[CutFixture]:
     """The labelled corpus: the adversarial battery instantiated per
     covered python sink class, plus interproc, catalog-empty-class,
     unsupported-language singletons, and the Java battery (b13 leg).
@@ -1194,7 +1194,7 @@ def build_corpus() -> List[CutFixture]:
     — a test pins that each per-class sanitizer used here is really in
     the catalog for its class and the wrong-class one is NOT.
     """
-    fixtures: List[CutFixture] = []
+    fixtures: list[CutFixture] = []
     fixtures += _class_fixtures(
         "xss", "CWE-79", "html.escape", "shlex.quote", "render")
     fixtures += _class_fixtures(
@@ -1275,7 +1275,7 @@ def build_corpus() -> List[CutFixture]:
     return fixtures
 
 
-def _java_b41_fixtures() -> List[CutFixture]:
+def _java_b41_fixtures() -> list[CutFixture]:
     """The b41 battery: multi-deep-name sink binding, value-carrying
     pick preference, and multi-line statement retargeting.
 
@@ -1294,7 +1294,7 @@ def _java_b41_fixtures() -> List[CutFixture]:
     handle = ("    public void handle(HttpServletRequest request, "
               "java.io.PrintWriter out) {\n"
               "        String x = request.getParameter(\"q\");\n")
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
 
     # ---- must-not-suppress ----
     # Deep-multi surface, helper-fed sibling taint (b34 incident shape).
@@ -1398,7 +1398,7 @@ def _java_b41_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_b27_fixtures() -> List[CutFixture]:
+def _java_b27_fixtures() -> list[CutFixture]:
     """The b27 battery: conduit summaries — helpers that provably
     return either a compile-time constant or a specific parameter
     UNCHANGED. A conduit call site is value-transparent: the sink's
@@ -1416,7 +1416,7 @@ def _java_b27_fixtures() -> List[CutFixture]:
     handle = ("    public void handle(HttpServletRequest request, "
               "java.io.PrintWriter out) {\n"
               "        String x = request.getParameter(\"q\");\n")
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
 
     # ---- may-suppress: the shapes the mechanism exists for ----
     j.append(_marked(
@@ -1691,7 +1691,7 @@ def _java_b27_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_b42_fixtures() -> List[CutFixture]:
+def _java_b42_fixtures() -> list[CutFixture]:
     """b42 battery: the taint-free definer union and returns-taint-free
     helper summaries — the measured blocker classes behind the
     "guard-shaped" census labels (which sampling proved are NOT value
@@ -2000,7 +2000,7 @@ def _java_b42_fixtures() -> List[CutFixture]:
     return fx
 
 
-def _java_b36_fixtures() -> List[CutFixture]:
+def _java_b36_fixtures() -> list[CutFixture]:
     """b36 battery (merged onto b37's machinery): the JDK-class tier
     and statement-scoped sibling coverage. Deduped against the b37
     battery — non-final, ambiguous-class, static-final-concat,
@@ -2072,7 +2072,7 @@ def _java_b36_fixtures() -> List[CutFixture]:
     return fx
 
 
-def _java_b37_fixtures() -> List[CutFixture]:
+def _java_b37_fixtures() -> list[CutFixture]:
     """b37 battery: cross-file static-final / returns-literal
     resolution and the taint-free tier. The prefix trap is the
     load-bearing must-not: a constant or taint-free directory prefix
@@ -2103,7 +2103,7 @@ def _java_b37_fixtures() -> List[CutFixture]:
         'System.getProperty("user.dir") + File.separator;\n'
         "}\n"
     )
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
     j.append(_fx(
         "java_b37_xfile_static_final", "xss", "CWE-79",
         "xfile_static_final_const", LABEL_MAY_SUPPRESS,
@@ -2284,14 +2284,14 @@ def measure_fixture(fx: CutFixture, work_dir: Path) -> FixtureMeasurement:
     )
 
 
-def _toolchain() -> Dict[str, str]:
+def _toolchain() -> dict[str, str]:
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
     }
 
 
-def _java_constant_fixtures() -> List[CutFixture]:
+def _java_constant_fixtures() -> list[CutFixture]:
     """Constant-definers battery: the dead-branch ternary trick may
     suppress; every variation that breaks the constancy proof — a
     live condition, the fold selecting the tainted branch, a compound
@@ -2368,7 +2368,7 @@ def _java_constant_fixtures() -> List[CutFixture]:
     return j
 
 
-def _java_config_fixtures() -> List[CutFixture]:
+def _java_config_fixtures() -> list[CutFixture]:
     """Config-resolution battery: a value read from a bundled
     .properties file through the strict resolver may fold to a
     constant (and suppress via the constant-definers gate); every
@@ -2464,7 +2464,7 @@ def _java_config_fixtures() -> List[CutFixture]:
     return j
 
 
-def run_corpus(fixtures: Optional[List[CutFixture]] = None,
+def run_corpus(fixtures: list[CutFixture] | None = None,
                corpus_name: str = "adversarial-v1") -> PrecisionReport:
     fixtures = fixtures if fixtures is not None else build_corpus()
     report = PrecisionReport(
@@ -2541,7 +2541,7 @@ def _format_markdown(report: PrecisionReport) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="raptor-sanitizer-cut-precision",
         description=(
@@ -2588,7 +2588,7 @@ __all__ = [
 ]
 
 
-def _java_b28_collection_fixtures() -> List[CutFixture]:
+def _java_b28_collection_fixtures() -> list[CutFixture]:
     """b28 battery: local map/list round-trips. Adversarial shapes
     first — a keyed store is exactly where key confusion, ordering
     assumptions, or escape blindness would false-suppress, so every
@@ -2607,7 +2607,7 @@ def _java_b28_collection_fixtures() -> List[CutFixture]:
     handle = ("    public void handle(HttpServletRequest request, "
               "java.io.PrintWriter out) {\n"
               "        String x = request.getParameter(\"q\");\n")
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
 
     # ---- must-not-suppress: adversarial shapes ----
     j.append(_marked(
@@ -2804,7 +2804,7 @@ _B33_DECOY_JAVA = _B33_SAFE_JAVA.replace(
     'bar = (String) map.get(\"keyB\");')
 
 
-def _java_b33_sink_shape_fixtures() -> List[CutFixture]:
+def _java_b33_sink_shape_fixtures() -> list[CutFixture]:
     """b33 battery: assignment-located and zero-argument-receiver sink
     shapes (the OWASP concatenated-sql / execute() finding locations).
     The decoy variants pin that a decoy parameterization (constant
@@ -2827,7 +2827,7 @@ def _java_b33_sink_shape_fixtures() -> List[CutFixture]:
     ]
 
 
-def _java_b34_positional_fixtures() -> List[CutFixture]:
+def _java_b34_positional_fixtures() -> list[CutFixture]:
     """b34 battery: positional list simulation. The Benchmark's clean
     siblings select a safe element by index after order-shifting ops
     (``remove(0)`` then ``get(1)``); the vulnerable twins read the
@@ -2845,7 +2845,7 @@ def _java_b34_positional_fixtures() -> List[CutFixture]:
     handle = ("    public void handle(HttpServletRequest request, "
               "java.io.PrintWriter out) {\n"
               "        String x = request.getParameter(\"q\");\n")
-    j: List[CutFixture] = []
+    j: list[CutFixture] = []
 
     # ---- must-not-suppress: adversarial shapes ----
     j.append(_marked(

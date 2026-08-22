@@ -7,7 +7,8 @@ per-call via ``new_solver(timeout_ms=...)``.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
+from collections.abc import Iterator
 
 from .availability import z3
 

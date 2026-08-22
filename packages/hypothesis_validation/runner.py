@@ -21,7 +21,7 @@ opinion. Confirmation requires that the tool produced concrete matches.
 
 import logging
 from dataclasses import replace
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 
 from .adapters.base import ToolAdapter, ToolEvidence
 from .hypothesis import Hypothesis
@@ -148,20 +148,20 @@ class LLMClientProtocol(Protocol):
     def generate_structured(
         self,
         prompt: str,
-        schema: Dict[str, Any],
-        system_prompt: Optional[str] = None,
-        task_type: Optional[str] = None,
+        schema: dict[str, Any],
+        system_prompt: str | None = None,
+        task_type: str | None = None,
         **kwargs: Any,
     ) -> Any: ...
 
 
 def validate(
     hypothesis: Hypothesis,
-    adapters: List[ToolAdapter],
+    adapters: list[ToolAdapter],
     llm_client: LLMClientProtocol,
     *,
     timeout: int = 300,
-    env: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
     task_type: str = "audit",
     max_iterations: int = _MAX_ITERATIONS,
 ) -> ValidationResult:
@@ -257,10 +257,10 @@ def validate(
         selection.get("reasoning", ""),
         selection.get("expected_evidence", ""),
     )
-    all_evidence: List[Evidence] = []
+    all_evidence: list[Evidence] = []
     verdict: Verdict = "inconclusive"
     reasoning = ""
-    prev_step: Optional[IterationStep] = None
+    prev_step: IterationStep | None = None
 
     for iteration in range(max_iterations):
         tool_evidence = adapter.run(
@@ -333,7 +333,7 @@ def validate(
 # Helpers ---------------------------------------------------------------------
 
 
-def _build_system_prompt(adapters: List[ToolAdapter]) -> str:
+def _build_system_prompt(adapters: list[ToolAdapter]) -> str:
     descriptions = "\n\n".join(a.describe().render_for_prompt() for a in adapters)
     return _SYSTEM_PROMPT.format(tool_descriptions=descriptions)
 
@@ -396,7 +396,7 @@ def _build_evaluate_prompt(hypothesis: Hypothesis, evidence: ToolEvidence) -> st
     )
 
 
-def _extract_data(response: Any) -> Optional[Dict[str, Any]]:
+def _extract_data(response: Any) -> dict[str, Any] | None:
     """Pull the result dict out of an LLM client response.
 
     LLMClient.generate_structured returns StructuredResponse with a
@@ -415,11 +415,11 @@ def _extract_data(response: Any) -> Optional[Dict[str, Any]]:
 
 def _ask_llm_to_select_tool(
     hypothesis: Hypothesis,
-    adapters: List[ToolAdapter],
+    adapters: list[ToolAdapter],
     llm_client: LLMClientProtocol,
     *,
     task_type: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     system = _build_system_prompt(adapters)
     user = _build_generate_prompt(hypothesis)
     try:
@@ -440,7 +440,7 @@ def _evaluate_with_refinement(
     llm_client: LLMClientProtocol,
     *,
     task_type: str,
-) -> tuple[Verdict, str, Optional[Dict[str, Any]]]:
+) -> tuple[Verdict, str, dict[str, Any] | None]:
     """Ask the LLM to evaluate evidence; constrain verdict by mechanical truth.
 
     Even if the LLM returns "confirmed", we downgrade when the tool

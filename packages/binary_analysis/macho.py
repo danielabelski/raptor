@@ -16,7 +16,7 @@ import subprocess
 import xml.parsers.expat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.sandbox import run_trusted
 
@@ -110,7 +110,7 @@ class AppBundleMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AppBundleMetadata":
+    def from_dict(cls, data: dict[str, Any]) -> AppBundleMetadata:
         return cls(
             bundle_path=str(data.get("bundle_path") or ""),
             info_plist_path=str(data.get("info_plist_path") or ""),
@@ -220,7 +220,7 @@ def inspect_macho_slices(path: Path, binary_sha256: str) -> tuple[list[MachOSlic
     return slices, [record]
 
 
-def _find_app_bundle(path: Path) -> Optional[Path]:
+def _find_app_bundle(path: Path) -> Path | None:
     for parent in [path.parent, *path.parents]:
         if parent.suffix == ".app" and (parent / "Contents" / "Info.plist").is_file():
             return parent
@@ -268,7 +268,7 @@ def _extract_code_signing(binary: Path) -> dict[str, Any]:
     return fields
 
 
-def inspect_app_bundle(path: Path, binary_sha256: str) -> tuple[Optional[AppBundleMetadata], list[BinaryEvidenceRecord]]:
+def inspect_app_bundle(path: Path, binary_sha256: str) -> tuple[AppBundleMetadata | None, list[BinaryEvidenceRecord]]:
     bundle = _find_app_bundle(Path(path))
     if bundle is None:
         return None, []
@@ -333,7 +333,7 @@ def inspect_app_bundle(path: Path, binary_sha256: str) -> tuple[Optional[AppBund
     return metadata, [record]
 
 
-def select_slice(slices: list[MachOSlice], requested_arch: Optional[str], host_arch: Optional[str]) -> Optional[MachOSlice]:
+def select_slice(slices: list[MachOSlice], requested_arch: str | None, host_arch: str | None) -> MachOSlice | None:
     if not slices:
         return None
     aliases = {

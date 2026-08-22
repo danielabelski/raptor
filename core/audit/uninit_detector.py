@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ _INIT_NAMES = (
 )
 
 
-def _safe_name(value: str) -> Optional[str]:
+def _safe_name(value: str) -> str | None:
     try:
         from packages.joern.runner import (
             _escape_scala_string,
@@ -71,7 +71,7 @@ def _safe_name(value: str) -> Optional[str]:
     return _escape_scala_string(value)
 
 
-def _run_query(server: Any, query: str) -> Optional[list]:
+def _run_query(server: Any, query: str) -> list | None:
     from core.audit.condition_cpg import _run_query as cpg_run_query
     return cpg_run_query(server, query)
 
@@ -79,7 +79,7 @@ def _run_query(server: Any, query: str) -> Optional[list]:
 def detect_uninit_leak_cpg(
     function_name: str,
     server: Any,
-) -> List[UninitLeak]:
+) -> list[UninitLeak]:
     """Use Joern CPG dataflow to find uninit struct → copy sink paths.
 
     Query: find locals of struct type in `function_name` that reach a
@@ -114,7 +114,7 @@ def detect_uninit_leak_cpg(
     if not raw:
         return []
 
-    results: List[UninitLeak] = []
+    results: list[UninitLeak] = []
     for item in raw:
         if not isinstance(item, (list, tuple)) or len(item) < 3:
             continue
@@ -169,10 +169,10 @@ _FIELD_ASSIGN = re.compile(
 )
 
 
-def detect_uninit_leak_regex(source: str) -> List[UninitLeak]:
+def detect_uninit_leak_regex(source: str) -> list[UninitLeak]:
     """Regex fallback: same-function struct → partial-init → copy sink."""
     lines = source.split("\n")
-    results: List[UninitLeak] = []
+    results: list[UninitLeak] = []
 
     stack_structs: dict[str, int] = {}
     zeroed_vars: set[str] = set()
@@ -224,7 +224,7 @@ def detect_uninit_leak(
     source: str,
     function_name: str = "",
     joern_server: Any = None,
-) -> List[UninitLeak]:
+) -> list[UninitLeak]:
     """Detect uninit struct → copy sink.  CPG when available, else regex."""
     if not _COPY_SINKS.search(source):
         return []

@@ -29,7 +29,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Reachability
 
@@ -37,11 +38,11 @@ logger = logging.getLogger(__name__)
 
 
 def build_packagist_symbol_map(
-    osv_results: Optional[Iterable[Any]],
-) -> Dict[str, List[str]]:
+    osv_results: Iterable[Any] | None,
+) -> dict[str, list[str]]:
     if not osv_results:
         return {}
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for r in osv_results:
         if not hasattr(r, "advisories"):
             continue
@@ -49,7 +50,7 @@ def build_packagist_symbol_map(
         if not dep_key or not dep_key.startswith("Packagist:"):
             continue
         dep_name = dep_key.split(":", 1)[1].split("@", 1)[0]
-        qualified: List[str] = []
+        qualified: list[str] = []
         for adv in r.advisories:
             qualified.extend(_extract_qualified(adv, dep_name))
         if qualified:
@@ -57,8 +58,8 @@ def build_packagist_symbol_map(
     return {k: list(dict.fromkeys(v)) for k, v in out.items()}
 
 
-def _extract_qualified(advisory: Any, dep_name: str) -> List[str]:
-    out: List[str] = []
+def _extract_qualified(advisory: Any, dep_name: str) -> list[str]:
+    out: list[str] = []
     es = getattr(advisory, "ecosystem_specific", None) or {}
     ds = getattr(advisory, "database_specific", None) or {}
     for source in (es, ds):
@@ -82,12 +83,12 @@ def _extract_qualified(advisory: Any, dep_name: str) -> List[str]:
 
 
 def refine_packagist_verdicts(
-    deps: List[Dependency],
-    out: Dict[str, Reachability],
+    deps: list[Dependency],
+    out: dict[str, Reachability],
     *,
     target: Path,
-    packagist_symbol_map: Dict[str, List[str]],
-    inventory: Optional[Dict[str, Any]] = None,
+    packagist_symbol_map: dict[str, list[str]],
+    inventory: dict[str, Any] | None = None,
 ) -> None:
     candidates = [
         d for d in deps

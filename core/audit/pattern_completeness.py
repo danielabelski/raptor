@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 from ._util import find_enclosing_function as _find_enclosing_function
 
@@ -72,7 +71,7 @@ class PatternGap:
 
 # Each tuple lists synonyms — if a pattern uses one but not the others in
 # the same file/module, the missing ones are flagged.
-_EXTENSION_SYNONYM_GROUPS: List[Tuple[str, ...]] = [
+_EXTENSION_SYNONYM_GROUPS: list[tuple[str, ...]] = [
     (".yml", ".yaml"),
     (".htm", ".html"),
     (".jpg", ".jpeg"),
@@ -80,13 +79,13 @@ _EXTENSION_SYNONYM_GROUPS: List[Tuple[str, ...]] = [
 ]
 
 # Build a flat lookup: extension -> tuple-of-synonyms (excluding itself).
-_EXTENSION_SYNONYMS: Dict[str, Tuple[str, ...]] = {}
+_EXTENSION_SYNONYMS: dict[str, tuple[str, ...]] = {}
 for _group in _EXTENSION_SYNONYM_GROUPS:
     for _ext in _group:
         _EXTENSION_SYNONYMS[_ext] = tuple(e for e in _group if e != _ext)
 
 # Directories where specific extensions are expected.
-_DIRECTORY_EXTENSION_EXPECTATIONS: Dict[str, Tuple[str, ...]] = {
+_DIRECTORY_EXTENSION_EXPECTATIONS: dict[str, tuple[str, ...]] = {
     ".github/workflows": (".yml", ".yaml"),
 }
 
@@ -94,7 +93,7 @@ _DIRECTORY_EXTENSION_EXPECTATIONS: Dict[str, Tuple[str, ...]] = {
 # CLI option short/long form table
 # ---------------------------------------------------------------------------
 
-_SHORT_LONG_PAIRS: List[Tuple[str, str]] = [
+_SHORT_LONG_PAIRS: list[tuple[str, str]] = [
     ("-e", "--editable"),
     ("-r", "--requirement"),
     ("-f", "--find-links"),
@@ -108,14 +107,14 @@ _SHORT_LONG_PAIRS: List[Tuple[str, str]] = [
     ("-p", "--port"),
 ]
 
-_SHORT_TO_LONG: Dict[str, str] = {short: long for short, long in _SHORT_LONG_PAIRS}
-_LONG_TO_SHORT: Dict[str, str] = {long: short for short, long in _SHORT_LONG_PAIRS}
+_SHORT_TO_LONG: dict[str, str] = {short: long for short, long in _SHORT_LONG_PAIRS}
+_LONG_TO_SHORT: dict[str, str] = {long: short for short, long in _SHORT_LONG_PAIRS}
 
 # ---------------------------------------------------------------------------
 # Regex character class known-valid chars by domain
 # ---------------------------------------------------------------------------
 
-_DOMAIN_VALID_CHARS: Dict[str, str] = {
+_DOMAIN_VALID_CHARS: dict[str, str] = {
     "purl": "@:/?#",
     "npm": "@/",
     "url": ":@[]?#/",
@@ -124,7 +123,7 @@ _DOMAIN_VALID_CHARS: Dict[str, str] = {
 }
 
 # Keywords that hint at the domain of a regex pattern.
-_DOMAIN_HINTS: Dict[str, List[str]] = {
+_DOMAIN_HINTS: dict[str, list[str]] = {
     "purl": ["purl", "pkg:", "package_url", "PURL"],
     "npm": ["npm", "node_module", "package.json", "scoped"],
     "url": ["url", "uri", "href", "endpoint", "http"],
@@ -159,14 +158,14 @@ _NEGATED_CLASS_RE = re.compile(
 )
 
 
-def _nearby_text(lines: List[str], line_idx: int, window: int = 10) -> str:
+def _nearby_text(lines: list[str], line_idx: int, window: int = 10) -> str:
     """Return source text around a line for domain hinting."""
     start = max(0, line_idx - window)
     end = min(len(lines), line_idx + window + 1)
     return "\n".join(lines[start:end])
 
 
-def _guess_domain(context: str) -> Optional[str]:
+def _guess_domain(context: str) -> str | None:
     """Guess the domain from surrounding source text."""
     context_lower = context.lower()
     for domain, hints in _DOMAIN_HINTS.items():
@@ -183,10 +182,10 @@ def _guess_domain(context: str) -> Optional[str]:
 def _detect_extension_synonym_gaps(
     filename: str,
     source: str,
-    lines: List[str],
-) -> List[PatternGap]:
+    lines: list[str],
+) -> list[PatternGap]:
     """Find glob/endswith patterns that use one extension but miss synonyms."""
-    gaps: List[PatternGap] = []
+    gaps: list[PatternGap] = []
     source_lower = source.lower()
 
     for line_idx, line in enumerate(lines):
@@ -244,13 +243,13 @@ def _detect_extension_synonym_gaps(
 def _detect_sibling_prefix_gaps(
     filename: str,
     source: str,
-    lines: List[str],
-) -> List[PatternGap]:
+    lines: list[str],
+) -> list[PatternGap]:
     """Find startswith patterns where a short/long form sibling is missing."""
-    gaps: List[PatternGap] = []
+    gaps: list[PatternGap] = []
 
     # Collect all startswith options in this file.
-    prefix_locations: List[Tuple[str, int, str]] = []  # (option, line_no, match_text)
+    prefix_locations: list[tuple[str, int, str]] = []  # (option, line_no, match_text)
     for line_idx, line in enumerate(lines):
         for m in _STARTSWITH_RE.finditer(line):
             prefix_locations.append((m.group(1), line_idx + 1, m.group(0)))
@@ -258,7 +257,7 @@ def _detect_sibling_prefix_gaps(
     all_prefixes = {opt for opt, _, _ in prefix_locations}
 
     for option, line_no, match_text in prefix_locations:
-        sibling: Optional[str] = None
+        sibling: str | None = None
         if option in _LONG_TO_SHORT:
             sibling = _LONG_TO_SHORT[option]
         elif option in _SHORT_TO_LONG:
@@ -349,10 +348,10 @@ def _detect_sibling_prefix_gaps(
 def _detect_char_class_exclusions(
     filename: str,
     source: str,
-    lines: List[str],
-) -> List[PatternGap]:
+    lines: list[str],
+) -> list[PatternGap]:
     """Find negated character classes that exclude valid domain chars."""
-    gaps: List[PatternGap] = []
+    gaps: list[PatternGap] = []
 
     for line_idx, line in enumerate(lines):
         line_no = line_idx + 1
@@ -392,10 +391,10 @@ def _detect_char_class_exclusions(
 def _detect_directory_glob_gaps(
     filename: str,
     source: str,
-    lines: List[str],
-) -> List[PatternGap]:
+    lines: list[str],
+) -> list[PatternGap]:
     """Flag globs in known directory types that miss expected extensions."""
-    gaps: List[PatternGap] = []
+    gaps: list[PatternGap] = []
 
     for dir_pattern, expected_exts in _DIRECTORY_EXTENSION_EXPECTATIONS.items():
         if dir_pattern not in source:
@@ -439,7 +438,7 @@ def _detect_directory_glob_gaps(
 # Public API
 # ---------------------------------------------------------------------------
 
-def detect_pattern_gaps(source_text: Dict[str, str]) -> List[PatternGap]:
+def detect_pattern_gaps(source_text: dict[str, str]) -> list[PatternGap]:
     """Detect patterns in source files that are too narrow.
 
     Args:
@@ -448,7 +447,7 @@ def detect_pattern_gaps(source_text: Dict[str, str]) -> List[PatternGap]:
     Returns:
         List of ``PatternGap`` instances, one per detected gap.
     """
-    all_gaps: List[PatternGap] = []
+    all_gaps: list[PatternGap] = []
 
     for filename, source in source_text.items():
         lines = source.splitlines()

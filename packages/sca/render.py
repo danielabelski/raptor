@@ -29,7 +29,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any
+from collections.abc import Sequence
 
 from .findings import severity_rank
 from .models import REACHABILITY_LABELS, REACHABILITY_ORDER
@@ -74,7 +75,7 @@ def main(argv: Sequence[str]) -> int:
         return 2
 
     target = Path(args.target).resolve() if args.target else base_dir
-    wrote: List[str] = []
+    wrote: list[str] = []
     if not args.no_md:
         md = _render_markdown(rows, target=target)
         md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,8 +155,8 @@ _NOT_REACHABLE_VERDICTS = {"not_reachable", "not_function_reachable"}
 
 
 def _apply_reachability_filters(
-    rows: List[Dict[str, Any]], args: argparse.Namespace,
-) -> List[Dict[str, Any]]:
+    rows: list[dict[str, Any]], args: argparse.Namespace,
+) -> list[dict[str, Any]]:
     """Filter vuln rows by reachability while preserving other rows."""
     requested = []
     if args.only_reachable:
@@ -188,7 +189,7 @@ def _apply_reachability_filters(
     if allowed is None and denied is None:
         return rows
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for row in rows:
         if row.get("vuln_type") != "sca:vulnerable_dependency":
             out.append(row)
@@ -202,7 +203,7 @@ def _apply_reachability_filters(
     return out
 
 
-def _row_reachability_verdict(row: Dict[str, Any]) -> str:
+def _row_reachability_verdict(row: dict[str, Any]) -> str:
     sca = row.get("sca") or {}
     reach = sca.get("reachability") or {}
     verdict = reach.get("verdict")
@@ -224,7 +225,7 @@ _SEV_LABEL = {
 
 
 
-def _render_markdown(rows: List[Dict[str, Any]], *, target: Path) -> str:
+def _render_markdown(rows: list[dict[str, Any]], *, target: Path) -> str:
     # Defensive — hand-edited findings.json may contain non-dict
     # elements; filter them out rather than crash on `.get()`.
     rows = [r for r in rows if isinstance(r, dict)]
@@ -297,7 +298,7 @@ def _render_markdown(rows: List[Dict[str, Any]], *, target: Path) -> str:
     return buf.getvalue()
 
 
-def _render_reachability_breakdown(rows: List[Dict[str, Any]]) -> str:
+def _render_reachability_breakdown(rows: list[dict[str, Any]]) -> str:
     counts: Counter[str] = Counter()
     for row in rows:
         if row.get("suppressed"):
@@ -318,7 +319,7 @@ def _render_reachability_breakdown(rows: List[Dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
-def _render_vuln_table(buf: StringIO, rows: List[Dict[str, Any]]) -> None:
+def _render_vuln_table(buf: StringIO, rows: list[dict[str, Any]]) -> None:
     ordered = sorted(
         rows,
         key=lambda r: (
@@ -357,7 +358,7 @@ def _render_vuln_table(buf: StringIO, rows: List[Dict[str, Any]]) -> None:
     buf.write("\n")
 
 
-def _render_kind_table(buf: StringIO, rows: List[Dict[str, Any]]) -> None:
+def _render_kind_table(buf: StringIO, rows: list[dict[str, Any]]) -> None:
     # Collapse identical (severity, kind, ecosystem, name) rows that
     # share the same detail — a dep loose-pinned across both
     # ``requirements.txt`` and ``requirements-dev.txt`` produces two
@@ -367,7 +368,7 @@ def _render_kind_table(buf: StringIO, rows: List[Dict[str, Any]]) -> None:
     # detail is suffixed with `(in N manifests)`.
     from collections import defaultdict
 
-    groups: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         sca = r.get("sca") or {}
         key = (

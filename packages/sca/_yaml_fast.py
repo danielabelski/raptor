@@ -24,7 +24,8 @@ modes — only speed differs.
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any
+from collections.abc import Iterator
 
 import yaml
 

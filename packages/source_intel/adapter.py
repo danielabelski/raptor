@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any
 
 from core.dataflow.finding import Finding
 from core.dataflow.validator import ValidatorVerdict
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # the finding's rule_id is in the relevant set for the observed
 # attribute. This keeps the verdict policy scoped — WUR evidence on
 # a use-after-free finding does NOT support EXPLOITABLE.
-_KIND_RELEVANT_RULE_PREFIXES: Dict[str, Tuple[str, ...]] = {
+_KIND_RELEVANT_RULE_PREFIXES: dict[str, tuple[str, ...]] = {
     KIND_WUR: (
         "cpp/null-dereference",
         "cpp/uncontrolled-",        # uncontrolled-allocation-size, etc.
@@ -135,8 +135,8 @@ class SourceIntelValidator:
 
     def __init__(
         self,
-        repo_root: Optional[Path] = None,
-        cache: Optional[SourceIntelCache] = None,
+        repo_root: Path | None = None,
+        cache: SourceIntelCache | None = None,
     ) -> None:
         self._repo_root = repo_root or _DEFAULT_REPO_ROOT
         self._cache = cache or SourceIntelCache()
@@ -166,7 +166,7 @@ class SourceIntelValidator:
     # Internal
     # -----------------------------------------------------------------
 
-    def _target_for_finding(self, finding: Finding) -> Optional[Path]:
+    def _target_for_finding(self, finding: Finding) -> Path | None:
         """Derive the target directory to scan from the finding's
         source file path.
 
@@ -327,7 +327,7 @@ def _rule_id_is_wur_relevant(rule_id: str) -> bool:
 # Rule prefixes for which unchecked-allocation evidence directly
 # supports the finding. Currently null-deref family — the typical
 # manifestation of an unchecked alloc-result is a NULL deref.
-_NULL_DEREF_RULE_PREFIXES: Tuple[str, ...] = (
+_NULL_DEREF_RULE_PREFIXES: tuple[str, ...] = (
     "cpp/null-dereference",
     "c/null-dereference",
 )
@@ -420,7 +420,7 @@ def _finding_in_dead_code(finding: Finding, repo_root: Path) -> bool:
 # concatenation (so the literal name never appears in source).
 # Conservative — only suppresses dead-code claim, doesn't change
 # other axes.
-_MACRO_REGISTERED_SUFFIXES: Tuple[str, ...] = (
+_MACRO_REGISTERED_SUFFIXES: tuple[str, ...] = (
     "_ioctl_submit", "_ioctl", "_ioctl_",
     "_show", "_store",
     "_open", "_release", "_read", "_write",
@@ -597,7 +597,7 @@ _LOCAL_ASSIGN_RE = re.compile(
 )
 
 
-def _extract_local_var_from_snippet(snippet: Optional[str]) -> Optional[str]:
+def _extract_local_var_from_snippet(snippet: str | None) -> str | None:
     """Best-effort: from `p = kstrdup(s, 0);` return `p`."""
     if not snippet:
         return None
@@ -689,7 +689,7 @@ def _has_interprocedural_check(
 # CWE-78 / CWE-89 (injection) findings don't benefit from this signal
 # because the exploitation primitive doesn't depend on continued
 # execution of the C-language process state.
-_MEMORY_CORRUPTION_RULE_PREFIXES: Tuple[str, ...] = (
+_MEMORY_CORRUPTION_RULE_PREFIXES: tuple[str, ...] = (
     "cpp/null-dereference",
     "cpp/use-after-free",
     "cpp/double-free",
@@ -749,7 +749,7 @@ def _abort_dominates_finding(
     #     no proximity gate — abort runs on every path from
     #     function entry to its line, so anything in the same
     #     function after the abort line is dominated.
-    _PROXIMITY_BY_GRADE: Dict[str, Optional[int]] = {
+    _PROXIMITY_BY_GRADE: dict[str, int | None] = {
         GRADE_SAME_FUNCTION: 50,
         GRADE_SAME_PATH: 300,
         GRADE_DOMINATES: None,  # no proximity gate
@@ -804,7 +804,7 @@ _SAME_FUNCTION_LINE_PROXIMITY_DEFAULT = 50
 # to a namespace — an unprivileged userns admin can hold
 # CAP_SYS_ADMIN inside their own ns without root, so they DON'T
 # satisfy the "already root-equivalent" requirement.
-_PRIVILEGED_CAP_FUNCTIONS: FrozenSet[str] = frozenset({
+_PRIVILEGED_CAP_FUNCTIONS: frozenset[str] = frozenset({
     "capable",
 })
 
@@ -825,7 +825,7 @@ _PRIVILEGED_CAP_FUNCTIONS: FrozenSet[str] = frozenset({
 # leaked as NOT_EXPLOITABLE when it should have stayed UNCERTAIN.
 # CAP_NET_ADMIN grants network-stack admin only; doesn't let you
 # load kernel modules or write arbitrary kmem.
-_PRIVILEGED_CAP_CONSTANTS: FrozenSet[str] = frozenset({
+_PRIVILEGED_CAP_CONSTANTS: frozenset[str] = frozenset({
     "CAP_SYS_ADMIN",      # nearly all FS / mount / namespace control
     "CAP_SYS_MODULE",     # arbitrary kernel-module load → arbitrary code
     "CAP_SYS_RAWIO",      # arbitrary device-mem access via /dev/mem
@@ -877,7 +877,7 @@ def _privileged_capability_dominates(
     #   * DOMINATES (depth=1, no preceding return): no gate;
     #     additionally requires cap_line < sink_line (a cap below
     #     the bug can't dominate it).
-    proximity_by_grade: Dict[str, Optional[int]] = {
+    proximity_by_grade: dict[str, int | None] = {
         GRADE_SAME_FUNCTION: 50,
         GRADE_SAME_PATH: 300,
         GRADE_DOMINATES: None,
@@ -954,7 +954,7 @@ def _line_uses_privileged_cap(file_path: str, line_no: int) -> bool:
 #   * FORTIFY=3 (gcc 12+, glibc 2.34+) extends coverage; we treat
 #     >=2 as "intercept" since the level-2 set is the stable union
 #     covered by all 2/3 implementations.
-_FORTIFIED_WRITE_CALLS: FrozenSet[str] = frozenset({
+_FORTIFIED_WRITE_CALLS: frozenset[str] = frozenset({
     "memcpy", "memmove", "memset", "mempcpy",
     "strcpy", "strncpy", "strcat", "strncat", "stpcpy", "stpncpy",
     "sprintf", "snprintf", "vsprintf", "vsnprintf",
@@ -1100,7 +1100,7 @@ def _fortified_dest_is_variable_size(finding: Finding) -> bool:
 # size, unbounded-write) are correctly suppressed when a check on
 # the size variable runs between bug-site and use-site, with an
 # early-exit. NOT applicable to null-deref / UAF / double-free.
-_DOWNSTREAM_CHECK_RULE_PREFIXES: Tuple[str, ...] = (
+_DOWNSTREAM_CHECK_RULE_PREFIXES: tuple[str, ...] = (
     "cpp/uncontrolled-",       # uncontrolled-allocation-size etc.
     "cpp/unbounded-write",
     "c/uncontrolled-",
@@ -1231,7 +1231,7 @@ _LINE_COMMENT_STRIP_RE = re.compile(r"//.*$", re.MULTILINE)
 # Hazard-kind → relevant CWE rule_id prefixes. Each kind only
 # strengthens findings whose CWE class matches the hazard's
 # threat-model fit.
-_HAZARD_KIND_RELEVANT_RULES: Dict[str, Tuple[str, ...]] = {
+_HAZARD_KIND_RELEVANT_RULES: dict[str, tuple[str, ...]] = {
     "deprecated_func": (
         "cpp/unbounded-write",
         "cpp/uncontrolled-",
@@ -1412,7 +1412,7 @@ def _path_is_gated(
     result: SourceIntelResult,
     *,
     remaining_depth: int,
-    visited: FrozenSet[str],
+    visited: frozenset[str],
 ) -> bool:
     """Multi-hop helper: True iff every call path reaching ``fn_name``
     (within ``remaining_depth`` further hops) passes through a
@@ -1583,7 +1583,7 @@ def _is_literal_const(value: str) -> bool:
 
 def _function_body_via_inventory(
     file_path: str, function_name: str,
-) -> Optional[list]:
+) -> list | None:
     """Tree-sitter-backed body extraction via the cached inventory
     populated by :func:`packages.source_intel.analyze.analyze`.
 
@@ -1655,7 +1655,7 @@ _FN_DEF_OPEN_RE = re.compile(
 
 def _find_function_definition_open(
     lines: list, function_name: str,
-) -> Optional[int]:
+) -> int | None:
     """Find the line where ``function_name``'s definition opens
     (line containing `func_name(args) {` or where `{` is on the
     next line). Returns 0-indexed line index, or None if not found.
@@ -1684,7 +1684,7 @@ def _find_function_definition_open(
 
 def _extract_function_body(
     lines: list, fn_open_line: int,
-) -> Tuple[list, int]:
+) -> tuple[list, int]:
     """Given the line index of a function-definition opener (line
     containing `{`), extract the body lines (between `{` and
     matching `}`). Returns (body_lines_list, close_line_index).

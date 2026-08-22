@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 from core.ast.model import FunctionView, Return, SCHEMA_VERSION
 from core.inventory.call_graph import (
@@ -97,9 +97,9 @@ def view(
     path: Path,
     function: str,
     *,
-    at_line: Optional[int] = None,
-    language: Optional[str] = None,
-) -> Optional[FunctionView]:
+    at_line: int | None = None,
+    language: str | None = None,
+) -> FunctionView | None:
     """Return a :class:`FunctionView` for ``function`` in ``path``.
 
     Returns ``None`` when:
@@ -179,8 +179,8 @@ def _filter_calls(
     content: str,
     language: str,
     line_start: int,
-    line_end: Optional[int],
-) -> Tuple:
+    line_end: int | None,
+) -> tuple:
     """Return calls inside the function's line range. Empty tuple
     when the language has no call-graph walker or the file is
     unparseable for it."""
@@ -209,8 +209,8 @@ def _walk_returns(
     content: str,
     language: str,
     line_start: int,
-    line_end: Optional[int],
-) -> Tuple[Return, ...]:
+    line_end: int | None,
+) -> tuple[Return, ...]:
     """Return all explicit ``return`` statements inside the function.
 
     Implicit returns (end-of-function fall-through in C/Go, etc.) are
@@ -235,7 +235,7 @@ def _walk_returns_python(
     content: str,
     line_start: int,
     line_end: int,
-) -> Tuple[Return, ...]:
+) -> tuple[Return, ...]:
     """Use stdlib ``ast`` for Python — no third-party grammar needed."""
     import ast as _stdlib_ast  # absolute import: shadowed by core.ast namespace
     try:
@@ -247,7 +247,7 @@ def _walk_returns_python(
         # expressions, ValueError for null bytes (pre-3.12). All mean
         # "unparseable file" here, not a caller bug.
         return ()
-    out: List[Return] = []
+    out: list[Return] = []
     for node in _stdlib_ast.walk(tree):
         if not isinstance(node, _stdlib_ast.Return):
             continue
@@ -272,7 +272,7 @@ def _walk_returns_ts(
     grammar_module,
     line_start: int,
     line_end: int,
-) -> Tuple[Return, ...]:
+) -> tuple[Return, ...]:
     """Generic tree-sitter ``return_statement`` walk.
 
     The grammar's emitted node type is conventionally
@@ -292,7 +292,7 @@ def _walk_returns_ts(
         tree = parser.parse(content.encode("utf-8", errors="replace"))
     except Exception:                                       # noqa: BLE001
         return ()
-    out: List[Return] = []
+    out: list[Return] = []
     return_types = ("return_statement",)
 
     # Iterative pre-order walk with an explicit stack: the parse tree
@@ -374,7 +374,7 @@ def _has_inline_asm(
     content: str,
     language: str,
     line_start: int,
-    line_end: Optional[int],
+    line_end: int | None,
 ) -> bool:
     """True iff a GNU-extension inline-asm construct appears in the
     function body. Non-C/C++ always False."""

@@ -16,7 +16,7 @@ import json as _json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 _DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "sentinel_packages.json"
 
-_SentinelKey = Tuple[str, str]  # (ecosystem, name)
+_SentinelKey = tuple[str, str]  # (ecosystem, name)
 
 
 @dataclass
@@ -43,10 +43,10 @@ class SentinelHit:
             )
 
 
-_CACHE: Optional[Dict[_SentinelKey, List[dict]]] = None
+_CACHE: dict[_SentinelKey, list[dict]] | None = None
 
 
-def _load_sentinels() -> Dict[_SentinelKey, List[dict]]:
+def _load_sentinels() -> dict[_SentinelKey, list[dict]]:
     global _CACHE
     if _CACHE is not None:
         return _CACHE
@@ -56,7 +56,7 @@ def _load_sentinels() -> Dict[_SentinelKey, List[dict]]:
         logger.warning("sca.supply_chain.sentinel: cannot load %s: %s",
                        _DATA_FILE, e)
         return {}
-    out: Dict[_SentinelKey, List[dict]] = {}
+    out: dict[_SentinelKey, list[dict]] = {}
     for entry in data.get("packages", []):
         eco = entry.get("ecosystem", "")
         name = entry.get("name", "").lower()
@@ -66,12 +66,12 @@ def _load_sentinels() -> Dict[_SentinelKey, List[dict]]:
     return _CACHE
 
 
-def scan_deps(deps: Iterable[Dependency]) -> List[SentinelHit]:
+def scan_deps(deps: Iterable[Dependency]) -> list[SentinelHit]:
     sentinels = _load_sentinels()
     if not sentinels:
         return []
-    hits: List[SentinelHit] = []
-    seen: Set[str] = set()
+    hits: list[SentinelHit] = []
+    seen: set[str] = set()
     for dep in deps:
         key = (dep.ecosystem, dep.name.lower())
         entries = sentinels.get(key)

@@ -8,7 +8,6 @@ identical for the shared tools across both modes.
 
 from __future__ import annotations
 
-from typing import List
 
 from core.llm.tool_use import ToolDef
 
@@ -35,7 +34,7 @@ GLOB_DESCRIPTION = (
 )
 
 
-def build_shared_tools(sandbox: SandboxedTools) -> List[ToolDef]:
+def build_shared_tools(sandbox: SandboxedTools) -> list[ToolDef]:
     """Read/Grep/Glob tools, identical between hunt and trace.
 
     Each ToolDef carries (name, description, input_schema, handler).

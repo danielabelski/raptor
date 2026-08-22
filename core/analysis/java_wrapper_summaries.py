@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any
 
 from core.dataflow.sanitizer_catalog import (
     SanitizerBinding,
@@ -120,8 +120,8 @@ class WrapperSummary:
     owner: str
     simple_name: str
     arity: int
-    sanitized_positions: FrozenSet[int]
-    sanitizer_callables: FrozenSet[str]
+    sanitized_positions: frozenset[int]
+    sanitizer_callables: frozenset[str]
     is_static: bool
     bare_callable: bool
 
@@ -132,8 +132,8 @@ class _CallInfo:
     form ('bare' / 'static' / 'creation' / 'creation_args') plus the
     positional argument identifiers (None for non-identifier args)."""
     form: str
-    owner: Optional[str]
-    args: Tuple[Optional[str], ...]
+    owner: str | None
+    args: tuple[str | None, ...]
 
 
 class _Refused(Exception):
@@ -142,18 +142,18 @@ class _Refused(Exception):
         self.reason = reason
 
 
-def _modifiers(decl) -> Set[str]:
+def _modifiers(decl) -> set[str]:
     mods = next((c for c in decl.children if c.type == "modifiers"), None)
     if mods is None:
         return set()
     return {_text(c) for c in mods.children}
 
 
-def _param_names(decl) -> Optional[Tuple[str, ...]]:
+def _param_names(decl) -> tuple[str, ...] | None:
     params = decl.child_by_field_name("parameters")
     if params is None:
         return None
-    out: List[str] = []
+    out: list[str] = []
     for p in params.children:
         if not p.is_named:
             continue
@@ -185,7 +185,7 @@ def _subtree_touches_state(n) -> bool:
     return False
 
 
-def _straight_line_locals(body, params: Tuple[str, ...],
+def _straight_line_locals(body, params: tuple[str, ...],
                           *, strict_state: bool):
     """Return ``(locals_map, return_expr)`` for a straight-line body,
     or raise :class:`_Refused`. ``strict_state`` (cross-class
@@ -198,8 +198,8 @@ def _straight_line_locals(body, params: Tuple[str, ...],
         raise _Refused("body does not end in a single return")
     if strict_state and _subtree_touches_state(body):
         raise _Refused("instance state touched in a cross-class helper")
-    locals_map: Dict[str, Any] = {}
-    assigned: Set[str] = set()
+    locals_map: dict[str, Any] = {}
+    assigned: set[str] = set()
     for stmt in stmts[:-1]:
         if stmt.type == _LOCAL_DECL:
             decls = [c for c in stmt.children if c.type == _DECLARATOR]
@@ -244,20 +244,20 @@ def _straight_line_locals(body, params: Tuple[str, ...],
 
 def _classify_return(
     expr,
-    params: Tuple[str, ...],
-    locals_map: Dict[str, Any],
+    params: tuple[str, ...],
+    locals_map: dict[str, Any],
     resolver,
-    catalog: Set[str],
-    composable: Dict[Tuple[str, str, int], "WrapperSummary"],
+    catalog: set[str],
+    composable: dict[tuple[str, str, int], WrapperSummary],
     owner: str,
-) -> Tuple[FrozenSet[int], FrozenSet[str]]:
+) -> tuple[frozenset[int], frozenset[str]]:
     """Positions and callables when the return is clean; raises
     :class:`_Refused` otherwise. ``composable`` holds the depth-1
     summaries a bare call may compose with (same owner only)."""
     param_pos = {p: i for i, p in enumerate(params)}
-    sanitized: Dict[int, Set[str]] = {}
+    sanitized: dict[int, set[str]] = {}
 
-    def visit(n, inside: Optional[FrozenSet[str]], depth: int) -> None:
+    def visit(n, inside: frozenset[str] | None, depth: int) -> None:
         if depth > _MAX_SUBST_DEPTH:
             raise _Refused("substitution depth cap")
         n = _unwrap(n)
@@ -330,15 +330,15 @@ def _classify_return(
 class _ClassInfo:
     node: Any
     name: str
-    modifiers: Set[str]
+    modifiers: set[str]
     is_nested: bool
 
 
-def _class_inventory(root) -> Tuple[Dict[str, List[_ClassInfo]], Set[str]]:
+def _class_inventory(root) -> tuple[dict[str, list[_ClassInfo]], set[str]]:
     """All class declarations by simple name, plus the set of names
     appearing in any ``extends`` clause in the file."""
-    by_name: Dict[str, List[_ClassInfo]] = {}
-    extended: Set[str] = set()
+    by_name: dict[str, list[_ClassInfo]] = {}
+    extended: set[str] = set()
     for n in _iter_named(root):
         if n.type != _CLASS_DECL:
             continue
@@ -385,9 +385,9 @@ def _trivially_constructible(cls_node) -> bool:
     return True
 
 
-def _methods_of(cls_node) -> Dict[Tuple[str, int], List[Any]]:
+def _methods_of(cls_node) -> dict[tuple[str, int], list[Any]]:
     body = cls_node.child_by_field_name("body")
-    out: Dict[Tuple[str, int], List[Any]] = {}
+    out: dict[tuple[str, int], list[Any]] = {}
     if body is None:
         return out
     for child in body.children:
@@ -410,17 +410,17 @@ def _summarize_class(
     *,
     is_enclosing: bool,
     resolver,
-    catalog: Set[str],
-    decisions: List[str],
-) -> Dict[Tuple[str, str, int], WrapperSummary]:
+    catalog: set[str],
+    decisions: list[str],
+) -> dict[tuple[str, str, int], WrapperSummary]:
     """Two-pass summaries for one class. Pass 1 admits catalog-only
     returns; pass 2 re-tries pass-1 refusals allowing composition
     with the pass-1 set (depth exactly 2 — cycles and recursion never
     earn a pass-1 summary, so they refuse in both passes)."""
     owner = info.name
-    summaries: Dict[Tuple[str, str, int], WrapperSummary] = {}
+    summaries: dict[tuple[str, str, int], WrapperSummary] = {}
 
-    def attempt(name, arity, decls, composable) -> Optional[WrapperSummary]:
+    def attempt(name, arity, decls, composable) -> WrapperSummary | None:
         if len(decls) > 1:
             decisions.append(
                 f"{owner}.{name}/{arity}: refused (overload ambiguity)")
@@ -461,7 +461,7 @@ def _summarize_class(
         )
 
     methods = _methods_of(info.node)
-    pending: List[Tuple[str, int, List[Any]]] = []
+    pending: list[tuple[str, int, list[Any]]] = []
     for (name, arity), decls in methods.items():
         s = attempt(name, arity, decls, composable={})
         if s is not None:
@@ -486,16 +486,16 @@ def _summarize_class(
 
 def derive_wrapper_summaries(
     source_text: str,
-    line_hint: Tuple[int, int],
+    line_hint: tuple[int, int],
     cwe: str,
     language: str,
-) -> Tuple[Dict[Tuple[str, str, int], WrapperSummary], List[str]]:
+) -> tuple[dict[tuple[str, str, int], WrapperSummary], list[str]]:
     """Summaries for qualifying helpers reachable from the method
     enclosing ``line_hint``: the enclosing class's own private/static
     helpers plus qualifying same-file helper classes. Returns
     ``(summaries, decisions)`` keyed ``(owner, name, arity)``; empty
     on any parse failure or when the CWE has no catalog sanitizers."""
-    decisions: List[str] = []
+    decisions: list[str] = []
     catalog = sanitizer_callables_for_cwe(cwe, language)
     if not catalog:
         return {}, ["no catalog sanitizers for this cwe/language"]
@@ -517,7 +517,7 @@ def derive_wrapper_summaries(
     by_name, extended = _class_inventory(root)
 
     lo, hi = min(line_hint), max(line_hint)
-    enclosing: Optional[_ClassInfo] = None
+    enclosing: _ClassInfo | None = None
     best_span = None
     for infos in by_name.values():
         for info in infos:
@@ -530,7 +530,7 @@ def derive_wrapper_summaries(
     if enclosing is None:
         return {}, ["no enclosing class for the finding's lines"]
 
-    summaries: Dict[Tuple[str, str, int], WrapperSummary] = {}
+    summaries: dict[tuple[str, str, int], WrapperSummary] = {}
     summaries.update(_summarize_class(
         enclosing, is_enclosing=True, resolver=resolver,
         catalog=catalog, decisions=decisions))
@@ -579,9 +579,9 @@ def derive_wrapper_summaries(
 # Call-site index + binding synthesis
 # ---------------------------------------------------------------------------
 
-def _positional_args(node) -> Tuple[Optional[str], ...]:
+def _positional_args(node) -> tuple[str | None, ...]:
     args_node = node.child_by_field_name("arguments")
-    args: List[Optional[str]] = []
+    args: list[str | None] = []
     if args_node is not None:
         for c in args_node.children:
             if not c.is_named:
@@ -594,9 +594,9 @@ def _positional_args(node) -> Tuple[Optional[str], ...]:
 
 def _index_calls(
     source_text: str,
-    simple_names: Set[str],
-    class_names: Set[str],
-) -> Dict[Tuple[int, int], _CallInfo]:
+    simple_names: set[str],
+    class_names: set[str],
+) -> dict[tuple[int, int], _CallInfo]:
     """Qualifying invocations keyed by the invocation node's
     (lineno, col) — the pair :class:`CallSite` carries. Receiver
     forms beyond bare / same-file-static / zero-arg-creation are
@@ -610,7 +610,7 @@ def _index_calls(
         tree = parser.parse(source_text.encode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return {}
-    out: Dict[Tuple[int, int], _CallInfo] = {}
+    out: dict[tuple[int, int], _CallInfo] = {}
     for cur in _iter_named(tree.root_node):
         if cur.type != _METHOD_INVOCATION:
             continue
@@ -659,10 +659,10 @@ def _simple_of(callsite_name: str) -> str:
 def synthetic_wrapper_bindings_java(
     cfg,
     source_text: str,
-    line_hint: Tuple[int, int],
+    line_hint: tuple[int, int],
     cwe: str,
     language: str,
-) -> FrozenSet[SanitizerBinding]:
+) -> frozenset[SanitizerBinding]:
     """Synthetic bindings for qualifying wrapper calls in ``cfg``.
     Empty frozenset on any failure — best-effort, the
     intra-procedural verdict stands."""
@@ -674,7 +674,7 @@ def synthetic_wrapper_bindings_java(
     class_names = {owner for (owner, _n, _a) in summaries}
     calls = _index_calls(source_text, simple_names, class_names)
 
-    bindings: List[SanitizerBinding] = []
+    bindings: list[SanitizerBinding] = []
     for node in cfg.nodes():
         for cs in getattr(node, "call_sites", ()) or ():
             info = calls.get((cs.lineno, cs.col_offset))
@@ -772,7 +772,7 @@ class ConduitSummary:
     simple_name: str
     arity: int
     kind: str
-    param_index: Optional[int]
+    param_index: int | None
     const_value: Any
     is_static: bool
     bare_callable: bool
@@ -784,8 +784,8 @@ _IF_STMT = "if_statement"
 _COMMENTS = frozenset({"line_comment", "block_comment"})
 
 
-def _classify_expr(expr, params: Tuple[str, ...],
-                   env: Dict[str, Any]) -> Tuple[str, Optional[int], Any]:
+def _classify_expr(expr, params: tuple[str, ...],
+                   env: dict[str, Any]) -> tuple[str, int | None, Any]:
     """AbstractVal ``(kind, param_index, const_value)`` for an
     expression under the body environment, or raise :class:`_Refused`.
     ``env`` maps body-local names to AbstractVals (or
@@ -856,7 +856,7 @@ def _merge_vals(a, b):
     raise _Refused("unmergeable branch values")
 
 
-def _single_assignment_arm(arm) -> Optional[Tuple[str, Any]]:
+def _single_assignment_arm(arm) -> tuple[str, Any] | None:
     """``(name, rhs)`` when an if-arm is exactly one plain assignment
     (braced or not); None otherwise."""
     node = arm
@@ -884,10 +884,10 @@ def _single_assignment_arm(arm) -> Optional[Tuple[str, Any]]:
 
 def _walk_conduit_body(
     body,
-    params: Tuple[str, ...],
+    params: tuple[str, ...],
     *,
     strict_state: bool,
-) -> Tuple[str, Optional[int], Any]:
+) -> tuple[str, int | None, Any]:
     """Sequential abstract interpretation of a conduit body over the
     const/param/join lattice. Exact for the accepted statement forms
     (declarations with or without initializers, plain reassignments —
@@ -905,8 +905,8 @@ def _walk_conduit_body(
         raise _Refused("body does not end in a single return")
     if strict_state and _subtree_touches_state(body):
         raise _Refused("instance state touched in a cross-class helper")
-    env: Dict[str, Any] = {}
-    declared: Set[str] = set()
+    env: dict[str, Any] = {}
+    declared: set[str] = set()
 
     def assign(name: str, rhs) -> None:
         if name in params:
@@ -1001,12 +1001,12 @@ def _summarize_class_conduits(
     info: _ClassInfo,
     *,
     is_enclosing: bool,
-    decisions: List[str],
-) -> Dict[Tuple[str, str, int], ConduitSummary]:
+    decisions: list[str],
+) -> dict[tuple[str, str, int], ConduitSummary]:
     """Conduit summaries for one class — same structural discipline
     as :func:`_summarize_class`, different return grammar."""
     owner = info.name
-    out: Dict[Tuple[str, str, int], ConduitSummary] = {}
+    out: dict[tuple[str, str, int], ConduitSummary] = {}
     for (name, arity), decls in _methods_of(info.node).items():
         if len(decls) > 1:
             decisions.append(
@@ -1051,14 +1051,14 @@ def _summarize_class_conduits(
 
 def derive_conduit_summaries(
     source_text: str,
-    line_hint: Tuple[int, int],
-) -> Tuple[Dict[Tuple[str, str, int], ConduitSummary], List[str]]:
+    line_hint: tuple[int, int],
+) -> tuple[dict[tuple[str, str, int], ConduitSummary], list[str]]:
     """Conduit summaries reachable from the method enclosing
     ``line_hint`` — enclosing-class helpers plus qualifying same-file
     classes under the wrapper rules (bounded dispatch, trivial
     construction). CWE-independent: conduits carry values, not
     sanitization."""
-    decisions: List[str] = []
+    decisions: list[str] = []
     parser = _parser()
     if parser is None:
         return {}, ["tree-sitter java unavailable"]
@@ -1070,7 +1070,7 @@ def derive_conduit_summaries(
     by_name, extended = _class_inventory(root)
 
     lo, hi = min(line_hint), max(line_hint)
-    enclosing: Optional[_ClassInfo] = None
+    enclosing: _ClassInfo | None = None
     best_span = None
     for infos in by_name.values():
         for info in infos:
@@ -1083,7 +1083,7 @@ def derive_conduit_summaries(
     if enclosing is None:
         return {}, ["no enclosing class for the finding's lines"]
 
-    summaries: Dict[Tuple[str, str, int], ConduitSummary] = {}
+    summaries: dict[tuple[str, str, int], ConduitSummary] = {}
     summaries.update(_summarize_class_conduits(
         enclosing, is_enclosing=True, decisions=decisions))
     for name, infos in by_name.items():
@@ -1117,8 +1117,8 @@ def derive_conduit_summaries(
 
 def _index_conduit_calls(
     source_text: str,
-    summaries: Dict[Tuple[str, str, int], ConduitSummary],
-) -> Dict[Tuple[int, int], Tuple[ConduitSummary, Tuple[Optional[str], ...]]]:
+    summaries: dict[tuple[str, str, int], ConduitSummary],
+) -> dict[tuple[int, int], tuple[ConduitSummary, tuple[str | None, ...]]]:
     """Qualifying conduit invocations keyed by (lineno, col), resolved
     to their summary plus positional argument identifiers. Anonymous
     subclass bodies and creation-with-arguments never resolve;
@@ -1132,8 +1132,8 @@ def _index_conduit_calls(
         tree = parser.parse(source_text.encode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return {}
-    out: Dict[Tuple[int, int],
-              Tuple[ConduitSummary, Tuple[Optional[str], ...]]] = {}
+    out: dict[tuple[int, int],
+              tuple[ConduitSummary, tuple[str | None, ...]]] = {}
     for cur in _iter_named(tree.root_node):
         if cur.type != _METHOD_INVOCATION:
             continue
@@ -1145,7 +1145,7 @@ def _index_conduit_calls(
         arity = len(args)
         key = (cur.start_point[0] + 1, cur.start_point[1])
         obj = cur.child_by_field_name("object")
-        summary: Optional[ConduitSummary] = None
+        summary: ConduitSummary | None = None
         if obj is None:
             matching = [
                 s for s in summaries.values()
@@ -1179,8 +1179,8 @@ def _index_conduit_calls(
 
 def conduit_call_map(
     source_text: str,
-    line_hint: Tuple[int, int],
-) -> Dict[Tuple[int, int], Tuple[ConduitSummary, Tuple[Optional[str], ...]]]:
+    line_hint: tuple[int, int],
+) -> dict[tuple[int, int], tuple[ConduitSummary, tuple[str | None, ...]]]:
     """(lineno, col) → (summary, arg identifiers) for every resolvable
     conduit call in the file. Empty dict on any failure."""
     summaries, _decisions = derive_conduit_summaries(source_text, line_hint)
@@ -1235,8 +1235,8 @@ class ConduitFoldResolver:
 
 def make_conduit_fold_resolver(
     source_text: str,
-    line_hint: Tuple[int, int],
-) -> Optional[ConduitFoldResolver]:
+    line_hint: tuple[int, int],
+) -> ConduitFoldResolver | None:
     """Fold-hook over the file's resolvable conduit calls; None when
     the file has none (the folder then skips the hook entirely)."""
     calls = conduit_call_map(source_text, line_hint)

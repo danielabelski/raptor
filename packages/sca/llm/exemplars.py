@@ -16,7 +16,6 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Tuple
 
 from core.security.prompt_envelope import UntrustedBlock
 
@@ -26,7 +25,7 @@ _DATA_DIR = Path(__file__).resolve().parents[1] / "data"  # packages/sca/data
 
 
 @lru_cache(maxsize=16)
-def popular_names_block(ecosystem: str) -> Optional[UntrustedBlock]:
+def popular_names_block(ecosystem: str) -> UntrustedBlock | None:
     """Return an exemplar block of popular package names for *ecosystem*.
 
     Returns ``None`` when no list exists for the ecosystem.
@@ -54,7 +53,7 @@ def popular_names_block(ecosystem: str) -> Optional[UntrustedBlock]:
 
 
 @lru_cache(maxsize=1)
-def exfil_destinations_block() -> Optional[UntrustedBlock]:
+def exfil_destinations_block() -> UntrustedBlock | None:
     """Return an exemplar block of known exfiltration destination patterns."""
     path = _DATA_DIR / "exfil_destinations.json"
     if not path.is_file():
@@ -95,7 +94,7 @@ def exfil_destinations_block() -> Optional[UntrustedBlock]:
 
 def exemplar_blocks_for_supply_chain(
     ecosystem: str,
-) -> Tuple[UntrustedBlock, ...]:
+) -> tuple[UntrustedBlock, ...]:
     """All exemplar blocks relevant to supply-chain analysis.
 
     Returns a tuple suitable for appending to a stage's

@@ -34,12 +34,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Set
 
 # Directory names treated as test trees. Same set across both
 # reachability and supply-chain — a project's "tests" dir is its
 # tests dir regardless of which detector is asking.
-TEST_DIR_NAMES: Set[str] = {"tests", "test", "__tests__", "spec", "e2e"}
+TEST_DIR_NAMES: set[str] = {"tests", "test", "__tests__", "spec", "e2e"}
 
 # Test-file naming conventions across the languages /sca handles.
 # Cross-ecosystem extension landed after the docker-moby sweep

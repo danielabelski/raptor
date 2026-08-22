@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Sequence
 
 from . import SCA_CACHE_ROOT
 from .cache_eviction import DEFAULT_MAX_AGE_DAYS, evict_stale

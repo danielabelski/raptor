@@ -76,7 +76,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 
@@ -132,7 +132,7 @@ class GitRefHit:
     ref_spec: str                # raw value from package.json
     owner: str                   # parsed git host owner
     repo: str                    # parsed git host repo
-    ref: Optional[str]           # SHA / tag / branch / None
+    ref: str | None           # SHA / tag / branch / None
     ref_kind: str                # "sha40" / "tag_or_branch" / "none"
 
 
@@ -151,11 +151,11 @@ class OrphanCommitFinding:
 def scan_manifests(
     manifests: Iterable[Manifest],
     deps: Iterable[Dependency],
-) -> List[OrphanCommitFinding]:
+) -> list[OrphanCommitFinding]:
     """Walk every npm ``package.json`` for git/github refs in
     dependency fields. Returns one finding per (manifest × dep).
     """
-    out: List[OrphanCommitFinding] = []
+    out: list[OrphanCommitFinding] = []
     deps_list = list(deps)
     for m in manifests:
         if m.path.name != "package.json" or m.is_lockfile:
@@ -169,7 +169,7 @@ def scan_manifests(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _scan_one(path: Path, host: Dependency) -> List[OrphanCommitFinding]:
+def _scan_one(path: Path, host: Dependency) -> list[OrphanCommitFinding]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -184,7 +184,7 @@ def _scan_one(path: Path, host: Dependency) -> List[OrphanCommitFinding]:
         return []
     if not isinstance(data, dict):
         return []
-    out: List[OrphanCommitFinding] = []
+    out: list[OrphanCommitFinding] = []
     for field in _DEP_FIELDS:
         block = data.get(field)
         if not isinstance(block, dict):
@@ -205,7 +205,7 @@ def _scan_one(path: Path, host: Dependency) -> List[OrphanCommitFinding]:
 
 def _classify_spec(
     field: str, dep_name: str, spec: str,
-) -> Optional[GitRefHit]:
+) -> GitRefHit | None:
     """Recognise ``spec`` as a git/github ref. Returns ``None`` for
     plain semver / file: / npm: / workspace: specs."""
     spec_stripped = spec.strip()
@@ -243,7 +243,7 @@ def _classify_spec(
     )
 
 
-def _classify_ref(ref: Optional[str]) -> str:
+def _classify_ref(ref: str | None) -> str:
     if ref is None:
         return "none"
     if _SHA40_RE.match(ref):
@@ -293,8 +293,8 @@ def _severity_for(hit: GitRefHit) -> tuple[str, Confidence]:
 
 
 def _host_dep(
-    deps: List[Dependency], manifest: Manifest,
-) -> Optional[Dependency]:
+    deps: list[Dependency], manifest: Manifest,
+) -> Dependency | None:
     for d in deps:
         if d.declared_in == manifest.path:
             return d

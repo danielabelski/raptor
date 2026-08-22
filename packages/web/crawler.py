@@ -10,7 +10,6 @@ LLM-powered web crawler that:
 """
 
 import re
-from typing import Dict, List, Set, Optional
 from urllib.parse import urlparse, urljoin, parse_qs
 
 # No sys.path mutation here: this module is only ever imported (no
@@ -42,18 +41,18 @@ class WebCrawler:
         self.max_pages = max_pages
 
         # Discovered resources
-        self.visited_urls: Set[str] = set()
-        self.discovered_urls: Set[str] = set()
-        self.discovered_forms: List[Dict] = []
-        self.discovered_apis: List[Dict] = []
-        self.discovered_parameters: Set[str] = set()
+        self.visited_urls: set[str] = set()
+        self.discovered_urls: set[str] = set()
+        self.discovered_forms: list[dict] = []
+        self.discovered_apis: list[dict] = []
+        self.discovered_parameters: set[str] = set()
         # param name -> set of (unredacted) URLs whose query string
         # carried it. Lets the scanner fuzz a parameter only where it
         # was actually discovered instead of the full URL x parameter
         # cross-product. Form input names are NOT recorded here — the
         # scanner's form loop fuzzes those against their form action.
-        self.parameter_urls: Dict[str, Set[str]] = {}
-        self._log_page_ids: Dict[str, str] = {}
+        self.parameter_urls: dict[str, set[str]] = {}
+        self._log_page_ids: dict[str, str] = {}
 
         logger.info(
             f"Web crawler initialized (max_depth={max_depth}, max_pages={max_pages})"
@@ -88,7 +87,7 @@ class WebCrawler:
             self._log_page_ids[raw_url] = page_id
         return f"{self._target_log_label()} page_id={page_id}"
 
-    def _redacted_url_list(self, urls: Set[str]) -> List[str]:
+    def _redacted_url_list(self, urls: set[str]) -> list[str]:
         """Return a deterministic, redacted URL list for persisted crawl artifacts."""
         return [self._redact_url_for_artifact(url) for url in sorted(urls)]
 
@@ -130,7 +129,7 @@ class WebCrawler:
                 redacted_inputs[name] = metadata
         return redacted_inputs
 
-    def _redacted_form(self, form: Dict) -> Dict:
+    def _redacted_form(self, form: dict) -> dict:
         """Redact sensitive fields from a discovered form artifact."""
         redacted = dict(form)
         for field in ("action", "page_url"):
@@ -140,14 +139,14 @@ class WebCrawler:
             redacted["inputs"] = self._redacted_form_inputs(redacted["inputs"])
         return redacted
 
-    def _redacted_api(self, api: Dict) -> Dict:
+    def _redacted_api(self, api: dict) -> dict:
         """Redact URL-bearing fields from a discovered API artifact."""
         redacted = dict(api)
         if "url" in redacted:
             redacted["url"] = self._redact_url_for_artifact(redacted["url"])
         return redacted
 
-    def crawl(self, start_url: str) -> Dict:
+    def crawl(self, start_url: str) -> dict:
         """
         Crawl website starting from URL.
 
@@ -180,7 +179,7 @@ class WebCrawler:
         # acts as a single-page-fetch helper; the BFS loop
         # below drives multiple passes.
         from collections import deque
-        queue: "deque[tuple[str, int]]" = deque([(start_url, 0)])
+        queue: deque[tuple[str, int]] = deque([(start_url, 0)])
         while queue:
             if len(self.visited_urls) >= self.max_pages:
                 logger.info("Max pages limit reached (%d)", self.max_pages)
@@ -385,7 +384,7 @@ class WebCrawler:
                 self._crawl_log_label(url), type(e).__name__
             )
 
-    def _parse_form(self, form_element, page_url: str) -> Optional[Dict]:
+    def _parse_form(self, form_element, page_url: str) -> dict | None:
         """Parse HTML form to extract inputs and action."""
         try:
             action = form_element.get("action", "")
@@ -486,7 +485,7 @@ class WebCrawler:
                             f"Found API endpoint in JS: {self._crawl_log_label(absolute_url)}"
                         )
 
-    def get_results(self) -> Dict:
+    def get_results(self) -> dict:
         """Get crawl results."""
         return {
             "visited_urls": self._redacted_url_list(self.visited_urls),

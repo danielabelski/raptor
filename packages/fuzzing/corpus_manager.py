@@ -6,7 +6,6 @@ Manages fuzzing corpus (seed inputs).
 """
 
 from pathlib import Path
-from typing import List
 
 from core.logging import get_logger
 
@@ -65,7 +64,7 @@ class CorpusManager:
         logger.debug("Added seed: %s (%d bytes)", name, len(data))
         return seed_file
 
-    def add_seeds(self, seeds: List[bytes]) -> int:
+    def add_seeds(self, seeds: list[bytes]) -> int:
         """Add multiple seeds to corpus."""
         for idx, seed in enumerate(seeds):
             self.add_seed(seed, f"seed{idx}")
@@ -126,7 +125,7 @@ class CorpusManager:
         logger.info("Copied %s files to corpus from %s", count, source_dir)
         return count
 
-    def list_seeds(self) -> List[Path]:
+    def list_seeds(self) -> list[Path]:
         """List all seed files in corpus."""
         return [p for p in self.corpus_dir.rglob("*") if p.is_file()]
 

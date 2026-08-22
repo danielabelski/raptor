@@ -46,7 +46,7 @@ class SourceSpec:
     ref: str = ""            # kind=repo — tag / sha / branch
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SourceSpec":
+    def from_dict(cls, data: dict[str, Any]) -> SourceSpec:
         return cls(**_known(cls, data))
 
 
@@ -69,7 +69,7 @@ class ToolchainSpec:
     debug: bool = False
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ToolchainSpec":
+    def from_dict(cls, data: dict[str, Any]) -> ToolchainSpec:
         d = _known(cls, data)
         for key in ("cflags", "ldflags", "instrumentation"):
             if key in d and isinstance(d[key], list):
@@ -86,7 +86,7 @@ class BuildSpec:
     toolchain: ToolchainSpec | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BuildSpec":
+    def from_dict(cls, data: dict[str, Any]) -> BuildSpec:
         d = _known(cls, data)
         tc = d.get("toolchain")
         if isinstance(tc, dict):
@@ -108,7 +108,7 @@ class RunSpec:
         return dict(self.env)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RunSpec":
+    def from_dict(cls, data: dict[str, Any]) -> RunSpec:
         d = _known(cls, data)
         if isinstance(d.get("env"), dict):
             d["env"] = tuple(sorted(d["env"].items()))
@@ -126,7 +126,7 @@ class NetworkPolicy:
     egress_hosts: tuple[str, ...] = ()
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "NetworkPolicy":
+    def from_dict(cls, data: dict[str, Any]) -> NetworkPolicy:
         d = _known(cls, data)
         if isinstance(d.get("egress_hosts"), list):
             d["egress_hosts"] = tuple(d["egress_hosts"])
@@ -159,7 +159,7 @@ class EnvironmentSpec:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EnvironmentSpec":
+    def from_dict(cls, data: dict[str, Any]) -> EnvironmentSpec:
         d = _known(cls, data)
         if "name" not in d or not d["name"]:
             raise ValueError("EnvironmentSpec requires a name")
@@ -174,5 +174,5 @@ class EnvironmentSpec:
         return cls(**d)
 
     @classmethod
-    def from_json(cls, text: str) -> "EnvironmentSpec":
+    def from_json(cls, text: str) -> EnvironmentSpec:
         return cls.from_dict(json.loads(text))

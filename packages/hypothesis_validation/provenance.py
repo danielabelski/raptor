@@ -36,7 +36,8 @@ import hashlib
 import json
 import posixpath
 import re
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from .hypothesis import Hypothesis
 

@@ -38,7 +38,8 @@ import ssl
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 from core.env.handle import RuntimeHandle
 
@@ -73,10 +74,10 @@ class VerifyHooks:
     """
 
     sanitize: Callable[[str], str] = field(default=lambda text: text)
-    status_hint: Optional[Callable[[dict[str, Any], str], str]] = None
-    http_request_hint: Optional[Callable[..., str]] = None
-    tcp_hint: Optional[Callable[..., str]] = None
-    quality_warning: Optional[Callable[[list[CheckResult]], str]] = None
+    status_hint: Callable[[dict[str, Any], str], str] | None = None
+    http_request_hint: Callable[..., str] | None = None
+    tcp_hint: Callable[..., str] | None = None
+    quality_warning: Callable[[list[CheckResult]], str] | None = None
 
 
 _NO_HOOKS = VerifyHooks()

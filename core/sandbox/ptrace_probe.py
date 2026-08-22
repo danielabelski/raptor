@@ -63,7 +63,6 @@ import ctypes.util
 import logging
 import os
 import signal
-from typing import Optional
 
 from . import state
 
@@ -80,7 +79,7 @@ _PTRACE_CONT = 7
 # etc. in probes.py.
 
 
-def _get_libc() -> Optional[ctypes.CDLL]:
+def _get_libc() -> ctypes.CDLL | None:
     """Resolve libc via find_library — same pattern as mount_ns.py.
 
     Returns None if libc is missing OR if the loaded libc lacks the

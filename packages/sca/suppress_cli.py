@@ -27,7 +27,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
-from typing import List, Sequence
+from collections.abc import Sequence
 
 from .suppressions import (
     SUPPRESS_FILENAME,
@@ -105,7 +105,7 @@ def _cmd_list(target: Path, *, emit_json: bool) -> int:
           f"{suppress_path}")
     for e in entries:
         kind, target_label = _describe_entry(e)
-        bits: List[str] = [kind, target_label]
+        bits: list[str] = [kind, target_label]
         if e.expires:
             note = ("EXPIRED" if e.is_expired(today)
                      else f"until {e.expires}")
@@ -141,9 +141,9 @@ def _cmd_check(*, target: Path, findings_path: Path) -> int:
         return 2
 
     today = date.today()
-    expired: List[SuppressionEntry] = []
-    matched: List[SuppressionEntry] = []
-    orphan: List[SuppressionEntry] = []
+    expired: list[SuppressionEntry] = []
+    matched: list[SuppressionEntry] = []
+    orphan: list[SuppressionEntry] = []
     for e in entries:
         if e.is_expired(today):
             expired.append(e)

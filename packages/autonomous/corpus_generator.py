@@ -12,7 +12,7 @@ Instead of hardcoded seeds, this module:
 import re
 from core.sandbox import run_trusted as _run_trusted, SandboxSetupError  # read-only tools only (strings)
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from core.logging import get_logger
 
@@ -27,7 +27,7 @@ class CorpusGenerator:
     to generate targeted test cases.
     """
 
-    def __init__(self, binary_path: Path, memory=None, goal=None, source_dir: Optional[Path] = None):
+    def __init__(self, binary_path: Path, memory=None, goal=None, source_dir: Path | None = None):
         """
         Initialize corpus generator.
 
@@ -40,13 +40,13 @@ class CorpusGenerator:
         self.source_dir = Path(source_dir).resolve() if source_dir else None
         self.memory = memory
         self.goal = goal
-        self.binary_strings: Set[str] = set()
-        self.detected_formats: Set[str] = set()
-        self.detected_commands: Dict[str, str] = {}  # Command -> description mapping
+        self.binary_strings: set[str] = set()
+        self.detected_formats: set[str] = set()
+        self.detected_commands: dict[str, str] = {}  # Command -> description mapping
 
         logger.info("Autonomous corpus generator initialized")
 
-    def analyze_binary(self) -> Dict[str, Any]:
+    def analyze_binary(self) -> dict[str, Any]:
         """
         Analyze binary to detect expected input formats.
 
@@ -156,10 +156,10 @@ class CorpusGenerator:
 
         return analysis
 
-    def _analyze_source_context(self) -> Dict[str, Any]:
+    def _analyze_source_context(self) -> dict[str, Any]:
         """Read nearby source/docs to discover command-style input grammars."""
         analysis = {"commands_detected": []}
-        commands: Set[str] = set()
+        commands: set[str] = set()
         if not self.source_dir:
             return analysis
 
@@ -188,7 +188,7 @@ class CorpusGenerator:
             logger.info("Detected source/documented commands: %s", ', '.join(sorted(commands)))
         return analysis
 
-    def _wrap_with_commands(self, seeds: List[bytes]) -> List[bytes]:
+    def _wrap_with_commands(self, seeds: list[bytes]) -> list[bytes]:
         """
         Wrap seeds with detected command prefixes.
 
@@ -229,7 +229,7 @@ class CorpusGenerator:
 
         corpus_dir.mkdir(parents=True, exist_ok=True)
         seeds_generated = 0
-        seen: Set[bytes] = set()
+        seen: set[bytes] = set()
 
         def write_seed(prefix: str, seed: bytes) -> bool:
             nonlocal seeds_generated
@@ -314,9 +314,9 @@ class CorpusGenerator:
         logger.info("✓ Autonomous corpus generation complete: %s seeds", seeds_generated)
         return seeds_generated
 
-    def _generate_command_seeds(self) -> List[bytes]:
+    def _generate_command_seeds(self) -> list[bytes]:
         """Generate seeds that directly satisfy discovered COMMAND:DATA grammars."""
-        seeds: List[bytes] = []
+        seeds: list[bytes] = []
         payloads = {
             "STACK": [b"hello\n", b"A" * 80 + b"\n", b"A" * 256 + b"\n"],
             "HEAP": [b"hello\n", b"A" * 160 + b"\n", b"A" * 512 + b"\n"],
@@ -332,7 +332,7 @@ class CorpusGenerator:
                 seeds.append(f"{command}:".encode() + payload)
         return seeds
 
-    def _generate_basic_seeds(self) -> List[bytes]:
+    def _generate_basic_seeds(self) -> list[bytes]:
         """Generate basic seed corpus that works for most binaries."""
         return [
             b"",                          # Empty input
@@ -349,7 +349,7 @@ class CorpusGenerator:
             b"!@#$%^&*()",                # Special chars
         ]
 
-    def _generate_format_seeds(self, format_name: str) -> List[bytes]:
+    def _generate_format_seeds(self, format_name: str) -> list[bytes]:
         """Generate seeds for specific formats."""
 
         if format_name == "xml":
@@ -414,7 +414,7 @@ class CorpusGenerator:
             b'[' + b'A' * 100 + b']',  # Malformed arrays
         ]
 
-    def _generate_goal_directed_seeds(self) -> List[bytes]:
+    def _generate_goal_directed_seeds(self) -> list[bytes]:
         """Generate seeds based on current goal."""
         if not self.goal:
             return []
@@ -486,7 +486,7 @@ class CorpusGenerator:
 
         return seeds
 
-    def optimize_corpus(self, corpus_dir: Path, coverage_data: Optional[Dict] = None) -> int:
+    def optimize_corpus(self, corpus_dir: Path, coverage_data: dict | None = None) -> int:
         """
         Optimize corpus by removing redundant seeds.
 

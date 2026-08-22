@@ -22,7 +22,8 @@ checker is meaningfully independent.
 
 from __future__ import annotations
 
-from typing import Iterable, Literal, Optional
+from typing import Literal
+from collections.abc import Iterable
 
 
 Family = Literal[
@@ -192,7 +193,7 @@ def provider_of(model_id: str) -> str:
 
 def resolve_model_shorthand(
     model_id: str, candidate_names: Iterable[str],
-) -> Optional[str]:
+) -> str | None:
     """Resolve a bare tier-token shorthand to a configured model name.
 
     An operator typing ``--model haiku`` gets back the full configured
@@ -422,7 +423,7 @@ def same_family(a: str, b: str) -> bool:
 def select_cross_family_checker(
     producer_model_id: str,
     candidates: Iterable[str],
-) -> Optional[str]:
+) -> str | None:
     """Pick the first candidate that is from a different family than the producer.
 
     Returns ``None`` if no suitable candidate exists. ``"unknown"`` family

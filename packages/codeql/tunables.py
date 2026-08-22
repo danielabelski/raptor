@@ -19,7 +19,6 @@ propagates everywhere.  Operator CLI flags override per-run.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -36,15 +35,15 @@ class CodeQLTunables:
                                  analyze path rejects it as unknown.
     """
     threads: int = 0
-    ram_mb: Optional[int] = None
-    max_disk_cache_mb: Optional[int] = None
+    ram_mb: int | None = None
+    max_disk_cache_mb: int | None = None
 
     @classmethod
     def from_tuning(
         cls, *,
-        overrides: Optional[dict] = None,
+        overrides: dict | None = None,
         concurrent_workers: int = 1,
-    ) -> "CodeQLTunables":
+    ) -> CodeQLTunables:
         """Build from RAPTOR's central tuning config.
 
         ``overrides`` is an operator-CLI-arg-shaped dict; any non-None

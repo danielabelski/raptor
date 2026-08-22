@@ -55,7 +55,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 from .label import FunctionLabel, compute_span_sha, load_label
 from .sources import FIXTURES_DIR
@@ -97,7 +97,7 @@ class PinCheck:
     """Result of verifying one label's source pin."""
 
     label: FunctionLabel
-    path: Optional[Path]
+    path: Path | None
     outcome: str
     detail: str = ""
     # Suggested re-pin (relocatable only).
@@ -131,9 +131,9 @@ def _name_re(name: str) -> re.Pattern:
 # Label loading (per-file error collection)
 # -------------------------------------------------------------------
 
-def collect_label_files(paths: Sequence[Path]) -> List[Path]:
+def collect_label_files(paths: Sequence[Path]) -> list[Path]:
     """Expand *paths* (files or directories) into label files."""
-    files: List[Path] = []
+    files: list[Path] = []
     for p in paths:
         if p.is_dir():
             files.extend(sorted(p.rglob("*.label.json")))
@@ -144,16 +144,16 @@ def collect_label_files(paths: Sequence[Path]) -> List[Path]:
 
 def load_labels(
     files: Sequence[Path],
-) -> Tuple[List[Tuple[Path, FunctionLabel]], List[str]]:
+) -> tuple[list[tuple[Path, FunctionLabel]], list[str]]:
     """Load labels, collecting per-file errors instead of raising.
 
     ``load_all_labels`` raises on the first bad file; the linter wants
     the full report.  Duplicate ``function_id`` values across the
     loaded set are errors (results and checkpoints key on it).
     """
-    loaded: List[Tuple[Path, FunctionLabel]] = []
-    errors: List[str] = []
-    seen: Dict[str, Path] = {}
+    loaded: list[tuple[Path, FunctionLabel]] = []
+    errors: list[str] = []
+    seen: dict[str, Path] = {}
     for f in files:
         try:
             label = load_label(f)
@@ -178,9 +178,9 @@ def load_labels(
     return loaded, errors
 
 
-def schema_check(pairs: Sequence[Tuple[Path, FunctionLabel]]) -> List[str]:
+def schema_check(pairs: Sequence[tuple[Path, FunctionLabel]]) -> list[str]:
     """Field sanity beyond what the dataclass validators enforce."""
-    errors: List[str] = []
+    errors: list[str] = []
     for path, label in pairs:
         src = label.source
 
@@ -221,8 +221,8 @@ def schema_check(pairs: Sequence[Tuple[Path, FunctionLabel]]) -> List[str]:
 
 
 def expected_rule_hits_check(
-    pairs: Sequence[Tuple[Path, FunctionLabel]],
-) -> List[str]:
+    pairs: Sequence[tuple[Path, FunctionLabel]],
+) -> list[str]:
     """Dangling ``expected_rule_hits`` staleness check.
 
     Every rule id a label pins must exist in the discovered rule
@@ -236,7 +236,7 @@ def expected_rule_hits_check(
     ``rule_eval.ENGINES`` (the field deliberately allows pinning rule
     sets this checkout doesn't ship) contributes no errors.
     """
-    pinned: Dict[str, List[Tuple[Path, FunctionLabel, str]]] = {}
+    pinned: dict[str, list[tuple[Path, FunctionLabel, str]]] = {}
     for path, label in pairs:
         for engine, rule_ids in (label.expected_rule_hits or {}).items():
             for rule_id in rule_ids:
@@ -255,11 +255,11 @@ def expected_rule_hits_check(
     graduated, _grad_errors = rule_eval.discover_graduated_rules(
         engines, rule_eval.find_engine_rules_base(None),
     )
-    known: Dict[str, set] = {}
+    known: dict[str, set] = {}
     for rule in [*rules, *graduated]:
         known.setdefault(rule.engine, set()).add(rule.rule_id)
 
-    errors: List[str] = []
+    errors: list[str] = []
     for engine, entries in sorted(pinned.items()):
         ids = known.get(engine)
         if not ids:
@@ -305,9 +305,9 @@ def resolve_trees(
     labels: Sequence[FunctionLabel],
     *,
     fixtures_dir: Path = FIXTURES_DIR,
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
     fetch_missing: bool = False,
-) -> Dict[Tuple[str, str], Tuple[Optional[Path], str]]:
+) -> dict[tuple[str, str], tuple[Path | None, str]]:
     """Resolve a verification tree per ``(repo, sha)`` pin target.
 
     Returns ``{(repo, sha): (tree_or_None, detail)}``.  A fixture tree
@@ -321,14 +321,14 @@ def resolve_trees(
     - anything else — no tree available (no fixture, offline, repo
       not in sources.json).  Callers score ``no-fixture``.
     """
-    wanted: Dict[Tuple[str, str], List[str]] = {}
+    wanted: dict[tuple[str, str], list[str]] = {}
     for label in labels:
         key = (label.source.repo, label.source.sha)
         files = wanted.setdefault(key, [])
         if label.source.file not in files:
             files.append(label.source.file)
 
-    resolved: Dict[Tuple[str, str], Tuple[Optional[Path], str]] = {}
+    resolved: dict[tuple[str, str], tuple[Path | None, str]] = {}
     registry = None
     for (repo, sha), files in wanted.items():
         fixture = fixtures_dir / repo
@@ -399,8 +399,8 @@ def resolve_trees(
 # -------------------------------------------------------------------
 
 def _relocate_by_hash(
-    lines: List[str], span_sha: str, span_len: int,
-) -> Optional[int]:
+    lines: list[str], span_sha: str, span_len: int,
+) -> int | None:
     """Find the 1-indexed start line where the stored span hash
     matches, or None."""
     from core.staleness import hash_spans_text
@@ -419,8 +419,8 @@ def _relocate_by_hash(
 
 
 def _relocate_by_name(
-    lines: List[str], name: str, span_len: int,
-) -> Optional[int]:
+    lines: list[str], name: str, span_len: int,
+) -> int | None:
     """Best-effort 1-indexed start line for *name*'s definition."""
     pattern = _name_re(name)
     candidates = [
@@ -439,11 +439,11 @@ def _relocate_by_name(
     return candidates[0]
 
 
-def _tree_search(tree: Path, name: str, limit: int = 3) -> List[str]:
+def _tree_search(tree: Path, name: str, limit: int = 3) -> list[str]:
     """Search *tree* for *name*; returns up to *limit* ``file:line``
     hits."""
     pattern = _name_re(name)
-    hits: List[str] = []
+    hits: list[str] = []
     for root, dirs, files in os.walk(tree):
         dirs[:] = [
             d for d in dirs
@@ -477,7 +477,7 @@ _CPP_SUFFIXES = frozenset({
 
 def _span_preprocessor_dead(
     rel_file: str,
-    lines: List[str],
+    lines: list[str],
     line_start: int,
     line_end: int,
 ) -> bool:
@@ -502,9 +502,9 @@ def _span_preprocessor_dead(
 
 def _check_span(
     label: FunctionLabel,
-    lines: List[str],
+    lines: list[str],
     rel_file: str,
-    path: Optional[Path],
+    path: Path | None,
     *,
     tree: Path,
     tree_search: bool,
@@ -593,7 +593,7 @@ def verify_pin(
     label: FunctionLabel,
     tree: Path,
     *,
-    path: Optional[Path] = None,
+    path: Path | None = None,
     tree_search: bool = False,
 ) -> PinCheck:
     """Verify one label's pin against a resolved *tree*."""
@@ -635,13 +635,13 @@ def verify_pin(
 
 
 def verify_pins(
-    pairs: Sequence[Tuple[Optional[Path], FunctionLabel]],
+    pairs: Sequence[tuple[Path | None, FunctionLabel]],
     *,
     fixtures_dir: Path = FIXTURES_DIR,
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
     fetch_missing: bool = False,
     tree_search: bool = False,
-) -> List[PinCheck]:
+) -> list[PinCheck]:
     """Verify every label's pin.  Order matches *pairs*."""
     labels = [label for _, label in pairs]
     trees = resolve_trees(
@@ -650,7 +650,7 @@ def verify_pins(
         cache_dir=cache_dir,
         fetch_missing=fetch_missing,
     )
-    checks: List[PinCheck] = []
+    checks: list[PinCheck] = []
     for path, label in pairs:
         tree, detail = trees[(label.source.repo, label.source.sha)]
         if tree is None:
@@ -678,14 +678,14 @@ def verify_pins(
 # Stamping
 # -------------------------------------------------------------------
 
-def stamp_labels(checks: Sequence[PinCheck]) -> List[Path]:
+def stamp_labels(checks: Sequence[PinCheck]) -> list[Path]:
     """Backfill ``span_sha`` into label files whose pin verified ok.
 
     Atomic rewrite (tempfile + rename) preserving key order; the hash
     lands directly after ``line_end`` in the ``source`` object.  A
     label that did not verify is never stamped.
     """
-    stamped: List[Path] = []
+    stamped: list[Path] = []
     for check in checks:
         if check.outcome != PIN_OK or not check.current_span_sha:
             continue
@@ -730,7 +730,7 @@ def stamp_labels(checks: Sequence[PinCheck]) -> List[Path]:
 # Reporting
 # -------------------------------------------------------------------
 
-def pin_census(checks: Sequence[PinCheck]) -> Dict[str, int]:
+def pin_census(checks: Sequence[PinCheck]) -> dict[str, int]:
     census = {
         PIN_OK: 0, PIN_RELOCATABLE: 0, PIN_MISSING: 0, PIN_NO_FIXTURE: 0,
     }
@@ -761,7 +761,7 @@ def format_pin_report(checks: Sequence[PinCheck]) -> str:
 # CLI
 # -------------------------------------------------------------------
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python3 -m core.audit.corpus.lint",
         description="Lint /audit calibration-corpus labels",

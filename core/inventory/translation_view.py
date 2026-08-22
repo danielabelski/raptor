@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 
 # Languages whose extraction goes through the C-preprocessor-aware path.
 _C_FAMILY = frozenset({"c", "cpp"})
@@ -71,7 +70,7 @@ def _strip_pp_comments(rest: str) -> str:
     return re.sub(r"//.*$", "", r).strip()
 
 
-def _eval_int_literal(s: str) -> Optional[int]:
+def _eval_int_literal(s: str) -> int | None:
     """Parse a bare integer literal (decimal / 0x-hex, optional surrounding
     parens / L/U suffix). Returns ``None`` for anything non-trivial — we only
     evaluate values we can be certain about."""
@@ -85,7 +84,7 @@ def _eval_int_literal(s: str) -> Optional[int]:
         return None
 
 
-def _pp_cond(kind: str, rest: str, macros: Optional["object"] = None) -> str:
+def _pp_cond(kind: str, rest: str, macros: object | None = None) -> str:
     """Classify an #if/#ifdef/#ifndef/#elif controlling expression as
     'false' | 'true' | 'unknown'.
 
@@ -182,7 +181,7 @@ def _is_digit_separator(line: str, i: int) -> bool:
     return j + 1 < i and line[j + 1].isdigit()
 
 
-def _pp_directive_line_mask(content: str, language: str = "c") -> List[bool]:
+def _pp_directive_line_mask(content: str, language: str = "c") -> list[bool]:
     """Per physical line: can a ``#`` directive starting on this line
     be honoured by the compiler?
 
@@ -210,7 +209,7 @@ def _pp_directive_line_mask(content: str, language: str = "c") -> List[bool]:
     mask = [True] * len(lines)
     raw_strings = language == "cpp"
     in_comment = False
-    raw_delim: Optional[str] = None
+    raw_delim: str | None = None
     continued = False          # previous physical line ended with '\'
     in_line_comment = False    # …and that line was inside a // comment
     for idx, line in enumerate(lines):
@@ -274,9 +273,9 @@ def _pp_directive_line_mask(content: str, language: str = "c") -> List[bool]:
 
 
 def detect_preprocessor_dead_ranges(
-    content: str, macros: Optional["object"] = None,
+    content: str, macros: object | None = None,
     *, language: str = "c",
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     """Inclusive 1-indexed line ranges of statically-dead preprocessor arms.
 
     Without ``macros``: literal-only — ``#if 0`` / ``#elif 0`` and the
@@ -331,8 +330,8 @@ def detect_preprocessor_dead_ranges(
             f["effective_dead"] = f["parent_dead"] or f["arm_dead"]
         elif kind == "endif" and stack:
             stack.pop()
-    ranges: List[Tuple[int, int]] = []
-    run: Optional[list] = None
+    ranges: list[tuple[int, int]] = []
+    run: list | None = None
     for ln in sorted(dead):
         if run and ln == run[1] + 1:
             run[1] = ln
@@ -362,7 +361,7 @@ def _strip_c_literals_comments(s: str) -> str:
     so call-shaped text inside them isn't mistaken for a routed call. Walks
     char-by-char; `//` ends the logical line. Returns the body with those
     spans removed."""
-    out: List[str] = []
+    out: list[str] = []
     i, n = 0, len(s)
     while i < n:
         c = s[i]
@@ -418,7 +417,7 @@ def detect_macro_call_targets(content: str) -> set:
     return targets
 
 
-def _blank_ranges(content: str, ranges: List[Tuple[int, int]]) -> str:
+def _blank_ranges(content: str, ranges: list[tuple[int, int]]) -> str:
     """Replace the body of each dead range with same-length spaces, keeping
     newlines so byte/line offsets — and therefore the identity line_map —
     are preserved. The on-disk file is untouched."""
@@ -445,7 +444,7 @@ class LineMap:
     mapping (parsed-line → source-line) from ``cpp``'s ``#line`` markers.
     """
     # Sorted tuple of (parse_line, source_line) breakpoints. Empty = identity.
-    entries: Tuple[Tuple[int, int], ...] = ()
+    entries: tuple[tuple[int, int], ...] = ()
 
     def to_source(self, parse_line: int) -> int:
         if not self.entries:
@@ -470,7 +469,7 @@ class TranslationView:
     line_map: LineMap = IDENTITY_LINE_MAP
     fidelity: int = 0
     masking_flags: frozenset = field(default_factory=frozenset)
-    config: Optional[object] = None     # BuildConfig placeholder (layer 3)
+    config: object | None = None     # BuildConfig placeholder (layer 3)
 
 
 def preprocess_view(
@@ -479,7 +478,7 @@ def preprocess_view(
     content: str,
     *,
     allow_unreachable: bool = False,
-    config: Optional[object] = None,
+    config: object | None = None,
 ) -> TranslationView:
     """Return the parser's view of ``content``.
 

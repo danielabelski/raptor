@@ -14,7 +14,7 @@ calls needs, and the future ``core.treesitter`` lift would move
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any
 
 # Re-exported so ``core.ast`` consumers don't have to know it lives in
 # inventory. When the future ``core.treesitter`` lift happens, this
@@ -74,14 +74,14 @@ class FunctionView:
     function: str
     file: str
     language: str
-    lines: Tuple[int, int]  # (start, end), 1-indexed inclusive
+    lines: tuple[int, int]  # (start, end), 1-indexed inclusive
     signature: str
-    calls_made: Tuple[CallSite, ...]
-    returns: Tuple[Return, ...]
+    calls_made: tuple[CallSite, ...]
+    returns: tuple[Return, ...]
     has_inline_asm: bool
     schema_version: int = SCHEMA_VERSION
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialise for JSON output (``/understand --map``, CLI)."""
         return {
             "function": self.function,

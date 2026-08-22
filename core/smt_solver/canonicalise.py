@@ -41,7 +41,6 @@ Used by:
 from __future__ import annotations
 
 import re
-from typing import Tuple
 
 # (pattern, replacement) pairs.  Replacements include surrounding spaces
 # because the english phrases don't always sit next to whitespace; the
@@ -54,7 +53,7 @@ from typing import Tuple
 #   - ``is greater than or equal to`` before ``is greater than``
 #   - ``does not exceed`` before ``exceeds``
 #   - ``is non-null`` before ``is null``
-_REWRITES: Tuple[Tuple[re.Pattern[str], str], ...] = (
+_REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     # Longer phrases first.
     (re.compile(r'\bis\s+greater\s+than\s+or\s+equal\s+to\b', re.IGNORECASE), ' >= '),
     (re.compile(r'\bis\s+less\s+than\s+or\s+equal\s+to\b',    re.IGNORECASE), ' <= '),

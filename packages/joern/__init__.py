@@ -19,7 +19,7 @@ Cross-tool session:
 import contextlib
 import logging
 from pathlib import Path
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 from .models import FlowStep, JoernCPG, JoernMethodSummary, JoernResult, TaintFlow
 from .prereqs import check_prereqs, is_available, version
@@ -51,10 +51,10 @@ __all__ = [
 def joern_session(
     target_path: Path,
     *,
-    cache_dir: Optional[Path] = None,
-    tunables: Optional[JoernTunables] = None,
+    cache_dir: Path | None = None,
+    tunables: JoernTunables | None = None,
     register_reach_audit: bool = True,
-) -> Iterator[Optional[JoernServer]]:
+) -> Iterator[JoernServer | None]:
     """Context manager for a cross-tool Joern session.
 
     Boots a Joern server, builds/loads the CPG, imports it into

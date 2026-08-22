@@ -10,7 +10,7 @@ precondition.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -23,8 +23,8 @@ class Guard:
     polarity: bool = True
     smt_parseable: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "condition": self.condition,
             "file": self.file,
             "line": self.line,
@@ -36,7 +36,7 @@ class Guard:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Guard:
+    def from_dict(cls, data: dict[str, Any]) -> Guard:
         return cls(
             condition=data["condition"],
             file=data["file"],
@@ -53,9 +53,9 @@ class WriteSite:
     file: str
     line: int
     function: str
-    guards: FrozenSet[Guard]
+    guards: frozenset[Guard]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.file,
             "line": self.line,
@@ -64,7 +64,7 @@ class WriteSite:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> WriteSite:
+    def from_dict(cls, data: dict[str, Any]) -> WriteSite:
         return cls(
             file=data["file"],
             line=data["line"],
@@ -80,11 +80,11 @@ class ReadSite:
     file: str
     line: int
     function: str
-    guards: FrozenSet[Guard]
+    guards: frozenset[Guard]
     security_relevant: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "file": self.file,
             "line": self.line,
             "function": self.function,
@@ -95,7 +95,7 @@ class ReadSite:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> ReadSite:
+    def from_dict(cls, data: dict[str, Any]) -> ReadSite:
         return cls(
             file=data["file"],
             line=data["line"],
@@ -117,13 +117,13 @@ class StateField:
     name: str
     struct_type: str
     invariant: str
-    write_sites: List[WriteSite] = field(default_factory=list)
-    read_sites: List[ReadSite] = field(default_factory=list)
+    write_sites: list[WriteSite] = field(default_factory=list)
+    read_sites: list[ReadSite] = field(default_factory=list)
     cwe: str = ""
     notes: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "name": self.name,
             "struct_type": self.struct_type,
             "invariant": self.invariant,
@@ -137,7 +137,7 @@ class StateField:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> StateField:
+    def from_dict(cls, data: dict[str, Any]) -> StateField:
         return cls(
             name=data["name"],
             struct_type=data["struct_type"],
@@ -149,7 +149,7 @@ class StateField:
         )
 
     @property
-    def write_guard_conditions(self) -> FrozenSet[str]:
+    def write_guard_conditions(self) -> frozenset[str]:
         """Union of all guard condition strings across write sites."""
         return frozenset(
             g.condition for ws in self.write_sites for g in ws.guards
@@ -162,10 +162,10 @@ class LifecycleFinding:
 
     state_field: StateField
     read_site: ReadSite
-    missing_guards: FrozenSet[str]
+    missing_guards: frozenset[str]
     confidence: str = "medium"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "field": self.state_field.name,
             "struct_type": self.state_field.struct_type,

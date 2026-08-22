@@ -26,7 +26,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -67,12 +67,12 @@ ECOSYSTEM = "PyPI"
 _POETRY_PREFIX_OPS = ("^", "~")
 
 
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     data = _load(path)
     if data is None:
         return []
 
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
 
     # --- PEP 621 ---------------------------------------------------------
     project = data.get("project")
@@ -140,7 +140,7 @@ def parse(path: Path) -> List[Dependency]:
     return deps
 
 
-def extract_project_license(path: Path) -> Optional[str]:
+def extract_project_license(path: Path) -> str | None:
     """License the manifest declares for the PROJECT ITSELF.
 
     ``[project].license`` / ``[tool.poetry].license`` describe the
@@ -159,7 +159,7 @@ def extract_project_license(path: Path) -> Optional[str]:
 # Internals
 # ---------------------------------------------------------------------------
 
-def _load(path: Path) -> Optional[Dict[str, Any]]:
+def _load(path: Path) -> dict[str, Any] | None:
     """Read + TOML-parse a pyproject.toml; None on any failure."""
     if _tomllib is None:
         logger.warning(
@@ -180,7 +180,7 @@ def _load(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _extract_license(data: Dict[str, Any]) -> Optional[str]:
+def _extract_license(data: dict[str, Any]) -> str | None:
     """Read the project license from PEP 621 ``[project]`` or Poetry's
     ``[tool.poetry]`` table.
 
@@ -208,7 +208,7 @@ def _extract_license(data: Dict[str, Any]) -> Optional[str]:
 
 def _from_pep508(
     spec: Any, path: Path, *, scope: str
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(spec, str) or not spec.strip():
         return None
     if not _HAS_PACKAGING:
@@ -253,7 +253,7 @@ def _from_pep508(
 
 def _from_poetry(
     name: str, spec: Any, path: Path, *, scope: str
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(name, str) or not name:
         return None
     if name.lower() == "python":
@@ -262,7 +262,7 @@ def _from_poetry(
         return None
 
     pin_style: PinStyle
-    version: Optional[str]
+    version: str | None
 
     if isinstance(spec, str):
         pin_style, version = _classify_poetry_string(spec)
@@ -318,7 +318,7 @@ def _from_poetry(
     )
 
 
-def _classify_specifier(req: Requirement) -> Tuple[PinStyle, Optional[str]]:
+def _classify_specifier(req: Requirement) -> tuple[PinStyle, str | None]:
     items = list(req.specifier)
     if req.url:
         return PinStyle.UNKNOWN, None
@@ -335,7 +335,7 @@ def _classify_specifier(req: Requirement) -> Tuple[PinStyle, Optional[str]]:
     return PinStyle.RANGE, None
 
 
-def _classify_poetry_string(spec: str) -> Tuple[PinStyle, Optional[str]]:
+def _classify_poetry_string(spec: str) -> tuple[PinStyle, str | None]:
     s = spec.strip()
     if not s or s == "*":
         return PinStyle.WILDCARD, None
@@ -350,7 +350,7 @@ def _classify_poetry_string(spec: str) -> Tuple[PinStyle, Optional[str]]:
     return PinStyle.EXACT, s
 
 
-def _classify_poetry_dict(spec: Dict[str, Any]) -> Tuple[PinStyle, Optional[str]]:
+def _classify_poetry_dict(spec: dict[str, Any]) -> tuple[PinStyle, str | None]:
     if "git" in spec:
         # ``rev``/``branch``/``tag`` becomes the version handle.
         ver = spec.get("rev") or spec.get("tag") or spec.get("branch")
@@ -365,8 +365,8 @@ def _classify_poetry_dict(spec: Dict[str, Any]) -> Tuple[PinStyle, Optional[str]
 
 
 def _poetry_bounds(
-    pin_style: PinStyle, version: Optional[str],
-) -> Tuple[Optional[str], Optional[str]]:
+    pin_style: PinStyle, version: str | None,
+) -> tuple[str | None, str | None]:
     """Corridor bounds for a Poetry RANGE string (PEP 440 grammar).
 
     Caret/tilde shapes imply their ceiling through ``pin_style`` and
@@ -388,7 +388,7 @@ def _poetry_bounds(
 
 
 def _confidence_for_pep508(
-    pin_style: PinStyle, version: Optional[str]
+    pin_style: PinStyle, version: str | None
 ) -> Confidence:
     if pin_style in (PinStyle.GIT, PinStyle.PATH):
         return Confidence(
@@ -403,7 +403,7 @@ def _confidence_for_pep508(
 
 
 def _confidence_for_poetry(
-    pin_style: PinStyle, version: Optional[str]
+    pin_style: PinStyle, version: str | None
 ) -> Confidence:
     if pin_style is PinStyle.UNKNOWN:
         return Confidence("low", reason="Poetry dep table without version")
@@ -421,7 +421,7 @@ def _normalise_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _build_purl(name: str, version: Optional[str]) -> str:
+def _build_purl(name: str, version: str | None) -> str:
     base = f"pkg:pypi/{_normalise_name(name)}"
     if version:
         return f"{base}@{version}"

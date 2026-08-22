@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ def _enclosing_method(root, line: int):
     return best
 
 
-def _line_byte_range(source_text: str, line: int) -> Tuple[int, int]:
+def _line_byte_range(source_text: str, line: int) -> tuple[int, int]:
     """(first_byte, end_byte) of ``line`` — used for writer-interval
     bounds. Statement covering is decided by LINE, not byte: the
     line's first byte is indentation, which no statement node spans."""
@@ -144,7 +144,7 @@ def _line_byte_range(source_text: str, line: int) -> Tuple[int, int]:
     return offset, offset
 
 
-def _parse_contains_condition(cond) -> Optional[Tuple[bool, Any, str]]:
+def _parse_contains_condition(cond) -> tuple[bool, Any, str] | None:
     """``(negated, receiver_node, tested_identifier)`` for a condition
     that is exactly ``[!]<recv>.contains(<ident>)``; None otherwise."""
     cond = _unwrap(cond)
@@ -211,9 +211,9 @@ def _guard_dominates_sink(guard_if, sink_line: int) -> bool:
     return False
 
 
-def _writers_of(method, name: str) -> List[int]:
+def _writers_of(method, name: str) -> list[int]:
     """Byte offsets of every construct that (re)defines ``name``."""
-    out: List[int] = []
+    out: list[int] = []
     for n in _iter_named(method):
         t = n.type
         if t == "assignment_expression":
@@ -246,13 +246,13 @@ def _writers_of(method, name: str) -> List[int]:
 # Constant-collection resolution
 # ---------------------------------------------------------------------------
 
-def _fold_str(node) -> Optional[str]:
+def _fold_str(node) -> str | None:
     from core.analysis.const_fold_java import _REFUSE, fold_expr
     v = fold_expr(node, lambda _name, _depth: _REFUSE)
     return v if isinstance(v, str) else None
 
 
-def _const_ctor_elements(expr, resolver) -> Optional[List[str]]:
+def _const_ctor_elements(expr, resolver) -> list[str] | None:
     """Literal string elements of a constant-collection constructor
     expression, or None when the shape doesn't qualify."""
     expr = _unwrap(expr)
@@ -288,7 +288,7 @@ def _const_ctor_elements(expr, resolver) -> Optional[List[str]]:
     named = [c for c in args.children if c.is_named] if args else []
     if not named or len(named) > _MAX_ELEMENTS:
         return None
-    out: List[str] = []
+    out: list[str] = []
     for a in named:
         v = _fold_str(a)
         if v is None:
@@ -321,8 +321,8 @@ def _occurrences_contains_only(scope, name: str, *,
     return True
 
 
-def _resolve_local_collection(method, name: str, resolver) -> List[str]:
-    decl_elems: Optional[List[str]] = None
+def _resolve_local_collection(method, name: str, resolver) -> list[str]:
+    decl_elems: list[str] | None = None
     for n in _iter_named(method):
         if n.type != "variable_declarator":
             continue
@@ -346,10 +346,10 @@ def _resolve_local_collection(method, name: str, resolver) -> List[str]:
     return decl_elems
 
 
-def _resolve_static_field(root, name: str, resolver) -> List[str]:
+def _resolve_static_field(root, name: str, resolver) -> list[str]:
     """``static final`` field with a constant initializer, occurrence
     discipline over the whole file."""
-    found: Optional[List[str]] = None
+    found: list[str] | None = None
     for n in _iter_named(root):
         if n.type != "field_declaration":
             continue
@@ -387,7 +387,7 @@ def _package_of(root) -> str:
 
 
 def _resolve_cross_file(chain: str, field: str, source_root: Path,
-                        parser) -> List[str]:
+                        parser) -> list[str]:
     """Resolve ``chain.field`` (chain = dotted type FQN or simple
     class name) to a constant literal set under the coordinator's
     discipline: unambiguous declaring file, static final, constant
@@ -478,7 +478,7 @@ def _resolve_cross_file(chain: str, field: str, source_root: Path,
 # Danger check
 # ---------------------------------------------------------------------------
 
-def _literals_clear_danger(elems: List[str], cwe: str) -> Optional[str]:
+def _literals_clear_danger(elems: list[str], cwe: str) -> str | None:
     """Reason fragment when every literal clears every danger model of
     the CWE's sink classes; None otherwise (including unknown class)."""
     from core.dataflow.sanitizer_catalog import sink_classes_for_cwe
@@ -510,9 +510,9 @@ def collection_guard_reason(
     sink_arg: str,
     cwe: str,
     *,
-    source_root: Optional[str] = None,
-    decisions: Optional[List[str]] = None,
-) -> Optional[str]:
+    source_root: str | None = None,
+    decisions: list[str] | None = None,
+) -> str | None:
     """Suppression reason when a dominating constant-collection
     membership guard bounds ``sink_arg`` at ``sink_line`` to a finite
     literal set that clears the CWE's danger models. None = no signal

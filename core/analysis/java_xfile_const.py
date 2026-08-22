@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _package_of(root) -> str:
     return ""
 
 
-def _chain_text(node) -> Optional[str]:
+def _chain_text(node) -> str | None:
     """Dotted text of a pure identifier chain; None for anything with
     a non-identifier link (calls, array access, this/super)."""
     parts = []
@@ -97,16 +97,16 @@ class XFileConst:
     """Per-finding cross-file resolver; every lookup memoized, every
     failure a refusal (``None``)."""
 
-    def __init__(self, java_file_path: str, repo_root: Optional[str]):
+    def __init__(self, java_file_path: str, repo_root: str | None):
         self._file = Path(java_file_path)
         self._root = Path(repo_root) if repo_root else None
         self._parser = _parser()
         self.ok = self._parser is not None and self._root is not None \
             and self._root.is_dir()
-        self._imports: Dict[str, str] = {}
-        self._class_cache: Dict[str, Optional[Tuple[Any, Path]]] = {}
-        self._field_cache: Dict[Tuple[str, str], Any] = {}
-        self._method_cache: Dict[Tuple[str, str, int], Any] = {}
+        self._imports: dict[str, str] = {}
+        self._class_cache: dict[str, tuple[Any, Path] | None] = {}
+        self._field_cache: dict[tuple[str, str], Any] = {}
+        self._method_cache: dict[tuple[str, str, int], Any] = {}
         # None = not scanned; ("poisoned",) = a variable-key
         # System.setProperty exists somewhere (any key may be written);
         # otherwise the frozenset of literally-written property keys.
@@ -440,8 +440,8 @@ def _scan_setproperty(root: Path, parser):
     return frozenset(keys)
 
 
-def make_xfile_resolver(java_file_path: Optional[str],
-                        repo_root: Optional[str]) -> Optional[XFileConst]:
+def make_xfile_resolver(java_file_path: str | None,
+                        repo_root: str | None) -> XFileConst | None:
     if not java_file_path:
         return None
     try:

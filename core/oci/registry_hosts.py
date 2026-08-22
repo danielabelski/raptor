@@ -19,7 +19,7 @@ predicate edge cases.
 from __future__ import annotations
 
 import re
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .image_ref import ImageRef, parse_image_ref
 
@@ -27,7 +27,7 @@ from .image_ref import ImageRef, parse_image_ref
 # Each entry is (predicate, hosts). The predicate takes the image's
 # registry (e.g. "docker.io" or "1234.dkr.ecr.us-east-1.amazonaws.com")
 # and returns True if this family applies. First match wins.
-_REGISTRY_FAMILIES: List[Tuple[Callable[[str], bool], List[str]]] = [
+_REGISTRY_FAMILIES: list[tuple[Callable[[str], bool], list[str]]] = [
     # Docker Hub: manifests on registry-1, tokens on auth.
     (lambda r: r == "docker.io",
      ["registry-1.docker.io", "auth.docker.io"]),
@@ -83,7 +83,7 @@ _REGISTRY_FAMILIES: List[Tuple[Callable[[str], bool], List[str]]] = [
 ]
 
 
-def registry_hosts_for(image: "str | ImageRef") -> List[str]:
+def registry_hosts_for(image: str | ImageRef) -> list[str]:
     """Return the list of HTTPS hostnames the sandbox must allow for
     operations against ``image``'s registry.
 
@@ -102,7 +102,7 @@ def registry_hosts_for(image: "str | ImageRef") -> List[str]:
         ref = image
 
     registry = ref.registry
-    out: List[str] = []
+    out: list[str] = []
     matched_family = False
     for predicate, hosts in _REGISTRY_FAMILIES:
         if not predicate(registry):
@@ -126,7 +126,7 @@ def registry_hosts_for(image: "str | ImageRef") -> List[str]:
 
     # Dedup, preserve order.
     seen = set()
-    deduped: List[str] = []
+    deduped: list[str] = []
     for h in out:
         if h not in seen:
             seen.add(h)
@@ -134,7 +134,7 @@ def registry_hosts_for(image: "str | ImageRef") -> List[str]:
     return deduped
 
 
-def _aws_ecr_hosts(registry: str) -> List[str]:
+def _aws_ecr_hosts(registry: str) -> list[str]:
     """ECR private: the registry host plus the regional STS endpoint
     for the auth dance.
 

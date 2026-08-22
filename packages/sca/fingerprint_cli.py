@@ -25,14 +25,14 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from . import SCA_CACHE_ROOT
 
 logger = logging.getLogger(__name__)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code."""
     args = _parse_args(list(argv) if argv is not None else None)
     target = args.target
@@ -204,7 +204,7 @@ def _fingerprint_image_ref(ref: str, args):
             pass
 
 
-def _emit_json(payload, out_path: Optional[str]) -> int:
+def _emit_json(payload, out_path: str | None) -> int:
     """Print to stdout or write to ``out_path``. Returns 0 on
     success, 3 on I/O failure (matches the CLI's infra-failure
     exit code so CI gates can differentiate write errors from
@@ -230,7 +230,7 @@ def _emit_json(payload, out_path: Optional[str]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="raptor-sca fingerprint",
         description=(

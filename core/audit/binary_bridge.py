@@ -18,7 +18,6 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +63,10 @@ class BinaryParserBoundary:
 class BinaryBridgeResult:
     """Aggregated binary analysis data for audit consumption."""
 
-    sink_edges: List[BinarySinkEdge] = field(default_factory=list)
-    ranked_surfaces: List[BinaryRankedSurface] = field(default_factory=list)
-    parser_boundaries: List[BinaryParserBoundary] = field(default_factory=list)
-    source_dirs: List[str] = field(default_factory=list)
+    sink_edges: list[BinarySinkEdge] = field(default_factory=list)
+    ranked_surfaces: list[BinaryRankedSurface] = field(default_factory=list)
+    parser_boundaries: list[BinaryParserBoundary] = field(default_factory=list)
+    source_dirs: list[str] = field(default_factory=list)
 
     @property
     def has_data(self) -> bool:
@@ -75,19 +74,19 @@ class BinaryBridgeResult:
             self.sink_edges or self.ranked_surfaces or self.parser_boundaries
         )
 
-    def sink_callers(self) -> Set[str]:
+    def sink_callers(self) -> set[str]:
         """Function names that call dangerous sinks (binary-confirmed)."""
         return {e.caller for e in self.sink_edges}
 
-    def surface_functions(self) -> Dict[str, float]:
+    def surface_functions(self) -> dict[str, float]:
         """Function name → highest investigation score."""
-        scores: Dict[str, float] = {}
+        scores: dict[str, float] = {}
         for s in self.ranked_surfaces:
             if s.function not in scores or s.score > scores[s.function]:
                 scores[s.function] = s.score
         return scores
 
-    def boundary_functions(self) -> Set[str]:
+    def boundary_functions(self) -> set[str]:
         """Function names identified as parser boundaries."""
         return {b.function for b in self.parser_boundaries}
 
@@ -98,9 +97,9 @@ RUN_METADATA_FILE = ".raptor-run.json"
 def find_binary_run_dirs(
     out_dir: Path,
     *,
-    target_path: Optional[Path] = None,
+    target_path: Path | None = None,
     max_dirs: int = 10,
-) -> List[Path]:
+) -> list[Path]:
     """Find sibling directories containing binary analysis output.
 
     When *target_path* is set, only siblings whose ``.raptor-run.json``
@@ -114,7 +113,7 @@ def find_binary_run_dirs(
 
     resolved_target = target_path.resolve() if target_path else None
 
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     try:
         for child in parent.iterdir():
             if not child.is_dir():
@@ -153,7 +152,7 @@ def find_binary_run_dirs(
     return candidates[:max_dirs]
 
 
-def _load_graph_sink_edges(run_dir: Path) -> List[BinarySinkEdge]:
+def _load_graph_sink_edges(run_dir: Path) -> list[BinarySinkEdge]:
     """Extract CALLS_SURFACE edges from a binary graph store."""
     graph_path = run_dir / GRAPH_SUBDIR / GRAPH_FILENAME
     if not graph_path.exists():
@@ -171,7 +170,7 @@ def _load_graph_sink_edges(run_dir: Path) -> List[BinarySinkEdge]:
         logger.debug("failed to query graph store %s", graph_path, exc_info=True)
         return []
 
-    edges: List[BinarySinkEdge] = []
+    edges: list[BinarySinkEdge] = []
     for e in raw_edges:
         kind = e.get("kind", "")
         src = e.get("source") or {}
@@ -214,7 +213,7 @@ def _load_investigation(run_dir: Path) -> tuple:
         logger.debug("failed to read %s", inv_path, exc_info=True)
         return [], []
 
-    surfaces: List[BinaryRankedSurface] = []
+    surfaces: list[BinaryRankedSurface] = []
     for fact in data.get("facts", []):
         if fact.get("type") != "surface_classification":
             continue
@@ -243,7 +242,7 @@ def _load_investigation(run_dir: Path) -> tuple:
         except (ValueError, TypeError):
             continue
 
-    boundaries: List[BinaryParserBoundary] = []
+    boundaries: list[BinaryParserBoundary] = []
     for item in data.get("parser_boundaries", []):
         fn = item.get("function", "")
         if not fn:
@@ -278,7 +277,7 @@ def _load_binary_context_map(run_dir: Path) -> tuple:
     except (json.JSONDecodeError, OSError):
         return [], []
 
-    surfaces: List[BinaryRankedSurface] = []
+    surfaces: list[BinaryRankedSurface] = []
     for sink in data.get("sinks", []):
         name = sink.get("name", "")
         if not name:
@@ -293,7 +292,7 @@ def _load_binary_context_map(run_dir: Path) -> tuple:
         except (ValueError, TypeError):
             continue
 
-    boundaries: List[BinaryParserBoundary] = []
+    boundaries: list[BinaryParserBoundary] = []
     for ep in data.get("external_ingress", []):
         fn = ep.get("function", "")
         if not fn:
@@ -315,9 +314,9 @@ def _load_binary_context_map(run_dir: Path) -> tuple:
 def load_binary_bridge(
     out_dir: Path,
     *,
-    target_path: Optional[Path] = None,
-    build_id_cache: Optional[object] = None,
-) -> Optional[BinaryBridgeResult]:
+    target_path: Path | None = None,
+    build_id_cache: object | None = None,
+) -> BinaryBridgeResult | None:
     """Load all binary analysis artifacts from sibling run directories.
 
     When *target_path* is set, only sibling runs that analysed the same

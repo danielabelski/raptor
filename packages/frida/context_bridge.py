@@ -10,7 +10,6 @@ Depends on packages.frida.evidence (PR #1) for discovery.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from core.logging import get_logger
 from core.sandbox.observe_context_merge import merge_observation_into_context_map
@@ -28,7 +27,7 @@ _MAX_EVIDENCE_FILES = 5
 def enrich_context_map_with_frida(
     context_map: dict,
     search_dirs: list[Path],
-    target_path: Optional[str] = None,
+    target_path: str | None = None,
 ) -> dict:
     """Discover frida evidence and merge into context map.
 

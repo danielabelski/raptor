@@ -42,7 +42,6 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 from .models import Confidence, Dependency, PinStyle
 
@@ -79,7 +78,7 @@ _SCOPE_MAP = {
 }
 
 
-def parse_cyclonedx(path: Path) -> Tuple[List[Dependency], List[str]]:
+def parse_cyclonedx(path: Path) -> tuple[list[Dependency], list[str]]:
     """Parse a CycloneDX 1.5 JSON file at ``path``.
 
     Returns ``(deps, warnings)`` — the parsed dep list and a list
@@ -118,8 +117,8 @@ def parse_cyclonedx(path: Path) -> Tuple[List[Dependency], List[str]]:
         # but it produces zero deps; emit empty + warning.
         return [], [f"SBOM at {path} has no components array"]
 
-    deps: List[Dependency] = []
-    warnings: List[str] = []
+    deps: list[Dependency] = []
+    warnings: list[str] = []
     for i, comp in enumerate(components):
         if not isinstance(comp, dict):
             warnings.append(f"component #{i}: not a dict, skipping")
@@ -137,7 +136,7 @@ def parse_cyclonedx(path: Path) -> Tuple[List[Dependency], List[str]]:
 
 def _component_to_dep(
     comp: dict, *, sbom_path: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     """Convert one CycloneDX component → SCA ``Dependency``.
 
     Returns ``None`` when the component lacks the minimum
@@ -198,7 +197,7 @@ _PURL_RE = re.compile(
 )
 
 
-def _parse_purl(purl: str) -> Optional[Tuple[str, str, Optional[str]]]:
+def _parse_purl(purl: str) -> tuple[str, str, str | None] | None:
     """Return ``(ecosystem, name, version)`` parsed from a purl,
     or ``None`` for malformed / unsupported ecosystems."""
     if not isinstance(purl, str):
@@ -219,7 +218,7 @@ def _parse_purl(purl: str) -> Optional[Tuple[str, str, Optional[str]]]:
     last_at = path_and_version.rfind("@")
     if last_at > 0:
         path = path_and_version[:last_at]
-        version: Optional[str] = path_and_version[last_at + 1:]
+        version: str | None = path_and_version[last_at + 1:]
     else:
         path = path_and_version
         version = None
@@ -246,7 +245,7 @@ def _parse_purl(purl: str) -> Optional[Tuple[str, str, Optional[str]]]:
     return (ecosystem, name, version)
 
 
-def _extract_license(licenses_block) -> Optional[str]:
+def _extract_license(licenses_block) -> str | None:
     """Pull the first license expression / SPDX id from a CycloneDX
     licenses array.
 

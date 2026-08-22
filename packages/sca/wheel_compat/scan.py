@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from packages.sca.models import (
     Confidence, Dependency, HygieneFinding,
@@ -53,8 +53,8 @@ def evaluate_platform_compat(
     *,
     target: Path,
     pypi_client,
-    platform_matrix: Optional[ProjectPlatformMatrix] = None,
-) -> List[HygieneFinding]:
+    platform_matrix: ProjectPlatformMatrix | None = None,
+) -> list[HygieneFinding]:
     """For each exact-pinned PyPI dep, cross-check against the
     project's platform matrix and emit a hygiene finding when
     a platform pair has no installable wheel.
@@ -77,7 +77,7 @@ def evaluate_platform_compat(
     if not platform_matrix:
         return []
 
-    findings: List[HygieneFinding] = []
+    findings: list[HygieneFinding] = []
     seen: set = set()       # dedup on (name, version)
 
     for dep in deps:
@@ -131,7 +131,7 @@ def evaluate_platform_compat(
 
 
 def _make_finding(
-    dep: Dependency, verdict, recommendation: Optional[str],
+    dep: Dependency, verdict, recommendation: str | None,
 ) -> HygieneFinding:
     sev = _FINDING_TIER.get(verdict.verdict, "low")
     rec_note = (

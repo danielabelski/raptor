@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, FrozenSet, List, Optional, Set
 
 from .lifecycle_model import Guard, ReadSite, WriteSite
 
@@ -20,7 +19,7 @@ _IF_CONDITION_RE = re.compile(
 )
 
 
-def _extract_condition_from_label(label: str) -> Optional[str]:
+def _extract_condition_from_label(label: str) -> str | None:
     """Extract the condition text from a CFG node label like 'If (x != NULL)'."""
     m = _IF_CONDITION_RE.match(label.strip())
     if m:
@@ -39,7 +38,7 @@ def collect_guards_at_site(
     dom_tree,
     line: int,
     file_path: str,
-) -> FrozenSet[Guard]:
+) -> frozenset[Guard]:
     """Extract the set of guard conditions dominating a given line.
 
     Walks the dominator tree from the target node back to entry,
@@ -50,7 +49,7 @@ def collect_guards_at_site(
         return frozenset()
 
     dominators = dom_tree.dominators_of(target_node)
-    guards: Set[Guard] = set()
+    guards: set[Guard] = set()
 
     for dom_node in dominators:
         cond = _extract_condition_from_label(dom_node.label)
@@ -105,15 +104,15 @@ def collect_field_sites_from_source(
     file_path: str,
     field_name: str,
     struct_type: str = "",  # noqa: ARG001
-) -> Dict[str, List[int]]:
+) -> dict[str, list[int]]:
     """Scan source text for write and read sites of a field.
 
     Returns {"writes": [line, ...], "reads": [line, ...]}.
     Uses heuristic pattern matching — arrow/dot access with assignment
     vs use context.
     """
-    writes: List[int] = []
-    reads: List[int] = []
+    writes: list[int] = []
+    reads: list[int] = []
 
     access_patterns = [
         re.compile(rf"->({re.escape(field_name)})\b"),

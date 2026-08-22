@@ -21,7 +21,7 @@ the envelope's separation guarantee.
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from core.dataflow.sanitizer_evidence import (
     CandidateValidator,
@@ -37,7 +37,7 @@ def render_evidence_for_prompt(evidence: SanitizerEvidence) -> str:
     candidates)"`` and similar placeholders rather than collapsing).
     Section order is stable: candidates → step annotations → metadata.
     """
-    sections: List[str] = [
+    sections: list[str] = [
         _render_candidate_pool(evidence.candidate_pool),
         _render_step_annotations(evidence.step_annotations),
         _render_metadata(evidence),

@@ -35,19 +35,14 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import (
     Any,
-    Deque,
-    Dict,
-    FrozenSet,
-    Mapping,
-    Set,
-    Tuple,
 )
+from collections.abc import Mapping
 
 
 # A reaching-def pair is (symbol, defining_node). Using a flat set
 # of pairs (rather than a per-symbol map) keeps the worklist's
 # set-union / set-difference operations to single ``frozenset`` calls.
-_Pair = Tuple[str, Any]
+_Pair = tuple[str, Any]
 
 
 @dataclass(frozen=True)
@@ -65,19 +60,19 @@ class ReachingDefs:
     or every prior definition was killed by an intervening rewrite
     on every path.
     """
-    _in: Mapping[Any, FrozenSet[_Pair]]
+    _in: Mapping[Any, frozenset[_Pair]]
 
-    def at(self, node: Any, symbol: str) -> FrozenSet[Any]:
+    def at(self, node: Any, symbol: str) -> frozenset[Any]:
         """Definer nodes whose write of ``symbol`` reaches ``node``'s
         IN-set."""
         return frozenset(
             n for (s, n) in self._in.get(node, frozenset()) if s == symbol
         )
 
-    def all_at(self, node: Any) -> Mapping[str, FrozenSet[Any]]:
+    def all_at(self, node: Any) -> Mapping[str, frozenset[Any]]:
         """Full ``{symbol -> frozenset[definer]}`` map at ``node``'s
         IN — handy for diagnostics."""
-        bucket: Dict[str, Set[Any]] = defaultdict(set)
+        bucket: dict[str, set[Any]] = defaultdict(set)
         for (s, n) in self._in.get(node, frozenset()):
             bucket[s].add(n)
         return {s: frozenset(ns) for s, ns in bucket.items()}
@@ -118,7 +113,7 @@ def reaching_defs(cfg: Any) -> ReachingDefs:
     # proof-pruned switch branch whose break still targets the join).
     # Unreachable nodes keep an empty IN via the constructor default.
     entry_node = cfg.entry
-    reachable: Set[Any] = {entry_node}
+    reachable: set[Any] = {entry_node}
     frontier = [entry_node]
     while frontier:
         cur = frontier.pop()
@@ -130,41 +125,41 @@ def reaching_defs(cfg: Any) -> ReachingDefs:
 
     # Forward edges via cfg.successors; invert to get predecessors
     # for the IN-set merge step (reachable endpoints only).
-    preds: Dict[Any, Set[Any]] = defaultdict(set)
+    preds: dict[Any, set[Any]] = defaultdict(set)
     for n in nodes:
         for succ in cfg.successors(n):
             if succ in reachable:
                 preds[succ].add(n)
 
-    params: Tuple[str, ...] = tuple(getattr(cfg, "params", ()) or ())
+    params: tuple[str, ...] = tuple(getattr(cfg, "params", ()) or ())
     entry = cfg.entry
 
-    def _node_defs(n: Any) -> FrozenSet[str]:
-        explicit: FrozenSet[str] = getattr(n, "defs", frozenset())
+    def _node_defs(n: Any) -> frozenset[str]:
+        explicit: frozenset[str] = getattr(n, "defs", frozenset())
         if n is entry and params:
             return frozenset(set(explicit) | set(params))
         return explicit
 
-    def _gen(n: Any) -> FrozenSet[_Pair]:
+    def _gen(n: Any) -> frozenset[_Pair]:
         return frozenset((s, n) for s in _node_defs(n))
 
     # Initial state: IN empty, OUT = GEN. The worklist then
     # propagates definitions forward to fixed point.
-    in_set: Dict[Any, FrozenSet[_Pair]] = {
+    in_set: dict[Any, frozenset[_Pair]] = {
         n: frozenset() for n in nodes
     }
-    out_set: Dict[Any, FrozenSet[_Pair]] = {
+    out_set: dict[Any, frozenset[_Pair]] = {
         n: _gen(n) for n in nodes
     }
 
-    worklist: Deque[Any] = deque(nodes)
-    in_worklist: Set[Any] = set(nodes)
+    worklist: deque[Any] = deque(nodes)
+    in_worklist: set[Any] = set(nodes)
     while worklist:
         n = worklist.popleft()
         in_worklist.discard(n)
 
         # IN[n] = union of OUT[p] for p in preds(n)
-        new_in_acc: Set[_Pair] = set()
+        new_in_acc: set[_Pair] = set()
         for p in preds.get(n, ()):
             new_in_acc |= out_set[p]
         new_in = frozenset(new_in_acc)

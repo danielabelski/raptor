@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, Optional, Set
+from typing import Any
 
 
 _IDENT_RE = re.compile(r"\b([a-zA-Z_]\w*(?:->[a-zA-Z_]\w*)*(?:\.[a-zA-Z_]\w*)*)\b")
@@ -20,12 +20,12 @@ class ControlCondition:
     """A guard expression on a CFG edge."""
 
     text: str
-    references: FrozenSet[str]
+    references: frozenset[str]
     smt_parseable: bool = False
     polarity: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "text": self.text,
             "references": sorted(self.references),
         }
@@ -36,7 +36,7 @@ class ControlCondition:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> ControlCondition:
+    def from_dict(cls, data: dict[str, Any]) -> ControlCondition:
         return cls(
             text=data["text"],
             references=frozenset(data.get("references", [])),
@@ -59,10 +59,10 @@ class ConditionEdge:
 
     src_line: int
     dst_line: int
-    condition: Optional[ControlCondition] = None
+    condition: ControlCondition | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "src_line": self.src_line,
             "dst_line": self.dst_line,
         }
@@ -71,7 +71,7 @@ class ConditionEdge:
         return d
 
 
-def extract_references(text: str) -> FrozenSet[str]:
+def extract_references(text: str) -> frozenset[str]:
     """Extract variable/field references from a condition expression."""
     keywords = frozenset({
         "if", "else", "elif", "while", "for", "return", "not", "and",
@@ -79,7 +79,7 @@ def extract_references(text: str) -> FrozenSet[str]:
         "sizeof", "typeof", "void", "int", "char", "long", "unsigned",
         "signed", "short", "double", "float", "const", "struct",
     })
-    refs: Set[str] = set()
+    refs: set[str] = set()
     for m in _IDENT_RE.finditer(text):
         name = m.group(1)
         if name not in keywords and not name.isdigit():
@@ -101,14 +101,14 @@ def _is_smt_parseable(text: str) -> bool:
     return any(op in text for op in _SMT_PARSEABLE_OPS)
 
 
-def extract_conditions_from_cfg(cfg) -> List[ConditionEdge]:
+def extract_conditions_from_cfg(cfg) -> list[ConditionEdge]:
     """Walk an existing PythonCFG or CPPCFG and produce ConditionEdge records.
 
     For each conditional node (If/While/ElIf), creates edges to
     successors with the appropriate polarity. Non-conditional edges
     get condition=None.
     """
-    edges: List[ConditionEdge] = []
+    edges: list[ConditionEdge] = []
 
     for node in cfg.nodes():
         successors = list(cfg.successors(node))

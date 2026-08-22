@@ -48,7 +48,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.json import load_json, save_json
 from core.logging import get_logger
@@ -60,7 +60,7 @@ SCHEMA_VERSION = 1
 # In-memory accumulator, keyed by (language, verdict) → count. Module-
 # level so every ``record_verdict`` call within the process aggregates;
 # ``flush`` reads + clears this buffer in one shot under the lock.
-_IN_MEMORY: Dict[str, Dict[str, int]] = {}
+_IN_MEMORY: dict[str, dict[str, int]] = {}
 _LOCK = threading.Lock()
 
 
@@ -83,7 +83,7 @@ def _sidecar_path() -> Path:
     return Path("out") / "reach_verdict_log.json"
 
 
-def record_verdict(language: Optional[str], verdict: Optional[str]) -> None:
+def record_verdict(language: str | None, verdict: str | None) -> None:
     """Increment the in-memory counter for ``(language, verdict)``.
 
     Both arguments may be ``None`` — typically ``language`` is unknown
@@ -111,7 +111,7 @@ def record_verdict(language: Optional[str], verdict: Optional[str]) -> None:
         per_lang[verdict] = per_lang.get(verdict, 0) + 1
 
 
-def _drain_in_memory() -> Dict[str, Dict[str, int]]:
+def _drain_in_memory() -> dict[str, dict[str, int]]:
     """Atomically swap the in-memory accumulator for an empty dict and
     return the prior contents. Holding ``_LOCK`` for the swap ensures no
     increment is lost between the read and the reset.
@@ -125,7 +125,7 @@ def _drain_in_memory() -> Dict[str, Dict[str, int]]:
         return out
 
 
-def _merge_disk(path: Path, increments: Dict[str, Dict[str, int]]) -> None:
+def _merge_disk(path: Path, increments: dict[str, dict[str, int]]) -> None:
     """Read-modify-write the sidecar under flock.
 
     Schema-version-strict: refuses to write back data of an unrecognised
@@ -157,7 +157,7 @@ def _merge_disk(path: Path, increments: Dict[str, Dict[str, int]]) -> None:
                     f"{path} has version={version!r}, expected "
                     f"{SCHEMA_VERSION!r}. Delete the sidecar to reset."
                 )
-            languages: Dict[str, Any] = data.setdefault("languages", {})
+            languages: dict[str, Any] = data.setdefault("languages", {})
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for lang, verdicts in increments.items():
                 slot = languages.setdefault(
@@ -174,7 +174,7 @@ def _merge_disk(path: Path, increments: Dict[str, Dict[str, int]]) -> None:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-def _redeposit(increments: Dict[str, Dict[str, int]]) -> None:
+def _redeposit(increments: dict[str, dict[str, int]]) -> None:
     """Merge ``increments`` back into the in-memory accumulator. Used
     when a flush attempt fails — the drained counts MUST NOT be lost,
     so we put them back where they were and let the next flush try
@@ -188,7 +188,7 @@ def _redeposit(increments: Dict[str, Dict[str, int]]) -> None:
                 per_lang[v] = per_lang.get(v, 0) + int(n)
 
 
-def flush(path: Optional[Path] = None) -> None:
+def flush(path: Path | None = None) -> None:
     """Drain the in-memory accumulator and merge into the sidecar.
 
     ``path`` defaults to :func:`_sidecar_path`. Tests pass an explicit
@@ -215,7 +215,7 @@ def flush(path: Optional[Path] = None) -> None:
         _redeposit(increments)
 
 
-def summarize(path: Optional[Path] = None) -> Dict[str, Dict[str, int]]:
+def summarize(path: Path | None = None) -> dict[str, dict[str, int]]:
     """Return the on-disk verdict distribution as
     ``{language: {verdict: count}}``. Empty dict if the sidecar doesn't
     exist or is unreadable. For CLI inspection — does not flush.
@@ -238,7 +238,7 @@ def summarize(path: Optional[Path] = None) -> Dict[str, Dict[str, int]]:
     }
 
 
-def reset(path: Optional[Path] = None) -> None:
+def reset(path: Path | None = None) -> None:
     """Clear in-memory counter AND delete the sidecar. Used by tests
     and the operator-facing ``--reset`` CLI flag."""
     with _LOCK:

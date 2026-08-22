@@ -44,7 +44,7 @@ import os
 import pickle
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from core.atomic_fs import write_bytes_atomically
 
@@ -111,7 +111,7 @@ _MAX_INDEX_BYTES = 64 * 1024 * 1024
 _MAX_CACHE_ENTRIES = 32
 
 
-def compute_fingerprint(inventory: Dict[str, Any]) -> Optional[str]:
+def compute_fingerprint(inventory: dict[str, Any]) -> str | None:
     """Return a stable content fingerprint for ``inventory``, or
     ``None`` if the inventory lacks the per-file sha256 we need
     (test fixtures often do).
@@ -157,7 +157,7 @@ def compute_fingerprint(inventory: Dict[str, Any]) -> Optional[str]:
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _cache_path_for(fingerprint: str) -> Optional[Path]:
+def _cache_path_for(fingerprint: str) -> Path | None:
     # Defense in depth: ``compute_fingerprint`` always returns a
     # SHA-256 hexdigest, but a future refactor could route an
     # attacker-controlled string here. Reject anything that isn't
@@ -174,7 +174,7 @@ def _cache_path_for(fingerprint: str) -> Optional[Path]:
     return _CACHE_DIR / f"{fingerprint}.pickle"
 
 
-def load_index(fingerprint: Optional[str]) -> Optional["_AdjacencyIndex"]:
+def load_index(fingerprint: str | None) -> _AdjacencyIndex | None:
     """Return the cached index for ``fingerprint``, or ``None`` if
     the cache is cold / corrupt / disabled.
 
@@ -314,8 +314,8 @@ def load_index(fingerprint: Optional[str]) -> Optional["_AdjacencyIndex"]:
 
 
 def save_index(
-    fingerprint: Optional[str],
-    index: "_AdjacencyIndex",
+    fingerprint: str | None,
+    index: _AdjacencyIndex,
 ) -> None:
     """Persist ``index`` under ``fingerprint``. Atomic write
     (tempfile + rename) so a process crash mid-write can't leave a

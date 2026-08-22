@@ -49,7 +49,7 @@ import io
 import logging
 import os
 import zipfile
-from typing import Callable, Dict, Optional, Union
+from collections.abc import Callable
 
 from .eocd import DEFAULT_MAX_ENTRIES, peek_total_entries
 from .safe_member import (
@@ -85,17 +85,17 @@ class ZipTotalBytesExceeded(Exception):
 
 
 def extract_files_from_zip(
-    source: Union[bytes, str, os.PathLike, io.IOBase],
+    source: bytes | str | os.PathLike | io.IOBase,
     *,
-    selector: Callable[[zipfile.ZipInfo], Optional[str]],
+    selector: Callable[[zipfile.ZipInfo], str | None],
     max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
     max_ratio: int = DEFAULT_MAX_RATIO,
     max_entry_count: int = DEFAULT_MAX_ENTRIES,
     allow_absolute_paths: bool = False,
-    expected_count: Optional[int] = None,
+    expected_count: int | None = None,
     raise_on_entry_count: bool = False,
-    max_total_bytes: Optional[int] = None,
-) -> Dict[str, bytes]:
+    max_total_bytes: int | None = None,
+) -> dict[str, bytes]:
     """Walk ``source`` (a zip archive) and return selected members
     as a ``{key: bytes}`` dict.
 
@@ -136,7 +136,7 @@ def extract_files_from_zip(
     explicitly (project import, CodeQL DB unpack) pass ``True``
     to get :class:`ZipEntryCountExceeded`.
     """
-    found: Dict[str, bytes] = {}
+    found: dict[str, bytes] = {}
 
     # Pre-flight: EOCD scan rejects bomb-shaped archives BEFORE
     # ``ZipFile.__init__`` materialises the central directory into
@@ -237,8 +237,8 @@ def extract_files_from_zip(
 
 
 def _normalise_source(
-    source: Union[bytes, str, os.PathLike, io.IOBase],
-) -> Union[io.IOBase, str, os.PathLike]:
+    source: bytes | str | os.PathLike | io.IOBase,
+) -> io.IOBase | str | os.PathLike:
     """Coerce ``source`` into a form ``zipfile.ZipFile`` accepts.
 
     Bytes are wrapped in :class:`io.BytesIO` (zipfile needs

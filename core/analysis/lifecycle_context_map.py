@@ -12,14 +12,14 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from .lifecycle_model import StateField
 
 logger = logging.getLogger(__name__)
 
 
-def load_state_fields(out_dir: Path) -> List[StateField]:
+def load_state_fields(out_dir: Path) -> list[StateField]:
     """Load state fields from context-map.json's state_fields section."""
     cm_path = out_dir / "context-map.json"
     if not cm_path.exists():
@@ -34,7 +34,7 @@ def load_state_fields(out_dir: Path) -> List[StateField]:
         return []
 
     raw_fields = data.get("state_fields", [])
-    fields: List[StateField] = []
+    fields: list[StateField] = []
     for raw in raw_fields:
         try:
             fields.append(StateField.from_dict(raw))
@@ -45,7 +45,7 @@ def load_state_fields(out_dir: Path) -> List[StateField]:
 
 def save_state_fields(
     out_dir: Path,
-    fields: List[StateField],
+    fields: list[StateField],
 ) -> Path:
     """Write state fields into context-map.json's state_fields section.
 
@@ -54,7 +54,7 @@ def save_state_fields(
     """
     cm_path = out_dir / "context-map.json"
 
-    data: Dict[str, Any] = {}
+    data: dict[str, Any] = {}
     if cm_path.exists():
         try:
             loaded = json.loads(cm_path.read_text())
@@ -82,9 +82,9 @@ def save_state_fields(
 
 
 def merge_state_fields(
-    existing: List[StateField],
-    new_fields: List[StateField],
-) -> List[StateField]:
+    existing: list[StateField],
+    new_fields: list[StateField],
+) -> list[StateField]:
     """Merge new state fields with existing, deduplicating by name+struct_type."""
     by_key = {(f.name, f.struct_type): f for f in existing}
     for f in new_fields:

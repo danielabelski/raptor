@@ -26,7 +26,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 from core.evidence import EvidenceTier
 
@@ -120,8 +121,8 @@ class Layer0Finding:
     vuln_type: str = ""
     dwarf_enhanced: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "pattern_id": self.pattern_id,
             "function": self.function,
             "evidence_tier": self.evidence_tier,
@@ -155,7 +156,7 @@ class BinaryMetadata:
     has_cfi: bool = False
     binary_path: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "has_pie": self.has_pie,
             "has_full_relro": self.has_full_relro,
@@ -169,7 +170,7 @@ class BinaryMetadata:
         }
 
     @property
-    def missing_mitigations(self) -> List[str]:
+    def missing_mitigations(self) -> list[str]:
         missing = []
         if not self.has_pie:
             missing.append("PIE")
@@ -183,7 +184,7 @@ class BinaryMetadata:
             missing.append("FORTIFY_SOURCE")
         return missing
 
-    def to_finding(self) -> Optional[Layer0Finding]:
+    def to_finding(self) -> Layer0Finding | None:
         missing = self.missing_mitigations
         if not missing:
             return None
@@ -201,12 +202,12 @@ class BinaryMetadata:
 class Layer0Result:
     """Aggregated results from Layer 0 scanning."""
 
-    findings: List[Layer0Finding] = field(default_factory=list)
-    metadata: Optional[BinaryMetadata] = None
+    findings: list[Layer0Finding] = field(default_factory=list)
+    metadata: BinaryMetadata | None = None
     functions_scanned: int = 0
     patterns_checked: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "findings": [f.to_dict() for f in self.findings],
             "metadata": self.metadata.to_dict() if self.metadata else None,
@@ -219,8 +220,8 @@ class Layer0Result:
     def finding_count(self) -> int:
         return len(self.findings)
 
-    def by_pattern(self) -> Dict[str, List[Layer0Finding]]:
-        groups: Dict[str, List[Layer0Finding]] = {}
+    def by_pattern(self) -> dict[str, list[Layer0Finding]]:
+        groups: dict[str, list[Layer0Finding]] = {}
         for f in self.findings:
             groups.setdefault(f.pattern_id, []).append(f)
         return groups
@@ -233,9 +234,9 @@ class Layer0Result:
 
 def check_format_string(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.1: printf family called with argument count suggesting format string."""
     findings = []
     for call in calls:
@@ -270,9 +271,9 @@ def check_format_string(
 
 def check_unchecked_return(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.3: security-critical return values not checked."""
     findings = []
     for call in calls:
@@ -293,9 +294,9 @@ def check_unchecked_return(
 
 def check_toctou(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.6: time-of-check-to-time-of-use call pairs."""
     findings = []
     call_names = [c.get("callee", "") for c in calls]
@@ -317,10 +318,10 @@ def check_toctou(
 
 def check_lock_imbalance(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     return_paths: int = 1,
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.7: lock acquired with no matching release anywhere in the
     function.
 
@@ -349,9 +350,9 @@ def check_lock_imbalance(
 
 def check_missing_clear(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.8: sensitive data not cleared before return."""
     func_lower = function.lower()
     is_sensitive = any(frag in func_lower for frag in _SENSITIVE_NAME_FRAGMENTS)
@@ -398,9 +399,9 @@ def check_missing_clear(
 
 def check_sign_confusion(
     function: str,
-    instructions: Sequence[Dict[str, Any]],
+    instructions: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.4: signed-to-unsigned widening (movsxd) before size argument."""
     findings = []
     for instr in instructions:
@@ -426,7 +427,7 @@ def check_indirect_flow(
     indirect_calls: int = 0,
     has_cfi: bool = False,
     file: str = "",
-) -> Optional[Layer0Finding]:
+) -> Layer0Finding | None:
     """30.9: high density of unprotected indirect control transfers."""
     if indirect_calls <= 2:
         return None
@@ -491,13 +492,13 @@ _UNRELATED_STRUCT_CAST_RE = re.compile(
 
 def check_buffer_size_mismatch(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.2: buffer allocation size vs copy size discrepancy."""
-    findings: List[Layer0Finding] = []
+    findings: list[Layer0Finding] = []
 
-    alloc_sizes: Dict[str, int] = {}
+    alloc_sizes: dict[str, int] = {}
     for call in calls:
         callee = call.get("callee", "")
         if callee in _ALLOC_CALLS:
@@ -535,9 +536,9 @@ def check_compiler_security(
     function: str,
     source: str,
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.5: functions that disable compiler security features."""
-    findings: List[Layer0Finding] = []
+    findings: list[Layer0Finding] = []
 
     for m in _STACK_PROTECTOR_DISABLE_RE.finditer(source):
         findings.append(Layer0Finding(
@@ -576,9 +577,9 @@ def check_inlined_ops(
     function: str,
     source: str,
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.10: inlined security operations that may be optimized away."""
-    findings: List[Layer0Finding] = []
+    findings: list[Layer0Finding] = []
 
     if not _SENSITIVE_STACK_RE.search(source):
         return findings
@@ -607,9 +608,9 @@ def check_dwarf_types(
     function: str,
     source: str,
     file: str = "",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """30.11: type confusion patterns visible in source/DWARF info."""
-    findings: List[Layer0Finding] = []
+    findings: list[Layer0Finding] = []
 
     for m in _VOID_PTR_CAST_RE.finditer(source):
         findings.append(Layer0Finding(
@@ -667,7 +668,7 @@ _CALLEE_KEYWORDS = frozenset({
 })
 
 
-def callees_from_source(source: str) -> List[Dict[str, Any]]:
+def callees_from_source(source: str) -> list[dict[str, Any]]:
     """Best-effort ``[{"callee": name}, ...]`` from function source.
 
     Over-approximates (a macro invocation and a call look identical;
@@ -676,7 +677,7 @@ def callees_from_source(source: str) -> List[Dict[str, Any]]:
     anything that counts.
     """
     seen: set[str] = set()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for m in _CALLEE_RE.finditer(source):
         name = m.group(1)
         if name in _CALLEE_KEYWORDS or name in seen:
@@ -688,16 +689,16 @@ def callees_from_source(source: str) -> List[Dict[str, Any]]:
 
 def scan_function(
     function: str,
-    calls: Sequence[Dict[str, Any]],
+    calls: Sequence[dict[str, Any]],
     *,
-    instructions: Optional[Sequence[Dict[str, Any]]] = None,
+    instructions: Sequence[dict[str, Any]] | None = None,
     indirect_calls: int = 0,
     has_cfi: bool = False,
     return_paths: int = 1,
     source: str = "",
     file: str = "",
     language: str = "c",
-) -> List[Layer0Finding]:
+) -> list[Layer0Finding]:
     """Run all applicable Layer 0 checks on a single function.
 
     ``language`` gates the C-idiom checks when the scan runs over
@@ -708,7 +709,7 @@ def scan_function(
     on a large mixed-language tree were exactly that shape).
     Default "c" preserves the binary-analysis callers' behaviour.
     """
-    findings: List[Layer0Finding] = []
+    findings: list[Layer0Finding] = []
     c_family = language in ("c", "cpp", "c++", "objc")
 
     findings.extend(check_format_string(function, calls, file))
@@ -736,7 +737,7 @@ def scan_function(
 
 def format_layer0_context(
     findings: Sequence[Layer0Finding],
-    metadata: Optional[BinaryMetadata] = None,
+    metadata: BinaryMetadata | None = None,
 ) -> str:
     """Render Layer 0 findings for LLM prompt injection."""
     if not findings and not metadata:

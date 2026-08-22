@@ -38,7 +38,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 
 SCHEMA_VERSION = 1
@@ -66,7 +67,7 @@ SEMANTICS_AUTH_CHECK = "auth_check"
 SEMANTICS_TYPE_COERCE = "type_coerce"
 SEMANTICS_RATE_LIMIT = "rate_limit"
 SEMANTICS_OTHER = "other"
-VALID_SEMANTICS_TAGS: FrozenSet[str] = frozenset(
+VALID_SEMANTICS_TAGS: frozenset[str] = frozenset(
     {
         SEMANTICS_SQL_ESCAPE,
         SEMANTICS_HTML_ESCAPE,
@@ -83,12 +84,12 @@ VALID_SEMANTICS_TAGS: FrozenSet[str] = frozenset(
 PROVENANCE_LLM = "llm"
 PROVENANCE_ANNOTATION = "annotation"
 PROVENANCE_FRAMEWORK_CATALOG = "framework_catalog"
-VALID_EXTRACTION_PROVENANCE: FrozenSet[str] = frozenset(
+VALID_EXTRACTION_PROVENANCE: frozenset[str] = frozenset(
     {PROVENANCE_LLM, PROVENANCE_ANNOTATION, PROVENANCE_FRAMEWORK_CATALOG}
 )
 
 
-_CANDIDATE_KEYS: FrozenSet[str] = frozenset(
+_CANDIDATE_KEYS: frozenset[str] = frozenset(
     {
         "name",
         "qualified_name",
@@ -100,7 +101,7 @@ _CANDIDATE_KEYS: FrozenSet[str] = frozenset(
         "extraction_provenance",
     }
 )
-_STEP_ANNOTATION_KEYS: FrozenSet[str] = frozenset(
+_STEP_ANNOTATION_KEYS: frozenset[str] = frozenset(
     {
         "step_index",
         "on_path_validators",
@@ -108,7 +109,7 @@ _STEP_ANNOTATION_KEYS: FrozenSet[str] = frozenset(
         "inlined_helpers",
     }
 )
-_EVIDENCE_KEYS: FrozenSet[str] = frozenset(
+_EVIDENCE_KEYS: frozenset[str] = frozenset(
     {
         "schema_version",
         "candidate_pool",
@@ -119,7 +120,7 @@ _EVIDENCE_KEYS: FrozenSet[str] = frozenset(
 )
 
 
-def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: FrozenSet[str]) -> None:
+def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: frozenset[str]) -> None:
     extras = set(data.keys()) - allowed
     if extras:
         raise ValueError(f"unknown fields in {name} JSON: {sorted(extras)}")
@@ -175,7 +176,7 @@ class CandidateValidator:
                 f"source_line must be >= 1, got {self.source_line!r}"
             )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "qualified_name": self.qualified_name,
@@ -188,7 +189,7 @@ class CandidateValidator:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "CandidateValidator":
+    def from_dict(cls, data: Mapping[str, Any]) -> CandidateValidator:
         _check_extra_fields("CandidateValidator", data, _CANDIDATE_KEYS)
         return cls(
             name=data["name"],
@@ -216,9 +217,9 @@ class StepAnnotation:
     """
 
     step_index: int
-    on_path_validators: Tuple[str, ...] = ()
-    variables_referenced: Tuple[str, ...] = ()
-    inlined_helpers: Tuple[str, ...] = ()
+    on_path_validators: tuple[str, ...] = ()
+    variables_referenced: tuple[str, ...] = ()
+    inlined_helpers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.step_index < 0:
@@ -238,7 +239,7 @@ class StepAnnotation:
                         f"StepAnnotation.{label} entries must be non-empty strings"
                     )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "step_index": self.step_index,
             "on_path_validators": list(self.on_path_validators),
@@ -247,7 +248,7 @@ class StepAnnotation:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "StepAnnotation":
+    def from_dict(cls, data: Mapping[str, Any]) -> StepAnnotation:
         _check_extra_fields("StepAnnotation", data, _STEP_ANNOTATION_KEYS)
         return cls(
             step_index=_coerce_int(data.get("step_index", 0)),
@@ -273,10 +274,10 @@ class SanitizerEvidence:
     couldn't parse or where the LLM call errored.
     """
 
-    candidate_pool: Tuple[CandidateValidator, ...] = ()
-    step_annotations: Tuple[StepAnnotation, ...] = ()
+    candidate_pool: tuple[CandidateValidator, ...] = ()
+    step_annotations: tuple[StepAnnotation, ...] = ()
     pool_completeness: str = "unknown"
-    extraction_failures: Tuple[str, ...] = ()
+    extraction_failures: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_nonempty("SanitizerEvidence.pool_completeness", self.pool_completeness)
@@ -299,7 +300,7 @@ class SanitizerEvidence:
                     "SanitizerEvidence.extraction_failures entries must be non-empty strings"
                 )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "candidate_pool": [c.to_dict() for c in self.candidate_pool],
@@ -309,7 +310,7 @@ class SanitizerEvidence:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "SanitizerEvidence":
+    def from_dict(cls, data: Mapping[str, Any]) -> SanitizerEvidence:
         _check_extra_fields("SanitizerEvidence", data, _EVIDENCE_KEYS)
         version = data["schema_version"]
         if version != SCHEMA_VERSION:
@@ -330,12 +331,12 @@ class SanitizerEvidence:
             extraction_failures=tuple(data.get("extraction_failures", [])),
         )
 
-    def to_json(self, *, indent: Optional[int] = None) -> str:
+    def to_json(self, *, indent: int | None = None) -> str:
         """Render as JSON. Explicit ``indent`` signature — see
         ``core.dataflow.label.GroundTruth.to_json`` for the
         rationale."""
         return json.dumps(self.to_dict(), indent=indent)
 
     @classmethod
-    def from_json(cls, text: str) -> "SanitizerEvidence":
+    def from_json(cls, text: str) -> SanitizerEvidence:
         return cls.from_dict(json.loads(text))

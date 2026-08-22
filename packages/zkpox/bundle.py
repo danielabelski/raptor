@@ -30,7 +30,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.witness.store import WitnessStore
 from core.witness.types import Witness
@@ -79,20 +79,20 @@ class ZKPoXBundle:
     witness_len: int
     source: str               # WitnessSource value
     observed_outcome: str     # WitnessOutcome value
-    outcome_detail: Dict[str, Any]
-    target_binary_hash: Optional[str]
-    target_source_hash: Optional[str]
-    produced_by: Optional[str]
-    timestamp: Optional[str]
-    attestation: Dict[str, Any]
+    outcome_detail: dict[str, Any]
+    target_binary_hash: str | None
+    target_source_hash: str | None
+    produced_by: str | None
+    timestamp: str | None
+    attestation: dict[str, Any]
     tier: str = "0/1"
-    reproduction: Optional[Dict[str, Any]] = None
+    reproduction: dict[str, Any] | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
-def _build_attestation(witness: Witness) -> Dict[str, Any]:
+def _build_attestation(witness: Witness) -> dict[str, Any]:
     """The Tier-1 claim, stated plainly. No crypto — this is the
     assertion a Tier-3 proof would later make zero-knowledge."""
     target = witness.target_binary_hash or witness.target_source_hash

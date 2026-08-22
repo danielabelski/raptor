@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Set
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
 ECOSYSTEM = "Maven"
 
 # Configurations that count as production runtime / compile.
-_MAIN_CONFIGS: Set[str] = {
+_MAIN_CONFIGS: set[str] = {
     "compileClasspath",
     "runtimeClasspath",
     "default",
@@ -48,7 +47,7 @@ _MAIN_CONFIGS: Set[str] = {
 
 # Test configurations — record as test only when no main config also
 # claims the dep.
-_TEST_CONFIGS: Set[str] = {
+_TEST_CONFIGS: set[str] = {
     "testCompileClasspath",
     "testRuntimeClasspath",
     "testImplementation",
@@ -60,7 +59,7 @@ _TEST_CONFIGS: Set[str] = {
 }
 
 # Build-time only (annotation processors, plugin classpath, etc.).
-_BUILD_CONFIGS: Set[str] = {
+_BUILD_CONFIGS: set[str] = {
     "annotationProcessor",
     "kapt",
     "ksp",
@@ -69,14 +68,14 @@ _BUILD_CONFIGS: Set[str] = {
 }
 
 
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         logger.warning("sca.parsers.gradle_lockfile: read failed for %s: %s", path, e)
         return []
 
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -94,7 +93,7 @@ def parse(path: Path) -> List[Dependency]:
 # Internals
 # ---------------------------------------------------------------------------
 
-def _parse_line(line: str, path: Path) -> Optional[Dependency]:
+def _parse_line(line: str, path: Path) -> Dependency | None:
     if "=" not in line:
         return None
     coord, configs_text = line.split("=", 1)
@@ -123,7 +122,7 @@ def _parse_line(line: str, path: Path) -> Optional[Dependency]:
     )
 
 
-def _scope_from_configs(configs: Set[str]) -> str:
+def _scope_from_configs(configs: set[str]) -> str:
     if configs & _MAIN_CONFIGS:
         return "main"
     if configs & _TEST_CONFIGS:

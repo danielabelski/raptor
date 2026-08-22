@@ -28,7 +28,7 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .evidence_grade import Confidence
 
@@ -75,9 +75,9 @@ class LayerClaim:
     """A claim from one analysis layer about a function/finding."""
 
     layer: LayerVerdict
-    reachable: Optional[bool] = None
-    has_flow: Optional[bool] = None
-    evasion_mechanism: Optional[str] = None
+    reachable: bool | None = None
+    has_flow: bool | None = None
+    evasion_mechanism: str | None = None
     detail: str = ""
 
 
@@ -88,14 +88,14 @@ class Disagreement:
     file: str
     function: str
     kind: DisagreementKind
-    mechanical_claim: Optional[LayerClaim] = None
-    llm_claim: Optional[LayerClaim] = None
-    dynamic_claim: Optional[LayerClaim] = None
+    mechanical_claim: LayerClaim | None = None
+    llm_claim: LayerClaim | None = None
+    dynamic_claim: LayerClaim | None = None
     resolution: str = ""
-    winner: Optional[LayerVerdict] = None
+    winner: LayerVerdict | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "file": self.file,
             "function": self.function,
             "kind": self.kind.value,
@@ -122,7 +122,7 @@ class ObservationRecord:
     coverage_pct: float = 0.0
     observation_runs: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.file,
             "function": self.function,
@@ -148,7 +148,7 @@ class LanguageCpgProfile:
     notes: str = ""
 
 
-_LANGUAGE_PROFILES: Dict[str, LanguageCpgProfile] = {
+_LANGUAGE_PROFILES: dict[str, LanguageCpgProfile] = {
     "c": LanguageCpgProfile("c", CpgConfidence.HIGH, 0.95,
                             "mature frontend, good pointer analysis"),
     "cpp": LanguageCpgProfile("cpp", CpgConfidence.HIGH, 0.90,
@@ -193,11 +193,11 @@ def cpg_reachability_weight(language: str) -> float:
 def resolve_disagreement(
     file: str,
     function: str,
-    mechanical: Optional[LayerClaim] = None,
-    llm: Optional[LayerClaim] = None,
-    dynamic: Optional[LayerClaim] = None,
+    mechanical: LayerClaim | None = None,
+    llm: LayerClaim | None = None,
+    dynamic: LayerClaim | None = None,
     language: str = "",
-) -> Optional[Disagreement]:
+) -> Disagreement | None:
     """Apply the resolution policy when layers disagree.
 
     Returns a Disagreement record if layers disagree, None if they agree
@@ -238,9 +238,9 @@ def resolve_disagreement(
 
 
 def _classify_disagreement(
-    mechanical: Optional[LayerClaim],
-    llm: Optional[LayerClaim],
-    dynamic: Optional[LayerClaim],
+    mechanical: LayerClaim | None,
+    llm: LayerClaim | None,
+    dynamic: LayerClaim | None,
 ) -> DisagreementKind:
     has_m = mechanical is not None
     has_l = llm is not None
@@ -255,7 +255,7 @@ def _classify_disagreement(
     return DisagreementKind.LLM_VS_DYNAMIC
 
 
-def _coalesce_bool(*values: Optional[bool]) -> Optional[bool]:
+def _coalesce_bool(*values: bool | None) -> bool | None:
     """Return the first non-None boolean, or None if all are None."""
     for v in values:
         if v is not None:
@@ -264,9 +264,9 @@ def _coalesce_bool(*values: Optional[bool]) -> Optional[bool]:
 
 
 def _apply_policy(
-    mechanical: Optional[LayerClaim],
-    llm: Optional[LayerClaim],
-    dynamic: Optional[LayerClaim],
+    mechanical: LayerClaim | None,
+    llm: LayerClaim | None,
+    dynamic: LayerClaim | None,
     language: str,
 ) -> tuple:
     """Return (winner, resolution_description)."""
@@ -323,7 +323,7 @@ def assign_observation_status(
     file: str,
     function: str,
     frida_available: bool,
-    observed_functions: Optional[frozenset] = None,
+    observed_functions: frozenset | None = None,
     observation_runs: int = 0,
 ) -> ObservationRecord:
     if not frida_available:
@@ -387,9 +387,9 @@ def adjust_triage_for_cpg_confidence(
 # -- Persistence --
 
 def write_disagreements(
-    disagreements: List[Disagreement],
+    disagreements: list[Disagreement],
     output_dir: Path,
-) -> Optional[Path]:
+) -> Path | None:
     if not disagreements:
         return None
 
@@ -414,9 +414,9 @@ def write_disagreements(
 
 
 def write_observation_records(
-    records: List[ObservationRecord],
+    records: list[ObservationRecord],
     output_dir: Path,
-) -> Optional[Path]:
+) -> Path | None:
     if not records:
         return None
 
@@ -440,10 +440,10 @@ def write_observation_records(
     return path
 
 
-def format_disagreement_summary(disagreements: List[Disagreement]) -> str:
+def format_disagreement_summary(disagreements: list[Disagreement]) -> str:
     if not disagreements:
         return "Layer resolution: no disagreements"
-    kinds: Dict[str, int] = {}
+    kinds: dict[str, int] = {}
     for d in disagreements:
         kinds[d.kind.value] = kinds.get(d.kind.value, 0) + 1
     parts = [f"{k}={v}" for k, v in sorted(kinds.items())]

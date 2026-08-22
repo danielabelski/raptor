@@ -1,7 +1,7 @@
 """Data models for Semgrep results."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 
 @dataclass
@@ -89,16 +89,16 @@ class SemgrepResult:
     name: str = ""
     config: str = ""
     target: str = ""
-    findings: List[SemgrepFinding] = field(default_factory=list)
-    files_examined: List[str] = field(default_factory=list)
-    files_failed: List[Dict[str, str]] = field(default_factory=list)
+    findings: list[SemgrepFinding] = field(default_factory=list)
+    files_examined: list[str] = field(default_factory=list)
+    files_failed: list[dict[str, str]] = field(default_factory=list)
     semgrep_version: str = ""
     returncode: int = 0
     stderr: str = ""
     sarif: str = ""
     json_output: str = ""
     elapsed_ms: int = 0
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -125,7 +125,7 @@ class SemgrepResult:
         }
 
 
-def parse_sarif(text: str) -> List[SemgrepFinding]:
+def parse_sarif(text: str) -> list[SemgrepFinding]:
     """Parse SARIF JSON text into SemgrepFinding objects.
 
     Returns an empty list on malformed input rather than raising — Semgrep
@@ -140,7 +140,7 @@ def parse_sarif(text: str) -> List[SemgrepFinding]:
     except (json.JSONDecodeError, ValueError):
         return []
 
-    findings: List[SemgrepFinding] = []
+    findings: list[SemgrepFinding] = []
     runs = data.get("runs") or []
     for run in runs:
         if not isinstance(run, dict):
@@ -151,7 +151,7 @@ def parse_sarif(text: str) -> List[SemgrepFinding]:
     return findings
 
 
-def parse_json_output(text: str) -> Dict[str, Any]:
+def parse_json_output(text: str) -> dict[str, Any]:
     """Parse Semgrep's --json-output content for paths.scanned, errors, version.
 
     Returns a dict with keys: files_examined, files_failed,
@@ -166,7 +166,7 @@ def parse_json_output(text: str) -> Dict[str, Any]:
     """
     import json
 
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "files_examined": [],
         "files_failed": [],
         "semgrep_version": "",
@@ -202,7 +202,7 @@ def parse_json_output(text: str) -> Dict[str, Any]:
     return out
 
 
-def _render_error(entry: Dict[str, Any]) -> str:
+def _render_error(entry: dict[str, Any]) -> str:
     """One-line rendering of a semgrep errors[] entry.
 
     Semgrep's error objects vary by type: rule-schema errors carry

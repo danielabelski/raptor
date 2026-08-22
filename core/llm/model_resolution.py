@@ -22,7 +22,6 @@ conditional in the integration point at :func:`_read_config_models`.
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from core.logging import get_logger
 
@@ -35,7 +34,7 @@ logger = get_logger()
 # transient network failure at startup doesn't trigger a retry on every
 # subsequent read of ``models.json`` — the same posture as Anthropic's
 # own SDK, which caches model lists between calls.
-_INVENTORY: Optional[list[str]] = None
+_INVENTORY: list[str] | None = None
 _INVENTORY_PROBED: bool = False
 _INVENTORY_LOCK = threading.Lock()
 
@@ -48,7 +47,7 @@ _INVENTORY_LOCK = threading.Lock()
 _LOGGED_RESOLUTIONS: set[tuple[str, str]] = set()
 
 
-def resolve_anthropic(name: str, api_key: Optional[str]) -> str:
+def resolve_anthropic(name: str, api_key: str | None) -> str:
     """Return the canonical Anthropic model ID for *name*.
 
     Resolution rules, in order:
@@ -128,7 +127,7 @@ def _next_segment_is_date(model_id: str, prefix_len: int) -> bool:
     return len(seg) == 8 and seg.isdigit()
 
 
-def _get_inventory(api_key: Optional[str]) -> list[str]:
+def _get_inventory(api_key: str | None) -> list[str]:
     """Return the cached inventory, fetching it on first call.
 
     Thread-safe: concurrent first-callers from multiple threads collapse

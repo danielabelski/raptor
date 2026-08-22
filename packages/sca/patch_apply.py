@@ -31,14 +31,13 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 def apply_patch_to_target(
     target: Path,
-    patch_path: Optional[Path],
+    patch_path: Path | None,
     *,
     caller_label: str = "sca",
     timeout: int = 60,

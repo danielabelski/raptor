@@ -46,7 +46,8 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Callable
 
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
@@ -168,7 +169,7 @@ def translate_pattern_to_cocci_rule(
     *,
     model: ModelConfig,
     max_cost_usd: float = DEFAULT_RULE_GEN_MAX_COST_USD,
-) -> "Optional[str]":
+) -> str | None:
     """Single-turn LLM call: pattern → cocci rule text. Returns None
     when the model declared the pattern UNTRANSLATABLE (caller falls
     back to LLM-grep hunt or surfaces the reason)."""
@@ -210,13 +211,13 @@ def translate_pattern_to_cocci_rule(
 def _spatch_matches_to_variants(
     result: SpatchResult,
     repo_path: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Translate ``SpatchResult.matches`` into the variant-dict shape
     that ``VariantAdapter`` expects: file (relative to repo), line,
     function (best-effort empty unless the rule emitted it), snippet
     (the rule's emitted message), confidence."""
     repo = Path(repo_path).resolve()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for m in result.matches:
         # Normalize file paths to repo-relative when we can. The
         # VariantAdapter's dedup key includes the file path; an
@@ -282,7 +283,7 @@ def _make_locked_sandbox_runner(
         return subprocess.run
 
     def _runner(cmd, **kwargs):
-        sandbox_kwargs: Dict[str, Any] = {
+        sandbox_kwargs: dict[str, Any] = {
             "block_network": True,
             "target": str(target),
             "output": str(scratch_output),
@@ -312,9 +313,9 @@ def cocci_hunt_dispatch(
     *,
     rule_timeout_s: int = DEFAULT_RULE_TIMEOUT_S,
     rule_gen_max_cost_usd: float = DEFAULT_RULE_GEN_MAX_COST_USD,
-    spatch_runner: Optional[Callable] = None,
+    spatch_runner: Callable | None = None,
     sandbox: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """``HuntDispatchFn`` implementation backed by Coccinelle.
 
     Same call shape as ``default_hunt_dispatch`` so the substrate's
@@ -387,7 +388,7 @@ def cocci_hunt_dispatch(
     # ``spatch_runner=`` wins (used by tests to inject mocks). Built
     # before the rule tempfile so failure here has nothing to clean up.
     effective_runner = spatch_runner
-    scratch_output: Optional[Path] = None
+    scratch_output: Path | None = None
     if effective_runner is None and sandbox:
         try:
             # Writable scratch for the sandbox: hosts the fake $HOME

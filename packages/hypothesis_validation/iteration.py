@@ -25,7 +25,6 @@ the evidence schema stabilises.
 """
 
 from dataclasses import dataclass, field
-from typing import List
 
 from .hypothesis import Hypothesis
 from .result import Evidence
@@ -44,7 +43,7 @@ class IterationStep:
     """
 
     hypothesis: Hypothesis
-    evidence: List[Evidence] = field(default_factory=list)
+    evidence: list[Evidence] = field(default_factory=list)
 
 
 def uncertainty(step: IterationStep) -> int:

@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -77,24 +77,24 @@ class SourceEntry:
 
     repo_key: str
     url: str
-    mirror_urls: Tuple[str, ...] = ()
+    mirror_urls: tuple[str, ...] = ()
     ref_kind: str = "tag"
-    symlinks: Dict[str, str] = field(default_factory=dict)
+    symlinks: dict[str, str] = field(default_factory=dict)
     notes: str = ""
 
     @property
-    def urls(self) -> Tuple[str, ...]:
+    def urls(self) -> tuple[str, ...]:
         return (self.url, *self.mirror_urls)
 
 
-def load_sources(path: Optional[Path] = None) -> Dict[str, SourceEntry]:
+def load_sources(path: Path | None = None) -> dict[str, SourceEntry]:
     """Load the source registry.  Raises on a malformed registry."""
     path = path or SOURCES_PATH
     raw = json.loads(path.read_text())
     repos = raw.get("repos")
     if not isinstance(repos, dict):
         raise ValueError(f"{path}: expected a top-level 'repos' mapping")
-    entries: Dict[str, SourceEntry] = {}
+    entries: dict[str, SourceEntry] = {}
     for key, val in repos.items():
         if not isinstance(val, dict) or not val.get("url"):
             raise ValueError(f"{path}: repo {key!r} needs a 'url'")
@@ -139,7 +139,7 @@ def _run_git(args, *, timeout_s: int) -> subprocess.CompletedProcess:
 
 def _clone_at_ref(
     url: str, ref: str, dest: Path, *, timeout_s: int,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Shallow-clone *url* at tag/branch *ref* into *dest*."""
     result = _run_git(
         [
@@ -156,7 +156,7 @@ def _clone_at_ref(
 
 def _clone_at_sha(
     url: str, sha: str, dest: Path, *, timeout_s: int,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Fetch a bare hex SHA shallowly (init + fetch + checkout)."""
     steps = [
         ["init", str(dest)],
@@ -193,7 +193,7 @@ def clone_source(
     ref: str,
     dest: Path,
     *,
-    entry: Optional[SourceEntry] = None,
+    entry: SourceEntry | None = None,
     timeout_s: int = CLONE_TIMEOUT_S,
 ) -> Path:
     """Create a pinned shallow clone of *repo_key* at *ref* in *dest*.
@@ -228,7 +228,7 @@ def clone_source(
     )
 
 
-def _resolve_entry(repo_key: str, entry: Optional[SourceEntry]) -> SourceEntry:
+def _resolve_entry(repo_key: str, entry: SourceEntry | None) -> SourceEntry:
     if entry is None:
         try:
             entry = load_sources().get(repo_key)
@@ -245,7 +245,7 @@ def _resolve_entry(repo_key: str, entry: Optional[SourceEntry]) -> SourceEntry:
 
 def _fetch_files_from(
     url: str, ref: str, files: Sequence[str], dest: Path, *, timeout_s: int,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Sparse, blob-filtered fetch of *files* at *ref* into *dest*."""
     # ``--filter=blob:none`` keeps the transfer to commit + tree
     # objects plus only the blobs the sparse checkout touches; servers
@@ -279,7 +279,7 @@ def fetch_files(
     files: Sequence[str],
     dest: Path,
     *,
-    entry: Optional[SourceEntry] = None,
+    entry: SourceEntry | None = None,
     timeout_s: int = CLONE_TIMEOUT_S,
 ) -> Path:
     """Fetch ONLY *files* of *repo_key* at *ref* into *dest*.

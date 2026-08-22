@@ -48,7 +48,6 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 _CANDIDATE_CAP = 8
 _SKIP_DIR_PARTS = frozenset({
@@ -74,10 +73,10 @@ class ConfigResolution:
     ``refusal`` is empty; ``default`` records a two-arg form's default
     literal (informational — the fold path refuses those anyway)."""
 
-    value: Optional[str] = None
-    key: Optional[str] = None
-    config_file: Optional[str] = None
-    default: Optional[str] = None
+    value: str | None = None
+    key: str | None = None
+    config_file: str | None = None
+    default: str | None = None
     refusal: str = ""
 
     @property
@@ -87,7 +86,7 @@ class ConfigResolution:
 
 @dataclass
 class _FileEntry:
-    entries: Dict[str, List[str]] = field(default_factory=dict)
+    entries: dict[str, list[str]] = field(default_factory=dict)
     unsupported: bool = False
 
 
@@ -118,17 +117,17 @@ class _FileIndex:
 
     def __init__(self, search_root: Path) -> None:
         self._root = search_root
-        self._parsed: Dict[Path, _FileEntry] = {}
-        self._located: Dict[str, Tuple[List[Path], bool]] = {}
+        self._parsed: dict[Path, _FileEntry] = {}
+        self._located: dict[str, tuple[list[Path], bool]] = {}
 
-    def locate(self, basename: str) -> Tuple[List[Path], bool]:
+    def locate(self, basename: str) -> tuple[list[Path], bool]:
         """(matches, capped). Hidden/build directories are skipped so a
         vendored or generated copy cannot shadow the source of truth
         silently — if both survive the skip list, ambiguity refuses."""
         cached = self._located.get(basename)
         if cached is not None:
             return cached
-        matches: List[Path] = []
+        matches: list[Path] = []
         capped = False
         try:
             for p in self._root.rglob(basename):
@@ -165,7 +164,7 @@ def _text(node) -> str:
         return ""
 
 
-def _string_literal_value(node) -> Optional[str]:
+def _string_literal_value(node) -> str | None:
     if node is None or node.type != "string_literal":
         return None
     raw = _text(node)
@@ -174,7 +173,7 @@ def _string_literal_value(node) -> Optional[str]:
     return None
 
 
-def _call_arguments(node) -> List:
+def _call_arguments(node) -> list:
     args = node.child_by_field_name("arguments")
     if args is None:
         return []
@@ -190,8 +189,8 @@ def _enclosing_method(node):
     return None
 
 
-def _string_literals_within(node) -> List[str]:
-    out: List[str] = []
+def _string_literals_within(node) -> list[str]:
+    out: list[str] = []
     stack = [node]
     while stack:
         n = stack.pop()
@@ -204,13 +203,13 @@ def _string_literals_within(node) -> List[str]:
 
 
 def _receiver_discipline(method_node, receiver: str,
-                         get_row: int) -> Tuple[Optional[str], str]:
+                         get_row: int) -> tuple[str | None, str]:
     """(resource_basename, refusal). Walks the enclosing method once:
     classifies every appearance of ``receiver`` and extracts the single
     load resource literal. Any unclassified appearance refuses."""
     new_props = 0
-    load_rows: List[int] = []
-    resource: Optional[str] = None
+    load_rows: list[int] = []
+    resource: str | None = None
     dynamic_resource = False
     other_appearance = False
 
@@ -283,7 +282,7 @@ class ConfigResolver:
     plus ``resolved`` — postpass telemetry consumes it directly."""
 
     def __init__(self, source_text: str, file_path: str,
-                 repo_root: Optional[str] = None) -> None:
+                 repo_root: str | None = None) -> None:
         self.stats: Counter = Counter()
         self._ok = False
         root = Path(repo_root) if repo_root else Path(file_path).parent
@@ -346,7 +345,7 @@ class ConfigResolver:
             return self._refuse("candidate_cap")
         if not matches:
             return self._refuse("file_not_found")
-        holders: List[Tuple[Path, List[str]]] = []
+        holders: list[tuple[Path, list[str]]] = []
         unsupported = False
         for path in matches:
             entry = self._index.parsed(path)
@@ -387,9 +386,9 @@ class ConfigResolver:
         return res.value
 
 
-def _getproperty_nodes_on_row(tree, row: int) -> List:
+def _getproperty_nodes_on_row(tree, row: int) -> list:
     """All getProperty method_invocation nodes starting on 0-based *row*."""
-    out: List = []
+    out: list = []
     stack = [tree.root_node]
     while stack:
         n = stack.pop()
@@ -403,7 +402,7 @@ def _getproperty_nodes_on_row(tree, row: int) -> List:
     return out
 
 
-def resolve_line(resolver: "ConfigResolver", line: int,
+def resolve_line(resolver: ConfigResolver, line: int,
                  ) -> ConfigResolution:
     """Resolve the single getProperty invocation on 1-based *line*.
 
@@ -424,8 +423,8 @@ def resolve_line(resolver: "ConfigResolver", line: int,
 
 
 def make_config_resolver(source_text: str, file_path: str,
-                         repo_root: Optional[str] = None
-                         ) -> Optional[ConfigResolver]:
+                         repo_root: str | None = None
+                         ) -> ConfigResolver | None:
     """Build a resolver, or None when the parser is unavailable."""
     resolver = ConfigResolver(source_text, file_path, repo_root)
     if resolver.stats.get("parser_unavailable"):

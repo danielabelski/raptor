@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — type-only import
     from core.llm.scorecard.scorecard import ModelScorecard
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 DECISION_CLASS = "cve-diff:discovery"
 
 
-def _default_scorecard() -> "ModelScorecard":
+def _default_scorecard() -> ModelScorecard:
     """Resolve the shared scorecard sidecar.
 
     Same convention as ``core/llm/scorecard/tool_evidence.py``:
@@ -59,7 +59,7 @@ def record_discovery_outcome(
     cve_id: str,
     *,
     verified: bool,
-    scorecard: Optional["ModelScorecard"] = None,
+    scorecard: ModelScorecard | None = None,
 ) -> bool:
     """Record one adjudicated discovery pick. Never raises.
 

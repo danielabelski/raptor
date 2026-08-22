@@ -15,7 +15,6 @@ it's a bug, but it cannot hallucinate a symptom that isn't there.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 _CORRECTION_PATTERNS = [
     # "uses `=` instead of `==`"  /  "uses `=` but should be `==`"
@@ -127,7 +126,7 @@ def source_confirms_correction(
     hypothesis: str,
     source: str,
     line_start: int = 0,
-) -> Optional[dict]:
+) -> dict | None:
     """If the hypothesis proposes a concrete correction verified in source,
     return details.  Otherwise return None.
 

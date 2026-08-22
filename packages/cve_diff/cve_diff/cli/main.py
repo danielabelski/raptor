@@ -140,7 +140,7 @@ def _echo_flow_md(output_dir: Path, cve_id: str, quiet: bool) -> None:
 def _flow_from_pipeline(
     output_dir: Path, cve_id: str, pipeline: Pipeline,
     *, ok: bool, error_class: str | None,
-    pipeline_result: "PipelineResult | None" = None,
+    pipeline_result: PipelineResult | None = None,
 ) -> None:
     """Read agent telemetry off the pipeline and emit per-CVE flow files.
 

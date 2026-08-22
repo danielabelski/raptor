@@ -23,7 +23,7 @@ import ast
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class SentinelCollapse:
 
 # Patterns where a variable is coerced through a falsy check and
 # replaced with an empty container, collapsing None into []/{}/""/0.
-_FALSY_COERCION_PATTERNS: List[re.Pattern[str]] = [
+_FALSY_COERCION_PATTERNS: list[re.Pattern[str]] = [
     # x if x else []  /  x if x else {}
     re.compile(
         r"""(?P<var>\w+)\s+if\s+(?P=var)\s+else\s+(?P<default>\[\]|\{\})""",
@@ -76,8 +76,8 @@ _FALSY_COERCION_PATTERNS: List[re.Pattern[str]] = [
 def _detect_falsy_coercion(
     path: str,
     source: str,
-) -> List[SentinelCollapse]:
-    results: List[SentinelCollapse] = []
+) -> list[SentinelCollapse]:
+    results: list[SentinelCollapse] = []
     current_func = "<module>"
     lines = source.splitlines()
 
@@ -128,10 +128,10 @@ def _detect_falsy_coercion(
 def _detect_except_same_as_success(
     path: str,
     source: str,
-) -> List[SentinelCollapse]:
+) -> list[SentinelCollapse]:
     from .fail_open_detector import _detect_error_conflated_with_empty
 
-    results: List[SentinelCollapse] = []
+    results: list[SentinelCollapse] = []
     for fop in _detect_error_conflated_with_empty(path, source):
         results.append(SentinelCollapse(
             file=fop.file,
@@ -165,15 +165,15 @@ _CACHE_READ_COERCE = re.compile(
 def _detect_cache_sentinel(
     path: str,
     source: str,
-) -> List[SentinelCollapse]:
-    results: List[SentinelCollapse] = []
+) -> list[SentinelCollapse]:
+    results: list[SentinelCollapse] = []
     lines = source.splitlines()
     current_func = "<module>"
 
     # Collect per-function evidence: does the function both write None
     # to a cache-like name AND later coerce the read?
     func_has_write_none = False
-    func_coercion_sites: List[tuple[int, str]] = []
+    func_coercion_sites: list[tuple[int, str]] = []
 
     def _flush() -> None:
         if func_has_write_none and func_coercion_sites:
@@ -231,8 +231,8 @@ _GO_NIL_COERCE = re.compile(
 def _detect_go_sentinel(
     path: str,
     source: str,
-) -> List[SentinelCollapse]:
-    results: List[SentinelCollapse] = []
+) -> list[SentinelCollapse]:
+    results: list[SentinelCollapse] = []
 
     # --- tree-sitter path: return-semantics extraction ---
     try:
@@ -288,7 +288,7 @@ def _detect_go_sentinel(
 
     # --- regex fallback for nil-nil if tree-sitter unavailable ---
     if ts_returns is None:
-        func_starts: List[Tuple[str, int]] = []
+        func_starts: list[tuple[str, int]] = []
         for lineno_0, line in enumerate(lines):
             fm = re.match(r"\s*func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(", line)
             if fm:
@@ -353,11 +353,11 @@ _JS_FUNC_RE = re.compile(
 def _detect_js_sentinel(
     path: str,
     source: str,
-) -> List[SentinelCollapse]:
-    results: List[SentinelCollapse] = []
+) -> list[SentinelCollapse]:
+    results: list[SentinelCollapse] = []
 
     # Use tree-sitter for function name attribution when available
-    func_name_at_line: Dict[int, str] = {}
+    func_name_at_line: dict[int, str] = {}
     try:
         from .ts_extract import _parse_file, _iter_functions
         parsed = _parse_file(path, source)
@@ -456,14 +456,14 @@ def _walk_skipping_nested_funcs(node: ast.AST):
 
 def _classify_returns_python(
     file_path: str, source: str,
-) -> Dict[str, _ReturnSemantics]:
+) -> dict[str, _ReturnSemantics]:
     """Classify return-path semantics for each function in a Python file."""
     try:
         tree = ast.parse(source, filename=file_path)
     except SyntaxError:
         return {}
 
-    results: Dict[str, _ReturnSemantics] = {}
+    results: dict[str, _ReturnSemantics] = {}
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -546,18 +546,18 @@ def _is_inside_error_if(
 
 
 def _detect_cross_function_collapse(
-    source_text: Dict[str, str],
-    call_graphs: Dict[str, Any],
-) -> List[SentinelCollapse]:
+    source_text: dict[str, str],
+    call_graphs: dict[str, Any],
+) -> list[SentinelCollapse]:
     """Detect sentinel collapses across function boundaries."""
-    results: List[SentinelCollapse] = []
+    results: list[SentinelCollapse] = []
 
-    all_semantics: Dict[str, Dict[str, _ReturnSemantics]] = {}
+    all_semantics: dict[str, dict[str, _ReturnSemantics]] = {}
     for path, source in source_text.items():
         if path.endswith(".py"):
             all_semantics[path] = _classify_returns_python(path, source)
 
-    ambiguous_funcs: Dict[str, _ReturnSemantics] = {}
+    ambiguous_funcs: dict[str, _ReturnSemantics] = {}
     for path, funcs in all_semantics.items():
         for fname, sem in funcs.items():
             if sem.sentinel_ambiguous:
@@ -629,7 +629,7 @@ def _find_coercion_of_call(
     source: str,
     caller_name: str,
     callee_name: str,
-) -> Optional[int]:
+) -> int | None:
     """Find a line where the caller coerces the callee's return value."""
     lines = source.splitlines()
     in_caller = False
@@ -677,9 +677,9 @@ def _find_coercion_of_call(
 
 
 def detect_sentinel_collapses(
-    source_text: Dict[str, str],
-    call_graphs: Optional[Dict[str, Any]] = None,
-) -> List[SentinelCollapse]:
+    source_text: dict[str, str],
+    call_graphs: dict[str, Any] | None = None,
+) -> list[SentinelCollapse]:
     """Run all sub-detectors over the provided sources.
 
     Parameters
@@ -696,7 +696,7 @@ def detect_sentinel_collapses(
     list[SentinelCollapse]
         All detected sentinel-collapse sites, sorted by file then line.
     """
-    findings: List[SentinelCollapse] = []
+    findings: list[SentinelCollapse] = []
 
     for path, source in source_text.items():
         if path.endswith(".py"):

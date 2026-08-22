@@ -69,7 +69,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.dataflow.finding import Finding
 from core.dataflow.label import (
@@ -161,9 +161,9 @@ def _finding_to_dataflow_path(finding: Finding) -> DataflowPath:
 
 
 def _iter_memory_corruption_corpus(
-    *, prefix: Optional[str], count: int, stratified: bool,
-    verdict: Optional[str] = None,
-) -> List[tuple]:
+    *, prefix: str | None, count: int, stratified: bool,
+    verdict: str | None = None,
+) -> list[tuple]:
     """Yield up to ``count`` (finding, label, name) tuples for
     memory-corruption corpus entries matching the optional prefix.
 
@@ -180,7 +180,7 @@ def _iter_memory_corruption_corpus(
     the caller is asking for an explicitly skewed sample, usually
     to probe for SI-induced false negatives on TP-only entries.
     """
-    candidates: List[tuple] = []
+    candidates: list[tuple] = []
     for fp in sorted(_CORPUS_DIR.glob("*.json")):
         if fp.name.endswith(".label.json"):
             continue
@@ -214,7 +214,7 @@ def _iter_memory_corruption_corpus(
     # Stratified: round-robin across buckets until we hit count or
     # buckets are empty.
     from collections import defaultdict
-    buckets: Dict[str, List[tuple]] = defaultdict(list)
+    buckets: dict[str, list[tuple]] = defaultdict(list)
     for entry in candidates:
         finding, label, name = entry
         key = (
@@ -223,7 +223,7 @@ def _iter_memory_corruption_corpus(
             else label.verdict
         )
         buckets[key].append(entry)
-    out: List[tuple] = []
+    out: list[tuple] = []
     while len(out) < count and any(buckets.values()):
         for key in sorted(buckets):
             if not buckets[key]:
@@ -261,7 +261,7 @@ def _result_to_verdict(result) -> ValidatorVerdict:
     return ValidatorVerdict.UNCERTAIN
 
 
-def _aggregate(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute aggregate stats over a list of per-entry result dicts.
 
     Each entry must have ``baseline_correct``, ``si_correct``, and
@@ -376,7 +376,7 @@ def main() -> int:
     # above — distinct concerns, separately controlled.
     repo_root = _REPO_ROOT
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for i, (finding, label, name) in enumerate(rows, 1):
         gt = label.verdict
         sys.stderr.write(

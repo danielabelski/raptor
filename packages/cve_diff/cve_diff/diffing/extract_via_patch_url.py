@@ -54,7 +54,7 @@ _MAX_BYTES = 5_000_000  # 5MB cap on patch body
 
 
 @functools.lru_cache(maxsize=1)
-def _client() -> "EgressClient":
+def _client() -> EgressClient:
     """Allowlisted egress client (curated forge hosts only).
 
     Pre-2026-05-04 this returned a bare UrllibClient with no host

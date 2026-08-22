@@ -52,7 +52,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from ..models import Confidence, Dependency, PinStyle
@@ -74,7 +74,7 @@ _GITHUB_FALLBACK_ECOSYSTEM = "GitHub"
 
 
 @register(filenames=[".pre-commit-config.yaml", ".pre-commit-config.yml"])
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -108,7 +108,7 @@ def parse(path: Path) -> List[Dependency]:
     if not isinstance(repos, list):
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for entry in repos:
         dep = _build_dep(entry, declared_in=path, repo_map=repo_map)
         if dep is not None:
@@ -123,7 +123,7 @@ def parse(path: Path) -> List[Dependency]:
 
 def _extract_additional_deps(
     entry: Any, *, declared_in: Path,
-) -> List[Dependency]:
+) -> list[Dependency]:
     """Extract ``hooks[].additional_dependencies`` entries.
 
     Each hook may declare extra runtime deps; pre-commit installs
@@ -155,7 +155,7 @@ def _extract_additional_deps(
     else:
         ecosystem = "PyPI"
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for hook in hooks:
         if not isinstance(hook, dict):
             continue
@@ -183,9 +183,9 @@ def _build_addl_dep(
     spec: str,
     ecosystem: str,
     declared_in: Path,
-    hook_id: Optional[str],
+    hook_id: str | None,
     hook_repo: str,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     """Build a Dependency from one ``additional_dependencies``
     string. The grammar is the underlying language's install
     spec: PEP 508 for PyPI (``pydantic>=2.5``, ``types-PyYAML``),
@@ -234,7 +234,7 @@ def _build_addl_dep(
 
 def _classify_addl_spec(
     spec: str, ecosystem: str,
-) -> "tuple[str, Optional[str], PinStyle]":
+) -> tuple[str, str | None, PinStyle]:
     """Split a PEP 508 / npm install spec into (name, version,
     pin_style)."""
     import re as _re
@@ -260,7 +260,7 @@ def _classify_addl_spec(
 
 def _wrap_version(
     name: str, ver_part: str,
-) -> "tuple[str, Optional[str], PinStyle]":
+) -> tuple[str, str | None, PinStyle]:
     if not ver_part:
         return name, None, PinStyle.WILDCARD
     if ver_part.startswith("=="):
@@ -284,7 +284,7 @@ def _wrap_version(
 # ---------------------------------------------------------------------------
 
 
-def _load_repo_map() -> Dict[str, Dict[str, str]]:
+def _load_repo_map() -> dict[str, dict[str, str]]:
     """Load the curated repo→registry map. Per-call rather than
     module-level so a future test injection point stays simple."""
     try:
@@ -297,7 +297,7 @@ def _load_repo_map() -> Dict[str, Dict[str, str]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    out: Dict[str, Dict[str, str]] = {}
+    out: dict[str, dict[str, str]] = {}
     for key, val in data.items():
         if key.startswith("_"):
             continue
@@ -314,8 +314,8 @@ def _build_dep(
     entry: Any,
     *,
     declared_in: Path,
-    repo_map: Dict[str, Dict[str, str]],
-) -> Optional[Dependency]:
+    repo_map: dict[str, dict[str, str]],
+) -> Dependency | None:
     if not isinstance(entry, dict):
         return None
     repo = entry.get("repo")
@@ -335,7 +335,7 @@ def _build_dep(
         return None
 
     hooks_raw = entry.get("hooks") or []
-    hook_ids: List[str] = []
+    hook_ids: list[str] = []
     if isinstance(hooks_raw, list):
         for h in hooks_raw:
             if isinstance(h, dict):
@@ -393,7 +393,7 @@ def _build_dep(
     )
 
 
-def _canonicalise_repo(url: str) -> Optional[str]:
+def _canonicalise_repo(url: str) -> str | None:
     """Normalise a pre-commit ``repo:`` URL to a lookup key.
 
     ``https://github.com/astral-sh/ruff-pre-commit.git`` →

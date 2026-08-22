@@ -9,7 +9,7 @@ nodes — so symlink-escape attacks are impossible by construction.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.tar import (
     TarEntryCountExceeded,
@@ -36,7 +36,7 @@ DEFAULT_MAX_FILES = DEFAULT_MAX_ENTRIES
 _SINGLE_SUFFIXES = (".gz", ".xz", ".bz2", ".zst")
 
 
-def _keep_files(info: Any) -> Optional[str]:
+def _keep_files(info: Any) -> str | None:
     """Selector for the zip/tar primitives: keep regular files, skip dirs.
 
     Handles both ``ZipInfo`` (``.filename`` + ``.is_dir()``) and ``TarInfo``
@@ -64,7 +64,7 @@ def _single_file_name(src: Path) -> str:
     return name + ".out"
 
 
-def _safe_dest_path(dest_root: Path, member_name: str) -> Optional[Path]:
+def _safe_dest_path(dest_root: Path, member_name: str) -> Path | None:
     """Resolve ``member_name`` under ``dest_root`` or return None if it escapes.
 
     The primitives already reject traversal; this is the write-boundary
@@ -83,8 +83,8 @@ def _safe_dest_path(dest_root: Path, member_name: str) -> Optional[Path]:
     return target
 
 
-def _write_members(members: Dict[str, bytes], dest: Path,
-                   max_total: int, max_files: int) -> Dict[str, int]:
+def _write_members(members: dict[str, bytes], dest: Path,
+                   max_total: int, max_files: int) -> dict[str, int]:
     if len(members) > max_files:
         raise DecompressionLimitExceeded(
             f"archive has {len(members)} files — exceeds cap of {max_files}")
@@ -116,7 +116,7 @@ def _write_members(members: Dict[str, bytes], dest: Path,
 def extract_to_dir(path, dest, *,
                    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
                    max_files: int = DEFAULT_MAX_FILES,
-                   max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES) -> Dict[str, Any]:
+                   max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES) -> dict[str, Any]:
     """Extract a Tier-1 archive (``path``) into ``dest``; return a summary dict
     ``{"format", "files", "bytes"}``.
 

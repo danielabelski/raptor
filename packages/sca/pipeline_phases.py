@@ -14,7 +14,6 @@ re-importing the entire pipeline module."""
 
 from __future__ import annotations
 
-from typing import Optional
 
 # Short-name → operator-facing description. Keep each one to a
 # single short clause so the error line stays readable.
@@ -37,7 +36,7 @@ _PHASE_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def describe_phase(name: str) -> Optional[str]:
+def describe_phase(name: str) -> str | None:
     """Return a one-line operator-facing description for the named
     pipeline phase, or ``None`` for an unknown phase.
 

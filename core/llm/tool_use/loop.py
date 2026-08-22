@@ -153,13 +153,13 @@ class InFireMutatorContext:
     cost_cap: float | None
     """``max_cost_usd`` from construction, or None."""
 
-    messages: "Sequence[Message]"
+    messages: Sequence[Message]
     """Immutable snapshot of the conversation history up to and
     including this turn's assistant response but BEFORE the
     tool-result user message is appended. Mutator may inspect but
     must not modify."""
 
-    tool_results: "Sequence[Any]"
+    tool_results: Sequence[Any]
     """The tool result blocks this turn produced. Mutator inspects
     these to decide whether to inject steering."""
 
@@ -189,7 +189,7 @@ class ToolUseLoop:
 
     def __init__(
         self,
-        provider: "LLMProvider",
+        provider: LLMProvider,
         tools: Sequence[ToolDef],
         *,
         system: str | None = None,
@@ -206,8 +206,8 @@ class ToolUseLoop:
         terminate_on_handler_error: bool = False,
         refuse_on_indicators: Sequence[str] = (),
         should_continue: Callable[[], bool] | None = None,
-        submission_warning: Callable[["SubmissionState"], str | None] | None = None,
-        in_fire_mutator: Callable[["InFireMutatorContext"], str | None] | None = None,
+        submission_warning: Callable[[SubmissionState], str | None] | None = None,
+        in_fire_mutator: Callable[[InFireMutatorContext], str | None] | None = None,
         nudge_on_no_tool_call: str | None = None,
         stream: bool = False,
         **provider_specific: Any,
@@ -956,7 +956,7 @@ class ToolUseLoop:
         self,
         iteration: int,
         messages: list[Message],
-    ) -> "TurnResponse":
+    ) -> TurnResponse:
         """Call ``turn_stream()`` and accumulate chunks into a
         :class:`TurnResponse`, emitting :class:`StreamDelta` events
         as they arrive."""

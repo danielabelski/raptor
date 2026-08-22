@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 _MAX_FUNCTION_NAME = 256
 _MAX_VARIABLE_NAME = 256
@@ -39,7 +38,7 @@ _CONFUSABLE_RANGES = [
     ("ɐ", "ʯ", "IPA Extensions"),
 ]
 
-_LATIN_CONFUSABLES: Dict[str, str] = {
+_LATIN_CONFUSABLES: dict[str, str] = {
     "а": "a", "е": "e", "о": "o", "р": "p",
     "с": "c", "у": "y", "х": "x", "һ": "h",
     "і": "i", "ј": "j", "ѕ": "s", "є": "e",
@@ -61,9 +60,9 @@ _LATIN_CONFUSABLES: Dict[str, str] = {
 def scan_for_homoglyphs(
     content: str,
     location: str = "unknown",
-) -> List[InjectionWarning]:
+) -> list[InjectionWarning]:
     """Detect Unicode characters that visually impersonate Latin letters."""
-    warnings: List[InjectionWarning] = []
+    warnings: list[InjectionWarning] = []
     seen_ranges: set = set()
 
     for i, ch in enumerate(content):
@@ -87,7 +86,7 @@ def scan_for_homoglyphs(
     return warnings
 
 
-_INJECTION_PATTERNS: List[re.Pattern[str]] = [
+_INJECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(
         r"\b(?:ignore|disregard|forget|override|skip)\b.*"
         r"\b(?:previous|prior|above|all|every)\b.*"
@@ -145,7 +144,7 @@ class InjectionWarning:
 class ScanResult:
     """Result of scanning target content for injection attempts."""
 
-    warnings: List[InjectionWarning] = field(default_factory=list)
+    warnings: list[InjectionWarning] = field(default_factory=list)
 
     @property
     def has_injection(self) -> bool:
@@ -204,9 +203,9 @@ def sanitise_comment(text: str) -> str:
 def scan_for_injection(
     content: str,
     location: str = "unknown",
-) -> List[InjectionWarning]:
+) -> list[InjectionWarning]:
     """Scan a block of target-derived content for injection patterns."""
-    warnings: List[InjectionWarning] = []
+    warnings: list[InjectionWarning] = []
 
     for pattern in _INJECTION_PATTERNS:
         for match in pattern.finditer(content):
@@ -242,7 +241,7 @@ def wrap_source_block(
     source: str,
     file_path: str,
     function_name: str,
-    lines: Optional[str] = None,
+    lines: str | None = None,
 ) -> str:
     """Wrap source code in structural tags marking it as data."""
     attrs = f'file="{sanitise_path(file_path)}" function="{sanitise_name(function_name)}"'

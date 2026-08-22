@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 
 # Regex split-points kept simple + verified by tests; not the full
@@ -55,8 +54,8 @@ class ImageRef:
 
     registry: str            # e.g. "docker.io", "ghcr.io"
     repository: str          # e.g. "library/python", "anthropic/claude-code"
-    tag: Optional[str]       # e.g. "3.11", or None when only digest is given
-    digest: Optional[str]    # "sha256:..." or None
+    tag: str | None       # e.g. "3.11", or None when only digest is given
+    digest: str | None    # "sha256:..." or None
 
     def to_canonical(self) -> str:
         """Round-trippable canonical form: ``<registry>/<repo>[:<tag>][@<digest>]``."""
@@ -92,7 +91,7 @@ def parse_image_ref(s: str) -> ImageRef:
         raise ValueError("empty image reference")
 
     # Split off the digest first — it's the unambiguous suffix.
-    digest: Optional[str] = None
+    digest: str | None = None
     if "@" in s:
         s, digest = s.rsplit("@", 1)
         if not _DIGEST_RE.match(digest):
@@ -128,7 +127,7 @@ def parse_image_ref(s: str) -> ImageRef:
     # only if it doesn't contain a ``/`` (a colon in the registry
     # part — like ``localhost:5000`` — has already been handled
     # above).
-    tag: Optional[str]
+    tag: str | None
     if ":" in repo_and_tag:
         repository, tag = repo_and_tag.rsplit(":", 1)
         if "/" in tag:

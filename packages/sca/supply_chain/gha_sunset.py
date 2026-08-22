@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 from ..models import (
     Confidence,
@@ -50,8 +50,8 @@ _SUNSET_DATA_PATH = (
 
 
 def load_sunset_map(
-    path: Optional[Path] = None,
-) -> Dict[str, List[Dict[str, object]]]:
+    path: Path | None = None,
+) -> dict[str, list[dict[str, object]]]:
     """Load the curated sunset list. ``path`` lets tests inject a
     fixture; production callers use the default path under
     ``packages/sca/data/``.
@@ -79,13 +79,13 @@ def load_sunset_map(
     if not isinstance(data, dict):
         return {}
 
-    out: Dict[str, List[Dict[str, object]]] = {}
+    out: dict[str, list[dict[str, object]]] = {}
     for action_name, records in data.items():
         if action_name.startswith("_"):
             continue
         if not isinstance(records, list):
             continue
-        valid: List[Dict[str, object]] = []
+        valid: list[dict[str, object]] = []
         for r in records:
             if not isinstance(r, dict):
                 continue
@@ -101,8 +101,8 @@ def load_sunset_map(
 def scan_dependencies(
     deps: Iterable[Dependency],
     *,
-    sunset_map: Optional[Dict[str, List[Dict[str, object]]]] = None,
-) -> List[SupplyChainFinding]:
+    sunset_map: dict[str, list[dict[str, object]]] | None = None,
+) -> list[SupplyChainFinding]:
     """Walk Dependencies and emit one SupplyChainFinding per action
     pinned to a sunset version.
 
@@ -121,7 +121,7 @@ def scan_dependencies(
     if not sunset_map:
         return []
 
-    out: List[SupplyChainFinding] = []
+    out: list[SupplyChainFinding] = []
     for dep in deps:
         if dep.ecosystem != "GitHub Actions":
             continue
@@ -169,7 +169,7 @@ def _parent_action(name: str) -> str:
 
 def _build_finding(
     dep: Dependency,
-    record: Dict[str, object],
+    record: dict[str, object],
 ) -> SupplyChainFinding:
     severity = _coerce_severity(record.get("severity"))
     sunset_date = record.get("sunset_date") or "unannounced"

@@ -25,7 +25,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 # Path setup for direct script execution (`python3 raptor.py binary`
 # spawns this file; `libexec/raptor-binary` imports it with the path

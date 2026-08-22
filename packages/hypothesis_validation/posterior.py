@@ -28,7 +28,8 @@ when you need a probability instead of a discrete verdict.
 """
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from .result import Verdict
 

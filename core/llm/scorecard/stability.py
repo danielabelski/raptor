@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -27,7 +27,7 @@ from .scorecard import EventType, ModelScorecard
 logger = logging.getLogger(__name__)
 
 
-def _find_prior_run(out_dir: Path) -> Optional[Path]:
+def _find_prior_run(out_dir: Path) -> Path | None:
     """Find the most recent completed agentic sibling run.
 
     Scans ``out_dir.parent`` for directories matching ``agentic_*``,
@@ -82,10 +82,10 @@ def _targets_match(current_dir: Path, prior_dir: Path) -> bool:
 
 
 def record_cross_run_stability(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
     out_dir: Path,
-    results_by_id: Dict[str, Dict[str, Any]],
+    results_by_id: dict[str, dict[str, Any]],
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Compare current verdicts against the prior run and record
@@ -116,7 +116,7 @@ def record_cross_run_stability(
         return 0
     prior_results = prior_report.get("results") or []
 
-    prior_verdicts: Dict[str, str] = {}
+    prior_verdicts: dict[str, str] = {}
     for pf in prior_results:
         fid = pf.get("finding_id")
         if fid is None:

@@ -36,7 +36,7 @@ import ast
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,16 @@ class ValueSpaceMismatch:
 
     producer_file: str
     producer_function: str
-    producer_values: List[str]
+    producer_values: list[str]
     consumer_file: str
     consumer_function: str
-    consumer_values: List[str]
-    unhandled: List[str]
-    dead_branches: List[str]
+    consumer_values: list[str]
+    unhandled: list[str]
+    dead_branches: list[str]
     confidence: str  # "high", "medium", "low"
-    format_mismatches: List[str] = field(default_factory=list)
+    format_mismatches: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "producer_file": self.producer_file,
             "producer_function": self.producer_function,
@@ -96,31 +96,31 @@ class _FunctionLiterals:
 
     file: str
     function: str
-    produced: Set[str] = field(default_factory=set)
-    consumed: Set[str] = field(default_factory=set)
+    produced: set[str] = field(default_factory=set)
+    consumed: set[str] = field(default_factory=set)
     # Names of bounded-domain fields this function produces/consumes
     # values for — linking only needs the names, not the values.
-    field_produced: Set[str] = field(default_factory=set)
-    field_consumed: Set[str] = field(default_factory=set)
+    field_produced: set[str] = field(default_factory=set)
+    field_consumed: set[str] = field(default_factory=set)
 
 
 class _LiteralExtractor(ast.NodeVisitor):
     """Walk a function AST and classify string literals."""
 
     def __init__(
-        self, file: str, func_name: str, param_names: List[str] | None = None
+        self, file: str, func_name: str, param_names: list[str] | None = None
     ) -> None:
         self.result = _FunctionLiterals(file=file, function=func_name)
         # Parameter names that match known field names — dict keys in the
         # function body are likely the valid domain of that parameter.
-        self._field_params: List[str] = [
+        self._field_params: list[str] = [
             p for p in (param_names or []) if _FIELD_NAME_RE.match(p)
         ]
 
     # -- producers ----------------------------------------------------------
 
     def visit_Dict(self, node: ast.Dict) -> None:
-        str_keys: List[str] = []
+        str_keys: list[str] = []
         for key in node.keys:
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
                 self.result.produced.add(key.value)
@@ -178,7 +178,7 @@ class _LiteralExtractor(ast.NodeVisitor):
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         """Extract template patterns from f-strings."""
-        parts: List[str] = []
+        parts: list[str] = []
         for value in node.values:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 parts.append(value.value)
@@ -222,10 +222,10 @@ class _LiteralExtractor(ast.NodeVisitor):
     # -- helpers ------------------------------------------------------------
 
     def _extract_membership_values(
-        self, node: ast.expr, field_name: Optional[str]
+        self, node: ast.expr, field_name: str | None
     ) -> None:
         """Extract string values from set/list/tuple membership tests."""
-        elts: Optional[list] = None
+        elts: list | None = None
         if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
             elts = node.elts
         if elts is None:
@@ -237,7 +237,7 @@ class _LiteralExtractor(ast.NodeVisitor):
                     self.result.field_consumed.add(field_name)
 
     @staticmethod
-    def _target_field_name(targets: list) -> Optional[str]:
+    def _target_field_name(targets: list) -> str | None:
         """Return the field name from a simple assignment target."""
         if len(targets) != 1:
             return None
@@ -249,7 +249,7 @@ class _LiteralExtractor(ast.NodeVisitor):
         return None
 
     @staticmethod
-    def _name_from_node(node: ast.expr) -> Optional[str]:
+    def _name_from_node(node: ast.expr) -> str | None:
         """Best-effort name extraction for a comparison operand."""
         if isinstance(node, ast.Name):
             return node.id
@@ -260,7 +260,7 @@ class _LiteralExtractor(ast.NodeVisitor):
 
 def _extract_function_literals(
     source: str, file_path: str
-) -> List[_FunctionLiterals]:
+) -> list[_FunctionLiterals]:
     """Parse *source* and return per-function literal classifications."""
     try:
         tree = ast.parse(source, filename=file_path)
@@ -268,7 +268,7 @@ def _extract_function_literals(
         logger.debug("SyntaxError parsing %s — skipping", file_path)
         return []
 
-    results: List[_FunctionLiterals] = []
+    results: list[_FunctionLiterals] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             param_names = [a.arg for a in node.args.args]
@@ -285,7 +285,7 @@ def _extract_function_literals(
 
 def _extract_function_literals_ts(
     source: str, file_path: str
-) -> List[_FunctionLiterals]:
+) -> list[_FunctionLiterals]:
     """Extract function literals via tree-sitter for non-Python files."""
     if file_path.endswith(".py"):
         return []
@@ -298,7 +298,7 @@ def _extract_function_literals_ts(
     if lits is None:
         return []
 
-    by_func: Dict[str, _FunctionLiterals] = {}
+    by_func: dict[str, _FunctionLiterals] = {}
     for lit in lits:
         if not lit.value or lit.is_template:
             continue
@@ -327,9 +327,9 @@ def _extract_function_literals_ts(
 
 
 def _link_by_call_graph(
-    all_funcs: Dict[str, List[_FunctionLiterals]],
+    all_funcs: dict[str, list[_FunctionLiterals]],
     call_graphs: dict,
-) -> List[Tuple[_FunctionLiterals, _FunctionLiterals, str]]:
+) -> list[tuple[_FunctionLiterals, _FunctionLiterals, str]]:
     """Link producer→consumer using explicit call-graph edges.
 
     *call_graphs* maps file paths to objects with a ``calls`` attribute.
@@ -339,16 +339,16 @@ def _link_by_call_graph(
 
     Returns (producer, consumer, confidence) triples.
     """
-    links: List[Tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
+    links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
 
     # Build a lookup: (file, func_name) -> _FunctionLiterals
-    by_name: Dict[Tuple[str, str], _FunctionLiterals] = {}
+    by_name: dict[tuple[str, str], _FunctionLiterals] = {}
     for file_path, funcs in all_funcs.items():
         for fl in funcs:
             by_name[(file_path, fl.function)] = fl
 
     # Also build a name-only lookup for cross-file resolution
-    by_func_name: Dict[str, List[_FunctionLiterals]] = {}
+    by_func_name: dict[str, list[_FunctionLiterals]] = {}
     for (_fp, fn), fl in by_name.items():
         by_func_name.setdefault(fn, []).append(fl)
 
@@ -377,18 +377,18 @@ def _link_by_call_graph(
 
 
 def _link_by_field_heuristic(
-    all_funcs: Dict[str, List[_FunctionLiterals]],
-) -> List[Tuple[_FunctionLiterals, _FunctionLiterals, str]]:
+    all_funcs: dict[str, list[_FunctionLiterals]],
+) -> list[tuple[_FunctionLiterals, _FunctionLiterals, str]]:
     """Link producer→consumer by shared field names within a package.
 
     When function A assigns ``ecosystem = "PyPI"`` and function B tests
     ``if ecosystem == "npm":``, and both are in the same package, they
     are likely a producer-consumer pair for the ``ecosystem`` field.
     """
-    links: List[Tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
+    links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
 
     # Group functions by their containing package (parent directory).
-    by_package: Dict[str, List[_FunctionLiterals]] = {}
+    by_package: dict[str, list[_FunctionLiterals]] = {}
     for file_path, funcs in all_funcs.items():
         # Use the directory as the package key.
         parts = file_path.replace("\\", "/").rsplit("/", 1)
@@ -396,8 +396,8 @@ def _link_by_field_heuristic(
         by_package.setdefault(pkg, []).extend(funcs)
 
     for _pkg, funcs in by_package.items():
-        producers: Dict[str, List[_FunctionLiterals]] = {}
-        consumers: Dict[str, List[_FunctionLiterals]] = {}
+        producers: dict[str, list[_FunctionLiterals]] = {}
+        consumers: dict[str, list[_FunctionLiterals]] = {}
 
         for fl in funcs:
             for fname in fl.field_produced:
@@ -416,15 +416,15 @@ def _link_by_field_heuristic(
 
 
 def _link_intra_module(
-    all_funcs: Dict[str, List[_FunctionLiterals]],
-) -> List[Tuple[_FunctionLiterals, _FunctionLiterals, str]]:
+    all_funcs: dict[str, list[_FunctionLiterals]],
+) -> list[tuple[_FunctionLiterals, _FunctionLiterals, str]]:
     """Link producer→consumer within the same file.
 
     When one function in a module only produces values and another only
     consumes values, and their value sets partially overlap, they are
     likely a producer-consumer pair.
     """
-    links: List[Tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
+    links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
 
     for _file_path, funcs in all_funcs.items():
         producers = [fl for fl in funcs if fl.produced and not fl.consumed]
@@ -470,11 +470,11 @@ def _template_matches(template: str, literal: str) -> bool:
 
 
 def _compute_gaps(
-    links: List[Tuple[_FunctionLiterals, _FunctionLiterals, str]],
-) -> List[ValueSpaceMismatch]:
+    links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]],
+) -> list[ValueSpaceMismatch]:
     """For each linked pair, compute unhandled and dead-branch sets."""
-    results: List[ValueSpaceMismatch] = []
-    seen: Set[Tuple[str, str, str, str]] = set()
+    results: list[ValueSpaceMismatch] = []
+    seen: set[tuple[str, str, str, str]] = set()
 
     for producer, consumer, confidence in links:
         key = (
@@ -509,8 +509,8 @@ def _compute_gaps(
 
         # Format normalization: flag exact-miss values that match after
         # case-folding or zero-stripping.
-        format_mismatches: List[str] = []
-        remaining_unhandled: List[str] = []
+        format_mismatches: list[str] = []
+        remaining_unhandled: list[str] = []
         for u in unhandled:
             u_norm = _normalize_for_comparison(u)
             matched = False
@@ -553,9 +553,9 @@ def _compute_gaps(
 
 
 def detect_value_space_mismatches(
-    source_text: Dict[str, str],
-    call_graphs: Optional[dict] = None,
-) -> List[ValueSpaceMismatch]:
+    source_text: dict[str, str],
+    call_graphs: dict | None = None,
+) -> list[ValueSpaceMismatch]:
     """Detect cross-module value-space mismatches.
 
     Parameters
@@ -573,7 +573,7 @@ def detect_value_space_mismatches(
         One entry per producer-consumer pair with non-empty gaps.
     """
     # Phase 1: extract literals from all source files.
-    all_funcs: Dict[str, List[_FunctionLiterals]] = {}
+    all_funcs: dict[str, list[_FunctionLiterals]] = {}
     for file_path, source in source_text.items():
         if file_path.endswith(".py"):
             funcs = _extract_function_literals(source, file_path)
@@ -586,7 +586,7 @@ def detect_value_space_mismatches(
         return []
 
     # Phase 2: link producers to consumers.
-    links: List[Tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
+    links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
 
     if call_graphs:
         links.extend(_link_by_call_graph(all_funcs, call_graphs))

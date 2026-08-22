@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
 from core.witness.types import Witness, compute_bytes_hash
@@ -246,7 +246,7 @@ class WitnessStore:
                     manifest, exc,
                 )
 
-    def blob_path(self, bytes_hash: str) -> Optional[Path]:
+    def blob_path(self, bytes_hash: str) -> Path | None:
         """Return the path to the raw bytes blob, or ``None`` if
         the store doesn't have one for this hash.
 

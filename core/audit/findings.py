@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +24,11 @@ def emit_finding(
     line: int,
     title: str,
     description: str,
-    cwe: Optional[str] = None,
+    cwe: str | None = None,
     severity: str = "medium",
-    tool_evidence: Optional[List[Dict[str, Any]]] = None,
-    hypothesis: Optional[str] = None,
-) -> Dict[str, Any]:
+    tool_evidence: list[dict[str, Any]] | None = None,
+    hypothesis: str | None = None,
+) -> dict[str, Any]:
     """Emit a finding and append to findings.json.
 
     Args:
@@ -73,7 +73,7 @@ def emit_finding(
     return finding
 
 
-def load_findings(out_dir: Path) -> List[Dict[str, Any]]:
+def load_findings(out_dir: Path) -> list[dict[str, Any]]:
     """Load findings.json from the output directory."""
     path = out_dir / "findings.json"
     if not path.exists():
@@ -87,7 +87,7 @@ def load_findings(out_dir: Path) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else data.get("findings", [])
 
 
-def write_findings(findings: List[Dict[str, Any]], out_dir: Path) -> Path:
+def write_findings(findings: list[dict[str, Any]], out_dir: Path) -> Path:
     """Write findings.json to the output directory."""
     path = out_dir / "findings.json"
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -105,7 +105,7 @@ def write_findings(findings: List[Dict[str, Any]], out_dir: Path) -> Path:
 
 
 def _append_findings_batch(
-    out_dir: Path, new_findings: List[Dict[str, Any]],
+    out_dir: Path, new_findings: list[dict[str, Any]],
 ) -> None:
     """Append multiple findings to findings.json in one read-modify-write.
 
@@ -118,6 +118,6 @@ def _append_findings_batch(
     write_findings(findings, out_dir)
 
 
-def _append_finding(out_dir: Path, finding: Dict[str, Any]) -> None:
+def _append_finding(out_dir: Path, finding: dict[str, Any]) -> None:
     """Append a finding to findings.json."""
     _append_findings_batch(out_dir, [finding])

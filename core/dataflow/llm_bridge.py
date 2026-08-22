@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from core.dataflow.adapters.codeql import from_dataflow_path
 from core.dataflow.evidence_collector import (
@@ -69,7 +69,7 @@ def make_llm_extractor(
     higher cost).
     """
 
-    def _extractor(bundle: PromptBundle) -> Optional[str]:
+    def _extractor(bundle: PromptBundle) -> str | None:
         system_msg = next(
             (m.content for m in bundle.messages if m.role == "system"),
             None,
@@ -96,7 +96,7 @@ def make_evidence_collector(
     llm_client: Any,
     *,
     model_id: str = "",
-    cache: Optional[Dict[str, Tuple[CandidateValidator, ...]]] = None,
+    cache: dict[str, tuple[CandidateValidator, ...]] | None = None,
     max_files: int = DEFAULT_MAX_FILES,
     task_type: str = TaskType.CLASSIFY,
 ):

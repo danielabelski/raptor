@@ -34,15 +34,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
-from typing import (
-    Dict,
-    FrozenSet,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Tuple,
-)
+from collections.abc import Iterable
 
 
 
@@ -95,8 +87,8 @@ class CallSite:
     for producers that don't track columns.
     """
     name: str
-    arg_names: FrozenSet[str]
-    assigned_names: FrozenSet[str]
+    arg_names: frozenset[str]
+    assigned_names: frozenset[str]
     lineno: int
     col_offset: int = 0
     # Names referenced ANYWHERE inside the argument subtrees —
@@ -108,7 +100,7 @@ class CallSite:
     # and widening it would over-suppress. Producers that don't track
     # deep names leave the default; the sink resolver uses it only
     # when it contains exactly one name.
-    arg_deep_names: FrozenSet[str] = frozenset()
+    arg_deep_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -145,10 +137,10 @@ class PyCFGNode:
     kind: str          # "entry" | "exit" | "stmt"
     lineno: int
     label: str         # short rendering, e.g. "If (x > 0)"
-    calls: FrozenSet[str] = frozenset()
-    defs: FrozenSet[str] = frozenset()
-    uses: FrozenSet[str] = frozenset()
-    call_sites: Tuple[CallSite, ...] = ()
+    calls: frozenset[str] = frozenset()
+    defs: frozenset[str] = frozenset()
+    uses: frozenset[str] = frozenset()
+    call_sites: tuple[CallSite, ...] = ()
 
     def __repr__(self) -> str:                              # pragma: no cover
         return (
@@ -167,7 +159,7 @@ class CallGraphNode:
     ``name``; ``demangled`` is metadata only.
     """
     name: str
-    demangled: Optional[str] = None
+    demangled: str | None = None
 
     def __repr__(self) -> str:                              # pragma: no cover
         return f"CallGraphNode({self.name!r})"
@@ -199,9 +191,9 @@ class PythonCFG:
     file_path: str
     entry_node: PyCFGNode
     exit_node: PyCFGNode
-    _nodes: Tuple[PyCFGNode, ...]
-    _adjacency: Dict[PyCFGNode, Tuple[PyCFGNode, ...]]
-    params: Tuple[str, ...] = ()
+    _nodes: tuple[PyCFGNode, ...]
+    _adjacency: dict[PyCFGNode, tuple[PyCFGNode, ...]]
+    params: tuple[str, ...] = ()
 
     @property
     def entry(self) -> PyCFGNode:
@@ -219,7 +211,7 @@ _COMPREHENSION_TYPES = (
 )
 
 
-def _statement_expr_roots(stmt: ast.stmt) -> List[ast.AST]:
+def _statement_expr_roots(stmt: ast.stmt) -> list[ast.AST]:
     """Per-stmt-kind list of expressions that belong to *this* CFG
     node, excluding nested compound bodies (which become their own
     nodes).
@@ -237,7 +229,7 @@ def _statement_expr_roots(stmt: ast.stmt) -> List[ast.AST]:
     if isinstance(stmt, ast.Try):
         return []  # try has no statement-level expressions
     if isinstance(stmt, ast.With):
-        roots: List[ast.AST] = []
+        roots: list[ast.AST] = []
         for item in stmt.items:
             roots.append(item.context_expr)
             if item.optional_vars is not None:
@@ -247,7 +239,7 @@ def _statement_expr_roots(stmt: ast.stmt) -> List[ast.AST]:
     return [stmt]
 
 
-def _resolve_callable_name(node: ast.AST) -> Optional[str]:
+def _resolve_callable_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -258,7 +250,7 @@ def _resolve_callable_name(node: ast.AST) -> Optional[str]:
     return None
 
 
-def _arg_surface_names(call: ast.Call) -> FrozenSet[str]:
+def _arg_surface_names(call: ast.Call) -> frozenset[str]:
     """Conservative bare-name extraction for one call's arguments.
 
     Only direct ``Name`` args and the base ``Name`` of direct
@@ -268,7 +260,7 @@ def _arg_surface_names(call: ast.Call) -> FrozenSet[str]:
     ``input_symbols ∩ tainted`` would over-suppress if we
     treated their internal names as inputs to the outer call.
     """
-    names: Set[str] = set()
+    names: set[str] = set()
     for arg in list(call.args) + [kw.value for kw in call.keywords]:
         if isinstance(arg, ast.Name) and isinstance(arg.ctx, ast.Load):
             names.add(arg.id)
@@ -281,7 +273,7 @@ def _arg_surface_names(call: ast.Call) -> FrozenSet[str]:
     return frozenset(names)
 
 
-def _assign_target_names(target: ast.AST) -> FrozenSet[str]:
+def _assign_target_names(target: ast.AST) -> frozenset[str]:
     """Collect ``Store``-context bare names from one assignment target.
 
     Handles ``Name``, ``Tuple``, ``List``. ``Subscript`` and
@@ -292,14 +284,14 @@ def _assign_target_names(target: ast.AST) -> FrozenSet[str]:
     subscript or attribute target doesn't capture the return as a
     fresh name.
     """
-    names: Set[str] = set()
+    names: set[str] = set()
     for child in ast.walk(target):
         if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
             names.add(child.id)
     return frozenset(names)
 
 
-def _statement_assigned_map(stmt: ast.stmt) -> Dict[int, FrozenSet[str]]:
+def _statement_assigned_map(stmt: ast.stmt) -> dict[int, frozenset[str]]:
     """Map ``id(call_node) → assigned LHS names`` for calls whose
     return value is captured into a fresh LHS name at this stmt.
 
@@ -309,9 +301,9 @@ def _statement_assigned_map(stmt: ast.stmt) -> Dict[int, FrozenSet[str]]:
     each Tuple LHS element with the same-position Tuple RHS Call.
     Nested calls and non-call RHS expressions get no entry.
     """
-    result: Dict[int, FrozenSet[str]] = {}
+    result: dict[int, frozenset[str]] = {}
     if isinstance(stmt, ast.Assign):
-        lhs_names: Set[str] = set()
+        lhs_names: set[str] = set()
         for target in stmt.targets:
             lhs_names |= _assign_target_names(target)
         all_lhs = frozenset(lhs_names)
@@ -352,7 +344,7 @@ def _statement_assigned_map(stmt: ast.stmt) -> Dict[int, FrozenSet[str]]:
 
 def _walk_symbols(
     root: ast.AST,
-) -> Tuple[FrozenSet[str], FrozenSet[str]]:
+) -> tuple[frozenset[str], frozenset[str]]:
     """Walk one statement-level expression subtree, returning
     ``(defs, uses)``.
 
@@ -364,12 +356,12 @@ def _walk_symbols(
     standard Python semantic), so its loads count for the
     enclosing function.
     """
-    defs: Set[str] = set()
-    uses: Set[str] = set()
+    defs: set[str] = set()
+    uses: set[str] = set()
 
-    def _walk(node: ast.AST, comp_local: FrozenSet[str]) -> None:
+    def _walk(node: ast.AST, comp_local: frozenset[str]) -> None:
         if isinstance(node, _COMPREHENSION_TYPES):
-            new_locals: Set[str] = set(comp_local)
+            new_locals: set[str] = set(comp_local)
             for gen in node.generators:
                 for n in ast.walk(gen.target):
                     if isinstance(n, ast.Name):
@@ -431,11 +423,11 @@ def _walk_symbols(
 
 def _extract_statement_payload(
     stmt: ast.stmt,
-) -> Tuple[
-    FrozenSet[str],          # calls (legacy)
-    FrozenSet[str],          # defs
-    FrozenSet[str],          # uses
-    Tuple[CallSite, ...],    # call_sites
+) -> tuple[
+    frozenset[str],          # calls (legacy)
+    frozenset[str],          # defs
+    frozenset[str],          # uses
+    tuple[CallSite, ...],    # call_sites
 ]:
     """Single pass producing every per-node symbol artefact.
 
@@ -448,7 +440,7 @@ def _extract_statement_payload(
     assigned_map = _statement_assigned_map(stmt)
 
     # call_sites in source order
-    site_records: List[Tuple[int, int, CallSite]] = []
+    site_records: list[tuple[int, int, CallSite]] = []
     for root in expr_roots:
         for child in ast.walk(root):
             if not isinstance(child, ast.Call):
@@ -475,8 +467,8 @@ def _extract_statement_payload(
     #   For.target — already Store-ctx, picked up by _walk_symbols
     #   With.items[].optional_vars — already Store-ctx
     #   AnnAssign.target without value — Store-ctx
-    defs: Set[str] = set()
-    uses: Set[str] = set()
+    defs: set[str] = set()
+    uses: set[str] = set()
     for root in expr_roots:
         d, u = _walk_symbols(root)
         defs |= d
@@ -526,14 +518,14 @@ class _PythonCFGBuilder:
             kind="exit", lineno=EXIT_LINENO,
             label=f"EXIT:{function_name}",
         )
-        self._adjacency: Dict[PyCFGNode, List[PyCFGNode]] = {}
-        self._all_nodes: List[PyCFGNode] = [self.entry, self.exit]
+        self._adjacency: dict[PyCFGNode, list[PyCFGNode]] = {}
+        self._all_nodes: list[PyCFGNode] = [self.entry, self.exit]
         # Loop context stack: each entry is (break_target, continue_target).
         # break_target is the node a ``break`` jumps to (the loop's
         # successor); continue_target is the loop header (re-enter the
         # condition). Both are pre-allocated as the loop is set up so
         # any inner ``break`` / ``continue`` has somewhere to attach.
-        self._loop_stack: List[Tuple[PyCFGNode, PyCFGNode]] = []
+        self._loop_stack: list[tuple[PyCFGNode, PyCFGNode]] = []
 
     # ----- edge plumbing -----
 
@@ -545,7 +537,7 @@ class _PythonCFGBuilder:
             self._link(s, dst)
 
     def _new_node(self, kind: str, stmt: ast.stmt,
-                  *, label: Optional[str] = None) -> PyCFGNode:
+                  *, label: str | None = None) -> PyCFGNode:
         calls, defs, uses, call_sites = _extract_statement_payload(stmt)
         node = PyCFGNode(
             kind=kind, lineno=stmt.lineno,
@@ -561,8 +553,8 @@ class _PythonCFGBuilder:
     # ----- statement dispatchers -----
 
     def _build_stmts(
-        self, stmts: List[ast.stmt], incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmts: list[ast.stmt], incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         cursor = incoming
         for stmt in stmts:
             cursor = self._build_stmt(stmt, cursor)
@@ -575,8 +567,8 @@ class _PythonCFGBuilder:
         return cursor
 
     def _build_stmt(
-        self, stmt: ast.stmt, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.stmt, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         if isinstance(stmt, ast.If):
             return self._build_if(stmt, incoming)
         if isinstance(stmt, ast.While):
@@ -626,8 +618,8 @@ class _PythonCFGBuilder:
     # ----- compound constructs -----
 
     def _build_if(
-        self, stmt: ast.If, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.If, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         cond = self._new_node("stmt", stmt)
         self._link_many(incoming, cond)
         then_out = self._build_stmts(stmt.body, [cond])
@@ -638,8 +630,8 @@ class _PythonCFGBuilder:
         return then_out + else_out
 
     def _build_while(
-        self, stmt: ast.While, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.While, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         header = self._new_node("stmt", stmt)
         self._link_many(incoming, header)
         exit_node = self._new_node("join", stmt, label=f"while-exit (line {stmt.lineno})")
@@ -657,8 +649,8 @@ class _PythonCFGBuilder:
         return [exit_node]
 
     def _build_for(
-        self, stmt: ast.For, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.For, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         header = self._new_node("stmt", stmt)
         self._link_many(incoming, header)
         exit_node = self._new_node("join", stmt, label=f"for-exit (line {stmt.lineno})")
@@ -676,19 +668,19 @@ class _PythonCFGBuilder:
         return [exit_node]
 
     def _build_match(
-        self, stmt: "ast.Match", incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.Match, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         subject = self._new_node("stmt", stmt, label=f"match (line {stmt.lineno})")
         self._link_many(incoming, subject)
-        exits: List[PyCFGNode] = []
+        exits: list[PyCFGNode] = []
         for case in stmt.cases:
             case_out = self._build_stmts(case.body, [subject])
             exits.extend(case_out)
         return exits
 
     def _build_try(
-        self, stmt: ast.Try, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.Try, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         # try-block: incoming flows into body. Any node in body may
         # raise and route to ANY of the except handlers, so the
         # conservative model is to fan every body node out to each
@@ -698,7 +690,7 @@ class _PythonCFGBuilder:
         # finally always runs; the model is that body_out, handler_out,
         # and the exceptional paths all converge at finally's entry.
         body_out = self._build_stmts(stmt.body, incoming)
-        handler_outs: List[PyCFGNode] = []
+        handler_outs: list[PyCFGNode] = []
         for handler in stmt.handlers:
             # Each handler's first node is reachable from every
             # statement of body (any of them could raise).
@@ -713,7 +705,7 @@ class _PythonCFGBuilder:
             # straight-line predecessor of body_out.
             handler_outs.extend(handler_node_start)
         # ``orelse`` (try/else clause): runs when no exception raised
-        else_out: List[PyCFGNode] = body_out
+        else_out: list[PyCFGNode] = body_out
         if stmt.orelse:
             else_out = self._build_stmts(stmt.orelse, body_out)
         # ``finalbody``: every other path merges here
@@ -723,8 +715,8 @@ class _PythonCFGBuilder:
         return merge_in
 
     def _build_with(
-        self, stmt: ast.With, incoming: List[PyCFGNode],
-    ) -> List[PyCFGNode]:
+        self, stmt: ast.With, incoming: list[PyCFGNode],
+    ) -> list[PyCFGNode]:
         # Model as a sentinel statement for the `with` line + the body.
         header = self._new_node("stmt", stmt)
         self._link_many(incoming, header)
@@ -737,12 +729,12 @@ class _PythonCFGBuilder:
         # Any fall-through path joins the exit sink.
         self._link_many(outs, self.exit)
         # Materialise immutable adjacency
-        adjacency: Dict[PyCFGNode, Tuple[PyCFGNode, ...]] = {
+        adjacency: dict[PyCFGNode, tuple[PyCFGNode, ...]] = {
             k: tuple(v) for k, v in self._adjacency.items()
         }
         # Deduplicate node list while preserving first-seen order
         seen: set = set()
-        ordered_nodes: List[PyCFGNode] = []
+        ordered_nodes: list[PyCFGNode] = []
         for n in self._all_nodes:
             if n not in seen:
                 seen.add(n)
@@ -760,7 +752,7 @@ class _PythonCFGBuilder:
 
 def _function_params(
     func: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> Tuple[str, ...]:
+) -> tuple[str, ...]:
     """Ordered tuple of bare parameter names declared by ``func``.
 
     Positional-only, then positional-or-keyword, then ``*vararg``,
@@ -770,7 +762,7 @@ def _function_params(
     parameter so body uses resolve to the entry node.
     """
     args = func.args
-    names: List[str] = []
+    names: list[str] = []
     for arg in args.posonlyargs:
         names.append(arg.arg)
     for arg in args.args:
@@ -786,7 +778,7 @@ def _function_params(
 
 def build_python_cfg(
     source: str | Path, function_name: str,
-) -> Optional[PythonCFG]:
+) -> PythonCFG | None:
     """Build the CFG for one named function in a Python source file or
     in-memory source string.
 
@@ -801,7 +793,7 @@ def build_python_cfg(
         file_path = "<string>"
         source_text = source
     tree = ast.parse(source_text)
-    func: Optional[ast.AST] = None
+    func: ast.AST | None = None
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
                 and node.name == function_name:
@@ -828,8 +820,8 @@ class CppCallGraph:
     should construct one call graph per root.
     """
     entry_node: CallGraphNode
-    _nodes: Tuple[CallGraphNode, ...]
-    _adjacency: Dict[CallGraphNode, Tuple[CallGraphNode, ...]]
+    _nodes: tuple[CallGraphNode, ...]
+    _adjacency: dict[CallGraphNode, tuple[CallGraphNode, ...]]
 
     @property
     def entry(self) -> CallGraphNode:
@@ -864,7 +856,7 @@ def build_cpp_callgraph(
     """
     from core.analysis.binary_oracle_edges import extract_direct_call_edges
 
-    adjacency_raw: Dict[str, set] = {}
+    adjacency_raw: dict[str, set] = {}
     seen_functions: set = set()
     for path in binary_paths:
         p = Path(path)
@@ -877,10 +869,10 @@ def build_cpp_callgraph(
 
     seen_functions.add(entry)
     # Build CallGraphNode instances (name-keyed; identity by name only)
-    node_for: Dict[str, CallGraphNode] = {
+    node_for: dict[str, CallGraphNode] = {
         name: CallGraphNode(name=name) for name in seen_functions
     }
-    adjacency: Dict[CallGraphNode, Tuple[CallGraphNode, ...]] = {
+    adjacency: dict[CallGraphNode, tuple[CallGraphNode, ...]] = {
         node_for[caller]: tuple(node_for[callee] for callee in callees)
         for caller, callees in adjacency_raw.items()
     }

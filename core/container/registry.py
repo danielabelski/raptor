@@ -19,7 +19,8 @@ import json
 import logging
 import re
 import time
-from typing import Callable, Literal
+from typing import Literal
+from collections.abc import Callable
 
 from core.container.proc import PROXY_ENV_VARS, run_cli
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List
 
 from core.llm.task_types import TaskType
 from ..models import Confidence, Dependency, PinStyle
@@ -40,9 +39,9 @@ def review_inline_installs(
     client,
     file_path: Path,
     file_content: str,
-    mechanical_deps: List[Dependency],
+    mechanical_deps: list[Dependency],
     source_kind: str,
-) -> List[Dependency]:
+) -> list[Dependency]:
     """Ask the LLM to find package installs the mechanical parser missed.
 
     Args:
@@ -102,7 +101,7 @@ def review_inline_installs(
     if result.preflight_hit and verdict.confidence == "high":
         verdict = verdict.model_copy(update={"confidence": "medium"})
 
-    new_deps: List[Dependency] = []
+    new_deps: list[Dependency] = []
     for item in verdict.missed_installs:
         if (item.ecosystem.lower(), item.name.lower()) in mechanical_names:
             continue

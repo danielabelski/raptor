@@ -51,7 +51,7 @@ _REGEX_PRECEDER_KEYWORDS = frozenset({
 })
 
 
-def _regex_end_on_line(s: "list[str] | str", start: int) -> int | None:
+def _regex_end_on_line(s: list[str] | str, start: int) -> int | None:
     """Index just past the closing ``/`` of a regex literal starting
     at ``start`` (which must hold the opening ``/``), or ``None`` when
     no unescaped closing ``/`` occurs before the end of line — regex

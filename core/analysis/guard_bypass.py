@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Set, Tuple
+from collections.abc import Callable
 
 from .cfg_conditions import ConditionEdge, ControlCondition, extract_conditions_from_cfg
 
@@ -39,10 +39,10 @@ class Guard:
 class GuardBypassResult:
     """Result of a guard-bypass query."""
 
-    bypassable_paths: List[List[int]] = field(default_factory=list)
-    constraining_guards: List[Guard] = field(default_factory=list)
-    must_visit_guards: List[Guard] = field(default_factory=list)
-    smt_verdict: Optional[str] = None
+    bypassable_paths: list[list[int]] = field(default_factory=list)
+    constraining_guards: list[Guard] = field(default_factory=list)
+    must_visit_guards: list[Guard] = field(default_factory=list)
+    smt_verdict: str | None = None
     confidence: str = "structural"
 
     def is_bypassed(self) -> bool:
@@ -75,13 +75,13 @@ def _find_node_at_line(cfg, line: int):
 
 def _find_guards(
     cfg,
-    condition_edges: List[ConditionEdge],
+    condition_edges: list[ConditionEdge],
     source_var: str,
     guard_classifier: GuardClassifier,
-) -> List[Guard]:
+) -> list[Guard]:
     """Find all guards in the CFG that constrain the source variable."""
-    guards: List[Guard] = []
-    seen: Set[Tuple[str, int]] = set()
+    guards: list[Guard] = []
+    seen: set[tuple[str, int]] = set()
 
     for edge in condition_edges:
         if edge.condition is None:
@@ -104,15 +104,15 @@ def _enumerate_paths(
     sink_node,
     max_paths: int = _MAX_PATHS,
     max_depth: int = _MAX_DEPTH,
-) -> Tuple[List[List[int]], bool]:
+) -> tuple[list[list[int]], bool]:
     """Bounded DFS from source to sink. Returns (paths, complete).
 
     complete is False if the path cap was hit (confidence degrades).
     """
-    paths: List[List[int]] = []
+    paths: list[list[int]] = []
     complete = True
 
-    stack: List[Tuple[object, List[int], Set[int]]] = [
+    stack: list[tuple[object, list[int], set[int]]] = [
         (source_node, [source_node.lineno], {id(source_node)}),
     ]
 
@@ -139,7 +139,7 @@ def _enumerate_paths(
 
 
 def _guard_on_path(
-    path_lines: List[int],
+    path_lines: list[int],
     guard: Guard,
 ) -> bool:
     """Check if a guard's node line appears on the path."""
@@ -151,7 +151,7 @@ def query(
     source_var: str,
     source_line: int,
     sink_line: int,
-    guard_classifier: Optional[GuardClassifier] = None,
+    guard_classifier: GuardClassifier | None = None,
 ) -> GuardBypassResult:
     """Query whether any path from source to sink bypasses guards
     constraining source_var.
@@ -197,8 +197,8 @@ def query(
             confidence="structural" if complete else "incomplete",
         )
 
-    bypassable: List[List[int]] = []
-    must_visit: Set[int] = set(range(len(guards)))
+    bypassable: list[list[int]] = []
+    must_visit: set[int] = set(range(len(guards)))
 
     for path in paths:
         guards_on_path = set()
@@ -241,7 +241,7 @@ def check_guard_coverage(
     entry_node = cfg.entry_node if hasattr(cfg, "entry_node") else cfg.entry
     condition_edges = extract_conditions_from_cfg(cfg)
 
-    guard_lines: Set[int] = set()
+    guard_lines: set[int] = set()
     for edge in condition_edges:
         if edge.condition is None:
             continue

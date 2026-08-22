@@ -29,7 +29,8 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class FailureMode:
     ]
 
 
-_MATRIX: Dict[str, frozenset] = {
+_MATRIX: dict[str, frozenset] = {
     "L0": frozenset({"naming_misdirection"}),
     "L1": frozenset({"attention_decay", "happy_path", "absence", "naming_misdirection"}),
     "L2": frozenset({
@@ -102,7 +103,7 @@ class PlantedBug:
     description: str = ""
     evasion_technique: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "bug_id": self.bug_id,
             "depth": self.depth,
@@ -130,8 +131,8 @@ class DetectionResult:
     evidence_tier: str = ""
     finding_id: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "bug_id": self.bug_id,
             "detected": self.detected,
             "configuration": self.configuration,
@@ -149,15 +150,15 @@ class MatrixCell:
 
     depth: str
     failure_mode: str
-    planted_bugs: List[PlantedBug] = field(default_factory=list)
-    detection_results: Dict[str, List[DetectionResult]] = field(default_factory=dict)
+    planted_bugs: list[PlantedBug] = field(default_factory=list)
+    detection_results: dict[str, list[DetectionResult]] = field(default_factory=dict)
 
     @property
     def is_active(self) -> bool:
         return self.failure_mode in _MATRIX.get(self.depth, frozenset())
 
     @property
-    def detection_rate(self) -> Optional[float]:
+    def detection_rate(self) -> float | None:
         if not self.planted_bugs:
             return None
         total = len(self.planted_bugs)
@@ -171,7 +172,7 @@ class MatrixCell:
                 found += 1
         return found / total if total > 0 else None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "depth": self.depth,
             "failure_mode": self.failure_mode,
@@ -185,8 +186,8 @@ class MatrixCell:
 class AdversarialMatrix:
     """The full depth x failure-mode matrix with results."""
 
-    cells: Dict[str, MatrixCell] = field(default_factory=dict)
-    configurations: List[str] = field(default_factory=list)
+    cells: dict[str, MatrixCell] = field(default_factory=dict)
+    configurations: list[str] = field(default_factory=list)
 
     def get_cell(self, depth: str, failure_mode: str) -> MatrixCell:
         key = f"{depth}:{failure_mode}"
@@ -222,7 +223,7 @@ class AdversarialMatrix:
                     ))
                     return
 
-    def blind_spots(self) -> List[MatrixCell]:
+    def blind_spots(self) -> list[MatrixCell]:
         """Return cells where bugs were planted but none were detected."""
         spots = []
         for cell in self.cells.values():
@@ -233,7 +234,7 @@ class AdversarialMatrix:
                 spots.append(cell)
         return spots
 
-    def coverage_summary(self) -> Dict[str, Any]:
+    def coverage_summary(self) -> dict[str, Any]:
         active = [c for c in self.cells.values() if c.is_active]
         populated = [c for c in active if c.planted_bugs]
         detected = [c for c in populated if (c.detection_rate or 0) > 0]
@@ -247,7 +248,7 @@ class AdversarialMatrix:
             ),
         }
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "configurations": self.configurations,
             "cells": {k: v.to_dict() for k, v in sorted(self.cells.items())},
@@ -255,7 +256,7 @@ class AdversarialMatrix:
         }
 
 
-def load_planted_bugs(manifest_path: Path) -> List[PlantedBug]:
+def load_planted_bugs(manifest_path: Path) -> list[PlantedBug]:
     """Load planted bugs from a JSON manifest."""
     if not manifest_path.is_file():
         return []
@@ -288,16 +289,16 @@ def load_planted_bugs(manifest_path: Path) -> List[PlantedBug]:
 
 
 def match_findings_to_bugs(
-    findings: Sequence[Dict[str, Any]],
+    findings: Sequence[dict[str, Any]],
     bugs: Sequence[PlantedBug],
     configuration: str = "default",
-) -> List[DetectionResult]:
+) -> list[DetectionResult]:
     """Match audit findings to planted bugs.
 
     A finding matches a planted bug if it references the same file and
     function (or overlapping line range).
     """
-    results: List[DetectionResult] = []
+    results: list[DetectionResult] = []
     matched_bugs: set = set()
 
     for bug in bugs:

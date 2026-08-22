@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ def check_bounds_infeasible(
     cwe: str,
     *,
     timeout_ms: int = 5000,
-) -> Optional[bool]:
+) -> bool | None:
     """Return True if overflow is provably impossible, False if possible, None if inconclusive.
 
     Only runs for overflow-related CWEs (120, 121, 122, 787, 190).

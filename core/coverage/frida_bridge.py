@@ -8,7 +8,7 @@ this module just discovers and orchestrates.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from core.logging import get_logger
 
@@ -19,11 +19,11 @@ log = get_logger("coverage.frida_bridge")
 
 
 def import_frida_coverage(
-    store: "CoverageStore",
-    checklist: Dict[str, Any],
+    store: CoverageStore,
+    checklist: dict[str, Any],
     search_dirs: list[Path],
-    target_binary: Optional[str] = None,
-    target_path: Optional[str] = None,
+    target_binary: str | None = None,
+    target_path: str | None = None,
 ) -> int:
     """Discover frida drcov files and import them into the coverage store.
 

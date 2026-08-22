@@ -43,7 +43,7 @@ import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Set
+from collections.abc import Iterable
 
 from .._test_paths import is_test_path as _shared_is_test_path
 from ..discovery import EXCLUDED_DIR_NAMES
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 # ``vendor/``, ``third_party/``, ``_vendor/`` patterns common in
 # Go-style monorepos and security-conscious Python projects) get
 # the heuristic against vendored content only.
-_VENDOR_DIR_NAMES: Set[str] = {
+_VENDOR_DIR_NAMES: set[str] = {
     "vendor",
     "_vendor",
     "third_party",
@@ -81,7 +81,7 @@ _VENDOR_DIR_NAMES: Set[str] = {
 # (we want to walk INTO those). ``site-packages`` is added because any
 # virtualenv that snuck in is the operator's local dev environment,
 # not a checked-in vendored dep.
-_EXCLUDED_DIRS: Set[str] = (
+_EXCLUDED_DIRS: set[str] = (
     EXCLUDED_DIR_NAMES - _VENDOR_DIR_NAMES
 ) | {"site-packages"}
 
@@ -91,7 +91,7 @@ _EXCLUDED_DIRS: Set[str] = (
 
 # Top-level module names whose function calls at import time we
 # consider suspicious. Paired with the call vocabulary below.
-_SUSPICIOUS_MODULE_PREFIXES: Set[str] = {
+_SUSPICIOUS_MODULE_PREFIXES: set[str] = {
     "subprocess",
     "os",
     "socket",
@@ -102,7 +102,7 @@ _SUSPICIOUS_MODULE_PREFIXES: Set[str] = {
 
 # Bare names — calls like ``eval(...)``, ``exec(...)``, ``__import__(...)``
 # at module scope without a module qualifier.
-_SUSPICIOUS_BARE_CALLS: Set[str] = {
+_SUSPICIOUS_BARE_CALLS: set[str] = {
     "eval", "exec", "compile", "__import__", "open",
 }
 
@@ -111,7 +111,7 @@ _SUSPICIOUS_BARE_CALLS: Set[str] = {
 # ``_is_suspicious_call`` matches the prefix set first and flags
 # every call on those modules, so a pair entry for a prefix-listed
 # module would be unreachable dead config.
-_SUSPICIOUS_ATTR_PAIRS: Set["tuple[str, str]"] = {
+_SUSPICIOUS_ATTR_PAIRS: set[tuple[str, str]] = {
     ("importlib", "import_module"), ("importlib", "__import__"),
 }
 
@@ -136,7 +136,7 @@ def scan_target(
     *,
     max_depth: int = _DEFAULT_MAX_DEPTH,
     cache=None,
-) -> List[ImportTimeFinding]:
+) -> list[ImportTimeFinding]:
     """Walk ``target``'s vendored Python sources (see
     ``_VENDOR_DIR_NAMES``); return per-file flagged statements.
 
@@ -150,7 +150,7 @@ def scan_target(
     """
     target = target.resolve()
     manifests_list = list(manifests)
-    out: List[ImportTimeFinding] = []
+    out: list[ImportTimeFinding] = []
     from .._file_scan_cache import cached_per_file
     for path in _walk_python_sources(target, max_depth=max_depth):
         if _looks_like_test_path(path, target):
@@ -216,7 +216,7 @@ def _scan_module(
     tree: ast.Module,
     path: Path,
     target: Path,
-    manifests: List[Manifest],
+    manifests: list[Manifest],
 ) -> Iterable[ImportTimeFinding]:
     for node in tree.body:
         # Whole-statement allowlists.
@@ -321,7 +321,7 @@ def _render_call(call: ast.Call) -> str:
         return f"{func.id}()"
     if isinstance(func, ast.Attribute):
         # Walk back to leftmost name and rebuild the dotted form.
-        names: List[str] = [func.attr]
+        names: list[str] = [func.attr]
         node: ast.AST = func.value
         while isinstance(node, ast.Attribute):
             names.append(node.attr)
@@ -436,9 +436,9 @@ def _looks_like_test_path(path: Path, target: Path) -> bool:
 
 
 def _project_host_dep(
-    manifests: List[Manifest], path: Path, target: Path,
+    manifests: list[Manifest], path: Path, target: Path,
 ) -> Dependency:
-    closest: "Manifest | None" = None
+    closest: Manifest | None = None
     for m in manifests:
         if m.is_lockfile:
             continue

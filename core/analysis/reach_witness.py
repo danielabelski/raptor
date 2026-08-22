@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional
 
 
 class Reachability(str, Enum):
@@ -82,7 +81,7 @@ class ReachabilityVerdict:
     status: Reachability
     witness: Witness
 
-    def may_suppress(self, earned_kinds: "frozenset" = frozenset()) -> bool:
+    def may_suppress(self, earned_kinds: frozenset = frozenset()) -> bool:
         """The ONLY predicate authorising skip / hard-demote / auto-resolve
         on reachability grounds. Returns True iff ALL of:
 
@@ -137,7 +136,7 @@ class VerdictSpec:
 # UNREACHABLE but HEURISTIC (build-config dependence, entry-set completeness,
 # or 1-hop assumptions can miss reflection, cross-file, or address-of edges).
 # Reachable/uncertain are never suppress-eligible.
-VERDICTS: Dict[str, VerdictSpec] = {
+VERDICTS: dict[str, VerdictSpec] = {
     "module_aborts": VerdictSpec(
         Reachability.UNREACHABLE, WitnessKind.MODULE_ABORTS, Soundness.SOUND,
         earns_suppression=True,
@@ -311,7 +310,7 @@ def verdict_from_classification(verdict: str) -> ReachabilityVerdict:
                         summary=spec.summary))
 
 
-def blocker_for(verdict: str, fq: str, detail: str = "") -> Optional[str]:
+def blocker_for(verdict: str, fq: str, detail: str = "") -> str | None:
     """The /validate demoter blocker string for a dead ``verdict``, or ``None``
     when the verdict has no blocker template. ``fq`` = ``module.func``;
     ``detail`` = the witness summary for verdicts whose blocker embeds one
@@ -330,7 +329,7 @@ def prompt_verdict_for(verdict: str) -> str:
 
 
 def resolve_reachability(
-    inventory: Dict[str, object],
+    inventory: dict[str, object],
     file_path: str,
     name: str,
     line: int,

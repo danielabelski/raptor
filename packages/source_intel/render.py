@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
 
 from core.build.build_flags import BuildFlagsContext
 from packages.source_intel.analyze import (
@@ -79,7 +78,7 @@ class Mitigation:
     axis: str  # "axis_1" through "axis_8"
     confidence: str  # "low" | "medium" | "high"
     detail: str
-    location: Optional[tuple] = None  # (file, line) or None
+    location: tuple | None = None  # (file, line) or None
 
 
 _STYLES = ("stage_d", "exploit_plan", "agentic_variant")
@@ -103,7 +102,7 @@ _BINARY_SUPERSEDING_VERDICTS = frozenset({
 })
 
 
-def _supersession_prefix(binary_verdict: Optional[str]) -> Optional[str]:
+def _supersession_prefix(binary_verdict: str | None) -> str | None:
     """Return a one-line SUPERSEDED marker when the binary verdict
     overrides source_intel; ``None`` otherwise.
 
@@ -131,13 +130,13 @@ def _supersession_prefix(binary_verdict: Optional[str]) -> Optional[str]:
 
 def derive_evidence_strings(
     result: SourceIntelResult,
-    finding_function: Optional[str] = None,
-    build_flags: Optional[BuildFlagsContext] = None,
+    finding_function: str | None = None,
+    build_flags: BuildFlagsContext | None = None,
     style: str = "stage_d",
-    max_lines: Optional[int] = None,
-    binary_verdict: Optional[str] = None,
-    privilege_back_walk: Optional[PrivilegeBackWalkEvidence] = None,
-) -> List[str]:
+    max_lines: int | None = None,
+    binary_verdict: str | None = None,
+    privilege_back_walk: PrivilegeBackWalkEvidence | None = None,
+) -> list[str]:
     """Render source_intel evidence for a finding into prompt lines.
 
     Args:
@@ -170,7 +169,7 @@ def derive_evidence_strings(
     if style not in _STYLES:
         raise ValueError(f"unknown style: {style!r} (expected one of {_STYLES})")
 
-    lines: List[str] = []
+    lines: list[str] = []
 
     if result.is_skipped:
         # Surface the skip reason so consumers know there was no
@@ -545,7 +544,7 @@ _CAP_CONST_RE = re.compile(r"\bCAP_[A-Z_]+\b")
 
 def _privileged_cap_constant_on_line(
     file_path: str, line_no: int,
-) -> Optional[str]:
+) -> str | None:
     """Return the first privileged CAP_ constant on the given line,
     or ``None`` when the line can't be read OR carries no privileged
     constant. Used by ``_render_capability_line`` to strengthen the
@@ -608,7 +607,7 @@ def _render_capability_line(c: CapabilityEvidence, style: str) -> str:
 
     # Detect a privileged-equivalent constant on the source line.
     # Only meaningful when the grade actually guards the sink path.
-    priv_cap: Optional[str] = None
+    priv_cap: str | None = None
     if c.grade in (GRADE_DOMINATES, GRADE_SAME_FUNCTION):
         priv_cap = _privileged_cap_constant_on_line(
             c.location[0], c.location[1],
@@ -666,7 +665,7 @@ def _render_capability_line(c: CapabilityEvidence, style: str) -> str:
 
 def _render_privilege_back_walk_line(
     bw: PrivilegeBackWalkEvidence, style: str,
-) -> Optional[str]:
+) -> str | None:
     """Render the axis-4 multi-hop privilege back-walk result as one
     prose line. Three cases:
 
@@ -840,9 +839,9 @@ def _render_abort_line(ab: AbortEvidence, style: str) -> str:
 
 def _render_attribute_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
-) -> Optional[str]:
+) -> str | None:
     """Dispatch to the per-kind renderer. Unknown kinds return None
     (silently dropped — render is best-effort).
 
@@ -894,7 +893,7 @@ def _append_conditional_caveat(
 
 def _render_wur_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """One line of WUR evidence, framed per consumer style.
@@ -934,7 +933,7 @@ def _render_wur_line(
 
 def _render_nonnull_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render nonnull evidence.
@@ -974,7 +973,7 @@ def _render_nonnull_line(
     )
 
 
-def _nonnull_null_check_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
+def _nonnull_null_check_phrase(build_flags: BuildFlagsContext | None) -> str:
     """Compose the dead-code-elimination caveat for nonnull."""
     if build_flags is None or build_flags.extraction_confidence == "absent":
         return (
@@ -1002,7 +1001,7 @@ def _nonnull_null_check_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
 
 def _render_alloc_size_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render alloc_size evidence.
@@ -1034,7 +1033,7 @@ def _render_alloc_size_line(
     )
 
 
-def _alloc_size_fortify_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
+def _alloc_size_fortify_phrase(build_flags: BuildFlagsContext | None) -> str:
     if build_flags is None or build_flags.extraction_confidence == "absent":
         return (
             "FORTIFY_SOURCE status unknown (build flags not in evidence); "
@@ -1068,7 +1067,7 @@ def _alloc_size_fortify_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
 
 def _render_returns_nonnull_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render returns_nonnull evidence.
@@ -1101,7 +1100,7 @@ def _render_returns_nonnull_line(
 
 
 def _returns_nonnull_caveat_phrase(
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
 ) -> str:
     if build_flags is None or build_flags.extraction_confidence == "absent":
         return (
@@ -1130,7 +1129,7 @@ def _returns_nonnull_caveat_phrase(
 
 def _render_noreturn_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render noreturn evidence.
@@ -1161,7 +1160,7 @@ def _render_noreturn_line(
 
 def _render_malloc_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render malloc evidence.
@@ -1195,7 +1194,7 @@ def _render_malloc_line(
 
 def _render_no_stack_protector_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render no_stack_protector evidence.
@@ -1228,7 +1227,7 @@ def _render_no_stack_protector_line(
     )
 
 
-def _stack_protector_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
+def _stack_protector_phrase(build_flags: BuildFlagsContext | None) -> str:
     """Phrase describing what the build-wide stack protector level is —
     the no_stack_protector attribute matters most when the build was
     otherwise enabling canary insertion."""
@@ -1264,7 +1263,7 @@ def _stack_protector_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
 
 def _render_access_line(
     ev: AttributeEvidence,
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render access evidence.
@@ -1296,7 +1295,7 @@ def _render_access_line(
     )
 
 
-def _access_fortify_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
+def _access_fortify_phrase(build_flags: BuildFlagsContext | None) -> str:
     """Same FORTIFY_SOURCE caveat shape as alloc_size — annotations
     unlock runtime checks when fortified intrinsics are active."""
     if build_flags is None or build_flags.extraction_confidence == "absent":
@@ -1326,7 +1325,7 @@ def _access_fortify_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
     )
 
 
-def _enforcement_phrase(build_flags: Optional[BuildFlagsContext]) -> str:
+def _enforcement_phrase(build_flags: BuildFlagsContext | None) -> str:
     """Compose the compile-enforcement caveat from build flag context."""
     if build_flags is None or build_flags.extraction_confidence == "absent":
         return (
@@ -1402,9 +1401,9 @@ def _render_c_level_source_line(src: CLevelSourceEvidence, style: str) -> str:
 
 
 def _render_sanitizers_line(
-    build_flags: Optional[BuildFlagsContext],
+    build_flags: BuildFlagsContext | None,
     style: str,
-) -> Optional[str]:
+) -> str | None:
     """Render a single line summarising active sanitizers when any
     are present in ``build_flags``. Returns None when:
       * build_flags is None,
@@ -1457,7 +1456,7 @@ def _render_sanitizers_line(
 # =====================================================================
 
 
-def _truncate(lines: List[str], max_lines: Optional[int]) -> List[str]:
+def _truncate(lines: list[str], max_lines: int | None) -> list[str]:
     """Cap line count for tight prompt budgets."""
     if max_lines is None or len(lines) <= max_lines:
         return lines
@@ -1466,10 +1465,10 @@ def _truncate(lines: List[str], max_lines: Optional[int]) -> List[str]:
 
 def derive_mitigations_found(
     result: SourceIntelResult,
-    finding_function: Optional[str] = None,
-    finding_file: Optional[str] = None,
-    finding_line: Optional[int] = None,
-) -> List[Mitigation]:
+    finding_function: str | None = None,
+    finding_file: str | None = None,
+    finding_line: int | None = None,
+) -> list[Mitigation]:
     """Return the structured `mitigations_found` list for a finding.
 
     Per design strict invariant: a positively-detected mitigation
@@ -1496,7 +1495,7 @@ def derive_mitigations_found(
     Each entry includes location when known so Stage D LLM can
     cross-reference the source.
     """
-    mitigations: List[Mitigation] = []
+    mitigations: list[Mitigation] = []
 
     # axis_2 abort — same function as finding
     for ab in result.aborts:
@@ -1561,7 +1560,7 @@ def derive_mitigations_found(
     return mitigations
 
 
-def aggregate_confidence(mitigations: List[Mitigation]) -> str:
+def aggregate_confidence(mitigations: list[Mitigation]) -> str:
     """Compute overall confidence per design strict invariant:
     "confidence capped at strongest individual signal; no
     multiplicative inflation".

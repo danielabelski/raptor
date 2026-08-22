@@ -17,7 +17,6 @@ need a canonical spelling before comparison.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 # Matches CWE-N shapes we accept: ``CWE-121``, ``cwe-121``, ``cwe121``,
@@ -27,7 +26,7 @@ from typing import Optional
 _CWE_RE = re.compile(r"^\s*cwe[-_\s]?(\d+)\s*$", re.IGNORECASE)
 
 
-def canonicalize_cwe(raw: Optional[str]) -> Optional[str]:
+def canonicalize_cwe(raw: str | None) -> str | None:
     """Return ``"CWE-N"`` (uppercase) for a CWE identifier.
 
     ``None`` / empty / non-CWE input → ``None``. Callers that need a
@@ -42,7 +41,7 @@ def canonicalize_cwe(raw: Optional[str]) -> Optional[str]:
     return f"CWE-{m.group(1)}"
 
 
-def cwe_dir_slug(raw: Optional[str]) -> Optional[str]:
+def cwe_dir_slug(raw: str | None) -> str | None:
     """Return ``"cwe-N"`` (lowercase) suitable for filenames / dirs.
 
     Same accept-set as :func:`canonicalize_cwe`; returns ``None`` on
@@ -54,7 +53,7 @@ def cwe_dir_slug(raw: Optional[str]) -> Optional[str]:
     return canon.lower()
 
 
-def format_cwe(number) -> Optional[str]:
+def format_cwe(number) -> str | None:
     """Format a pure CWE number as the canonical ``"CWE-N"`` string.
 
     Companion to :func:`canonicalize_cwe` for producers that already

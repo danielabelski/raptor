@@ -16,7 +16,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from .prompt_defence import sanitise_for_prompt
 from .sibling_analysis import (
@@ -106,7 +106,7 @@ class BlockSiblingFinding:
     severity: str = "medium"
     confidence: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.file,
             "function": self.function,
@@ -125,7 +125,7 @@ class BlockSiblingFinding:
 # Property extraction from branch text
 # ---------------------------------------------------------------------------
 
-def _extract_branch_properties(body_text: str) -> Dict[str, Any]:
+def _extract_branch_properties(body_text: str) -> dict[str, Any]:
     """Extract security-relevant properties from a branch body."""
     return {
         "validates_input": bool(_VALIDATION_RE.search(body_text)),
@@ -149,13 +149,13 @@ def _truncate_label(text: str, max_len: int = 60) -> str:
 
 def _collect_switch_branches(
     switch_node, lang: str, src: bytes,
-) -> List[Tuple[str, str, int]]:
+) -> list[tuple[str, str, int]]:
     """Collect (label, body_text, line) for each case in a switch."""
     case_types = _CASE_TYPES.get(lang, ())
     if not case_types:
         return []
 
-    branches: List[Tuple[str, str, int]] = []
+    branches: list[tuple[str, str, int]] = []
     for child in switch_node.children:
         if child.type not in case_types:
             continue
@@ -175,13 +175,13 @@ def _collect_switch_branches(
 
 def _collect_if_branches(
     if_node, lang: str, src: bytes,
-) -> List[Tuple[str, str, int]]:
+) -> list[tuple[str, str, int]]:
     """Collect (label, body_text, line) from an if/elif/else chain.
 
     Handles Python (elif_clause chain), C/JS (else_clause wrapping
     if_statement), and Go (alternative is if_statement directly).
     """
-    branches: List[Tuple[str, str, int]] = []
+    branches: list[tuple[str, str, int]] = []
     _walk_if_chain(if_node, lang, src, branches, depth=0)
     return branches
 
@@ -238,7 +238,7 @@ def _walk_if_chain(node, lang, src, out, depth):
 
 def _collect_branches_ts(
     file_path: str, source: str,
-) -> List[Tuple[str, str, List[Tuple[str, str, int]]]]:
+) -> list[tuple[str, str, list[tuple[str, str, int]]]]:
     """Find all switch/if-chain branch groups in a file via tree-sitter.
 
     Returns list of (function_name, group_label, branches).
@@ -260,7 +260,7 @@ def _collect_branches_ts(
     switch_types = _SWITCH_TYPES.get(lang, ())
     if_types = ("if_statement", "if_expression", "if")
 
-    groups: List[Tuple[str, str, List[Tuple[str, str, int]]]] = []
+    groups: list[tuple[str, str, list[tuple[str, str, int]]]] = []
     visited_starts: set = set()
 
     for node in _walk_descendants(tree.root_node):
@@ -322,10 +322,10 @@ _FUNC_RE = re.compile(
 
 def _collect_branches_regex(
     file_path: str, source: str,
-) -> List[Tuple[str, str, List[Tuple[str, str, int]]]]:
+) -> list[tuple[str, str, list[tuple[str, str, int]]]]:
     """Regex fallback for branch collection."""
     lines = source.splitlines()
-    groups: List[Tuple[str, str, List[Tuple[str, str, int]]]] = []
+    groups: list[tuple[str, str, list[tuple[str, str, int]]]] = []
 
     # Try switch/case first
     case_matches = list(_CASE_HEADER_RE.finditer(source))
@@ -340,7 +340,7 @@ def _collect_branches_regex(
 
 def _collect_case_groups(case_matches, lines, source, file_path, groups):
     """Group consecutive case statements at the same indent level."""
-    indent_groups: Dict[int, List] = {}
+    indent_groups: dict[int, list] = {}
     for m in case_matches:
         indent = len(m.group(1))
         indent_groups.setdefault(indent, []).append(m)
@@ -349,7 +349,7 @@ def _collect_case_groups(case_matches, lines, source, file_path, groups):
         if len(matches) < MIN_BRANCHES:
             continue
 
-        branches: List[Tuple[str, str, int]] = []
+        branches: list[tuple[str, str, int]] = []
         for i, m in enumerate(matches):
             label = (m.group(2) or m.group(3) or "default").strip()
             start_line = source[:m.start()].count("\n")
@@ -370,8 +370,8 @@ def _collect_if_groups_regex(lines, source, file_path, groups):
     if not matches:
         return
 
-    chains: List[List] = []
-    current_chain: List = []
+    chains: list[list] = []
+    current_chain: list = []
     current_indent = -1
 
     for m in matches:
@@ -395,7 +395,7 @@ def _collect_if_groups_regex(lines, source, file_path, groups):
         chains.append(current_chain)
 
     for chain in chains:
-        branches: List[Tuple[str, str, int]] = []
+        branches: list[tuple[str, str, int]] = []
         for i, m in enumerate(chain):
             label = m.group(2).strip()
             start_line = source[:m.start()].count("\n") + 1
@@ -409,7 +409,7 @@ def _collect_if_groups_regex(lines, source, file_path, groups):
         groups.append((func, f"if-chain@L{branches[0][2]}", branches))
 
 
-def _find_enclosing_func_regex(lines: List[str], target_line: int) -> str:
+def _find_enclosing_func_regex(lines: list[str], target_line: int) -> str:
     """Find the function name enclosing a line number (1-based)."""
     for i in range(min(target_line - 1, len(lines) - 1), -1, -1):
         m = _FUNC_RE.search(lines[i])
@@ -429,13 +429,13 @@ _SEVERITY_BOOST_PROPS = frozenset({
 
 def _detect_asymmetries_in_groups(
     file_path: str,
-    branch_groups: List[Tuple[str, str, List[Tuple[str, str, int]]]],
-) -> List[BlockSiblingFinding]:
+    branch_groups: list[tuple[str, str, list[tuple[str, str, int]]]],
+) -> list[BlockSiblingFinding]:
     """Run sibling asymmetry detection on collected branch groups."""
-    findings: List[BlockSiblingFinding] = []
+    findings: list[BlockSiblingFinding] = []
 
     for func_name, group_label, branches in branch_groups:
-        siblings: List[SiblingPath] = []
+        siblings: list[SiblingPath] = []
         for label, body_text, line in branches:
             props = _extract_branch_properties(body_text)
             siblings.append(SiblingPath(
@@ -488,8 +488,8 @@ def _detect_asymmetries_in_groups(
 # ---------------------------------------------------------------------------
 
 def detect_block_sibling_asymmetries(
-    source_texts: Dict[str, str],
-) -> List[BlockSiblingFinding]:
+    source_texts: dict[str, str],
+) -> list[BlockSiblingFinding]:
     """Detect sibling asymmetries across branches within functions.
 
     Scans for switch/case, if/elif chains with ≥3 branches, extracts
@@ -497,7 +497,7 @@ def detect_block_sibling_asymmetries(
     outliers where the majority of branches share a property but one
     or more don't.
     """
-    all_findings: List[BlockSiblingFinding] = []
+    all_findings: list[BlockSiblingFinding] = []
 
     for file_path, source in source_texts.items():
         branch_groups = _collect_branches_ts(file_path, source)
@@ -516,7 +516,7 @@ def detect_block_sibling_asymmetries(
 
 
 def format_block_sibling_findings_for_prompt(
-    findings: List[BlockSiblingFinding],
+    findings: list[BlockSiblingFinding],
 ) -> str:
     """Format block sibling findings for LLM review prompt injection."""
     if not findings:

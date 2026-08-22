@@ -24,7 +24,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +50,9 @@ class GroundTruthEntry:
 class EvaluationResult:
     """Result of comparing findings against ground truth."""
 
-    true_positives: List[GroundTruthEntry] = field(default_factory=list)
-    false_negatives: List[GroundTruthEntry] = field(default_factory=list)
-    false_positives: List[Dict[str, Any]] = field(default_factory=list)
+    true_positives: list[GroundTruthEntry] = field(default_factory=list)
+    false_negatives: list[GroundTruthEntry] = field(default_factory=list)
+    false_positives: list[dict[str, Any]] = field(default_factory=list)
     total_findings: int = 0
     total_ground_truth: int = 0
 
@@ -88,11 +88,11 @@ class EvaluationResult:
             return 0.0
         return 2 * p * r / (p + r)
 
-    per_capability: Dict[str, Dict[str, int]] = field(default_factory=dict)
-    per_cell: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    per_capability: dict[str, dict[str, int]] = field(default_factory=dict)
+    per_cell: dict[str, dict[str, int]] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "true_positives": [e.id for e in self.true_positives],
             "false_negatives": [e.id for e in self.false_negatives],
             "false_positives": [
@@ -114,7 +114,7 @@ class EvaluationResult:
         return d
 
 
-def load_ground_truth(target_path: Path) -> List[GroundTruthEntry]:
+def load_ground_truth(target_path: Path) -> list[GroundTruthEntry]:
     """Load ground-truth.json from the target directory or its parent."""
     for candidate in (
         target_path / "ground-truth.json",
@@ -141,7 +141,7 @@ def load_ground_truth(target_path: Path) -> List[GroundTruthEntry]:
 
 def evaluate_run(
     out_dir: Path,
-    ground_truth: List[GroundTruthEntry],
+    ground_truth: list[GroundTruthEntry],
 ) -> EvaluationResult:
     """Evaluate an audit run's findings against ground truth.
 
@@ -154,7 +154,7 @@ def evaluate_run(
         total_ground_truth=len(ground_truth),
     )
 
-    truth_keys: Dict[str, GroundTruthEntry] = {}
+    truth_keys: dict[str, GroundTruthEntry] = {}
     for entry in ground_truth:
         k = entry.key()
         if k in truth_keys:
@@ -162,7 +162,7 @@ def evaluate_run(
             continue
         truth_keys[k] = entry
 
-    found_keys: Set[str] = set()
+    found_keys: set[str] = set()
 
     for finding in findings:
         key = f"{finding.get('file', '')}:{finding.get('function', '')}"
@@ -253,9 +253,9 @@ def write_evaluation(
     return path
 
 
-def _extract_evidence_sources(finding: Dict[str, Any]) -> List[str]:
+def _extract_evidence_sources(finding: dict[str, Any]) -> list[str]:
     """Extract evidence source tags from a finding dict."""
-    sources: List[str] = []
+    sources: list[str] = []
     for ev in finding.get("evidence_chain", []):
         src = ev.get("source", "")
         if src and src not in sources:
@@ -268,7 +268,7 @@ def _extract_evidence_sources(finding: Dict[str, Any]) -> List[str]:
     return sources
 
 
-def _load_findings(out_dir: Path) -> List[Dict[str, Any]]:
+def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     """Load findings from graded or standard findings file."""
     graded_path = out_dir / "findings-graded.json"
     if graded_path.exists():

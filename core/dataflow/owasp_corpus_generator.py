@@ -28,7 +28,7 @@ import random
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 from core.dataflow.adapters.codeql import from_sarif_result
 from core.dataflow.finding import Finding, Step
@@ -43,13 +43,13 @@ from core.dataflow.label import (
 _TESTNAME_RE = re.compile(r"BenchmarkTest\d{5}")
 
 
-def parse_expected_results(csv_path: Path) -> Dict[str, Tuple[int, bool]]:
+def parse_expected_results(csv_path: Path) -> dict[str, tuple[int, bool]]:
     """Return ``test_name -> (cwe, is_real_vulnerability)``.
 
     Skips ``#``-prefixed comment lines (OWASP's CSV format starts with
     one) and any row that doesn't begin with ``BenchmarkTest``.
     """
-    mapping: Dict[str, Tuple[int, bool]] = {}
+    mapping: dict[str, tuple[int, bool]] = {}
     with csv_path.open(encoding="utf-8") as f:
         for raw_line in f:
             stripped = raw_line.strip()
@@ -68,7 +68,7 @@ def parse_expected_results(csv_path: Path) -> Dict[str, Tuple[int, bool]]:
     return mapping
 
 
-def _test_name_for_finding(finding: Finding) -> Optional[str]:
+def _test_name_for_finding(finding: Finding) -> str | None:
     """Locate the BenchmarkTestNNNNN this finding belongs to.
 
     Searches source then sink then intermediate steps for the first
@@ -104,9 +104,9 @@ def _rewrite_finding_paths_and_snippets(
             return p
         return f"{repo_relative_prefix.rstrip('/')}/{p.lstrip('/')}"
 
-    line_cache: Dict[Path, List[str]] = {}
+    line_cache: dict[Path, list[str]] = {}
 
-    def _read_line(rel_path: str, line: int) -> Optional[str]:
+    def _read_line(rel_path: str, line: int) -> str | None:
         full = (repo_root / rel_path).resolve()
         if not full.is_relative_to(repo_root.resolve()):
             return None
@@ -144,11 +144,11 @@ def _rewrite_finding_paths_and_snippets(
 
 
 def _balance_subsample(
-    findings_with_labels: Sequence[Tuple[Finding, GroundTruth]],
+    findings_with_labels: Sequence[tuple[Finding, GroundTruth]],
     target: int,
     *,
     seed: int = 0,
-) -> List[Tuple[Finding, GroundTruth]]:
+) -> list[tuple[Finding, GroundTruth]]:
     """Pick target entries with TP/FP balance close to 50/50."""
     tps = [(f, label) for f, label in findings_with_labels if label.verdict == VERDICT_TRUE_POSITIVE]
     fps = [(f, label) for f, label in findings_with_labels if label.verdict == VERDICT_FALSE_POSITIVE]
@@ -170,11 +170,11 @@ def generate(
     repo_relative_prefix: str,
     repo_root: Path,
     target_count: int = 30,
-    cwe_filter: Optional[int] = 78,
+    cwe_filter: int | None = 78,
     seed: int = 0,
     labeler: str = "owasp-benchmark-generator",
     labeled_at: str = "2026-05-10",
-) -> List[Tuple[Finding, GroundTruth]]:
+) -> list[tuple[Finding, GroundTruth]]:
     expected = parse_expected_results(expected_results_csv)
 
     try:
@@ -185,7 +185,7 @@ def generate(
     if not runs:
         return []
 
-    pairs: List[Tuple[Finding, GroundTruth]] = []
+    pairs: list[tuple[Finding, GroundTruth]] = []
     seen_ids: set = set()
     for run in runs:
         for result in run.get("results", []):
@@ -254,7 +254,7 @@ def generate(
     return _balance_subsample(pairs, target_count, seed=seed)
 
 
-def write_corpus(pairs: Sequence[Tuple[Finding, GroundTruth]], out_dir: Path) -> int:
+def write_corpus(pairs: Sequence[tuple[Finding, GroundTruth]], out_dir: Path) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for finding, label in pairs:
         (out_dir / f"{finding.finding_id}.json").write_text(
@@ -266,7 +266,7 @@ def write_corpus(pairs: Sequence[Tuple[Finding, GroundTruth]], out_dir: Path) ->
     return len(pairs)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sarif", type=Path, required=True)
     parser.add_argument("--expected-results", type=Path, required=True)

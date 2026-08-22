@@ -38,7 +38,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Iterable
 
 from core.security.log_sanitisation import escape_nonprintable
 from core.security.prompt_envelope import neutralize_tag_forgery
@@ -132,10 +133,10 @@ class VerifiedOutcome:
     reproducible: bool
     evidence: dict[str, Any] = field(default_factory=dict)
 
-    cwe_id: Optional[str] = None
-    file: Optional[str] = None
-    produced_by: Optional[str] = None
-    authorization: Optional[str] = None
+    cwe_id: str | None = None
+    file: str | None = None
+    produced_by: str | None = None
+    authorization: str | None = None
     timestamp: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
@@ -155,7 +156,7 @@ class VerifiedOutcome:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "VerifiedOutcome":
+    def from_dict(cls, data: dict[str, Any]) -> VerifiedOutcome:
         """Inverse of :meth:`to_dict`. Tolerant of extra keys so future
         schema additions don't break old persisted records."""
         ts_raw = data.get("timestamp")
@@ -203,7 +204,7 @@ def _sandbox_status_from_observed(observed: str, outcome: str) -> OutcomeStatus:
     return OutcomeStatus.INCONCLUSIVE
 
 
-def from_labeled_attempt(la: LabeledAttempt) -> Optional[VerifiedOutcome]:
+def from_labeled_attempt(la: LabeledAttempt) -> VerifiedOutcome | None:
     """Project a :class:`LabeledAttempt` onto a :class:`VerifiedOutcome`.
 
     Per-oracle outcome interpretation:
@@ -371,7 +372,7 @@ def _witness_status(observed: Any) -> OutcomeStatus:
     return OutcomeStatus.INCONCLUSIVE
 
 
-def from_witness(witness: "Witness") -> VerifiedOutcome:
+def from_witness(witness: Witness) -> VerifiedOutcome:
     """Project a :class:`~core.witness.types.Witness` onto a
     :class:`VerifiedOutcome`. Carries a reference (``witness_bytes_hash``)
     to the raw bytes; the witness store remains the backend of record.
@@ -417,11 +418,11 @@ _SINK_CLASS_CWE = {
 
 
 def from_barrier_synthesis(
-    proposal: "BarrierProposal",
-    result: "SynthResult",
+    proposal: BarrierProposal,
+    result: SynthResult,
     *,
-    produced_by: Optional[str] = None,
-    timestamp: Optional[datetime] = None,
+    produced_by: str | None = None,
+    timestamp: datetime | None = None,
 ) -> VerifiedOutcome:
     """Project a CodeQL ``isBarrier`` adjudication onto a VerifiedOutcome.
 
@@ -467,10 +468,10 @@ VERIFIED_OUTCOMES_FILENAME = "verified-outcomes.jsonl"
 
 
 def collect_outcomes(
-    output_dir: Optional[Path],
+    output_dir: Path | None,
     *,
-    project_root: Optional[Path] = None,
-) -> List[VerifiedOutcome]:
+    project_root: Path | None = None,
+) -> list[VerifiedOutcome]:
     """Collect every visible verified outcome from every backend.
 
     Sources (best-effort, never raises):
@@ -486,7 +487,7 @@ def collect_outcomes(
     projected via ``from_barrier_synthesis`` at the call site (no store
     discovery needed).
     """
-    outcomes: List[VerifiedOutcome] = []
+    outcomes: list[VerifiedOutcome] = []
 
     # 1. LabeledAttempt records — canonical substrate. Each pool is
     # read under its own try block so a failure in one (e.g. bundled
@@ -584,12 +585,12 @@ def collect_outcomes(
 
 
 def _verified_outcome_dirs(
-    output_dir: Optional[Path],
-    project_root: Optional[Path],
-) -> List[Path]:
+    output_dir: Path | None,
+    project_root: Path | None,
+) -> list[Path]:
     """Candidate directories for run-local verified-outcome files: the
     run itself plus (cross-run view) the project's sibling run dirs."""
-    dirs: List[Path] = []
+    dirs: list[Path] = []
     if output_dir is not None:
         dirs.append(Path(output_dir))
     if project_root is not None:
@@ -617,8 +618,8 @@ class ScoredOutcome:
 
 
 def _score_outcome(
-    outcome: VerifiedOutcome, finding: Dict[str, Any],
-) -> Tuple[int, str]:
+    outcome: VerifiedOutcome, finding: dict[str, Any],
+) -> tuple[int, str]:
     finding_id = finding.get("id")
     finding_cwe = finding.get("cwe_id") or finding.get("cwe")
     finding_file = finding.get("file") or finding.get("file_path")
@@ -637,18 +638,18 @@ def _score_outcome(
 
 def rank_outcomes_for_finding(
     outcomes: Iterable[VerifiedOutcome],
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     *,
     top_k: int = 3,
-    statuses: Tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
-) -> List[ScoredOutcome]:
+    statuses: tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
+) -> list[ScoredOutcome]:
     """Return the ``top_k`` outcomes most relevant to ``finding``.
 
     Filters to ``statuses`` first (default: only VERIFIED — exemplar
     retrieval wants successful outcomes to prime on). Drops score-0.
     Ties broken by reproducible-first, then recency.
     """
-    scored: List[ScoredOutcome] = []
+    scored: list[ScoredOutcome] = []
     for o in outcomes:
         if statuses and o.status not in statuses:
             continue
@@ -715,11 +716,11 @@ def _render_one(scored: ScoredOutcome) -> str:
 
 
 def render_verified_exemplars(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     outcomes: Iterable[VerifiedOutcome],
     *,
     top_k: int = 3,
-    statuses: Tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
+    statuses: tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
     max_bytes: int = 4096,
 ) -> str:
     """Render the finding's nearest verified outcomes as a prompt block.
@@ -734,7 +735,7 @@ def render_verified_exemplars(
         return ""
 
     header = [_HEADER, "", _INTRO, ""]
-    entries: List[str] = []
+    entries: list[str] = []
     for s in ranked:
         entries.append(_render_one(s))
 
@@ -748,13 +749,13 @@ def render_verified_exemplars(
 
 
 def exemplar_block_for_finding(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     *,
-    outcomes: Optional[Iterable[VerifiedOutcome]] = None,
+    outcomes: Iterable[VerifiedOutcome] | None = None,
     output_dir: Any = None,
     use_active_project: bool = True,
     top_k: int = 3,
-    statuses: Tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
+    statuses: tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
     max_bytes: int = 4096,
 ) -> str:
     """Collect (if needed) and render the verified-exemplar block for one
@@ -897,13 +898,13 @@ def render_retrieved_exemplars(
 
 
 def exemplar_slot_for_finding(
-    finding: Dict[str, Any],
+    finding: dict[str, Any],
     *,
-    outcomes: Optional[Iterable[VerifiedOutcome]] = None,
+    outcomes: Iterable[VerifiedOutcome] | None = None,
     output_dir: Any = None,
     use_active_project: bool = True,
     top_k: int = 3,
-    statuses: Tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
+    statuses: tuple[OutcomeStatus, ...] = (OutcomeStatus.VERIFIED,),
     max_bytes: int = 4096,
 ) -> ExemplarSlot:
     """Serve one finding's few-shot exemplar slot, best-effort.
@@ -995,11 +996,11 @@ def render_outcome_summary(outcomes: Iterable[VerifiedOutcome]) -> str:
     """Render a grouped operator-facing summary: total, an oracle ×
     status table, and a list of the confirmed (Verified) findings.
     """
-    items: List[VerifiedOutcome] = list(outcomes)
+    items: list[VerifiedOutcome] = list(outcomes)
     if not items:
         return "No verified outcomes found.\n"
 
-    lines: List[str] = [f"Verified outcomes: {len(items)} total", ""]
+    lines: list[str] = [f"Verified outcomes: {len(items)} total", ""]
 
     by = Counter((o.oracle, o.status) for o in items)
     lines.append("By oracle x status:")

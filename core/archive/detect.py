@@ -10,7 +10,6 @@ are a tar or a single file.
 """
 
 from pathlib import Path
-from typing import Optional
 
 # Formats whose magic sits at offset 0. Order matters only in that more
 # specific signatures must precede generic ones (none overlap here).
@@ -32,7 +31,7 @@ _TAR_MAGICS = (b"ustar\x0000", b"ustar  \x00", b"ustar")
 _PEEK_BYTES = 512
 
 
-def detect_format(path) -> Optional[str]:
+def detect_format(path) -> str | None:
     """Return ``'zip'|'tar'|'gz'|'bz2'|'xz'|'zst'`` from the file's magic
     bytes, or ``None`` if it is not a recognised archive/compressed file
     (or can't be read). Never raises.

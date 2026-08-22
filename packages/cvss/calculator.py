@@ -9,7 +9,6 @@ this module computes the numeric score.
 
 import math
 import re
-from typing import Optional
 
 # Metric value weights from CVSS v3.1 specification tables.
 
@@ -170,7 +169,7 @@ def compute_base_score(vector: str) -> tuple[float, str]:
     return score, label
 
 
-def compute_score_safe(vector: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+def compute_score_safe(vector: str | None) -> tuple[float | None, str | None]:
     """Compute CVSS score, returning (None, None) for missing or invalid vectors."""
     if not vector:
         return None, None
@@ -180,7 +179,7 @@ def compute_score_safe(vector: Optional[str]) -> tuple[Optional[float], Optional
         return None, None
 
 
-def score_for_label(label: Optional[str]) -> Optional[float]:
+def score_for_label(label: str | None) -> float | None:
     """Return a representative CVSS numeric for a severity label.
 
     Inverse-ish of the ``_SEVERITY`` threshold table at the top of

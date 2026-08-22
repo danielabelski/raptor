@@ -22,7 +22,7 @@ design is documented at the design memo.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Tuple
+from collections.abc import Iterator
 
 from core.dataflow.finding import Finding
 from core.dataflow.llm_extractor import ExtractorFn, extract_from_files
@@ -42,7 +42,7 @@ def collect_sanitizer_evidence(
     repo_root: Path,
     extractor: ExtractorFn,
     model_id: str = "",
-    cache: Optional[Dict[str, Tuple[CandidateValidator, ...]]] = None,
+    cache: dict[str, tuple[CandidateValidator, ...]] | None = None,
     max_files: int = DEFAULT_MAX_FILES,
 ) -> SanitizerEvidence:
     """Build :class:`SanitizerEvidence` for one :class:`Finding`.

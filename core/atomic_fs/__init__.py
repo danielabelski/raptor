@@ -59,7 +59,6 @@ import secrets
 import stat as _stat
 import threading
 from pathlib import Path
-from typing import Optional, Union
 
 
 # Perm mask: only the low 9 bits are legal via ``mode=``. Rejects
@@ -70,7 +69,7 @@ from typing import Optional, Union
 _MODE_MASK = 0o777
 
 
-def _validate_mode(mode: Optional[int]) -> None:
+def _validate_mode(mode: int | None) -> None:
     """Reject ``mode`` values outside 0o000..0o777.
 
     Raises ``ValueError`` on anything not representable as a plain
@@ -92,7 +91,7 @@ def _validate_mode(mode: Optional[int]) -> None:
 
 def _resolve_effective_mode(
     path: Path,
-    mode: Optional[int],
+    mode: int | None,
 ) -> int:
     """Pick the mode to apply to the new file.
 
@@ -124,12 +123,12 @@ def _resolve_effective_mode(
 
 
 def write_text_atomically(
-    path: Union[str, Path],
+    path: str | Path,
     content: str,
     *,
     encoding: str = "utf-8",
     tmp_prefix: str = ".atomic-",
-    mode: Optional[int] = None,
+    mode: int | None = None,
 ) -> None:
     """Write ``content`` (str) to ``path`` atomically.
 
@@ -149,11 +148,11 @@ def write_text_atomically(
 
 
 def write_bytes_atomically(
-    path: Union[str, Path],
+    path: str | Path,
     content: bytes,
     *,
     tmp_prefix: str = ".atomic-",
-    mode: Optional[int] = None,
+    mode: int | None = None,
 ) -> None:
     """Write ``content`` (bytes) to ``path`` atomically.
 

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
 
 from core.llm.task_types import TaskType
 from ..models import SupplyChainFinding
@@ -34,9 +33,9 @@ _MAX_CONTEXT_CHARS = 50_000
 
 def review_binary_in_tests(
     client,
-    findings: List[SupplyChainFinding],
+    findings: list[SupplyChainFinding],
     target: Path,
-) -> List[SupplyChainFinding]:
+) -> list[SupplyChainFinding]:
     """Enrich binary_in_tests findings with LLM plausibility assessment.
 
     Reads surrounding test files to provide context for the LLM's
@@ -85,7 +84,7 @@ def _review_one(
     context: str,
     pkg_name: str,
     ecosystem: str,
-) -> Optional[BinaryInTestsVerdict]:
+) -> BinaryInTestsVerdict | None:
     """Run the LLM on a single binary-in-tests finding."""
     content_parts = [
         f"Binary file: {binary_path}",

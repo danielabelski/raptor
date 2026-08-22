@@ -42,7 +42,8 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any
+from collections.abc import Iterable, Mapping
 
 from core.analysis import threat_model_java as _tm
 
@@ -95,7 +96,7 @@ _TF_COLLIDING_KINDS = frozenset({
     "socket",
 })
 
-_SOURCE_KINDS: Dict[str, Dict[str, Dict[str, Any]]] = {
+_SOURCE_KINDS: dict[str, dict[str, dict[str, Any]]] = {
     "java": {
         "servlet": {
             "patterns": (
@@ -177,19 +178,19 @@ class PostpassStats:
     enforced: int = 0
     # Identities of enforced findings (rule_id, file-as-in-SARIF, line)
     # — the scanner's filter input. Empty when enforcement is off.
-    enforced_findings: List[Dict[str, Any]] = field(default_factory=list)
+    enforced_findings: list[dict[str, Any]] = field(default_factory=list)
     recorded_candidate: int = 0
     refused: int = 0
-    refused_reasons: Dict[str, int] = field(default_factory=dict)
+    refused_reasons: dict[str, int] = field(default_factory=dict)
     budget_exhausted_skips: int = 0
     elapsed_seconds: float = 0.0
     # Which optional gate mechanisms fired (CFG build_notes such as
     # switch:constant-resolved, plus table-load-resolved constancy) —
     # the refusal/mechanism telemetry that ranks the next iteration.
-    mechanism_counts: Dict[str, int] = field(default_factory=dict)
+    mechanism_counts: dict[str, int] = field(default_factory=dict)
     # Which source KINDS supplied the candidates for examined findings
     # (locator path only; codeFlows findings are counted as "trace").
-    source_kind_counts: Dict[str, int] = field(default_factory=dict)
+    source_kind_counts: dict[str, int] = field(default_factory=dict)
 
     def source_kind(self, kind: str) -> None:
         self.source_kind_counts[kind] = self.source_kind_counts.get(kind, 0) + 1
@@ -201,7 +202,7 @@ class PostpassStats:
     def mechanism(self, note: str) -> None:
         self.mechanism_counts[note] = self.mechanism_counts.get(note, 0) + 1
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "examined": self.examined,
             "recorded_suppress": self.recorded_suppress,
@@ -218,9 +219,9 @@ class PostpassStats:
 
 
 def _sink_method_span(
-    resolved_path: "Path",
+    resolved_path: Path,
     sink_line: int,
-    text_cache: Dict["Path", str],
+    text_cache: dict[Path, str],
 ):
     """Sink's enclosing-method span for candidate scoping.
 
@@ -241,7 +242,7 @@ def _sink_method_span(
         return None
 
 
-def _language_for(file_path: str) -> Optional[str]:
+def _language_for(file_path: str) -> str | None:
     for ext, lang in _EXT_LANGUAGE.items():
         if file_path.lower().endswith(ext):
             return lang
@@ -277,7 +278,7 @@ def _resolver_grammar_available(language: str) -> bool:
     return True
 
 
-def _grammar_ok(language: str, cache: Dict[str, bool]) -> bool:
+def _grammar_ok(language: str, cache: dict[str, bool]) -> bool:
     """Once-per-run grammar probe with the loud degradation signal.
 
     When the grammar for a supported language is missing, every one
@@ -308,7 +309,7 @@ _MAX_CANDIDATE_SOURCES = 4
 
 def _scan_file_for_kinds(
     file_path: Path, language: str, extra_patterns: tuple,
-) -> Optional[List[tuple]]:
+) -> list[tuple] | None:
     """Per-file scan: ``[(line, frozenset(kinds)), ...]`` or None.
 
     Kind activation, exclusion, and the properties/resolver
@@ -322,7 +323,7 @@ def _scan_file_for_kinds(
     except OSError:
         return None
 
-    active: Dict[str, Dict[str, Any]] = {}
+    active: dict[str, dict[str, Any]] = {}
     for kind, spec in kinds_table.items():
         evidence = spec.get("file_evidence")
         if evidence and not any(re.search(p, text) for p in evidence):
@@ -336,7 +337,7 @@ def _scan_file_for_kinds(
 
     resolver = None
     resolver_built = False
-    out: List[tuple] = []
+    out: list[tuple] = []
     for i, line in enumerate(text.splitlines()):
         lineno = i + 1
         kinds = set()
@@ -379,9 +380,9 @@ def _scan_file_for_kinds(
 
 def _candidate_source_lines_with_kinds(
     file_path: Path, sink_line: int, language: str,
-    _cache: Dict[Path, Optional[List[tuple]]],
+    _cache: dict[Path, list[tuple] | None],
     extra_patterns: tuple = (),
-) -> List[tuple]:
+) -> list[tuple]:
     """Source-shaped lines before the sink with their source kinds.
 
     The soundness argument for multiple candidates: the taint rule's
@@ -405,9 +406,9 @@ def _candidate_source_lines_with_kinds(
 
 def _candidate_source_lines(
     file_path: Path, sink_line: int, language: str,
-    _cache: Dict[Path, Optional[List[tuple]]],
+    _cache: dict[Path, list[tuple] | None],
     extra_patterns: tuple = (),
-) -> List[int]:
+) -> list[int]:
     """Back-compat lines-only view of the kinds variant."""
     return [ln for ln, _ in _candidate_source_lines_with_kinds(
         file_path, sink_line, language, _cache, extra_patterns)]
@@ -415,9 +416,9 @@ def _candidate_source_lines(
 
 def _locate_unique_source_line(
     file_path: Path, sink_line: int, language: str,
-    _cache: Dict[Path, Optional[List[int]]],
+    _cache: dict[Path, list[int] | None],
     extra_patterns: tuple = (),
-) -> Optional[int]:
+) -> int | None:
     """Back-compat single-source form: the file's single source-shaped
     call before the sink, or None when zero/ambiguous/unreadable."""
     lines = _candidate_source_lines(
@@ -427,7 +428,7 @@ def _locate_unique_source_line(
     return lines[0]
 
 
-def _dataflow_source_line(finding: Mapping[str, Any]) -> Optional[int]:
+def _dataflow_source_line(finding: Mapping[str, Any]) -> int | None:
     path = finding.get("dataflow_path") or {}
     source = path.get("source") or {}
     line = source.get("line")
@@ -465,7 +466,7 @@ def run_postpass(
     budget_seconds: float = 180.0,
     extra_source_patterns: Iterable[str] = (),
     enforce: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run the record-only gate over every eligible SARIF finding.
 
     Returns the stats dict (also logged as a one-line summary). Any
@@ -502,12 +503,12 @@ def run_postpass(
     learned_patterns = _compile_extra_source_patterns(extra_source_patterns)
     if learned_patterns:
         stats.mechanism_counts["learned-source-patterns"] = len(learned_patterns)
-    source_cache: Dict[Path, Optional[List[int]]] = {}
-    text_cache: Dict[Path, str] = {}
-    grammar_cache: Dict[str, bool] = {}
+    source_cache: dict[Path, list[int] | None] = {}
+    text_cache: dict[Path, str] = {}
+    grammar_cache: dict[str, bool] = {}
     repo_root = Path(repo_root).resolve()
 
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     for sarif in sarif_paths:
         try:
             findings.extend(parse_sarif_findings(Path(sarif)))
@@ -632,7 +633,7 @@ def run_postpass(
         # nothing worse than candidate_only appears; anything else —
         # a no_suppress verdict, a resolver refusal, or a gate error
         # on any candidate — refuses the whole finding.
-        verdicts: List[str] = []
+        verdicts: list[str] = []
         native = None
         for source_line in source_lines:
             native = {
@@ -760,7 +761,7 @@ def run_postpass(
 
 def filter_enforced_from_sarif(
     sarif_path: Path,
-    enforced: List[Dict[str, Any]],
+    enforced: list[dict[str, Any]],
 ) -> int:
     """Remove enforced findings from one SARIF file, in place.
 

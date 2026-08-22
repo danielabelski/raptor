@@ -40,13 +40,12 @@ Semantic delta from the prior in-module implementation:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
 
 
 def atomic_write_text(
-    path: Union[str, Path],
+    path: str | Path,
     content: str,
     *,
     encoding: str = "utf-8",
@@ -56,7 +55,7 @@ def atomic_write_text(
 
 
 def atomic_write_bytes(
-    path: Union[str, Path],
+    path: str | Path,
     content: bytes,
 ) -> None:
     """Replace ``path`` with ``content`` atomically. See module docstring."""

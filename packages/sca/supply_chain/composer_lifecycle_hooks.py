@@ -28,7 +28,7 @@ import json as _json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
 from . import _hook_patterns
@@ -50,7 +50,7 @@ _LIFECYCLE_KEYS = (
 class ComposerLifecycleHit:
     script_key: str
     script_body: str
-    reasons: List[str]
+    reasons: list[str]
     reads_credentials: bool
     has_publish_action: bool
 
@@ -66,8 +66,8 @@ class ComposerLifecycleFinding:
 def scan_manifests(
     manifests: Iterable[Manifest],
     deps: Iterable[Dependency],
-) -> List[ComposerLifecycleFinding]:
-    out: List[ComposerLifecycleFinding] = []
+) -> list[ComposerLifecycleFinding]:
+    out: list[ComposerLifecycleFinding] = []
     deps_list = list(deps)
     for m in manifests:
         if m.ecosystem != "Composer":
@@ -81,7 +81,7 @@ def scan_manifests(
 
 def _scan_one(
     path: Path, host: Dependency,
-) -> List[ComposerLifecycleFinding]:
+) -> list[ComposerLifecycleFinding]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -99,7 +99,7 @@ def _scan_one(
     scripts = data.get("scripts")
     if not isinstance(scripts, dict):
         return []
-    out: List[ComposerLifecycleFinding] = []
+    out: list[ComposerLifecycleFinding] = []
     for key in _LIFECYCLE_KEYS:
         entries = scripts.get(key)
         if entries is None:
@@ -161,8 +161,8 @@ def _scan_one(
 
 
 def _host_dep(
-    deps: List[Dependency], manifest: Manifest,
-) -> Optional[Dependency]:
+    deps: list[Dependency], manifest: Manifest,
+) -> Dependency | None:
     try:
         data = _json.loads(manifest.path.read_text(
             encoding="utf-8", errors="replace",

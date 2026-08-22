@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Pattern, Sequence, Tuple
+from re import Pattern
+from collections.abc import Sequence
 
 
 @dataclass
@@ -36,7 +37,7 @@ class FrameworkGuarantee:
     guarantees: str
     """Human-readable description of what the pattern guarantees."""
 
-    negates_cwe: List[str] = field(default_factory=list)
+    negates_cwe: list[str] = field(default_factory=list)
     """CWE identifiers (e.g. ``"CWE-89"``) that this pattern prevents."""
 
 
@@ -44,7 +45,7 @@ class FrameworkGuarantee:
 # Static catalog
 # ---------------------------------------------------------------------------
 
-FRAMEWORK_GUARANTEES: List[FrameworkGuarantee] = [
+FRAMEWORK_GUARANTEES: list[FrameworkGuarantee] = [
     # ------------------------------------------------------------------
     # Django (Python)
     # ------------------------------------------------------------------
@@ -189,9 +190,9 @@ FRAMEWORK_GUARANTEES: List[FrameworkGuarantee] = [
 # framework is considered present and the associated CWEs are candidates for
 # negation.
 
-_FrameworkDetector = Tuple[str, List[Tuple[Pattern[str], List[str]]]]
+_FrameworkDetector = tuple[str, list[tuple[Pattern[str], list[str]]]]
 
-_DETECTORS: List[_FrameworkDetector] = [
+_DETECTORS: list[_FrameworkDetector] = [
     (
         "django",
         [
@@ -341,7 +342,7 @@ _DETECTORS: List[_FrameworkDetector] = [
 ]
 
 # Pre-index guarantees by (framework, cwe) for O(1) lookup.
-_GUARANTEE_INDEX: Dict[Tuple[str, str], FrameworkGuarantee] = {}
+_GUARANTEE_INDEX: dict[tuple[str, str], FrameworkGuarantee] = {}
 for _g in FRAMEWORK_GUARANTEES:
     for _cwe in _g.negates_cwe:
         _GUARANTEE_INDEX[(_g.framework, _cwe)] = _g
@@ -356,7 +357,7 @@ def framework_negates_cwe(
     file_path: str,
     source: str,
     cwe: str,
-) -> Optional[FrameworkGuarantee]:
+) -> FrameworkGuarantee | None:
     """Check whether a framework guarantee negates *cwe* in *source*.
 
     Detection is lightweight pattern matching on import statements,
@@ -389,7 +390,7 @@ def format_framework_context(guarantees: Sequence[FrameworkGuarantee]) -> str:
     if not guarantees:
         return ""
 
-    parts: List[str] = []
+    parts: list[str] = []
     for g in guarantees:
         cwes = ", ".join(g.negates_cwe) if g.negates_cwe else "none"
         parts.append(f"{g.framework.capitalize()} {g.pattern} -- "

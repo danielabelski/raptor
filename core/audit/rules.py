@@ -20,7 +20,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,10 @@ def save_rule(
     tool: str,
     content: str,
     description: str,
-    origin_file: Optional[str] = None,
-    origin_function: Optional[str] = None,
-    origin_finding: Optional[str] = None,
-    cwe: Optional[str] = None,
+    origin_file: str | None = None,
+    origin_function: str | None = None,
+    origin_finding: str | None = None,
+    cwe: str | None = None,
 ) -> Path:
     """Save a synthesized rule to the rules directory.
 
@@ -92,7 +92,7 @@ def save_rule(
     return rule_path
 
 
-def list_rules(out_dir: Path) -> List[Dict[str, Any]]:
+def list_rules(out_dir: Path) -> list[dict[str, Any]]:
     """List all synthesized rules for a run."""
     manifest = _load_manifest(out_dir)
     rules = []
@@ -105,7 +105,7 @@ def list_rules(out_dir: Path) -> List[Dict[str, Any]]:
     return rules
 
 
-def get_rule(out_dir: Path, rule_id: str) -> Optional[Dict[str, Any]]:
+def get_rule(out_dir: Path, rule_id: str) -> dict[str, Any] | None:
     """Get a single rule's metadata and content."""
     manifest = _load_manifest(out_dir)
     meta = manifest.get(rule_id)
@@ -126,7 +126,7 @@ def run_rule_sweep(
     out_dir: Path,
     rule_id: str,
     target_path: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a saved rule against the full target codebase.
 
     Returns a dict with match count and match details. Uses the
@@ -152,7 +152,7 @@ def run_rule_sweep(
         return {"error": f"unknown tool {tool!r}"}
 
 
-def _finding_to_match(finding: Any) -> Dict[str, Any]:
+def _finding_to_match(finding: Any) -> dict[str, Any]:
     """Flatten one semgrep finding to ``{file, line, message}``.
 
     ``SemgrepResult.findings`` holds ``SemgrepFinding`` dataclasses
@@ -178,7 +178,7 @@ def _finding_to_match(finding: Any) -> Dict[str, Any]:
     }
 
 
-def _run_semgrep_rule(rule_path: Path, target_path: Path) -> Dict[str, Any]:
+def _run_semgrep_rule(rule_path: Path, target_path: Path) -> dict[str, Any]:
     try:
         from packages.semgrep.runner import run_rule, is_available
 
@@ -196,7 +196,7 @@ def _run_semgrep_rule(rule_path: Path, target_path: Path) -> Dict[str, Any]:
         return {"error": str(exc)}
 
 
-def _run_coccinelle_rule(rule_path: Path, target_path: Path) -> Dict[str, Any]:
+def _run_coccinelle_rule(rule_path: Path, target_path: Path) -> dict[str, Any]:
     try:
         from packages.coccinelle.runner import run_rule, is_available
 
@@ -226,7 +226,7 @@ def _run_coccinelle_rule(rule_path: Path, target_path: Path) -> Dict[str, Any]:
         return {"error": str(exc)}
 
 
-def _load_manifest(out_dir: Path) -> Dict[str, Any]:
+def _load_manifest(out_dir: Path) -> dict[str, Any]:
     manifest_path = out_dir / RULES_DIR / RULES_MANIFEST
     if not manifest_path.exists():
         return {}
@@ -237,7 +237,7 @@ def _load_manifest(out_dir: Path) -> Dict[str, Any]:
         return {}
 
 
-def _save_manifest(out_dir: Path, manifest: Dict[str, Any]) -> None:
+def _save_manifest(out_dir: Path, manifest: dict[str, Any]) -> None:
     manifest_path = out_dir / RULES_DIR / RULES_MANIFEST
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(manifest_path.parent), suffix=".tmp")

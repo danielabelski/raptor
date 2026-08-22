@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.logging import get_logger
 from packages.web.client import WebClient
@@ -73,7 +73,7 @@ class VerificationResult:
     requests_used: int = 0
     # Per-leg observations, bounded excerpts only — feeds the
     # WebEvidence.response_evidence record.
-    observations: Dict[str, Any] = field(default_factory=dict)
+    observations: dict[str, Any] = field(default_factory=dict)
     # True when the control experiment positively refuted the signal.
     # This is the flag the verified-outcomes projection gates REFUTED
     # on — a mere failed replay never sets it.
@@ -100,7 +100,7 @@ class VerificationOracle:
     # -- transport ---------------------------------------------------------
 
     def _probe(self, url: str, param: str, value: str,
-               method: str) -> Optional[Any]:
+               method: str) -> Any | None:
         """One rate-limited request via the scan client; None on error."""
         try:
             self.requests_used += 1
@@ -143,7 +143,7 @@ class VerificationOracle:
                            method: str, evidence_type: str) -> VerificationResult:
         start = self.requests_used
         canary = mint_canary()
-        obs: Dict[str, Any] = {"canary": canary}
+        obs: dict[str, Any] = {"canary": canary}
 
         canary_resp = self._probe(url, param, canary, method)
         if canary_resp is None:
@@ -197,7 +197,7 @@ class VerificationOracle:
                                     vuln_type: str, method: str,
                                     evidence_type: str) -> VerificationResult:
         start = self.requests_used
-        obs: Dict[str, Any] = {}
+        obs: dict[str, Any] = {}
 
         replay_resp = self._probe(url, param, payload, method)
         if replay_resp is None:
@@ -213,7 +213,7 @@ class VerificationOracle:
 
         control = mint_canary()
         obs["control_value"] = control
-        control_markers: List[bool] = []
+        control_markers: list[bool] = []
         for leg in ("control", "control_replay"):
             resp = self._probe(url, param, control, method)
             if resp is None:

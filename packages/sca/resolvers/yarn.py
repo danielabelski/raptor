@@ -26,7 +26,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 from . import ResolverResult, _check_tool, _run
 
@@ -131,7 +130,7 @@ class YarnResolver:
             )
 
 
-def _detect_major_version() -> Optional[int]:
+def _detect_major_version() -> int | None:
     """Return Yarn's major version, or None if it can't be parsed."""
     try:
         proc = subprocess.run(
@@ -149,7 +148,7 @@ def _detect_major_version() -> Optional[int]:
         return None
 
 
-def _read_if_exists(p: Path) -> Optional[bytes]:
+def _read_if_exists(p: Path) -> bytes | None:
     try:
         return p.read_bytes()
     except OSError:

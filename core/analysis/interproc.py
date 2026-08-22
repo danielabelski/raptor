@@ -67,14 +67,6 @@ Public surface:
 from __future__ import annotations
 
 import ast
-from typing import (
-    Dict,
-    FrozenSet,
-    List,
-    Optional,
-    Set,
-    Tuple,
-)
 
 from core.dataflow.sanitizer_catalog import (
     SanitizerBinding,
@@ -90,10 +82,10 @@ from core.analysis.taint_summaries import TaintSummary
 _DIRECT_RETURN_CALLABLE = ""
 
 
-def _chain_str(node: ast.AST) -> Optional[str]:
+def _chain_str(node: ast.AST) -> str | None:
     """Dotted name for an attribute chain over ``ast.Name``.
     ``foo.bar`` → ``"foo.bar"``, ``f`` → ``"f"``. None otherwise."""
-    parts: List[str] = []
+    parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
         parts.append(cur.attr)
@@ -108,7 +100,7 @@ def _chain_str(node: ast.AST) -> Optional[str]:
 def _param_cleanly_sanitized(
     summary: TaintSummary,
     param_idx: int,
-    sanitizer_names: Set[str],
+    sanitizer_names: set[str],
 ) -> bool:
     """True iff tainting ``param_idx`` of ``summary``'s function
     yields a return value provably sanitized for the CWE whose
@@ -141,7 +133,7 @@ def _param_cleanly_sanitized(
 
 def _call_arg_names(
     fn_ast: ast.AST, lineno: int, col_offset: int, callee_chain: str,
-) -> Optional[Tuple[List[Optional[str]], List[Tuple[Optional[str], Optional[str]]]]]:
+) -> tuple[list[str | None], list[tuple[str | None, str | None]]] | None:
     """Argument bare-names for the call to ``callee_chain`` at
     ``(lineno, col_offset)``. Returns ``(positional, keywords)``:
     ``positional`` has one entry per positional arg — the arg's
@@ -174,10 +166,10 @@ def _call_arg_names(
             continue
         if _chain_str(node.func) != callee_chain:
             continue
-        out: List[Optional[str]] = []
+        out: list[str | None] = []
         for arg in node.args:
             out.append(arg.id if isinstance(arg, ast.Name) else None)
-        kw_out: List[Tuple[Optional[str], Optional[str]]] = []
+        kw_out: list[tuple[str | None, str | None]] = []
         for kw in node.keywords:
             val = kw.value
             kw_out.append((
@@ -191,10 +183,10 @@ def _call_arg_names(
 def synthetic_sanitizer_bindings(
     cfg,
     fn_ast: ast.AST,
-    summaries: Dict[str, TaintSummary],
+    summaries: dict[str, TaintSummary],
     cwe: str,
     language: str,
-) -> FrozenSet[SanitizerBinding]:
+) -> frozenset[SanitizerBinding]:
     """Build synthetic sanitizer bindings for inter-procedural
     sanitization in ``cfg``'s function.
 
@@ -214,7 +206,7 @@ def synthetic_sanitizer_bindings(
     if not sanitizer_names or not summaries:
         return frozenset()
 
-    bindings: List[SanitizerBinding] = []
+    bindings: list[SanitizerBinding] = []
     for node in cfg.nodes():
         call_sites = getattr(node, "call_sites", ()) or ()
         for cs in call_sites:
@@ -247,7 +239,7 @@ def synthetic_sanitizer_bindings(
             # AND dirty through ``b``; the synthetic binding must not
             # claim x is sanitized. Exclude any such symbol so the gate
             # declines to suppress (stays conservative).
-            unsanitized_symbols: Set[str] = set()
+            unsanitized_symbols: set[str] = set()
             for i, name in enumerate(arg_names):
                 if name is None or i in sanitized_set:
                     continue
@@ -273,7 +265,7 @@ def synthetic_sanitizer_bindings(
                     continue
                 if summary.param_taints_return(idx):
                     unsanitized_symbols.add(val_name)
-            input_symbols: Set[str] = set()
+            input_symbols: set[str] = set()
             for i in sanitized_positions:
                 if i < len(arg_names) and arg_names[i] is not None:
                     name = arg_names[i]

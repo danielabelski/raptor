@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Set
+from typing import Any
 
 from .condition_extraction import SinkGuard
 
@@ -33,7 +33,7 @@ from .condition_extraction import SinkGuard
 _IDENT_RE = re.compile(r"\b([a-zA-Z_]\w*)\b")
 
 # Common keywords/types to exclude from identifier extraction
-_KEYWORDS: FrozenSet[str] = frozenset({
+_KEYWORDS: frozenset[str] = frozenset({
     # C/C++ keywords
     "if", "else", "while", "for", "return", "break", "continue",
     "switch", "case", "default", "goto", "do", "sizeof", "typeof",
@@ -72,7 +72,7 @@ _FIELD_RE = re.compile(r"([a-zA-Z_]\w*)(?:->|\.)([a-zA-Z_]\w*)")
 _SUBSCRIPT_RE = re.compile(r"([a-zA-Z_]\w*)\s*\[")
 
 
-def extract_identifiers(text: str) -> FrozenSet[str]:
+def extract_identifiers(text: str) -> frozenset[str]:
     """Extract meaningful identifiers from an expression.
 
     Excludes language keywords, type names, and common function names
@@ -82,12 +82,12 @@ def extract_identifiers(text: str) -> FrozenSet[str]:
     return frozenset(raw - _KEYWORDS)
 
 
-def extract_field_accesses(text: str) -> FrozenSet[str]:
+def extract_field_accesses(text: str) -> frozenset[str]:
     """Extract struct/object field access patterns (obj.field, ptr->field).
 
     Returns both the base and the full access for matching flexibility.
     """
-    results: Set[str] = set()
+    results: set[str] = set()
     for base, fld in _FIELD_RE.findall(text):
         if base not in _KEYWORDS:
             results.add(base)
@@ -99,7 +99,7 @@ def extract_sink_arg_identifiers(
     source: str,
     sink_line: int,
     sink_api: str,
-) -> FrozenSet[str]:
+) -> frozenset[str]:
     """Extract identifiers from a sink call's arguments.
 
     Finds the call at the given line and extracts all variable names
@@ -176,13 +176,13 @@ class BindingResult:
 
     guard_text: str
     guard_category: str
-    guard_identifiers: FrozenSet[str]
-    sink_identifiers: FrozenSet[str]
-    bound_identifiers: FrozenSet[str]
+    guard_identifiers: frozenset[str]
+    sink_identifiers: frozenset[str]
+    bound_identifiers: frozenset[str]
     is_bound: bool
     confidence: float
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "guard_text": self.guard_text,
             "guard_category": self.guard_category,
@@ -201,13 +201,13 @@ class SinkBindingAnalysis:
     sink_file: str
     sink_line: int
     sink_api: str
-    sink_identifiers: FrozenSet[str]
-    binding_results: List[BindingResult] = field(default_factory=list)
+    sink_identifiers: frozenset[str]
+    binding_results: list[BindingResult] = field(default_factory=list)
     has_any_bound_guard: bool = False
     all_guards_decorative: bool = False
     decorative_guard_count: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "sink_file": self.sink_file,
             "sink_line": self.sink_line,
@@ -234,7 +234,7 @@ def check_guard_binding(
         source, sink_guard.sink_line, sink_guard.sink_api,
     )
 
-    results: List[BindingResult] = []
+    results: list[BindingResult] = []
     any_bound = False
 
     for guard in sink_guard.guards:
@@ -302,7 +302,7 @@ def check_guard_binding(
 
 def check_all_bindings(
     source: str,
-    guards: List[SinkGuard],
-) -> List[SinkBindingAnalysis]:
+    guards: list[SinkGuard],
+) -> list[SinkBindingAnalysis]:
     """Check binding for all sink guards in a file."""
     return [check_guard_binding(source, sg) for sg in guards]

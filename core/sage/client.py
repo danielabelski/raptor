@@ -17,7 +17,7 @@ import os
 import stat
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.logging import get_logger
 
@@ -93,7 +93,7 @@ _OLLAMA_EMBED_URL = os.getenv(
 )
 _OLLAMA_EMBED_TIMEOUT = 60.0
 
-_direct_embed: Optional[bool] = None
+_direct_embed: bool | None = None
 _direct_embed_lock = threading.Lock()
 
 
@@ -120,7 +120,7 @@ def _use_direct_embed() -> bool:
     return _direct_embed
 
 
-def _embed_via_ollama(text: str) -> Optional[List[float]]:
+def _embed_via_ollama(text: str) -> list[float] | None:
     """Call Ollama's /api/embed directly with a 60s timeout.
 
     SAGE's /v1/embed is a pure passthrough — no consensus, no
@@ -185,11 +185,11 @@ class SageClient:
             results = client.query("crash patterns for heap overflow", "raptor-crashes")
     """
 
-    def __init__(self, config: Optional[SageConfig] = None):
+    def __init__(self, config: SageConfig | None = None):
         ensure_loopback_no_proxy()
         self._config = config or SageConfig.from_env()
         self._client = None
-        self._query_cache: Dict[Tuple[str, str, int, Optional[float]], Tuple[Tuple[str, float, str], ...]] = {}
+        self._query_cache: dict[tuple[str, str, int, float | None], tuple[tuple[str, float, str], ...]] = {}
         self._register_with_egress_proxy()
 
     def _register_with_egress_proxy(self) -> None:
@@ -287,7 +287,7 @@ class SageClient:
             )
         return self._client
 
-    def embed(self, text: str) -> Optional[List[float]]:
+    def embed(self, text: str) -> list[float] | None:
         """Generate an embedding vector for the given text."""
         if not self._config.enabled:
             return None
@@ -308,8 +308,8 @@ class SageClient:
         memory_type: str = "observation",
         domain_tag: str = "general",
         confidence: float = 0.80,
-        embedding: Optional[List[float]] = None,
-        tags: Optional[List[str]] = None,
+        embedding: list[float] | None = None,
+        tags: list[str] | None = None,
     ) -> bool:
         """
         Propose a memory to SAGE. Auto-embeds if no embedding is provided.
@@ -366,7 +366,7 @@ class SageClient:
                         "falling back to observation", memory_type,
                     )
                 mt = _MemoryType.observation
-            propose_kwargs: Dict[str, Any] = dict(
+            propose_kwargs: dict[str, Any] = dict(
                 content=content,
                 memory_type=mt,
                 domain_tag=domain_tag,
@@ -386,8 +386,8 @@ class SageClient:
         text: str,
         domain_tag: str = "general",
         top_k: int = 5,
-        min_confidence: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        min_confidence: float | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Query SAGE for semantically similar memories.
         Returns a list of dicts with content, confidence, and domain keys.
@@ -404,8 +404,8 @@ class SageClient:
         text: str,
         domain_tag: str,
         top_k: int,
-        min_confidence: Optional[float],
-    ) -> Tuple[Tuple[str, float, str], ...]:
+        min_confidence: float | None,
+    ) -> tuple[tuple[str, float, str], ...]:
         """Per-instance cached query returning tuples (hashable for the cache)."""
         key = (text, domain_tag, top_k, min_confidence)
         cached = self._query_cache.get(key)
@@ -418,7 +418,7 @@ class SageClient:
             embedding = self.embed(text)
             if embedding is None:
                 return ()
-            query_kwargs: Dict[str, Any] = dict(
+            query_kwargs: dict[str, Any] = dict(
                 embedding=embedding,
                 domain_tag=domain_tag,
                 top_k=top_k,

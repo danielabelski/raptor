@@ -65,7 +65,6 @@ import json as _json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from ..models import Confidence, Dependency, PinStyle
 from ..versions import semver
@@ -90,12 +89,12 @@ _HEX_SHA = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
 _BARE_VERSION = re.compile(r"^v?\d+(?:\.\d+){0,2}(?:[-+].+)?$")
 
 
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     data = _load(path)
     if data is None:
         return []
 
-    deps: List[Dependency] = []
+    deps: list[Dependency] = []
     for key, scope in _DEP_BUCKETS:
         block = data.get(key)
         if not isinstance(block, dict):
@@ -180,7 +179,7 @@ def parse(path: Path) -> List[Dependency]:
     return deps
 
 
-def extract_project_license(path: Path) -> Optional[str]:
+def extract_project_license(path: Path) -> str | None:
     """License the manifest declares for the PROJECT ITSELF.
 
     A manifest-level license describes the project, not its deps —
@@ -194,7 +193,7 @@ def extract_project_license(path: Path) -> Optional[str]:
     return _extract_license(data)
 
 
-def _load(path: Path) -> Optional[Dict[str, object]]:
+def _load(path: Path) -> dict[str, object] | None:
     """Read + JSON-parse a package.json; None on any failure."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -218,9 +217,9 @@ def _load(path: Path) -> Optional[Dict[str, object]]:
 
 
 def _flatten_overrides(
-    block: Dict[str, object],
-    parent_chain: Tuple[str, ...] = (),
-) -> List[Tuple[str, str]]:
+    block: dict[str, object],
+    parent_chain: tuple[str, ...] = (),
+) -> list[tuple[str, str]]:
     """Walk an ``overrides`` / ``resolutions`` block and yield
     ``(package_name, version_spec)`` pairs.
 
@@ -236,7 +235,7 @@ def _flatten_overrides(
     Scoped packages (``@scope/pkg@npm:^1.0``) keep the leading
     ``@``.
     """
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for raw_name, value in block.items():
         if not isinstance(raw_name, str):
             continue
@@ -307,7 +306,7 @@ def _strip_descriptor(spec_key: str) -> str:
 # Internals
 # ---------------------------------------------------------------------------
 
-def _extract_license(data: Dict[str, object]) -> Optional[str]:
+def _extract_license(data: dict[str, object]) -> str | None:
     """Read the ``license`` / ``licenses`` field from a package.json.
 
     Handles all three shapes seen in real-world manifests:
@@ -344,7 +343,7 @@ def _build_dep(
     raw_spec: object,
     scope: str,
     path: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(name, str) or not name:
         return None
     if not isinstance(raw_spec, str):
@@ -413,7 +412,7 @@ def _build_dep(
     )
 
 
-def _classify(spec: str) -> Tuple[PinStyle, Optional[str], Optional[str]]:
+def _classify(spec: str) -> tuple[PinStyle, str | None, str | None]:
     """Return (pin_style, version_for_record, npm_alias_target_or_None).
 
     For an alias like ``"npm:lodash@^4.17.0"``, the alias target is
@@ -453,7 +452,7 @@ def _classify(spec: str) -> Tuple[PinStyle, Optional[str], Optional[str]]:
         spec.startswith(("git+", "git:", "git@", "github:", "bitbucket:", "gitlab:", "gist:")) or "://" in spec and spec.split("://", 1)[0].endswith("git")
     ):
         # Try to extract a #ref or #semver: spec for the version field.
-        version: Optional[str] = None
+        version: str | None = None
         if "#" in spec:
             tag = spec.split("#", 1)[1]
             if tag.startswith("semver:"):
@@ -493,7 +492,7 @@ def _classify(spec: str) -> Tuple[PinStyle, Optional[str], Optional[str]]:
     return PinStyle.UNKNOWN, spec, None
 
 
-def _confidence(pin_style: PinStyle, version: Optional[str]) -> Confidence:
+def _confidence(pin_style: PinStyle, version: str | None) -> Confidence:
     if pin_style is PinStyle.UNKNOWN:
         return Confidence("low", reason="package.json spec unrecognised")
     if pin_style in (PinStyle.GIT, PinStyle.PATH):
@@ -506,7 +505,7 @@ def _confidence(pin_style: PinStyle, version: Optional[str]) -> Confidence:
     return Confidence("high", reason="package.json structured field")
 
 
-def _build_purl(name: str, version: Optional[str]) -> str:
+def _build_purl(name: str, version: str | None) -> str:
     """Build an npm purl. Scoped packages keep the leading ``@``."""
     base = f"pkg:npm/{name}"
     if version:

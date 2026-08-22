@@ -23,7 +23,8 @@ inconclusive. INCONCLUSIVE is the bottom of the lattice: it absorbs
 disagreement and tool failures alike.
 """
 
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from .result import Verdict
 

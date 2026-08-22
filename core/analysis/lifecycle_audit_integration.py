@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from .lifecycle_checker import check_coverage
 from .lifecycle_context_map import load_state_fields
@@ -25,7 +25,7 @@ def check_lifecycle_at_function(
     source: str,
     out_dir: Path,
     line: int = 0,
-) -> List[LifecycleFinding]:
+) -> list[LifecycleFinding]:
     """Check a function for lifecycle-precondition violations.
 
     Loads state fields from context-map.json, checks whether this
@@ -37,7 +37,7 @@ def check_lifecycle_at_function(
     if not fields:
         return []
 
-    findings: List[LifecycleFinding] = []
+    findings: list[LifecycleFinding] = []
 
     for field in fields:
         for rs in field.read_sites:
@@ -50,7 +50,7 @@ def check_lifecycle_at_function(
     return findings
 
 
-def format_lifecycle_evidence(findings: List[LifecycleFinding]) -> str:
+def format_lifecycle_evidence(findings: list[LifecycleFinding]) -> str:
     """Format lifecycle findings as evidence prose for the LLM reviewer."""
     if not findings:
         return ""
@@ -71,14 +71,14 @@ def format_lifecycle_evidence(findings: List[LifecycleFinding]) -> str:
 
 
 def lifecycle_findings_to_constraints(
-    findings: List[LifecycleFinding],
-) -> List[Dict[str, Any]]:
+    findings: list[LifecycleFinding],
+) -> list[dict[str, Any]]:
     """Convert lifecycle findings to audit constraint format.
 
     Each finding becomes a 'precondition' constraint that can be
     propagated through the constraint system.
     """
-    constraints: List[Dict[str, Any]] = []
+    constraints: list[dict[str, Any]] = []
     for f in findings:
         constraints.append({
             "kind": "precondition",

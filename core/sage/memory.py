@@ -6,7 +6,7 @@ for consensus-validated persistence while keeping JSON as local cache.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.logging import get_logger
 from core.security.redaction import redact_secrets
@@ -34,12 +34,12 @@ def _domain_tag_for_knowledge(k: FuzzingKnowledge) -> str:
 
 
 def _merge_query_hits(
-    hit_lists: List[List[Dict[str, Any]]],
+    hit_lists: list[list[dict[str, Any]]],
     top_k: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Merge SAGE query rows from multiple domains, de-duped by content."""
     seen: set = set()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for lst in hit_lists:
         for r in lst:
             c = (r.get("content") or "").strip()
@@ -76,7 +76,7 @@ def _knowledge_to_natural_language(k: FuzzingKnowledge) -> str:
     return " ".join(parts)
 
 
-def _campaign_to_natural_language(campaign: Dict) -> str:
+def _campaign_to_natural_language(campaign: dict) -> str:
     """Convert a campaign dict to natural language."""
     name = campaign.get("binary_name", "unknown")
     date = campaign.get("date", "unknown")
@@ -107,8 +107,8 @@ class SageFuzzingMemory(FuzzingMemory):
 
     def __init__(
         self,
-        memory_file: Optional[Path] = None,
-        sage_config: Optional[SageConfig] = None,
+        memory_file: Path | None = None,
+        sage_config: SageConfig | None = None,
     ):
         super().__init__(memory_file=memory_file)
 
@@ -174,7 +174,7 @@ class SageFuzzingMemory(FuzzingMemory):
         except Exception as e:
             logger.debug("SAGE remember failed: %s", e)
 
-    def record_campaign(self, campaign_data: Dict):
+    def record_campaign(self, campaign_data: dict):
         """Record campaign locally and in SAGE."""
         super().record_campaign(campaign_data)
 
@@ -200,7 +200,7 @@ class SageFuzzingMemory(FuzzingMemory):
         query_text: str,
         domain: str = "raptor-fuzzing",
         top_k: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Recall semantically similar fuzzing knowledge from SAGE.
 
         When ``domain`` is not ``raptor-methodology``, also queries the
@@ -235,9 +235,9 @@ class SageFuzzingMemory(FuzzingMemory):
     def recall_exploit_patterns(
         self,
         crash_type: str,
-        binary_characteristics: Optional[Dict] = None,
+        binary_characteristics: dict | None = None,
         top_k: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Recall exploit technique patterns relevant to a crash type."""
         if not self._is_sage_available():
             return []
@@ -261,7 +261,7 @@ class SageFuzzingMemory(FuzzingMemory):
         )
         return _merge_query_hits([methodology, fuzzing], top_k)
 
-    def get_statistics(self) -> Dict:
+    def get_statistics(self) -> dict:
         """Get memory statistics including SAGE status."""
         stats = super().get_statistics()
         stats["sage_enabled"] = self._is_sage_available()

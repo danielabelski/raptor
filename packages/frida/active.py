@@ -17,7 +17,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from core.logging import get_logger
 
@@ -57,9 +56,9 @@ def _safe_env() -> dict[str, str]:
 def observe_target(
     target: str,
     template: str = "api-trace",
-    out_dir: Optional[Path] = None,
+    out_dir: Path | None = None,
     duration_sec: float = 30.0,
-) -> Optional[Path]:
+) -> Path | None:
     """Launch a frida observation of a target binary (spawn mode).
 
     Runs frida under the sandbox frida profile via libexec/raptor-frida.
@@ -132,11 +131,11 @@ def observe_target(
 def observe_paired(
     target_cmd: list[str],
     template: str = "api-trace",
-    out_dir: Optional[Path] = None,
+    out_dir: Path | None = None,
     duration_sec: float = 30.0,
     wait_port: int = 0,
     wait_timeout_s: float = 5.0,
-) -> Optional[Path]:
+) -> Path | None:
     """Launch paired frida observation via the netns coordinator.
 
     The target runs in one sandbox child (target_run profile); frida
@@ -272,11 +271,11 @@ def observe_paired(
 def auto_observe(
     target_path: str,
     search_dirs: list[Path],
-    out_dir: Optional[Path] = None,
+    out_dir: Path | None = None,
     duration_sec: float = 30.0,
     template: str = "api-trace",
     staleness_s: float = _STALENESS_THRESHOLD_S,
-) -> Optional[Path]:
+) -> Path | None:
     """Observe a target only if no fresh evidence exists.
 
     Checks search_dirs for existing frida evidence matching target_path.
@@ -308,7 +307,7 @@ def auto_observe(
     )
 
 
-def _extract_output_dir(stdout: str) -> Optional[Path]:
+def _extract_output_dir(stdout: str) -> Path | None:
     """Parse OUTPUT_DIR=<path> from libexec output."""
     for line in stdout.splitlines():
         if line.startswith("OUTPUT_DIR="):

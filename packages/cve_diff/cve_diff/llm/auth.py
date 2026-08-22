@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 # Historical cve-diff default; also the last-resort fallback when the
@@ -66,7 +65,7 @@ class AuthDecision:
     dispatcher route in :mod:`core.llm.providers` handles auth.
     """
     provider: str
-    api_key: Optional[str] = None
+    api_key: str | None = None
     via_dispatcher: bool = False
 
 

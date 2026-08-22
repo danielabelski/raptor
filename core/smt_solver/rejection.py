@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any
 
 from .availability import z3
 from .config import BVProfile
@@ -255,8 +255,8 @@ def parse_literal_value(
     tok: str,
     profile: BVProfile,
     *,
-    outer_text: Optional[str] = None,
-) -> Union[int, Rejection]:
+    outer_text: str | None = None,
+) -> int | Rejection:
     """Validate and convert a literal token, or return a structured rejection.
 
     Centralised so atom-position literals and bitmask-form literals

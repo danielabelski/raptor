@@ -36,7 +36,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 from core.atomic_fs import write_text_atomically
 from core.hash import sha256_file as _sha256_file
@@ -69,11 +68,11 @@ class BinaryEdgeIndex:
     function names that appear as a callee somewhere (cheap "is X
     binary-called?" check used by the reach_witness stage)."""
     binary_path: str
-    edges: List[BinaryCallEdge] = field(default_factory=list)
-    callees: Set[str] = field(default_factory=set)
+    edges: list[BinaryCallEdge] = field(default_factory=list)
+    callees: set[str] = field(default_factory=set)
 
 
-def _content_hash(binary_path: Path) -> Optional[str]:
+def _content_hash(binary_path: Path) -> str | None:
     """sha256 of the binary's file content — cache key fallback when
     ``.note.gnu.build-id`` is absent (stripped Go, PGO-stripped vendor
     binaries)."""
@@ -83,7 +82,7 @@ def _content_hash(binary_path: Path) -> Optional[str]:
         return None
 
 
-def _fn_addr(f: Dict) -> Optional[int]:
+def _fn_addr(f: dict) -> int | None:
     """Function entry address from an ``aflj`` record. r2 6.x keys this
     as ``addr``; r2 5.x (the version Ubuntu/Debian apt ships, used by the
     nightly CI corpus job) keys it as ``offset``. Accept either so the
@@ -108,7 +107,7 @@ def _edge_cache_dir() -> Path:
 _BUILD_ID_RE = re.compile(r"^[0-9a-f]{8,128}$")
 
 
-def _cache_path_for(build_id: str) -> Optional[Path]:
+def _cache_path_for(build_id: str) -> Path | None:
     """Cache path for a given build_id, or ``None`` when the build_id
     isn't a safely-embeddable hex string. Belt-and-braces against any
     future regression in the upstream ``read_build_id`` helper: a
@@ -123,7 +122,7 @@ def _cache_path_for(build_id: str) -> Optional[Path]:
 def _load_cached_index(
     cache_file: Path,
     binary_path: str,
-) -> Optional[BinaryEdgeIndex]:
+) -> BinaryEdgeIndex | None:
     """Load a previously-extracted edge index from cache. Returns None
     when the cache file is missing, malformed, or version-mismatched
     (caller falls back to full extraction)."""
@@ -206,7 +205,7 @@ def _save_cached_index(cache_file: Path, idx: BinaryEdgeIndex) -> None:
         logger.debug("binary_oracle_edges: cache write failed: %s", e)
 
 
-def _try_graph_store(binary_path: Path) -> Optional[BinaryEdgeIndex]:
+def _try_graph_store(binary_path: Path) -> BinaryEdgeIndex | None:
     """Try to read call edges from an existing binary graph store.
 
     Returns None if no graph store is found or it has no CALLS edges.
@@ -379,7 +378,7 @@ def extract_direct_call_edges(
         return BinaryEdgeIndex(binary_path=str(binary_path))
 
     # Build addr → name map for resolving callee addresses.
-    addr_to_name: Dict[int, str] = {}
+    addr_to_name: dict[int, str] = {}
     for f in fns:
         addr = _fn_addr(f)
         name = f.get("name")
@@ -482,7 +481,7 @@ def _extract_vtable_edges(
     binary_path: Path,
     *,
     timeout: int = 300,
-) -> List[BinaryCallEdge]:
+) -> list[BinaryCallEdge]:
     """Run r2 ``av`` and emit one synthetic edge per vtable slot:
     ``<vtable@<addr>>`` → ``method``. Each method that appears in any
     vtable slot is, by construction, a candidate target for the
@@ -510,8 +509,8 @@ def _extract_vtable_edges(
             binary_path, e,
         )
         return []
-    edges: List[BinaryCallEdge] = []
-    current_vtable: Optional[str] = None
+    edges: list[BinaryCallEdge] = []
+    current_vtable: str | None = None
     for line in (proc.stdout or "").splitlines():
         # Strip ANSI escapes r2 emits in interactive-style output.
         plain = re.sub(r"\x1b\[[\d;]*m", "", line)
@@ -565,14 +564,14 @@ def _clean_r2_function_name(name: str) -> str:
 
 def _parse_axffj_batch(
     output: str,
-    addr_to_name: Dict[int, str],
+    addr_to_name: dict[int, str],
     index: BinaryEdgeIndex,
 ) -> None:
     """Parse the concatenated axffj output: ``BATCH <addr>`` separators
     delimit each function's refs, each refs block is a JSON array of
     ``{type, at, ref, name}``."""
-    current_caller: Optional[str] = None
-    buf: List[str] = []
+    current_caller: str | None = None
+    buf: list[str] = []
     for raw_line in output.splitlines():
         line = re.sub(r"\x1b\[[\d;]*m", "", raw_line)
         if line.startswith("BATCH "):
@@ -589,9 +588,9 @@ def _parse_axffj_batch(
 
 
 def _flush_axffj(
-    buf: List[str],
-    caller: Optional[str],
-    addr_to_name: Dict[int, str],
+    buf: list[str],
+    caller: str | None,
+    addr_to_name: dict[int, str],
     index: BinaryEdgeIndex,
 ) -> None:
     """Parse a single function's axffj JSON output and append CALL
@@ -637,7 +636,7 @@ def _flush_axffj(
         index.callees.add(callee_name)
 
 
-def load_cached_edge_index(binary_path: Path) -> Optional[BinaryEdgeIndex]:
+def load_cached_edge_index(binary_path: Path) -> BinaryEdgeIndex | None:
     """Cache-only edge-index lookup — NEVER invokes r2.
 
     Consults the two persisted edge sources in order:
@@ -672,9 +671,9 @@ def load_cached_edge_index(binary_path: Path) -> Optional[BinaryEdgeIndex]:
 
 
 def annotate_inventory_with_edges(
-    inventory: Dict,
-    indices: List[BinaryEdgeIndex],
-) -> Dict[str, int]:
+    inventory: dict,
+    indices: list[BinaryEdgeIndex],
+) -> dict[str, int]:
     """Walk the inventory and mark each native-language item whose
     name is a binary-edge callee in ANY of the supplied indices.
     Per-item annotation: ``metadata.binary_oracle_edges = [{caller,
@@ -688,7 +687,7 @@ def annotate_inventory_with_edges(
     if not indices:
         return counts
     # Map: callee_name → list of (caller, binary_path)
-    edges_by_callee: Dict[str, List[Tuple[str, str]]] = {}
+    edges_by_callee: dict[str, list[tuple[str, str]]] = {}
     for idx in indices:
         for edge in idx.edges:
             edges_by_callee.setdefault(edge.callee, []).append(

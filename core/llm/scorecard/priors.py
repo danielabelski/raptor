@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Mapping, Tuple
+from collections.abc import Mapping
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ class BetaPrior:
         posterior's strength is ``prior.strength + s + f``."""
         return self.alpha + self.beta
 
-    def credible_interval(self, level: float = 0.95) -> Tuple[float, float]:
+    def credible_interval(self, level: float = 0.95) -> tuple[float, float]:
         """Two-sided equal-tailed credible interval at the given
         confidence level (default 0.95). Implementation: inverse Beta
         CDF at the two tail probabilities.
@@ -291,8 +291,8 @@ def prior_from_validation_labels(
 
 
 def priors_from_validation(
-    counts_by_class: Mapping[str, Tuple[int, int]],
-) -> Dict[str, BetaPrior]:
+    counts_by_class: Mapping[str, tuple[int, int]],
+) -> dict[str, BetaPrior]:
     """Per-decision-class informed priors from ``/validate`` ground
     truth.
 

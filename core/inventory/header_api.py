@@ -26,7 +26,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import FrozenSet, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +84,8 @@ _EXCLUDE_DIRS = frozenset({
 def scan_public_api(
     target_path: str,
     *,
-    include_dirs: Optional[list[str]] = None,
-) -> FrozenSet[str]:
+    include_dirs: list[str] | None = None,
+) -> frozenset[str]:
     """Scan header files and return function names declared in them.
 
     Args:
@@ -102,7 +101,7 @@ def scan_public_api(
     if not target.is_dir():
         return frozenset()
 
-    names: Set[str] = set()
+    names: set[str] = set()
     headers_scanned = 0
 
     for root, dirs, files in os.walk(target):

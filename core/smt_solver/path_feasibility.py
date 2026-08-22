@@ -141,7 +141,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 from core.logging import get_logger as _get_logger
 from core.smt_solver import (
@@ -222,15 +222,15 @@ class PathSMTResult:
     only the opaque ``_anon_N`` names and the LLM can't connect the
     concrete value back to anything actionable.
     """
-    feasible: Optional[bool]
-    satisfied: List[str]
-    unsatisfied: List[str]
-    unknown: List[str]
-    model: Dict[str, int]
+    feasible: bool | None
+    satisfied: list[str]
+    unsatisfied: list[str]
+    unknown: list[str]
+    model: dict[str, int]
     smt_available: bool
     reasoning: str
-    unknown_reasons: List[Rejection] = field(default_factory=list)
-    anon_var_map: Dict[str, str] = field(default_factory=dict)
+    unknown_reasons: list[Rejection] = field(default_factory=list)
+    anon_var_map: dict[str, str] = field(default_factory=dict)
 
     # Human-readable labels of the libc/POSIX call-summary axioms that
     # were asserted alongside the path conditions (see
@@ -239,7 +239,7 @@ class PathSMTResult:
     # Consumers treat these as the assumptions the verdict is
     # conditional on; an axiom label can also appear in ``unsatisfied``
     # when it participates in an unsat core.
-    summary_axioms: List[str] = field(default_factory=list)
+    summary_axioms: list[str] = field(default_factory=list)
 
     # --- Phase 8: weakest-precondition predicate (additive) ---
     # ``wp_predicate`` is the minimal sat-preserving subset of the pending
@@ -252,10 +252,10 @@ class PathSMTResult:
     # consumes it as a hard constraint on synthesised inputs.  ``None``
     # when the path is not ``sat``, when there were no pending conjuncts,
     # or when Z3 is unavailable.  See :func:`_extract_wp`.
-    wp_predicate: Optional[str] = None
+    wp_predicate: str | None = None
     # The kept (minimal) conjunct texts, in the deterministic extraction
     # order.  Empty whenever ``wp_predicate`` is ``None``.
-    wp_conjuncts: List[str] = field(default_factory=list)
+    wp_conjuncts: list[str] = field(default_factory=list)
     # ``False`` when the deletion pass hit ``WP_MAX_SOLVER_CALLS`` before
     # every conjunct was tested — ``wp_predicate`` is then a sound
     # sat-preserving subset but possibly not minimal.
@@ -288,7 +288,7 @@ _TOKEN_RE = re.compile(
 # All left-associative.  The relational and bitmask layers run in
 # ``_parse_condition`` above this; ``&`` therefore doesn't appear in this
 # table — it's only accepted in the dedicated bitmask form.
-_PRECEDENCE: Dict[str, int] = {
+_PRECEDENCE: dict[str, int] = {
     '|':  1,
     '<<': 2, '>>': 2,
     '+':  3, '-':  3,
@@ -327,8 +327,8 @@ _CONDITION_LEVEL_OPS = frozenset({'<=', '>=', '!=', '==', '<', '>', '&'})
 
 
 def _parse_expr(
-    text: str, vars_: Dict[str, Any], *, profile: BVProfile,
-) -> Union[Any, Rejection]:
+    text: str, vars_: dict[str, Any], *, profile: BVProfile,
+) -> Any | Rejection:
     """Parse an arithmetic expression into a Z3 bitvector at the given profile.
 
     Handles: identifier, NULL, hex literal, decimal literal, parenthesised
@@ -366,7 +366,7 @@ def _parse_expr(
     pos = [0]
     paren_depth = [0]
 
-    def _atom() -> Union[Any, Rejection]:
+    def _atom() -> Any | Rejection:
         if pos[0] >= len(tokens):
             return Rejection(
                 text, RejectionKind.UNRECOGNIZED_OPERAND,
@@ -464,7 +464,7 @@ def _parse_expr(
     _MAX_CLIMB_DEPTH = 256
     _climb_depth = [0]
 
-    def _climb(min_prec: int) -> Union[Any, Rejection]:
+    def _climb(min_prec: int) -> Any | Rejection:
         if _climb_depth[0] >= _MAX_CLIMB_DEPTH:
             return Rejection(
                 ' '.join(tokens),
@@ -524,7 +524,7 @@ def _parse_expr(
 _CALL_HEAD_RE = re.compile(r'[a-z_][a-z0-9_]*', re.IGNORECASE)
 
 
-def _next_anon_index(vars_: Dict[str, Any]) -> int:
+def _next_anon_index(vars_: dict[str, Any]) -> int:
     """Return the next free ``_anon_<N>`` index for ``vars_``.
 
     Seeds from ``max(existing index) + 1`` rather than ``len(existing)``
@@ -536,7 +536,7 @@ def _next_anon_index(vars_: Dict[str, Any]) -> int:
     :func:`make_anon_call_var` (verb-side) so both paths allocate from
     the same counter.
     """
-    existing_indices: List[int] = []
+    existing_indices: list[int] = []
     for k in vars_:
         if k.startswith('_anon_'):
             try:
@@ -569,7 +569,7 @@ def is_balanced_call(text: str) -> bool:
     return depth == 0 and j == len(text)
 
 
-def make_anon_call_var(vars_: Dict[str, Any], *, profile: BVProfile) -> Any:
+def make_anon_call_var(vars_: dict[str, Any], *, profile: BVProfile) -> Any:
     """Allocate a fresh ``_anon_N`` Z3 BV for a function-call operand.
 
     Each call allocates a new variable.  This is the verb-path
@@ -686,16 +686,16 @@ _ASSIGNMENT_SHAPED_RE = re.compile(
 _MAX_SUMMARY_ARGS_CHARS = 200
 
 
-def _nonneg_summary(var: Any, args_text: str, vars_: Dict[str, Any],
-                    profile: BVProfile) -> Optional[Any]:
+def _nonneg_summary(var: Any, args_text: str, vars_: dict[str, Any],
+                    profile: BVProfile) -> Any | None:
     """``result >= 0`` — meaningful only at signed profiles."""
     if not profile.signed:
         return None
     return ge(var, _mk_val(0, profile.width), signed=True)
 
 
-def _abs_summary(var: Any, args_text: str, vars_: Dict[str, Any],
-                 profile: BVProfile) -> Optional[Any]:
+def _abs_summary(var: Any, args_text: str, vars_: dict[str, Any],
+                 profile: BVProfile) -> Any | None:
     """``result >= 0 OR result == INT_MIN`` at signed profiles.
 
     ``abs(INT_MIN)`` is UB in C but evaluates to INT_MIN in
@@ -709,13 +709,13 @@ def _abs_summary(var: Any, args_text: str, vars_: Dict[str, Any],
                  var == int_min)
 
 
-def _sizeof_summary(var: Any, args_text: str, vars_: Dict[str, Any],
-                    profile: BVProfile) -> Optional[Any]:
+def _sizeof_summary(var: Any, args_text: str, vars_: dict[str, Any],
+                    profile: BVProfile) -> Any | None:
     """``sizeof(...) != 0`` — signedness-neutral, always meaningful."""
     return var != _mk_val(0, profile.width)
 
 
-def _split_two_args(args_text: str) -> Optional[Tuple[str, str]]:
+def _split_two_args(args_text: str) -> tuple[str, str] | None:
     """Split ``args_text`` on its single top-level comma, or None."""
     depth = 0
     split_at = None
@@ -738,8 +738,8 @@ def _minmax_summary(pick_smaller: bool):
     max mirror), applied only when BOTH arguments parse as plain
     arithmetic expressions (nested calls or unsupported syntax mean no
     axiom — the placeholder stays free, today's behaviour)."""
-    def _builder(var: Any, args_text: str, vars_: Dict[str, Any],
-                 profile: BVProfile) -> Optional[Any]:
+    def _builder(var: Any, args_text: str, vars_: dict[str, Any],
+                 profile: BVProfile) -> Any | None:
         parts = _split_two_args(args_text)
         if parts is None:
             return None
@@ -758,7 +758,7 @@ def _minmax_summary(pick_smaller: bool):
 # Callee name (case-sensitive, matching C) → axiom builder.  A builder
 # returns a Z3 expression or None (axiom not meaningful for this
 # profile / arguments) — None keeps today's free-variable behaviour.
-_CALL_SUMMARIES: Dict[str, Any] = {
+_CALL_SUMMARIES: dict[str, Any] = {
     "strlen": _nonneg_summary,
     "strnlen": _nonneg_summary,
     "wcslen": _nonneg_summary,
@@ -775,8 +775,8 @@ _CALL_SUMMARIES: Dict[str, Any] = {
 
 def _summarise_call(
     callee: str, args_text: str, call_text: str, var: Any,
-    vars_: Dict[str, Any], *, profile: BVProfile,
-) -> Optional[Tuple[str, Any]]:
+    vars_: dict[str, Any], *, profile: BVProfile,
+) -> tuple[str, Any] | None:
     """Return ``(label, axiom_expr)`` for a recognised call, else None."""
     builder = _CALL_SUMMARIES.get(callee)
     if builder is None or len(args_text) > _MAX_SUMMARY_ARGS_CHARS:
@@ -788,10 +788,10 @@ def _summarise_call(
 
 
 def _substitute_calls(
-    text: str, vars_: Dict[str, Any], *, profile: BVProfile,
-    anon_map: Optional[Dict[str, str]] = None,
-    dedup_window: Optional[Dict[str, str]] = None,
-    axiom_sink: Optional[List[Tuple[str, Any]]] = None,
+    text: str, vars_: dict[str, Any], *, profile: BVProfile,
+    anon_map: dict[str, str] | None = None,
+    dedup_window: dict[str, str] | None = None,
+    axiom_sink: list[tuple[str, Any]] | None = None,
 ) -> str:
     """Replace balanced ``<ident>(...)`` subterms with free Z3 variables.
 
@@ -879,7 +879,7 @@ def _substitute_calls(
         rev = {v: k for k, v in anon_map.items()}
     else:
         rev = {}
-    out: List[str] = []
+    out: list[str] = []
     i = 0
     n = len(text)
     while i < n:
@@ -947,11 +947,11 @@ def _substitute_calls(
 
 
 def _parse_condition(
-    text: str, vars_: Dict[str, Any], *, profile: BVProfile,
-    anon_map: Optional[Dict[str, str]] = None,
-    dedup_window: Optional[Dict[str, str]] = None,
-    axiom_sink: Optional[List[Tuple[str, Any]]] = None,
-) -> Union[Any, Rejection]:
+    text: str, vars_: dict[str, Any], *, profile: BVProfile,
+    anon_map: dict[str, str] | None = None,
+    dedup_window: dict[str, str] | None = None,
+    axiom_sink: list[tuple[str, Any]] | None = None,
+) -> Any | Rejection:
     """Parse a single condition string into a Z3 boolean expression.
 
     Recognised forms:
@@ -1115,14 +1115,14 @@ def _parse_condition(
 
 def _classify_text_condition(
     cond: PathCondition,
-    vars_: Dict[str, Any],
+    vars_: dict[str, Any],
     solver: Any,
     *,
     profile: BVProfile,
-    anon_map: Optional[Dict[str, str]] = None,
-    dedup_window: Optional[Dict[str, str]] = None,
-    axiom_sink: Optional[List[Tuple[str, Any]]] = None,
-) -> Tuple[Optional[str], Optional[Tuple[str, Any]], Optional[Rejection]]:
+    anon_map: dict[str, str] | None = None,
+    dedup_window: dict[str, str] | None = None,
+    axiom_sink: list[tuple[str, Any]] | None = None,
+) -> tuple[str | None, tuple[str, Any] | None, Rejection | None]:
     """Parse one text condition and classify it.
 
     Returns one of:
@@ -1167,11 +1167,11 @@ def _classify_text_condition(
 
 
 def _extract_wp(
-    pending: List[Tuple[str, Any]],
+    pending: list[tuple[str, Any]],
     *,
     cap: int = WP_MAX_SOLVER_CALLS,
-    axioms: Optional[List[Tuple[str, Any]]] = None,
-) -> Tuple[Optional[str], List[str], bool]:
+    axioms: list[tuple[str, Any]] | None = None,
+) -> tuple[str | None, list[str], bool]:
     """Extract the weakest-precondition predicate for a *sat* path.
 
     ``pending`` is the list of ``(text, z3_expr)`` path conjuncts whose
@@ -1262,17 +1262,17 @@ def _extract_wp(
 
 
 def _solve_pending(
-    pending: List[Tuple[str, Any]],
+    pending: list[tuple[str, Any]],
     solver: Any,
-    satisfied: List[str],
-    unknown: List[str],
-    unknown_reasons: List[Rejection],
+    satisfied: list[str],
+    unknown: list[str],
+    unknown_reasons: list[Rejection],
     *,
     profile: BVProfile,
-    anon_map: Optional[Dict[str, str]] = None,
-    prefer_witness: Optional[Tuple[str, str]] = None,
-    vars_: Optional[Dict[str, Any]] = None,
-    axioms: Optional[List[Tuple[str, Any]]] = None,
+    anon_map: dict[str, str] | None = None,
+    prefer_witness: tuple[str, str] | None = None,
+    vars_: dict[str, Any] | None = None,
+    axioms: list[tuple[str, Any]] | None = None,
 ) -> PathSMTResult:
     """Run the solver over pending predicates and produce a verdict.
 
@@ -1422,7 +1422,7 @@ def _solve_pending(
     )
 
 
-def make_var(name: str, vars_: Dict[str, Any], *, profile: BVProfile) -> Any:
+def make_var(name: str, vars_: dict[str, Any], *, profile: BVProfile) -> Any:
     """Get-or-create a Z3 bitvector variable, sharing ``vars_`` with the parser.
 
     Domain encoders (``smt_verbs``) building Z3 predicates directly via
@@ -1456,9 +1456,9 @@ def make_val(literal: str, *, profile: BVProfile) -> Any:
 
 
 def check_verb_feasibility(
-    intrinsic: List[Tuple[str, Any]],
-    text_guards: List[PathCondition],
-    vars_: Dict[str, Any],
+    intrinsic: list[tuple[str, Any]],
+    text_guards: list[PathCondition],
+    vars_: dict[str, Any],
     *,
     profile: BVProfile = BV_C_UINT64,
 ) -> PathSMTResult:
@@ -1482,10 +1482,10 @@ def check_verb_feasibility(
     tautology_solver = _new_solver()
     solver = _new_solver()
 
-    satisfied: List[str] = []
-    unknown: List[str] = []
-    unknown_reasons: List[Rejection] = []
-    pending: List[Tuple[str, Any]] = list(intrinsic)  # intrinsic always solved
+    satisfied: list[str] = []
+    unknown: list[str] = []
+    unknown_reasons: list[Rejection] = []
+    pending: list[tuple[str, Any]] = list(intrinsic)  # intrinsic always solved
 
     for cond in text_guards:
         sat_display, pending_pair, rejection = _classify_text_condition(
@@ -1518,11 +1518,11 @@ def check_verb_feasibility(
 
 
 def check_path_feasibility(
-    conditions: List[PathCondition],
+    conditions: list[PathCondition],
     *,
     profile: BVProfile = BV_C_UINT64,
-    timeout_ms: Optional[int] = None,
-    prefer_witness: Optional[Tuple[str, str]] = None,
+    timeout_ms: int | None = None,
+    prefer_witness: tuple[str, str] | None = None,
 ) -> PathSMTResult:
     """
     Check whether a set of path conditions are jointly satisfiable.
@@ -1608,7 +1608,7 @@ def check_path_feasibility(
             reasoning=f"no conditions ({mode}) — path is unconditionally reachable",
         )
 
-    vars_: Dict[str, Any] = {}
+    vars_: dict[str, Any] = {}
     # Tautology checks (push/add(Not(expr))/check/pop) run on a
     # throwaway solver so residual push/pop state cannot leak into
     # the final solve.  Z3 4.15.4.0 has been observed to return
@@ -1644,7 +1644,7 @@ def check_path_feasibility(
     # bare `_anon_0 = 32`. Accumulates EVERY allocation across the
     # whole batch — including allocations on either side of a
     # mutation barrier — so labels remain complete for the result.
-    anon_map: Dict[str, str] = {}
+    anon_map: dict[str, str] = {}
     # The call-dedup window controls *which* placeholders the current
     # condition's parser may reuse. Distinct from `anon_map` (the
     # label store) so we can reset it at mutation barriers without
@@ -1657,17 +1657,17 @@ def check_path_feasibility(
     # path under the broken SSA assumption. Post-D2 the parser
     # consults this window instead; ASSIGNMENT_SHAPED rejections
     # clear it so post-mutation calls allocate fresh placeholders.
-    dedup_window: Dict[str, str] = {}
+    dedup_window: dict[str, str] = {}
     # Call-summary axioms accumulated by _substitute_calls as it
     # allocates placeholders for recognised libc/POSIX calls.  Asserted
     # (tracked) alongside the pending conditions and carried as
     # background theory through the WP pass — see _solve_pending.
-    axioms: List[Tuple[str, Any]] = []
+    axioms: list[tuple[str, Any]] = []
 
-    satisfied: List[str] = []
-    unknown: List[str] = []
-    unknown_reasons: List[Rejection] = []
-    pending: List[Tuple[str, Any]] = []
+    satisfied: list[str] = []
+    unknown: list[str] = []
+    unknown_reasons: list[Rejection] = []
+    pending: list[tuple[str, Any]] = []
 
     for cond in conditions:
         sat_display, pending_pair, rejection = _classify_text_condition(

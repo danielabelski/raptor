@@ -17,7 +17,7 @@ import csv
 import importlib
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from core.dataflow.finding import Finding
 from core.dataflow.label import (
@@ -31,7 +31,7 @@ from core.dataflow.validator import TrivialValidator, Validator, ValidatorVerdic
 _DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "findings"
 
 
-CSV_HEADER: List[str] = [
+CSV_HEADER: list[str] = [
     "finding_id",
     "producer",
     "rule_id",
@@ -43,7 +43,7 @@ CSV_HEADER: List[str] = [
 ]
 
 
-def iter_corpus(corpus_dir: Path) -> Iterable[Tuple[Finding, GroundTruth]]:
+def iter_corpus(corpus_dir: Path) -> Iterable[tuple[Finding, GroundTruth]]:
     """Yield ``(finding, label)`` for every paired entry in the corpus dir."""
     for fp in sorted(corpus_dir.glob("*.json")):
         if fp.name.endswith(".label.json"):
@@ -121,7 +121,7 @@ def load_validator(spec: str) -> Validator:
     return instance
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--corpus-dir",

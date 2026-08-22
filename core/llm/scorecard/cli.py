@@ -21,7 +21,7 @@ import datetime as _dt
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .scorecard import (
     ALL_EVENT_TYPES,
@@ -99,7 +99,7 @@ def _drift_marker(baseline: str, current: str) -> str:
 def _wilson_ub_pct(
     stats: DecisionClassStats,
     event_type: str = EventType.CHEAP_SHORT_CIRCUIT,
-) -> Optional[float]:
+) -> float | None:
     """Wilson 95% upper bound on the chosen event slot's
     incorrect-rate as a percentage. None when n=0 (no observations).
 
@@ -144,7 +144,7 @@ def _event_correct_count(stats: DecisionClassStats, event_type: str) -> int:
     return stats.events[event_type].correct
 
 
-def _humanise_age(iso_ts: str, *, now: Optional[_dt.datetime] = None) -> str:
+def _humanise_age(iso_ts: str, *, now: _dt.datetime | None = None) -> str:
     """Render an ISO timestamp as a human-friendly relative age
     (``2h ago``, ``3d ago``). Empty string for missing/invalid ts."""
     if not iso_ts:
@@ -190,13 +190,13 @@ def _parse_since(s: str) -> _dt.timedelta:
 
 
 def _filter_stats(
-    stats: List[DecisionClassStats], *,
-    consumer: Optional[str] = None,
-    since: Optional[_dt.timedelta] = None,
+    stats: list[DecisionClassStats], *,
+    consumer: str | None = None,
+    since: _dt.timedelta | None = None,
     only_untrusted: bool = False,
     only_learning: bool = False,
     sample_size_floor: int = 10,
-) -> List[DecisionClassStats]:
+) -> list[DecisionClassStats]:
     """Apply CLI filter flags. Filters compose (AND)."""
     out = list(stats)
     if consumer is not None:
@@ -231,9 +231,9 @@ def _filter_stats(
 
 
 def _sort_stats(
-    stats: List[DecisionClassStats], *, sort_key: str,
+    stats: list[DecisionClassStats], *, sort_key: str,
     event_type: str = EventType.CHEAP_SHORT_CIRCUIT,
-) -> List[DecisionClassStats]:
+) -> list[DecisionClassStats]:
     """Apply CLI sort. Default is decision_class then model."""
     if sort_key == "savings":
         return sorted(
@@ -261,7 +261,7 @@ def _sort_stats(
 # ---------------------------------------------------------------------------
 
 
-def _stats_to_json(s: DecisionClassStats) -> Dict[str, Any]:
+def _stats_to_json(s: DecisionClassStats) -> dict[str, Any]:
     """JSON-shape dict for a single cell — used by every command's --json
     output. Keeps the shape stable so scripts / dashboards / CI gates can
     depend on it (vs scraping the markdown table)."""
@@ -289,10 +289,10 @@ def _stats_to_json(s: DecisionClassStats) -> Dict[str, Any]:
 
 
 def _render_table(
-    stats: List[DecisionClassStats],
+    stats: list[DecisionClassStats],
     event_type: str = EventType.CHEAP_SHORT_CIRCUIT,
     *,
-    drift_map: Optional[Dict[Any, str]] = None,
+    drift_map: dict[Any, str] | None = None,
 ) -> str:
     """Markdown table of cell summary lines. Columns are chosen for
     "what is this model good at?" research questions.
@@ -349,8 +349,8 @@ def _render_table(
 
 
 def _render_compare(
-    a_stats: List[DecisionClassStats],
-    b_stats: List[DecisionClassStats],
+    a_stats: list[DecisionClassStats],
+    b_stats: list[DecisionClassStats],
     *, model_a: str, model_b: str,
 ) -> str:
     """Side-by-side view of two models on decision_classes they
@@ -455,7 +455,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     # Drift map: when freshness is on, compute the unweighted baseline policy
     # per (dc, model) so the render can flag cells whose verdict changed under
     # freshness — the silent-regression / silent-recovery signal.
-    drift_map: Optional[Dict[Any, str]] = None
+    drift_map: dict[Any, str] | None = None
     if hl:
         baseline = sc.get_stats()
         drift_map = {
@@ -489,7 +489,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 if baseline and baseline != d["policy"]:
                     d["freshness_drift"] = {"baseline_policy": baseline}
             cells.append(d)
-        out: Dict[str, Any] = {"cells": cells}
+        out: dict[str, Any] = {"cells": cells}
         if hl:
             out["freshness_half_life_days"] = hl
             out["freshness_impact"] = sc.measure_freshness_impact(hl)
@@ -522,10 +522,10 @@ def cmd_summary(args: argparse.Namespace) -> int:
     models = set()
     short_circuit = learning = fall_through = 0
     total_cost = 0.0
-    cost_per_model: Dict[str, float] = {}
-    calls_per_model: Dict[str, int] = {}
-    usage_cell_by_model: Dict[str, DecisionClassStats] = {}
-    sc_models_by_dc: Dict[str, str] = {}   # for cheapest-trusted picking
+    cost_per_model: dict[str, float] = {}
+    calls_per_model: dict[str, int] = {}
+    usage_cell_by_model: dict[str, DecisionClassStats] = {}
+    sc_models_by_dc: dict[str, str] = {}   # for cheapest-trusted picking
 
     for s in stats:
         models.add(s.model)
@@ -544,7 +544,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
         calls_per_model[s.model] = calls_per_model.get(s.model, 0) + s.calls
 
     # Cheapest short-circuit (lowest $/call from each cell's _usage row).
-    cheapest: Optional[tuple] = None
+    cheapest: tuple | None = None
     sc_aliases = {m for (_, m) in sc_models_by_dc}
     for m in sc_aliases:
         u = usage_cell_by_model.get(m)
@@ -796,7 +796,7 @@ def cmd_chain_closure(args: argparse.Namespace) -> int:
     # positive success rate. Recommending a rate=0.0 model would be
     # misleading — no wins observed. Return None in that case
     # rather than pointing operators at a proven-failing model.
-    def _recommendation() -> Optional[str]:
+    def _recommendation() -> str | None:
         if not rows:
             return None
         top = rows[0]
@@ -1414,7 +1414,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import sys as _sys
     argv = list(_sys.argv[1:] if argv is None else argv)
     parser = _build_parser()

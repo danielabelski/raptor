@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -56,7 +56,7 @@ _REQUIRE_RE = re.compile(
 # ``discovery.EXCLUDED_DIR_NAMES`` so a new entry there still
 # propagates through the shared walk.
 
-_TEST_DIR_NAMES: Set[str] = {"tests", "test", "__tests__", "spec", "e2e"}
+_TEST_DIR_NAMES: set[str] = {"tests", "test", "__tests__", "spec", "e2e"}
 _TEST_FILE_RE = re.compile(r".*\.(test|spec)\.[mc]?[jt]sx?$")
 
 _JS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
@@ -64,7 +64,7 @@ _JS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 _DEFAULT_MAX_DEPTH = 12
 
 # Built-in / runtime modules ``import``-ed but not deps.
-_BUILTINS: Set[str] = {
+_BUILTINS: set[str] = {
     "fs", "path", "os", "crypto", "http", "https", "stream", "events",
     "util", "url", "querystring", "buffer", "child_process", "cluster",
     "net", "dns", "tls", "vm", "zlib", "assert", "async_hooks",
@@ -76,10 +76,10 @@ _BUILTINS: Set[str] = {
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{package_name: [(file, line, is_test_code), ...]}``."""
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for js_file in _walk_js_sources(target, max_depth=max_depth):
         is_test = _is_test_file(js_file, target)
         try:
@@ -97,9 +97,9 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
 ) -> Reachability:
     """Build a ``Reachability`` for an npm dep using the scan evidence."""
     hits = scan.get(dep_name, [])
@@ -137,7 +137,7 @@ def resolve_dep(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _imports_in(text: str) -> Iterable[Tuple[str, int]]:
+def _imports_in(text: str) -> Iterable[tuple[str, int]]:
     for m in _REQUIRE_RE.finditer(text):
         spec = next((g for g in m.groups() if g is not None), None)
         if not spec:
@@ -146,7 +146,7 @@ def _imports_in(text: str) -> Iterable[Tuple[str, int]]:
         yield spec, line
 
 
-def _specifier_to_package(spec: str) -> Optional[str]:
+def _specifier_to_package(spec: str) -> str | None:
     s = spec.strip()
     if not s:
         return None
@@ -191,12 +191,12 @@ def _is_test_file(path: Path, target: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path] = None,
+    target: Path | None = None,
     max_lines: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for path, line, is_test in hits[:max_lines]:
         try:
             shown = path.relative_to(target) if target else path

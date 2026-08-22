@@ -18,7 +18,6 @@ doesn't wrap it.
 
 import hashlib
 from pathlib import Path
-from typing import Optional
 
 from core.config import RaptorConfig
 from core.logging import get_logger
@@ -40,8 +39,8 @@ _MAX_FILE_SIZE_NO_CAP_THRESHOLD = 10 ** 12
 
 def sha256_tree(
     root: Path,
-    max_file_size: Optional[int] = None,
-    chunk_size: Optional[int] = None,
+    max_file_size: int | None = None,
+    chunk_size: int | None = None,
 ) -> str:
     """Hash a directory tree (filenames + contents).
 
@@ -153,7 +152,7 @@ def sha256_tree(
         RaptorConfig, "MAX_TREE_HASH_BYTES", 100 * max_file_size,
     )
     cumulative_bytes = 0
-    truncated_at: Optional[str] = None
+    truncated_at: str | None = None
     for p in all_files:
         if not p.is_file():
             continue
@@ -246,7 +245,7 @@ def _chunk_floor(chunk_size: int) -> int:
     return max(int(chunk_size), 4096)
 
 
-def sha256_file(path: Path, chunk_size: Optional[int] = None) -> str:
+def sha256_file(path: Path, chunk_size: int | None = None) -> str:
     """Hash a single file, streaming in chunks (no full-file load).
 
     Use this in preference to ``hashlib.sha256(path.read_bytes())`` —

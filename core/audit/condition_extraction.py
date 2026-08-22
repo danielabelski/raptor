@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,10 @@ class GuardCondition:
     polarity: str  # "required" (sink in true-branch) | "excluded" (sink in else-branch)
     line: int
     resolvable: bool = False
-    concrete_values: Dict[str, str] = field(default_factory=dict)
+    concrete_values: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "text": self.text,
             "category": self.category,
             "polarity": self.polarity,
@@ -60,10 +60,10 @@ class SinkGuard:
     sink_line: int
     sink_function: str
     sink_api: str
-    guards: List[GuardCondition] = field(default_factory=list)
+    guards: list[GuardCondition] = field(default_factory=list)
     unconditional: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "sink_file": self.sink_file,
             "sink_line": self.sink_line,
@@ -122,7 +122,7 @@ except ImportError:
     _TS_AVAILABLE = False
 
 
-def _get_parser(lang: str) -> Optional[Any]:
+def _get_parser(lang: str) -> Any | None:
     """Get a cached tree-sitter parser for a language.
 
     Reuses the parser cache from core.inventory.extractors when available.
@@ -151,7 +151,7 @@ def _get_parser(lang: str) -> Optional[Any]:
 # Language → file extension mapping
 # ---------------------------------------------------------------------------
 
-_EXT_TO_LANG: Dict[str, str] = {
+_EXT_TO_LANG: dict[str, str] = {
     ".c": "c", ".h": "c",
     ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
     ".py": "python", ".pyw": "python",
@@ -167,7 +167,7 @@ _EXT_TO_LANG: Dict[str, str] = {
 }
 
 
-def language_for_file(filepath: str) -> Optional[str]:
+def language_for_file(filepath: str) -> str | None:
     """Determine tree-sitter language from file extension."""
     for ext, lang in _EXT_TO_LANG.items():
         if filepath.endswith(ext):
@@ -180,7 +180,7 @@ def language_for_file(filepath: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 # Node types that represent conditional branching
-_CONDITIONAL_TYPES: Dict[str, Tuple[str, ...]] = {
+_CONDITIONAL_TYPES: dict[str, tuple[str, ...]] = {
     "c": ("if_statement", "switch_statement", "conditional_expression"),
     "cpp": ("if_statement", "switch_statement", "conditional_expression"),
     "python": ("if_statement", "match_statement"),
@@ -197,7 +197,7 @@ _CONDITIONAL_TYPES: Dict[str, Tuple[str, ...]] = {
 }
 
 # Node types that represent function definitions (for enclosing function lookup)
-_FUNCTION_TYPES: Dict[str, Tuple[str, ...]] = {
+_FUNCTION_TYPES: dict[str, tuple[str, ...]] = {
     "c": ("function_definition",),
     "cpp": ("function_definition",),
     "python": ("function_definition",),
@@ -214,7 +214,7 @@ _FUNCTION_TYPES: Dict[str, Tuple[str, ...]] = {
 }
 
 # Node types representing early exit (return/goto/break/throw)
-_EXIT_TYPES: Dict[str, Tuple[str, ...]] = {
+_EXIT_TYPES: dict[str, tuple[str, ...]] = {
     "c": ("return_statement", "goto_statement", "break_statement"),
     "cpp": ("return_statement", "goto_statement", "break_statement", "throw_statement"),
     "python": ("return_statement", "raise_statement"),
@@ -465,7 +465,7 @@ def _find_enclosing_conditionals(
     lang: str,
     source_bytes: bytes,
     max_depth: int = 5,
-) -> List[Tuple[Any, str, str]]:
+) -> list[tuple[Any, str, str]]:
     """Walk up from the sink line to find all enclosing conditionals.
 
     Also detects preceding guard clauses (early-return pattern):
@@ -482,7 +482,7 @@ def _find_enclosing_conditionals(
         return []
 
     cond_types = _CONDITIONAL_TYPES.get(lang, ())
-    results: List[Tuple[Any, str, str]] = []
+    results: list[tuple[Any, str, str]] = []
 
     # Walk up from target node, collecting enclosing conditionals
     cur = target_node.parent
@@ -513,7 +513,7 @@ def _find_preceding_guard_clauses(
     lang: str,
     source_bytes: bytes,
     max_count: int,
-) -> List[Tuple[Any, str, str]]:
+) -> list[tuple[Any, str, str]]:
     """Find if-statements before the sink that are guard clauses.
 
     A guard clause is an if-statement whose body contains only exit
@@ -547,7 +547,7 @@ def _find_preceding_guard_clauses(
     if enclosing_block is None:
         return []
 
-    results: List[Tuple[Any, str, str]] = []
+    results: list[tuple[Any, str, str]] = []
 
     for child in enclosing_block.children:
         if len(results) >= max_count:
@@ -644,7 +644,7 @@ def _find_node_at_line(root, target_row: int):
 # ---------------------------------------------------------------------------
 
 # Common call node types across languages
-_CALL_TYPES: Dict[str, Tuple[str, ...]] = {
+_CALL_TYPES: dict[str, tuple[str, ...]] = {
     "c": ("call_expression",),
     "cpp": ("call_expression",),
     "python": ("call",),
@@ -695,14 +695,14 @@ def find_sink_calls(
     root_node,
     source_bytes: bytes,
     lang: str,
-    sink_names: FrozenSet[str],
-) -> List[Tuple[int, str]]:
+    sink_names: frozenset[str],
+) -> list[tuple[int, str]]:
     """Find all call sites in the tree that match a sink name.
 
     Returns (line_1indexed, matched_sink_name) pairs.
     """
     call_types = _CALL_TYPES.get(lang, ())
-    results: List[Tuple[int, str]] = []
+    results: list[tuple[int, str]] = []
 
     # Explicit-stack pre-order walk — recursion depth would track the
     # source nesting depth and overflow on deeply nested inputs.
@@ -720,7 +720,7 @@ def find_sink_calls(
     return results
 
 
-def _match_sink(call_name: str, sink_names: FrozenSet[str]) -> Optional[str]:
+def _match_sink(call_name: str, sink_names: frozenset[str]) -> str | None:
     """Check if a call name matches any sink. Returns matched name or None."""
     if not call_name:
         return None
@@ -751,10 +751,10 @@ def _match_sink(call_name: str, sink_names: FrozenSet[str]) -> Optional[str]:
 def extract_sink_guards(
     source: str,
     filepath: str,
-    sink_names: Optional[FrozenSet[str]] = None,
-    sink_lines: Optional[List[int]] = None,
+    sink_names: frozenset[str] | None = None,
+    sink_lines: list[int] | None = None,
     max_guard_depth: int = 5,
-) -> List[SinkGuard]:
+) -> list[SinkGuard]:
     """Extract guard conditions for sink calls in a source file.
 
     Two modes:
@@ -784,7 +784,7 @@ def extract_sink_guards(
     root = tree.root_node
 
     # Determine sink call sites
-    call_sites: List[Tuple[int, str]] = []
+    call_sites: list[tuple[int, str]] = []
 
     if sink_lines is not None:
         # Use provided lines — extract call name at each line
@@ -806,7 +806,7 @@ def extract_sink_guards(
         return []
 
     # Extract guards for each call site
-    results: List[SinkGuard] = []
+    results: list[SinkGuard] = []
 
     from .condition_classifier import classify_condition
 
@@ -823,7 +823,7 @@ def extract_sink_guards(
             max_depth=max_guard_depth,
         )
 
-        guards: List[GuardCondition] = []
+        guards: list[GuardCondition] = []
         for _cond_node, cond_text, polarity in conditionals:
             if not cond_text:
                 continue
@@ -872,10 +872,10 @@ def _find_call_at_line(root, target_row: int, lang: str):
 
 
 def extract_guards_for_files(
-    source_texts: Dict[str, str],
-    sink_names: FrozenSet[str],
+    source_texts: dict[str, str],
+    sink_names: frozenset[str],
     max_guard_depth: int = 5,
-) -> Dict[str, List[SinkGuard]]:
+) -> dict[str, list[SinkGuard]]:
     """Extract sink guards across multiple files.
 
     Args:
@@ -886,7 +886,7 @@ def extract_guards_for_files(
     Returns:
         Mapping of filepath → list of SinkGuard instances.
     """
-    results: Dict[str, List[SinkGuard]] = {}
+    results: dict[str, list[SinkGuard]] = {}
 
     for filepath, source in sorted(source_texts.items()):
         guards = extract_sink_guards(

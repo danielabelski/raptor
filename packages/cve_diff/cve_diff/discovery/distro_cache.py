@@ -70,7 +70,7 @@ class DistroFetcher:
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
     # OrderedDict for LRU semantics. Pre-fix this was a plain dict
     # with monotonic growth.
-    _mem: "OrderedDict[tuple[str, str], dict[str, Any]]" = field(
+    _mem: OrderedDict[tuple[str, str], dict[str, Any]] = field(
         default_factory=OrderedDict
     )
     _disk: JsonCache | None = field(default=None, repr=False)

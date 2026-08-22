@@ -27,7 +27,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List
 
 from . import RewriteEdit, RewriteResult
 
@@ -35,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def rewrite_dockerfile_inline_install(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply inline-pip install version-pin edits to a Dockerfile.
 
     Each edit's ``locator`` is the PyPI package name; the regex
@@ -55,7 +54,7 @@ def rewrite_dockerfile_inline_install(
                               reason=f"error: read failed: {e}")
                 for e2 in edits]
 
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     new_text = text
     for edit in edits:
         new_text, result = _apply_one(new_text, edit)
@@ -74,7 +73,7 @@ def rewrite_dockerfile_inline_install(
 
 def _apply_one(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply a single inline-install edit. Refuses on value
     mismatch (the file's value differs from what the plan
     expected) so a stale plan never silently corrupts an

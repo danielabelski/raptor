@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
 
 from core.dataflow.sanitizer_evidence import (
     PROVENANCE_LLM,
@@ -135,7 +135,7 @@ _PROMPT_VERSION_SHA = hashlib.sha256(
 #: of vendor-side error, etc.). Treat ``""`` as "LLM gave us nothing"
 #: and ``None`` as "extractor itself failed" — both produce no
 #: candidates plus an :data:`extraction_failures` entry.
-ExtractorFn = Callable[[PromptBundle], Optional[str]]
+ExtractorFn = Callable[[PromptBundle], str | None]
 
 
 # ---------------------------------------------------------------------
@@ -204,7 +204,7 @@ def _coerce_semantics_tag(tag: object) -> str:
     return SEMANTICS_OTHER
 
 
-def _coerce_confidence(value: object) -> Optional[float]:
+def _coerce_confidence(value: object) -> float | None:
     try:
         f = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -218,14 +218,14 @@ def _parse_response(
     raw: str,
     file_path: str,
     line_count: int,
-) -> Tuple[Tuple[CandidateValidator, ...], List[str]]:
+) -> tuple[tuple[CandidateValidator, ...], list[str]]:
     """Parse the LLM's JSON output into CandidateValidators.
 
     Returns ``(candidates, errors)``. Errors are human-readable
     strings suitable for :data:`SanitizerEvidence.extraction_failures`;
     callers thread them up.
     """
-    errors: List[str] = []
+    errors: list[str] = []
 
     try:
         obj = json.loads(raw)
@@ -239,7 +239,7 @@ def _parse_response(
     if not isinstance(items, list):
         return (), [f"{file_path}: 'validators' field is not a list"]
 
-    candidates: List[CandidateValidator] = []
+    candidates: list[CandidateValidator] = []
     for i, raw_item in enumerate(items):
         if not isinstance(raw_item, dict):
             errors.append(f"{file_path} item {i}: not an object")
@@ -302,8 +302,8 @@ def extract_from_content(
     content: str,
     extractor: ExtractorFn,
     model_id: str = "",
-    cache: Optional[Dict[str, Tuple[CandidateValidator, ...]]] = None,
-) -> Tuple[Tuple[CandidateValidator, ...], List[str]]:
+    cache: dict[str, tuple[CandidateValidator, ...]] | None = None,
+) -> tuple[tuple[CandidateValidator, ...], list[str]]:
     """Extract candidates from one file's content.
 
     If ``cache`` is supplied (mutable dict), checks it before calling
@@ -342,15 +342,15 @@ def extract_from_files(
     repo_root: Path,
     extractor: ExtractorFn,
     model_id: str = "",
-    cache: Optional[Dict[str, Tuple[CandidateValidator, ...]]] = None,
-) -> Tuple[Tuple[CandidateValidator, ...], List[str]]:
+    cache: dict[str, tuple[CandidateValidator, ...]] | None = None,
+) -> tuple[tuple[CandidateValidator, ...], list[str]]:
     """Extract from multiple files; de-duplicate by ``qualified_name``.
 
     File-read failures are recorded in the returned errors and
     skipped; the remaining files still contribute candidates.
     """
-    all_candidates: List[CandidateValidator] = []
-    all_errors: List[str] = []
+    all_candidates: list[CandidateValidator] = []
+    all_errors: list[str] = []
 
     for rel in file_paths:
         full = (repo_root / rel).resolve()
@@ -373,7 +373,7 @@ def extract_from_files(
         all_candidates.extend(candidates)
         all_errors.extend(errors)
 
-    by_qname: Dict[str, CandidateValidator] = {}
+    by_qname: dict[str, CandidateValidator] = {}
     for c in all_candidates:
         # First-seen wins. Acceptable; downstream LLM doesn't reason
         # about which file a duplicate name was first defined in.

@@ -22,7 +22,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def analyse_intra_function(
     min_branches: int = 3,
     domain_model: dict[str, Any] | None = None,
     target_path: Path | None = None,
-) -> List[IntraFunctionAsymmetry]:
+) -> list[IntraFunctionAsymmetry]:
     """Run all intra-function comparisons on a function's source.
 
     Args:
@@ -177,7 +177,7 @@ def check_cleanup_consistency(
     min_paths: int = 2,
     domain_model: dict[str, Any] | None = None,
     target_path: Path | None = None,
-) -> List[IntraFunctionAsymmetry]:
+) -> list[IntraFunctionAsymmetry]:
     """Compare cleanup calls across return paths.
 
     Splits the function into segments ending at each ``return``
@@ -237,7 +237,7 @@ def check_cleanup_consistency(
 
 def check_operator_consistency(
     source: str,
-) -> List[IntraFunctionAsymmetry]:
+) -> list[IntraFunctionAsymmetry]:
     """Find comparison operator deviations within a function.
 
     Groups comparisons by the variable being compared, then flags
@@ -288,8 +288,8 @@ def check_operator_consistency(
 
 
 def format_intra_function_context(
-    asymmetries: List[IntraFunctionAsymmetry],
-) -> Optional[str]:
+    asymmetries: list[IntraFunctionAsymmetry],
+) -> str | None:
     """Format asymmetries for injection into the LLM review prompt."""
     if not asymmetries:
         return None

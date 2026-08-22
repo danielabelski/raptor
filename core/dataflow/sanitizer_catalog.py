@@ -29,13 +29,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import (
     Any,
-    FrozenSet,
-    Iterable,
-    List,
-    Mapping,
-    Set,
     TypeVar,
 )
+from collections.abc import Iterable, Mapping
 
 from core.dataflow.known_safe_calls import (
     all_entries,
@@ -78,12 +74,12 @@ class SanitizerBinding:
     """
     node: Any
     callable: str
-    input_symbols: FrozenSet[str]
-    output_symbols: FrozenSet[str]
+    input_symbols: frozenset[str]
+    output_symbols: frozenset[str]
     lineno: int
 
 
-def nodes_of(bindings: Iterable[SanitizerBinding]) -> Set[Any]:
+def nodes_of(bindings: Iterable[SanitizerBinding]) -> set[Any]:
     """Project a binding set down to its underlying CFG nodes.
 
     Helper for Phase 7's vertex-cut consumer (which works on nodes,
@@ -175,7 +171,7 @@ def sink_classes_for_cwe(cwe: str) -> frozenset:
 
 def sanitizer_callables_for_cwe(
     cwe: str, language: str,
-) -> Set[str]:
+) -> set[str]:
     """Return the set of ``library_call`` identifiers from the
     known-safe catalog that neutralize ``cwe`` for ``language``.
 
@@ -186,14 +182,14 @@ def sanitizer_callables_for_cwe(
     sink_classes = sink_classes_for_cwe(cwe)
     if not sink_classes:
         return set()
-    out: Set[str] = set()
+    out: set[str] = set()
     for entry in all_entries():
         if entry.sink_class in sink_classes and language in entry.languages:
             out.add(entry.library_call)
     return out
 
 
-def all_sanitizer_callables(language: str) -> Set[str]:
+def all_sanitizer_callables(language: str) -> set[str]:
     """Every catalog entry for ``language``, irrespective of sink class.
     Useful for callers that haven't tagged the finding with a CWE
     (they get over-broad suppression rather than none)."""
@@ -231,7 +227,7 @@ def _node_calls(node: N) -> Iterable[str]:
 
 def match_sanitizers_in_cfg(
     graph, cwe: str, language: str,
-) -> FrozenSet[SanitizerBinding]:
+) -> frozenset[SanitizerBinding]:
     """Return the set of :class:`SanitizerBinding` records that
     correspond to catalog-matched sanitizer calls in ``graph`` for
     ``cwe`` + ``language``.
@@ -263,7 +259,7 @@ def match_sanitizers_in_cfg(
     sanitizer_names = sanitizer_callables_for_cwe(cwe, language)
     if not sanitizer_names:
         return frozenset()
-    bindings: List[SanitizerBinding] = []
+    bindings: list[SanitizerBinding] = []
     for node in graph.nodes():
         call_sites = getattr(node, "call_sites", ()) or ()
         if call_sites:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.evidence import EvidenceTier
 
@@ -61,13 +61,13 @@ class FunctionSummary:
 
     function: str
     file: str
-    taint_rules: List[TaintRule] = field(default_factory=list)
-    preconditions: List[Precondition] = field(default_factory=list)
-    returns: List[ReturnCondition] = field(default_factory=list)
-    error_paths: List[str] = field(default_factory=list)
-    callees: List[str] = field(default_factory=list)
-    callers: List[str] = field(default_factory=list)
-    state_transitions: List[str] = field(default_factory=list)
+    taint_rules: list[TaintRule] = field(default_factory=list)
+    preconditions: list[Precondition] = field(default_factory=list)
+    returns: list[ReturnCondition] = field(default_factory=list)
+    error_paths: list[str] = field(default_factory=list)
+    callees: list[str] = field(default_factory=list)
+    callers: list[str] = field(default_factory=list)
+    state_transitions: list[str] = field(default_factory=list)
     evidence_tier: EvidenceTier = EvidenceTier.XREF_BACKED
     source: str = "mechanical"
     confidence: str = "high"
@@ -141,7 +141,7 @@ class FunctionSummary:
 
         return "\n".join(lines)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "function": self.function,
             "file": self.file,
@@ -184,7 +184,7 @@ class FunctionSummary:
         }
 
 
-def _parse_evidence_tier(data: Dict[str, Any]) -> EvidenceTier:
+def _parse_evidence_tier(data: dict[str, Any]) -> EvidenceTier:
     """Parse an evidence tier from a dict, defaulting to XREF_BACKED."""
     raw = data.get("evidence_tier", "")
     if raw:
@@ -195,7 +195,7 @@ def _parse_evidence_tier(data: Dict[str, Any]) -> EvidenceTier:
     return EvidenceTier.XREF_BACKED
 
 
-def parse_taint_lines(raw: str) -> List[TaintRule]:
+def parse_taint_lines(raw: str) -> list[TaintRule]:
     """Parse SUMMARY_TAINT: lines from Joern query output."""
     rules = []
     for line in raw.splitlines():
@@ -217,7 +217,7 @@ def parse_taint_lines(raw: str) -> List[TaintRule]:
     return rules
 
 
-def parse_guard_lines(raw: str) -> List[Precondition]:
+def parse_guard_lines(raw: str) -> list[Precondition]:
     """Parse SUMMARY_GUARD: lines from Joern query output."""
     guards = []
     for line in raw.splitlines():
@@ -237,7 +237,7 @@ def parse_guard_lines(raw: str) -> List[Precondition]:
     return guards
 
 
-def parse_return_lines(raw: str) -> List[ReturnCondition]:
+def parse_return_lines(raw: str) -> list[ReturnCondition]:
     """Parse SUMMARY_RETURN: lines from Joern query output."""
     returns = []
     for line in raw.splitlines():
@@ -257,7 +257,7 @@ def parse_return_lines(raw: str) -> List[ReturnCondition]:
     return returns
 
 
-def parse_error_lines(raw: str) -> List[str]:
+def parse_error_lines(raw: str) -> list[str]:
     """Parse SUMMARY_ERROR: lines from Joern query output."""
     errors = []
     for line in raw.splitlines():
@@ -280,9 +280,9 @@ def build_summary_from_query_outputs(
     guard_output: str = "",
     return_output: str = "",
     error_output: str = "",
-    callees: Optional[List[str]] = None,
-    callers: Optional[List[str]] = None,
-    state_transitions: Optional[List[str]] = None,
+    callees: list[str] | None = None,
+    callers: list[str] | None = None,
+    state_transitions: list[str] | None = None,
     source: str = "mechanical",
     confidence: str = "high",
 ) -> FunctionSummary:
@@ -305,8 +305,8 @@ def build_summary_from_query_outputs(
 def summary_from_review_result(
     function: str,
     file: str,
-    review_result: Dict[str, Any],
-) -> Optional[FunctionSummary]:
+    review_result: dict[str, Any],
+) -> FunctionSummary | None:
     """Extract a FunctionSummary from an LLM review outcome.
 
     The LLM discovers security behavior that Joern can't see —
@@ -350,8 +350,8 @@ def summary_from_review_result(
 def propagate_taint_upward(
     callee_summary: FunctionSummary,
     caller_summary: FunctionSummary,
-    call_args: List[Dict[str, Any]],
-) -> List[TaintRule]:
+    call_args: list[dict[str, Any]],
+) -> list[TaintRule]:
     """Inherit callee taint rules into the caller's summary.
 
     If ``parse_header(user_input)`` has taint_rule param[0]→return,
@@ -393,9 +393,9 @@ def propagate_taint_upward(
 
 
 def resolve_scc_summaries(
-    scc: List[str],
-    summaries: Dict[str, FunctionSummary],
-    call_edges: List[Dict[str, Any]],
+    scc: list[str],
+    summaries: dict[str, FunctionSummary],
+    call_edges: list[dict[str, Any]],
     max_iterations: int = 3,
 ) -> int:
     """Fixed-point propagation for strongly-connected components.

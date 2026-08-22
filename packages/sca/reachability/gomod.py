@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Reachability
 
@@ -44,10 +44,10 @@ _BLOCK_LINE_RE = re.compile(
 
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> Dict[str, List[Tuple[Path, int, bool]]]:
+) -> dict[str, list[tuple[Path, int, bool]]]:
     """Return ``{import_path: [(file, line, is_test), ...]}``."""
     target = target.resolve()
-    out: Dict[str, List[Tuple[Path, int, bool]]] = {}
+    out: dict[str, list[tuple[Path, int, bool]]] = {}
     for go_file in _walk_go_sources(target, max_depth=max_depth):
         is_test = _is_test_file(go_file)
         try:
@@ -62,10 +62,10 @@ def scan_imports(
 
 def resolve_dep(
     dep_name: str,
-    scan: Dict[str, List[Tuple[Path, int, bool]]],
+    scan: dict[str, list[tuple[Path, int, bool]]],
     *,
-    target: Optional[Path] = None,
-    advisory_symbols: Optional[List[str]] = None,
+    target: Path | None = None,
+    advisory_symbols: list[str] | None = None,
 ) -> Reachability:
     """Look up ``dep_name`` (a Go module path) in the scan.
 
@@ -74,7 +74,7 @@ def resolve_dep(
     function/type names appear in the importing Go files. A match
     upgrades the verdict from ``imported`` to ``likely_called``.
     """
-    matches: List[Tuple[Path, int, bool]] = []
+    matches: list[tuple[Path, int, bool]] = []
     prefix = dep_name.rstrip("/") + "/"
     for path, hits in scan.items():
         if path == dep_name or path.startswith(prefix):
@@ -128,16 +128,16 @@ def resolve_dep(
 
 
 def _grep_symbols(
-    hits: List[Tuple[Path, int, bool]],
-    symbols: List[str],
-) -> List[str]:
+    hits: list[tuple[Path, int, bool]],
+    symbols: list[str],
+) -> list[str]:
     """Check whether any advisory-listed symbols appear in the source files.
 
     Returns the subset of ``symbols`` that were found (identifier-boundary
     match, not substring).
     """
     files_checked: set = set()
-    file_contents: Dict[Path, str] = {}
+    file_contents: dict[Path, str] = {}
     for f, _, _ in hits:
         if f in files_checked:
             continue
@@ -150,7 +150,7 @@ def _grep_symbols(
     if not file_contents:
         return []
 
-    found: List[str] = []
+    found: list[str] = []
     combined = "\n".join(file_contents.values())
     for sym in symbols:
         pat = re.compile(r"\b" + re.escape(sym) + r"\b")
@@ -163,7 +163,7 @@ def _grep_symbols(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _imports_in(text: str) -> Iterable[Tuple[str, int]]:
+def _imports_in(text: str) -> Iterable[tuple[str, int]]:
     # Single-line.
     for m in _IMPORT_SINGLE_RE.finditer(text):
         yield m.group(1), text.count("\n", 0, m.start()) + 1
@@ -189,12 +189,12 @@ def _is_test_file(path: Path) -> bool:
 
 
 def _format_evidence(
-    hits: List[Tuple[Path, int, bool]],
+    hits: list[tuple[Path, int, bool]],
     *,
-    target: Optional[Path],
+    target: Path | None,
     cap: int = 5,
-) -> List[str]:
-    out: List[str] = []
+) -> list[str]:
+    out: list[str] = []
     for f, line, _ in hits[:cap]:
         rel = (f.relative_to(target) if target and target in f.parents
                 else f)

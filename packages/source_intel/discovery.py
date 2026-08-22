@@ -33,13 +33,12 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 
 
 #: Per-family substring markers — the expansion of a discovered macro
 #: must contain at least one of these to be classified into the family.
-_KIND_MARKERS: Dict[str, Tuple[str, ...]] = {
+_KIND_MARKERS: dict[str, tuple[str, ...]] = {
     "wur": (
         "warn_unused_result",
         "__warn_unused_result__",
@@ -68,10 +67,10 @@ PER_FAMILY_ALIAS_CAP: int = 30
 MAX_RESOLUTION_DEPTH: int = 3
 
 #: Header file extensions inspected.
-_HEADER_EXTS: Tuple[str, ...] = (".h", ".hpp", ".hh", ".hxx")
+_HEADER_EXTS: tuple[str, ...] = (".h", ".hpp", ".hh", ".hxx")
 
 #: Source file extensions inspected for frequency-counting alias usage.
-_SOURCE_EXTS: Tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
+_SOURCE_EXTS: tuple[str, ...] = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
 
 #: Bound on number of files walked. Kernels easily exceed 10k; the cap
 #: keeps the pre-pass cost sub-second on small/medium projects and
@@ -104,7 +103,7 @@ class DiscoveryResult:
 
     #: Per-family discovered macro names, capped per ``PER_FAMILY_ALIAS_CAP``,
     #: ordered by usage frequency in source files (descending).
-    aliases_by_family: Dict[str, Tuple[str, ...]]
+    aliases_by_family: dict[str, tuple[str, ...]]
 
     #: Total number of header files scanned.
     headers_scanned: int
@@ -138,7 +137,7 @@ def discover_aliases(target: Path) -> DiscoveryResult:
             sources_scanned=0,
         )
 
-    scan_roots: List[Path] = [target]
+    scan_roots: list[Path] = [target]
     # Walk up at most 2 parents looking for a sibling include/ tree.
     # 1 hop covers `proj/crypto` → `proj/include`; 2 hops covers
     # `proj/sub/comp` → `proj/include`. Stop sooner if we hit /.
@@ -154,7 +153,7 @@ def discover_aliases(target: Path) -> DiscoveryResult:
 
     # Phase 1: scan headers across all roots, build macro_name →
     # expansion map. First definition wins per C semantics.
-    macros: Dict[str, str] = {}
+    macros: dict[str, str] = {}
     headers_seen = 0
     for root in scan_roots:
         for entry in root.rglob("*"):
@@ -177,7 +176,7 @@ def discover_aliases(target: Path) -> DiscoveryResult:
     # Phase 2: classify each macro by family. A macro is in a family
     # iff its FULLY-RESOLVED expansion (recursive macro lookup up to
     # MAX_RESOLUTION_DEPTH) contains a family marker.
-    family_to_aliases: Dict[str, List[str]] = defaultdict(list)
+    family_to_aliases: dict[str, list[str]] = defaultdict(list)
     for name, expansion in macros.items():
         resolved = _resolve_expansion(expansion, macros, depth=0)
         for family, markers in _KIND_MARKERS.items():
@@ -185,13 +184,13 @@ def discover_aliases(target: Path) -> DiscoveryResult:
                 family_to_aliases[family].append(name)
 
     # Phase 3: count usage of each candidate macro in source files.
-    candidate_names: Set[str] = set()
+    candidate_names: set[str] = set()
     for names in family_to_aliases.values():
         candidate_names.update(names)
     usage_counts = _count_usage(target, candidate_names)
 
     # Phase 4: sort within each family by usage frequency desc, cap.
-    out: Dict[str, Tuple[str, ...]] = {}
+    out: dict[str, tuple[str, ...]] = {}
     for family, names in family_to_aliases.items():
         # Filter to candidates that appear at least once (drop dead
         # defines — common in kernel headers where alternate-config
@@ -228,10 +227,10 @@ def _join_continuations(text: str) -> str:
 
 def _resolve_expansion(
     expansion: str,
-    macros: Dict[str, str],
+    macros: dict[str, str],
     *,
     depth: int,
-    visited: Optional[Set[str]] = None,
+    visited: set[str] | None = None,
 ) -> str:
     """Recursively expand any macro tokens in ``expansion`` using the
     discovered macro table. Bounded by ``MAX_RESOLUTION_DEPTH`` and a
@@ -270,7 +269,7 @@ def _iter_source_files(target: Path):
         yield entry
 
 
-def _count_usage(target: Path, names: Set[str]) -> Dict[str, int]:
+def _count_usage(target: Path, names: set[str]) -> dict[str, int]:
     """Count word-boundary occurrences of each macro in source files
     under ``target``. Returns a dict mapping name → count.
 
@@ -285,7 +284,7 @@ def _count_usage(target: Path, names: Set[str]) -> Dict[str, int]:
     valid C identifiers, so word-boundary checks are safe against
     English-language false positives.
     """
-    counts: Dict[str, int] = {n: 0 for n in names}
+    counts: dict[str, int] = {n: 0 for n in names}
     if not names:
         return counts
 

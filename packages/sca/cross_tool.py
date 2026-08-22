@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ _GHSA_RE = re.compile(r"(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})", re.IGNORECA
 
 def link_related_findings(
     sca_findings_path: Path,
-    sarif_dirs: List[Path],
+    sarif_dirs: list[Path],
 ) -> int:
     """Link SCA findings to sibling SARIF results by CVE/GHSA reference.
 
@@ -67,7 +67,7 @@ def link_related_findings(
     return added
 
 
-def _load_findings(path: Path) -> List[Dict[str, Any]]:
+def _load_findings(path: Path) -> list[dict[str, Any]]:
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -77,16 +77,16 @@ def _load_findings(path: Path) -> List[Dict[str, Any]]:
         return []
 
 
-def _write_findings(path: Path, findings: List[Dict[str, Any]]) -> None:
+def _write_findings(path: Path, findings: list[dict[str, Any]]) -> None:
     from core.json import save_json
     save_json(path, findings)
 
 
 def _build_cve_index(
-    findings: List[Dict[str, Any]],
-) -> Dict[str, List[str]]:
+    findings: list[dict[str, Any]],
+) -> dict[str, list[str]]:
     """Map CVE/GHSA ID → list of SCA finding IDs that reference it."""
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for f in findings:
         fid = f.get("finding_id", "")
         if not fid:
@@ -97,13 +97,13 @@ def _build_cve_index(
     return out
 
 
-def _extract_cves_from_finding(f: Dict[str, Any]) -> Set[str]:
+def _extract_cves_from_finding(f: dict[str, Any]) -> set[str]:
     """Extract CVE/GHSA IDs from an SCA finding dict.
 
     Real findings nest advisory data under ``sca.advisory`` (primary)
     and ``sca.all_advisories`` (full list), each keyed by ``"id"``.
     """
-    ids: Set[str] = set()
+    ids: set[str] = set()
     sca = f.get("sca") or {}
     # Primary advisory.
     primary = sca.get("advisory") or {}
@@ -123,13 +123,13 @@ def _extract_cves_from_finding(f: Dict[str, Any]) -> Set[str]:
 
 
 def _collect_sarif_refs(
-    sarif_dirs: List[Path],
-) -> Dict[str, List[str]]:
+    sarif_dirs: list[Path],
+) -> dict[str, list[str]]:
     """Scan SARIF files for CVE/GHSA references in results.
 
     Returns ``{CVE_ID: [sarif_ref_id, ...]}``.
     """
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for d in sarif_dirs:
         if not d.is_dir():
             continue
@@ -143,7 +143,7 @@ def _collect_sarif_refs(
 
 def _scan_sarif_file(
     path: Path,
-    out: Dict[str, List[str]],
+    out: dict[str, list[str]],
 ) -> None:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -164,7 +164,7 @@ def _scan_sarif_file(
 
 
 def _sarif_result_id(
-    result: Dict[str, Any],
+    result: dict[str, Any],
     tool_name: str,
     file_stem: str,
 ) -> str:
@@ -186,11 +186,11 @@ def _sarif_result_id(
 
 
 def _extract_cves_from_sarif_result(
-    result: Dict[str, Any],
-    run: Dict[str, Any],
-) -> Set[str]:
+    result: dict[str, Any],
+    run: dict[str, Any],
+) -> set[str]:
     """Extract CVE/GHSA IDs from a SARIF result's message, tags, and properties."""
-    ids: Set[str] = set()
+    ids: set[str] = set()
 
     msg = result.get("message", {}).get("text", "")
     ids.update(m.group(1).upper() for m in _CVE_RE.finditer(msg))

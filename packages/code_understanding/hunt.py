@@ -10,7 +10,8 @@ own (which makes mock testing trivial).
 """
 
 import logging
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Callable, Iterable
 
 from core.llm.multi_model import (
     Aggregator,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 HuntDispatchFn = Callable[
     [ModelHandle, str, str],     # (model, pattern, repo_path)
-    List[Dict[str, Any]],        # list of variant dicts
+    list[dict[str, Any]],        # list of variant dicts
 ]
 
 
@@ -38,9 +39,9 @@ def hunt(
     repo_path: str,
     models: Iterable[ModelHandle],
     dispatch_fn: HuntDispatchFn,
-    reviewers: Optional[Iterable[Reviewer]] = (),
-    aggregator: Optional[Aggregator] = None,
-    cost_gate: Optional[CostGate] = None,
+    reviewers: Iterable[Reviewer] | None = (),
+    aggregator: Aggregator | None = None,
+    cost_gate: CostGate | None = None,
     max_parallel: int = 3,
 ) -> MultiModelResult:
     """Multi-model variant hunt.
@@ -76,7 +77,7 @@ def hunt(
     # trailing whitespace from copy-paste mistakes.
     pattern = pattern.strip()
 
-    def task(model: ModelHandle) -> List[Dict[str, Any]]:
+    def task(model: ModelHandle) -> list[dict[str, Any]]:
         # Substrate calls this once per model in parallel. dispatch_fn
         # is the consumer-supplied actual-work; we just bind args.
         return dispatch_fn(model, pattern, repo_path)

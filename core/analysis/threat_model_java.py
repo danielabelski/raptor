@@ -44,12 +44,11 @@ evaluated and rejected in b45: they classify different things.
 
 from __future__ import annotations
 
-from typing import FrozenSet, Tuple
 
 # ``System.<name>(...)`` reads that ARE taint sources under the
 # programme threat model.  Deriving consumers: the postpass environment
 # source kind (patterns below) and — by exclusion — the fold tier.
-ENVIRONMENT_SOURCE_SYSTEM_READS: FrozenSet[str] = frozenset({
+ENVIRONMENT_SOURCE_SYSTEM_READS: frozenset[str] = frozenset({
     "getenv",
     "getProperty",
 })
@@ -59,11 +58,11 @@ ENVIRONMENT_SOURCE_SYSTEM_READS: FrozenSet[str] = frozenset({
 # read returns environment-influenced data.  Any future addition must
 # argue why the API cannot carry attacker influence under threat-model
 # local, and cannot overlap the source set (asserted below).
-NON_SOURCE_SYSTEM_READS: FrozenSet[str] = frozenset()
+NON_SOURCE_SYSTEM_READS: frozenset[str] = frozenset()
 
 # JVM constant fields (accessed as ``Cls.field``, never method calls):
 # compile-time/JVM-defined values with no attacker channel.
-NON_SOURCE_JVM_CONSTANT_FIELDS: FrozenSet[str] = frozenset({
+NON_SOURCE_JVM_CONSTANT_FIELDS: frozenset[str] = frozenset({
     "separator",
     "pathSeparator",
     "separatorChar",
@@ -78,7 +77,7 @@ assert not _overlap, (
 )
 
 
-def environment_source_patterns() -> Tuple[str, ...]:
+def environment_source_patterns() -> tuple[str, ...]:
     """Locator regexes for the environment source kind, derived from
     the source set so a newly added source API automatically becomes a
     locator pattern and can never be folded taint-free."""

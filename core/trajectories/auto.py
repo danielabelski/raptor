@@ -84,7 +84,7 @@ def _sanitize_run_id(run_id: str) -> str:
 
 
 def persist_from_loop_result(
-    result: "ToolLoopResult",
+    result: ToolLoopResult,
     *,
     run_id: str,
     model_name: str,

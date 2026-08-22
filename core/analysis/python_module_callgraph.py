@@ -64,15 +64,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import (
-    Dict,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Union,
-)
+from collections.abc import Iterable
 
 
 # Sentinel name for the synthetic module entry. Chosen to be
@@ -95,9 +87,9 @@ class PyCallGraphNode:
     name: str               # qualified — "foo", "C.method", "outer.inner"
     lineno: int             # 1-indexed start line of the def
     end_lineno: int = 0     # 1-indexed end line; 0 when unknown
-    params: Tuple[str, ...] = ()
+    params: tuple[str, ...] = ()
     is_method: bool = False
-    class_name: Optional[str] = None
+    class_name: str | None = None
     is_module_entry: bool = False
 
     def __repr__(self) -> str:                              # pragma: no cover
@@ -130,18 +122,18 @@ class PyModuleCallGraph:
     """
     file_path: str
     entry_node: PyCallGraphNode
-    _nodes: Tuple[PyCallGraphNode, ...]
-    _adjacency: Dict[PyCallGraphNode, Tuple[PyCallGraphNode, ...]]
-    _by_name: Dict[str, PyCallGraphNode] = field(default_factory=dict)
+    _nodes: tuple[PyCallGraphNode, ...]
+    _adjacency: dict[PyCallGraphNode, tuple[PyCallGraphNode, ...]]
+    _by_name: dict[str, PyCallGraphNode] = field(default_factory=dict)
     # Mutable side-channel for ast access. NOT part of node identity;
     # frozen dataclass equality still works because dicts compare by
     # content. Kept private; access via :meth:`function_ast`.
-    _ast_by_name: Dict[str, ast.AST] = field(default_factory=dict)
+    _ast_by_name: dict[str, ast.AST] = field(default_factory=dict)
     # All variants per qualified name, in definition order. Singleton
     # tuples for the (overwhelmingly common) unredefined case.
-    _variants_by_name: Dict[str, Tuple[PyCallGraphNode, ...]] = field(
+    _variants_by_name: dict[str, tuple[PyCallGraphNode, ...]] = field(
         default_factory=dict)
-    _asts_by_node: Dict[Tuple[str, int], ast.AST] = field(
+    _asts_by_node: dict[tuple[str, int], ast.AST] = field(
         default_factory=dict)
 
     @property
@@ -156,24 +148,24 @@ class PyModuleCallGraph:
     ) -> Iterable[PyCallGraphNode]:
         return self._adjacency.get(node, ())
 
-    def find(self, name: str) -> Optional[PyCallGraphNode]:
+    def find(self, name: str) -> PyCallGraphNode | None:
         """Look up a node by its qualified name."""
         return self._by_name.get(name)
 
-    def function_ast(self, name: str) -> Optional[ast.AST]:
+    def function_ast(self, name: str) -> ast.AST | None:
         """Phase 13 hook — the AST subtree for ``name``. Returns
         None for the module entry, for unknown names, and for
         functions whose AST wasn't preserved (e.g. a lambda whose
         binding was lost)."""
         return self._ast_by_name.get(name)
 
-    def find_all(self, name: str) -> Tuple[PyCallGraphNode, ...]:
+    def find_all(self, name: str) -> tuple[PyCallGraphNode, ...]:
         """Every definition of ``name``, in source order. Empty tuple
         for unknown names; a singleton for the common unredefined
         case."""
         return self._variants_by_name.get(name, ())
 
-    def function_asts(self, name: str) -> Tuple[ast.AST, ...]:
+    def function_asts(self, name: str) -> tuple[ast.AST, ...]:
         """The AST of every definition of ``name``, in source order.
         Consumers analysing behaviour must consider ALL variants —
         a conditionally-redefined function's runtime body depends on
@@ -199,20 +191,20 @@ class _FunctionRecord:
     qualified_name: str
     lineno: int
     end_lineno: int
-    params: Tuple[str, ...]
+    params: tuple[str, ...]
     is_method: bool
-    class_name: Optional[str]
+    class_name: str | None
     ast_node: ast.AST
 
 
 def _function_params(
-    fn: Union[ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda],
-) -> Tuple[str, ...]:
+    fn: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> tuple[str, ...]:
     """Ordered param names. Same convention as
     :func:`core.analysis.cfg_builder._function_params`: posonly,
     positional, ``*args``, kwonly, ``**kwargs``."""
     args = fn.args
-    names: List[str] = []
+    names: list[str] = []
     for a in args.posonlyargs:
         names.append(a.arg)
     for a in args.args:
@@ -238,7 +230,7 @@ def _end_lineno(node: ast.AST) -> int:
     return out
 
 
-def _collect_functions(tree: ast.AST) -> List[_FunctionRecord]:
+def _collect_functions(tree: ast.AST) -> list[_FunctionRecord]:
     """Walk ``tree`` collecting every named function-like
     definition. Recursion handles nested functions and methods.
 
@@ -247,10 +239,10 @@ def _collect_functions(tree: ast.AST) -> List[_FunctionRecord]:
     Anonymous lambdas in expression position are skipped (no
     static name to resolve from a call site).
     """
-    out: List[_FunctionRecord] = []
+    out: list[_FunctionRecord] = []
     # Walk with an explicit stack so we can carry the enclosing
     # qualified-prefix and class-name context downward.
-    stack: List[Tuple[ast.AST, str, Optional[str]]] = [(tree, "", None)]
+    stack: list[tuple[ast.AST, str, str | None]] = [(tree, "", None)]
     # (subtree_root, prefix, current_class_name)
     while stack:
         node, prefix, class_name = stack.pop()
@@ -333,12 +325,12 @@ def _collect_functions(tree: ast.AST) -> List[_FunctionRecord]:
 # ---------------------------------------------------------------------------
 
 
-def _attribute_chain(node: ast.AST) -> Optional[List[str]]:
+def _attribute_chain(node: ast.AST) -> list[str] | None:
     """``foo.bar.baz`` (``ast.Attribute`` rooted on ``ast.Name``) →
     ``["foo", "bar", "baz"]``. ``ast.Name("f")`` → ``["f"]``.
     Anything else (subscript root, call root, parenthesised
     lambda, etc.) → None."""
-    parts: List[str] = []
+    parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
         parts.append(cur.attr)
@@ -352,8 +344,8 @@ def _attribute_chain(node: ast.AST) -> Optional[List[str]]:
 
 def _enclosing_function_chain(
     call_node: ast.Call,
-    function_records: List[_FunctionRecord],
-) -> Optional[_FunctionRecord]:
+    function_records: list[_FunctionRecord],
+) -> _FunctionRecord | None:
     """Find the function whose line range contains the call's line
     and whose span is smallest (so a nested method wins over its
     enclosing class scope)."""
@@ -369,11 +361,11 @@ def _enclosing_function_chain(
 
 
 def _resolve_callee(
-    chain: List[str],
-    caller: Optional[_FunctionRecord],
-    function_records_by_name: Dict[str, List[_FunctionRecord]],
-    class_methods: Dict[str, Set[str]],
-) -> Optional[str]:
+    chain: list[str],
+    caller: _FunctionRecord | None,
+    function_records_by_name: dict[str, list[_FunctionRecord]],
+    class_methods: dict[str, set[str]],
+) -> str | None:
     """Resolve a call's attribute chain to a callee's qualified
     name in this module, or None.
 
@@ -430,11 +422,11 @@ def _resolve_callee(
     return None
 
 
-def _collect_calls(tree: ast.AST) -> List[Tuple[ast.Call, List[str]]]:
+def _collect_calls(tree: ast.AST) -> list[tuple[ast.Call, list[str]]]:
     """Every ``ast.Call`` whose function position has a resolvable
     static name chain, paired with that chain. Calls without a
     recoverable chain (lambda invoke, subscript, etc.) are skipped."""
-    out: List[Tuple[ast.Call, List[str]]] = []
+    out: list[tuple[ast.Call, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -452,8 +444,8 @@ def _collect_calls(tree: ast.AST) -> List[Tuple[ast.Call, List[str]]]:
 
 def _module_level_calls(
     tree: ast.Module,
-    function_records: List[_FunctionRecord],
-) -> List[Tuple[ast.Call, List[str]]]:
+    function_records: list[_FunctionRecord],
+) -> list[tuple[ast.Call, list[str]]]:
     """Calls that live at module level (outside any
     ``FunctionDef`` / ``AsyncFunctionDef`` / ``ClassDef`` body).
     These attach to the synthetic module-entry node."""
@@ -462,7 +454,7 @@ def _module_level_calls(
     def _inside_function(line: int) -> bool:
         return any(start <= line <= end for start, end in fn_ranges)
 
-    out: List[Tuple[ast.Call, List[str]]] = []
+    out: list[tuple[ast.Call, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -481,8 +473,8 @@ def _module_level_calls(
 
 
 def build_python_module_callgraph(
-    source: Union[str, Path],
-) -> Optional[PyModuleCallGraph]:
+    source: str | Path,
+) -> PyModuleCallGraph | None:
     """Build a module-local call graph for one Python source file.
 
     ``source`` is a :class:`Path` (read from disk) or a ``str`` of
@@ -506,10 +498,10 @@ def build_python_module_callgraph(
         return None
 
     fn_records = _collect_functions(tree)
-    by_name: Dict[str, List[_FunctionRecord]] = {}
+    by_name: dict[str, list[_FunctionRecord]] = {}
     for fr in fn_records:
         by_name.setdefault(fr.qualified_name, []).append(fr)
-    class_methods: Dict[str, Set[str]] = {}
+    class_methods: dict[str, set[str]] = {}
     for fr in fn_records:
         if fr.is_method and fr.class_name is not None:
             method_short = fr.qualified_name.split(".", 1)[1]
@@ -526,8 +518,8 @@ def build_python_module_callgraph(
     # silently dropped every variant but the last, which (a) lost the
     # earlier body from the graph entirely and (b) mis-attributed the
     # earlier body's outgoing calls to the later variant's node.
-    fn_node_by_key: Dict[Tuple[str, int], PyCallGraphNode] = {}
-    variants_by_name: Dict[str, List[PyCallGraphNode]] = {}
+    fn_node_by_key: dict[tuple[str, int], PyCallGraphNode] = {}
+    variants_by_name: dict[str, list[PyCallGraphNode]] = {}
     for fr in fn_records:
         node = PyCallGraphNode(
             name=fr.qualified_name,
@@ -542,17 +534,17 @@ def build_python_module_callgraph(
     # Name-keyed views: last definition wins (Python's runtime
     # semantics for sequential module-level defs) — the variant
     # tuples carry the rest.
-    fn_nodes: Dict[str, PyCallGraphNode] = {
+    fn_nodes: dict[str, PyCallGraphNode] = {
         name: nodes[-1] for name, nodes in variants_by_name.items()
     }
-    all_nodes_by_name: Dict[str, PyCallGraphNode] = {
+    all_nodes_by_name: dict[str, PyCallGraphNode] = {
         MODULE_ENTRY_NAME: entry,
         **fn_nodes,
     }
-    ast_by_name: Dict[str, ast.AST] = {
+    ast_by_name: dict[str, ast.AST] = {
         fr.qualified_name: fr.ast_node for fr in fn_records
     }
-    asts_by_node: Dict[Tuple[str, int], ast.AST] = {
+    asts_by_node: dict[tuple[str, int], ast.AST] = {
         (fr.qualified_name, fr.lineno): fr.ast_node for fr in fn_records
     }
 
@@ -561,7 +553,7 @@ def build_python_module_callgraph(
     #    resolvable callee.
     # 2. In-function calls — edges from the caller's node to each
     #    resolvable callee.
-    adjacency: Dict[PyCallGraphNode, Set[PyCallGraphNode]] = {}
+    adjacency: dict[PyCallGraphNode, set[PyCallGraphNode]] = {}
 
     def _add_edge(src: PyCallGraphNode, dst: PyCallGraphNode) -> None:
         adjacency.setdefault(src, set()).add(dst)
@@ -612,11 +604,11 @@ def build_python_module_callgraph(
 
     # Materialise immutable adjacency. Sort deterministically by
     # (name, lineno) so test snapshots are stable.
-    final_adj: Dict[PyCallGraphNode, Tuple[PyCallGraphNode, ...]] = {}
+    final_adj: dict[PyCallGraphNode, tuple[PyCallGraphNode, ...]] = {}
     for src, dsts in adjacency.items():
         final_adj[src] = tuple(sorted(dsts, key=lambda n: (n.name, n.lineno)))
 
-    ordered_nodes: List[PyCallGraphNode] = [entry] + sorted(
+    ordered_nodes: list[PyCallGraphNode] = [entry] + sorted(
         fn_node_by_key.values(), key=lambda n: (n.lineno, n.name),
     )
 

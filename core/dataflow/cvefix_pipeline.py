@@ -22,7 +22,7 @@ import datetime
 import json
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from collections.abc import Iterable, Sequence
 
 from core.dataflow.codeql_augmented_run import DEFAULT_CODEQL_BIN, RunnerFn, analyze
 from core.dataflow.cvefix_corpus_generator import generate_from_sarif, write_corpus
@@ -39,11 +39,11 @@ def generate_corpus_for_pair(
     cwe: str,
     labeled_at: str,
     out_dir: Path,
-    fix_touched_files: Optional[Iterable[str]] = None,
+    fix_touched_files: Iterable[str] | None = None,
     codeql_bin: str = DEFAULT_CODEQL_BIN,
-    runner: Optional[RunnerFn] = None,
+    runner: RunnerFn | None = None,
     write: bool = True,
-) -> List[Tuple[Finding, GroundTruth]]:
+) -> list[tuple[Finding, GroundTruth]]:
     """Run ``queries`` on the pre- and post-fix CodeQL DBs and emit labeled
     corpus entries for one CVE.
 
@@ -79,7 +79,7 @@ def generate_corpus_for_pair(
     return pairs
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("before_db", type=Path, help="CodeQL DB of the pre-fix source")
     p.add_argument("after_db", type=Path, help="CodeQL DB of the post-fix source")

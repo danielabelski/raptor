@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from core.logging import get_logger
 
@@ -30,12 +29,12 @@ _MAX_SCAN_CHILDREN = 500  # cap on iterdir results per search dir
 class FridaEvidence:
     run_dir: Path
     metadata: dict = field(default_factory=dict)
-    target_binary: Optional[str] = None
+    target_binary: str | None = None
     has_drcov: bool = False
     has_events: bool = False
 
 
-def _load_metadata(run_dir: Path) -> Optional[dict]:
+def _load_metadata(run_dir: Path) -> dict | None:
     """Load and validate metadata.json from a frida run directory."""
     meta_path = run_dir / "metadata.json"
     if not meta_path.is_file():
@@ -122,7 +121,7 @@ def _has_nonempty_events(path: Path) -> bool:
 
 def discover_evidence(
     search_dirs: list[Path],
-    target_path: Optional[str] = None,
+    target_path: str | None = None,
 ) -> list[FridaEvidence]:
     """Scan directories for frida run output.
 
@@ -169,7 +168,7 @@ def _mtime(path: Path) -> float:
 
 def _try_add(
     run_dir: Path,
-    target_path: Optional[str],
+    target_path: str | None,
     results: list[FridaEvidence],
     seen: set[Path],
 ) -> None:

@@ -30,7 +30,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -51,8 +50,8 @@ def _is_gha_workflow(path: Path) -> bool:
 
 @register(predicate=_is_gha_workflow)
 def rewrite_gha_uses(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply ``uses:`` ref-bump edits to a GHA workflow file."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -62,7 +61,7 @@ def rewrite_gha_uses(
                 for e2 in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one_uses(new_text, edit)
         results.append(result)
@@ -80,7 +79,7 @@ def rewrite_gha_uses(
 
 def _apply_one_uses(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply one ``uses:`` edit — either tag-pinned or
     SHA-pinned-with-comment.
 
@@ -164,7 +163,7 @@ def _looks_like_sha(ref: str) -> bool:
 
 def _apply_sha_pinned(
     text: str, edit: RewriteEdit,
-) -> "tuple[str, RewriteResult]":
+) -> tuple[str, RewriteResult]:
     """Apply a SHA-pinned-with-``# was vX``-comment edit.
 
     Targets the canonical raptor shape:

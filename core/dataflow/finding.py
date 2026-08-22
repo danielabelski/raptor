@@ -19,16 +19,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable, Mapping
 
 
 SCHEMA_VERSION = 1
 
 
-_STEP_KEYS: FrozenSet[str] = frozenset(
+_STEP_KEYS: frozenset[str] = frozenset(
     {"file_path", "line", "column", "snippet", "label"}
 )
-_FINDING_KEYS: FrozenSet[str] = frozenset(
+_FINDING_KEYS: frozenset[str] = frozenset(
     {
         "schema_version",
         "finding_id",
@@ -43,7 +44,7 @@ _FINDING_KEYS: FrozenSet[str] = frozenset(
 )
 
 
-def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: FrozenSet[str]) -> None:
+def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: frozenset[str]) -> None:
     extras = set(data.keys()) - allowed
     if extras:
         raise ValueError(f"unknown fields in {name} JSON: {sorted(extras)}")
@@ -67,7 +68,7 @@ class Step:
     line: int
     column: int
     snippet: str
-    label: Optional[str] = None
+    label: str | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty("Step.file_path", self.file_path)
@@ -76,7 +77,7 @@ class Step:
         if self.column < 0:
             raise ValueError(f"Step.column must be >= 0, got {self.column}")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "file_path": self.file_path,
             "line": self.line,
@@ -86,7 +87,7 @@ class Step:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Step":
+    def from_dict(cls, data: Mapping[str, Any]) -> Step:
         _check_extra_fields("Step", data, _STEP_KEYS)
         return cls(
             file_path=data["file_path"],
@@ -118,7 +119,7 @@ class Finding:
     message: str
     source: Step
     sink: Step
-    intermediate_steps: Tuple[Step, ...] = ()
+    intermediate_steps: tuple[Step, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -131,7 +132,7 @@ class Finding:
         if not all(isinstance(s, Step) for s in self.intermediate_steps):
             raise TypeError("Finding.intermediate_steps must contain Step instances")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "finding_id": self.finding_id,
@@ -145,7 +146,7 @@ class Finding:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Finding":
+    def from_dict(cls, data: Mapping[str, Any]) -> Finding:
         _check_extra_fields("Finding", data, _FINDING_KEYS)
         version = data["schema_version"]
         if version != SCHEMA_VERSION:
@@ -165,12 +166,12 @@ class Finding:
             raw=dict(data.get("raw", {})),
         )
 
-    def to_json(self, *, indent: Optional[int] = None) -> str:
+    def to_json(self, *, indent: int | None = None) -> str:
         """Render as JSON. Explicit ``indent`` signature — see
         ``core.dataflow.label.GroundTruth.to_json`` for the
         rationale."""
         return json.dumps(self.to_dict(), indent=indent)
 
     @classmethod
-    def from_json(cls, text: str) -> "Finding":
+    def from_json(cls, text: str) -> Finding:
         return cls.from_dict(json.loads(text))

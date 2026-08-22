@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from collections.abc import Sequence
 
 from core.llm.scorecard.scorecard import (
     ALL_EVENT_TYPES,
@@ -63,7 +63,7 @@ class EventTypeSummary:
     event_type: str
     total_cells: int = 0
     cells_with_any_data: int = 0
-    cells_at_thresholds: Dict[int, int] = field(default_factory=dict)
+    cells_at_thresholds: dict[int, int] = field(default_factory=dict)
     total_observations: int = 0
 
 
@@ -81,12 +81,12 @@ class DecisionClassSummary:
 @dataclass
 class AuditReport:
     scorecard_path: str
-    schema_version: Optional[int]
+    schema_version: int | None
     total_models: int
     total_decision_classes: int
     total_cells: int
-    event_type_summaries: List[EventTypeSummary]
-    decision_class_summaries: List[DecisionClassSummary]
+    event_type_summaries: list[EventTypeSummary]
+    decision_class_summaries: list[DecisionClassSummary]
     primary_event_type: str
     verdict: str  # "green" | "amber" | "red" | "no-data"
     verdict_reason: str
@@ -99,7 +99,7 @@ def _empty_event_summary(event_type: str) -> EventTypeSummary:
     )
 
 
-def _load_raw(path: Path) -> Optional[dict]:
+def _load_raw(path: Path) -> dict | None:
     """Read the sidecar JSON directly (without going through
     ``ModelScorecard``) so we can surface ``schema_version`` and survive
     a malformed file. Returns ``None`` when the file is missing."""
@@ -147,13 +147,13 @@ def audit(path: Path = DEFAULT_PATH) -> AuditReport:
     sc = ModelScorecard(path)
     stats_list = sc.get_stats()
 
-    event_summaries: Dict[str, EventTypeSummary] = {
+    event_summaries: dict[str, EventTypeSummary] = {
         et: _empty_event_summary(et) for et in ALL_EVENT_TYPES
     }
     # Per decision-class: track distinct models and per-cell primary-event
     # observation counts for median computation.
-    dc_models: Dict[str, set] = defaultdict(set)
-    dc_obs_primary: Dict[str, List[int]] = defaultdict(list)
+    dc_models: dict[str, set] = defaultdict(set)
+    dc_obs_primary: dict[str, list[int]] = defaultdict(list)
 
     distinct_models = set()
     distinct_decision_classes = set()
@@ -185,7 +185,7 @@ def audit(path: Path = DEFAULT_PATH) -> AuditReport:
             if event_type == PRIMARY_EVENT_TYPE:
                 dc_obs_primary[stats.decision_class].append(n)
 
-    dc_summaries: List[DecisionClassSummary] = []
+    dc_summaries: list[DecisionClassSummary] = []
     for dc, obs_list in sorted(dc_obs_primary.items()):
         obs_list_sorted = sorted(obs_list)
         if not obs_list_sorted:
@@ -267,7 +267,7 @@ def audit(path: Path = DEFAULT_PATH) -> AuditReport:
 def render_markdown(report: AuditReport) -> str:
     """Operator-facing markdown report. Tables paste cleanly into issues
     and notebooks."""
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append(f"# Scorecard audit — `{report.scorecard_path}`")
     lines.append("")
     lines.append(f"Schema version: `{report.schema_version}`")
@@ -340,7 +340,7 @@ def render_json(report: AuditReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scorecard-audit",
         description=(

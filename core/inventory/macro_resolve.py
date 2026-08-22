@@ -14,7 +14,6 @@ import logging
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ _C_EXTENSIONS = frozenset({
 })
 _RUST_EXTENSIONS = frozenset({".rs"})
 
-_SKIP_IDENTS_C: FrozenSet[str] = frozenset({
+_SKIP_IDENTS_C: frozenset[str] = frozenset({
     "if", "else", "for", "while", "do", "switch", "case", "return",
     "break", "continue", "goto", "sizeof", "typeof", "void", "int",
     "char", "unsigned", "signed", "long", "short", "float", "double",
@@ -37,7 +36,7 @@ _SKIP_IDENTS_C: FrozenSet[str] = frozenset({
     "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t",
     "int64_t", "uintptr_t", "intptr_t", "ptrdiff_t",
 })
-_SKIP_IDENTS_RUST: FrozenSet[str] = frozenset({
+_SKIP_IDENTS_RUST: frozenset[str] = frozenset({
     "if", "else", "for", "while", "loop", "match", "return", "break",
     "continue", "let", "mut", "fn", "pub", "use", "mod", "struct",
     "enum", "impl", "trait", "where", "type", "const", "static",
@@ -52,7 +51,7 @@ _SKIP_IDENTS_RUST: FrozenSet[str] = frozenset({
 })
 
 _TABLE_CACHE_MAX = 8
-_table_cache: OrderedDict[str, Dict[str, Tuple[str, str]]] = OrderedDict()
+_table_cache: OrderedDict[str, dict[str, tuple[str, str]]] = OrderedDict()
 
 # Anonymous and named enum enumerator extraction:
 #   enum { FOO = 1, BAR = 2 };
@@ -85,10 +84,10 @@ _RUST_MACRO_RULES_RE = re.compile(
 _RUST_MACRO_CALL_RE = re.compile(r"\b(\w+)\s*!")
 
 _RUST_TABLE_CACHE_MAX = 8
-_rust_table_cache: OrderedDict[str, Dict[str, str]] = OrderedDict()
+_rust_table_cache: OrderedDict[str, dict[str, str]] = OrderedDict()
 
 
-def _extract_braced_body(text: str, open_pos: int) -> Optional[str]:
+def _extract_braced_body(text: str, open_pos: int) -> str | None:
     """Extract text between matched braces starting at open_pos."""
     if open_pos >= len(text) or text[open_pos] != "{":
         return None
@@ -103,7 +102,7 @@ def _extract_braced_body(text: str, open_pos: int) -> Optional[str]:
     return None
 
 
-def build_rust_macro_table(target_path: Path) -> Dict[str, str]:
+def build_rust_macro_table(target_path: Path) -> dict[str, str]:
     """Build name→body table of all macro_rules! in the target.
 
     Results are cached per target path.
@@ -113,7 +112,7 @@ def build_rust_macro_table(target_path: Path) -> Dict[str, str]:
         _rust_table_cache.move_to_end(key)
         return _rust_table_cache[key]
 
-    table: Dict[str, str] = {}
+    table: dict[str, str] = {}
     try:
         for p in target_path.rglob("*"):
             if not p.is_file() or p.is_symlink() or p.suffix not in _RUST_EXTENSIONS:
@@ -149,7 +148,7 @@ def resolve_rust_macros(
     target_path: Path,
     source: str,
     max_depth: int = 3,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Find macro_rules! macros invoked in source, resolve transitively.
 
     Returns list of (name, body) tuples, leaf-first.
@@ -163,7 +162,7 @@ def resolve_rust_macros(
 
     called = set(_RUST_MACRO_CALL_RE.findall(source)) - _SKIP_IDENTS_RUST
 
-    resolved: Dict[str, Tuple[str, str, int]] = {}
+    resolved: dict[str, tuple[str, str, int]] = {}
     worklist = [(name, 0) for name in called if name in table]
     visited: set = set()
 
@@ -191,7 +190,7 @@ def resolve_rust_macros(
     return [(name, body) for name, body, _ in items]
 
 
-def build_macro_table(target_path: Path) -> Dict[str, Tuple[str, str]]:
+def build_macro_table(target_path: Path) -> dict[str, tuple[str, str]]:
     """Build name→(params, body) table of all #defines in the target.
 
     Results are cached per target path, evicting LRU when full.
@@ -201,7 +200,7 @@ def build_macro_table(target_path: Path) -> Dict[str, Tuple[str, str]]:
         _table_cache.move_to_end(key)
         return _table_cache[key]
 
-    table: Dict[str, Tuple[str, str]] = {}
+    table: dict[str, tuple[str, str]] = {}
     try:
         for p in target_path.rglob("*"):
             if not p.is_file() or p.is_symlink() or p.suffix not in _C_EXTENSIONS:
@@ -254,8 +253,8 @@ def resolve_macros(
     target_path: Path,
     source: str,
     max_depth: int = 3,
-    table: Optional[Dict[str, Tuple[str, str]]] = None,
-) -> List[Tuple[str, str]]:
+    table: dict[str, tuple[str, str]] | None = None,
+) -> list[tuple[str, str]]:
     """Find macros used in source, resolve transitively.
 
     Returns list of (display_name, body) tuples, leaf-first so consumers
@@ -271,7 +270,7 @@ def resolve_macros(
 
     source_idents = set(_MACRO_IDENT_RE.findall(source)) - _SKIP_IDENTS_C
 
-    resolved: Dict[str, Tuple[str, str, int]] = {}
+    resolved: dict[str, tuple[str, str, int]] = {}
     worklist = [(name, 0) for name in source_idents if name in table]
     visited: set = set()
 

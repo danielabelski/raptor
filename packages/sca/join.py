@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, Iterable, List, Set, Tuple
+from collections.abc import Iterable
 
 from .models import Confidence, Dependency
 
@@ -49,7 +49,7 @@ from .models import Confidence, Dependency
 _MAX_ANCESTOR_WALK = 64
 
 
-def join(deps: Iterable[Dependency]) -> List[Dependency]:
+def join(deps: Iterable[Dependency]) -> list[Dependency]:
     """Apply both passes — direct-flag promotion and pin-style propagation.
 
     Returns a new list; the input is not mutated.
@@ -66,10 +66,10 @@ def join(deps: Iterable[Dependency]) -> List[Dependency]:
 # Index entry: (ecosystem, manifest_dir, name) -> the matching manifest
 # Dependency. We store the actual Dependency so we can copy attributes
 # (pin_style, parser_confidence) onto the lockfile row.
-_ManifestIndex = Dict[Tuple[str, Path, str], Dependency]
+_ManifestIndex = dict[tuple[str, Path, str], Dependency]
 
 
-def _index_manifest_rows(deps: List[Dependency]) -> _ManifestIndex:
+def _index_manifest_rows(deps: list[Dependency]) -> _ManifestIndex:
     """Build (ecosystem, manifest_dir, name) → manifest Dependency map.
 
     When the same (ecosystem, name) appears in multiple manifests in
@@ -121,7 +121,7 @@ def _find_manifest_match(
     """
     walked = 0
     cursor: Path = dep.declared_in.parent
-    seen: Set[Path] = set()
+    seen: set[Path] = set()
     while walked < _MAX_ANCESTOR_WALK:
         if cursor in seen:
             break

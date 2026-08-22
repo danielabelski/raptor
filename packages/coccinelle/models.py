@@ -1,7 +1,6 @@
 """Data models for Coccinelle results."""
 
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass
@@ -51,9 +50,9 @@ class SpatchResult:
 
     rule: str
     rule_path: str = ""
-    matches: List[SpatchMatch] = field(default_factory=list)
-    files_examined: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
+    matches: list[SpatchMatch] = field(default_factory=list)
+    files_examined: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
     returncode: int = 0
     # COCCIRESULT-shaped output lines that did NOT carry the runner's

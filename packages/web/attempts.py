@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import urlparse
 
 from core.labeled_attempts.store import write as store_write
@@ -68,7 +68,7 @@ def build_web_attempt(
         vuln_type=vuln_type,
     )
     safe_url = redact_secrets(url, reveal_secrets=reveal_secrets)
-    response_evidence: Dict[str, Any] = dict(result.observations)
+    response_evidence: dict[str, Any] = dict(result.observations)
     response_evidence["verification_status"] = result.status
     response_evidence["reason"] = result.reason
     if result.refuted_by_control:
@@ -101,10 +101,10 @@ def build_web_attempt(
 
 
 def write_web_attempts(
-    attempts: List[LabeledAttempt], out_dir: Path,
-) -> List[Path]:
+    attempts: list[LabeledAttempt], out_dir: Path,
+) -> list[Path]:
     """Persist records to the run's per-project pool; never raises."""
-    written: List[Path] = []
+    written: list[Path] = []
     for attempt in attempts:
         try:
             written.extend(store_write(attempt, project_dir=out_dir))

@@ -12,7 +12,6 @@ import importlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -42,7 +41,7 @@ def _can_import(module: str) -> bool:
         return False
 
 
-def _has_dwarf(binary_path: Optional[Path]) -> bool:
+def _has_dwarf(binary_path: Path | None) -> bool:
     if binary_path is None or not binary_path.is_file():
         return False
     readelf = shutil.which("readelf")
@@ -79,7 +78,7 @@ def _has_dwarf(binary_path: Optional[Path]) -> bool:
 
 
 def probe_capabilities(
-    binary_path: Optional[Path] = None,
+    binary_path: Path | None = None,
 ) -> AuditCapabilities:
     """Detect available tools. Called once at audit start."""
     try:

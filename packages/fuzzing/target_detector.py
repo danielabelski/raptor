@@ -31,7 +31,6 @@ import struct
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +65,9 @@ class TargetInfo:
     arch: str = "unknown"
     description: str = ""
     can_fuzz_here: bool = False
-    recommended_fuzzer: Optional[str] = None
-    blockers: List[str] = field(default_factory=list)
-    hints: List[str] = field(default_factory=list)
+    recommended_fuzzer: str | None = None
+    blockers: list[str] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         out = [f"Target: {self.path}", f"Kind: {self.kind}", f"Arch: {self.arch}"]
@@ -209,7 +208,7 @@ def _looks_like_fat_macho(path: Path, magic: bytes) -> bool:
     return int(offset) >= header_size and int(size) > 0 and int(offset) + int(size) <= file_size
 
 
-def _detect_zip_artifact(path: Path) -> Optional[TargetInfo]:
+def _detect_zip_artifact(path: Path) -> TargetInfo | None:
     try:
         with zipfile.ZipFile(path) as zf:
             members = set(zf.namelist()[:10000])

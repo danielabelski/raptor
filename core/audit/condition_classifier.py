@@ -14,7 +14,6 @@ Categories:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Category patterns — ordered by specificity (most specific first)
@@ -171,7 +170,7 @@ _CLASSIFIERS = [
 
 def classify_condition(
     condition_text: str,
-    language: Optional[str] = None,
+    language: str | None = None,
 ) -> str:
     """Classify a guard condition text into a security-relevant category.
 
@@ -195,7 +194,7 @@ def classify_condition(
 
 def classify_conditions_batch(
     conditions: list,
-    language: Optional[str] = None,
+    language: str | None = None,
 ) -> list:
     """Classify a batch of condition texts. Returns parallel list of categories."""
     return [classify_condition(c, language) for c in conditions]

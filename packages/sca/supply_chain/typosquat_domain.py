@@ -31,7 +31,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from .._test_paths import TEST_DIR_NAMES as _SHARED_TEST_DIR_NAMES
 from ..discovery import EXCLUDED_DIR_NAMES
@@ -92,7 +92,7 @@ def scan_target(
     manifests: Iterable[Manifest],
     *,
     max_depth: int = _DEFAULT_MAX_DEPTH,
-) -> List[TyposquatDomainFinding]:
+) -> list[TyposquatDomainFinding]:
     """Walk the project, extract URLs, flag near-miss hostnames."""
     target = target.resolve()
     popular = _load_popular_domains()
@@ -102,7 +102,7 @@ def scan_target(
     # Group manifests by parent dir so the synthesised Dependency for a
     # finding gets attached to a real declared_in.
     manifests_list = list(manifests)
-    fallback_manifest: Optional[Manifest] = (
+    fallback_manifest: Manifest | None = (
         manifests_list[0] if manifests_list else None)
 
     # Per-scan cache: a popular-near-miss check is purely a function
@@ -111,9 +111,9 @@ def scan_target(
     # docstrings, comments, generated code) — recomputing the
     # Damerau-Levenshtein matrix per occurrence dominates runtime.
     # Caching collapses 1.2M DL calls (raptor on itself) to ~ 15K.
-    near_miss_cache: Dict[str, Optional[Tuple[int, str]]] = {}
+    near_miss_cache: dict[str, tuple[int, str] | None] = {}
 
-    out: List[TyposquatDomainFinding] = []
+    out: list[TyposquatDomainFinding] = []
     for src in _walk_sources(target, max_depth=max_depth):
         if _is_test_file(src, target):
             continue
@@ -165,7 +165,7 @@ def scan_target(
 # Internals
 # ---------------------------------------------------------------------------
 
-def _load_popular_domains() -> Set[str]:
+def _load_popular_domains() -> set[str]:
     if not _DATA_FILE.exists():
         return set()
     try:
@@ -179,7 +179,7 @@ def _load_popular_domains() -> Set[str]:
     return {str(d).lower() for d in data}
 
 
-def _hosts_in(text: str) -> Iterable[Tuple[str, int]]:
+def _hosts_in(text: str) -> Iterable[tuple[str, int]]:
     """Yield ``(host, line_number)`` for every URL in ``text``.
 
     Line numbers are computed by walking forward from the previous
@@ -197,9 +197,9 @@ def _hosts_in(text: str) -> Iterable[Tuple[str, int]]:
 
 
 def _nearest_popular(
-    host: str, popular: Set[str],
-) -> Optional[Tuple[int, str]]:
-    best: Optional[Tuple[int, str]] = None
+    host: str, popular: set[str],
+) -> tuple[int, str] | None:
+    best: tuple[int, str] | None = None
     for pop in popular:
         d = _damerau_levenshtein(host, pop, _MAX_DISTANCE + 1)
         if d > _MAX_DISTANCE:
@@ -325,7 +325,7 @@ def _is_test_file(path: Path, target: Path) -> bool:
     return any(p in _TEST_DIR_NAMES for p in rel.parts)
 
 
-def _stub_dep(manifest: Optional[Manifest], src: Path) -> Dependency:
+def _stub_dep(manifest: Manifest | None, src: Path) -> Dependency:
     """Synthesise a Dependency row for the finding's required field.
 
     Domain typosquats aren't tied to a specific dep — they're a signal

@@ -242,7 +242,7 @@ def _run_one(cve_id: str, output_dir: str, disk_limit_pct: float = 80.0,
                 signal.signal(signal.SIGALRM, prev_handler)
 
 
-def _agent_attrs(pipeline: "Pipeline", model_id: str) -> dict:
+def _agent_attrs(pipeline: Pipeline, model_id: str) -> dict:
     """Pull agent telemetry off the loop's last_telemetry + pipeline state."""
     tel = getattr(pipeline.agent, "last_telemetry", None) or {}
     return {
@@ -293,9 +293,9 @@ def _write_failure_md(output_dir: Path, cve_id: str, error_class: str,
         )
 
 
-def _write_flow(output_dir: Path, cve_id: str, result: "_CveResult",
-                pipeline: "Pipeline | None" = None,
-                pipeline_result: "PipelineResult | None" = None) -> None:
+def _write_flow(output_dir: Path, cve_id: str, result: _CveResult,
+                pipeline: Pipeline | None = None,
+                pipeline_result: PipelineResult | None = None) -> None:
     """Emit `<cve>.flow.jsonl` + `<cve>.flow.md` for one bench result.
 
     When ``pipeline`` is supplied, this delegates to
@@ -329,7 +329,7 @@ def _write_flow(output_dir: Path, cve_id: str, result: "_CveResult",
 _CORRECT_REFUSAL_CLASSES = frozenset({"UnsupportedSource", "no_evidence"})
 
 
-def _outcome_buckets(summary: "_BenchSummary") -> tuple[int, int, int]:
+def _outcome_buckets(summary: _BenchSummary) -> tuple[int, int, int]:
     """Return (pass, correct_refusal, pipeline_issue) counts.
 
     - pass: ``r.ok=True``
@@ -909,7 +909,7 @@ _TRANSIENT_CLASSES = frozenset({
 
 
 def _run_bench_retry_pass(
-    summary: "_BenchSummary",
+    summary: _BenchSummary,
     output_dir: str,
     disk_limit_pct: float,
     max_file_bytes: int,

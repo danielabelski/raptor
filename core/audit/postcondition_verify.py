@@ -28,7 +28,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class Postcondition:
     role: str = ""
     source: str = "summary"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "function": self.function,
             "file": self.file,
@@ -108,8 +109,8 @@ class PostconditionViolation:
     consumer_file: str = ""
     confidence: str = "medium"
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "function": self.function,
             "file": self.file,
             "violation_kind": self.violation_kind,
@@ -129,12 +130,12 @@ class PostconditionViolation:
 class PostconditionVerifyResult:
     """Result of postcondition verification across a codebase."""
 
-    postconditions: List[Postcondition] = field(default_factory=list)
-    violations: List[PostconditionViolation] = field(default_factory=list)
+    postconditions: list[Postcondition] = field(default_factory=list)
+    violations: list[PostconditionViolation] = field(default_factory=list)
     functions_checked: int = 0
     functions_with_postconditions: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "postconditions": [p.to_dict() for p in self.postconditions],
             "violations": [v.to_dict() for v in self.violations],
@@ -148,7 +149,7 @@ def classify_function_role(
     *,
     return_type: str = "",
     summary_text: str = "",
-) -> Optional[str]:
+) -> str | None:
     """Classify a function's security role from its name and signature."""
     name_lower = function_name.lower()
     combined = f"{name_lower} {summary_text.lower()}"
@@ -173,15 +174,15 @@ def classify_function_role(
 
 
 def extract_postconditions(
-    gaps: Sequence[Dict[str, Any]],
-    summaries: Dict[str, Any],
-) -> List[Postcondition]:
+    gaps: Sequence[dict[str, Any]],
+    summaries: dict[str, Any],
+) -> list[Postcondition]:
     """Extract postconditions from function summaries.
 
     Only examines functions with a security-relevant role (sanitiser,
     validator, encoder, decoder, serialiser, deserialiser).
     """
-    postconditions: List[Postcondition] = []
+    postconditions: list[Postcondition] = []
 
     for gap in gaps:
         func_name = gap.get("name", "")
@@ -215,9 +216,9 @@ def check_ordering_violations(
     postcondition: Postcondition,
     call_sequence: Sequence[str],
     *,
-    consumer_function: Optional[str] = None,
-    consumer_file: Optional[str] = None,
-) -> Optional[PostconditionViolation]:
+    consumer_function: str | None = None,
+    consumer_file: str | None = None,
+) -> PostconditionViolation | None:
     """Check whether the postcondition-relevant operation is the last step.
 
     A sanitiser that strips dangerous characters then normalises Unicode
@@ -284,14 +285,14 @@ def check_composition_violations(
     consumer_function: str,
     consumer_file: str,
     consumer_preconditions: Sequence[str],
-) -> List[PostconditionViolation]:
+) -> list[PostconditionViolation]:
     """Check that a producer's postcondition satisfies a consumer's preconditions.
 
     When function A's output feeds function B's input, A's postcondition
     should imply B's preconditions.  This flags cases where the
     postcondition is too weak or doesn't cover the precondition.
     """
-    violations: List[PostconditionViolation] = []
+    violations: list[PostconditionViolation] = []
     guarantee = producer.claimed_guarantee.lower()
 
     for precond in consumer_preconditions:
@@ -319,8 +320,8 @@ def check_composition_violations(
 def check_completeness(
     postcondition: Postcondition,
     handled_representations: Sequence[str],
-    known_representations: Optional[Sequence[str]] = None,
-) -> Optional[PostconditionViolation]:
+    known_representations: Sequence[str] | None = None,
+) -> PostconditionViolation | None:
     """Check whether a safety guarantee covers all representations.
 
     If a sanitiser claims "no shell metacharacters" but only strips
@@ -355,9 +356,9 @@ def check_completeness(
 
 
 def verify_postconditions(
-    gaps: Sequence[Dict[str, Any]],
-    summaries: Dict[str, Any],
-    call_graphs: Optional[Dict[str, Any]] = None,
+    gaps: Sequence[dict[str, Any]],
+    summaries: dict[str, Any],
+    call_graphs: dict[str, Any] | None = None,
 ) -> PostconditionVerifyResult:
     """Run postcondition verification across the codebase.
 
@@ -374,7 +375,7 @@ def verify_postconditions(
         ),
     )
 
-    postcond_by_func: Dict[str, Postcondition] = {}
+    postcond_by_func: dict[str, Postcondition] = {}
     for pc in postconditions:
         key = f"{pc.file}:{pc.function}"
         postcond_by_func[key] = pc
@@ -387,7 +388,7 @@ def verify_postconditions(
     # ``call_graphs`` parameter used to be a pure boolean gate the
     # loop never read — and every production caller passed None, so
     # this whole ordering/composition tier had never executed.
-    graph_callees: Dict[str, List[str]] = {}
+    graph_callees: dict[str, list[str]] = {}
     for cg_file, fcg in call_graphs.items():
         for cs in getattr(fcg, "calls", None) or ():
             chain = getattr(cs, "chain", None) or []
@@ -492,8 +493,8 @@ def verify_postconditions(
 
 
 def check_sibling_ordering(
-    siblings: Sequence[Dict[str, Any]],
-) -> List[PostconditionViolation]:
+    siblings: Sequence[dict[str, Any]],
+) -> list[PostconditionViolation]:
     """Compare operation ordering across sibling functions.
 
     When peer functions (render_X, render_Y) apply the same safety
@@ -506,7 +507,7 @@ def check_sibling_ordering(
     if len(siblings) < 2:
         return []
 
-    call_sequences: List[tuple] = []
+    call_sequences: list[tuple] = []
     for sib in siblings:
         seq = sib.get("call_sequence", [])
         if not seq:
@@ -517,7 +518,7 @@ def check_sibling_ordering(
             ]
         call_sequences.append((sib, seq))
 
-    violations: List[PostconditionViolation] = []
+    violations: list[PostconditionViolation] = []
     seen_pairs: set = set()
 
     for i, (sib_a, seq_a) in enumerate(call_sequences):
@@ -565,8 +566,8 @@ def check_sibling_ordering(
 
 
 def check_sibling_sanitizer_strength(
-    siblings: Sequence[Dict[str, Any]],
-) -> List[PostconditionViolation]:
+    siblings: Sequence[dict[str, Any]],
+) -> list[PostconditionViolation]:
     """Compare sanitizer strength across sibling functions.
 
     When peer functions use different sanitizers for the same purpose,
@@ -578,7 +579,7 @@ def check_sibling_sanitizer_strength(
     if len(siblings) < 2:
         return []
 
-    strengths: List[tuple] = []
+    strengths: list[tuple] = []
     for sib in siblings:
         sanitizer = sib.get("sanitizer", "")
         if not sanitizer:
@@ -601,7 +602,7 @@ def check_sibling_sanitizer_strength(
     if strong_count == 0 or not weak_entries:
         return []
 
-    violations: List[PostconditionViolation] = []
+    violations: list[PostconditionViolation] = []
     for sib, san in weak_entries:
         name = sib.get("name", "")
         file_path = sib.get("file", "")
@@ -672,7 +673,7 @@ def format_postcondition_context(
 def _lookup_summary(
     function_name: str,
     file_path: str,
-    summaries: Dict[str, Any],
+    summaries: dict[str, Any],
 ) -> Any:
     if file_path:
         key = f"{file_path}:{function_name}"
@@ -691,8 +692,8 @@ def _extract_postconditions_from_summary(
     file_path: str,
     role: str,
     summary: Any,
-) -> List[Postcondition]:
-    postconditions: List[Postcondition] = []
+) -> list[Postcondition]:
+    postconditions: list[Postcondition] = []
 
     postconds = getattr(summary, "postconditions", []) if summary else []
     for pc in postconds:
@@ -721,7 +722,7 @@ def _infer_postcondition(
     function_name: str,
     role: str,
     summary_text: str,
-) -> Optional[Postcondition]:
+) -> Postcondition | None:
     if role == FunctionRole.SANITISER:
         return Postcondition(
             function=function_name,
@@ -769,7 +770,7 @@ def _postcondition_covers_precondition(
     return True
 
 
-def _default_representations() -> List[str]:
+def _default_representations() -> list[str]:
     return [
         "ascii",
         "unicode",
@@ -782,8 +783,8 @@ def _default_representations() -> List[str]:
 
 def _find_key_for_function(
     function_name: str,
-    index: Dict[str, Any],
-) -> Optional[str]:
+    index: dict[str, Any],
+) -> str | None:
     for key in index:
         if key.endswith(f":{function_name}") or key == function_name:
             return key
@@ -791,9 +792,9 @@ def _find_key_for_function(
 
 
 def _extract_consumer_preconditions(
-    gap: Dict[str, Any],
-    summaries: Dict[str, Any],
-) -> List[str]:
+    gap: dict[str, Any],
+    summaries: dict[str, Any],
+) -> list[str]:
     """Extract preconditions that a consumer function expects from its inputs."""
     func_name = gap.get("name", "")
     file_path = gap.get("file", "")
@@ -801,7 +802,7 @@ def _extract_consumer_preconditions(
     if summary is None:
         return []
     preconds = getattr(summary, "preconditions", [])
-    result: List[str] = []
+    result: list[str] = []
     for p in preconds:
         conds = getattr(p, "conditions", [])
         for c in conds:
@@ -824,13 +825,13 @@ _EXTRACTABLE_REPRESENTATIONS = frozenset({
 
 def _extract_handled_representations(
     postcondition: Postcondition,
-    summaries: Dict[str, Any],
-) -> List[str]:
+    summaries: dict[str, Any],
+) -> list[str]:
     """Extract character representations the sanitiser handles."""
     summary = _lookup_summary(
         postcondition.function, postcondition.file, summaries,
     )
-    handled: List[str] = []
+    handled: list[str] = []
     guarantee = postcondition.claimed_guarantee.lower()
     if "ascii" in guarantee or "metacharacter" in guarantee:
         handled.append("ascii")

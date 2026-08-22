@@ -36,7 +36,6 @@ import re
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically as _atomic_write
-from typing import List, Tuple
 
 from . import RewriteEdit, RewriteResult, register
 
@@ -47,7 +46,7 @@ def _csproj_predicate(path: Path) -> bool:
     return path.suffix.lower() in (".csproj", ".fsproj", ".vbproj")
 
 
-def _build_inline_version_pattern(include_name: str) -> "re.Pattern":
+def _build_inline_version_pattern(include_name: str) -> re.Pattern:
     """``<PackageReference Include="X" Version="OLD" />`` — the
     pre-CPM and CPM-with-inline shape."""
     inc = re.escape(include_name)
@@ -63,7 +62,7 @@ def _build_inline_version_pattern(include_name: str) -> "re.Pattern":
     )
 
 
-def _build_version_override_pattern(include_name: str) -> "re.Pattern":
+def _build_version_override_pattern(include_name: str) -> re.Pattern:
     """``<PackageReference Include="X" VersionOverride="OLD" />`` —
     CPM per-csproj override shape. Separate from the inline
     pattern so the rewriter can pick which attribute to update."""
@@ -80,7 +79,7 @@ def _build_version_override_pattern(include_name: str) -> "re.Pattern":
     )
 
 
-def _build_child_version_pattern(include_name: str) -> "re.Pattern":
+def _build_child_version_pattern(include_name: str) -> re.Pattern:
     """``<PackageReference Include="X"><Version>OLD</Version></PackageReference>``
     — older child-element shape some projects use."""
     inc = re.escape(include_name)
@@ -98,8 +97,8 @@ def _build_child_version_pattern(include_name: str) -> "re.Pattern":
 
 @register(predicate=_csproj_predicate)
 def rewrite_csproj(
-    path: Path, edits: List[RewriteEdit],
-) -> List[RewriteResult]:
+    path: Path, edits: list[RewriteEdit],
+) -> list[RewriteResult]:
     """Apply ``<PackageReference>`` Version / VersionOverride
     edits to an MSBuild project file.
 
@@ -122,7 +121,7 @@ def rewrite_csproj(
                 for ed in edits]
 
     new_text = text
-    results: List[RewriteResult] = []
+    results: list[RewriteResult] = []
     for edit in edits:
         new_text, result = _apply_one(new_text, edit)
         results.append(result)
@@ -140,7 +139,7 @@ def rewrite_csproj(
     return results
 
 
-def _apply_one(text: str, edit: RewriteEdit) -> Tuple[str, RewriteResult]:
+def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:
     for pattern_builder in (
         _build_inline_version_pattern,
         _build_version_override_pattern,

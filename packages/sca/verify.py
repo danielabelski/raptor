@@ -45,7 +45,8 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any
+from collections.abc import Sequence
 
 from core.json import JsonCache
 from . import SCA_CACHE_ROOT
@@ -61,7 +62,7 @@ logger = logging.getLogger(__name__)
 # Vendored / build-output directories we don't bother copying.
 # Mirrors discovery.EXCLUDED_DIR_NAMES and the supply-chain artefact
 # walk's skiplist.
-_SKIP_DIR_NAMES: Set[str] = {
+_SKIP_DIR_NAMES: set[str] = {
     "node_modules", "vendor", "bower_components",
     ".git", ".svn", ".hg",
     "target", "build", "dist", "out", "_build",
@@ -75,8 +76,8 @@ _SKIP_DIR_NAMES: Set[str] = {
 def main(
     argv: Sequence[str],
     *,
-    http: Optional[HttpClient] = None,
-    cache: Optional[JsonCache] = None,
+    http: HttpClient | None = None,
+    cache: JsonCache | None = None,
 ) -> int:
     from .cli import _configure_logging
 
@@ -213,7 +214,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _resolve_out(explicit: Optional[str]) -> Path:
+def _resolve_out(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).resolve()
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -246,11 +247,11 @@ def _copy_target(src: Path, dst: Path) -> None:
         # symlinks: skip (we don't want to follow)
 
 
-def _apply_overlay(proposed: Path, overlay: Path) -> List[Path]:
+def _apply_overlay(proposed: Path, overlay: Path) -> list[Path]:
     """Copy every file from ``proposed/`` onto its same-named relative
     path in the overlay. Returns the list of relative paths applied.
     """
-    applied: List[Path] = []
+    applied: list[Path] = []
     proposed = proposed.resolve()
     for src in sorted(proposed.rglob("*")):
         if not src.is_file():
@@ -268,8 +269,8 @@ def _apply_overlay(proposed: Path, overlay: Path) -> List[Path]:
 # ---------------------------------------------------------------------------
 
 def _verdict(
-    delta, *, severity_floor: str, applied: "Optional[List[Path]]" = None,
-) -> "tuple[Dict[str, Any], int]":
+    delta, *, severity_floor: str, applied: list[Path] | None = None,
+) -> tuple[dict[str, Any], int]:
     floor = severity_rank(severity_floor)
     triggering = [
         r for r in delta.new
@@ -301,8 +302,8 @@ def _verdict(
 
 
 def _not_cleared_in_applied(
-    rows: "List[Dict[str, Any]]", applied: "Optional[List[Path]]",
-) -> "List[Dict[str, Any]]":
+    rows: list[dict[str, Any]], applied: list[Path] | None,
+) -> list[dict[str, Any]]:
     """Subset of ``rows`` whose ``file`` is one of the overlaid
     (patched) relative paths. Finding rows carry overlay-absolute
     paths; ``applied`` carries proposed/-relative paths — match on
@@ -310,7 +311,7 @@ def _not_cleared_in_applied(
     if not applied:
         return []
     rels = {str(p) for p in applied}
-    out: "List[Dict[str, Any]]" = []
+    out: list[dict[str, Any]] = []
     for r in rows:
         f = r.get("file")
         if not isinstance(f, str):
@@ -323,11 +324,11 @@ def _not_cleared_in_applied(
 def _render_markdown(
     target: Path,
     proposed: Path,
-    applied: List[Path],
+    applied: list[Path],
     delta,
-    summary: Dict[str, Any],
+    summary: dict[str, Any],
 ) -> str:
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append(f"# sca verify — `{target}` ⇐ `{proposed}`\n")
     if summary["regressing_above_threshold"]:
         lines.append(
@@ -385,7 +386,7 @@ def _render_markdown(
     return "\n".join(lines) + "\n"
 
 
-def _row_line(r: Dict[str, Any]) -> str:
+def _row_line(r: dict[str, Any]) -> str:
     sev = (r.get("severity") or "info").title()
     sca = r.get("sca") or {}
     eco = sca.get("ecosystem") or ""

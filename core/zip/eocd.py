@@ -30,7 +30,6 @@ from __future__ import annotations
 import logging
 import struct
 from pathlib import Path
-from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +56,8 @@ _EOCD_SEARCH_BYTES = 65557
 
 
 def peek_total_entries(
-    source: Union[Path, str, bytes],
-) -> Optional[int]:
+    source: Path | str | bytes,
+) -> int | None:
     """Read the EOCD pre-flight from ``source`` and return the zip's
     declared total entry count, or ``None`` on unparseable EOCD.
 
@@ -83,7 +82,7 @@ def peek_total_entries(
     return _peek_from_path(Path(source))
 
 
-def _peek_from_path(zip_path: Path) -> Optional[int]:
+def _peek_from_path(zip_path: Path) -> int | None:
     try:
         size = zip_path.stat().st_size
     except OSError:
@@ -101,7 +100,7 @@ def _peek_from_path(zip_path: Path) -> Optional[int]:
         return None
 
 
-def _peek_from_bytes(blob: bytes) -> Optional[int]:
+def _peek_from_bytes(blob: bytes) -> int | None:
     size = len(blob)
     if size < 22:
         return None
@@ -118,8 +117,8 @@ def _parse_eocd(
     *,
     total_size: int,
     fh=None,
-    blob: Optional[bytes] = None,
-) -> Optional[int]:
+    blob: bytes | None = None,
+) -> int | None:
     """Locate the EOCD signature in ``tail`` and return total entries.
 
     Either ``fh`` (file handle, for ZIP64 follow-up reads) or ``blob``

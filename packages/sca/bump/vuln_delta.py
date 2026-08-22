@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List
 
 from ..findings import build_vuln_findings
 from ..models import Confidence, Dependency, PinStyle, VulnFinding
@@ -50,7 +49,7 @@ def evaluate_bump_vulns(
     osv_client: OsvClient,
     kev_client=None,
     epss_client=None,
-) -> List[VulnFinding]:
+) -> list[VulnFinding]:
     """Return the vuln findings for advisories introduced by
     bumping from ``current_version`` to ``target_version``.
 

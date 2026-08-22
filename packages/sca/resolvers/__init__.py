@@ -63,7 +63,8 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Protocol, Sequence
+from typing import Protocol
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +80,8 @@ class ResolverResult:
     ecosystem: str
     success: bool
     available: bool                  # was the toolchain present at all?
-    proposed_lockfile: Optional[bytes] = None
-    error: Optional[str] = None
+    proposed_lockfile: bytes | None = None
+    error: str | None = None
     raw_output: str = ""
 
 
@@ -124,12 +125,12 @@ class Resolver(Protocol):
 
 
 def dry_run_batch(
-    resolver: "Resolver",
+    resolver: Resolver,
     project_dirs: Sequence[Path],
     *,
-    common_root: Optional[Path] = None,
+    common_root: Path | None = None,
     timeout: int = 120,
-) -> "list[ResolverResult]":
+) -> list[ResolverResult]:
     """Resolve N project_dirs and return one ``ResolverResult`` per
     input dir, in input order.
 
@@ -174,7 +175,7 @@ def dry_run_batch(
 # (``<tool> --version``) independently — without caching, ``npm
 # --version`` (which is genuinely ~1s on most systems) gets invoked
 # 3-4× per scan and dominates short-scan wall-clock time.
-_CHECK_TOOL_CACHE: "dict[tuple, bool]" = {}
+_CHECK_TOOL_CACHE: dict[tuple, bool] = {}
 
 
 def _check_tool(cmd: list, *, timeout: int = 5) -> bool:
@@ -210,7 +211,7 @@ def _run(
     cwd: Path,
     timeout: int,
     proxy_hosts: Sequence[str],
-    env: Optional[dict] = None,
+    env: dict | None = None,
     block_network: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a resolver subprocess sandboxed.
@@ -325,8 +326,8 @@ _RESOLVERS = (
 
 
 def get_resolver(
-    ecosystem: str, project_dir: Optional[Path] = None,
-) -> Optional[Resolver]:
+    ecosystem: str, project_dir: Path | None = None,
+) -> Resolver | None:
     """Return the best resolver for ``(ecosystem, project_dir)``.
 
     When ``project_dir`` is given, prefer a resolver whose

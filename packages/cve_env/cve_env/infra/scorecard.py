@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — type-only import
     from core.llm.scorecard.scorecard import ModelScorecard
@@ -42,7 +42,7 @@ _ADJUDICATION: dict[str, str] = {
 }
 
 
-def _default_scorecard() -> "ModelScorecard":
+def _default_scorecard() -> ModelScorecard:
     """Resolve the shared scorecard sidecar (tool_evidence convention:
     RAPTOR_SCORECARD_PATH override, then RAPTOR_DIR/out, then bare)."""
     from core.llm.scorecard.scorecard import ModelScorecard
@@ -61,7 +61,7 @@ def record_build_outcome(
     cve_id: str,
     status: str,
     *,
-    scorecard: Optional["ModelScorecard"] = None,
+    scorecard: ModelScorecard | None = None,
 ) -> bool:
     """Record one adjudicated build. Never raises.
 

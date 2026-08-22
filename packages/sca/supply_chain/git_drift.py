@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Iterable, List
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, PinStyle
 
@@ -67,9 +67,9 @@ class GitDriftFinding:
     ref_kind: str          # "tag" / "branch_or_other"
 
 
-def scan_deps(deps: Iterable[Dependency]) -> List[GitDriftFinding]:
+def scan_deps(deps: Iterable[Dependency]) -> list[GitDriftFinding]:
     """Walk deps; flag any git-pinned entry whose ref isn't a SHA."""
-    out: List[GitDriftFinding] = []
+    out: list[GitDriftFinding] = []
     for dep in deps:
         if dep.pin_style is not PinStyle.GIT:
             continue

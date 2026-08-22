@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class ContractContext:
 
     callee_function: str
     callee_file: str
-    preconditions: List[str]
+    preconditions: list[str]
     source: str = "joern_summary"
 
 
@@ -42,9 +43,9 @@ class ContractViolation:
 
 
 def extract_callee_contracts(
-    gap: Dict[str, Any],
-    summaries: Dict[str, Any],
-) -> List[ContractContext]:
+    gap: dict[str, Any],
+    summaries: dict[str, Any],
+) -> list[ContractContext]:
     """Extract precondition contracts from callee summaries.
 
     For each callee in the gap's callee list, look up its FunctionSummary
@@ -54,7 +55,7 @@ def extract_callee_contracts(
     if not callees:
         return []
 
-    contracts: List[ContractContext] = []
+    contracts: list[ContractContext] = []
 
     for callee in callees:
         callee_name = callee if isinstance(callee, str) else callee.get("name", "")
@@ -232,10 +233,10 @@ def _extract_param_from_precondition(precondition: str) -> str:
 
 
 def enforce_callee_contracts(
-    gap: Dict[str, Any],
-    callee_summaries: Dict[str, Any],
+    gap: dict[str, Any],
+    callee_summaries: dict[str, Any],
     source: str,
-) -> List[ContractViolation]:
+) -> list[ContractViolation]:
     """Mechanically check caller source for missing precondition guards.
 
     For each callee's preconditions, use regex patterns to look for
@@ -251,7 +252,7 @@ def enforce_callee_contracts(
 
     caller_file = gap.get("file", "")
     caller_function = gap.get("name", "")
-    violations: List[ContractViolation] = []
+    violations: list[ContractViolation] = []
 
     for contract in contracts:
         for precondition in contract.preconditions:
@@ -283,7 +284,7 @@ def _check_single_precondition(
     source: str,
     *,
     callee_file: str = "",
-) -> "ContractViolation | None":
+) -> ContractViolation | None:
     """Check one precondition against the caller source.
 
     Returns a ``ContractViolation`` if the guard is missing, else ``None``.
@@ -349,7 +350,7 @@ def _check_single_precondition(
 def _lookup_summary(
     function_name: str,
     file_path: str,
-    summaries: Dict[str, Any],
+    summaries: dict[str, Any],
 ) -> Any:
     """Look up a FunctionSummary by function name.
 
@@ -370,9 +371,9 @@ def _lookup_summary(
     return None
 
 
-def _extract_preconditions(summary: Any) -> List[str]:
+def _extract_preconditions(summary: Any) -> list[str]:
     """Extract human-readable precondition strings from a FunctionSummary."""
-    preconditions: List[str] = []
+    preconditions: list[str] = []
 
     preconds = getattr(summary, "preconditions", [])
     for p in preconds:

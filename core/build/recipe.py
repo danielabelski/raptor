@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,7 @@ class RecipeStep:
     ``cd <target>``; renderers add the target prefix). ``why``
     is one-line operator-readable rationale."""
     command: str
-    why: Optional[str] = None
+    why: str | None = None
     optional: bool = False
 
 
@@ -44,7 +43,7 @@ class BuildRecipe:
     handled — caller renders "(build instructions: consult the
     project's README)" or similar."""
     build_system: str  # e.g. "autotools", "cmake", "make", "" (unknown)
-    steps: List[RecipeStep] = field(default_factory=list)
+    steps: list[RecipeStep] = field(default_factory=list)
 
 
 # Bootstrap-script preference for autotools: pick the first
@@ -99,7 +98,7 @@ def _autotools_recipe(target: Path) -> BuildRecipe:
     When ``configure`` already exists in source root, step 1 is
     omitted.
     """
-    steps: List[RecipeStep] = []
+    steps: list[RecipeStep] = []
     configure_present = (target / "configure").is_file()
     if not configure_present:
         bootstrap = _find_autotools_bootstrap(target)
@@ -147,7 +146,7 @@ def _cmake_recipe(target: Path) -> BuildRecipe:
     ``my-build``) still get the default-``build`` recipe and
     have to adapt — same trade-off as every IDE that has to
     pick a default."""
-    steps: List[RecipeStep] = []
+    steps: list[RecipeStep] = []
     for existing in (
         "build", "_build", "out/build",
         "cmake-build-debug", "cmake-build-release",
@@ -224,7 +223,7 @@ def _poetry_recipe(target: Path) -> BuildRecipe:
 def _pip_recipe(target: Path) -> BuildRecipe:
     """Pip — install the package in editable mode if pyproject /
     setup.py is present; else install requirements.txt."""
-    steps: List[RecipeStep] = []
+    steps: list[RecipeStep] = []
     if (target / "pyproject.toml").exists() or (target / "setup.py").exists():
         steps.append(RecipeStep(
             command="cd <target> && pip install -e .",
@@ -286,7 +285,7 @@ _RECIPES = {
 }
 
 
-def _find_autotools_bootstrap(target: Path) -> Optional[str]:
+def _find_autotools_bootstrap(target: Path) -> str | None:
     """Walk ``_AUTOTOOLS_BOOTSTRAP_CANDIDATES`` and return the
     first one present + executable. Returns None when no
     project-specific bootstrap is shipped (caller falls back to

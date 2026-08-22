@@ -29,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.llm.config import ModelConfig
@@ -48,7 +48,7 @@ _PROBE_TIMEOUT_S = 15
 _MAX_PROBES = 4
 
 
-def _configured_bedrock_models() -> list["ModelConfig"]:
+def _configured_bedrock_models() -> list[ModelConfig]:
     """Bedrock ModelConfigs the current run could select: config-file
     entries plus the env-builder result.  Best-effort — resolution
     errors yield an empty list (preflight is advisory)."""
@@ -97,7 +97,7 @@ def _write_cache(cache: dict) -> None:
         logger.debug("bedrock preflight: cache write failed: %s", exc)
 
 
-def _probe_request(creds: "CredentialStore", mc: "ModelConfig"):
+def _probe_request(creds: CredentialStore, mc: ModelConfig):
     """Build the signed/bearer 1-token request for *mc* via the
     dispatcher's own builders.  Returns a PreparedRequest or ``None``
     when no auth resolves (that case is already covered by
@@ -144,7 +144,7 @@ def _probe_request(creds: "CredentialStore", mc: "ModelConfig"):
 
 
 def preflight_configured_bedrock(
-    creds: "CredentialStore",
+    creds: CredentialStore,
 ) -> list[str]:
     """Probe each configured Bedrock ``(model, surface, region,
     profile)`` combination once and return operator-actionable warning
@@ -193,8 +193,8 @@ def preflight_configured_bedrock(
 
 
 def _probe_one(
-    creds: "CredentialStore", mc: "ModelConfig",
-) -> Optional[str]:
+    creds: CredentialStore, mc: ModelConfig,
+) -> str | None:
     """One live probe.  ``None`` = entitled (success); ``""`` =
     transient/skip (no warning); non-empty string = warning text."""
     try:

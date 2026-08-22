@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Optional, Tuple, Union
+from collections.abc import Callable, Iterator
 
 from ...models import PinStyle
 from ..requirements import _spec_bounds
@@ -35,27 +35,27 @@ from ..requirements import _spec_bounds
 # record a safe corridor (pip) additionally append ``(floor, ceiling)``.
 # The consumer (``__init__._scan_shell_lines``) unpacks defensively so
 # both shapes flow through at runtime.
-_ParsedRow = Tuple[str, Optional[str], PinStyle]
-_ParsedRowWithBounds = Tuple[str, Optional[str], PinStyle,
-                             Optional[str], Optional[str]]
+_ParsedRow = tuple[str, str | None, PinStyle]
+_ParsedRowWithBounds = tuple[str, str | None, PinStyle,
+                             str | None, str | None]
 
 
 @dataclass(frozen=True)
 class _PkgManager:
     """One row per supported package manager."""
 
-    pattern: "re.Pattern[str]"      # matches the install command in a line
+    pattern: re.Pattern[str]      # matches the install command in a line
     ecosystem: str                  # the SCA ecosystem string
     purl_type: str                  # the purl `type` segment
-    purl_namespace: Optional[str]   # the purl `namespace` segment (or None)
+    purl_namespace: str | None   # the purl `namespace` segment (or None)
     parse_args: Callable[
-        [str], Iterator[Union[_ParsedRow, _ParsedRowWithBounds]]]
+        [str], Iterator[_ParsedRow | _ParsedRowWithBounds]]
 
 
 _NAME_RE = r"[A-Za-z0-9][A-Za-z0-9._+\-]*"
 
 
-def _tokenise(s: str) -> List[str]:
+def _tokenise(s: str) -> list[str]:
     """Split on whitespace, dropping empties. Doesn't honour shell quoting
     perfectly — quotes are stripped afterwards by the per-manager parser.
     """
@@ -124,7 +124,7 @@ def _parse_pip_args(
 
 def _classify_pip_token(
     tok: str,
-) -> Optional[_ParsedRowWithBounds]:
+) -> _ParsedRowWithBounds | None:
     """Map one ``pkg[<spec>...]`` token to
     ``(name, version, pin_style, floor, ceiling)``.
 
@@ -177,7 +177,7 @@ def _classify_pip_token(
 
 def _legacy_single_spec(
     name: str, rest: str,
-) -> Optional[_ParsedRowWithBounds]:
+) -> _ParsedRowWithBounds | None:
     """Pre-``packaging`` fallback for single-specifier shapes only.
 
     Multi-spec rests get rejected (yield None) rather than mangled.
@@ -308,7 +308,7 @@ _NPM_SCOPED_RE = re.compile(
 _NPM_PLAIN_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._\-]*)$")
 
 
-def _split_npm_token(tok: str) -> Optional[Tuple[str, Optional[str]]]:
+def _split_npm_token(tok: str) -> tuple[str, str | None] | None:
     """Split an npm install token into ``(name, version)``.
 
     Handles four shapes:
@@ -348,7 +348,7 @@ def _split_npm_token(tok: str) -> Optional[Tuple[str, Optional[str]]]:
 
 def _emit_npm_pkg(
     name: str,
-    version: Optional[str],
+    version: str | None,
 ) -> _ParsedRow:
     """Map an npm name+version into a Dependency-shaped tuple."""
     if version is None:
@@ -401,7 +401,7 @@ def _parse_npx_args(
     Same parser is reused for ``bunx``, ``pnpm dlx``, ``yarn dlx``.
     """
     tokens = _tokenise(args)
-    packages: List[str] = []
+    packages: list[str] = []
     via_flag = False
     saw_positional = False
     i = 0
@@ -441,7 +441,7 @@ def _parse_versioned_flag_args(
     args: str,
     *,
     version_flags: set,
-    name_re: "re.Pattern[str]",
+    name_re: re.Pattern[str],
     flags_with_value: set,
 ) -> Iterator[_ParsedRow]:
     """Generic parser for ``<cmd> install <name> [--version X]`` shape.
@@ -450,8 +450,8 @@ def _parse_versioned_flag_args(
     Multiple positionals share the same ``--version`` if present.
     """
     tokens = _tokenise(args)
-    version: Optional[str] = None
-    names: List[str] = []
+    version: str | None = None
+    names: list[str] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
@@ -560,7 +560,7 @@ def _parse_go_install_args(
 # Registry table
 # ---------------------------------------------------------------------------
 
-_MANAGERS: List[_PkgManager] = [
+_MANAGERS: list[_PkgManager] = [
     _PkgManager(
         pattern=re.compile(
             r"\b(?:python3?\s+-m\s+)?pip3?\s+install\b", re.IGNORECASE),

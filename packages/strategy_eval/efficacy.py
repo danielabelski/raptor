@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List
+from collections.abc import Callable
 
 import yaml
 
@@ -51,11 +51,11 @@ def grade(reply: str) -> bool:
     return bool(_VERDICT_RE.search(reply or ""))
 
 
-def _strategies_by_name() -> Dict[str, object]:
+def _strategies_by_name() -> dict[str, object]:
     return {s.name: s for s in load_all()}
 
 
-def build_prompts(sample: EfficacySample) -> "tuple[str, str, str]":
+def build_prompts(sample: EfficacySample) -> tuple[str, str, str]:
     """Return (control_system, treatment_system, user_prompt).
 
     The two system prompts differ ONLY by the target lens, so any verdict
@@ -94,8 +94,8 @@ def run_ab(sample: EfficacySample, complete: Completer, runs: int = 3) -> ABResu
 
 
 def run_efficacy_eval(
-    samples: List[EfficacySample], complete: Completer, runs: int = 3,
-) -> List[ABResult]:
+    samples: list[EfficacySample], complete: Completer, runs: int = 3,
+) -> list[ABResult]:
     return [run_ab(s, complete, runs) for s in samples]
 
 
@@ -104,14 +104,14 @@ def run_efficacy_eval(
 # ---------------------------------------------------------------------------
 
 
-def load_corpus(corpus_dir: Path) -> List[EfficacySample]:
+def load_corpus(corpus_dir: Path) -> list[EfficacySample]:
     """Load a labeled corpus: a ``manifest.yml`` listing samples, each with
     ``id``, ``strategy``, ``file`` (relative path to the source), ``variant``
     and optional ``synthetic``. Real samples drop in via the same format.
     """
     corpus_dir = Path(corpus_dir)
     manifest = yaml.safe_load((corpus_dir / "manifest.yml").read_text("utf-8")) or {}
-    samples: List[EfficacySample] = []
+    samples: list[EfficacySample] = []
     for raw in manifest.get("samples", []):
         code = (corpus_dir / raw["file"]).read_text(encoding="utf-8")
         samples.append(
@@ -131,9 +131,9 @@ def load_corpus(corpus_dir: Path) -> List[EfficacySample]:
 # ---------------------------------------------------------------------------
 
 
-def format_report(results: List[ABResult]) -> str:
+def format_report(results: list[ABResult]) -> str:
     # Aggregate per strategy × variant: total runs and flagged counts.
-    agg: Dict[tuple, List[int]] = defaultdict(lambda: [0, 0, 0])  # runs, ctrl, treat
+    agg: dict[tuple, list[int]] = defaultdict(lambda: [0, 0, 0])  # runs, ctrl, treat
     for r in results:
         slot = agg[(r.strategy, r.variant)]
         slot[0] += r.runs

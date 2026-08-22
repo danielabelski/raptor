@@ -51,7 +51,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +104,11 @@ class SignalIndex:
     """Per-function mechanism receipts harvested from run directories."""
 
     # function key "file:function" -> set of raw signal tokens
-    tools: Dict[str, Set[str]] = field(default_factory=dict)
-    gates: Dict[str, Set[str]] = field(default_factory=dict)
-    detectors: Dict[str, Set[str]] = field(default_factory=dict)
+    tools: dict[str, set[str]] = field(default_factory=dict)
+    gates: dict[str, set[str]] = field(default_factory=dict)
+    detectors: dict[str, set[str]] = field(default_factory=dict)
 
-    def add(self, bucket: Dict[str, Set[str]], key: str, token: str) -> None:
+    def add(self, bucket: dict[str, set[str]], key: str, token: str) -> None:
         if key and token:
             bucket.setdefault(key, set()).add(token)
 
@@ -140,7 +141,7 @@ def _iter_jsonl(path: Path) -> Iterable[dict]:
 def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
     """Harvest mechanism receipts from audit run directories."""
     index = SignalIndex()
-    seen: Set[Path] = set()
+    seen: set[Path] = set()
     for run_dir in run_dirs:
         run_dir = Path(run_dir)
         if not run_dir.is_dir() or run_dir in seen:
@@ -232,7 +233,7 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
 _MAX_TOKEN_LEN = 64
 
 
-def _tool_tokens(raw: str) -> Set[str]:
+def _tool_tokens(raw: str) -> set[str]:
     """Normalise one evidence-tool/detector string to mechanism tokens."""
     tok = str(raw).strip().lower()
     if not tok:
@@ -248,7 +249,7 @@ def _tool_tokens(raw: str) -> Set[str]:
     return out
 
 
-def _gate_tokens(gate: str) -> Set[str]:
+def _gate_tokens(gate: str) -> set[str]:
     gate = str(gate).strip().lower()
     if not gate:
         return set()
@@ -262,9 +263,9 @@ def normalise_expected(mechanism: str) -> str:
 
 
 def observed_mechanisms(
-    row: Dict[str, Any],
-    index: Optional[SignalIndex] = None,
-) -> Set[str]:
+    row: dict[str, Any],
+    index: SignalIndex | None = None,
+) -> set[str]:
     """Collect normalised mechanism tokens observed for one result row.
 
     Row-level signals (``evidence_tool``, hypothesis gate marker) are
@@ -272,7 +273,7 @@ def observed_mechanisms(
     provided.  Old results without run directories therefore degrade
     to partial, row-level attribution rather than fabricated receipts.
     """
-    observed: Set[str] = set()
+    observed: set[str] = set()
 
     observed |= _tool_tokens(row.get("evidence_tool") or "")
 
@@ -295,7 +296,7 @@ def observed_mechanisms(
     return observed
 
 
-def mechanism_matches(expected: str, observed: Set[str]) -> bool:
+def mechanism_matches(expected: str, observed: set[str]) -> bool:
     """Does the expected mechanism appear among the observed tokens?
 
     Exact token match, or a bare-channel expectation (no ``:``)
@@ -314,9 +315,9 @@ def mechanism_matches(expected: str, observed: Set[str]) -> bool:
 
 
 def attribute_row(
-    row: Dict[str, Any],
-    index: Optional[SignalIndex] = None,
-) -> Dict[str, Any]:
+    row: dict[str, Any],
+    index: SignalIndex | None = None,
+) -> dict[str, Any]:
     """Compute the attribution cell for one result row.
 
     Returns ``{"observed_mechanisms", "mechanism_match", "attribution"}``.
@@ -353,9 +354,9 @@ def attribute_row(
 
 
 def annotate_results(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     run_dirs: Iterable[Path],
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Annotate result rows in place with attribution fields.
 
     Returns ``(annotated_count, receipt_source_count)`` where the

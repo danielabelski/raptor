@@ -12,7 +12,7 @@ is one of confirmed / refuted / inconclusive.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def record_dataflow_validation_outcomes(
-    scorecard: Optional[ModelScorecard],
+    scorecard: ModelScorecard | None,
     *,
-    results_by_id: Dict[str, Dict[str, Any]],
+    results_by_id: dict[str, dict[str, Any]],
     decision_class_prefix: str = "agentic",
 ) -> int:
     """Record dataflow validation outcomes on the scorecard.

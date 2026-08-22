@@ -20,11 +20,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
+from collections.abc import Iterator
 
 __all__ = ["available", "parse_events"]
 
-_available: Optional[bool] = None
+_available: bool | None = None
 
 
 def available(*, force: bool = False) -> bool:

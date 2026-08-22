@@ -62,7 +62,7 @@ import logging
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from .models import (
     Confidence,
@@ -92,9 +92,9 @@ class LicensePolicy:
     """Operator-defined license rules. Use :func:`load_policy` to read
     from disk; :data:`DEFAULT_POLICY` is the no-config baseline."""
 
-    allow: Set[str] = field(default_factory=set)
-    deny: Set[str] = field(default_factory=set)
-    warn: Set[str] = field(default_factory=set)
+    allow: set[str] = field(default_factory=set)
+    deny: set[str] = field(default_factory=set)
+    warn: set[str] = field(default_factory=set)
     default: str = "allow"          # "allow" | "warn" | "deny"
     on_unknown: str = "warn"        # "allow" | "warn" | "deny"
 
@@ -173,7 +173,7 @@ def load_policy(target: Path) -> LicensePolicy:
     )
 
 
-def _as_set(v: Any) -> Set[str]:
+def _as_set(v: Any) -> set[str]:
     if v is None:
         return set()
     if isinstance(v, list):
@@ -205,7 +205,7 @@ def _as_action(v: Any, *, default: str) -> str:
 #: Adding an ecosystem here requires the enrichment path
 #: (``enrich_licenses``) to fetch SPDX for it; otherwise every dep
 #: from the new ecosystem floods as ``license_unknown``.
-_SPDX_SUPPORTED_ECOSYSTEMS: Set[str] = {
+_SPDX_SUPPORTED_ECOSYSTEMS: set[str] = {
     "PyPI",
     "npm",
     "Maven",
@@ -223,9 +223,9 @@ _SPDX_SUPPORTED_ECOSYSTEMS: Set[str] = {
 
 
 def evaluate(
-    deps: List[Dependency],
+    deps: list[Dependency],
     policy: LicensePolicy,
-) -> List[LicenseFinding]:
+) -> list[LicenseFinding]:
     """Classify each dep's declared_license against the policy.
 
     Dedups by (ecosystem, name, version) — no point reporting the
@@ -236,8 +236,8 @@ def evaluate(
     Debian, OCI, Inline) are skipped entirely — see
     :data:`_SPDX_SUPPORTED_ECOSYSTEMS` for the allowlist.
     """
-    seen: Set[str] = set()
-    out: List[LicenseFinding] = []
+    seen: set[str] = set()
+    out: list[LicenseFinding] = []
     for d in deps:
         if d.ecosystem not in _SPDX_SUPPORTED_ECOSYSTEMS:
             continue
@@ -254,7 +254,7 @@ def evaluate(
 def _evaluate_one(
     dep: Dependency,
     policy: LicensePolicy,
-) -> Optional[LicenseFinding]:
+) -> LicenseFinding | None:
     spdx = dep.declared_license
     if spdx is None or not spdx.strip():
         return _unknown_finding(dep, policy)
@@ -296,7 +296,7 @@ def _evaluate_or(
     dep: Dependency,
     spdx: str,
     policy: LicensePolicy,
-) -> Optional[LicenseFinding]:
+) -> LicenseFinding | None:
     """OR-expression policy semantics: ONE choice satisfying the
     policy is enough.  Evaluate each choice through ``_classify``;
     return no-finding as soon as any choice classifies as allowed.
@@ -342,7 +342,7 @@ def _evaluate_and(
     dep: Dependency,
     spdx: str,
     policy: LicensePolicy,
-) -> Optional[LicenseFinding]:
+) -> LicenseFinding | None:
     """AND-expression policy semantics: ALL parts apply, so any
     deny / warn on any part propagates. First non-None finding
     wins (operator sees the most-significant violation)."""
@@ -358,7 +358,7 @@ def _classify(
     dep: Dependency,
     spdx: str,
     policy: LicensePolicy,
-) -> Optional[LicenseFinding]:
+) -> LicenseFinding | None:
     if " WITH " in spdx:
         base = spdx.split(" WITH ", 1)[0].strip()
         return _classify(dep, base, policy)
@@ -413,7 +413,7 @@ def _warn_finding(
 def _unknown_finding(
     dep: Dependency,
     policy: LicensePolicy,
-) -> Optional[LicenseFinding]:
+) -> LicenseFinding | None:
     if policy.on_unknown == "allow":
         return None
     severity = "high" if policy.on_unknown == "deny" else "info"
@@ -448,10 +448,10 @@ def _finding_id(dep: Dependency, kind: str) -> str:
 
 
 def enrich_licenses(
-    deps: List[Dependency],
+    deps: list[Dependency],
     *,
-    http: Optional[Any] = None,
-    cache: Optional[Any] = None,
+    http: Any | None = None,
+    cache: Any | None = None,
     enabled: bool = True,
     offline: bool = False,
 ) -> int:
@@ -500,7 +500,7 @@ def enrich_licenses(
     if not work_all:
         return 0
     _seen_lic: set = set()
-    work: List[Dependency] = []
+    work: list[Dependency] = []
     for d in work_all:
         key = (d.ecosystem, d.name)
         if key in _seen_lic:
@@ -581,7 +581,7 @@ def enrich_licenses(
     # license-drift-across-versions is rare in practice (when it
     # happens, the operator sees the propagated value rather than
     # ``license_unknown`` — strictly better noise floor).
-    license_map: Dict[Tuple[str, str], str] = {}
+    license_map: dict[tuple[str, str], str] = {}
     for d in work:
         if d.declared_license:
             license_map[(d.ecosystem, d.name)] = d.declared_license
@@ -603,7 +603,7 @@ def enrich_licenses(
 
 def _fetch_crates_license(
     name: str, *, http: Any, cache: Any,
-) -> Optional[str]:
+) -> str | None:
     """Cargo's crates.io API exposes the license SPDX directly:
 
         https://crates.io/api/v1/crates/<name>
@@ -645,7 +645,7 @@ def _fetch_crates_license(
 
 def _fetch_maven_license(
     coord: str, version: str, *, http: Any, cache: Any,
-) -> Optional[str]:
+) -> str | None:
     """Fetch + parse a Maven artefact's POM and extract the
     license element. Maven coords are ``groupId:artifactId``; the
     POM URL composes them into a path.
@@ -704,7 +704,7 @@ except ImportError:                                # pragma: no cover
     )
 
 
-def _spdx_from_pom(pom_bytes: bytes) -> Optional[str]:
+def _spdx_from_pom(pom_bytes: bytes) -> str | None:
     """Parse a POM and extract the first license name, mapped to
     SPDX. Uses ``defusedxml`` when available (XXE / billion-laughs
     hardening), falls back to stdlib ``xml.etree.ElementTree``.
@@ -748,7 +748,7 @@ def _spdx_from_pom(pom_bytes: bytes) -> Optional[str]:
 
 def _fetch_rubygems_license(
     name: str, *, http: Any, cache: Any,
-) -> Optional[str]:
+) -> str | None:
     """RubyGems API exposes ``licenses`` as an array of SPDX strings:
 
         https://rubygems.org/api/v1/gems/<name>.json
@@ -769,7 +769,7 @@ def _fetch_rubygems_license(
     except Exception:                                   # noqa: BLE001
         return None
     licenses = (data or {}).get("licenses") if isinstance(data, dict) else None
-    result: Optional[str] = None
+    result: str | None = None
     if isinstance(licenses, list) and licenses:
         first = licenses[0]
         if isinstance(first, str) and first.strip():
@@ -786,7 +786,7 @@ def _fetch_rubygems_license(
 
 def _fetch_nuget_license(
     name: str, version: str, *, http: Any, cache: Any,
-) -> Optional[str]:
+) -> str | None:
     """NuGet exposes per-package metadata via the registration
     endpoint:
 
@@ -820,7 +820,7 @@ def _fetch_nuget_license(
         # whole document.
         entry = data if isinstance(data, dict) else {}
     spdx = entry.get("licenseExpression")
-    result: Optional[str] = None
+    result: str | None = None
     if isinstance(spdx, str) and spdx.strip():
         result = spdx.strip()
     if cache is not None:
@@ -834,8 +834,8 @@ def _fetch_nuget_license(
 
 
 def _fetch_packagist_license(
-    name: str, version: Optional[str], *, http: Any, cache: Any,
-) -> Optional[str]:
+    name: str, version: str | None, *, http: Any, cache: Any,
+) -> str | None:
     """Packagist exposes per-package metadata at:
 
         https://repo.packagist.org/p2/<vendor>/<package>.json
@@ -877,7 +877,7 @@ def _fetch_packagist_license(
     if not isinstance(chosen, dict):
         return None
     licenses = chosen.get("license")
-    result: Optional[str] = None
+    result: str | None = None
     if isinstance(licenses, list) and licenses:
         first = licenses[0]
         if isinstance(first, str) and first.strip():
@@ -890,7 +890,7 @@ def _fetch_packagist_license(
 # Mapping of common Maven license-element names to SPDX IDs. POMs
 # carry free-text names; this table covers the licenses that
 # appear most often in published OSS POMs.
-_MAVEN_NAME_TO_SPDX: Dict[str, str] = {
+_MAVEN_NAME_TO_SPDX: dict[str, str] = {
     "The Apache Software License, Version 2.0": "Apache-2.0",
     "Apache License, Version 2.0": "Apache-2.0",
     "Apache 2.0": "Apache-2.0",
@@ -924,7 +924,7 @@ _MAVEN_NAME_TO_SPDX: Dict[str, str] = {
 }
 
 
-def _spdx_from_pypi(meta: Optional[dict]) -> Optional[str]:
+def _spdx_from_pypi(meta: dict | None) -> str | None:
     if not isinstance(meta, dict):
         return None
     info = meta.get("info") or {}
@@ -971,7 +971,7 @@ def _spdx_from_pypi(meta: Optional[dict]) -> Optional[str]:
 from core.license.spdx import looks_like_spdx_expression as _looks_like_spdx_expression  # noqa: E402
 
 
-def _spdx_from_trove(classifier: str) -> Optional[str]:
+def _spdx_from_trove(classifier: str) -> str | None:
     """Map a single PyPI ``License ::`` Trove classifier to an SPDX id.
 
     Covers the common cases. Unknown classifiers return None — the
@@ -980,7 +980,7 @@ def _spdx_from_trove(classifier: str) -> Optional[str]:
     return _TROVE_TO_SPDX.get(classifier.strip())
 
 
-_TROVE_TO_SPDX: Dict[str, str] = {
+_TROVE_TO_SPDX: dict[str, str] = {
     "License :: OSI Approved :: MIT License": "MIT",
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
     "License :: OSI Approved :: BSD License": "BSD-3-Clause",
@@ -1008,8 +1008,8 @@ _TROVE_TO_SPDX: Dict[str, str] = {
 
 
 def _spdx_from_npm(
-    meta: Optional[dict], version: Optional[str],
-) -> Optional[str]:
+    meta: dict | None, version: str | None,
+) -> str | None:
     """Extract the SPDX license string from npm registry metadata.
 
     Schema: top-level ``license`` is the package-level default; per-
@@ -1035,7 +1035,7 @@ def _spdx_from_npm(
     return _spdx_from_npm_block(meta.get("licenses"))
 
 
-def _spdx_from_npm_block(block: Any) -> Optional[str]:
+def _spdx_from_npm_block(block: Any) -> str | None:
     if isinstance(block, str):
         return block.strip() or None
     if isinstance(block, dict):
@@ -1059,7 +1059,7 @@ def _spdx_from_npm_block(block: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def detect_project_license(target: Path) -> Optional[str]:
+def detect_project_license(target: Path) -> str | None:
     """SPDX string the target's root manifest declares for the project
     itself, or None when no root manifest declares one.
 
@@ -1076,7 +1076,7 @@ def detect_project_license(target: Path) -> Optional[str]:
     """
     from .parsers import package_json, pom, pyproject
 
-    extractors: Tuple[Tuple[str, Any], ...] = (
+    extractors: tuple[tuple[str, Any], ...] = (
         ("package.json", package_json.extract_project_license),
         ("pyproject.toml", pyproject.extract_project_license),
         ("pom.xml", pom.extract_project_license),

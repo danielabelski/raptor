@@ -34,7 +34,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def label_set_hash(labels: Iterable[Any]) -> str:
     return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
 
 
-def _gate_outcomes(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _gate_outcomes(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Recompute calibration-gate outcomes for the run header.
 
     Deterministic re-derivation from the same rows the summary scores;
@@ -132,7 +133,7 @@ def run_id_for_output(output: Path) -> str:
     return resolved.stem
 
 
-def _timestamp_for_run(run_tag: Optional[str], output: Path) -> str:
+def _timestamp_for_run(run_tag: str | None, output: Path) -> str:
     """ISO-8601 UTC timestamp from the run's own artifacts.
 
     Prefers the runner's run tag (the epoch it stamped at run start);
@@ -154,18 +155,18 @@ def _timestamp_for_run(run_tag: Optional[str], output: Path) -> str:
 
 
 def build_run_record(
-    results: List[Dict[str, Any]],
-    meta: Dict[str, Any],
+    results: list[dict[str, Any]],
+    meta: dict[str, Any],
     *,
     run_id: str,
     timestamp: str,
     tree_sha: str,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     labels_hash: str,
     imported: bool = False,
     profile: str = "deployed",
     selection: Any = "full",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the RUN header record for one corpus run.
 
     ``profile`` records which knowledge profile produced the run
@@ -210,7 +211,7 @@ def build_run_record(
     }
 
 
-def describe_selection(run_rec: Dict[str, Any]) -> str:
+def describe_selection(run_rec: dict[str, Any]) -> str:
     """Human-readable selection: 'full', 'class=x', 'N label(s)'.
 
     Pre-selection records return '' (unknown — full runs and refires
@@ -230,7 +231,7 @@ def describe_selection(run_rec: Dict[str, Any]) -> str:
     return "refire: " + ", ".join(parts) if parts else "refire"
 
 
-def run_profile(run_rec: Dict[str, Any]) -> str:
+def run_profile(run_rec: dict[str, Any]) -> str:
     """The run header's profile, tolerant of pre-profile records.
 
     Every run recorded before the profile field existed ran with all
@@ -240,11 +241,11 @@ def run_profile(run_rec: Dict[str, Any]) -> str:
 
 
 def build_label_records(
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
     *,
     run_id: str,
-    span_shas: Optional[Dict[str, str]] = None,
-) -> List[Dict[str, Any]]:
+    span_shas: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Build one LABEL record per result row.
 
     Tolerates older result shapes: every field beyond ``function_id``
@@ -282,7 +283,7 @@ def build_label_records(
     return records
 
 
-def append_records(path: Path, records: List[Dict[str, Any]]) -> None:
+def append_records(path: Path, records: list[dict[str, Any]]) -> None:
     """Append records to the JSONL store (append-only, one per line)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -291,14 +292,14 @@ def append_records(path: Path, records: List[Dict[str, Any]]) -> None:
 
 
 def record_run(
-    results: List[Dict[str, Any]],
-    meta: Dict[str, Any],
+    results: list[dict[str, Any]],
+    meta: dict[str, Any],
     *,
     output_path: Path,
-    run_tag: Optional[str] = None,
-    labels: Optional[List[Any]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    store: Optional[Path] = None,
+    run_tag: str | None = None,
+    labels: list[Any] | None = None,
+    config: dict[str, Any] | None = None,
+    store: Path | None = None,
     profile: str = "deployed",
     selection: Any = "full",
 ) -> bool:
@@ -344,7 +345,7 @@ def record_run(
 # Store reading
 # ---------------------------------------------------------------------------
 
-def iter_records(path: Path) -> Iterator[Dict[str, Any]]:
+def iter_records(path: Path) -> Iterator[dict[str, Any]]:
     """Yield store records, skipping malformed lines with a warning.
 
     A corrupt line (interrupted append, manual edit) must not kill
@@ -376,10 +377,10 @@ def iter_records(path: Path) -> Iterator[Dict[str, Any]]:
 
 def load_store(
     path: Path,
-) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     """Load (run_headers, label_records_by_run_id) in append order."""
-    runs: List[Dict[str, Any]] = []
-    labels: Dict[str, List[Dict[str, Any]]] = {}
+    runs: list[dict[str, Any]] = []
+    labels: dict[str, list[dict[str, Any]]] = {}
     for rec in iter_records(path):
         if rec["record"] == "run":
             runs.append(rec)
@@ -389,9 +390,9 @@ def load_store(
 
 
 def resolve_run(
-    runs: List[Dict[str, Any]],
+    runs: list[dict[str, Any]],
     token: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Resolve a run id (or unique substring) to its latest header.
 
     Raises ``ValueError`` listing candidates on ambiguity, or when
@@ -415,11 +416,11 @@ def resolve_run(
 
 
 def _latest_labels(
-    run: Dict[str, Any],
-    labels_by_run: Dict[str, List[Dict[str, Any]]],
-) -> Dict[str, Dict[str, Any]]:
+    run: dict[str, Any],
+    labels_by_run: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
     """Latest label record per function_id for one run."""
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for rec in labels_by_run.get(run.get("run_id", ""), []):
         out[rec["function_id"]] = rec
     return out
@@ -429,7 +430,7 @@ def _latest_labels(
 # compare
 # ---------------------------------------------------------------------------
 
-def classify_flip(a: Dict[str, Any], b: Dict[str, Any]) -> str:
+def classify_flip(a: dict[str, Any], b: dict[str, Any]) -> str:
     """Classify a verdict flip between two records of the same label.
 
     ``errored``: the label now errors.  ``recovered``: it errored
@@ -451,15 +452,15 @@ def classify_flip(a: Dict[str, Any], b: Dict[str, Any]) -> str:
 
 
 def compare_runs(
-    run_a: Dict[str, Any],
-    run_b: Dict[str, Any],
-    labels_a: Dict[str, Dict[str, Any]],
-    labels_b: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
+    run_a: dict[str, Any],
+    run_b: dict[str, Any],
+    labels_a: dict[str, dict[str, Any]],
+    labels_b: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     """Compute the fix-impact diff between two runs."""
     common = sorted(set(labels_a) & set(labels_b))
-    flips: Dict[str, List[Dict[str, Any]]] = {}
-    attribution_changes: List[Dict[str, Any]] = []
+    flips: dict[str, list[dict[str, Any]]] = {}
+    attribution_changes: list[dict[str, Any]] = []
     for fid in common:
         a, b = labels_a[fid], labels_b[fid]
         if a.get("actual") != b.get("actual"):
@@ -480,7 +481,7 @@ def compare_runs(
                 "observed": b.get("observed_mechanisms", []),
             })
 
-    def _matched(recs: Dict[str, Dict[str, Any]]) -> Tuple[int, int]:
+    def _matched(recs: dict[str, dict[str, Any]]) -> tuple[int, int]:
         """(matched, reviewed) over non-skipped records — the same
         convention as the run header and the runner summary."""
         reviewed = [r for r in recs.values() if not r.get("skipped")]
@@ -512,7 +513,7 @@ def compare_runs(
 _FLIP_ORDER = ("improved", "recovered", "lateral", "regressed", "errored")
 
 
-def format_compare(diff: Dict[str, Any]) -> str:
+def format_compare(diff: dict[str, Any]) -> str:
     """Format the compare report."""
     a, b = diff["run_a"], diff["run_b"]
     lines = []
@@ -604,7 +605,7 @@ def format_compare(diff: Dict[str, Any]) -> str:
 # runs / trend / stability
 # ---------------------------------------------------------------------------
 
-def format_runs(runs: List[Dict[str, Any]]) -> str:
+def format_runs(runs: list[dict[str, Any]]) -> str:
     """Format the run-header listing."""
     if not runs:
         return "No runs recorded."
@@ -641,8 +642,8 @@ def format_runs(runs: List[Dict[str, Any]]) -> str:
 
 def format_trend(
     function_id: str,
-    runs: List[Dict[str, Any]],
-    labels_by_run: Dict[str, List[Dict[str, Any]]],
+    runs: list[dict[str, Any]],
+    labels_by_run: dict[str, list[dict[str, Any]]],
 ) -> str:
     """Format one label's history across all recorded runs."""
     rows = []
@@ -675,9 +676,9 @@ def format_trend(
 
 
 def stability_groups(
-    runs: List[Dict[str, Any]],
-    labels_by_run: Dict[str, List[Dict[str, Any]]],
-) -> List[Dict[str, Any]]:
+    runs: list[dict[str, Any]],
+    labels_by_run: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
     """Group runs by (pipeline tree sha, profile, config), measure variance.
 
     Runs without a recorded tree sha (imports) cannot assert
@@ -685,7 +686,7 @@ def stability_groups(
     runs, a label is unstable when the same tree and config produced
     different verdicts — the nondeterminism measure.
     """
-    grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for run in runs:
         tree = run.get("pipeline_tree_sha") or ""
         if not tree:
@@ -701,7 +702,7 @@ def stability_groups(
     for (tree, profile, config_json), group in sorted(grouped.items()):
         if len(group) < 2:
             continue
-        verdicts: Dict[str, Dict[str, str]] = {}
+        verdicts: dict[str, dict[str, str]] = {}
         for run in group:
             for fid, rec in _latest_labels(run, labels_by_run).items():
                 verdicts.setdefault(fid, {})[run.get("run_id", "")] = (
@@ -725,7 +726,7 @@ def stability_groups(
     return out
 
 
-def format_stability(groups: List[Dict[str, Any]]) -> str:
+def format_stability(groups: list[dict[str, Any]]) -> str:
     """Format the same-tree same-config variance report."""
     if not groups:
         return (
@@ -763,10 +764,10 @@ def format_stability(groups: List[Dict[str, Any]]) -> str:
 
 def refire_deltas(
     store: Path,
-    function_ids: List[str],
+    function_ids: list[str],
     *,
     current_run_id: str,
-) -> List[str]:
+) -> list[str]:
     """Per-label verdict deltas vs each label's latest PRIOR record.
 
     Post-run operator reporting for the selective-refire loop (fix a
@@ -798,7 +799,7 @@ def refire_deltas(
         if r.get("run_id") != current_run_id
     ]
 
-    lines: List[str] = []
+    lines: list[str] = []
     for fid in function_ids:
         now = cur_labels.get(fid)
         if now is None:
@@ -834,7 +835,7 @@ def refire_deltas(
     return lines
 
 
-def full_run_delta(store: Path, current_run_id: str) -> Optional[str]:
+def full_run_delta(store: Path, current_run_id: str) -> str | None:
     """Fix-impact delta of THIS run vs the latest prior recorded run.
 
     Full-run counterpart to :func:`refire_deltas`: a 220-label run
@@ -930,7 +931,7 @@ def import_results(results_path: Path, store: Path) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python3 -m core.audit.corpus.history",
         description=(

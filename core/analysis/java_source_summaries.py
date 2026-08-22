@@ -37,7 +37,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Sequence
 
 # Shared parsing bones (deliberate private-name imports; the summary
 # modules form one family — see java_wrapper_summaries).
@@ -60,13 +61,13 @@ from core.analysis.java_wrapper_summaries import (  # noqa: PLC2701
 #: data. Seed set (<= 9 names total with the methods below): servlet
 #: request surface only. Growth must come from learned vocabulary
 #: (study/IRIS), never from editing these literals.
-SOURCE_RECEIVER_TYPES: FrozenSet[str] = frozenset({
+SOURCE_RECEIVER_TYPES: frozenset[str] = frozenset({
     "HttpServletRequest",
     "ServletRequest",
 })
 
 #: Methods on those receivers whose return carries remote input.
-SOURCE_METHODS: FrozenSet[str] = frozenset({
+SOURCE_METHODS: frozenset[str] = frozenset({
     "getParameter",
     "getHeader",
     "getQueryString",
@@ -100,8 +101,8 @@ class SourceSummary:
 
 @dataclass
 class DeriveResult:
-    summaries: List[SourceSummary] = field(default_factory=list)
-    refusals: Dict[str, int] = field(default_factory=dict)
+    summaries: list[SourceSummary] = field(default_factory=list)
+    refusals: dict[str, int] = field(default_factory=dict)
 
     def refuse(self, reason: str) -> None:
         self.refusals[reason] = self.refusals.get(reason, 0) + 1
@@ -115,11 +116,11 @@ def _simple_type(text: str) -> str:
     return text.rsplit(".", 1)[-1].strip()
 
 
-def _param_types(decl) -> Optional[Tuple[str, ...]]:
+def _param_types(decl) -> tuple[str, ...] | None:
     params = decl.child_by_field_name("parameters")
     if params is None:
         return None
-    out: List[str] = []
+    out: list[str] = []
     for p in params.children:
         if not p.is_named:
             continue
@@ -132,7 +133,7 @@ def _param_types(decl) -> Optional[Tuple[str, ...]]:
     return tuple(out)
 
 
-def _request_typed_params(decl) -> Dict[str, str]:
+def _request_typed_params(decl) -> dict[str, str]:
     """Parameter name → simple type, for source-receiver-typed params."""
     names = _param_names(decl)
     types = _param_types(decl)
@@ -144,12 +145,12 @@ def _request_typed_params(decl) -> Dict[str, str]:
     }
 
 
-def _frozen_request_fields(cls_node) -> FrozenSet[str]:
+def _frozen_request_fields(cls_node) -> frozenset[str]:
     """Field names of a source-receiver type that are assigned exactly
     once, inside a constructor, from a constructor parameter of the
     same type family, and never assigned anywhere else in the class.
     """
-    declared: Dict[str, str] = {}
+    declared: dict[str, str] = {}
     body = cls_node.child_by_field_name("body")
     if body is None:
         return frozenset()
@@ -170,7 +171,7 @@ def _frozen_request_fields(cls_node) -> FrozenSet[str]:
     if not declared:
         return frozenset()
 
-    assigns: Dict[str, List[Tuple[bool, Optional[str]]]] = {n: [] for n in declared}
+    assigns: dict[str, list[tuple[bool, str | None]]] = {n: [] for n in declared}
     for node in _iter_named(cls_node):
         if node.type != _ASSIGN:
             continue
@@ -214,10 +215,10 @@ def _frozen_request_fields(cls_node) -> FrozenSet[str]:
 
 def _classify_source_return(
     expr,
-    request_params: Dict[str, str],
-    frozen_fields: FrozenSet[str],
-    locals_map: Dict[str, Any],
-    composable: Dict[Tuple[str, int], SourceSummary],
+    request_params: dict[str, str],
+    frozen_fields: frozenset[str],
+    locals_map: dict[str, Any],
+    composable: dict[tuple[str, int], SourceSummary],
 ) -> str:
     """Return ``"param" | "field" | "compose"`` when *expr* provably
     carries a source value; raise :class:`_Refused` otherwise."""
@@ -288,7 +289,7 @@ def derive_source_summaries(java_source: str) -> DeriveResult:
         if body is None:
             continue
 
-        methods: Dict[Tuple[str, int], List[Any]] = {}
+        methods: dict[tuple[str, int], list[Any]] = {}
         for m in body.children:
             if m.type != _METHOD_DECL:
                 continue
@@ -299,7 +300,7 @@ def derive_source_summaries(java_source: str) -> DeriveResult:
                 continue
             methods.setdefault((_text(mn), len(names)), []).append(m)
 
-        composable: Dict[Tuple[str, int], SourceSummary] = {}
+        composable: dict[tuple[str, int], SourceSummary] = {}
         for _pass in (1, 2):
             for (mname, arity), decls in methods.items():
                 if (mname, arity) in composable:
@@ -351,7 +352,7 @@ def scan_tree(
     root: Path,
     *,
     max_files: int = _MAX_FILES_DEFAULT,
-) -> Tuple[List[SourceSummary], Dict[str, int], int]:
+) -> tuple[list[SourceSummary], dict[str, int], int]:
     """Scan a source tree for source wrappers.
 
     Returns ``(summaries, refusal_counts, files_scanned)``. Hidden,
@@ -360,8 +361,8 @@ def scan_tree(
     """
     skip_parts = {".git", "target", "build", "out", "node_modules", "test",
                   "tests", ".idea"}
-    summaries: List[SourceSummary] = []
-    refusals: Dict[str, int] = {}
+    summaries: list[SourceSummary] = []
+    refusals: dict[str, int] = {}
     scanned = 0
     for path in sorted(Path(root).rglob("*.java")):
         if any(part in skip_parts or part.startswith(".")

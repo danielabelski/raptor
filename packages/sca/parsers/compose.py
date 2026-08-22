@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
 from . import register
@@ -71,7 +71,7 @@ _SERVICES_KEY = "services"
 
 
 @register(predicate=lambda p: _is_compose_file(p))
-def parse(path: Path) -> List[Dependency]:
+def parse(path: Path) -> list[Dependency]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -130,7 +130,7 @@ def parse(path: Path) -> List[Dependency]:
     if not isinstance(services, dict):
         return []
 
-    out: List[Dependency] = []
+    out: list[Dependency] = []
     for service_name, service in services.items():
         dep = _build_dep(
             service_name=service_name,
@@ -171,7 +171,7 @@ def _build_dep(
     service_name: Any,
     service: Any,
     declared_in: Path,
-) -> Optional[Dependency]:
+) -> Dependency | None:
     if not isinstance(service_name, str) or not service_name:
         return None
     if not isinstance(service, dict):
@@ -222,7 +222,7 @@ def _build_dep(
     )
 
 
-def _classify_pin_style(version: Optional[str]) -> PinStyle:
+def _classify_pin_style(version: str | None) -> PinStyle:
     """Classify an OCI tag's pin style."""
     if not version:
         return PinStyle.WILDCARD

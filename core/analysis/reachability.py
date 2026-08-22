@@ -78,7 +78,8 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Union
+from collections.abc import Iterable
 
 from . import _reach_cache
 from core.inventory.call_graph import (
@@ -117,8 +118,8 @@ class ReachabilityResult:
     call because that file uses ``getattr``-by-name dispatch.
     """
     verdict: Verdict
-    evidence: Tuple[Tuple[str, int], ...] = ()
-    uncertain_reasons: Tuple[Tuple[str, str], ...] = ()
+    evidence: tuple[tuple[str, int], ...] = ()
+    uncertain_reasons: tuple[tuple[str, str], ...] = ()
 
 
 # Test-file pattern. Matches paths that look like pytest /
@@ -139,7 +140,7 @@ _TEST_FILE_PATTERN = re.compile(
 # Python flags first; JS flags second. The resolver doesn't
 # distinguish — any present flag → file is a confounder when it
 # also mentions the target tail name.
-_MASKING_FLAGS: Set[str] = {
+_MASKING_FLAGS: set[str] = {
     INDIRECTION_GETATTR,
     INDIRECTION_GETATTR_OPAQUE,
     INDIRECTION_IMPORTLIB,
@@ -161,7 +162,7 @@ _MASKING_FLAGS: Set[str] = {
 # and ``_file_masks_target`` route it through ``_wildcard_could_provide``
 # to narrow per-target (the entry-reachability path derives the target's
 # module from its file path so the heuristic applies there too).
-_OPAQUE_MASKING_FLAGS: Set[str] = {
+_OPAQUE_MASKING_FLAGS: set[str] = {
     INDIRECTION_GETATTR_OPAQUE,
     INDIRECTION_IMPORTLIB,
     INDIRECTION_DUNDER_IMPORT,
@@ -203,28 +204,28 @@ class _FunctionCalledIndex:
     # token (module head / dotted prefix / func tail / fully-qualified
     # dotted chain / getattr-target name) → file indices that mention
     # it in some role function_called might consult.
-    files_by_token: Dict[str, Tuple[int, ...]]
+    files_by_token: dict[str, tuple[int, ...]]
     # Files with any non-wildcard masking flag — visited regardless
     # of token bucket so the indirection branch can yield UNCERTAIN
     # when ``file_mentions_tail`` matches the query.
-    files_with_non_wildcard_masking: Tuple[int, ...]
+    files_with_non_wildcard_masking: tuple[int, ...]
     # Files with a wildcard import — visited so the wildcard branch
     # can yield UNCERTAIN via ``_wildcard_could_provide``.
-    files_with_wildcard_import: Tuple[int, ...]
+    files_with_wildcard_import: tuple[int, ...]
     # U4: function name → file paths whose function-like macro bodies
     # invoke it (C/C++). A function reachable only via such a macro reads
     # NOT_CALLED in the static graph (tree-sitter doesn't expand macros);
     # the resolver maps a hit here to UNCERTAIN. Global membership —
     # consulted independent of the per-token candidate buckets, because
     # the macro-defining file may not otherwise mention the target.
-    macro_targets: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+    macro_targets: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 # Keyed on ``id(inventory)``; identity-checked on read so a fresh
 # inventory dict reusing the address of a GC'd one doesn't return
 # the wrong index. Capped — matches the ``_INDEX_CACHE`` policy
 # already used by ``callers_of`` / ``callees_of``.
-_FN_CALLED_INDEX_CACHE: Dict[int, Tuple[Dict[str, Any], _FunctionCalledIndex]] = {}
+_FN_CALLED_INDEX_CACHE: dict[int, tuple[dict[str, Any], _FunctionCalledIndex]] = {}
 _FN_CALLED_INDEX_CACHE_MAX = 8
 _FN_CALLED_INDEX_CACHE_LOCK = threading.Lock()
 
@@ -234,21 +235,21 @@ _FN_CALLED_INDEX_CACHE_LOCK = threading.Lock()
 # thousands of findings that's 100M file-walks per analysis pass; with
 # the index each call is hash-lookup-fast (adversarial review P1-C-2).
 # Map shape: ``{normalised_path: {name: [item, item, ...]}}``.
-_BO_ITEM_INDEX_CACHE: Dict[
-    int, Tuple[Dict[str, Any], Dict[str, Dict[str, List[Dict[str, Any]]]]],
+_BO_ITEM_INDEX_CACHE: dict[
+    int, tuple[dict[str, Any], dict[str, dict[str, list[dict[str, Any]]]]],
 ] = {}
 _BO_ITEM_INDEX_CACHE_MAX = 8
 _BO_ITEM_INDEX_CACHE_LOCK = threading.Lock()
 
 
 def _build_bo_item_index(
-    inventory: Dict[str, Any],
-) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    inventory: dict[str, Any],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """Walk the inventory ONCE and build the
     ``{path: {name: [item, ...]}}`` map. List values handle the in-
     file name-collision case (static helpers / overloads / #if-#else
     branches recorded as multiple items)."""
-    out: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for file_record in inventory.get("files", []) or []:
         if not isinstance(file_record, dict):
             continue
@@ -256,7 +257,7 @@ def _build_bo_item_index(
         if not isinstance(rec_path, str):
             continue
         normalised = rec_path.replace("\\", "/")
-        by_name: Dict[str, List[Dict[str, Any]]] = out.setdefault(
+        by_name: dict[str, list[dict[str, Any]]] = out.setdefault(
             normalised, {})
         for item in file_record.get("items") or []:
             if not isinstance(item, dict):
@@ -269,8 +270,8 @@ def _build_bo_item_index(
 
 
 def _get_bo_item_index(
-    inventory: Dict[str, Any],
-) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    inventory: dict[str, Any],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
     inv_id = id(inventory)
     with _BO_ITEM_INDEX_CACHE_LOCK:
         cached = _BO_ITEM_INDEX_CACHE.get(inv_id)
@@ -288,13 +289,13 @@ def _get_bo_item_index(
 
 
 def _build_function_called_index(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
 ) -> _FunctionCalledIndex:
     files = inventory.get("files") or []
-    files_by_token: Dict[str, Set[int]] = {}
-    non_wildcard: Set[int] = set()
-    wildcard: Set[int] = set()
-    macro_targets: Dict[str, Set[str]] = {}
+    files_by_token: dict[str, set[int]] = {}
+    non_wildcard: set[int] = set()
+    wildcard: set[int] = set()
+    macro_targets: dict[str, set[str]] = {}
 
     def _add(token: str, i: int) -> None:
         if not token:
@@ -357,7 +358,7 @@ def _build_function_called_index(
 
 
 def _get_function_called_index(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
 ) -> _FunctionCalledIndex:
     inv_id = id(inventory)
     with _FN_CALLED_INDEX_CACHE_LOCK:
@@ -376,7 +377,7 @@ def _get_function_called_index(
 
 
 def function_called(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     qualified_name: str,
     *,
     exclude_test_files: bool = True,
@@ -407,8 +408,8 @@ def function_called(
     target_module_parts = target_parts[:-1]
     target_module = ".".join(target_module_parts)
 
-    evidence: List[Tuple[str, int]] = []
-    uncertain_reasons: List[Tuple[str, str]] = []
+    evidence: list[tuple[str, int]] = []
+    uncertain_reasons: list[tuple[str, str]] = []
 
     target_dot_func = f"{target_module}.{target_func}"
     target_module_dot = target_module + "."
@@ -430,7 +431,7 @@ def function_called(
     # preserving.
     files = inventory.get("files") or []
     index = _get_function_called_index(inventory)
-    candidate_idx: Set[int] = set()
+    candidate_idx: set[int] = set()
     candidate_idx.update(
         index.files_by_token.get(target_module, ()),
     )
@@ -508,7 +509,7 @@ def function_called(
                 # is ``<pkg>.<Class>.<method>``. For languages
                 # where the file IS the module (Python / JS /
                 # Ruby class-less), fall back to path-derived form.
-                candidates: List[str] = []
+                candidates: list[str] = []
                 if file_pkg:
                     candidates.append(f"{file_pkg}.{rc}.{target_func}")
                 else:
@@ -644,8 +645,8 @@ def function_called(
 
 
 def _resolves_to(
-    chain: List[str],
-    imports: Dict[str, str],
+    chain: list[str],
+    imports: dict[str, str],
     target_module: str,
     target_func: str,
 ) -> bool:
@@ -683,7 +684,7 @@ def _resolves_to(
 
 
 def _wildcard_could_provide(
-    imports: Dict[str, str],
+    imports: dict[str, str],
     target_module: str,
     target_func: str,
 ) -> bool:
@@ -814,17 +815,17 @@ class CallersResult:
     documented method-call policy.
     """
 
-    definitive: Tuple[InternalFunction, ...] = ()
-    uncertain: Tuple[InternalFunction, ...] = ()
-    method_match_overinclusive: Tuple[InternalFunction, ...] = ()
+    definitive: tuple[InternalFunction, ...] = ()
+    uncertain: tuple[InternalFunction, ...] = ()
+    method_match_overinclusive: tuple[InternalFunction, ...] = ()
 
     @property
-    def all_callers(self) -> Tuple[InternalFunction, ...]:
+    def all_callers(self) -> tuple[InternalFunction, ...]:
         """Union of definitive + uncertain + over-inclusive method
         matches, deduplicated, in stable order. Useful when the
         consumer just wants "everyone who might call this"."""
-        seen: Set[InternalFunction] = set()
-        out: List[InternalFunction] = []
+        seen: set[InternalFunction] = set()
+        out: list[InternalFunction] = []
         for group in (self.definitive, self.uncertain,
                       self.method_match_overinclusive):
             for c in group:
@@ -853,8 +854,8 @@ class CalleesResult:
     the source's internal callee set as incomplete.
     """
 
-    definitive: Tuple[FunctionId, ...] = ()
-    uncertain: Tuple[str, ...] = ()
+    definitive: tuple[FunctionId, ...] = ()
+    uncertain: tuple[str, ...] = ()
     has_method_dispatch: bool = False
 
 
@@ -897,14 +898,14 @@ class _AdjacencyIndex:
       whose body has a call resolving to the target.
     """
 
-    forward: Dict[InternalFunction, Set[FunctionId]] = field(default_factory=dict)
-    reverse: Dict[FunctionId, Set[InternalFunction]] = field(default_factory=dict)
+    forward: dict[InternalFunction, set[FunctionId]] = field(default_factory=dict)
+    reverse: dict[FunctionId, set[InternalFunction]] = field(default_factory=dict)
     # Uncertain callers are stashed by *target tail name*, not target
     # FunctionId, because the same file-level masking flag taints
     # every internal function in that file as a possible caller for
     # any target the file mentions by tail. callers_of() looks up by
     # the target's tail when assembling its result.
-    uncertain_callers_by_tail: Dict[str, Set[Tuple[InternalFunction, str]]] = (
+    uncertain_callers_by_tail: dict[str, set[tuple[InternalFunction, str]]] = (
         field(default_factory=dict)
     )
     # ``method_match[tail]`` entries pair a candidate caller with an
@@ -913,22 +914,22 @@ class _AdjacencyIndex:
     # class body; ``None`` means "unknown receiver, stay over-
     # inclusive". ``callers_of`` narrows entries by class hierarchy
     # before returning method_match_overinclusive.
-    method_match: Dict[
-        str, Set[Tuple[InternalFunction, Optional[str]]],
+    method_match: dict[
+        str, set[tuple[InternalFunction, str | None]],
     ] = field(default_factory=dict)
-    uncertain_callees: Dict[InternalFunction, Set[str]] = field(default_factory=dict)
-    has_method_dispatch: Dict[InternalFunction, bool] = field(default_factory=dict)
-    definitions: Dict[Tuple[str, str], Set[InternalFunction]] = (
+    uncertain_callees: dict[InternalFunction, set[str]] = field(default_factory=dict)
+    has_method_dispatch: dict[InternalFunction, bool] = field(default_factory=dict)
+    definitions: dict[tuple[str, str], set[InternalFunction]] = (
         field(default_factory=dict)
     )
     # ``method → owning class name`` (None when method is module-
     # level rather than inside a class body). Lets ``callers_of``
     # narrow method_match by class hierarchy.
-    class_of_method: Dict[InternalFunction, str] = field(default_factory=dict)
+    class_of_method: dict[InternalFunction, str] = field(default_factory=dict)
     # ``(file, class_name) → tuple of base class names`` as they
     # appeared in the source. Used to compute the receiver's
     # ancestor chain at query time, scoped to same-file classes.
-    class_bases: Dict[Tuple[str, str], Tuple[str, ...]] = field(
+    class_bases: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=dict,
     )
     # ``(class_name, method_name)`` pairs for methods declared in a class that
@@ -939,7 +940,7 @@ class _AdjacencyIndex:
     # (some unresolved ``x.m()`` exists), function_called yields UNCERTAIN
     # rather than NOT_CALLED — never suppress what virtual dispatch could reach.
     # Surface-only; precise typed resolution stays CodeQL's (Tier 2) job.
-    override_methods: Set[Tuple[str, str]] = field(default_factory=set)
+    override_methods: set[tuple[str, str]] = field(default_factory=set)
     # Functions whose decorators match a framework-dispatch
     # registration pattern (``@app.route``, ``@router.get``,
     # ``@cli.command``, ``@task.fixture``, etc.). These are reachable
@@ -947,7 +948,7 @@ class _AdjacencyIndex:
     # via internal dispatch. ``callers_of`` may return an empty
     # ``definitive`` set for these, but they are NOT dead code;
     # consumers should treat them as entry points.
-    framework_callable: Set[InternalFunction] = field(default_factory=set)
+    framework_callable: set[InternalFunction] = field(default_factory=set)
     # Functions referenced as identifier arguments to a framework
     # registration call (``http.HandleFunc("/x", handler)``,
     # ``app.get("/users", listUsers)``, etc.). Sister to
@@ -956,13 +957,13 @@ class _AdjacencyIndex:
     # than decorators. Populated from CallSite.argument_identifiers
     # which the JS + Go extractors emit (other languages populate
     # an empty list — the set just stays empty for them).
-    framework_registered: Set[InternalFunction] = field(default_factory=set)
+    framework_registered: set[InternalFunction] = field(default_factory=set)
     # ``qualified_name -> InternalFunction`` for project-defined
     # functions reachable via cross-package import. Used by
     # callers_of() to follow ExternalFunction → InternalFunction
     # aliasing at lookup time (the index already canonicalises
     # forward edges; this map preserves the reverse lookup).
-    qualified_to_internal: Dict[str, InternalFunction] = (
+    qualified_to_internal: dict[str, InternalFunction] = (
         field(default_factory=dict)
     )
     # ``(src, dst) -> sorted tuple of line numbers`` recording every
@@ -971,11 +972,11 @@ class _AdjacencyIndex:
     # rendering ("X calls Y at lines 12, 27, 45"). Lines are 1-based
     # source-file lines from the call_graph extractor; 0 when the
     # extractor couldn't attribute a line.
-    call_lines: Dict[
-        Tuple[InternalFunction, FunctionId], Tuple[int, ...],
+    call_lines: dict[
+        tuple[InternalFunction, FunctionId], tuple[int, ...],
     ] = field(default_factory=dict)
     # Set of file paths classified as test files (cached).
-    test_paths: FrozenSet[str] = frozenset()
+    test_paths: frozenset[str] = frozenset()
 
 
 # Memoisation: keyed on ``id(inventory)``. Cache entries hold a
@@ -1006,13 +1007,13 @@ class _AdjacencyIndex:
 # even if it had just been read 1ms before — anti-LRU semantics that
 # hurt the hot-cache case worst. Cache hits now ``move_to_end`` to
 # keep recently-touched entries warm.
-_INDEX_CACHE: "OrderedDict[int, Tuple[Dict[str, Any], _AdjacencyIndex]]" = OrderedDict()
+_INDEX_CACHE: OrderedDict[int, tuple[dict[str, Any], _AdjacencyIndex]] = OrderedDict()
 _CACHE_MAX_ENTRIES = 64
 _INDEX_CACHE_LOCK = threading.Lock()
 
 
 def _get_or_build_index(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     *,
     exclude_test_files: bool,
 ) -> _AdjacencyIndex:
@@ -1055,7 +1056,7 @@ def _get_or_build_index(
         return persisted
 
     idx = _AdjacencyIndex()
-    test_paths: Set[str] = set()
+    test_paths: set[str] = set()
 
     # Pass 1: gather every project-defined function as an
     # InternalFunction and seed `definitions`.
@@ -1245,7 +1246,7 @@ def _get_or_build_index(
     # declaration writes it into ``FileCallGraph.package_name``;
     # we read it here and combine with the function name to seed
     # ``qualified_to_internal``.
-    file_packages: Dict[str, Optional[str]] = {}
+    file_packages: dict[str, str | None] = {}
     for file_record in inventory.get("files", []):
         if not isinstance(file_record, dict):
             continue
@@ -1321,20 +1322,20 @@ def _get_or_build_index(
         cg = file_record.get("call_graph")
         if not cg:
             continue
-        imports: Dict[str, str] = cg.get("imports") or {}
-        flags: Set[str] = set(cg.get("indirection") or [])
-        getattr_targets: Set[str] = set(cg.get("getattr_targets") or [])
+        imports: dict[str, str] = cg.get("imports") or {}
+        flags: set[str] = set(cg.get("indirection") or [])
+        getattr_targets: set[str] = set(cg.get("getattr_targets") or [])
         non_wildcard_masking = (flags & _MASKING_FLAGS) - {
             INDIRECTION_WILDCARD_IMPORT,
         }
         has_wildcard = INDIRECTION_WILDCARD_IMPORT in flags
 
         for call in cg.get("calls") or []:
-            chain: List[str] = list(call.get("chain") or [])
+            chain: list[str] = list(call.get("chain") or [])
             if not chain:
                 continue
             line = int(call.get("line", 0) or 0)
-            caller_name: Optional[str] = call.get("caller")
+            caller_name: str | None = call.get("caller")
             caller_node = _resolve_caller(idx, path, caller_name, line)
             if caller_node is None:
                 # Module-level call OR enclosing function not in the
@@ -1436,7 +1437,7 @@ def _get_or_build_index(
                 fn for (p, _name), fns in idx.definitions.items()
                 if p == path for fn in fns
             ]
-            mentioned_tails: Set[str] = set(getattr_targets)
+            mentioned_tails: set[str] = set(getattr_targets)
             for call in cg.get("calls") or []:
                 chain = list(call.get("chain") or [])
                 if chain:
@@ -1496,7 +1497,7 @@ def _get_or_build_index(
 # interpretation is unambiguous even at length 1, see
 # ``_FRAMEWORK_DISPATCH_NAKED_NAMES`` below — these get an exception
 # to the chain-length gate.
-_FRAMEWORK_DISPATCH_TAILS: FrozenSet[str] = frozenset({
+_FRAMEWORK_DISPATCH_TAILS: frozenset[str] = frozenset({
     # HTTP route methods (Flask / FastAPI / Starlette / Bottle / etc.)
     "route", "get", "post", "put", "patch", "delete", "head", "options",
     "endpoint", "websocket", "errorhandler", "exception_handler",
@@ -1548,7 +1549,7 @@ _FRAMEWORK_DISPATCH_TAILS: FrozenSet[str] = frozenset({
 #     skips a demotion that might have been correct); silencing
 #     real frameworks costs false negatives. Bias toward
 #     admitting the framework case.
-_FRAMEWORK_REGISTRATION_TAILS: FrozenSet[str] = frozenset({
+_FRAMEWORK_REGISTRATION_TAILS: frozenset[str] = frozenset({
     # Express / Fastify / Koa / Hono — lowercase HTTP verbs + use + route.
     "get", "post", "put", "patch", "delete", "head", "options",
     "all", "use", "route", "param",
@@ -1586,7 +1587,7 @@ _FRAMEWORK_REGISTRATION_TAILS: FrozenSet[str] = frozenset({
 #     enough not to collide.
 #   * dramatiq: ``@actor`` — domain-specific term, unlikely to be a
 #     user-defined pass-through.
-_FRAMEWORK_DISPATCH_NAKED_NAMES: FrozenSet[str] = frozenset({
+_FRAMEWORK_DISPATCH_NAKED_NAMES: frozenset[str] = frozenset({
     "receiver",
     "shared_task",
     "periodic_task",
@@ -1638,7 +1639,7 @@ def _resolved_ancestor_chain(
     file_path: str,
     class_name: str,
     idx: _AdjacencyIndex,
-) -> Optional[FrozenSet[str]]:
+) -> frozenset[str] | None:
     """Return the set of class names reachable from ``class_name``
     via base-class edges within ``file_path``, including
     ``class_name`` itself.
@@ -1649,8 +1650,8 @@ def _resolved_ancestor_chain(
     silently truncating. Cross-file inheritance is a follow-on
     project; today's narrowing only fires within a single file.
     """
-    seen: Set[str] = {class_name}
-    stack: List[str] = [class_name]
+    seen: set[str] = {class_name}
+    stack: list[str] = [class_name]
     # Guard against pathological recursive base claims (a class
     # listing itself in its own bases, etc.). The stack-based walk
     # already deduplicates via ``seen``; this is the loop bound.
@@ -1702,7 +1703,7 @@ def _resolved_ancestor_chain(
 # computing the ancestor chain — they can't define a method that
 # a ``self.foo()`` could legitimately resolve to as far as project
 # code goes.
-_SAFE_BUILTIN_BASES: FrozenSet[str] = frozenset({
+_SAFE_BUILTIN_BASES: frozenset[str] = frozenset({
     "object", "Exception", "BaseException", "ValueError", "TypeError",
     "KeyError", "IndexError", "RuntimeError", "OSError", "IOError",
     "FileNotFoundError", "NotImplementedError", "StopIteration",
@@ -1721,9 +1722,9 @@ _SAFE_BUILTIN_BASES: FrozenSet[str] = frozenset({
 
 def _method_match_compatible(
     *,
-    receiver_class: Optional[str],
+    receiver_class: str | None,
     receiver_file: str,
-    target_class: Optional[str],
+    target_class: str | None,
     idx: _AdjacencyIndex,
 ) -> bool:
     """True iff a ``self.foo()`` / ``cls.foo()`` call site whose
@@ -1758,9 +1759,9 @@ def _method_match_compatible(
 def _resolve_caller(
     idx: _AdjacencyIndex,
     file_path: str,
-    caller_name: Optional[str],
+    caller_name: str | None,
     call_line: int,
-) -> Optional[InternalFunction]:
+) -> InternalFunction | None:
     """Map ``caller_name`` (lexical enclosing fn-name in ``file_path``)
     to its :class:`InternalFunction` definition record.
 
@@ -1842,7 +1843,7 @@ def _apply_reexport_aliases(idx: _AdjacencyIndex) -> int:
             pkg_path = ""
         else:
             pkg_path = path[: -len("/__init__.py")]
-        pkg_dotted_candidates: List[str] = []
+        pkg_dotted_candidates: list[str] = []
         if pkg_path:
             pkg_dotted_candidates.append(pkg_path.replace("/", "."))
             if pkg_path.startswith("src/"):
@@ -1924,7 +1925,7 @@ def _apply_reexport_aliases(idx: _AdjacencyIndex) -> int:
     return added
 
 
-def _file_path_to_module(rel_path: str) -> Optional[str]:
+def _file_path_to_module(rel_path: str) -> str | None:
     """Universal file-path → module conversion used by the same-file
     bare-name fast-path in ``function_called``.
 
@@ -1965,7 +1966,7 @@ def _file_path_to_module(rel_path: str) -> Optional[str]:
 
 def _path_derived_module(
     file_path: str, class_name: str, fn_name: str,
-) -> List[str]:
+) -> list[str]:
     """Synthesise candidate ``<file_module>.<class_name>.<fn_name>``
     forms for languages where the file IS the module (Python / JS-TS
     / Ruby where no top-level module declaration sets
@@ -1994,7 +1995,7 @@ def _path_derived_module(
         base = base[: -len("/init")]
     if not base:
         return []
-    out: List[str] = [f"{base.replace('/', '.')}.{class_name}.{fn_name}"]
+    out: list[str] = [f"{base.replace('/', '.')}.{class_name}.{fn_name}"]
     for prefix in ("src/", "luasrc/", "lib/"):
         if base.startswith(prefix):
             stripped = base[len(prefix):]
@@ -2010,9 +2011,9 @@ def _candidate_qualified_names(
     file_path: str,
     fn_name: str,
     *,
-    package_name: Optional[str] = None,
-    class_name: Optional[str] = None,
-) -> List[str]:
+    package_name: str | None = None,
+    class_name: str | None = None,
+) -> list[str]:
     """Heuristic: derive plausible qualified names for an
     InternalFunction defined at ``(file_path, fn_name)``.
 
@@ -2038,7 +2039,7 @@ def _candidate_qualified_names(
     in priority order; consumers do ``setdefault`` so the highest-
     confidence form wins.
     """
-    candidates: List[str] = []
+    candidates: list[str] = []
 
     # Declaration-based path: ``package_name`` from the extractor.
     # The qualified form depends on whether the language allows
@@ -2115,9 +2116,9 @@ def _candidate_qualified_names(
 
 
 def _resolve_callee_chain(
-    chain: List[str],
-    imports: Dict[str, str],
-) -> Optional[ExternalFunction]:
+    chain: list[str],
+    imports: dict[str, str],
+) -> ExternalFunction | None:
     """Map a call chain to an :class:`ExternalFunction` via the file's
     import map. Returns None if the chain head isn't in the import
     map.
@@ -2152,7 +2153,7 @@ def _resolve_callee_chain(
 
 
 def callers_of(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     target: FunctionId,
     *,
     exclude_test_files: bool = True,
@@ -2184,7 +2185,7 @@ def callers_of(
         if aliased is not None:
             target = aliased
 
-    definitive_set: Set[InternalFunction] = set(
+    definitive_set: set[InternalFunction] = set(
         idx.reverse.get(target, set())
     )
 
@@ -2198,7 +2199,7 @@ def callers_of(
     # Drop callers that are already definitive — uncertain only
     # matters when there's NO definitive evidence in that file. But
     # uncertain is per-fn, not per-file, so we filter by fn.
-    uncertain_set: Set[InternalFunction] = {
+    uncertain_set: set[InternalFunction] = {
         fn for (fn, _flag) in uncertain_pairs
         if fn not in definitive_set
     }
@@ -2216,11 +2217,11 @@ def callers_of(
     # ``class C.foo`` when B and C are unrelated. Entries with
     # ``receiver_class=None`` stay (the safe over-inclusive
     # default).
-    method_match_set: Set[InternalFunction] = set()
+    method_match_set: set[InternalFunction] = set()
     if isinstance(target, InternalFunction):
         candidates = idx.method_match.get(target.name, set())
         target_class = idx.class_of_method.get(target)
-        narrowed: Set[InternalFunction] = set()
+        narrowed: set[InternalFunction] = set()
         for caller, receiver_class in candidates:
             if _method_match_compatible(
                     receiver_class=receiver_class,
@@ -2246,7 +2247,7 @@ def callers_of(
 
 
 def is_framework_callable(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     target: InternalFunction,
     *,
     exclude_test_files: bool = True,
@@ -2265,7 +2266,7 @@ def is_framework_callable(
 
 
 def is_registered_via_call(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     target: InternalFunction,
     *,
     exclude_test_files: bool = True,
@@ -2291,9 +2292,9 @@ def is_registered_via_call(
 
 
 def module_aborts_on_load(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Return the module-load-abort record for ``file_path`` if the
     inventory builder detected an unconditional top-of-module abort
     (``raise ImportError`` / ``throw new Error`` / ``init() panic`` /
@@ -2325,9 +2326,9 @@ def module_aborts_on_load(
 
 
 def build_excluded(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Return the build-exclusion record for ``file_path`` if the inventory
     builder detected that the file is never compiled (e.g. Go
     ``//go:build ignore``), else ``None``.
@@ -2357,9 +2358,9 @@ def build_excluded(
 
 
 def _select_item_by_line(
-    candidates: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
     line: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Narrow same-name inventory items to the single best match for a
     query line. Shared by the binary-oracle / frida accessors so the
     disambiguation can't drift between copies (it had, three ways).
@@ -2406,7 +2407,7 @@ def _select_item_by_line(
 
 
 def binary_call_edge_present(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
     name: str,
     line: int = 0,
@@ -2452,7 +2453,7 @@ def binary_call_edge_present(
 
 
 def frida_runtime_trace_present(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
     name: str,
     line: int = 0,
@@ -2492,7 +2493,7 @@ def frida_runtime_trace_present(
 
 
 def binary_oracle_absent(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
     name: str,
     line: int = 0,
@@ -2579,7 +2580,7 @@ def binary_oracle_absent(
 
 
 def is_lexically_dead(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
     name: str,
     line: int = 0,
@@ -2688,7 +2689,7 @@ class ReachabilityProfile:
     has_php_framework: bool = False
 
 
-PROFILES: Dict[str, ReachabilityProfile] = {
+PROFILES: dict[str, ReachabilityProfile] = {
     "c":    ReachabilityProfile("c", "sound", "non_static"),
     "cpp":  ReachabilityProfile("cpp", "sound", "non_static"),
     "go":   ReachabilityProfile("go", "sound", "go_exported", has_go_init=True),
@@ -2818,7 +2819,7 @@ def _annotation_tail(annotation: Any) -> str:
     return str(annotation).split("(")[0].strip().split(".")[-1].lstrip("@")
 
 
-def _java_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _java_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A Java method dispatched by a framework / DI container with no
     in-project caller — servlet lifecycle method, method-level dispatch
     annotation, or a public method of a stereotyped (container-managed) class.
@@ -2875,7 +2876,7 @@ _TS_CLASS_STEREOTYPE_DECORATORS = frozenset({
 })
 
 
-def _ts_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _ts_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A TS/JS method dispatched by a framework / DI container with no
     in-project caller — a method-level route/handler/resolver decorator, or a
     PUBLIC method of a stereotyped (container-managed / template-bound /
@@ -2913,7 +2914,7 @@ _CSHARP_CLASS_STEREOTYPE_ATTRS = frozenset({
 })
 
 
-def _csharp_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _csharp_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A C# method dispatched by ASP.NET with no in-project caller — a method
     routing attribute (``[HttpGet]`` / ``[Route]``) or a PUBLIC method of a
     ``[ApiController]`` / ``[Controller]`` class. Monotonic add-entries lever:
@@ -2940,7 +2941,7 @@ _RUBY_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _ruby_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _ruby_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A Ruby method dispatched by Rails with no in-project caller. Rails uses
     CONVENTION (no annotations): a class inheriting a framework base (a
     ``*Controller`` / job / mailer / channel) has its methods invoked by the
@@ -2978,7 +2979,7 @@ _PHP_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _php_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _php_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A PHP method dispatched by Laravel / Symfony with no in-project caller —
     a Symfony ``#[Route]`` method attribute, or a method of a class whose
     ``class_attributes`` (extends/implements bases + class-level attributes)
@@ -3033,7 +3034,7 @@ _PYTHON_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _python_framework_entry(name: str, item: Dict[str, Any]) -> bool:
+def _python_framework_entry(name: str, item: dict[str, Any]) -> bool:
     """A Python method dispatched by a web framework with no in-project caller —
     a method of a class-based view (Django ``View``/generic CBVs, DRF
     ``APIView``/``ViewSet``, Flask ``MethodView``). The framework routes HTTP
@@ -3047,8 +3048,8 @@ def _python_framework_entry(name: str, item: Dict[str, Any]) -> bool:
     return False
 
 
-def _is_library_export(item: Dict[str, Any], language: str,
-                       nested_keys: "frozenset" = frozenset()) -> bool:
+def _is_library_export(item: dict[str, Any], language: str,
+                       nested_keys: frozenset = frozenset()) -> bool:
     """In LIBRARY mode, an exported / public symbol is an entry point — a
     library's public API is reachable by consumers even with no in-project
     caller. Opt-in (off by default): treating exports as entries would mask
@@ -3078,7 +3079,7 @@ def _is_library_export(item: Dict[str, Any], language: str,
     return False
 
 
-def _nested_function_keys(items: List[Dict[str, Any]]) -> "frozenset":
+def _nested_function_keys(items: list[dict[str, Any]]) -> frozenset:
     """Return ``{(name, line_start), ...}`` for items whose line_start falls
     INSIDE another item's [line_start, line_end] range — i.e. nested
     closures, inner functions, lambdas extracted as separate items by
@@ -3109,10 +3110,10 @@ def _nested_function_keys(items: List[Dict[str, Any]]) -> "frozenset":
     return frozenset(nested)
 
 
-def _item_is_entry(item: Dict[str, Any], language: str,
+def _item_is_entry(item: dict[str, Any], language: str,
                    library_mode: bool = False,
-                   nested_keys: "frozenset" = frozenset(),
-                   header_api: "frozenset | None" = None) -> bool:
+                   nested_keys: frozenset = frozenset(),
+                   header_api: frozenset | None = None) -> bool:
     """Is this inventory item an externally-invocable entry point under its
     language's linkage/visibility model? (Framework dispatch is handled
     separately off the adjacency index.)
@@ -3206,11 +3207,11 @@ def _item_is_entry(item: Dict[str, Any], language: str,
     return False
 
 
-_ENTRY_SET_CACHE: Dict[int, Tuple[Dict[str, Any], "frozenset"]] = {}
+_ENTRY_SET_CACHE: dict[int, tuple[dict[str, Any], frozenset]] = {}
 _ENTRY_SET_CACHE_MAX = 8
 _ENTRY_SET_CACHE_LOCK = threading.Lock()
 
-_FILES_BY_PATH_CACHE: Dict[int, Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]] = {}
+_FILES_BY_PATH_CACHE: dict[int, tuple[dict[str, Any], dict[str, dict[str, Any]]]] = {}
 _FILES_BY_PATH_CACHE_MAX = 8
 _FILES_BY_PATH_CACHE_LOCK = threading.Lock()
 
@@ -3218,7 +3219,7 @@ _ENTRY_REACHABLE_CACHE_MAX = 8
 _ENTRY_REACHABLE_CACHE_LOCK = threading.Lock()
 
 
-def _files_by_path(inventory: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _files_by_path(inventory: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Path-keyed view of ``inventory["files"]`` — O(1) lookup per file.
 
     Cached per-inventory by ``id``; identity-checked on read so a fresh
@@ -3235,7 +3236,7 @@ def _files_by_path(inventory: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         cached = _FILES_BY_PATH_CACHE.get(inv_id)
         if cached is not None and cached[0] is inventory:
             return cached[1]
-    index: Dict[str, Dict[str, Any]] = {}
+    index: dict[str, dict[str, Any]] = {}
     for fr in inventory.get("files", []):
         if not isinstance(fr, dict):
             continue
@@ -3252,7 +3253,7 @@ def _files_by_path(inventory: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return index
 
 
-def _entry_functions(inventory: Dict[str, Any]) -> "frozenset":
+def _entry_functions(inventory: dict[str, Any]) -> frozenset:
     """Set of InternalFunction entry points (visibility/linkage model +
     framework dispatch). Cached per-inventory by identity."""
     inv_id = id(inventory)
@@ -3263,7 +3264,7 @@ def _entry_functions(inventory: Dict[str, Any]) -> "frozenset":
     library_mode = bool(inventory.get("treat_exports_as_entries"))
     header_api_raw = inventory.get("header_api")
     header_api = frozenset(header_api_raw) if header_api_raw else None
-    entries: Set[InternalFunction] = set()
+    entries: set[InternalFunction] = set()
     for fr in inventory.get("files", []):
         if not isinstance(fr, dict):
             continue
@@ -3295,7 +3296,7 @@ def _entry_functions(inventory: Dict[str, Any]) -> "frozenset":
 
 
 # (reachable_set, closure_truncated) per inventory.
-_ENTRY_REACHABLE_CACHE: Dict[int, Tuple[Dict[str, Any], "frozenset", bool]] = {}
+_ENTRY_REACHABLE_CACHE: dict[int, tuple[dict[str, Any], frozenset, bool]] = {}
 # Closure depth for the entry set. Far above any realistic call-chain
 # depth so reachability isn't lost to truncation (a truncated closure
 # would falsely read deep-reachable functions as NO_PATH). It's a single
@@ -3304,8 +3305,8 @@ _ENTRY_CLOSURE_MAX_DEPTH = 100_000
 
 
 def _entry_reachable_set(
-    inventory: Dict[str, Any],
-) -> Tuple["frozenset", bool]:
+    inventory: dict[str, Any],
+) -> tuple[frozenset, bool]:
     """``(reachable_set, truncated)``. ``reachable_set`` is every
     InternalFunction reachable from any entry (entries + their forward
     closure). ``truncated`` is True if the closure hit the depth cap — in
@@ -3338,14 +3339,14 @@ def _entry_reachable_set(
     return frozen, fc.truncated
 
 
-def _file_language(inventory: Dict[str, Any], file_path: str) -> Optional[str]:
+def _file_language(inventory: dict[str, Any], file_path: str) -> str | None:
     fr = _files_by_path(inventory).get(file_path.replace("\\", "/"))
     return fr.get("language") if fr else None
 
 
 def _file_python_exports(
-    inventory: Dict[str, Any], file_path: str,
-) -> Optional[frozenset]:
+    inventory: dict[str, Any], file_path: str,
+) -> frozenset | None:
     """Return the frozenset of names in the file's module-level ``__all__``,
     or ``None`` when the module doesn't declare ``__all__``. Authoritative
     "what is exported" signal — distinct from the leading-underscore
@@ -3361,7 +3362,7 @@ def _file_python_exports(
 
 
 def _is_nested_function(
-    inventory: Dict[str, Any], target: InternalFunction,
+    inventory: dict[str, Any], target: InternalFunction,
 ) -> bool:
     """Is ``target`` a nested ``def`` that the extractor flattened to a
     top-level item? Detected by line-range containment: an item whose
@@ -3388,8 +3389,8 @@ def _is_nested_function(
 
 
 def _file_masks_target(
-    inventory: Dict[str, Any], file_path: str, target_name: str,
-    *, target_module: Optional[str] = None,
+    inventory: dict[str, Any], file_path: str, target_name: str,
+    *, target_module: str | None = None,
 ) -> bool:
     """Could dynamic dispatch in this file resolve to ``target_name``?
 
@@ -3446,8 +3447,8 @@ def _file_masks_target(
 
 
 def is_virtual_dispatch_candidate(
-    inventory: Dict[str, Any],
-    class_name: Optional[str],
+    inventory: dict[str, Any],
+    class_name: str | None,
     method_name: str,
     *,
     exclude_test_files: bool = True,
@@ -3470,7 +3471,7 @@ def is_virtual_dispatch_candidate(
 
 
 def entry_reachability(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     target: InternalFunction,
     *,
     max_depth: int = 50,
@@ -3571,7 +3572,7 @@ def entry_reachability(
 
 
 def callees_of(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     source: InternalFunction,
     *,
     exclude_test_files: bool = True,
@@ -3591,8 +3592,8 @@ def callees_of(
         inventory, exclude_test_files=exclude_test_files,
     )
 
-    definitive_set: Set[FunctionId] = set(idx.forward.get(source, set()))
-    uncertain: Set[str] = set(idx.uncertain_callees.get(source, set()))
+    definitive_set: set[FunctionId] = set(idx.forward.get(source, set()))
+    uncertain: set[str] = set(idx.uncertain_callees.get(source, set()))
     has_method_dispatch = bool(idx.has_method_dispatch.get(source, False))
 
     if exclude_test_files:
@@ -3610,10 +3611,10 @@ def callees_of(
 
 
 def call_lines_of(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     caller: InternalFunction,
     callee: FunctionId,
-) -> Tuple[int, ...]:
+) -> tuple[int, ...]:
     """Source lines where ``caller`` calls ``callee``.
 
     Returns the sorted, dedup'd tuple of 1-based line numbers
@@ -3636,12 +3637,12 @@ def call_lines_of(
     return idx.call_lines.get((caller, callee), ())
 
 
-def _sorted_internal(s: Iterable[InternalFunction]) -> List[InternalFunction]:
+def _sorted_internal(s: Iterable[InternalFunction]) -> list[InternalFunction]:
     """Stable order: by file path, then name, then line."""
     return sorted(s, key=lambda fn: (fn.file_path, fn.name, fn.line))
 
 
-def _sorted_callees(s: Iterable[FunctionId]) -> List[FunctionId]:
+def _sorted_callees(s: Iterable[FunctionId]) -> list[FunctionId]:
     """Stable order: Internal first (by path/name/line), External
     second (by qualified_name)."""
     internals = [c for c in s if isinstance(c, InternalFunction)]
@@ -3707,15 +3708,15 @@ class ClosureResult:
     with a higher ``max_depth``.
     """
 
-    nodes: Tuple[FunctionId, ...] = ()
-    paths: Dict[FunctionId, Tuple[FunctionId, ...]] = field(
+    nodes: tuple[FunctionId, ...] = ()
+    paths: dict[FunctionId, tuple[FunctionId, ...]] = field(
         default_factory=dict,
     )
     truncated: bool = False
 
 
 def reverse_closure(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     target: FunctionId,
     *,
     max_depth: int = 50,
@@ -3747,8 +3748,8 @@ def reverse_closure(
         if aliased is not None:
             target = aliased
 
-    paths: Dict[FunctionId, Tuple[FunctionId, ...]] = {target: (target,)}
-    queue: "deque[Tuple[FunctionId, int]]" = deque([(target, 0)])
+    paths: dict[FunctionId, tuple[FunctionId, ...]] = {target: (target,)}
+    queue: deque[tuple[FunctionId, int]] = deque([(target, 0)])
     truncated = False
     while queue:
         node, depth = queue.popleft()
@@ -3769,8 +3770,8 @@ def reverse_closure(
             paths[caller] = (caller,) + paths[node]
             queue.append((caller, depth + 1))
 
-    nodes_list: List[FunctionId] = []
-    out_paths: Dict[FunctionId, Tuple[FunctionId, ...]] = {}
+    nodes_list: list[FunctionId] = []
+    out_paths: dict[FunctionId, tuple[FunctionId, ...]] = {}
     for n, p in paths.items():
         if n == target:
             continue
@@ -3785,7 +3786,7 @@ def reverse_closure(
 
 
 def forward_closure(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     entries: Iterable[InternalFunction],
     *,
     max_depth: int = 50,
@@ -3812,9 +3813,9 @@ def forward_closure(
         inventory, exclude_test_files=exclude_test_files,
     )
 
-    entry_set: Set[FunctionId] = set(entries)
-    paths: Dict[FunctionId, Tuple[FunctionId, ...]] = {}
-    queue: "deque[Tuple[FunctionId, int]]" = deque()
+    entry_set: set[FunctionId] = set(entries)
+    paths: dict[FunctionId, tuple[FunctionId, ...]] = {}
+    queue: deque[tuple[FunctionId, int]] = deque()
     for entry in entry_set:
         if entry not in paths:
             paths[entry] = (entry,)
@@ -3843,8 +3844,8 @@ def forward_closure(
             paths[callee] = paths[node] + (callee,)
             queue.append((callee, depth + 1))
 
-    nodes_list: List[FunctionId] = []
-    out_paths: Dict[FunctionId, Tuple[FunctionId, ...]] = {}
+    nodes_list: list[FunctionId] = []
+    out_paths: dict[FunctionId, tuple[FunctionId, ...]] = {}
     for n, p in paths.items():
         if n in entry_set:
             continue
@@ -3859,13 +3860,13 @@ def forward_closure(
 
 
 def shortest_path(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     source: InternalFunction,
     target: FunctionId,
     *,
     max_depth: int = 50,
     exclude_test_files: bool = False,
-) -> Optional[Tuple[FunctionId, ...]]:
+) -> tuple[FunctionId, ...] | None:
     """Shortest call chain ``source`` → ``target``, or None.
 
     BFS forward from ``source`` with early-exit on hitting
@@ -3896,8 +3897,8 @@ def shortest_path(
     if source == target:
         return (source,)
 
-    visited: Dict[FunctionId, Tuple[FunctionId, ...]] = {source: (source,)}
-    queue: "deque[Tuple[FunctionId, int]]" = deque([(source, 0)])
+    visited: dict[FunctionId, tuple[FunctionId, ...]] = {source: (source,)}
+    queue: deque[tuple[FunctionId, int]] = deque([(source, 0)])
     while queue:
         node, depth = queue.popleft()
         if depth >= max_depth:
@@ -3938,14 +3939,14 @@ def shortest_path(
 
 
 def all_paths(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     source: InternalFunction,
     target: FunctionId,
     *,
     max_paths: int = 10,
     max_depth: int = 50,
     exclude_test_files: bool = False,
-) -> Tuple[Tuple[FunctionId, ...], ...]:
+) -> tuple[tuple[FunctionId, ...], ...]:
     """All simple call chains ``source`` → ``target``, sorted by
     length (shortest first), bounded by ``max_paths`` and
     ``max_depth``.
@@ -3977,10 +3978,10 @@ def all_paths(
     if source == target:
         return ((source,),)
 
-    found: List[Tuple[FunctionId, ...]] = []
+    found: list[tuple[FunctionId, ...]] = []
 
-    def _dfs(node: FunctionId, path: Tuple[FunctionId, ...],
-              visited: Set[FunctionId]) -> None:
+    def _dfs(node: FunctionId, path: tuple[FunctionId, ...],
+              visited: set[FunctionId]) -> None:
         if len(found) >= max_paths:
             return
         if len(path) > max_depth:
@@ -4010,7 +4011,7 @@ def all_paths(
     return tuple(found[:max_paths])
 
 
-def _closure_sort_key(fn: FunctionId) -> Tuple:
+def _closure_sort_key(fn: FunctionId) -> tuple:
     """Stable order across mixed Internal+External: Internal first by
     (path, name, line); External after by qualified_name. Use a
     tuple-with-discriminant so heterogeneous comparison works."""
@@ -4034,10 +4035,10 @@ def _closure_sort_key(fn: FunctionId) -> Tuple:
 
 
 def enclosing_function(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     file_path: str,
     line: int,
-) -> Optional[InternalFunction]:
+) -> InternalFunction | None:
     """Return the project-internal function whose body contains
     ``line`` in ``file_path``, or ``None`` if the line lives at
     module scope (no enclosing def).
@@ -4060,7 +4061,7 @@ def enclosing_function(
     if not isinstance(items, list):
         return None
 
-    best: Optional[Dict[str, Any]] = None
+    best: dict[str, Any] | None = None
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -4094,7 +4095,7 @@ def enclosing_function(
     )
 
 
-def parse_evidence_entry(entry: str) -> Tuple[Optional[str], int]:
+def parse_evidence_entry(entry: str) -> tuple[str | None, int]:
     """Split a ``"path:line"`` evidence string into ``(path, line)``.
 
     Returns ``(None, 0)`` for malformed inputs. Handles paths
@@ -4114,9 +4115,9 @@ def parse_evidence_entry(entry: str) -> Tuple[Optional[str], int]:
 
 
 def _find_file_record(
-    inventory: Dict[str, Any],
+    inventory: dict[str, Any],
     path: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Linear scan of the inventory's files for a path match.
 
     Files lists are typically hundreds of entries; linear scan is

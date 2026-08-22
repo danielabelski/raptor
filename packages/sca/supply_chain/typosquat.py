@@ -27,7 +27,7 @@ import json as _json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from ..models import Confidence, Dependency
 
@@ -73,7 +73,7 @@ _SYMDIFF_CUTOFF = 2 * _MAX_DISTANCE
 # we could have skipped — never the reverse — so the prefilter stays
 # sound regardless of the input alphabet.
 _BIT_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-_.@/+~"
-_CHAR_BIT: Dict[str, int] = {c: i for i, c in enumerate(_BIT_ALPHABET)}
+_CHAR_BIT: dict[str, int] = {c: i for i, c in enumerate(_BIT_ALPHABET)}
 _OTHER_BIT = 63
 
 
@@ -86,7 +86,7 @@ def _char_mask(name: str) -> int:
     return mask
 
 # Per-ecosystem popular-name caches. Loaded lazily and re-used.
-_POPULAR_BY_ECO: Dict[str, List[str]] = {}
+_POPULAR_BY_ECO: dict[str, list[str]] = {}
 # Per-ecosystem ``{length: [name, ...]}`` index. The Damerau-
 # Levenshtein cap ``_MAX_DISTANCE`` already implies
 # ``|len(query) - len(pop)| ≤ _MAX_DISTANCE``; pre-bucketing by
@@ -98,20 +98,20 @@ _POPULAR_BY_ECO: Dict[str, List[str]] = {}
 # from the first ``abs(la-lb) >= cutoff`` early-out anyway, so the
 # bucket index is purely a faster way to enforce a check the inner
 # function was already doing — output is byte-identical.
-_POPULAR_BY_LEN: Dict[str, Dict[int, List[Tuple[str, int]]]] = {}
+_POPULAR_BY_LEN: dict[str, dict[int, list[tuple[str, int]]]] = {}
 # Set view of the popular list for the O(1) "is it popular" test
 # in ``_check_one`` (was a list ``in`` linear scan pre-fix).
-_POPULAR_SET: Dict[str, set] = {}
+_POPULAR_SET: dict[str, set] = {}
 # Per-ecosystem denylist sets, loaded once from ``_DENYLIST_PATH``.
-_DENYLIST_BY_ECO: Dict[str, set] = {}
+_DENYLIST_BY_ECO: dict[str, set] = {}
 # Sentinel so a missing/!exists denylist file is loaded (and logged) once.
-_DENYLIST_RAW: Optional[Dict[str, set]] = None
+_DENYLIST_RAW: dict[str, set] | None = None
 # Per-ecosystem allowlist sets (confirmed-legitimate near-names), loaded
 # once from ``_ALLOWLIST_PATH``. A name here short-circuits the distance
 # check in ``_check_one`` — it is NOT a typosquat regardless of edit
 # distance.
-_ALLOWLIST_BY_ECO: Dict[str, set] = {}
-_ALLOWLIST_RAW: Optional[Dict[str, set]] = None
+_ALLOWLIST_BY_ECO: dict[str, set] = {}
+_ALLOWLIST_RAW: dict[str, set] | None = None
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ class TyposquatFinding:
     confidence: Confidence
 
 
-def scan_deps(deps: Iterable[Dependency]) -> List[TyposquatFinding]:
+def scan_deps(deps: Iterable[Dependency]) -> list[TyposquatFinding]:
     """Run the candidate check on every direct dep.
 
     The verdict depends only on ``(ecosystem, name)`` — the popular
@@ -134,8 +134,8 @@ def scan_deps(deps: Iterable[Dependency]) -> List[TyposquatFinding]:
     emits its own finding (the downstream id keys on ``declared_in``),
     so the output is unchanged.
     """
-    out: List[TyposquatFinding] = []
-    memo: Dict[Tuple[str, str], Optional[TyposquatFinding]] = {}
+    out: list[TyposquatFinding] = []
+    memo: dict[tuple[str, str], TyposquatFinding | None] = {}
     for d in deps:
         if not d.direct:
             continue
@@ -156,7 +156,7 @@ def scan_deps(deps: Iterable[Dependency]) -> List[TyposquatFinding]:
 # Internals
 # ---------------------------------------------------------------------------
 
-def _check_one(dep: Dependency) -> Optional[TyposquatFinding]:
+def _check_one(dep: Dependency) -> TyposquatFinding | None:
     popular = _load_popular(dep.ecosystem)
     if not popular:
         return None
@@ -176,7 +176,7 @@ def _check_one(dep: Dependency) -> Optional[TyposquatFinding]:
         candidates.append(name_norm.split("/", 1)[1])
 
     by_len = _popular_by_len(dep.ecosystem)
-    best: Optional[Tuple[int, str]] = None
+    best: tuple[int, str] | None = None
     for cand in candidates:
         # Walk only the length buckets that COULD contain a match.
         # Damerau-Levenshtein with cutoff ``_MAX_DISTANCE`` requires
@@ -247,7 +247,7 @@ def _check_one(dep: Dependency) -> Optional[TyposquatFinding]:
     )
 
 
-def _load_popular(ecosystem: str) -> List[str]:
+def _load_popular(ecosystem: str) -> list[str]:
     if ecosystem in _POPULAR_BY_ECO:
         return _POPULAR_BY_ECO[ecosystem]
     path = _DATA_DIR / f"{ecosystem}.json"
@@ -353,7 +353,7 @@ def _popular_set(ecosystem: str) -> set:
     return s
 
 
-def _popular_by_len(ecosystem: str) -> Dict[int, List[Tuple[str, int]]]:
+def _popular_by_len(ecosystem: str) -> dict[int, list[tuple[str, int]]]:
     """Return the popular list indexed by name length.
 
     Each bucket holds ``(name, char_mask)`` pairs — the mask is
@@ -369,7 +369,7 @@ def _popular_by_len(ecosystem: str) -> Dict[int, List[Tuple[str, int]]]:
     cached = _POPULAR_BY_LEN.get(ecosystem)
     if cached is not None:
         return cached
-    by_len: Dict[int, List[Tuple[str, int]]] = {}
+    by_len: dict[int, list[tuple[str, int]]] = {}
     for name in _load_popular(ecosystem):
         by_len.setdefault(len(name), []).append((name, _char_mask(name)))
     _POPULAR_BY_LEN[ecosystem] = by_len

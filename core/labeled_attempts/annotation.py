@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from core.atomic_fs import write_text_atomically
 
@@ -42,7 +41,7 @@ def _atomic_replace(path: Path, payload: str) -> None:
 
 def set_failure_mode(
     record_path: Path,
-    mode: Optional[FailureMode],
+    mode: FailureMode | None,
 ) -> LabeledAttempt:
     """Update ``record_path``'s ``failure_mode`` field in place.
 

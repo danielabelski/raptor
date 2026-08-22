@@ -70,7 +70,7 @@ class CvefixSpec:
     include_tests: bool = False
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "CvefixSpec":
+    def from_dict(cls, raw: dict) -> CvefixSpec:
         errors = []
         cve = str(raw.get("cve_id", ""))
         if not _CVE_RE.match(cve):

@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol
+from typing import Any, Protocol
+from collections.abc import Iterator, Mapping
 
 # Default size limits — caps protect parser code paths from decompression
 # bombs and pathological response shapes.
@@ -51,8 +52,8 @@ class HttpError(Exception):
     def __init__(
         self,
         message: str,
-        status: Optional[int] = None,
-        retry_after: Optional[int] = None,
+        status: int | None = None,
+        retry_after: int | None = None,
         *,
         circuit_break: bool = False,
     ) -> None:
@@ -204,14 +205,14 @@ class HttpClient(Protocol):
         method: str,
         url: str,
         *,
-        body: Optional[bytes] = None,
-        headers: Optional[Dict[str, str]] = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
-    ) -> "Response":
+    ) -> Response:
         """Low-level request — returns :class:`Response` with status, headers, body.
 
         Use for arbitrary HTTP methods (DELETE/PUT/PATCH/HEAD) and when
@@ -223,14 +224,14 @@ class HttpClient(Protocol):
     def post_json(
         self,
         url: str,
-        body: Dict[str, Any],
+        body: dict[str, Any],
         timeout: int = DEFAULT_TIMEOUT,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """POST ``body`` as JSON, return decoded JSON response."""
         ...
 
@@ -239,12 +240,12 @@ class HttpClient(Protocol):
         url: str,
         timeout: int = DEFAULT_TIMEOUT,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
         max_bytes: int = DEFAULT_MAX_BYTES,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """GET ``url``, parse response as JSON.
 
         ``max_bytes`` caps the response size at the transport layer.
@@ -263,7 +264,7 @@ class HttpClient(Protocol):
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
         *,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = DEFAULT_RETRIES,
         follow_redirects: bool = True,
@@ -277,7 +278,7 @@ class HttpClient(Protocol):
         *,
         timeout: int = DEFAULT_TIMEOUT,
         max_bytes: int = DEFAULT_MAX_BYTES,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
         total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
         retries: int = 0,
     ) -> Iterator[bytes]:
@@ -293,7 +294,7 @@ class HttpClient(Protocol):
 
 
 def default_client(
-    allowed_hosts: Optional[List[str]] = None,
+    allowed_hosts: list[str] | None = None,
 ) -> HttpClient:
     """Construct the right HttpClient backend for the caller.
 

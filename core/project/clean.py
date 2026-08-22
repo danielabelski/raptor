@@ -3,7 +3,7 @@
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 def _run_dir_size(d: Path) -> int:
@@ -55,7 +55,7 @@ def split_live_runs(dirs) -> tuple[list, list]:
     return rest, live
 
 
-def plan_clean(project, keep=1) -> Dict[str, Any]:
+def plan_clean(project, keep=1) -> dict[str, Any]:
     """Plan which runs to delete. Returns stats with directory paths.
 
     ``keep=0`` is valid: delete as aggressively as possible, bounded by the
@@ -68,7 +68,7 @@ def plan_clean(project, keep=1) -> Dict[str, Any]:
     if keep < 0:
         raise ValueError(f"keep must be >= 0, got {keep}")
     groups = project.get_run_dirs_by_type()
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "delete_dirs": [], "deleted": [], "kept": [], "freed_bytes": 0,
         "by_type": {}, "skipped_live": [],
     }
@@ -109,7 +109,7 @@ def plan_clean(project, keep=1) -> Dict[str, Any]:
     return stats
 
 
-def plan_dedup(project) -> Dict[str, Any]:
+def plan_dedup(project) -> dict[str, Any]:
     """Lossless dedup plan: per command type, drop runs fully subsumed (same
     files examined, no unique findings) by a surviving run, keeping the newest
     representative. Same shape as :func:`plan_clean` so the clean machinery
@@ -122,7 +122,7 @@ def plan_dedup(project) -> Dict[str, Any]:
     from core.coverage.clean import dedup_runs
 
     groups = project.get_run_dirs_by_type()
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "delete_dirs": [], "deleted": [], "kept": [], "freed_bytes": 0,
         "by_type": {}, "skipped_live": [],
     }
@@ -155,7 +155,7 @@ def plan_dedup(project) -> Dict[str, Any]:
     return stats
 
 
-def execute_clean(plan: Dict[str, Any],
+def execute_clean(plan: dict[str, Any],
                   output_path: Path | None = None) -> None:
     """Execute a clean plan by deleting the planned directories.
 
@@ -215,7 +215,7 @@ def execute_clean(plan: Dict[str, Any],
             pass
 
 
-def clean_project(project, keep=1, dry_run=False) -> Dict[str, Any]:
+def clean_project(project, keep=1, dry_run=False) -> dict[str, Any]:
     """Clean old runs from a project. Returns stats dict.
 
     Keeps latest `keep` runs per command type.

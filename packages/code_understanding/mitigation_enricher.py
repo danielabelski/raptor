@@ -37,7 +37,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:  # type-only — no runtime dep
     from core.build.build_flags import BuildFlagsContext
@@ -64,7 +64,7 @@ _KNOWN_CWE_FAMILIES = frozenset({
 })
 
 
-def _sha256_file(path: Path) -> Optional[str]:
+def _sha256_file(path: Path) -> str | None:
     """Compute sha256 of ``path`` — used as part of the analysis cache key.
 
     Returns ``None`` on I/O error rather than raising; enrichment is
@@ -84,8 +84,8 @@ def _sha256_file(path: Path) -> Optional[str]:
 
 def _availability_for_cwe(
     cwe: str,
-    result: Dict[str, Any],
-) -> Dict[str, Optional[bool]]:
+    result: dict[str, Any],
+) -> dict[str, bool | None]:
     """Project the substrate verdict into primitive-availability tri-state.
 
     Tri-state semantics (from PR #878):
@@ -130,7 +130,7 @@ def _availability_for_cwe(
     # Hook overwrite: glibc 2.34+ removed __malloc_hook / __free_hook.
     # We only mark False when we KNOW glibc >= 2.34.
     glibc_ver_str = result.get("glibc_version") or ""
-    hook_overwrite: Optional[bool] = None
+    hook_overwrite: bool | None = None
     if glibc_ver_str:
         try:
             major_minor = ".".join(glibc_ver_str.split(".")[:2])
@@ -145,7 +145,7 @@ def _availability_for_cwe(
     # Stack smash primitives are gated on canary + PIE relative to the
     # attacker's leak posture — not statically decidable from the ELF
     # alone. Leave as None for CWE-121, False for non-stack CWEs.
-    stack_smash: Optional[bool]
+    stack_smash: bool | None
     if cwe == "CWE-121":
         stack_smash = None
     else:
@@ -163,15 +163,15 @@ def _availability_for_cwe(
 
 def _availability_detail_for_cwe(
     cwe: str,
-    result: Dict[str, Any],
-) -> Dict[str, str]:
+    result: dict[str, Any],
+) -> dict[str, str]:
     """Human-readable detail strings for the primitives we opine on.
 
     Only populated for entries that carry substrate-provided prose
     (e.g. ``printf_n_availability_detail`` for `%n`). Empty otherwise —
     the tri-state value speaks for itself.
     """
-    detail: Dict[str, str] = {}
+    detail: dict[str, str] = {}
     n_detail = result.get("printf_n_availability_detail")
     if isinstance(n_detail, str) and n_detail:
         detail["format_n_write"] = n_detail
@@ -185,8 +185,8 @@ def _availability_detail_for_cwe(
 
 
 def _priority_hint(
-    availability: Dict[str, Optional[bool]],
-    verdict: Optional[str],
+    availability: dict[str, bool | None],
+    verdict: str | None,
 ) -> str:
     """Advisory hint for renderer sink-ordering. Not authoritative.
 
@@ -215,8 +215,8 @@ def _priority_hint(
 
 
 def _priority_reason(
-    availability: Dict[str, Optional[bool]],
-    verdict: Optional[str],
+    availability: dict[str, bool | None],
+    verdict: str | None,
     hint: str,
 ) -> str:
     """One-line reason for the priority_hint."""
@@ -234,13 +234,13 @@ def _priority_reason(
 
 
 def build_mitigation_context(
-    result: Dict[str, Any],
+    result: dict[str, Any],
     *,
     sink_cwe: str,
     binary_path: Path,
-    build_flags_source: Optional[str] = None,
-    generated_at: Optional[str] = None,
-) -> Dict[str, Any]:
+    build_flags_source: str | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
     """Build a ``mitigation_context`` blob for ONE sink from an
     ``analyze_binary`` result and the sink's CWE.
 
@@ -260,7 +260,7 @@ def build_mitigation_context(
     hint = _priority_hint(availability, verdict)
     reason = _priority_reason(availability, verdict, hint)
 
-    blob: Dict[str, Any] = {
+    blob: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "source": "exploit_feasibility.analyze_binary",
         "cwe_class": sink_cwe,
@@ -293,7 +293,7 @@ def build_mitigation_context(
     return blob
 
 
-def _sink_cwe(sink: Dict[str, Any]) -> Optional[str]:
+def _sink_cwe(sink: dict[str, Any]) -> str | None:
     """Best-effort CWE extraction from a context-map sink entry.
 
     context-map.json sinks carry CWE variously as ``cwe``, ``cwe_class``,
@@ -313,12 +313,12 @@ def _sink_cwe(sink: Dict[str, Any]) -> Optional[str]:
 
 
 def enrich_context_map(
-    context_map: Dict[str, Any],
+    context_map: dict[str, Any],
     *,
     binary_path: Path,
-    build_flags: Optional["BuildFlagsContext"] = None,
-    generated_at: Optional[str] = None,
-) -> Dict[str, Any]:
+    build_flags: BuildFlagsContext | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
     """Enrich every sink in ``context_map`` with ``mitigation_context``.
 
     Idempotent within a single run: ``analyze_binary`` is called once
@@ -344,7 +344,7 @@ def enrich_context_map(
     # Older substrate versions reject the keyword — pass it only when
     # actually supplied so the enricher stays compatible with any
     # branch predating that merge.
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
     if build_flags is not None:
         kwargs["build_flags"] = build_flags
     try:
@@ -410,8 +410,8 @@ def enrich_context_map_file(
     path: Path,
     *,
     binary_path: Path,
-    build_flags: Optional["BuildFlagsContext"] = None,
-    generated_at: Optional[str] = None,
+    build_flags: BuildFlagsContext | None = None,
+    generated_at: str | None = None,
 ) -> None:
     """Read ``path``, enrich, and write it back atomically.
 

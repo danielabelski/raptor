@@ -27,7 +27,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Literal, Optional, Tuple
+from typing import Literal
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ``build_o2/`` (our own convention from the binary_oracle precision
 # harness) so an existing operator build isn't overridden by a leftover
 # harness cache.
-_BUILD_DIRS: Tuple[str, ...] = (
+_BUILD_DIRS: tuple[str, ...] = (
     # Common single-binary / autotools / CMake
     "build",
     "build_o2",
@@ -68,7 +69,7 @@ _BUILD_DIRS: Tuple[str, ...] = (
 # Rust cross-compile target dirs: ``target/<triple>/{release,debug}``
 # (e.g. ``target/x86_64-unknown-linux-gnu/release``). Glob-matched at
 # runtime so we don't have to enumerate every triple.
-_RUST_TARGET_GLOBS: Tuple[str, ...] = (
+_RUST_TARGET_GLOBS: tuple[str, ...] = (
     "target/*/release",
     "target/*/debug",
 )
@@ -97,8 +98,8 @@ def detect_binaries(
     target_kind: TargetKind = "auto",
     *,
     max_results: int = 8,
-    path_filter: Optional[Callable[[List[Path]], List[Path]]] = None,
-) -> List[Path]:
+    path_filter: Callable[[list[Path]], list[Path]] | None = None,
+) -> list[Path]:
     """Walk ``target_root`` for plausible debug binaries.
 
     ``target_kind`` shapes what's included:
@@ -129,12 +130,12 @@ def detect_binaries(
     if not target_root.is_dir():
         return []
 
-    raw: List[_Candidate] = []
+    raw: list[_Candidate] = []
     # Expand the literal build-dir list with Rust cross-target globs
     # (``target/x86_64-unknown-linux-gnu/release`` etc.). Glob is
     # cheap — single readdir on ``target/`` — and avoids enumerating
     # every Rust triple in the literal list.
-    expanded_dirs: List[str] = list(_BUILD_DIRS)
+    expanded_dirs: list[str] = list(_BUILD_DIRS)
     for pattern in _RUST_TARGET_GLOBS:
         for hit in target_root.glob(pattern):
             if hit.is_dir():
@@ -275,7 +276,7 @@ _NON_BINARY_NAMES = frozenset({
 })
 
 
-def _classify_candidate(p: Path) -> Optional[_Candidate]:
+def _classify_candidate(p: Path) -> _Candidate | None:
     """Library vs executable vs neither. Returns None when not a
     plausible debug binary."""
     name = p.name

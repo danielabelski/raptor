@@ -111,6 +111,12 @@ _OBSERVE_EXTRA_TRACE_SYSCALLS = (
 _SCMP_CMP_EQ = 4         # equal to: arg == datum_a
 _SCMP_CMP_MASKED_EQ = 7  # masked equal: (arg & datum_a) == datum_b
 
+# MSG_FASTOPEN (include/linux/socket.h): sendto/sendmsg flag that makes
+# the kernel perform the TCP connect INSIDE the send path — no
+# connect(2) is ever issued, so address-based connect controls
+# (connect-scoping supervisor, Landlock CONNECT_TCP) never see it.
+_MSG_FASTOPEN = 0x20000000
+
 # Linux extracts the socket type from the (type | flags) arg with this
 # mask (linux/socket.h SOCK_TYPE_MASK). Without it, exact-equality rules
 # on `arg=1` for `SOCK_DGRAM` (2) miss the very common
@@ -566,6 +572,13 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     # Most ioctls are legitimate (FIONBIO, TIOCGWINSZ, etc.); we only
     # reject the known-dangerous ones.
     ioctl_num = _resolve("ioctl")
+    # send-path syscalls carrying a flags argument that can smuggle an
+    # in-kernel connect (MSG_FASTOPEN): sendto(arg 3), sendmsg(arg 2),
+    # sendmmsg(arg 3 — the call-level flags; per-message msg_hdr flags
+    # do not carry MSG_FASTOPEN through the TFO path).
+    send_flag_syscalls = [("sendto", _resolve("sendto"), 3),
+                          ("sendmsg", _resolve("sendmsg"), 2),
+                          ("sendmmsg", _resolve("sendmmsg"), 3)]
 
     # socketpair(AF_UNIX, SOCK_DGRAM) is denied exactly when the
     # matching socket(AF_UNIX, SOCK_DGRAM) is denied: either AF_UNIX
@@ -597,6 +610,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
         missing.append("ioctl")
     if deny_unix_dgram_socketpair and socketpair_num < 0:
         missing.append("socketpair")
+    missing += [name for name, num, _arg in send_flag_syscalls
+                if num < 0]
     if missing and state.warn_once("_seccomp_arch_missing_warned"):
         logger.warning(
             "Sandbox: seccomp could not resolve syscall(s) %s on this architecture — those blocks are NOT installed. Likely harmless on x86_64/aarch64 (this should be empty); investigate on other architectures if any entries appear.", missing
@@ -889,6 +904,38 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     if ret < 0:
                         _os_write(2, b"RAPTOR: seccomp socketpair DGRAM"
                                      b" rule failed -- refusing to exec"
+                                     b" without filter\n")
+                        os._exit(126)
+
+                # MSG_FASTOPEN on the send path: TCP Fast Open performs
+                # the connect IN-KERNEL inside sendto/sendmsg — no
+                # connect(2) is ever issued, so neither the connect-
+                # scoping supervisor nor Landlock CONNECT_TCP evaluates,
+                # and a child under allowed_tcp_ports could open (and
+                # deliver data on) a TCP connection to any host:port.
+                # Nothing in RAPTOR's tool population legitimately uses
+                # client-side TFO (a reconnect-latency micro-
+                # optimisation), so the flag is denied wholesale for
+                # sandboxed children rather than policied per-address.
+                # MASKED_EQ on the flag bit alone: any flag combination
+                # (or high-bit garnish) containing MSG_FASTOPEN matches.
+                # hard_deny: same escape-primitive rationale as the
+                # socket()-argument rules — this must not downgrade to
+                # allow-and-log under audit mode.
+                for _sf_name, _sf_num, _sf_arg in send_flag_syscalls:
+                    if _sf_num < 0:
+                        continue
+                    _sf = _ScmpArgCmp(arg=_sf_arg,
+                                      op=_SCMP_CMP_MASKED_EQ,
+                                      datum_a=_MSG_FASTOPEN,
+                                      datum_b=_MSG_FASTOPEN)
+                    _sf_arr = (_ScmpArgCmp * 1)(_sf)
+                    ret = lib.seccomp_rule_add_array(
+                        ctx, hard_deny, _sf_num, 1, _sf_arr,
+                    )
+                    if ret < 0:
+                        _os_write(2, b"RAPTOR: seccomp MSG_FASTOPEN rule"
+                                     b" failed -- refusing to exec"
                                      b" without filter\n")
                         os._exit(126)
 

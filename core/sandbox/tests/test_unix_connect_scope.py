@@ -468,3 +468,125 @@ class TestFailClosedDowngrade(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSendPathConnectSmuggling(_Base):
+    """TCP Fast Open performs the connect IN-KERNEL inside
+    sendto/sendmsg — no connect(2) is issued, so neither the
+    supervisor's port re-check nor Landlock CONNECT_TCP ever fires.
+    The MSG_FASTOPEN flag is denied wholesale for sandboxed children
+    (nothing in the tool population legitimately uses client TFO)."""
+
+    def test_msg_fastopen_sendto_denied(self):
+        try:
+            with open("/proc/sys/net/ipv4/tcp_fastopen") as f:
+                if not int(f.read().strip()) & 1:
+                    self.skipTest("client TFO disabled on this host")
+        except (OSError, ValueError):
+            self.skipTest("no TFO sysctl on this host")
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.setsockopt(socket.IPPROTO_TCP, 23, 5)  # TCP_FASTOPEN
+        srv.listen(4)
+        srv.settimeout(0.8)
+        self.addCleanup(srv.close)
+        port = srv.getsockname()[1]
+        prog = textwrap.dedent(f"""
+            import socket
+            s = socket.socket()
+            try:
+                s.sendto(b"TFO-PROBE", socket.MSG_FASTOPEN,
+                         ("127.0.0.1", {port}))
+                print("SENT")
+            except OSError as e:
+                print("DENIED", e.errno)
+        """)
+        r = self._spawn(prog, block_network=False,
+                        allowed_tcp_ports=[443])
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("DENIED", r.stdout, (
+            f"MSG_FASTOPEN sendto smuggled an in-kernel connect past "
+            f"the port policy: {r.stdout!r}"
+        ))
+        self.assertFalse(self._accepted(srv),
+                         "listener on a non-allowed port received a "
+                         "TFO connection")
+
+    def test_plain_send_flags_unaffected(self):
+        """MSG_NOSIGNAL / MSG_DONTWAIT sends must keep working — only
+        the FASTOPEN bit is filtered."""
+        prog = textwrap.dedent("""
+            import socket
+            a, b = socket.socketpair()
+            a.sendmsg([b"ok"], [], socket.MSG_NOSIGNAL)
+            print("OK", b.recv(2).decode())
+        """)
+        r = self._spawn(prog)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("OK ok", r.stdout)
+
+
+class TestOfdFlagRaceBounded(_Base):
+    """O_NONBLOCK lives on the open file description shared with the
+    child; a sibling thread spin-clearing it can park a supervisor
+    worker in a fully blocking connect. The per-notification watchdog
+    must answer the child's syscall (ETIMEDOUT) at a bounded deadline
+    so the run is never held hostage."""
+
+    def test_flag_race_park_is_deadline_bounded(self):
+        import core.sandbox._unix_scope as uscope
+        with patch.object(uscope, "_PRE_CONNECT_DEADLINE_S", 4.0):
+            prog = textwrap.dedent("""
+                import fcntl, os, socket, threading, time
+                srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                srv.bind("/tmp/park")
+                srv.listen(0)
+                c1 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                c1.setblocking(False)
+                try:
+                    c1.connect("/tmp/park")  # occupy the backlog
+                except BlockingIOError:
+                    pass
+                stop = False
+                def clearer(fd):
+                    while not stop:
+                        try:
+                            fcntl.fcntl(fd, fcntl.F_SETFL, 0)
+                        except OSError:
+                            return
+                hung = False
+                for i in range(120):
+                    c = socket.socket(socket.AF_UNIX,
+                                      socket.SOCK_STREAM)
+                    t = threading.Thread(target=clearer,
+                                         args=(c.fileno(),),
+                                         daemon=True)
+                    t.start()
+                    time.sleep(0.001)
+                    t0 = time.monotonic()
+                    try:
+                        c.connect("/tmp/park")
+                        outcome = "CONNECTED"
+                    except OSError as e:
+                        outcome = "errno=%d" % (e.errno or 0)
+                    dt = time.monotonic() - t0
+                    c.close()
+                    if dt > 2:
+                        print("RACED dt=%.1f outcome=%s"
+                              % (dt, outcome), flush=True)
+                        hung = dt > 15
+                        break
+                stop = True
+                print("UNBOUNDED" if hung else "BOUNDED", flush=True)
+            """)
+            r = self._spawn(prog, timeout=90)
+        self.assertEqual(r.returncode, 0, (
+            f"flag-race park held the run to its timeout: "
+            f"rc={r.returncode} {r.stderr[-300:]!r}"
+        ))
+        self.assertIn("BOUNDED", r.stdout, (
+            f"parked connect was not answered within the watchdog "
+            f"deadline: {r.stdout!r}"
+        ))
+        self.assertNotIn("UNBOUNDED", r.stdout)

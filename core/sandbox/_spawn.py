@@ -430,6 +430,73 @@ def _kill_and_reap(pid: int) -> None:
         pass
 
 
+def _teardown_target(child_pid: int, death_w: int, parent_fds: set,
+                     grace_s: float = 1.0) -> None:
+    """Timeout/exception teardown for the intermediate child and the
+    sandboxed target it forked.
+
+    ``_kill_and_reap(child_pid)`` alone has a kill-escape on this
+    path: it SIGKILLs the intermediate — which holds the death-pipe
+    watcher (the ``select`` loop on ``death_r``) — and then killpg's
+    the intermediate's process group. A hostile target that called
+    ``setsid()``/``setpgid()`` has LEFT that group, carries no
+    PR_SET_PDEATHSIG, and ``death_w`` used to close only in the outer
+    ``finally`` — after the watcher was already dead — so nothing
+    signalled the target and it outlived the run teardown with its
+    write grants (output dir, /tmp) still live.
+
+    Close ``death_w`` FIRST, while the watcher is still alive: the
+    intermediate's select loop reads EOF and SIGKILLs the grandchild
+    BY PID — session/process-group escapes don't help, and in the
+    pid-ns case killing the namespace's init collapses every process
+    inside it, including double-forked stragglers. Give the watcher a
+    short grace window to do that sweep (it polls every 50 ms and
+    ``_exit(137)``s when done), then fall back to the usual
+    ``_kill_and_reap`` for every remaining case: watcher already past
+    its loop, wedged intermediate, pre-exec failures where no
+    grandchild exists yet, or an already-reaped child.
+
+    The intermediate's PGID is captured up front for the same
+    PID-reuse rationale documented in ``_kill_and_reap``: when the
+    grace loop reaps the intermediate we still sweep the ORIGINAL
+    process group (descendants that stayed in it), but never
+    re-signal the reaped PID itself.
+    """
+    try:
+        pgid = os.getpgid(child_pid)
+    except ProcessLookupError:
+        pgid = None
+    reaped = False
+    if death_w in parent_fds:
+        try:
+            os.close(death_w)
+        except OSError:
+            pass
+        parent_fds.discard(death_w)
+        deadline = time.monotonic() + grace_s
+        while time.monotonic() < deadline:
+            try:
+                pid_, _status = os.waitpid(child_pid, os.WNOHANG)
+            except ChildProcessError:
+                reaped = True  # reaped elsewhere — never re-signal the PID
+                break
+            if pid_ != 0:
+                reaped = True
+                break
+            time.sleep(0.01)
+    if not reaped:
+        _kill_and_reap(child_pid)
+    elif pgid is not None:
+        # The watcher swept the grandchild and exited on its own;
+        # sweep any descendants that stayed in the intermediate's
+        # original process group (same belt-and-braces killpg
+        # _kill_and_reap would have sent).
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 def _reap_tracer(tracer_pid: int, timeout_s: float = 2.0) -> None:
     """Wait for the audit-mode tracer subprocess to exit, then reap it.
 
@@ -2598,12 +2665,15 @@ def run_sandboxed(
         # do it). But some failure points don't — e.g., a
         # BrokenPipeError on `os.write(p_go_w, b"G")` if the child
         # died mid-startup, or any unexpected exception in the
-        # post-newuidmap parent flow. _kill_and_reap is idempotent
-        # (catches ProcessLookupError + ChildProcessError) so
-        # re-reaping an already-dead child is harmless.
+        # post-newuidmap parent flow. Route through _teardown_target
+        # (death-pipe EOF first — the go signal may already have been
+        # written, meaning the grandchild can exist and may have
+        # setsid'd out of the killable group). Both helpers are
+        # idempotent (ProcessLookupError + ChildProcessError caught)
+        # so re-reaping an already-dead child is harmless.
         if child_pid > 0:
             try:
-                _kill_and_reap(child_pid)
+                _teardown_target(child_pid, death_w, _parent_fds)
             except Exception:
                 logger.debug("child reap during cleanup failed",
                              exc_info=True)
@@ -2665,7 +2735,12 @@ def run_sandboxed(
                 while fds:
                     remaining = (deadline - time.monotonic()) if deadline else None
                     if remaining is not None and remaining <= 0:
-                        _kill_and_reap(child_pid)
+                        # Death-pipe EOF BEFORE killing the
+                        # intermediate — see _teardown_target: a
+                        # setsid()'d target escapes the killpg sweep
+                        # and only the (still-alive) watcher can
+                        # reach it by pid.
+                        _teardown_target(child_pid, death_w, _parent_fds)
                         out_str = stdout_buf.decode("utf-8", errors="replace") if text else stdout_buf
                         err_str = stderr_buf.decode("utf-8", errors="replace") if text else stderr_buf
                         raise subprocess.TimeoutExpired(
@@ -2711,7 +2786,9 @@ def run_sandboxed(
                     if pid_ != 0:
                         break
                     if time.monotonic() > deadline:
-                        _kill_and_reap(child_pid)
+                        # Death-pipe EOF first — same setsid-escape
+                        # rationale as the capture_output branch above.
+                        _teardown_target(child_pid, death_w, _parent_fds)
                         out_str = (stdout_buf or b"").decode("utf-8", errors="replace") if text else stdout_buf
                         err_str = (stderr_buf or b"").decode("utf-8", errors="replace") if text else stderr_buf
                         raise subprocess.TimeoutExpired(

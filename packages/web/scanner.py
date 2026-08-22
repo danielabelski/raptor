@@ -375,6 +375,36 @@ Examples:
         help="Optional ffuf response size filter for -fs",
     )
     parser.add_argument(
+        "--ffuf-extensions",
+        help="Comma-separated file extensions for ffuf -e, e.g. '.php,.bak,.old'",
+    )
+    parser.add_argument(
+        "--ffuf-filter-words",
+        type=int,
+        help="Optional ffuf response word-count filter for -fw",
+    )
+    parser.add_argument(
+        "--ffuf-filter-lines",
+        type=int,
+        help="Optional ffuf response line-count filter for -fl",
+    )
+    parser.add_argument(
+        "--ffuf-match-regex",
+        help="Optional ffuf response-content match regex for -mr (Go regexp syntax)",
+    )
+    parser.add_argument(
+        "--ffuf-filter-regex",
+        help="Optional ffuf response-content filter regex for -fr (Go regexp syntax)",
+    )
+    parser.add_argument(
+        "--ffuf-match-time",
+        help="Optional ffuf response-time matcher for -mt, e.g. '>500' (milliseconds)",
+    )
+    parser.add_argument(
+        "--ffuf-filter-time",
+        help="Optional ffuf response-time filter for -ft, e.g. '<100' (milliseconds)",
+    )
+    parser.add_argument(
         "--ffuf-stop-on-403",
         action="store_true",
         help="Stop ffuf when >95%% of responses return 403 (-sf); typical WAF signal",
@@ -442,6 +472,15 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         stop_on_403=bool(args.ffuf_stop_on_403),
         stop_on_spurious=bool(args.ffuf_stop_on_spurious_errors),
         stop_on_all_errors=bool(args.ffuf_stop_on_all_errors),
+        extensions=tuple(
+            ext.strip() for ext in (args.ffuf_extensions or "").split(",") if ext.strip()
+        ),
+        filter_words=args.ffuf_filter_words,
+        filter_lines=args.ffuf_filter_lines,
+        match_regex=args.ffuf_match_regex,
+        filter_regex=args.ffuf_filter_regex,
+        match_time=args.ffuf_match_time,
+        filter_time=args.ffuf_filter_time,
     )
 
 

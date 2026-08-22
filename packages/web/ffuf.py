@@ -9,6 +9,7 @@ origin before spawning the external binary.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -51,6 +52,13 @@ class FfufConfig:
     stop_on_403: bool = False
     stop_on_spurious: bool = False
     stop_on_all_errors: bool = False
+    extensions: tuple[str, ...] = ()
+    filter_words: int | None = None
+    filter_lines: int | None = None
+    match_regex: str | None = None
+    filter_regex: str | None = None
+    match_time: str | None = None
+    filter_time: str | None = None
 
 
 class FfufRunner:
@@ -153,8 +161,11 @@ class FfufRunner:
             raise ValueError(msg)
         return url_template
 
-    def build_command(self, config: FfufConfig, output_file: Path) -> list[str]:
-        """Return argv for a safe, non-shell ffuf invocation."""
+    _TIME_MATCHER_RE = re.compile(r"^[<>]\d+$")
+
+    @staticmethod
+    def _validate_config(config: FfufConfig) -> None:
+        """Reject configurations that cannot form a safe ffuf argv."""
         if not config.wordlist.is_file():
             msg = f"ffuf wordlist not found: {config.wordlist}"
             raise FileNotFoundError(msg)
@@ -176,6 +187,40 @@ class FfufRunner:
         if config.filter_size is not None and config.filter_size < 0:
             msg = "ffuf filter size must be >= 0 when set"
             raise ValueError(msg)
+        if config.filter_words is not None and config.filter_words < 0:
+            msg = "ffuf filter words must be >= 0 when set"
+            raise ValueError(msg)
+        if config.filter_lines is not None and config.filter_lines < 0:
+            msg = "ffuf filter lines must be >= 0 when set"
+            raise ValueError(msg)
+        for label, ext in (("extension", e) for e in config.extensions):
+            if (
+                len(ext) < 2
+                or not ext.startswith(".")
+                or any(c in ext for c in ",\n\r\t ")
+            ):
+                msg = (
+                    f"ffuf {label} must look like '.php' "
+                    f"(got {ext!r}): leading dot, no commas or whitespace"
+                )
+                raise ValueError(msg)
+        for label, value in (
+            ("match regex", config.match_regex),
+            ("filter regex", config.filter_regex),
+        ):
+            # Deliberately not compiled here: ffuf uses Go regexp, and
+            # Python acceptance is neither necessary nor sufficient.
+            # ffuf's own config error surfaces through the returncode.
+            if value is not None and ("\n" in value or "\r" in value):
+                msg = f"ffuf {label} must not contain newlines"
+                raise ValueError(msg)
+        for label, value in (
+            ("match time", config.match_time),
+            ("filter time", config.filter_time),
+        ):
+            if value is not None and not FfufRunner._TIME_MATCHER_RE.match(value):
+                msg = f"ffuf {label} must look like '>100' or '<100' (milliseconds)"
+                raise ValueError(msg)
         if any("\n" in header or "\r" in header for header in config.headers):
             msg = "ffuf headers must not contain newlines"
             raise ValueError(msg)
@@ -188,6 +233,10 @@ class FfufRunner:
         ):
             msg = "ffuf headers must be in 'Name: value' form"
             raise ValueError(msg)
+
+    def build_command(self, config: FfufConfig, output_file: Path) -> list[str]:
+        """Return argv for a safe, non-shell ffuf invocation."""
+        self._validate_config(config)
 
         url_template = self.build_url_template(config.path_template)
         cmd = [
@@ -226,6 +275,20 @@ class FfufRunner:
             cmd.extend(["-fc", config.filter_status])
         if config.filter_size is not None:
             cmd.extend(["-fs", str(config.filter_size)])
+        if config.filter_words is not None:
+            cmd.extend(["-fw", str(config.filter_words)])
+        if config.filter_lines is not None:
+            cmd.extend(["-fl", str(config.filter_lines)])
+        if config.match_regex is not None:
+            cmd.extend(["-mr", config.match_regex])
+        if config.filter_regex is not None:
+            cmd.extend(["-fr", config.filter_regex])
+        if config.match_time is not None:
+            cmd.extend(["-mt", config.match_time])
+        if config.filter_time is not None:
+            cmd.extend(["-ft", config.filter_time])
+        if config.extensions:
+            cmd.extend(["-e", ",".join(config.extensions)])
         for header in config.headers:
             cmd.extend(["-H", header])
         for cookie in config.cookies:

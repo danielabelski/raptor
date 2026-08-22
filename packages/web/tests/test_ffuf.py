@@ -129,6 +129,103 @@ def test_build_command_emits_stop_conditions_only_when_enabled(tmp_path: Path):
     assert "-sa" in full_cmd
 
 
+def test_build_command_threads_matcher_and_filter_family(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            extensions=(".php", ".bak"),
+            filter_words=17,
+            filter_lines=3,
+            match_regex="AKIA[0-9A-Z]{16}",
+            filter_regex="Not Found",
+            match_time=">500",
+            filter_time="<100",
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-e") + 1] == ".php,.bak"
+    assert cmd[cmd.index("-fw") + 1] == "17"
+    assert cmd[cmd.index("-fl") + 1] == "3"
+    assert cmd[cmd.index("-mr") + 1] == "AKIA[0-9A-Z]{16}"
+    assert cmd[cmd.index("-fr") + 1] == "Not Found"
+    assert cmd[cmd.index("-mt") + 1] == ">500"
+    assert cmd[cmd.index("-ft") + 1] == "<100"
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "message"),
+    [
+        ({"extensions": ("php",)}, "leading dot"),
+        ({"extensions": (".",)}, "leading dot"),
+        ({"extensions": (".php,.bak",)}, "no commas or whitespace"),
+        ({"extensions": (".p hp",)}, "no commas or whitespace"),
+        ({"filter_words": -1}, "filter words must be >= 0"),
+        ({"filter_lines": -1}, "filter lines must be >= 0"),
+        ({"match_regex": "a\nb"}, "match regex must not contain newlines"),
+        ({"filter_regex": "a\rb"}, "filter regex must not contain newlines"),
+        ({"match_time": "500"}, "match time must look like"),
+        ({"match_time": ">1x0"}, "match time must look like"),
+        ({"filter_time": "=100"}, "filter time must look like"),
+    ],
+)
+def test_build_command_rejects_invalid_matcher_options(
+    tmp_path: Path,
+    config_kwargs: dict[str, object],
+    message: str,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(FfufConfig(wordlist=wordlist, **config_kwargs), tmp_path / "out.json")
+
+
+def test_scanner_cli_wires_ffuf_matcher_family(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-extensions",
+            ".php, .bak",
+            "--ffuf-filter-words",
+            "17",
+            "--ffuf-filter-lines",
+            "3",
+            "--ffuf-match-regex",
+            "secret_[a-z]+",
+            "--ffuf-filter-regex",
+            "Not Found",
+            "--ffuf-match-time",
+            ">500",
+            "--ffuf-filter-time",
+            "<100",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.extensions == (".php", ".bak")
+    assert config.filter_words == 17
+    assert config.filter_lines == 3
+    assert config.match_regex == "secret_[a-z]+"
+    assert config.filter_regex == "Not Found"
+    assert config.match_time == ">500"
+    assert config.filter_time == "<100"
+
+
 def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The subprocess timeout must exceed -maxtime so ffuf's own clean
     shutdown (which flushes the JSON report) always wins the race."""

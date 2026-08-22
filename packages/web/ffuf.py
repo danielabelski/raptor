@@ -30,6 +30,11 @@ logger = get_logger()
 # even saturated wordlist runs stay far under this cap.
 _MAX_FFUF_OUTPUT_BYTES = 64 * 1024 * 1024
 
+# Applied when a request-multiplying mode (recursion, clusterbomb) is
+# enabled without an explicit -rate: unbounded fan-out against a live
+# target is an operational hazard, not a scanner feature.
+DEFAULT_GUARDED_RATE = 50
+
 
 @dataclass(frozen=True)
 class FfufConfig:
@@ -53,6 +58,10 @@ class FfufConfig:
     stop_on_spurious: bool = False
     stop_on_all_errors: bool = False
     extensions: tuple[str, ...] = ()
+    recursion: bool = False
+    recursion_depth: int = 2
+    recursion_strategy: str = "default"
+    max_runtime_job: int | None = None
     filter_words: int | None = None
     filter_lines: int | None = None
     match_regex: str | None = None
@@ -187,6 +196,15 @@ class FfufRunner:
         if config.filter_size is not None and config.filter_size < 0:
             msg = "ffuf filter size must be >= 0 when set"
             raise ValueError(msg)
+        if config.recursion_depth < 1:
+            msg = "ffuf recursion depth must be >= 1"
+            raise ValueError(msg)
+        if config.recursion_strategy not in ("default", "greedy"):
+            msg = "ffuf recursion strategy must be 'default' or 'greedy'"
+            raise ValueError(msg)
+        if config.max_runtime_job is not None and config.max_runtime_job < 1:
+            msg = "ffuf max runtime per job must be >= 1 when set"
+            raise ValueError(msg)
         if config.filter_words is not None and config.filter_words < 0:
             msg = "ffuf filter words must be >= 0 when set"
             raise ValueError(msg)
@@ -239,6 +257,14 @@ class FfufRunner:
         self._validate_config(config)
 
         url_template = self.build_url_template(config.path_template)
+        if config.recursion and not url_template.rstrip("/").endswith("FUZZ"):
+            # ffuf constraint: recursion re-queues discovered directories
+            # by substituting the FUZZ keyword at the end of the URL path.
+            msg = (
+                "ffuf recursion requires the URL template to end with FUZZ "
+                f"(got {self._redact(url_template)})"
+            )
+            raise ValueError(msg)
         cmd = [
             config.binary,
             "-u",
@@ -293,8 +319,26 @@ class FfufRunner:
             cmd.extend(["-H", header])
         for cookie in config.cookies:
             cmd.extend(["-b", cookie])
-        if config.rate is not None:
-            cmd.extend(["-rate", str(config.rate)])
+        if config.recursion:
+            cmd.append("-recursion")
+            cmd.extend(["-recursion-depth", str(config.recursion_depth)])
+            cmd.extend(["-recursion-strategy", config.recursion_strategy])
+        max_runtime_job = config.max_runtime_job
+        if max_runtime_job is None and config.recursion:
+            # One hot directory must not consume the whole -maxtime budget.
+            max_runtime_job = max(60, config.max_runtime // 4)
+        if max_runtime_job is not None:
+            cmd.extend(["-maxtime-job", str(max_runtime_job)])
+        rate = config.rate
+        if rate is None and config.recursion:
+            rate = DEFAULT_GUARDED_RATE
+            logger.info(
+                "ffuf recursion enabled with no explicit rate limit; "
+                "applying default -rate %d req/s (pass --ffuf-rate to override)",
+                rate,
+            )
+        if rate is not None:
+            cmd.extend(["-rate", str(rate)])
         return cmd
 
     def run(self, config: FfufConfig) -> dict[str, Any]:

@@ -226,6 +226,129 @@ def test_scanner_cli_wires_ffuf_matcher_family(tmp_path: Path):
     assert config.filter_time == "<100"
 
 
+def test_build_command_recursion_pairs_job_cap_and_default_rate(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, recursion=True, max_runtime=400),
+        tmp_path / "out.json",
+    )
+
+    assert "-recursion" in cmd
+    assert cmd[cmd.index("-recursion-depth") + 1] == "2"
+    assert cmd[cmd.index("-recursion-strategy") + 1] == "default"
+    # max(60, 400 // 4) = 100
+    assert cmd[cmd.index("-maxtime-job") + 1] == "100"
+    assert cmd[cmd.index("-rate") + 1] == "50"
+
+
+def test_build_command_recursion_respects_explicit_rate_and_job_cap(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            recursion=True,
+            recursion_depth=3,
+            recursion_strategy="greedy",
+            rate=7,
+            max_runtime_job=42,
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-recursion-depth") + 1] == "3"
+    assert cmd[cmd.index("-recursion-strategy") + 1] == "greedy"
+    assert cmd[cmd.index("-maxtime-job") + 1] == "42"
+    assert cmd[cmd.index("-rate") + 1] == "7"
+
+
+def test_build_command_without_recursion_adds_no_recursion_or_rate_flags(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(FfufConfig(wordlist=wordlist), tmp_path / "out.json")
+
+    assert "-recursion" not in cmd
+    assert "-maxtime-job" not in cmd
+    assert "-rate" not in cmd
+
+
+def test_build_command_recursion_requires_fuzz_terminated_template(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="recursion requires the URL template to end with FUZZ"):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, path_template="FUZZ.php", recursion=True),
+            tmp_path / "out.json",
+        )
+
+    # A trailing slash after FUZZ is fine.
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, path_template="api/FUZZ/", recursion=True),
+        tmp_path / "out.json",
+    )
+    assert "-recursion" in cmd
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "message"),
+    [
+        ({"recursion_depth": 0}, "recursion depth must be >= 1"),
+        ({"recursion_strategy": "wide"}, "recursion strategy must be"),
+        ({"max_runtime_job": 0}, "max runtime per job must be >= 1"),
+    ],
+)
+def test_build_command_rejects_invalid_recursion_options(
+    tmp_path: Path,
+    config_kwargs: dict[str, object],
+    message: str,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(FfufConfig(wordlist=wordlist, **config_kwargs), tmp_path / "out.json")
+
+
+def test_scanner_cli_wires_ffuf_recursion(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    args = build_arg_parser().parse_args(
+        [
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-recursion",
+            "--ffuf-recursion-depth",
+            "3",
+            "--ffuf-recursion-strategy",
+            "greedy",
+            "--ffuf-maxtime-job",
+            "90",
+        ]
+    )
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.recursion is True
+    assert config.recursion_depth == 3
+    assert config.recursion_strategy == "greedy"
+    assert config.max_runtime_job == 90
+
+
 def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The subprocess timeout must exceed -maxtime so ffuf's own clean
     shutdown (which flushes the JSON report) always wins the race."""

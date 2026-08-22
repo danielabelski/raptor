@@ -375,6 +375,35 @@ Examples:
         help="Optional ffuf response size filter for -fs",
     )
     parser.add_argument(
+        "--ffuf-recursion",
+        action="store_true",
+        help=(
+            "Enable ffuf recursive directory discovery; requires the URL "
+            "template to end with FUZZ. Applies a default -rate of 50 req/s "
+            "unless --ffuf-rate is set."
+        ),
+    )
+    parser.add_argument(
+        "--ffuf-recursion-depth",
+        type=int,
+        default=2,
+        help="ffuf recursion depth (default: 2)",
+    )
+    parser.add_argument(
+        "--ffuf-recursion-strategy",
+        choices=("default", "greedy"),
+        default="default",
+        help="ffuf recursion strategy (default: default)",
+    )
+    parser.add_argument(
+        "--ffuf-maxtime-job",
+        type=int,
+        help=(
+            "Per-job runtime cap in seconds for -maxtime-job; defaults to "
+            "max(60, max-runtime/4) when recursion is enabled"
+        ),
+    )
+    parser.add_argument(
         "--ffuf-extensions",
         help="Comma-separated file extensions for ffuf -e, e.g. '.php,.bak,.old'",
     )
@@ -475,6 +504,10 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         extensions=tuple(
             ext.strip() for ext in (args.ffuf_extensions or "").split(",") if ext.strip()
         ),
+        recursion=bool(args.ffuf_recursion),
+        recursion_depth=args.ffuf_recursion_depth,
+        recursion_strategy=args.ffuf_recursion_strategy,
+        max_runtime_job=args.ffuf_maxtime_job,
         filter_words=args.ffuf_filter_words,
         filter_lines=args.ffuf_filter_lines,
         match_regex=args.ffuf_match_regex,

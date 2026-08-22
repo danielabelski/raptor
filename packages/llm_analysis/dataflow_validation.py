@@ -378,6 +378,11 @@ def validate_dataflow_claims(
         results_by_id: Per-finding analysis results, keyed by finding_id.
             Mutated in place.
         codeql_db: Path to pre-built CodeQL database. None ⇒ no-op.
+        codeql_dbs: Per-language CodeQL DB map (language → path). None ⇒
+            treated as empty. `codeql_db`, when also given, is merged in
+            as a `"_default"` wildcard entry; paths missing on disk are
+            dropped. Each finding is validated against the DB matching
+            its language, falling back to `"_default"`.
         repo_path: Repository root, used as the Hypothesis target for
             audit-trail clarity.
         llm_client: Anything implementing `generate_structured(...)` —
@@ -388,6 +393,14 @@ def validate_dataflow_claims(
         budget_threshold: Fraction of total budget above which validation
             is skipped. Default 0.60.
         progress_callback: Optional `(message) -> None` for progress.
+        deep_validate: Operator's `--deep-validate` — force-enable
+            Tier 2/3 LLM-backed predicate generation for every finding.
+            When neither this nor `deep_validate_disabled` is set,
+            Tier 2/3 is auto-enabled per finding iff its analysis
+            carries `path_conditions`.
+        deep_validate_disabled: Operator's `--no-deep-validate` — hard
+            opt-out: Tier 2/3 never runs. Takes precedence over
+            `deep_validate` and the per-finding auto-gate.
 
     Never raises — returns 0 and logs on any error.
     """
@@ -1098,11 +1111,30 @@ def _validate_one_hypothesis(
     """Run a hypothesis through Tier 1 → Tier 2 → Tier 3 in order.
 
     Args:
+        hypothesis: The Hypothesis under test. Its `cwe` (with a
+            `finding` fallback) selects the Tier 1 prebuilt query, its
+            `target` is what that query runs against, and it is passed
+            whole to Tier 2/3 predicate generation and the legacy
+            fallback `validate()`.
+        finding: Finding dict — supplies the language, the CWE fallback
+            (inferred from `rule_id` when the hypothesis carries none),
+            the file/function coverage gate for Tier 1, and the
+            location match for the prebuilt verdict.
+        adapter: CodeQL adapter used to run the Tier 1 prebuilt query
+            and Tier 2/3 template queries; its `_database_path` (when
+            set) drives the Tier 1 coverage gate.
+        llm_client: LLM client consulted only by Tier 2/3 (source/sink
+            predicate generation) and the legacy fallback `validate()`;
+            never used by Tier 1.
         deep_validate: When False (default), Tier 2/3 LLM-backed predicate
             generation is skipped — Tier 1's verdict is returned even if
             inconclusive. Tier 1 is free (just CodeQL); Tier 2/3 burns
             LLM tokens. Operators opt in via `--deep-validate` to spend
             tokens trying to refute Tier 1-inconclusive findings.
+        tier1_batch: Optional map of prebuilt-query path → ToolEvidence
+            from the batched Tier 1 pre-pass. When the discovered
+            query's path is present, the cached evidence is used
+            instead of re-running the query via `adapter`.
 
     Returns (ValidationResult, tier_label). Tier label is one of:
       "prebuilt"               — Tier 1 produced a definitive verdict

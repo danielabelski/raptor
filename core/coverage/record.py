@@ -24,7 +24,7 @@ _MANIFEST_CAP = 64 * 1024 * 1024
 
 
 def _read_manifest_lines(manifest_path: Path) -> set[str]:
-    """Read reads-manifest paths under a shared flock with a size cap.
+    r"""Read reads-manifest paths under a shared flock with a size cap.
 
     Single reader for the hook-written ``.reads-manifest`` so every
     consumer (``build_from_manifest``, ``build_from_findings``) gets
@@ -38,7 +38,7 @@ def _read_manifest_lines(manifest_path: Path) -> set[str]:
     without flock (Windows; raptor doesn't really support them but the
     import is best-effort) we fall back to an unlocked read.
 
-    Use ``rstrip("\\r\\n")`` not ``strip()`` — the latter also trims
+    Use ``rstrip("\r\n")`` not ``strip()`` — the latter also trims
     leading/trailing spaces, but POSIX permits filenames that
     legitimately START or END with a space. ``track_read`` already
     rejects NUL/CR/LF in the path itself, so a manifest line carrying

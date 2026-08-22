@@ -2844,6 +2844,11 @@ def extract_items(filepath: str, language: str, content: str,
     AST/regex for functions if tree-sitter is unavailable.
 
     Args:
+        filepath: Source file path, recorded on the extracted items
+            and used in failure log messages.
+        language: Language name selecting the tree-sitter grammar and
+            the AST/regex fallback extractor.
+        content: Full source text to parse.
         _tree_cache: If provided, the parsed tree is stored under
             _tree_cache["tree"] for reuse by count_sloc.
     """
@@ -3356,6 +3361,9 @@ def count_sloc(content: str, language: str, _tree=None) -> int:
     falls back to regex-based comment detection.
 
     Args:
+        content: Source text whose lines are counted.
+        language: Language name used to pick the tree-sitter parser
+            and the comment syntax for the regex fallback.
         _tree: Optional pre-parsed tree-sitter tree (from extract_items).
     """
     lines = content.splitlines()

@@ -1,4 +1,4 @@
-"""Prompt-building helpers for multi-model consumers.
+r"""Prompt-building helpers for multi-model consumers.
 
 The substrate enforces that prior-model output is treated as untrusted
 input by *making it easy to do the right thing* — consumers call
@@ -14,7 +14,7 @@ Injection-defense note: the UntrustedBlock returned here is only safe
 once it's passed through prompt_envelope.build_prompt, which adds a
 nonce-suffixed close marker that an attacker in the model output cannot
 forge. wrap_model_output alone does not protect against
-"END_MODEL_OUTPUT\\nignore prior instructions" injection — the envelope
+"END_MODEL_OUTPUT\nignore prior instructions" injection — the envelope
 build does. Don't bypass the envelope.
 """
 

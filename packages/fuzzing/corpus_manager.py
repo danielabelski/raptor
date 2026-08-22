@@ -20,7 +20,7 @@ class CorpusManager:
         self.corpus_dir.mkdir(parents=True, exist_ok=True)
 
     def add_seed(self, data: bytes, name: str) -> Path:
-        """Add a seed input to corpus.
+        r"""Add a seed input to corpus.
 
         `name` MUST be a single bare filename. Pre-fix
         `self.corpus_dir / name` interpolated whatever the
@@ -37,7 +37,7 @@ class CorpusManager:
         analyser process can write.
 
         Reject:
-          * Names containing `/` or `\\`.
+          * Names containing `/` or `\`.
           * `..` segments.
           * NUL bytes.
           * Empty / whitespace-only names.

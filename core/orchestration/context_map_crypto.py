@@ -78,9 +78,9 @@ def _load_packs() -> list[dict[str, Any]]:
 
 
 def _compile_matchers() -> list[tuple[str, str, re.Pattern]]:
-    """One compiled call-site pattern per (api, kind).
+    r"""One compiled call-site pattern per (api, kind).
 
-    Prefixes match ``<prefix>\\w*`` and exact names match the bare
+    Prefixes match ``<prefix>\w*`` and exact names match the bare
     identifier, both followed by ``(`` — the regex approximation of
     the cocci ``fn(...)`` call-expression match. Invalid identifiers
     are dropped (same tolerance as the pack renderer).

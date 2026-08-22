@@ -56,11 +56,11 @@ _FILE_COLUMN_INDEX = FINDINGS_COLUMNS.index("File")
 
 
 def _markdown_rows(rows: list[tuple]) -> list[tuple]:
-    """Escape cells and wrap file paths in backticks for markdown rendering.
+    r"""Escape cells and wrap file paths in backticks for markdown rendering.
 
     `build_findings_rows` output is shared with the console renderer
     (which does its own `escape_nonprintable` pass and must not show
-    literal ``\\|`` / ``<br>``), so the markdown-specific escaping
+    literal ``\|`` / ``<br>``), so the markdown-specific escaping
     lives here — every cell goes through `_md_table_cell` so a
     finding-derived value (vuln_type, cwe, file:line, status) cannot
     split table columns or open an inline-code span. Matches the
@@ -188,7 +188,7 @@ def findings_summary_line(counts: dict[str, int], vuln_count: int | None = None)
 
 
 def _md_table_cell(s: str) -> str:
-    """Escape characters that break out of a markdown table cell.
+    r"""Escape characters that break out of a markdown table cell.
 
     Pre-fix only `|` was escaped, and only at one site
     (`build_finding_detail`'s code-line). Other cells interpolated
@@ -199,8 +199,8 @@ def _md_table_cell(s: str) -> str:
     re-parse the table as a list.
 
     Escapes:
-      * `|` → `\\|` (table column separator)
-      * `` ` `` → `\\` ` (inline-code fence)
+      * `|` → `\|` (table column separator)
+      * `` ` `` → `\` ` (inline-code fence)
       * Newlines → `<br>` (rows must be one line)
 
     Also strips autofetch markup (image/`<img>`/`<iframe>` tags,

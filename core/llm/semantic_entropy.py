@@ -1,4 +1,4 @@
-"""Semantic-entropy / reasoning-divergence math for multi-model panels.
+r"""Semantic-entropy / reasoning-divergence math for multi-model panels.
 
 Detects when N models on the same finding agreed on the verdict but
 their reasoning text diverges substantially — i.e. they landed on the
@@ -29,7 +29,7 @@ embeddings:
       *opposite* of the discrimination we want.
     * Jaccard is free, local, no model download, no PII concerns.
 
-Known limitation — tokenisation is ASCII-biased. ``re.compile(r"\\w+")``
+Known limitation — tokenisation is ASCII-biased. ``re.compile(r"\w+")``
 does match Unicode word characters in Python 3, but for scripts
 without word separators (Chinese, Japanese, Thai) a whole phrase
 collapses to a single token, killing Jaccard discrimination.
@@ -202,10 +202,12 @@ def pairwise_distance(
     just return the scalar distance.
 
     Args:
-        a, b: Reasoning strings. Either being shorter than
-            ``min_chars`` causes the function to return ``None``
+        a: First reasoning string. Either ``a`` or ``b`` being shorter
+            than ``min_chars`` causes the function to return ``None``
             (signal-free inputs are treated as "no measurement",
             consistent with :func:`divergence`).
+        b: Second reasoning string; the same ``min_chars`` floor
+            applies.
         min_chars: Per-string floor. See ``_DEFAULT_MIN_CHARS``.
 
     Returns:

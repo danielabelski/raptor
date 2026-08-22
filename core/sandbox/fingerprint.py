@@ -1,4 +1,4 @@
-"""Host-fingerprint sanitisation overlay for sandboxed children.
+r"""Host-fingerprint sanitisation overlay for sandboxed children.
 
 Opt-in via `sandbox(..., sanitise_host_fingerprint=True)`. When engaged,
 the mount-ns child bind-mounts canonical files over the host's identity
@@ -6,7 +6,7 @@ surfaces and the spawn machinery sets a canonical UTS namespace +
 sched_setaffinity mask:
 
   /proc/cpuinfo                          → N blocks, host flags preserved
-  /proc/version                          → "Linux version <host-release>\\n"
+  /proc/version                          → "Linux version <host-release>\n"
   /proc/cmdline                          → canonical stub
   /proc/stat                             → aggregate + N per-cpu lines
   /proc/uptime                           → fake uptime + derived idle
@@ -420,8 +420,8 @@ def _write(path: Path, content: str) -> str:
 
 
 def _read_host_cpu_flags() -> str:
-    """Return the host's /proc/cpuinfo `flags` line value (space-
-    separated flag names; no `flags\\t:` prefix).
+    r"""Return the host's /proc/cpuinfo `flags` line value (space-
+    separated flag names; no `flags\t:` prefix).
 
     Empty string on failure — handled gracefully by build_persona.
     """
@@ -437,11 +437,11 @@ def _read_host_cpu_flags() -> str:
 
 
 def _trim_proc_version() -> str:
-    """Return host /proc/version with build-host/compiler/timestamp
+    r"""Return host /proc/version with build-host/compiler/timestamp
     fingerprint stripped, preserving only `Linux version <release>`.
 
     Example: "Linux version 6.8.0-49-generic (buildd@...) (gcc ...) #49-..."
-             becomes "Linux version 6.8.0-49-generic\\n"
+             becomes "Linux version 6.8.0-49-generic\n"
     """
     try:
         with open("/proc/version", encoding="utf-8") as f:

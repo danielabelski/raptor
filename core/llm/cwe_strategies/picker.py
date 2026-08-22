@@ -246,6 +246,12 @@ def pick_strategies(
         file_includes: header includes seen in the source file
             (used for include signals). May be empty when the
             inventory doesn't track includes for the language.
+        function_calls_made: callee names invoked by the function
+            under review (used for call signals; each matching
+            callee scores by its name length).
+        candidate_cwes: CWE ids attached to the finding by an
+            upstream classifier (used for CWE signals; each exact
+            id match adds a dominating 100 points).
         strategies: optional pre-loaded strategy list. Defaults to
             ``load_all()`` for the bundled strategies dir.
         max_strategies: maximum number of strategies to return

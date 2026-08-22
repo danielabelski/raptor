@@ -384,6 +384,9 @@ def synthesize_and_sweep(
             ``file:function`` keys cannot filter function-less sites.
         synthesis_count: How many syntheses have been done this run.
         max_per_run: Maximum synthesis attempts per run.
+        quarantined_rules: Run-scoped quarantine set of rule IDs.
+            Library-replay candidates whose ``rule_id`` is in this set
+            are skipped (this run already triaged their matches all-FP).
 
     Returns:
         SynthesisResult with hits, or None if synthesis failed or was skipped.

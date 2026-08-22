@@ -513,6 +513,11 @@ class CrashAnalysisAgent:
 
         Args:
             crash_context: Crash context with debugging information
+            sage_prior_recall: Optional SAGE crash-pattern recall text;
+                when non-empty, it is stripped and added to the prompt
+                as an untrusted envelope block
+                (kind "sage-crash-pattern-recall"). None or blank ⇒
+                no recall block.
 
         Returns:
             True if analysis succeeded

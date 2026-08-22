@@ -663,14 +663,14 @@ def _resolve_rules_applied(
 
 
 def _sanitize_pack_name(name: str) -> str:
-    """Strict allowlist: alphanumeric + dash + underscore + dot.
+    r"""Strict allowlist: alphanumeric + dash + underscore + dot.
 
     ``name`` is the policy-pack name from
     ``RaptorConfig.BASELINE_SEMGREP_PACKS`` /
     ``POLICY_GROUP_TO_SEMGREP_PACK`` (operator can extend via
     ``--policy-groups``), and the sanitised result becomes part of an
     output FILE PATH. Any other shell / filesystem-special character
-    (``*``, ``?``, ``[``, ``]``, ``\\``, space, NUL, newline, control
+    (``*``, ``?``, ``[``, ``]``, ``\``, space, NUL, newline, control
     bytes) would otherwise flow straight into
     ``out_dir / f"semgrep_{suffix}.sarif"``. Concrete failure: a
     custom policy pack named with a space produced an output path with
@@ -1184,6 +1184,12 @@ def semgrep_scan_parallel(
             consult the target-type catalog. Callers integrated
             with the catalog (scanner.py main) resolve via
             ``_resolve_baseline_packs`` and pass the result.
+        extra_configs: Operator-supplied custom rule sources
+            (``--extra-config``). Each value becomes its own peer
+            pack named ``extra_<basename>`` with its own SARIF;
+            duplicate paths are dropped with a warning and basename
+            collisions get a positional suffix. None/empty ⇒ no
+            extra packs.
 
     Returns:
         (sarif_paths, failed_pack_names). Callers MUST surface the
@@ -1524,6 +1530,9 @@ def run_codeql(
             has those files or not" approach).
         build_command: Optional CodeQL build command override
             (e.g. for compiled languages with non-standard layouts).
+        traced_build: When True, forward ``--traced-build`` to the
+            agent (traced-build CodeQL extraction for compiled
+            languages). Default False adds no flag.
 
     Returns:
         List of absolute SARIF paths the agent wrote. Empty on any

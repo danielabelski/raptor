@@ -42,10 +42,10 @@ SHA_DISPLAY_LEN: int = 12
 
 
 def normalize_slug(slug: str) -> str:
-    """Lower-case, strip ``.git`` suffix, strip whitespace.
+    r"""Lower-case, strip ``.git`` suffix, strip whitespace.
 
     Pre-fix didn't strip TRAILING PUNCTUATION (`)`, `]`, `>`,
-    `,`, `.`, `;`). The capture regex `[^/]+/[^/#?\\s]+`
+    `,`, `.`, `;`). The capture regex `[^/]+/[^/#?\s]+`
     excludes only `/`, `#`, `?`, whitespace — so a URL
     appearing in prose like:
 

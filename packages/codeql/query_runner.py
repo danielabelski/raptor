@@ -371,6 +371,11 @@ class QueryRunner:
             out_dir: Output directory for SARIF
             suite: Custom suite identifier (uses default if None)
             use_extended: Use security-extended suite instead of standard
+            concurrent_workers: How many CodeQL invocations run at the
+                same time as this one (parallel multi-language analyses).
+                Passed to ``CodeQLTunables.from_tuning`` so the auto
+                (``-j 0``) thread count is divided between the concurrent
+                processes; explicit thread settings are respected as-is
 
         Returns:
             QueryResult with execution status

@@ -305,6 +305,9 @@ def verify_guard_relevance_cpg(
     2. Does the guard dominate the sink in the CFG?
 
     Args:
+        sink_guard: Sink-plus-guards record to verify — each condition
+            in ``sink_guard.guards`` is checked against the recorded
+            sink location, producing one CpgGuardResult per guard.
         joern_server: A packages.joern.server.JoernServer instance
             (must have a CPG loaded). Pass None to get empty results.
 

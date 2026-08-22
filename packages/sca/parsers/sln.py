@@ -61,7 +61,7 @@ _PROJECT_SUFFIXES = {".csproj", ".fsproj", ".vbproj"}
 def find_sln_referenced_csprojs(
     sln_path: Path, *, repo_root: Path | None = None,
 ) -> list[Path]:
-    """Read a ``.sln`` file and return absolute paths to every
+    r"""Read a ``.sln`` file and return absolute paths to every
     referenced csproj / fsproj / vbproj.
 
     Empty list when:
@@ -78,13 +78,13 @@ def find_sln_referenced_csprojs(
 
     Path resolution:
       * Each project path is relative to the .sln's parent dir.
-      * Windows-style ``\\`` separators are normalised to ``/``.
+      * Windows-style ``\`` separators are normalised to ``/``.
       * Absolute paths are rejected up-front (``/`` prefix or
-        Windows drive-letter — ``C:\\...``).
-      * UNC paths (``\\\\server\\share``) and URL-encoded /
+        Windows drive-letter — ``C:\...``).
+      * UNC paths (``\\server\share``) and URL-encoded /
         percent-encoded segments are rejected. A hostile .sln
         line carrying ``%2e%2e/etc/passwd`` survives the
-        ``.replace("\\", "/")`` normalisation but is caught
+        ``.replace("\", "/")`` normalisation but is caught
         here.
       * Literal ``..`` segments are rejected up-front BEFORE
         the ``(parent / rel).resolve()`` call, so a .sln cannot

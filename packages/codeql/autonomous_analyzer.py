@@ -211,6 +211,10 @@ class AutonomousCodeQLAnalyzer:
                 loads it instead of rebuilding. Lets a subprocess
                 analyzer reuse an inventory built by the parent
                 /agentic run, avoiding the per-process tree walk.
+            allow_unreachable: When True, the reachability prefilter
+                never short-circuits NOT_CALLED findings — full LLM
+                analysis runs even on dead-code-looking sinks
+                (default: False).
         """
         self.llm = llm_client
         self.validator = exploit_validator
@@ -639,6 +643,9 @@ class AutonomousCodeQLAnalyzer:
             finding: CodeQLFinding object
             vulnerable_code: Source code context
             dataflow_validation: Dataflow validation result (if applicable)
+            repo_path: Repository root used to attach the project's
+                threat-model context block to the prompt; when None,
+                the block is skipped
 
         Returns:
             VulnerabilityAnalysis result

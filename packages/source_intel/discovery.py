@@ -217,10 +217,10 @@ def discover_aliases(target: Path) -> DiscoveryResult:
 
 
 def _join_continuations(text: str) -> str:
-    """Pre-join GNU make / cpp line-continuation backslashes so the
+    r"""Pre-join GNU make / cpp line-continuation backslashes so the
     define regex sees a single logical line per macro.
 
-    Replaces ``\\<newline>`` with a single space.
+    Replaces ``\<newline>`` with a single space.
     """
     return re.sub(r"\\\n", " ", text)
 

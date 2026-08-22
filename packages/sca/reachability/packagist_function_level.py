@@ -1,4 +1,4 @@
-"""Packagist (PHP / Composer) function-level reachability tier.
+r"""Packagist (PHP / Composer) function-level reachability tier.
 
 Sibling of the PyPI / npm / Go / Java / Cargo / RubyGems / NuGet
 tiers. Consumes PHP call-graph data emitted by
@@ -15,9 +15,9 @@ cross-language resolver against OSV symbol data.
 ## Qualified-name shape
 
 PHP / Packagist OSV records ship symbols as fully-qualified
-namespace paths (``Symfony\\Component\\HttpFoundation\\Request::create``).
-The PHP extractor binds ``use Foo\\Bar\\Baz;`` ->
-``imports["Baz"] = "Foo\\Bar\\Baz"``; chains like
+namespace paths (``Symfony\Component\HttpFoundation\Request::create``).
+The PHP extractor binds ``use Foo\Bar\Baz;`` ->
+``imports["Baz"] = "Foo\Bar\Baz"``; chains like
 ``["Baz", "method"]`` resolve via the import map.
 
 Limitation: ``call_user_func`` / variable callables / ``$$var``

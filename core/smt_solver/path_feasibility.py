@@ -1537,6 +1537,9 @@ def check_path_feasibility(
                     rendering.  Defaults to BV_C_UINT64 (64-bit unsigned).
                     Use BV_C_UINT32 for CWE-190 32-bit wraparound paths;
                     BV_C_INT32 for signed-integer path conditions; etc.
+        timeout_ms: Per-call Z3 solver timeout in milliseconds.  When
+                    None (default) the solver uses the substrate's
+                    ``DEFAULT_TIMEOUT_MS`` (5000 ms).
         prefer_witness: When set to ``(var_name, "max")`` or
                     ``(var_name, "min")``, drive the satisfying witness
                     toward an extreme value of ``var_name`` instead of

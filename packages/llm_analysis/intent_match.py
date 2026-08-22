@@ -148,11 +148,11 @@ def _compile_error_anchor(
 
 
 def _cwe_buffer_overflow_shape(exploit_code: str) -> bool:
-    """CWE-120/121/787: long-string payload generation.
+    r"""CWE-120/121/787: long-string payload generation.
 
     Looks for the common LLM patterns:
-    * Repeated-character payloads: ``"A" * 100``, ``b"\\x41" * 64``
-    * Long byte literals: ``b"\\xde\\xad\\xbe\\xef\\xca\\xfe..."``
+    * Repeated-character payloads: ``"A" * 100``, ``b"\x41" * 64``
+    * Long byte literals: ``b"\xde\xad\xbe\xef\xca\xfe..."``
     """
     if not exploit_code:
         return False

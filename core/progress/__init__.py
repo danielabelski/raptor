@@ -35,13 +35,13 @@ def last_stage_name() -> str | None:
 
 
 def _stderr_supports_unicode() -> bool:
-    """Probe whether stderr can encode the unicode block characters
+    r"""Probe whether stderr can encode the unicode block characters
     used by the spinner / status decorations.
 
     Returns False under POSIX/C locale, on legacy 7-bit terminals,
     and on platforms where stderr lacks an `encoding` attribute.
     Pre-fix every write to stderr risked
-    `UnicodeEncodeError: 'ascii' codec can't encode character '\\u2588'`
+    `UnicodeEncodeError: 'ascii' codec can't encode character '\u2588'`
     when the operator's locale was `C` (common in containers and
     minimal CI runners), aborting the entire `with HackerProgress`
     block partway through. Detect once at import.

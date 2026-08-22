@@ -385,6 +385,15 @@ def plan(
       allow_major: when False, candidates whose latest-safe crosses a
         major boundary become ``review_required`` and are omitted from
         the patch.
+      pin_only: when True, deps that aren't already exact-pinned are
+        skipped (``skipped_loose_pin``) — never converts a loose
+        ``>=X``-style pin to ``==Y``; only already-exact pins are
+        considered for newer-exact promotions.
+      pin_debian: Debian/apt pinning is off by default; when True, opt
+        in to pinning apt deps to the newest version in the suite of
+        the governing base image. When False, Debian deps get
+        ``pinning_deferred``; deps with no resolvable suite are also
+        deferred rather than pinned to a guess.
       library_mode: when True (library/hybrid target), select the minimal
         safe version above the baseline rather than the newest — a minimal
         floor-raise that clears advisories while keeping the dependency

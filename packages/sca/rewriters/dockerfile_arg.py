@@ -1,4 +1,4 @@
-"""Dockerfile ``ARG <NAME>_VERSION=<value>`` in-place rewriter.
+r"""Dockerfile ``ARG <NAME>_VERSION=<value>`` in-place rewriter.
 
 The bumper-orchestrator emits :class:`RewriteEdit` records with
 the ARG name as the locator, then calls
@@ -21,7 +21,7 @@ package-local ``_atomic`` if core.file isn't available).
 
 Adapted from https://github.com/gadievron/raptor/pull/467 by
 Natalie Somersall — her ``update_dockerfile()`` shipped the
-``rf"^(ARG {arg}=)(\\S+)"`` regex + the idempotent
+``rf"^(ARG {arg}=)(\S+)"`` regex + the idempotent
 skip-if-unchanged + change-tuple-return pattern. This module
 generalises that into the ``RewriteEdit``/``RewriteResult``
 shape used across all SCA rewriters.

@@ -1,19 +1,19 @@
-"""Module-level reachability for Composer (PHP) deps.
+r"""Module-level reachability for Composer (PHP) deps.
 
 Walks ``*.php`` files outside test trees, extracts ``use
-<Namespace>\\<Class>;`` statements, and matches against the dep's
+<Namespace>\<Class>;`` statements, and matches against the dep's
 PSR-4 namespace.
 
 Heuristic: PHP package names are ``vendor/pkg`` (e.g.,
 ``symfony/console``), and PSR-4 namespaces typically PascalCase the
-parts (``Symfony\\Component\\Console``). Without parsing the
+parts (``Symfony\Component\Console``). Without parsing the
 package's own composer.json autoload section, we use two probes:
 
-  1. **Vendor prefix**: a ``use Vendor\\Anything`` statement (case-
+  1. **Vendor prefix**: a ``use Vendor\Anything`` statement (case-
      insensitive on the vendor) is evidence the package's vendor is
      used somewhere — coarse but useful when we don't know the
      package's exact namespace.
-  2. **Pkg-name segment**: ``use Vendor\\PkgName\\...`` where
+  2. **Pkg-name segment**: ``use Vendor\PkgName\...`` where
      ``PkgName`` matches the dep's pkg part (with kebab→Pascal
      conversion) is stronger evidence.
 
@@ -49,9 +49,9 @@ _PHP_USE_RE = re.compile(
 def scan_imports(
     target: Path, *, max_depth: int = _DEFAULT_MAX_DEPTH,
 ) -> dict[str, list[tuple[Path, int, bool]]]:
-    """Return ``{namespace: [(file, line, is_test), ...]}``.
+    r"""Return ``{namespace: [(file, line, is_test), ...]}``.
 
-    ``namespace`` is the full ``Vendor\\Class\\...`` chain from the
+    ``namespace`` is the full ``Vendor\Class\...`` chain from the
     ``use`` statement.
     """
     target = target.resolve()
@@ -75,9 +75,9 @@ def resolve_dep(
     *,
     target: Path | None = None,
 ) -> Reachability:
-    """Match a Composer ``vendor/pkg`` dep against namespaces in the scan.
+    r"""Match a Composer ``vendor/pkg`` dep against namespaces in the scan.
 
-    Vendor prefix match (``Vendor\\...``) yields ``imported`` with
+    Vendor prefix match (``Vendor\...``) yields ``imported`` with
     medium confidence; refining via pkg-name match boosts confidence.
     """
     if "/" not in dep_name:

@@ -126,7 +126,7 @@ def _free_names(vocab: Any = None) -> tuple[str, ...]:
 
 @lru_cache(maxsize=128)
 def _call_re(names: tuple[str, ...]) -> re.Pattern:
-    """``\\b(name|...)\\s*(`` matcher for a merged name tuple (cached)."""
+    r"""``\b(name|...)\s*(`` matcher for a merged name tuple (cached)."""
     alts = "|".join(
         re.escape(n) for n in sorted(names, key=len, reverse=True)
     )

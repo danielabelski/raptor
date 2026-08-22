@@ -183,16 +183,16 @@ class GDBDebugger:
         return self.run_commands(commands, input_file=input_file)
 
     def examine_memory(self, input_file: Path, address: str, num_bytes: int = 64) -> str:
-        """Examine memory at address.
+        r"""Examine memory at address.
 
         Args:
             input_file: Crash input file fed to the binary via stdin.
             address: Hex address, 0x<1-16 hex digits>. See _validators for
                      the full threat model (GDB scripts are newline-delimited,
-                     so \\n here injects a second command).
+                     so \n here injects a second command).
             num_bytes: Byte count, 1..4096. Embedded verbatim into the GDB
                      script; validated to block str-disguised-as-int inputs
-                     like "64\\nshell id".
+                     like "64\nshell id".
 
         Raises:
             ValueError: If address or num_bytes fails validation.

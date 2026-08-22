@@ -1,4 +1,4 @@
-"""Vertex-cut sanitizer suppressor — Phase 7 of the sanitizer-cut arc.
+r"""Vertex-cut sanitizer suppressor — Phase 7 of the sanitizer-cut arc.
 
 The structural FP reduction this arc was designed for. Given a finding
 with a source location, a sink location, a CWE, and a language, the
@@ -13,7 +13,7 @@ the finding without an LLM call.
 Algorithm: a **vertex cut**.
 
     Suppress iff ``sink`` is unreachable from ``source`` in
-    ``CFG \\ candidate_sanitizers``.
+    ``CFG \ candidate_sanitizers``.
 
 Equivalent intuition: remove every candidate sanitizer node from the
 graph. If the sink becomes unreachable, every path was sanitized; if
@@ -216,11 +216,11 @@ def sanitizer_cuts_source_to_sink(
     sink,
     cut_set: Iterable,
 ) -> bool:
-    """Return True iff removing every node in ``cut_set`` disconnects
+    r"""Return True iff removing every node in ``cut_set`` disconnects
     ``sink`` from every node in ``sources``.
 
     Multi-source semantics: the check is "no source reaches sink".
-    Equivalent to BFS from ``sources ∪`` over ``graph \\ cut_set``
+    Equivalent to BFS from ``sources ∪`` over ``graph \ cut_set``
     and asking whether ``sink`` is in the result.
 
     Pure graph reachability — no language semantics, no catalog

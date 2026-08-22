@@ -1,8 +1,8 @@
-"""Shared validators for binary-analysis inputs passed into subprocess tools.
+r"""Shared validators for binary-analysis inputs passed into subprocess tools.
 
 Consolidates the hex-address regex and byte-count bound so GDB, LLDB, and
 addr2line code paths can't drift apart. GDB scripts are newline-delimited,
-so \\n in any string field is an injection vector — every such field should
+so \n in any string field is an injection vector — every such field should
 route through here.
 """
 
@@ -54,9 +54,9 @@ def validate_hex_address(address, *, param_name: str = "address") -> None:
 
 
 def validate_byte_count(num_bytes, *, param_name: str = "num_bytes") -> None:
-    """Raise ValueError if num_bytes isn't an int in [1, _MAX_EXAMINE_BYTES].
+    r"""Raise ValueError if num_bytes isn't an int in [1, _MAX_EXAMINE_BYTES].
 
-    Guards the f-string path in examine_memory(): a str like "64\\nshell id"
+    Guards the f-string path in examine_memory(): a str like "64\nshell id"
     passed as num_bytes would otherwise be embedded verbatim into a GDB script.
     bool is an int subclass in Python, so reject it explicitly.
     """

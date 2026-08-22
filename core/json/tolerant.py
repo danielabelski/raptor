@@ -619,9 +619,9 @@ def _try_quasi_json_fixups(text: str) -> tuple[Any, tuple[str, ...]]:
 
 
 def _extract_partial_keys(text: str | None) -> tuple[str, ...]:
-    """Best-effort extract JSON object keys from a possibly-broken payload.
+    r"""Best-effort extract JSON object keys from a possibly-broken payload.
 
-    Regex matches ``"key":`` patterns outside of ``\\``-escaped string
+    Regex matches ``"key":`` patterns outside of ``\``-escaped string
     content. Not a JSON parser — deliberately permissive to catch
     partial signal in truncated / broken payloads. Returns keys in
     document order, de-duplicated, capped at 32 to protect against

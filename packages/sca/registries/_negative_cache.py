@@ -87,7 +87,11 @@ def fetch_or_negative_cache(
         Raised exceptions are caught and treated as negative.
       negative_value: value returned (and cached) on fetch failure.
         Defaults to ``None``; pass ``[]`` for version-list endpoints.
-      log_prefix / item_name: shape the WARNING log line on failure.
+      log_prefix: prefix for the log line on fetch failure; passed
+        through to :func:`log_fetch_failure`.
+      item_name: name of the item being fetched, included in the
+        failure log line when non-empty; passed through to
+        :func:`log_fetch_failure`.
     """
     if cache is not None:
         cached = cache.try_get(key, ttl_seconds=ttl_seconds)

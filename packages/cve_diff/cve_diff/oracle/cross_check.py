@@ -1,4 +1,4 @@
-"""Oracle cross-check CLI.
+r"""Oracle cross-check CLI.
 
 Reads a `cve-diff bench` ``summary.json`` and, for each CVE:
 - If PASS: parse the matching ``<cve_id>.osv.json`` in the same
@@ -14,8 +14,8 @@ Writes:
   examples per verdict
 
 Usage:
-    .venv/bin/python -m cve_diff.oracle.cross_check \\
-        --summary /tmp/bench200/summary.json \\
+    .venv/bin/python -m cve_diff.oracle.cross_check \
+        --summary /tmp/bench200/summary.json \
         --output-dir /tmp/bench200/oracle/
 """
 

@@ -69,13 +69,13 @@ def _manifest_files(resolver: Resolver) -> Sequence[str]:
 def manifest_hash(
     resolver: Resolver, project_dir: Path,
 ) -> str | None:
-    """Compute a deterministic hash over the resolver's manifest files.
+    r"""Compute a deterministic hash over the resolver's manifest files.
 
     Returns ``None`` if the resolver doesn't opt in (no
     ``MANIFEST_FILES``) OR if no declared file is present in
     ``project_dir`` (can't key on a non-existent input).
 
-    Hash shape: SHA-256 of ``\\0``-separated ``<rel_path>\\0<bytes>``
+    Hash shape: SHA-256 of ``\0``-separated ``<rel_path>\0<bytes>``
     pairs, sorted by rel_path for deterministic order. Missing files
     are skipped silently — they don't contribute to the hash. A
     project that has only ``package.json`` (no lock) hashes the same

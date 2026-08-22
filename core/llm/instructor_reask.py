@@ -74,7 +74,7 @@ def _tool_use_ids(message: Any) -> list[str]:
 
 
 def _tool_result_ids(message: Any) -> set[str]:
-    """The ``tool_use_id``\\ s answered by one message's tool_results."""
+    r"""The ``tool_use_id``\ s answered by one message's tool_results."""
     content = _block_field(message, "content")
     if not isinstance(content, list):
         return set()

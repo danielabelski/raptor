@@ -112,6 +112,9 @@ class MultiTurnAnalyser:
             max_turns: Maximum dialogue turns. Turn 1 (initial
                 analysis) always runs; follow-up turns are skipped
                 once the cap is reached.
+            sage_prior_recall: Prior SAGE crash-pattern recall text.
+                When non-blank, included in the turn-1 prompt as an
+                untrusted context block; ignored when None or blank.
 
         Returns:
             Dictionary with analysis results and confidence

@@ -182,13 +182,13 @@ def _is_digit_separator(line: str, i: int) -> bool:
 
 
 def _pp_directive_line_mask(content: str, language: str = "c") -> list[bool]:
-    """Per physical line: can a ``#`` directive starting on this line
+    r"""Per physical line: can a ``#`` directive starting on this line
     be honoured by the compiler?
 
     Comments are removed in translation phase 3, BEFORE phase-4
     directive processing, so a directive-shaped line inside a
     ``/* */`` block comment is comment text — honouring it lets a
-    hostile repo blank live code out of the parse view (``/*\\n#if 0\\n*/``
+    hostile repo blank live code out of the parse view (``/*\n#if 0\n*/``
     around a live function: the function compiles but never reaches
     the inventory). The same holds for a line spliced onto the
     previous one by a trailing backslash (including a spliced ``//``

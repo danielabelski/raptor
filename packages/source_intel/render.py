@@ -161,6 +161,12 @@ def derive_evidence_strings(
         and reframed as informational-only: the LLM should weigh
         the binary verdict over any source_intel EXPLOITABLE signal.
         ``None`` (default): no binary side; emit unchanged.
+      privilege_back_walk: optional axis-4 multi-hop privilege
+        back-walk evidence. When supplied, rendered as one prose line
+        (the privileged gate example(s) along the call paths, or the
+        ungated counter-example) after the C-level source lines;
+        ``no_callers`` results render nothing. ``None`` (default): no
+        back-walk line.
 
     Returns an empty list when the result is skipped or carries no
     relevant evidence — consumers can render "no source_intel signal"

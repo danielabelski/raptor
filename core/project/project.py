@@ -554,6 +554,8 @@ class Project:
         its own runs. Only sweeps runs whose session has died.
 
         Args:
+            dirs: candidate run directories to examine; only those whose
+                  metadata records status == "running" are considered.
             keep_latest: if True, skip the most recent 'running' dir even
                          if its session is dead (legacy fallback for runs
                          without session_pid).
@@ -662,6 +664,16 @@ class ProjectManager:
         """Create a new project.
 
         Args:
+            name: project name; validated against the safe-filename
+                pattern (alphanumeric first character, then letters,
+                digits, dots, hyphens, underscores; reserved names and
+                names over 100 chars rejected).
+            target: path to the code under analysis; resolved to an
+                absolute path when ``resolve_target`` is True.
+            description: free-form description stored on the project.
+            output_dir: directory for the project's runs; created if
+                missing. When falsy, defaults to
+                ``DEFAULT_OUTPUT_BASE/<name>`` (resolved).
             resolve_target: If True (default), resolve target to absolute path.
                 Set to False for imports where the original path should be preserved.
             created: ISO timestamp override (for imports preserving original date).

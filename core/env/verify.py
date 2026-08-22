@@ -1148,11 +1148,11 @@ def inject_version_assertion(
     version_literal: str,
     command_pattern: re.Pattern[str] | None,
 ) -> tuple[list[dict[str, Any]], set[int]]:
-    """Fill a missing version literal into version-discovery exec_checks.
+    r"""Fill a missing version literal into version-discovery exec_checks.
 
     For each ``exec_check`` whose ``command`` matches
     ``command_pattern`` AND whose ``expected_stdout_contains`` is
-    missing or lacks a version literal (``\\d+\\.\\d+``), overwrite
+    missing or lacks a version literal (``\d+\.\d+``), overwrite
     ``expected_stdout_contains`` with ``version_literal``.
 
     Safe by construction: if the deployed version actually differs,

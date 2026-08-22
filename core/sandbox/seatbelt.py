@@ -114,13 +114,13 @@ def _realpath_or_none(path: str | None) -> str | None:
 
 
 def _quote_sbpl(s: str) -> str:
-    """Quote a string literal for SBPL. SBPL uses double-quoted strings
+    r"""Quote a string literal for SBPL. SBPL uses double-quoted strings
     with backslash escapes for embedded quotes/backslashes.
 
     Rejects control characters (newline, NUL, anything <0x20). The
-    SBPL parser is whitespace-sensitive: a path containing `\\n` would
+    SBPL parser is whitespace-sensitive: a path containing `\n` would
     close the current s-expression and inject a fresh clause —
-    `output="/tmp/x\\n(allow file-write*)"` becomes a profile that
+    `output="/tmp/x\n(allow file-write*)"` becomes a profile that
     grants blanket write. Realpath canonicalisation only protects
     paths that exist as inodes; caller-supplied writable_paths /
     readable_paths come straight from kwargs and may not exist yet
@@ -187,6 +187,10 @@ def build_profile(*,
         before exec. The profile itself doesn't reference HOME so this
         kwarg is here for signature parity; the actual env mutation
         happens in _macos_spawn.py.
+      exclude_tmp_baseline: when True, drop the /private/tmp seed from
+        the write-allowlist exception so every /tmp spelling is denied
+        (mirrors Linux's writable_paths=[] semantics); the spawn layer
+        then redirects the child's TMPDIR into {output}/.tmp.
       audit_mode: when True, replace file-write denies with
         (allow file-write* (with report)) — the write succeeds AND
         emits a kernel sandbox log entry that seatbelt_audit captures.
@@ -233,6 +237,11 @@ def build_profile(*,
         lookup of specific services, iokit-open, etc.) are too
         invasive to apply by default — a future "macos-strict"
         profile could opt in.
+      profile_name: name of the requested sandbox profile. "strict"
+        (with seccomp_profile not None/"none") layers the macos-strict
+        extras: deny signal to other processes, deny nvram*, and a
+        mach-lookup allowlist (emitted as allow-with-report forms when
+        audit_mode=True). Other values add nothing.
     """
     parts: list = []
     parts.append("(version 1)")

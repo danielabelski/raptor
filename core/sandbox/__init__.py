@@ -1,4 +1,4 @@
-"""Subprocess sandboxing via Linux user namespaces, Landlock, and seccomp.
+r"""Subprocess sandboxing via Linux user namespaces, Landlock, and seccomp.
 
 Provides network, filesystem, and syscall-level isolation plus resource
 limits for subprocesses that handle untrusted content. Falls back
@@ -181,7 +181,7 @@ Log-output hygiene:
   colour flips, window-title spoofing, cursor-movement to overwrite
   prior lines with forged "all clear" entries.
   `core.security.log_sanitisation.escape_nonprintable()` replaces
-  non-printable chars with `\\xHH` literals before logging; the
+  non-printable chars with `\xHH` literals before logging; the
   proxy's CONNECT parser uses the predicate form
   `has_nonprintable()` to reject such requests outright with a 400
   Bad Request.

@@ -380,9 +380,9 @@ _VALID_ANNOTATION_SOURCES = frozenset({"human", "llm", "agent"})
 
 
 def _parse_meta(comment_body: str) -> dict[str, str]:
-    """Parse ``key=value`` pairs from the inside of a meta comment.
+    r"""Parse ``key=value`` pairs from the inside of a meta comment.
     Quoted values keep spaces; bare values are whitespace-delimited.
-    Escaped double-quotes (``\\"``) inside quoted values are unescaped.
+    Escaped double-quotes (``\"``) inside quoted values are unescaped.
 
     Amendment §6 (Phase 3.5): warn when ``source=`` carries a value
     outside the ``{human, llm, agent}`` enum. The read path stays

@@ -1121,6 +1121,11 @@ def run_orchestrator(
             The orchestrator is agnostic to HOW the LLM is called — the
             consumer provides the implementation.
         on_progress: Optional callback (current_idx, total, outcome).
+        prep_cache: Shared dict for ensemble (multi-model) runs: the
+            first pass stores its prep result and coordination keys
+            (``_lock``/``_event``/``_ready``) here for later passes to
+            reuse, and ``_caches_cleared`` gates the per-run module
+            cache / shutdown-state reset to once per shared dict.
 
     Returns:
         OrchestratorResult summarizing the run.
@@ -15682,6 +15687,25 @@ def _sweep_validate(
 
     Parameters
     ----------
+    outcome:
+        The LLM's ReviewOutcome to validate. Returned unchanged when
+        already tool-confirmed, stamped with confirming evidence, or
+        demoted (no hypothesis / SMT overflow disproof).
+    config:
+        OrchestratorConfig — supplies target_path, project_sinks, and
+        CodeQL database routing for the mechanical tool runs.
+    sarif_cache:
+        Prior-SARIF index passed to the tool chain so semgrep steps can
+        reuse cached scan results instead of spawning a subprocess.
+    tier_counters:
+        Per-tier TierCounters dict; confirmed/refuted/error counts for
+        the smt/codeql/joern/aggregation channels are incremented here.
+    evidence_index:
+        Pre-computed per-function EvidenceRecord map (``file:function``
+        keys), passed through to the tool chain for evidence lookups.
+    joern_server:
+        Live JoernServer passed through to the tool chain for CPG-backed
+        checks; None disables that channel.
     source_override:
         Pre-loaded source/decompilation text. Skips file read when set.
     is_binary:

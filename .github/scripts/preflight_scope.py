@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Changed-test-file scoper for the PR preflight workflow.
+r"""Changed-test-file scoper for the PR preflight workflow.
 
 test_scope.py answers "which tests does this change AFFECT?" (reverse
 import graph, per-tier dispatch). The preflight asks a narrower
@@ -25,7 +25,7 @@ no full-dispatch fallback on purpose: running the entire suite under
 every simulation is exactly the latency the changed-file bound avoids.
 
 Usage:
-    python3 .github/scripts/preflight_scope.py \\
+    python3 .github/scripts/preflight_scope.py \
         --changed-files /tmp/changed_files.txt --repo .
 """
 

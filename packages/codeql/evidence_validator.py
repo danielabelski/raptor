@@ -1,9 +1,9 @@
-"""Corpus-runner :class:`Validator` adapter that drives the CodeQL
+r"""Corpus-runner :class:`Validator` adapter that drives the CodeQL
 :class:`DataflowValidator` with the sanitizer-evidence pipeline enabled.
 
 This is the operator-facing measurement entry point. Wire via:
 
-    core/dataflow/scripts/corpus-run --output evidence.csv \\
+    core/dataflow/scripts/corpus-run --output evidence.csv \
         --validator packages.codeql.evidence_validator:CodeQLEvidenceValidator
     core/dataflow/scripts/corpus-metrics evidence.csv
 

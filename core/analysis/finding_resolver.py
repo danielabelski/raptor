@@ -804,10 +804,10 @@ _JAVA_STMT_TYPES = frozenset({
 def _java_statement_start_line(
     source_text: str, lineno: int,
 ) -> int | None:
-    """Start line of the smallest Java STATEMENT spanning ``lineno``.
+    r"""Start line of the smallest Java STATEMENT spanning ``lineno``.
 
     Findings frequently flag a continuation line of a multi-line
-    statement (``new java.io.FileWriter(\\n    fileTarget, true);``
+    statement (``new java.io.FileWriter(\n    fileTarget, true);``
     flagged on the constructor line) — the CFG's statement node lives
     at the statement's start line, so an exact-line lookup lands on
     nothing. Returns ``None`` when the grammar is missing or no

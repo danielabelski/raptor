@@ -48,25 +48,25 @@ def _checked_token(witness_token: str) -> str:
 
 
 def _single_quote(s: str) -> str:
-    """Render *s* as a single-quoted Ruby/Perl/PHP string literal.
+    r"""Render *s* as a single-quoted Ruby/Perl/PHP string literal.
 
     Double-quoted strings interpolate in all three languages — Ruby
     ``#{...}``, Perl ``@{[...]}``/``$var``, PHP ``$var`` — so a
     ``json.dumps``-rendered witness argument is an eval sink.
     Single-quoted strings recognise exactly two escape sequences
-    (``\\\\`` and ``\\'``) and interpolate nothing, so escaping those
+    (``\\`` and ``\'``) and interpolate nothing, so escaping those
     two characters makes the value pure data in every one of them.
     """
     return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _lua_quote(s: str) -> str:
-    """Render *s* as a single-quoted Lua string literal.
+    r"""Render *s* as a single-quoted Lua string literal.
 
     Lua interpolates nothing, but backslash escapes are live in BOTH
     quote styles and a raw newline ends the literal — and JSON's
-    ``\\uXXXX`` spelling is not valid Lua. Escape the backslash and
-    quote, and spell control bytes with Lua's decimal ``\\ddd`` form
+    ``\uXXXX`` spelling is not valid Lua. Escape the backslash and
+    quote, and spell control bytes with Lua's decimal ``\ddd`` form
     (always three digits so a following digit cannot extend it).
     """
     out = []

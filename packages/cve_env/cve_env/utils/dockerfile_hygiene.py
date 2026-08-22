@@ -83,10 +83,10 @@ def robust_json_parse(text: str) -> dict[str, Any] | None:
 
 
 def sanitize_dockerfile(text: str) -> str:
-    """Clean up a Dockerfile produced by an LLM.
+    r"""Clean up a Dockerfile produced by an LLM.
 
     Fixes:
-      * excessive backslash escaping (``\\\\\\\\`` -> ``\\``),
+      * excessive backslash escaping (``\\\\`` -> ``\``),
       * malformed ``LABEL`` lines lacking ``key=value`` (commented out
         with a marker so the semantic validator can still report them).
     """

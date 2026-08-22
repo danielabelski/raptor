@@ -444,9 +444,9 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 def _compile_extra_source_patterns(names: Iterable[str]) -> tuple:
-    """Run-scoped learned source patterns (e.g. source-wrapper methods).
+    r"""Run-scoped learned source patterns (e.g. source-wrapper methods).
 
-    Each valid identifier becomes a ``\\.name\\s*(`` call pattern —
+    Each valid identifier becomes a ``\.name\s*(`` call pattern —
     the same shape as the seed table. Invalid names are dropped, not
     escaped: the caller passes mechanically-derived method names, so
     anything non-identifier is a contract violation worth losing.

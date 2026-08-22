@@ -852,10 +852,10 @@ class DataflowVisualizer:
         return output_file
 
     def _escape_dot(self, text: str) -> str:
-        """Escape text for DOT syntax.
+        r"""Escape text for DOT syntax.
 
         Backslashes are escaped first: escaping quotes before backslashes
-        would let text ending in a backslash produce ``\\\\"`` (an escaped
+        would let text ending in a backslash produce ``\\"`` (an escaped
         backslash followed by a bare quote), which re-terminates the DOT
         string early.
         """

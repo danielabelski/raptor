@@ -570,6 +570,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         proxy_hosts: Hostname allowlist for the egress proxy. Union'd
                  with any existing allowlist if the proxy singleton is
                  already running. Required when use_egress_proxy=True.
+        loopback_unix_bridges: Mapping of {port: unix_socket_path}
+                 relayed inside the child's empty network namespace:
+                 the child connects to 127.0.0.1:<port> and the
+                 pre-Landlock relay forwards the bytes to the named
+                 unix socket on the host. Requires
+                 use_egress_proxy=True (ValueError) AND the netns
+                 egress tier (SandboxSetupError when only the
+                 Landlock/advisory tiers are available). When set, the
+                 staged proxy env carries NO_PROXY=127.0.0.1,localhost
+                 so bridged loopback traffic goes direct instead of
+                 dying at the CONNECT proxy's loopback rejection.
+        require_proxy_netns: Fail-closed switch for the egress tiers
+                 (Linux only; inert on macOS): when True and
+                 use_egress_proxy cannot engage the netns tier, raise
+                 SandboxSetupError instead of degrading to the
+                 port-scoped Landlock pin — which does not enforce the
+                 hostname allowlist. RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1
+                 is the operator override that accepts the weaker tier.
         restrict_reads: If True, flip Landlock's default "read everywhere"
                  to "read only in allowed paths". Defaults to a system-
                  dirs allowlist that covers what normal compiled binaries
@@ -581,6 +599,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         readable_paths: Extra read-allowed paths (adds to the default
                  system-dirs list when restrict_reads=True). Ignored
                  when restrict_reads=False (reads are already wide).
+        tool_paths: Extra read-allowed directories for the TOOLCHAIN
+                 being run — unioned with readable_paths into the
+                 Landlock read allowlist and the mount-ns read-only
+                 bind set, so a tool installed outside the system dirs
+                 is visible and executable inside the sandbox.
+                 Extended by the --sandbox-tool-path CLI flag. Callers
+                 spawning user-local toolchains under strict/
+                 restrict_reads need this (see
+                 python_runtime_tool_paths()).
+        writable_paths: Extra write-allowed paths (absolutized),
+                 layered on top of the canonical writable surface
+                 (output + the /tmp baseline). Use case: resolver
+                 scratch dirs (~/.cache/pip, ~/.npm, ~/.m2) that live
+                 outside the per-run output dir.
+        exclude_tmp_baseline: If True, drop /tmp (and /dev/shm) from
+                 the writable baseline so the child cannot write
+                 ANYWHERE under /tmp (exploit-engine wrapper-script
+                 defence). Only use when the sandboxed program is
+                 known not to need /tmp to start — a normal python3
+                 import writes pyc cache there.
         caller_label: Optional short identifier (e.g. "claude-sub-agent",
                  "codeql-pack-download") that propagates into proxy
                  event records. Used for per-caller filtering of
@@ -599,6 +637,29 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  should pre-populate `{output}/.home/` before invoking.
                  Requires `output=` to be set. Defaults to True on
                  `run_untrusted()`, False on direct `sandbox()` use.
+        audit: If True, engage the audit evidence channel for this
+                 context's run() calls: a spawn-tier syscall tracer
+                 records JSONL evidence under `<dir>/.audit` of the
+                 audit target dir (audit_run_dir or output). Per-call
+                 equivalent of the --audit CLI flag; silently no-ops
+                 when the sandbox is effectively disabled.
+        audit_verbose: Trace every syscall, not just those outside the
+                 enforcement allowlist. Only takes effect when audit
+                 mode is engaged; forced on by observe=True.
+        audit_run_dir: Directory the audit tiers write evidence into
+                 (they create only the `.audit/` subdir — the dir
+                 itself must already exist and be writable, else
+                 ValueError). Decouples "where audit JSONL goes" from
+                 Landlock's output= restriction: pass it alone for
+                 audit signal without a writable-path restriction.
+                 When unset, audit falls back to output; audit mode
+                 requires one of the two.
+        observe: Observe mode — implies audit and audit_verbose,
+                 writes to a separate observe JSONL, extends the trace
+                 set with the stat family, and stamps a per-run
+                 128-bit nonce into
+                 result.sandbox_info["observe_nonce"] for
+                 spoof-resistant parse_observe_log() parsing.
         audit_required: (default False) Fail-closed switch for the audit
                  evidence channel (precedent: `require_sanitisation`).
                  When True and audit mode is engaged for a run() call but
@@ -640,6 +701,30 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  with EACCES; extend `readable_paths=` for specific
                  needs. Inert when `restrict_reads` is off (no read
                  allowlist exists).
+        sanitise_host_fingerprint: If True, build a host-fingerprint
+                 persona once per context (synthetic cpuinfo etc.
+                 bind-mounted over the real files, plus UTS/identity
+                 and CPU-affinity changes) so the child sees a
+                 sanitised host identity. Requires Linux, the mount-ns
+                 backend, and at least one of target=/output=; when
+                 any is missing it degrades to a one-shot WARNING (the
+                 identity surfaces stay host-real) unless
+                 require_sanitisation=True.
+        cpu_count: CPU count the fingerprint persona claims (its
+                 cpuinfo), default 4; set_cpu_affinity clamps to the
+                 host's actual CPUs at apply time. Ignored with a
+                 warning when sanitise_host_fingerprint=False.
+        require_sanitisation: Fail-closed switch for the persona: when
+                 True and sanitisation cannot engage (unsupported
+                 platform, no mount-ns, no target/output), raise
+                 RuntimeError instead of logging the degradation
+                 warning.
+        etc_overlay: Dict mapping in-sandbox /etc paths (e.g.
+                 "/etc/sudoers") to host source files bind-mounted
+                 over them during mount-ns init (mount-ns backend
+                 only; non-str or missing-source entries are skipped
+                 with a warning). Keys are also appended to the read
+                 allowlist under restrict_reads=True.
         rootfs: Directory holding an unpacked container-image filesystem
                  (e.g. `docker create` + `docker export`). When set, the
                  mount namespace pivots into THAT tree instead of the

@@ -130,6 +130,11 @@ def discover_project_sinks(
         edges do not resolve the callee's defining file), so same-name
         functions share one count.  Reduces promotion of single-use
         internal helpers.
+    entry_points
+        Set of (file, function) entry points.  When provided (and the
+        call graphs yield reverse edges), side-effect wrapper discovery
+        keeps only functions transitively reachable from an entry point;
+        without it, all side-effect wrappers are included.
     """
     result = SinkHeuristicsResult()
 

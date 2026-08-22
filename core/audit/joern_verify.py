@@ -351,12 +351,12 @@ def build_guard_dominance_query(
     sink_call: str,
     identifier: str,
 ) -> str:
-    """CPGQL: does a condition on *identifier* dominate each *sink_call*?
+    r"""CPGQL: does a condition on *identifier* dominate each *sink_call*?
 
     Emits one ``RAPTOR_GD_*`` sentinel line per fact; parsed by
     :func:`_parse_guard_output`.  All three inputs must already have
     passed identifier validation (bare identifiers are regex-safe, so
-    the ``\\b<ident>\\b`` interpolation cannot change the regex shape).
+    the ``\b<ident>\b`` interpolation cannot change the regex shape).
     """
     fn = _escape(function_name)
     sink = _escape(sink_call)

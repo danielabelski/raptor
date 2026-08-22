@@ -58,7 +58,7 @@ _EVIDENCE_RAW_KEY_ALLOWLIST = frozenset({
 
 
 def _clip_str(value: Any, byte_cap: int = _MAX_STRING_BYTES) -> str:
-    """Coerce ``value`` to str, strip control chars, cap length.
+    r"""Coerce ``value`` to str, strip control chars, cap length.
 
     Used at every adversarial-input boundary entering the
     threat model. Strips the C1 control-char range
@@ -69,7 +69,7 @@ def _clip_str(value: Any, byte_cap: int = _MAX_STRING_BYTES) -> str:
     otherwise a hostile 10 MB input made the escape pass do
     proportional work even though we'd discard most of it
     immediately. ``escape_nonprintable`` can expand chars up to
-    ~4x (each control byte → ``\\x..`` text); the pre-clip
+    ~4x (each control byte → ``\x..`` text); the pre-clip
     accepts that the tail of the cap may be truncated
     mid-escape sequence on hostile inputs, which is safer than
     an O(N) regex pass over an attacker-controlled blob.

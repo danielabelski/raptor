@@ -1230,9 +1230,9 @@ class ToolUseLoop:
         *,
         tool_calls_made: int = 0,
     ) -> list[Message]:
-        """Drop oldest user/assistant pairs until estimate fits.
+        r"""Drop oldest user/assistant pairs until estimate fits.
 
-        Pairing-aware: a user-role message carrying :class:`ToolResult`\\ s
+        Pairing-aware: a user-role message carrying :class:`ToolResult`\ s
         is a *response* to the prior assistant turn. We never drop a
         ToolResult message without also dropping its matching ToolCall,
         otherwise the next ``provider.turn()`` rejects the conversation

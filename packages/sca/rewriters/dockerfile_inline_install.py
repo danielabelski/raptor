@@ -36,13 +36,13 @@ logger = logging.getLogger(__name__)
 def rewrite_dockerfile_inline_install(
     path: Path, edits: list[RewriteEdit],
 ) -> list[RewriteResult]:
-    """Apply inline-pip install version-pin edits to a Dockerfile.
+    r"""Apply inline-pip install version-pin edits to a Dockerfile.
 
     Each edit's ``locator`` is the PyPI package name; the regex
     matches ``<name>==<version>`` with optional surrounding
     quoting / whitespace inside any line that looks like part of
     a ``RUN`` instruction. We don't try to parse RUN bodies —
-    they can span multiple physical lines via ``\\`` continuation
+    they can span multiple physical lines via ``\`` continuation
     — instead we rewrite the first matching ``<name>==<value>``
     token anywhere in the file, refusing to touch any other line
     that happens to contain ``<name>==``.

@@ -283,7 +283,7 @@ class DatabaseManager:
         return None
 
     def get_codeql_version(self) -> str | None:
-        """Get CodeQL version.
+        r"""Get CodeQL version.
 
         Returns the dotted-version number (e.g. ``"2.16.4"``) extracted
         from `codeql version` output, or None on failure. Pre-fix the
@@ -293,7 +293,7 @@ class DatabaseManager:
             CodeQL command-line toolchain release 2.16.4.
 
         Callers comparing against version strings (semver, regex
-        `\\d+\\.\\d+`) then matched against the trailing prose, not the
+        `\d+\.\d+`) then matched against the trailing prose, not the
         version number, and either crashed or silently mismatched.
         """
         try:
@@ -941,6 +941,12 @@ class DatabaseManager:
                 That's the "user asked for fresh" semantics; if you want
                 to coalesce concurrent force=True invocations, do it at
                 the orchestrator layer.
+            concurrent_workers: How many CodeQL invocations run at the
+                same time as this one (parallel multi-language builds).
+                Passed to :meth:`CodeQLTunables.from_tuning` so the
+                auto (``-j 0``) thread count is divided between the
+                concurrent processes; explicit thread settings are
+                respected as-is (default: 1).
 
         Returns:
             DatabaseResult with creation status

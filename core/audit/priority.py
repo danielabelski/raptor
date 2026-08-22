@@ -126,6 +126,12 @@ def score_functions(
         tool_coverage: {file_path: set_of_tool_names} — files with no tools
             get SCORE_NO_TOOL_COVERAGE, files with only one tool get
             SCORE_PARTIAL_TOOL_COVERAGE.
+        tool_failures: File paths where a tool attempted to scan but
+            failed (``files_failed`` in sibling runs' coverage records).
+            Gap files in this set get SCORE_TOOL_FAILED.
+        fuzz_coverage: File paths examined by fuzzing
+            (coverage-fuzz.json ``files_examined``). Gap files NOT in
+            the set get SCORE_NOT_FUZZED; None disables the check.
         fuzz_function_coverage: Per-function coverage-fuzz.json document
             (``files.{path}.functions.{name}`` records with ``reached``,
             ``iterations``, ``crashes``). Functions the fuzzer never
@@ -141,6 +147,9 @@ def score_functions(
         threat_model: Parsed threat model dict.  When it carries a
             ``focus_cwes`` list, functions whose CWE matches get
             SCORE_THREAT_MODEL_FOCUS.
+        open_constraint_keys: file:function keys carrying open or
+            depth-limited constraints from a prior run's constraint
+            journal. Gets SCORE_OPEN_CONSTRAINT.
         strategy_weights: Per-strategy weight multipliers from past runs.
             Strategies with weight > 1.0 boost the function's score;
             strategies with weight < 1.0 are deprioritized.

@@ -1,4 +1,4 @@
-"""Tar member safety predicate.
+r"""Tar member safety predicate.
 
 Wraps :func:`tarfile.data_filter` (PEP 706 / Python 3.12+) into a
 boolean predicate consumers use as a skip-or-continue check.
@@ -23,8 +23,8 @@ The hardening rules (per PEP 706's ``data`` filter):
   * **uid/gid bits** — setuid / setgid / sticky bits stripped.
     A tarball can't usefully grant SUID 0 to its own files; the
     presence is suspicious.
-  * **Backslash separator** — Windows-shaped paths (``..\\..\\etc``)
-    rejected so an on-disk resolver that treats ``\\`` as a
+  * **Backslash separator** — Windows-shaped paths (``..\..\etc``)
+    rejected so an on-disk resolver that treats ``\`` as a
     separator can't be fooled. Mirrors :mod:`core.zip.safe_member`.
   * **NFKC-normalised traversal** — fullwidth/decomposed Unicode
     forms (``．．``) that filesystems like HFS+ fold back to ASCII

@@ -199,12 +199,12 @@ class AuditWriter:
         return self._root / self._run_id
 
     def write(self, *, cve_id: str, entry: AuditEntry) -> Path:
-        """Append one :class:`AuditEntry` to the CVE's trace.
+        r"""Append one :class:`AuditEntry` to the CVE's trace.
 
         Returns the path written so tests can assert on it directly
         without reconstructing the convention.
 
-        Atomicity: the JSON line + ``\\n`` are written in a SINGLE
+        Atomicity: the JSON line + ``\n`` are written in a SINGLE
         ``fh.write`` call so a crash never leaves a partial line on disk.
         ``flush()`` is called immediately so the line is visible to a
         concurrent reader without waiting on Python's I/O buffer.

@@ -121,7 +121,7 @@ def _strip_inline_comment(line: str) -> str:
 
 
 def _collapse_continuations(text: str) -> list[tuple[int, str, bool]]:
-    """Join ``\\``-continued lines into single logical lines.
+    r"""Join ``\``-continued lines into single logical lines.
 
     Returns ``(starting_line_no, joined, is_commented)`` triples.
     ``is_commented`` is True if every constituent line was a comment.
@@ -687,10 +687,10 @@ _GHA_RUN_BLOCK_OPEN_RE = re.compile(r"^(\s*)(?:-\s+)?run:\s*[|>][+-]?\s*$")
 
 
 def _extract_gha_run_blocks(text: str) -> list[tuple[int, str, bool]]:
-    """Pull the body of every ``run:`` step out of a workflow.
+    r"""Pull the body of every ``run:`` step out of a workflow.
 
     Supports both inline (``run: pip install foo``) and block-scalar form
-    (``run: |\\n  pip install foo``). Block bodies are dedented to their
+    (``run: |\n  pip install foo``). Block bodies are dedented to their
     first content line's indent.
     """
     out: list[tuple[int, str, bool]] = []

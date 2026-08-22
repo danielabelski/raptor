@@ -44,7 +44,7 @@ _SEARCH_RE = re.compile(r"(\d+)\.(\d+)", re.ASCII)
 
 
 def search_major_minor(text: str | None) -> tuple[int, int] | None:
-    """Extract ``(major, minor)`` from the first ``\\d+\\.\\d+``
+    r"""Extract ``(major, minor)`` from the first ``\d+\.\d+``
     occurrence in ``text``.
 
     Companion to :func:`parse_major_minor` for callers that receive

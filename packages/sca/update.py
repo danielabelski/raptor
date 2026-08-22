@@ -1323,7 +1323,7 @@ _INLINE_SHELL_SEP_RE = re.compile(r"&&|\|\||;|(?<!\|)\|(?!\|)")
 
 
 def _inline_line_continues(raw: str) -> bool:
-    """True if ``raw`` ends with a shell line-continuation ``\\``
+    r"""True if ``raw`` ends with a shell line-continuation ``\``
     (ignoring the trailing newline / whitespace)."""
     return raw.rstrip().endswith("\\")
 
@@ -1331,7 +1331,7 @@ def _inline_line_continues(raw: str) -> bool:
 def _rewrite_inline_install(
     text: str, plan: _PlanEntry,
 ) -> tuple[str, bool, str | None]:
-    """Rewrite the version of ``plan.name`` inside an inline-install file.
+    r"""Rewrite the version of ``plan.name`` inside an inline-install file.
 
     Inline-install files are Dockerfile / Containerfile / ``*.sh`` /
     ``*.bash`` / ``.github/workflows/*.yml`` / ``devcontainer.json`` —
@@ -1341,8 +1341,8 @@ def _rewrite_inline_install(
     Strategy:
       1. Walk the file physical line by line, tracking whether we are
          inside the *argument region* of a matching install command —
-         a region that spans ``\\``-continuation lines, so a multi-line
-         ``apt-get install -y \\`` … block with one package per line is
+         a region that spans ``\``-continuation lines, so a multi-line
+         ``apt-get install -y \`` … block with one package per line is
          covered, not just same-line installs.
       2. On a line carrying the install command, substitute within its
          same-line args. While inside the continued arg region, each
@@ -1440,7 +1440,7 @@ def _rewrite_inline_cmd_line(
     raw: str, cmd_re: re.Pattern, sub_fn: Any,
     name: str, new_version: str,
 ) -> tuple[str, bool, bool]:
-    """Rewrite every matching install command's OWN argument segment
+    r"""Rewrite every matching install command's OWN argument segment
     on one physical line.
 
     Each command's args end at the first shell separator after it.
@@ -1456,7 +1456,7 @@ def _rewrite_inline_cmd_line(
 
     Returns ``(new_line, any_hit, still_in_args)``; ``still_in_args``
     is True when the final install command's args run to end-of-line,
-    so a ``\\`` continuation extends THEM rather than a post-separator
+    so a ``\`` continuation extends THEM rather than a post-separator
     command.
     """
     out: list[str] = []

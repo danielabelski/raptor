@@ -3803,7 +3803,7 @@ class _CSharpCallGraph:
 
 
 def extract_call_graph_php(content: str) -> FileCallGraph:
-    """Walk a PHP source string via tree-sitter-php and return its
+    r"""Walk a PHP source string via tree-sitter-php and return its
     :class:`FileCallGraph`.
 
     Returns an empty graph when ``tree_sitter_php`` isn't installed
@@ -3811,9 +3811,9 @@ def extract_call_graph_php(content: str) -> FileCallGraph:
 
     PHP shapes:
 
-      * ``use Foo\\Bar\\Baz;`` -> ``imports["Baz"] = "Foo\\Bar\\Baz"``
-      * ``use Foo\\Bar as B;`` -> alias
-      * ``use function Foo\\bar;`` / ``use const Foo\\BAR;``
+      * ``use Foo\Bar\Baz;`` -> ``imports["Baz"] = "Foo\Bar\Baz"``
+      * ``use Foo\Bar as B;`` -> alias
+      * ``use function Foo\bar;`` / ``use const Foo\BAR;``
       * ``Baz::method()`` (static) -> chain ``["Baz", "method"]``
       * ``$inst->method()`` -> chain ``["inst", "method"]``
       * ``call_user_func(...)`` /
@@ -4026,11 +4026,11 @@ class _PhpCallGraph:
         self.graph.imports[bound] = full
 
     def _namespace_parts(self, node) -> list[str]:
-        """``Foo\\Bar\\Baz`` (qualified_name with nested
+        r"""``Foo\Bar\Baz`` (qualified_name with nested
         namespace_name LHS) -> ``["Foo", "Bar", "Baz"]``.
 
         tree-sitter-php nests deep namespaces: ``qualified_name``
-        contains ``namespace_name`` (Foo\\Bar) plus a trailing
+        contains ``namespace_name`` (Foo\Bar) plus a trailing
         ``name`` (Baz). Recurse into any child of type
         ``qualified_name`` / ``namespace_name`` for the LHS.
         """

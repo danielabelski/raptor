@@ -252,6 +252,11 @@ def build_inventory(
         extensions: File extensions to include (defaults to LANGUAGE_MAP keys).
         skip_generated: Skip auto-generated files.
         parallel: Use parallel processing for large codebases.
+        allow_unreachable: Isolation mode for C/C++: parse the raw
+            source with no dead-preprocessor-arm blanking (``#if 0``
+            code stays visible for review) and skip config-aware macro
+            resolution. Also folded into the default cache-dir key so
+            the two modes never share a cached checklist.
         treat_exports_as_entries: target classification driving library mode
             (reachability treats exported/public symbols as entry points).
             ``True``/``"library"``/``"hybrid"``/``"on"`` enable it, ``False``/
@@ -261,6 +266,10 @@ def build_inventory(
             (library/hybrid → enabled). The classification is recorded in
             ``inventory['target_kind']`` (+ ``_reason``/``_source``);
             ``RAPTOR_TARGET_KIND`` is the operator env override.
+        scope: Optional list of target-relative path prefixes; when
+            set, collected files outside every prefix are dropped from
+            the inventory (match is path-separator-aware, so
+            ``src/a`` does not match ``src/abc``).
 
     Returns:
         Inventory dict (also saved to ``<output_dir>/checklist.json``).

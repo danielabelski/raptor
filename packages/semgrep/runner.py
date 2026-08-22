@@ -351,6 +351,12 @@ def run_rules(
         env: Subprocess environment.
         semgrep_bin: Override semgrep binary path.
         extra_args: Additional semgrep arguments applied to every run.
+        subprocess_runner: Optional callable replacing the default
+            sandboxed runner; passed through unchanged to run_rule()
+            for every config (see run_rule for the required contract).
+        unsandboxed: Explicit opt-out from the default sandbox, passed
+            through unchanged to run_rule() for every config. Ignored
+            when subprocess_runner is given.
 
     Returns:
         One SemgrepResult per config, in input order.

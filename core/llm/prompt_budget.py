@@ -1,4 +1,4 @@
-"""Prompt budget: estimate token cost and shed low-priority sections.
+r"""Prompt budget: estimate token cost and shed low-priority sections.
 
 Reusable across any prompt-assembly site — /audit context, /agentic
 analysis bundles, tool-use loop preambles.  The estimator uses the
@@ -18,7 +18,7 @@ Usage
         PromptSection("exemplars", exemplar_text,  priority=5),
     ]
     kept, shed = fit_to_budget(sections, budget_tokens=60_000)
-    prompt = "\\n".join(s.text for s in kept)
+    prompt = "\n".join(s.text for s in kept)
 
 Lower ``priority`` = more important (never shed priority 0).
 """

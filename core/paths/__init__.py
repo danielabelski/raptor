@@ -1,4 +1,4 @@
-"""Shared path-handling primitives — file:// stripping, repo-relative
+r"""Shared path-handling primitives — file:// stripping, repo-relative
 normalisation, and containment ("confinement") checks.
 
 Before this module existed the tree carried 13+ independent ``file://``
@@ -27,7 +27,7 @@ never license suppression.
 Scope note: this module is purely lexical apart from
 :func:`confine`, which resolves symlinks. SARIF-layer normalisation
 with percent-decoding stays in ``core/sarif`` (the only layer that
-``unquote``\\ s); adoption sweeps for the remaining strippers and
+``unquote``\ s); adoption sweeps for the remaining strippers and
 containment checks are follow-up work, site by site.
 """
 

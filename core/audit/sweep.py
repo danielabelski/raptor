@@ -1006,6 +1006,14 @@ def run_coccinelle_sweep(
         function_name: Function being audited.
         cocci_rule: Path to the .cocci rule file.
         defines: Optional spatch -D defines (e.g. {"func": "parse_input"}).
+        line_start: With ``line_end``, restricts matches to that line
+            range (the audited function's span); matches outside it are
+            dropped. Only applied when both bounds are given.
+        line_end: Upper bound of the match-filter range; see
+            ``line_start``.
+        domain_vocab: DomainVocabulary used to render vocabulary
+            placeholders in the rule to a tempfile before running;
+            when None the rule file is run as-is.
 
     Returns:
         SweepResult with outcome and matches.
@@ -2342,6 +2350,9 @@ def run_consistency_check(
         function_name: Function whose callers to check.
         cocci_rule: Path to the .cocci rule file. Must accept
             -D func=<name> for parametric matching.
+        domain_vocab: DomainVocabulary used to render vocabulary
+            placeholders in the rule to a tempfile before running;
+            when None the rule file is run as-is.
 
     Returns:
         SweepResult with matches being the inconsistent call sites.

@@ -110,12 +110,12 @@ def _classify(path: str) -> str | None:
 
 
 def _normalise(source: str) -> str:
-    """Approximate translation phases 2-3 so directive regexes see what
+    r"""Approximate translation phases 2-3 so directive regexes see what
     the preprocessor sees.
 
     Two legal spellings the raw regexes miss:
 
-      - ``#include \\`` + newline + ``"path"`` — phase 2 splices
+      - ``#include \`` + newline + ``"path"`` — phase 2 splices
         backslash-newline continuations before directives are parsed.
       - ``#include/*x*/"path"`` — phase 3 replaces each block comment
         with a single space.

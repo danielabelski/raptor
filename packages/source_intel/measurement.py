@@ -1,4 +1,4 @@
-"""Phase D PR2 measurement harness — A/B compare LLM verdicts with
+r"""Phase D PR2 measurement harness — A/B compare LLM verdicts with
 and without source_intel evidence injection.
 
 Runs N corpus entries through the CodeQL ``DataflowValidator``
@@ -8,8 +8,8 @@ source_intel evidence. Reports per-entry verdict deltas and an
 aggregate error-rate change vs ground truth.
 
 Usage:
-  PYTHONPATH=$(pwd) RAPTOR_DIR=$(pwd) _RAPTOR_TRUSTED=1 \\
-      python3 -m packages.source_intel.measurement \\
+  PYTHONPATH=$(pwd) RAPTOR_DIR=$(pwd) _RAPTOR_TRUSTED=1 \
+      python3 -m packages.source_intel.measurement \
       --count 10 [--output csv] [--target-prefix str]
 
   --count N           number of memory-corruption corpus entries to

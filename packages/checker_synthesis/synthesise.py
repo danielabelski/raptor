@@ -681,6 +681,10 @@ def synthesise_and_run(
             synthesis prompt appends them as negative examples. Empty
             for single-shot synthesis; populated by
             ``synthesise_with_refinement``.
+        model_id: model identifier threaded into prompt building
+            (proposal and triage) to select the per-model envelope
+            profile via ``get_profile_for``; empty string falls back
+            to the CONSERVATIVE profile.
         ground_truth_fixtures: ``(positive_text, negative_text)`` for
             EXTERNAL seeds whose file is not present in ``repo_root``
             (e.g. a CVE fix commit's pre-fix hunk / fixed form). The

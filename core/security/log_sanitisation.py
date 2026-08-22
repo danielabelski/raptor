@@ -1,4 +1,4 @@
-"""Log-output sanitisation for untrusted strings.
+r"""Log-output sanitisation for untrusted strings.
 
 When RAPTOR logs a string that may contain attacker-influenced content —
 scanned-repo filenames in argv, subprocess stderr / ASAN bug-type, CONNECT
@@ -12,7 +12,7 @@ escape sequences and other non-printable characters can:
     control bytes inside what the reader expects is one record).
   - Hide evidence from post-incident review by re-rendering log text.
 
-`escape_nonprintable()` replaces such characters with `\\xHH` so downstream
+`escape_nonprintable()` replaces such characters with `\xHH` so downstream
 log consumers see inert, reviewable text. `has_nonprintable()` is the
 predicate form for callers that prefer to reject the input outright (e.g.
 the egress proxy's CONNECT-target parser fails-closed with a 400 Bad
@@ -29,7 +29,7 @@ _STRUCTURAL_WHITESPACE = frozenset(('\n', '\t'))
 
 
 def escape_nonprintable(s: str, *, preserve_newlines: bool = False) -> str:
-    """Return `s` with each non-printable character replaced by `\\xHH`.
+    r"""Return `s` with each non-printable character replaced by `\xHH`.
 
     Use this on any string that may contain attacker-influenced content
     before emitting it through `logging` (f-strings in log calls are the
@@ -38,7 +38,7 @@ def escape_nonprintable(s: str, *, preserve_newlines: bool = False) -> str:
     Printable characters — including ASCII space and Unicode letters
     with legitimate non-ASCII categories — pass through unchanged.
 
-    When `preserve_newlines` is True, ``\\n`` and ``\\t`` are kept as-is
+    When `preserve_newlines` is True, ``\n`` and ``\t`` are kept as-is
     (they are structural in source code and multi-line prose). All other
     non-printable characters are still escaped.
     """

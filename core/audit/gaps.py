@@ -129,6 +129,10 @@ def compute_gaps(
             store's ``import_journal`` at run-completion is the
             durable path but only fires at END, not at gap-
             computation time.
+        include_kinds: Operator ``--include-kinds`` value selecting
+            which extra checklist kinds (beyond functions/methods) are
+            gap-eligible — see ``_resolve_reviewable_kinds`` for the
+            override / ``-kind`` opt-out / ``{"none"}`` semantics.
         reuse_sink: When a dict is passed, cross-run verdict reuse is
             enabled: hash-verified, reuse-eligible project-index
             entries are placed into it (``file:function`` → entry)
@@ -139,6 +143,10 @@ def compute_gaps(
             running on the default/session model). Used by the reuse
             eligibility screen — a verdict recorded under a
             different model is re-reviewed, not imported.
+        scope_floor: Forwarded to ``truncate_gaps_to_budget`` when both
+            ``scope`` and ``budget`` are set: True (default) keeps each
+            in-scope file's best-scored gap before the remaining budget
+            fills in score order (skipped when files outnumber budget).
         own_run_reuse: Same-run resume mode (``raptor-audit resume``).
             The run's OWN journal is folded hash-aware through the
             same verification + eligibility screen as the project

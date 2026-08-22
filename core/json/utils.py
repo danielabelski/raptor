@@ -62,7 +62,7 @@ def load_json(
     *,
     allow_non_finite: bool = False,
 ) -> Any | None:
-    """Load a JSON file.
+    r"""Load a JSON file.
 
     Returns None if the file does not exist. If the file exists but is
     malformed or unreadable, behaviour depends on ``strict``:
@@ -71,7 +71,7 @@ def load_json(
     - strict=True: raise the underlying exception (for required files)
 
     Reads with ``utf-8-sig`` to transparently handle UTF-8 BOM
-    (`\\ufeff` at the start of the file). Pre-fix utf-8 read passed
+    (`\ufeff` at the start of the file). Pre-fix utf-8 read passed
     the BOM straight to the JSON parser which rejected it with
     "Expecting value: line 1 column 1 (char 0)" — Windows-edited
     config files, files round-tripped through some text editors,
@@ -123,7 +123,7 @@ def load_json(
 
 
 def _strip_json_comments(text: str) -> str:
-    """Strip ``//`` and ``#`` comments from JSON text, respecting strings.
+    r"""Strip ``//`` and ``#`` comments from JSON text, respecting strings.
 
     Handles full-line comments, inline trailing comments, and comment
     characters inside quoted strings (e.g. ``"url": "https://x.com"``
@@ -131,7 +131,7 @@ def _strip_json_comments(text: str) -> str:
 
     `in_string` state persists across line boundaries. Pre-fix the
     state was reset per line, so a multi-line string (legal in JSON5
-    via `\\\\\\n` line continuations and accepted by tolerant parsers
+    via `\\\n` line continuations and accepted by tolerant parsers
     like simdjson; common in human-edited config) lost track of the
     in-string context at line breaks. A `//` or `#` inside the
     spanning string was then incorrectly treated as a comment start
@@ -254,6 +254,10 @@ def save_json(path: str | Path, data: Any, mode: int | None = None) -> None:
     "path exists but fails to parse" on the next read.
 
     Args:
+        path: Destination file path. The parent directory is created if
+              missing (by ``write_text_atomically``).
+        data: Object to serialise. Path, datetime, and other non-JSON
+              types are stringified via the encoder's default hook.
         mode: Optional POSIX file permission bits (e.g. 0o600). When set,
               the mode is installed on the tempfile before rename — no
               chmod-after-rename window.

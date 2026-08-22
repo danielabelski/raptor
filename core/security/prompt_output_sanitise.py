@@ -1,4 +1,4 @@
-"""Post-processing for LLM-returned strings before they reach reports / UI.
+r"""Post-processing for LLM-returned strings before they reach reports / UI.
 
 Pairs with prompt_envelope at the input side: where the envelope quarantines
 input from being treated as instructions by the model, this module
@@ -13,13 +13,13 @@ Pipeline:
   3. defang line-leading markdown control chars (`*_#|> at line
      start) on real newline boundaries — keeps prose readable
      mid-string while disabling block-level rendering
-  4. escape ANSI / BIDI / control bytes (preserves `\\n`, `\\t` so
+  4. escape ANSI / BIDI / control bytes (preserves `\n`, `\t` so
      multi-line prose still renders as paragraphs in reports)
   5. length-cap at max_chars with a single Unicode ellipsis (…)
 
 Note: the /tmp/llm.md spec listed escape→strip→cap. We deviate to strip→
 escape→cap because `core.security.log_sanitisation.escape_nonprintable`
-treats `\\n` as non-printable and would convert it to `\\x0a`, which both
+treats `\n` as non-printable and would convert it to `\x0a`, which both
 breaks the multi-line strip and prevents reports from showing line breaks.
 The spec's *intent* (multi-line markdown defanged, ANSI/BIDI killed,
 natural prose preserved) is preserved; only the literal order changed.

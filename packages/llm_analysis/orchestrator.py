@@ -565,12 +565,39 @@ def orchestrate(
         repo_path: Target repository path.
         out_dir: Output directory for orchestration results.
         max_parallel: Maximum concurrent agents (0 = auto from model RPM).
+        max_findings: Cap on findings dispatched — when > 0 and the
+            report carries more, only the first max_findings are
+            analysed. 0 (default) = no cap.
         no_exploits: Skip exploit generation.
         no_patches: Skip patch generation.
         llm_config: LLMConfig for external LLM dispatch (None = CC only).
+        block_cc_dispatch: If True and dispatch falls to the CC path
+            (no external LLM), abort and return None instead of
+            spawning claude -p sub-agents. Set when the target repo
+            contains credential helpers in .claude/settings.json.
         accept_weakened_defenses: If True, allow PASSTHROUGH fallback when
             the model fails the envelope probe. If False (default), abort
             orchestration with a clear error instead of silently weakening.
+        dataflow_validation_enabled: If True (default), run the
+            dataflow validation pass after analysis, reconcile its
+            downgrades after consensus/judge, and record its metrics in
+            the merged report. If False, all three steps are skipped.
+        deep_validate: Passed through to the validation pass —
+            force-enable Tier 2/3 LLM-backed predicate generation
+            (operator's --deep-validate).
+        deep_validate_disabled: Passed through to the validation pass —
+            hard opt-out from Tier 2/3 (--no-deep-validate); takes
+            precedence over deep_validate.
+        deep_validate_budget: Budget threshold for the validation pass:
+            fraction of the total budget above which validation is
+            skipped. Default 0.60.
+        allow_unreachable: Operator's --allow-unreachable; threaded
+            into AnalysisTask so the Stage C reachability text in the
+            analysis prompt switches from "engagement required" to
+            "informational only".
+        checklist: Optional checklist dict; passed to the source_intel
+            and flow-context pre-seed steps for per-finding prompt
+            context. None ⇒ pre-seeding runs without checklist context.
 
     Returns:
         Orchestrated report dict, or None if orchestration was skipped.

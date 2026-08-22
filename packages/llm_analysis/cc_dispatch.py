@@ -219,12 +219,12 @@ _SAFE_ID_MAX = 80
 
 
 def _safe_id(finding_id: str) -> str:
-    """Sanitise a finding_id for filesystem use.
+    r"""Sanitise a finding_id for filesystem use.
 
     Pre-fix `Path(finding_id).name.replace("..", "_")` was the
     only sanitisation. Three failure modes:
 
-    * NUL bytes: `Path("foo\\x00bar").name` returned the
+    * NUL bytes: `Path("foo\x00bar").name` returned the
       original value on Linux, then `write_text` raised
       ValueError mid-write.
     * Long IDs: SARIF rule IDs can be 200+ chars (vendor-rule
@@ -235,7 +235,7 @@ def _safe_id(finding_id: str) -> str:
       attribute of `"sub/dir/leaf"` is `"leaf"` — losing the
       sub/dir context but also opening the door to weird
       Windows-path interactions if `finding_id` contained
-      backslashes (`Path("a\\\\b").name` is OS-dependent).
+      backslashes (`Path("a\\b").name` is OS-dependent).
 
     Allowlist `[A-Za-z0-9._-]` (sub everything else with `_`)
     and cap at 80 chars (well under any FS limit, leaves room

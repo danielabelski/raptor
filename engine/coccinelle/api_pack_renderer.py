@@ -1,4 +1,4 @@
-"""Render Coccinelle rules from per-library API pack data files.
+r"""Render Coccinelle rules from per-library API pack data files.
 
 A rule opts in with a marker line:
 
@@ -24,8 +24,8 @@ Pack schema (see the pack directory README for the full contract)::
 
 ``prefixes`` become anchored identifier-prefix matches; ``names`` become
 exact matches. Both are compiled into a single OCaml-Str-syntax regex
-constraint (``identifier fn =~ "^\\(a\\|b$\\)";`` — this spatch regex
-dialect supports ``\\(``/``\\|`` grouping and ``^``/``$`` anchors; an
+constraint (``identifier fn =~ "^\(a\|b$\)";`` — this spatch regex
+dialect supports ``\(``/``\|`` grouping and ``^``/``$`` anchors; an
 unanchored pattern is a substring search, so everything here is
 ``^``-anchored).
 

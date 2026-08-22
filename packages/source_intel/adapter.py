@@ -1,4 +1,4 @@
-""":class:`Validator` adapter — wires source_intel into the corpus runner.
+r""":class:`Validator` adapter — wires source_intel into the corpus runner.
 
 Phase 2 substrate ships a minimal verdict policy: source_intel is
 fundamentally a SIDECAR (evidence, not verdict), so the Validator
@@ -19,7 +19,7 @@ UNCERTAIN bucket separately — it doesn't contribute to precision /
 recall, so Phase 2 lands without harming the V2 baseline.
 
 Wire via:
-    libexec/raptor-corpus-run --output source_intel.csv \\
+    libexec/raptor-corpus-run --output source_intel.csv \
         --validator packages.source_intel.adapter:SourceIntelValidator
     libexec/raptor-corpus-metrics source_intel.csv
 """
@@ -453,7 +453,7 @@ def _looks_like_macro_registered_handler(fn_name: str) -> bool:
 def _function_referenced_as_pointer(
     target: Path, function_name: str
 ) -> bool:
-    """Best-effort: scan ``target`` (file or dir) for non-call uses of
+    r"""Best-effort: scan ``target`` (file or dir) for non-call uses of
     ``function_name``. Returns True if the name appears in a context
     consistent with function-pointer use (vtable assignment, callback
     registration, address-of, array element).
@@ -461,9 +461,9 @@ def _function_referenced_as_pointer(
     Patterns:
       * ``.field = funcname[,;}]``       — struct vtable assignment
       * ``= funcname[,;}]``              — bare initializer
-      * ``& funcname\\b``                 — address-of
+      * ``& funcname\b``                 — address-of
       * ``( funcname [,)]``              — passed as argument
-      * ``\\bfuncname [,;]``              — array element / list
+      * ``\bfuncname [,;]``              — array element / list
 
     Conservative file traversal: limited to ``.c`` / ``.h`` / ``.cc``
     / ``.cpp`` / ``.hpp`` to bound cost on noisy targets.

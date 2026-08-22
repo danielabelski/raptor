@@ -1,4 +1,4 @@
-"""Render Coccinelle rules with DomainVocabulary extensions.
+r"""Render Coccinelle rules with DomainVocabulary extensions.
 
 Reads ``// @vocab: <bucket>`` markers from ``.cocci`` files and extends
 the SmPL construct that follows with study-discovered names from the
@@ -6,7 +6,7 @@ audit DomainVocabulary.
 
 Supported constructs (auto-detected from the line after the marker):
 
-* **Inline alternation** ``\\(a\\|b\\)`` — appends ``\\|name`` entries.
+* **Inline alternation** ``\(a\|b\)`` — appends ``\|name`` entries.
 * **Identifier list** ``identifier fn = {a, b, ...};`` — appends names.
 * **Python set literal** ``{"a", "b", ...}`` — appends ``"name"`` entries.
 * **when-clause block** ``when != func(`` — inserts extra ``when !=`` lines.
@@ -86,7 +86,7 @@ def _get_bucket(vocab: Any, bucket_name: str) -> frozenset[str]:
 
 
 def _extend_alternation(line: str, names: frozenset[str]) -> str:
-    """Extend ``\\(a\\|b\\)`` with extra names."""
+    r"""Extend ``\(a\|b\)`` with extra names."""
     if not names:
         return line
     suffix = "".join(rf"\|{n}" for n in sorted(names))

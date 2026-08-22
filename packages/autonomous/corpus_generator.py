@@ -35,6 +35,9 @@ class CorpusGenerator:
             binary_path: Path to binary to analyze
             memory: FuzzingMemory for learning (optional)
             goal: Goal object for goal-directed generation (optional)
+            source_dir: Source tree to scan for command-style input
+                grammars during analyze_binary(); resolved at init,
+                None disables source scanning (optional)
         """
         self.binary_path = Path(binary_path)
         self.source_dir = Path(source_dir).resolve() if source_dir else None

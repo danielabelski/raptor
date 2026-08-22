@@ -277,11 +277,11 @@ def _render_turn_line(rec: dict[str, Any]) -> str:
 
 
 def _escape_terminal_codes(s: str) -> str:
-    """Escape ANSI ESC, BEL, NUL, etc. to ``\\xHH`` form for markdown-safe
+    r"""Escape ANSI ESC, BEL, NUL, etc. to ``\xHH`` form for markdown-safe
     rendering. ``refusal_text`` is LLM-controlled and reaches
-    refusals-log.md inside a ``\\`\\`\\`code block\\`\\`\\``` interpolated raw
+    refusals-log.md inside a ``\`\`\`code block\`\`\``` interpolated raw
     (no ``!r``). An attacker who induces ANSI ESC sequences (e.g.
-    ``\\x1b[2J\\x1b[H pwned``) in the model output triggers terminal
+    ``\x1b[2J\x1b[H pwned``) in the model output triggers terminal
     injection when an operator runs ``cat refusals-log.md``.
 
     Preserves printable Unicode + newlines + tabs (markdown-friendly).

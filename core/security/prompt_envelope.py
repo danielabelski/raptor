@@ -460,7 +460,7 @@ def _break_setext_underline(m: re.Match) -> str:
 
 
 def neutralize_tag_forgery(content: str) -> str:
-    """Escape sequences in untrusted content that could forge prompt structure.
+    r"""Escape sequences in untrusted content that could forge prompt structure.
 
     Public utility for any prompt-envelope defence — both build_prompt's
     internal pipeline and any caller building its own envelope (e.g. the
@@ -484,10 +484,10 @@ def neutralize_tag_forgery(content: str) -> str:
        ``## Section`` headings to scope content (e.g. ``## Strategy:``,
        ``## Bug-class lenses``).  An attacker who controls a field that
        echoes into the trusted region — like ``finding["file_path"] =
-       "src/foo.py\\n## INJECTED"`` — can forge a heading the model
+       "src/foo.py\n## INJECTED"`` — can forge a heading the model
        parses as a peer of the real ones.  Each line-start ``#`` run
        (markdown allows up to three leading spaces) is prefixed with
-       ``\\`` so visual heading recognition fails while the semantic
+       ``\`` so visual heading recognition fails while the semantic
        content (Python ``# comment``, shebang ``#!/...``, C
        ``#include`` etc.) remains readable.  Setext headings — a text
        line "underlined" by ``===``/``---`` — are the same forgery in
@@ -536,7 +536,7 @@ _neutralize_tag_forgery = neutralize_tag_forgery
 
 
 def _content_for_envelope(content: str, profile: ModelDefenseProfile) -> str:
-    """Apply the per-profile defence pipeline to a single untrusted block.
+    r"""Apply the per-profile defence pipeline to a single untrusted block.
 
     Order: markdown stripping → control-char escape → tag-forgery
     neutralization → datamarking → base64.
@@ -545,8 +545,8 @@ def _content_for_envelope(content: str, profile: ModelDefenseProfile) -> str:
     characters don't interfere with tag pattern matching.  It's skipped
     when base64 is enabled since the encoded blob is already opaque.
 
-    Uses _escape_for_envelope (preserves \\n/\\t) rather than the stricter
-    escape_nonprintable (which converts them to \\x0a/\\x09) — source code
+    Uses _escape_for_envelope (preserves \n/\t) rather than the stricter
+    escape_nonprintable (which converts them to \x0a/\x09) — source code
     structure depends on newlines and indentation for the model to parse.
     """
     if profile.markdown_strip:

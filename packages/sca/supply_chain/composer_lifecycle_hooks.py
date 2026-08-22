@@ -1,4 +1,4 @@
-"""Composer (PHP) ``composer.json`` lifecycle-hook scanner.
+r"""Composer (PHP) ``composer.json`` lifecycle-hook scanner.
 
 Composer's ``scripts`` block declares hooks that fire at well-defined
 points in the dependency-management lifecycle.  The ones that fire
@@ -14,7 +14,7 @@ attack surface:
 
 Each entry can be a string (single shell command), a list of
 strings (multiple commands), or a PHP method reference
-(``Vendor\\Class::method``).  We scan the shell-shaped forms; the
+(``Vendor\Class::method``).  We scan the shell-shaped forms; the
 PHP-class form is out of scope (it requires loading the class to
 analyse, which is a different regime).
 

@@ -1157,6 +1157,10 @@ def make_review_fn(
             compelling counter-hypothesis is bumped to suspicious.
         mode: Review mode — controls system prompt and schema when no
             explicit overrides are given.
+        out_dir: Run output directory, consulted only when
+            ``system_prompt`` is None: learned corrections
+            (``prompt-corrections.json`` there, or from recent corpus
+            runs) are appended to the mode's base system prompt.
 
     Returns:
         A callable (context_dict, config) -> ReviewOutcome.

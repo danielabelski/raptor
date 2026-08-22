@@ -2279,9 +2279,9 @@ def _is_tool_use_unsupported_error(exc: BaseException) -> bool:
 
 
 def _message_to_openai_wire(m: Message) -> list[dict[str, Any]]:
-    """One :class:`Message` → 1+ OpenAI wire dicts.
+    r"""One :class:`Message` → 1+ OpenAI wire dicts.
 
-    OpenAI splits user messages with multiple :class:`ToolResult`\\ s
+    OpenAI splits user messages with multiple :class:`ToolResult`\ s
     into N separate ``role:"tool"`` messages (each carrying its own
     ``tool_call_id``), unlike Anthropic which packs them in one user
     message's content array.
@@ -3308,14 +3308,14 @@ def is_credit_exhausted(exc: BaseException) -> bool:
 
 
 def _message_to_anthropic_wire(m: Message) -> dict[str, Any]:
-    """Our :class:`Message` → Anthropic wire dict.
+    r"""Our :class:`Message` → Anthropic wire dict.
 
     Anthropic accepts mixed content lists per turn — text, tool_use,
     and tool_result blocks all live in the same ``content`` array;
     role determines which subset is valid (assistant: text + tool_use;
     user: text + tool_result).
 
-    Empty :class:`Message`\\ s (``content=[]``) — which the loop can
+    Empty :class:`Message`\ s (``content=[]``) — which the loop can
     produce when a turn returns ``StopReason.ERROR`` with no blocks —
     are emitted as ``[{"type": "text", "text": ""}]`` so the wire
     shape stays valid if a caller resumes from a failed run.

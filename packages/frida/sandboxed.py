@@ -1,4 +1,4 @@
-"""Run ``packages.frida.cli`` inside a sandbox.
+r"""Run ``packages.frida.cli`` inside a sandbox.
 
 Invoked by ``libexec/raptor-frida`` when ``--unsafe-attach`` is NOT
 set.  Wraps the CLI subprocess in ``core.sandbox.run()`` with the
@@ -13,7 +13,7 @@ Network policy depends on target mode:
 
 Usage (from libexec/raptor-frida)::
 
-    python3 -m packages.frida.sandboxed --spawn --out /tmp/run -- \\
+    python3 -m packages.frida.sandboxed --spawn --out /tmp/run -- \
         python3 -m packages.frida.cli --target ./victim ...
 """
 

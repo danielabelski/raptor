@@ -68,9 +68,9 @@ _DOTDOT = re.compile(r"\.{2,}")
 
 
 def _sanitize_run_id(run_id: str) -> str:
-    """Coerce ``run_id`` into the ``TrajectoryRecord`` validation grammar.
+    r"""Coerce ``run_id`` into the ``TrajectoryRecord`` validation grammar.
 
-    ``TrajectoryRecord.__post_init__`` requires ``^[A-Za-z0-9_\\-.]+`` and
+    ``TrajectoryRecord.__post_init__`` requires ``^[A-Za-z0-9_\-.]+`` and
     rejects ``..``. Real model names break those constraints (Bedrock
     ``claude-3-haiku-20240307-v1:0``, OpenRouter ``anthropic/claude-...``).
     Sanitise here so operators get a trajectory rather than a silently

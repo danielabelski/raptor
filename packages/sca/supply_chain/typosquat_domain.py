@@ -180,11 +180,11 @@ def _load_popular_domains() -> set[str]:
 
 
 def _hosts_in(text: str) -> Iterable[tuple[str, int]]:
-    """Yield ``(host, line_number)`` for every URL in ``text``.
+    r"""Yield ``(host, line_number)`` for every URL in ``text``.
 
     Line numbers are computed by walking forward from the previous
     match's offset rather than re-scanning the whole text from 0 per
-    match — the naive ``text.count('\\n', 0, m.start())`` form is
+    match — the naive ``text.count('\n', 0, m.start())`` form is
     O(matches × text_length), which dominated scan time on URL-heavy
     source files (e.g. files with many docstring URLs).
     """

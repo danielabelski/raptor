@@ -4079,10 +4079,10 @@ def enclosing_function(
 
 
 def parse_evidence_entry(entry: str) -> tuple[str | None, int]:
-    """Split a ``"path:line"`` evidence string into ``(path, line)``.
+    r"""Split a ``"path:line"`` evidence string into ``(path, line)``.
 
     Returns ``(None, 0)`` for malformed inputs. Handles paths
-    containing colons (``C:\\path`` on Windows, IPv6 fragments)
+    containing colons (``C:\path`` on Windows, IPv6 fragments)
     by ``rsplit``-ing on the LAST colon and requiring the suffix
     to be a decimal int.
     """

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""
+r"""
 RAPTOR Fuzzing Mode
 
 Binary fuzzing with AFL++ and LLM-powered crash analysis.
 
 Usage:
-    python3 raptor_fuzzing.py \\
-        --binary /path/to/binary \\
-        --duration 3600 \\
+    python3 raptor_fuzzing.py \
+        --binary /path/to/binary \
+        --duration 3600 \
         --max-crashes 10
 
 This is very much a work-in-progress!

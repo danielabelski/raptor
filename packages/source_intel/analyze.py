@@ -2072,7 +2072,7 @@ def _enclosing_function_via_inventory(
 
 
 def _enclosing_function(file_path: str, line: int) -> str | None:
-    """Find the C function definition enclosing ``line`` in ``file_path``.
+    r"""Find the C function definition enclosing ``line`` in ``file_path``.
 
     Resolution order:
       1. Tree-sitter inventory cache (preferred — real AST parse via
@@ -2096,7 +2096,7 @@ def _enclosing_function(file_path: str, line: int) -> str | None:
          matches the full ``_FUNC_DEF_RE`` (``name(args)[{``) and the
          name isn't a C control keyword, return it.
       3. Multi-line definitions like
-         ``static CURLcode do_sendmsg(\\n    struct Curl_cfilter *cf,\\n    ...)``
+         ``static CURLcode do_sendmsg(\n    struct Curl_cfilter *cf,\n    ...)``
          are matched once paren balance is reached on a later line.
 
     NOT a full C parser — still misses (in fallback mode only):
@@ -2546,14 +2546,14 @@ def _scan_project_alias_observations(
 
 
 def _is_word_present(text: str, word: str) -> bool:
-    """Word-boundary substring check. Avoids false positives where
+    r"""Word-boundary substring check. Avoids false positives where
     one macro name is a prefix of another (e.g. ``CHECK`` matching in
     ``CHECK_RETURN``).
 
     Aliases that contain non-word characters (e.g.
     ``__attribute__((warn_unused_result))``) can't be safely
-    bounded by ``\\b`` — both ends are non-word chars and
-    ``\\b`` requires a word-on-one-side transition. For those,
+    bounded by ``\b`` — both ends are non-word chars and
+    ``\b`` requires a word-on-one-side transition. For those,
     fall back to plain substring containment; prefix-overlap risk
     is negligible for any alias containing parens.
     """

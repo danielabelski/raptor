@@ -375,13 +375,13 @@ _ALPHA_BACKSLASH_ESCAPE = _re.compile(r"\\[A-Za-z0-9]")
 
 
 def _charset_body_is_safe(body: str) -> bool:
-    """Reject character-class bodies our literal-char extractor would
+    r"""Reject character-class bodies our literal-char extractor would
     misread:
 
       * **Negation** (``[^chars]``) — inverts the language and would
         need entirely different proof semantics.  Currently silently
         misread as a literal ``^`` plus the chars.
-      * **Regex shorthand classes** (``\\d``, ``\\W``, ...) — see
+      * **Regex shorthand classes** (``\d``, ``\W``, ...) — see
         ``_ALPHA_BACKSLASH_ESCAPE`` above.
     """
     if not body or body.startswith("^"):
@@ -455,9 +455,9 @@ def _try_java_validator(line: str) -> ValidatorSpec | None:
 
 
 def _try_ruby_validator(line: str) -> ValidatorSpec | None:
-    """Ruby ``unless x =~ /…/`` and ``if x !~ /…/`` guard shapes.
+    r"""Ruby ``unless x =~ /…/`` and ``if x !~ /…/`` guard shapes.
 
-    Only ``\\A[chars]+\\z``-anchored patterns lift — Ruby ``^``/``$``
+    Only ``\A[chars]+\z``-anchored patterns lift — Ruby ``^``/``$``
     are line anchors, so a line-anchored guard does not bound the whole
     string (see the anchor note on the guard regexes above).
     """
@@ -1368,12 +1368,12 @@ def _lexical_var_reaches_sink(
     var: str, source_text: str, validator_line: int,
     sink_line: int, sink_line_text: str,
 ) -> bool:
-    """AST-free analogue of ``_python_chain_reaches_sink``'s rebind-KILL,
+    r"""AST-free analogue of ``_python_chain_reaches_sink``'s rebind-KILL,
     for languages without a parsed tree (JS/TS/Java).
 
     Returns ``True`` iff ``var`` appears at the sink line AND is not
     rebound between the validator and the sink. Previously the non-Python
-    path was a bare ``\\bvar\\b`` match at the sink with NO rebind-KILL
+    path was a bare ``\bvar\b`` match at the sink with NO rebind-KILL
     (a204f309): ``x = validate(raw); x = req.query.evil; sink(x)`` left
     ``x`` "validated" at the sink and the charset prescreen suppressed a
     live flow. A reassignment ``var = <expr not referencing var>`` between
@@ -1385,7 +1385,7 @@ def _lexical_var_reaches_sink(
     the validated value; they KILL the reach whenever the RHS
     references any identifier other than ``var`` itself — the mixed-in
     operand's characters were never covered by the validator's charset
-    proof.  Pre-fix ``\\bvar\\b\\s*=(?!=)`` matched only the plain
+    proof.  Pre-fix ``\bvar\b\s*=(?!=)`` matched only the plain
     ``=`` spelling, so ``x += req.query.evil`` slid past the
     rebind-KILL entirely (the lexical analogue of the AugAssign mixing
     kill the AST path already had).  Identifier detection does not
@@ -1500,7 +1500,7 @@ def _lexical_substitution_dominates(
 # --------------------------------------------------------------------------
 
 def _iter_charclass_atoms(body: str):
-    """Tokenize a Python `[...]` char-class body into literal chars and
+    r"""Tokenize a Python `[...]` char-class body into literal chars and
     ascending ``(lo, hi)`` ranges, interpreting a backslash escape on
     EITHER range endpoint.
 
@@ -1508,10 +1508,10 @@ def _iter_charclass_atoms(body: str):
     the single range/escape interpreter shared by :func:`_charclass_to_re`
     (allowlist Z3 model) and :func:`_expand_charset_body` (forbidden-set
     expansion) — pre-fix each had its own parse and BOTH misread an
-    escaped range endpoint as literals: for body ``\\--z`` the escape
-    branch consumed ``\\-`` and the remaining ``-z`` read as two
+    escaped range endpoint as literals: for body ``\--z`` the escape
+    branch consumed ``\-`` and the remaining ``-z`` read as two
     literals, so the modeled language was ``{'-','z'}`` while Python's
-    real semantics for ``[\\--z]`` are the RANGE 0x2D..0x7A (which
+    real semantics for ``[\--z]`` are the RANGE 0x2D..0x7A (which
     includes ``/ . ; < > =`` — every pathtrav/cmdi/xss danger char).
     Z3 then proved the under-approximated language disjoint from the
     danger set and returned SOUND for a validator that in reality
@@ -1522,7 +1522,7 @@ def _iter_charclass_atoms(body: str):
     Python — the guard would never run; treat it as three literals
     (same doctrine both consumers already used).
 
-    Alphabetic/digit escapes (``\\d``, ``\\2``…) never reach this
+    Alphabetic/digit escapes (``\d``, ``\2``…) never reach this
     tokenizer: :func:`_charset_body_is_safe` rejects those bodies.
     """
     i, n = 0, len(body)

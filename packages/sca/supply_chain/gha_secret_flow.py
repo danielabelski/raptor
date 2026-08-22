@@ -428,7 +428,7 @@ def _mask_gha_exprs(body: str) -> str:
 def _extract_redirect_blocks(
     body: str, target: str, _depth: int = 0,
 ) -> list[str]:
-    """Return text blocks whose content flows into ``$TARGET``
+    r"""Return text blocks whose content flows into ``$TARGET``
     (``GITHUB_ENV`` or ``GITHUB_OUTPUT``) via any of the bash redirect
     shapes commonly used in workflow `run:` blocks.
 
@@ -436,7 +436,7 @@ def _extract_redirect_blocks(
       * per-line — ``echo "X=Y" >> $TARGET``
       * group — ``{ echo X=Y; echo Z=W; } >> $TARGET`` (nested OK)
       * subshell — ``( ... ) >> $TARGET`` (nested OK)
-      * heredoc — ``cat <<EOF >> $TARGET\\n X=Y\\n EOF`` (with
+      * heredoc — ``cat <<EOF >> $TARGET\n X=Y\n EOF`` (with
         ``<<-`` and quoted-delim variants)
       * tee — ``echo X=Y | tee -a $TARGET`` (the piped command is
         the block)

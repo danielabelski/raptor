@@ -745,6 +745,13 @@ def discover_sinks_for_target(
         Minimum callers for framework API detection.
     framework_min_files
         Minimum files for framework API detection.
+    scope_dirs
+        Optional list of directories; when set, only source files whose
+        resolved path starts with one of them are processed.
+    collect_call_graphs
+        Optional dict; when provided, it is updated in place with the
+        per-file call graphs (keyed by target-relative path) so callers
+        can reuse them without a second parse.
     """
     if not target.is_dir():
         logger.warning("sink_discovery: target %s is not a directory", target)

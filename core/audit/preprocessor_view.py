@@ -88,9 +88,9 @@ _C_KEYWORDS = frozenset({
 
 @dataclass
 class ExpandedView:
-    """Fidelity-3 view of one translation unit.
+    r"""Fidelity-3 view of one translation unit.
 
-    ``line_map`` is a tuple parallel to ``text.split("\\n")`` — entry
+    ``line_map`` is a tuple parallel to ``text.split("\n")`` — entry
     ``i`` describes expanded line ``i + 1``.  Each entry is either
     ``(original_file_rel, original_line)`` for lines attributable to a
     file under the target root, or ``None`` for system-header /
@@ -327,7 +327,7 @@ _LINEMARKER_RE = re.compile(r'^#\s+(\d+)\s+"((?:[^"\\]|\\.)*)"(?:[ \t\d]*)$')
 
 
 def _unescape_marker_path(raw: str) -> str:
-    """Undo GCC's escaping of ``\\`` and ``"`` in marker filenames."""
+    r"""Undo GCC's escaping of ``\`` and ``"`` in marker filenames."""
     if "\\" not in raw:
         return raw
     out = []

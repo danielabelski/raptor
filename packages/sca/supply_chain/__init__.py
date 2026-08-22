@@ -86,14 +86,21 @@ def evaluate(
         target: project root (used by artefact / source walks).
         manifests: the discovery output (manifests + lockfiles).
         deps: the joined dep list — typically post-``join.join``.
-        pypi_client / npm_client / github_actions_client: optional
-            registry clients used by detectors that need
-            registry-side metadata. When absent, those detectors
-            are no-ops so we don't make uncached HTTP calls from
-            unit tests or in offline mode. ``github_actions_client``
-            powers ``gha_freshness`` (major-version-behind
-            detection); when None, only the curated sunset list
-            fires.
+        pypi_client: optional PyPI registry client used by detectors
+            that need registry-side metadata; with ``npm_client`` it
+            feeds ``registry_metadata.scan_deps``. When both are
+            absent, that detector is a no-op so we don't make
+            uncached HTTP calls from unit tests or in offline mode.
+        npm_client: optional npm registry client — same role as
+            ``pypi_client``; either one being set enables the
+            ``registry_metadata`` detector.
+        github_actions_client: optional GitHub client; powers
+            ``gha_freshness`` (major-version-behind detection) and
+            ``branch_protection``. When None, those detectors are
+            no-ops and only the curated sunset list fires.
+        cache: optional ``core.json.JsonCache`` threaded into
+            ``python_imports.scan_target`` to cache its per-file scan
+            results; None disables that caching.
     """
     manifests_list = list(manifests)
     deps_list = list(deps)

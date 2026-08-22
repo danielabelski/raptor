@@ -1,4 +1,4 @@
-"""Detector for ``binary_in_tests`` — generalised to "any executable
+r"""Detector for ``binary_in_tests`` — generalised to "any executable
 binary in a source-language published package, outside the opt-in
 allowlist".
 
@@ -32,7 +32,7 @@ What this detector must defend against:
     discovery's ``EXCLUDED_DIR_NAMES`` — see its comment) + cap the
     walk via a stat budget.
 
-  * **Magic-byte spoofing** — file starts with ``\\x7fELF`` but is
+  * **Magic-byte spoofing** — file starts with ``\x7fELF`` but is
     actually a text wrapper.  Defence: we don't claim "this WILL
     execute" — we claim "this LOOKS LIKE an executable that
     shouldn't be in a source distribution".  Operators decide.
@@ -196,9 +196,9 @@ class BinaryHit:
 
 
 def _classify_magic(head: bytes) -> str | None:
-    """Return ``"elf"``/``"pe"``/``"macho"``/``"wasm"`` or None.
+    r"""Return ``"elf"``/``"pe"``/``"macho"``/``"wasm"`` or None.
 
-    Disambiguates the ``\\xca\\xfe\\xba\\xbe`` collision: Mach-O fat
+    Disambiguates the ``\xca\xfe\xba\xbe`` collision: Mach-O fat
     binaries and Java ``.class`` files share the same first 4 bytes.
     Bytes 4-7 distinguish them:
 

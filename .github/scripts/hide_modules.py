@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stub-module writer: simulate absent dependencies for the PR preflight.
+r"""Stub-module writer: simulate absent dependencies for the PR preflight.
 
 Bare CI installs ``requirements-dev.txt`` only, so every dependency that
 ships commented out in ``requirements.txt`` (the anthropic SDK, botocore,
@@ -36,7 +36,7 @@ Named sets:
     grammar wheel is hidden automatically (no second list to maintain).
 
 Usage:
-    python3 .github/scripts/hide_modules.py --dest DIR \\
+    python3 .github/scripts/hide_modules.py --dest DIR \
         [--set optional-deps] [--set tree-sitter] [NAME ...]
 
 Prints the stub directory path — the value to prepend to PYTHONPATH.

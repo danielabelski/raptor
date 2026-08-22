@@ -528,14 +528,163 @@ class TestCPGCaching:
     def test_content_hash_changes_on_edit(self, tmp_path):
         f = tmp_path / "a.c"
         f.write_text("int main() {}")
-        import time
-        time.sleep(0.05)
         h1 = _target_content_hash(tmp_path)
-        import os
-        future = int(time.time()) + 100
-        os.utime(f, (future, future))
+        # Same byte length — only the CONTENT differs.
+        f.write_text("int main() {;}"[:13])
         h2 = _target_content_hash(tmp_path)
         assert h1 != h2
+
+    def test_content_hash_ignores_mtime(self, tmp_path):
+        # An unchanged tree must produce an unchanged key across mtime
+        # churn (builds, checkouts, tooling touches). The pre-fix
+        # mtime-based key rebuilt the CPG at every resumed-audit
+        # segment start on a git-clean target.
+        import os
+        import time
+        f = tmp_path / "a.c"
+        f.write_text("int main() {}")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "b.py").write_text("x = 1\n")
+        h1 = _target_content_hash(tmp_path)
+        future = int(time.time()) + 100
+        os.utime(f, (future, future))
+        os.utime(tmp_path / "sub" / "b.py", (future, future))
+        h2 = _target_content_hash(tmp_path)
+        assert h1 == h2
+
+    def test_content_hash_ignores_directory_order(self, tmp_path, monkeypatch):
+        # The key must be a function of the sorted file set, not of
+        # the order the OS yields directory entries.
+        import os as os_mod
+        for name in ("m.c", "a.c", "z.c"):
+            (tmp_path / name).write_text(f"// {name}\n")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "s.c").write_text("// s\n")
+        h1 = _target_content_hash(tmp_path)
+
+        real_walk = os_mod.walk
+
+        def shuffled_walk(top, *args, **kwargs):
+            for root, dirs, files in real_walk(top, *args, **kwargs):
+                dirs.reverse()
+                files.reverse()
+                yield root, dirs, files
+
+        import packages.joern.runner as runner_mod
+        monkeypatch.setattr(runner_mod.os, "walk", shuffled_walk)
+        h2 = _target_content_hash(tmp_path)
+        assert h1 == h2
+
+    def test_content_hash_excludes_dot_and_dependency_dirs(self, tmp_path):
+        (tmp_path / "a.c").write_text("int main() {}")
+        h1 = _target_content_hash(tmp_path)
+        # VCS / dependency dirs never enter the key (and the same rule
+        # is passed to the CPG build — see CPG_EXCLUDE_REGEX parity).
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "hook.py").write_text("x = 1\n")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "dep.js").write_text("var x;\n")
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "lib.c").write_text("int v;\n")
+        h2 = _target_content_hash(tmp_path)
+        assert h1 == h2
+        # A real source file still changes the key.
+        (tmp_path / "b.c").write_text("int f() { return 0; }")
+        assert _target_content_hash(tmp_path) != h1
+
+    def test_committed_run_marker_cannot_carve_a_blind_spot(self, tmp_path):
+        # Exclusions are never derived from repo content: a hostile
+        # tree committing a .raptor-run.json marker must NOT remove
+        # its subtree from the key — otherwise edits there would
+        # serve a silently stale CPG to every joern-backed check.
+        (tmp_path / "a.c").write_text("int main() {}")
+        marked = tmp_path / "src"
+        marked.mkdir()
+        (marked / ".raptor-run.json").write_text("{}")
+        (marked / "handler.c").write_text("int h(void) { return 1; }")
+        h1 = _target_content_hash(tmp_path)
+        (marked / "handler.c").write_text("int h(void) { return 2; }")
+        assert _target_content_hash(tmp_path) != h1
+        (marked / "backdoor.c").write_text("int bd(void) { return 0; }")
+        assert _target_content_hash(tmp_path) != h1
+
+    def test_declared_exclude_dirs_pruned_from_key(self, tmp_path):
+        # Caller-declared output roots (the ONLY sanctioned run-output
+        # exclusion) are pruned from the key; build_cpg_cached passes
+        # the same list to the build as --exclude.
+        (tmp_path / "a.c").write_text("int main() {}")
+        out_root = tmp_path / "out"
+        run_dir = out_root / "audit_1234"
+        run_dir.mkdir(parents=True)
+        h1 = _target_content_hash(tmp_path, exclude_dirs=[out_root])
+        (run_dir / "checker.py").write_text("print('generated')\n")
+        h2 = _target_content_hash(tmp_path, exclude_dirs=[out_root])
+        assert h1 == h2
+        # Undeclared, the same artifacts enter the key (rebuild —
+        # safe, never stale).
+        assert _target_content_hash(tmp_path) != h1
+
+    def test_content_hash_skips_non_regular_files(self, tmp_path):
+        # A symlink to a device (git-committable) or a FIFO named
+        # like source must be skipped, not opened — reading either
+        # blocks the orchestrator forever.
+        import os
+        (tmp_path / "a.c").write_text("int main() {}")
+        h1 = _target_content_hash(tmp_path)
+        os.symlink("/dev/zero", tmp_path / "zero.c")
+        os.mkfifo(tmp_path / "pipe.c")
+        h2 = _target_content_hash(tmp_path)
+        assert h1 == h2
+        # A symlink to a REGULAR source file still counts as content.
+        os.symlink(tmp_path / "a.c", tmp_path / "alias.c")
+        assert _target_content_hash(tmp_path) != h1
+
+    def test_exclude_regex_matches_key_walk_semantics(self):
+        # CPG_EXCLUDE_REGEX is the frontend-side mirror of the key
+        # walk's directory rule: excluded DIRECTORY components only;
+        # dot-FILES are source and stay in both.
+        import re
+        from packages.joern.runner import CPG_EXCLUDE_REGEX
+        rx = re.compile(CPG_EXCLUDE_REGEX)
+        excluded = [
+            "vendor/lib.c",
+            "third_party/x/y.cpp",
+            "a/node_modules/dep.js",
+            ".git/hook.py",
+            "src/.tox/env.py",
+            "__pycache__/m.py",
+        ]
+        kept = [
+            "src/app.c",
+            "src/.hidden.c",       # dot-FILE: in key, in graph
+            "src/vendor.c",        # name contains, not a component
+            "vendored/lib.c",      # prefix, not the excluded name
+        ]
+        for p in excluded:
+            assert rx.fullmatch(p), f"should exclude: {p}"
+        for p in kept:
+            assert not rx.fullmatch(p), f"should keep: {p}"
+
+    def test_load_cached_cpg_honours_precomputed_hash(self, tmp_path):
+        # build_cpg_cached hashes the tree ONCE, before the build, and
+        # threads that hash into both the freshness check and the
+        # manifest write — load_cached_cpg must trust the precomputed
+        # value rather than re-walking a tree that may have gained
+        # transient build artifacts.
+        target = tmp_path / "src"
+        target.mkdir()
+        (target / "a.c").write_text("int main() {}")
+        cache = tmp_path / "cache"
+        cpg_dir = cache / "joern-cpg"
+        cpg_dir.mkdir(parents=True)
+        (cpg_dir / "cpg.bin").write_bytes(b"\x00")
+        _write_cpg_manifest(cpg_dir, target, "pinnedhash", {"c"}, 100)
+
+        assert load_cached_cpg(target, cache) is None
+        hit = load_cached_cpg(
+            target, cache, current_content_hash="pinnedhash")
+        assert hit is not None
+        assert hit.path == cpg_dir / "cpg.bin"
 
     def test_manifest_roundtrip(self, tmp_path):
         cpg_dir = tmp_path / "joern-cpg"

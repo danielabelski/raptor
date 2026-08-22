@@ -192,6 +192,11 @@ class TestBuildCpgWiring:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return fake_runner
 
+    # The --frontend-args separator is ALWAYS present now: the shared
+    # exclusion rule rides it as --exclude-regex so the graph's
+    # coverage matches the content key's file set (key/analysis
+    # parity). Discovery wiring is asserted via --define/--include.
+
     def test_c_language_appends_frontend_tail(self, tmp_path):
         inc = tmp_path / "include"
         inc.mkdir()
@@ -203,27 +208,44 @@ class TestBuildCpgWiring:
         sep = cmd.index("--frontend-args")
         tail = cmd[sep + 1:]
         assert tail == ["--define", "FOO=1",
-                        "--include", str(inc.resolve())]
+                        "--include", str(inc.resolve()),
+                        "--exclude-regex", runner_mod.CPG_EXCLUDE_REGEX]
 
     def test_non_c_language_skips_discovery(self, tmp_path):
         _write_db(tmp_path, [_entry(tmp_path, ["-DFOO=1"])])
         calls = []
         build_cpg(tmp_path, languages={"pythonsrc"},
                   subprocess_runner=self._capture_runner(calls))
-        assert "--frontend-args" not in calls[0]
+        assert "--define" not in calls[0]
+        assert "--include" not in calls[0]
+        assert "--exclude-regex" in calls[0]
 
     def test_explicit_empty_disables(self, tmp_path):
         _write_db(tmp_path, [_entry(tmp_path, ["-DFOO=1"])])
         calls = []
         build_cpg(tmp_path, languages={"c"}, frontend_args=FrontendArgs(),
                   subprocess_runner=self._capture_runner(calls))
-        assert "--frontend-args" not in calls[0]
+        assert "--define" not in calls[0]
+        assert "--exclude-regex" in calls[0]
 
     def test_no_database_no_tail(self, tmp_path):
         calls = []
         build_cpg(tmp_path, languages={"c"},
                   subprocess_runner=self._capture_runner(calls))
-        assert "--frontend-args" not in calls[0]
+        assert "--define" not in calls[0]
+        assert "--exclude-regex" in calls[0]
+
+    def test_exclude_dirs_passed_to_frontend(self, tmp_path):
+        out_root = tmp_path / "out"
+        out_root.mkdir()
+        calls = []
+        build_cpg(tmp_path, languages={"c"},
+                  exclude_dirs=[out_root],
+                  subprocess_runner=self._capture_runner(calls))
+        cmd = calls[0]
+        i = cmd.index("--exclude")
+        assert cmd[i + 1] == str(out_root.resolve())
+        assert cmd.index("--frontend-args") < i
 
 
 class TestCacheKey:

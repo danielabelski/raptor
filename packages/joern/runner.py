@@ -10,7 +10,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
+import stat
 import shlex
 import shutil
 import subprocess
@@ -449,6 +451,7 @@ def build_cpg(
     on_progress: Callable | None = None,
     heap_mb: int | None = None,
     frontend_args: FrontendArgs | None = None,
+    exclude_dirs=(),
 ) -> JoernCPG:
     """Parse target directory into a Code Property Graph.
 
@@ -460,6 +463,13 @@ def build_cpg(
     ``frontend_args``: sanitized c2cpg flags. ``None`` auto-discovers
     from the target's compile_commands.json when the pinned language
     set includes the C frontend; pass ``FrontendArgs()`` to disable.
+
+    ``exclude_dirs``: caller-declared directories (e.g. a run's
+    configured output root inside the target) passed to the frontend
+    as ``--exclude``. The shared directory-name rule
+    (:data:`CPG_EXCLUDE_REGEX`) is always passed as
+    ``--exclude-regex`` so the graph's coverage matches the content
+    key's file set exactly (key/analysis parity).
     """
     target = Path(target).resolve()
     if not target.is_dir():
@@ -510,6 +520,17 @@ def build_cpg(
         # Everything after --frontend-args is passed verbatim to the
         # frontend, so this must be the argv tail.
         cmd.extend(frontend_args.to_argv())
+    else:
+        cmd.append("--frontend-args")
+    # Key/analysis parity: the same exclusion rule that prunes the
+    # content-key walk is handed to the frontend. Without it, a
+    # subtree the key skips (vendor/, dot-dirs, a declared output
+    # root) would still be parsed into the graph — an edit there
+    # leaves the key unchanged and every joern-backed check silently
+    # evaluates stale code.
+    cmd.extend(["--exclude-regex", CPG_EXCLUDE_REGEX])
+    for d in sorted(_resolved_exclude_dirs(exclude_dirs)):
+        cmd.extend(["--exclude", str(d)])
 
     runner = subprocess_runner or _default_sandbox_runner()
 
@@ -1001,25 +1022,111 @@ def _build_taint_exists_query(
     )
 
 
-def _target_content_hash(target: Path) -> str:
-    """Fast content hash: sorted file listing with mtimes."""
-    import hashlib
-    h = hashlib.sha256()
+#: Directories that never contribute analysed source: VCS/tool state
+#: (any dot-dir), dependency trees, and bytecode caches. Mirrors the
+#: walk-skip conventions elsewhere in the repo (compiler_sweep,
+#: inventory.library_detection). This single rule drives BOTH the
+#: content-key walk and the CPG build's ``--exclude-regex``
+#: (:data:`CPG_EXCLUDE_REGEX`) — key and analysis coverage are
+#: identical by construction, so an edit the key ignores is an edit
+#: joern never analysed, and vice versa. A subtree the key skips but
+#: the build parses would serve a silently stale CPG to every
+#: joern-backed check.
+_SKIP_DIR_NAMES = frozenset({
+    "node_modules", "vendor", "third_party", "__pycache__",
+})
+
+
+def _dir_name_excluded(name: str) -> bool:
+    """The shared directory-exclusion rule (dot-dirs + _SKIP_DIR_NAMES)."""
+    return name.startswith(".") or name in _SKIP_DIR_NAMES
+
+
+#: Frontend ``--exclude-regex`` equivalent of :func:`_dir_name_excluded`
+#: (X2Cpg matches it against paths relative to the input dir). The
+#: excluded segment must be a DIRECTORY component (trailing ``/``):
+#: dot-FILES are source and stay in both the key and the graph.
+CPG_EXCLUDE_REGEX = (
+    r"(?:^|.*/)(?:\.[^/]+|"
+    + "|".join(sorted(_SKIP_DIR_NAMES))
+    + r")/.*$"
+)
+
+
+def _resolved_exclude_dirs(exclude_dirs) -> set:
+    """Resolve caller-declared exclusion roots for prune comparison."""
+    resolved = set()
+    for d in exclude_dirs or ():
+        try:
+            resolved.add(Path(d).resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _target_content_hash(target: Path, *, exclude_dirs=()) -> str:
+    """Content-only cache key for the target tree.
+
+    A function of the source file SET and each file's CONTENT and
+    nothing else: entries are ``relpath:sha256(content)``, sorted by
+    path, so the key is invariant under mtime churn (builds,
+    checkouts, tooling touches) and directory iteration order. The
+    previous mtime-based key flapped at every resumed-audit segment
+    start on an unchanged, git-clean tree, forcing a full CPG rebuild
+    per segment.
+
+    Exclusions are never derived from repo content: a hostile tree
+    must not be able to carve itself a blind spot. Two sources only,
+    both mirrored into the CPG build for key/analysis parity:
+
+    * the shared directory-name rule (:func:`_dir_name_excluded` /
+      :data:`CPG_EXCLUDE_REGEX`): dot-dirs, dependency trees,
+      bytecode caches;
+    * ``exclude_dirs`` — directories the CALLER declares (a run's
+      configured output root living inside the target), passed to the
+      build as ``--exclude``.
+
+    Only regular files are hashed: a symlink to a character device
+    (``zero.c -> /dev/zero``) or a FIFO named like source must be
+    skipped, not opened — reading either blocks the orchestrator
+    indefinitely.
+    """
     source_exts = {
         ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp",
         ".py", ".java", ".js", ".ts", ".go", ".rs",
     }
+    excluded_roots = _resolved_exclude_dirs(exclude_dirs)
     entries = []
-    for p in sorted(target.rglob("*")):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() not in source_exts:
-            continue
-        try:
-            st = p.stat()
-            entries.append(f"{p.relative_to(target)}:{st.st_size}:{int(st.st_mtime)}")
-        except OSError:
-            continue
+    for root, dirs, files in os.walk(target):
+        root_path = Path(root)
+        dirs[:] = [
+            d for d in dirs
+            if not _dir_name_excluded(d)
+            and (not excluded_roots
+                 or (root_path / d).resolve() not in excluded_roots)
+        ]
+        for name in files:
+            p = root_path / name
+            if p.suffix.lower() not in source_exts:
+                continue
+            try:
+                st = os.stat(p)  # follows symlinks
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                # FIFOs block open(); device files read forever.
+                continue
+            digest = hashlib.sha256()
+            try:
+                with open(p, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        digest.update(chunk)
+            except OSError:
+                continue
+            entries.append(
+                f"{p.relative_to(target)}:{digest.hexdigest()}")
+    entries.sort()
+    h = hashlib.sha256()
     h.update("\n".join(entries).encode())
     return h.hexdigest()[:16]
 
@@ -1098,6 +1205,7 @@ def _write_cpg_manifest(
     languages: set[str] | None = None, build_time_ms: int = 0,
     frontend_args_fingerprint: str = "",
     method_count: int | None = None,
+    exclude_dirs=(),
 ) -> None:
     """Write manifest.json alongside the cached CPG."""
     manifest = {
@@ -1107,6 +1215,12 @@ def _write_cpg_manifest(
         "languages": sorted(languages or []),
         "frontend_args_fingerprint": frontend_args_fingerprint,
         "method_count": method_count,
+        # The exclusion contract this graph was built under. The regex
+        # joins the freshness check: a graph built under a different
+        # rule has different coverage, and serving it would break
+        # key/analysis parity.
+        "exclude_regex": CPG_EXCLUDE_REGEX,
+        "exclude_dirs": sorted(str(d) for d in exclude_dirs or ()),
     }
     manifest_path = cpg_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -1128,6 +1242,8 @@ def load_cached_cpg(
     cache_dir: Path,
     *,
     expected_frontend_fingerprint: str | None = None,
+    current_content_hash: str | None = None,
+    exclude_dirs=(),
 ) -> JoernCPG | None:
     """Return a cached CPG if fresh, None if stale or missing.
 
@@ -1135,6 +1251,12 @@ def load_cached_cpg(
     recorded c2cpg frontend-args fingerprint must match it — a
     compile_commands.json change then invalidates the cache. ``None``
     (read-only consumers that never rebuild) skips the check.
+
+    ``current_content_hash``: precomputed :func:`_target_content_hash`
+    of the target tree; ``None`` computes it here (with
+    ``exclude_dirs``). Callers that go on to rebuild pass it so the
+    freshness check and the rebuilt cache's manifest describe the
+    SAME tree state.
     """
     cpg_dir = cache_dir / "joern-cpg"
     cpg_path = cpg_dir / "cpg.bin"
@@ -1143,6 +1265,17 @@ def load_cached_cpg(
 
     manifest = _read_cpg_manifest(cpg_dir)
     if manifest is None:
+        return None
+
+    recorded_regex = manifest.get("exclude_regex")
+    if recorded_regex is not None and recorded_regex != CPG_EXCLUDE_REGEX:
+        # Built under a different exclusion rule: its coverage no
+        # longer matches the content key's file set (parity).
+        logger.info(
+            "CPG cache at %s stale (exclusion rule changed) — this "
+            "cache will be rebuilt",
+            cpg_dir,
+        )
         return None
 
     if expected_frontend_fingerprint is not None:
@@ -1156,7 +1289,8 @@ def load_cached_cpg(
             )
             return None
 
-    current_hash = _target_content_hash(target)
+    current_hash = current_content_hash or _target_content_hash(
+        target, exclude_dirs=exclude_dirs)
     if manifest.get("content_hash") != current_hash:
         # Name the cache path: several consumers keep separate CPG
         # caches, and a bare "will rebuild" printed next to another
@@ -1199,6 +1333,7 @@ def build_cpg_cached(
     subprocess_runner=None,
     on_progress: Callable | None = None,
     heap_mb: int | None = None,
+    exclude_dirs=(),
 ) -> JoernCPG:
     """Build or reuse a cached CPG for the target.
 
@@ -1207,14 +1342,28 @@ def build_cpg_cached(
     Frontend args discovered from compile_commands.json join the
     freshness contract: a flags change rebuilds even when source
     contents are unchanged.
+
+    ``exclude_dirs``: caller-declared exclusion roots (a run's
+    configured output directory inside the target). They are pruned
+    from the content key AND passed to the build as ``--exclude`` —
+    the two must always travel together (key/analysis parity).
     """
     frontend_args = _EMPTY_FRONTEND_ARGS
     if languages and "c" in languages:
         frontend_args = discover_frontend_args(Path(target))
 
+    # Hash the tree ONCE, before the (potentially minutes-long) build.
+    # The manifest then records the tree state the CPG was built FROM;
+    # re-walking after the build used to pick up transient files
+    # written while it ran, producing a recorded hash that never
+    # matched the at-rest tree — a guaranteed rebuild at the next
+    # consumer.
+    content_hash = _target_content_hash(target, exclude_dirs=exclude_dirs)
+
     cached = load_cached_cpg(
         target, cache_dir,
         expected_frontend_fingerprint=frontend_args.fingerprint(),
+        current_content_hash=content_hash,
     )
     if cached is not None:
         return cached
@@ -1229,16 +1378,17 @@ def build_cpg_cached(
         on_progress=on_progress,
         heap_mb=heap_mb,
         frontend_args=frontend_args,
+        exclude_dirs=exclude_dirs,
     )
 
     if cpg.exists():
-        content_hash = _target_content_hash(target)
         _write_cpg_manifest(
             cpg_dir, target, content_hash,
             languages=cpg.languages,
             build_time_ms=cpg.build_time_ms,
             frontend_args_fingerprint=frontend_args.fingerprint(),
             method_count=cpg_method_count(cpg.path),
+            exclude_dirs=exclude_dirs,
         )
 
     return cpg

@@ -122,12 +122,23 @@ jobs:
           # want the bump to cover Python (requirements.txt),
           # Debian (apt-installed in devcontainer), and npm
           # (yarn / pnpm in devcontainer).
+          # ``--exclude``: never bump pins inside test / fixture
+          # trees. Fixture manifests are test assertions — the old
+          # versions are deliberate and the suites depend on them
+          # (e.g. test/data/sca-e2e/*/fixture/Dockerfile.fixture).
+          # This is repo policy passed explicitly; the tool itself
+          # applies no default exclusion, and scanning still reports
+          # findings in these trees.
           rm -rf /tmp/sca-harden-out
           bin/raptor-sca fix . --harden \
             --out /tmp/sca-harden-out \
             --git-patch \
             --self-test \
-            --no-llm
+            --no-llm \
+            --exclude '**/tests/**' \
+            --exclude '**/test/**' \
+            --exclude '**/fixtures/**' \
+            --exclude '**/testdata/**'
           if [[ -s /tmp/sca-harden-out/upgrade.patch ]]; then
             echo "patch_present=true" >> "$GITHUB_OUTPUT"
           else
@@ -152,10 +163,16 @@ jobs:
           # it into the bump branch — otherwise pr-body.md lands as a
           # committed file in the PR and the "Detect changes" step always
           # sees a spurious change.
+          # Same fixture-protection policy as Phase 1 (see comment
+          # there): fixture pins are test assertions, never bumped.
           bin/raptor-sca bump . \
             --apply \
             --pr-comment \
             --repo-label "self-bump $(date -u +%Y-%m-%d)" \
+            --exclude '**/tests/**' \
+            --exclude '**/test/**' \
+            --exclude '**/fixtures/**' \
+            --exclude '**/testdata/**' \
             > "$RUNNER_TEMP/pr-body.md"
 
       - name: Exclude workflow-file changes (GITHUB_TOKEN can't push them)

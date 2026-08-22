@@ -61,6 +61,7 @@ def load_json(
     strict: bool = False,
     *,
     allow_non_finite: bool = False,
+    max_bytes: int | None = None,
 ) -> Any | None:
     r"""Load a JSON file.
 
@@ -87,10 +88,35 @@ def load_json(
     fuzzers) opt in here so the parse doesn't reject the whole file
     on one NaN cell. Caller is then responsible for handling
     non-finite values downstream (treat-as-zero, skip, etc).
+
+    ``max_bytes`` (keyword-only): byte budget for the file. The size
+    is checked via ``stat()`` BEFORE any read, so an oversize file is
+    rejected without ever being loaded into memory. An oversize file
+    follows the malformed-file contract: ``strict=True`` raises
+    ``ValueError``, ``strict=False`` warns and returns ``None``.
+    ``None`` (the default) keeps the historical unbounded behaviour.
+    Use a budget whenever the file lives somewhere another principal
+    can influence (target repos, importable archives, shared tmp).
     """
     p = Path(path)
     if not p.exists():
         return None
+    if max_bytes is not None:
+        try:
+            size = p.stat().st_size
+        except OSError as e:
+            if strict:
+                raise
+            logger.warning("load_json: failed to stat %s: %s", p, e)
+            return None
+        if size > max_bytes:
+            msg = (
+                f"file size {size} bytes exceeds max_bytes={max_bytes}: {p}"
+            )
+            if strict:
+                raise ValueError(msg)
+            logger.warning("load_json: refusing oversize file: %s", msg)
+            return None
     parse_constant = None if allow_non_finite else _reject_non_finite
     if strict:
         return _loads(

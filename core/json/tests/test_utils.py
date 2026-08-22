@@ -360,5 +360,59 @@ class TestOrjsonBackend(unittest.TestCase):
                 u._orjson = saved
 
 
+class TestLoadJsonMaxBytes(unittest.TestCase):
+    """Byte budget: st_size gate BEFORE any read."""
+
+    def test_under_budget_parses(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "data.json"
+            p.write_text('{"key": "value"}')
+            self.assertEqual(
+                load_json(p, max_bytes=1024), {"key": "value"})
+
+    def test_exact_size_parses(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "data.json"
+            p.write_text('{"a": 1}')
+            size = p.stat().st_size
+            self.assertEqual(load_json(p, max_bytes=size), {"a": 1})
+
+    def test_oversize_returns_none(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.json"
+            p.write_text('{"pad": "' + "x" * 100 + '"}')
+            self.assertIsNone(load_json(p, max_bytes=10))
+
+    def test_oversize_strict_raises(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.json"
+            p.write_text('{"pad": "' + "x" * 100 + '"}')
+            with self.assertRaises(ValueError):
+                load_json(p, strict=True, max_bytes=10)
+
+    def test_oversize_never_read(self):
+        # The gate must fire on stat alone — a FIFO would block any
+        # read attempt forever, so returning promptly proves no read
+        # happened. Instead of a FIFO (fragile in CI), assert on the
+        # cheaper contract: a file of valid JSON over budget is
+        # rejected even though a read+parse would have succeeded.
+        with TemporaryDirectory() as d:
+            p = Path(d) / "valid-but-big.json"
+            p.write_text(json.dumps({"k": "v" * 1000}))
+            self.assertIsNone(load_json(p, max_bytes=100))
+
+    def test_default_unbounded_unchanged(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.json"
+            p.write_text(json.dumps({"k": "v" * 100_000}))
+            self.assertEqual(load_json(p)["k"], "v" * 100_000)
+
+    def test_missing_file_still_none(self):
+        self.assertIsNone(
+            load_json("/nonexistent/path.json", max_bytes=10))
+        self.assertIsNone(
+            load_json("/nonexistent/path.json", strict=True, max_bytes=10))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -72,7 +72,12 @@ def append_jsonl(
         os.close(fd)
 
 
-def load_jsonl(path: str | Path) -> list[Any]:
+def load_jsonl(
+    path: str | Path,
+    *,
+    max_line_bytes: int | None = None,
+    max_total_bytes: int | None = None,
+) -> list[Any]:
     """Read back a JSONL trail as a list of parsed records.
 
     Best-effort: a missing, unreadable, or symlinked file loads as
@@ -80,6 +85,15 @@ def load_jsonl(path: str | Path) -> list[Any]:
     a truncated final line (writer killed mid-append) doesn't lose the
     well-formed records before it. Callers that only want objects
     filter with ``isinstance(rec, dict)`` on the result.
+
+    Byte budgets (keyword-only, ``None`` = historical unbounded):
+
+    - ``max_total_bytes``: ``fstat`` size gate on the opened fd BEFORE
+      any read; an oversize trail loads as ``[]`` with a warning —
+      nothing is buffered.
+    - ``max_line_bytes``: an over-long line is skipped like a
+      malformed one. The check runs after the line is materialised,
+      so pair it with ``max_total_bytes`` for a hard memory bound.
     """
     flags = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
     try:
@@ -89,6 +103,22 @@ def load_jsonl(path: str | Path) -> list[Any]:
         # "nothing trustworthy to read".
         logger.debug("load_jsonl: cannot open %s", path, exc_info=True)
         return []
+    if max_total_bytes is not None:
+        try:
+            size = os.fstat(fd).st_size
+        except OSError:
+            size = None
+        if size is not None and size > max_total_bytes:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            logger.warning(
+                "load_jsonl: refusing oversize trail %s "
+                "(%d bytes > max_total_bytes=%d)",
+                path, size, max_total_bytes,
+            )
+            return []
     records: list[Any] = []
     try:
         f = os.fdopen(fd, "r", encoding="utf-8")
@@ -101,7 +131,14 @@ def load_jsonl(path: str | Path) -> list[Any]:
         return records
     with f:
         try:
+            oversize_lines = 0
             for raw in f:
+                if (
+                    max_line_bytes is not None
+                    and len(raw.encode("utf-8")) > max_line_bytes
+                ):
+                    oversize_lines += 1
+                    continue
                 line = raw.strip()
                 if not line:
                     continue
@@ -111,4 +148,9 @@ def load_jsonl(path: str | Path) -> list[Any]:
                     continue
         except OSError:
             logger.debug("load_jsonl: read failed for %s", path, exc_info=True)
+        if oversize_lines:
+            logger.warning(
+                "load_jsonl: skipped %d line(s) over max_line_bytes=%d in %s",
+                oversize_lines, max_line_bytes, path,
+            )
     return records

@@ -169,6 +169,41 @@ def test_lazy_reexport_surface():
     assert "load_jsonl" in cj.__all__
 
 
+class TestLoadJsonlBudgets:
+    """Byte budgets: fstat total gate before read, per-line skip."""
+
+    def test_total_budget_oversize_loads_empty(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        for i in range(100):
+            append_jsonl(p, {"i": i})
+        assert load_jsonl(p, max_total_bytes=32) == []
+
+    def test_total_budget_under_loads_all(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"a": 1})
+        append_jsonl(p, {"b": 2})
+        size = p.stat().st_size
+        assert load_jsonl(p, max_total_bytes=size) == [{"a": 1}, {"b": 2}]
+
+    def test_line_budget_skips_only_oversize(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"small": 1})
+        append_jsonl(p, {"huge": "x" * 4096})
+        append_jsonl(p, {"small": 2})
+        assert load_jsonl(p, max_line_bytes=1024) == [
+            {"small": 1}, {"small": 2},
+        ]
+
+    def test_default_unbounded_unchanged(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"huge": "x" * 4096})
+        assert load_jsonl(p) == [{"huge": "x" * 4096}]
+
+    def test_missing_file_with_budgets(self, tmp_path: Path):
+        p = tmp_path / "absent.jsonl"
+        assert load_jsonl(p, max_line_bytes=10, max_total_bytes=10) == []
+
+
 def test_o_nofollow_available():
     # The hardening this module exists for requires O_NOFOLLOW on the
     # platforms RAPTOR supports (Linux/macOS).

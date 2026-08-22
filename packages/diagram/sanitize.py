@@ -2,10 +2,6 @@
 
 import re
 
-# Default max length for a single line within a node label.
-# Individual renderers can pass a different value or None to disable.
-DEFAULT_MAX_LEN = 80
-
 _SAFE_ID_RE = re.compile(r'[^A-Za-z0-9_-]')
 
 _FENCE_RE = re.compile(r'`{3,}')

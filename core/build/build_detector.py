@@ -591,22 +591,6 @@ class BuildDetector:
         except Exception as e:  # noqa: BLE001 — malformed manifest degrades to no-build-script
             logger.debug("Error parsing package.json: %s", e)
             return False
-
-    def detect_all_build_systems(self, languages: list[str]) -> dict[str, BuildSystem | None]:
-        """
-        Detect build systems for multiple languages.
-
-        Args:
-            languages: List of programming languages
-
-        Returns:
-            Dict mapping language -> BuildSystem (or None)
-        """
-        result = {}
-        for language in languages:
-            result[language] = self.detect_build_system(language)
-        return result
-
     # Version probes run from the filesystem root — NEVER from inside
     # the scanned repo. Build tools auto-load configuration relative
     # to cwd (or an ancestor found by walking upward), even for bare

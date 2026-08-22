@@ -20,8 +20,6 @@ from .orchestrator import OrchestratorConfig, ReviewOutcome
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 10
-
 # Audit-purpose framing: same gap class as the refused summary /
 # spec_inference prompts (bare code + one-line security question);
 # unexercised in the final audit run (0 glances) but the shape is

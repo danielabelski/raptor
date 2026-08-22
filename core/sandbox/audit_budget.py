@@ -10,9 +10,11 @@ sampling rate, new CLI knob) lands in one place.
 
 Five mechanisms compose:
 
-  1. Global cap (`global_cap`). Hard ceiling on total records per
-     run. Once hit, EVERY record is evaluated through sampling
-     (defaulting to drop for un-sampled categories).
+  1. Global cap (`global_cap`). Hard ceiling on records COUNTED
+     toward the global budget per run. Once hit, EVERY record is
+     evaluated through sampling (defaulting to drop for un-sampled
+     categories); the sampled trickle rides above this cap but is
+     itself hard-bounded (see mechanism 5).
 
   2. Per-category sub-cap (`category_caps`). Stops one chatty
      category (file-read-metadata, process-info-*) from squeezing
@@ -32,7 +34,15 @@ Five mechanisms compose:
   5. Post-cap sampling (`sampling_rates`). Once a category's burst
      cap is hit, instead of going completely dark the budget can
      emit 1-in-N records. Operators see "is this still happening?"
-     at a fraction of the volume.
+     at a fraction of the volume. The trickle rides ABOVE the global
+     cap by design (sampled keeps don't count toward it), so it is
+     bounded separately: cumulative sampled keeps across all
+     categories may not exceed `global_cap` (a second hard ceiling).
+     Total records a run can emit is therefore at most
+     `2 * global_cap` (+ a handful of control-plane markers) — after
+     that an over-cap flood produces no keeps at all, no matter its
+     volume. Without this second ceiling, JSONL output would stay
+     proportional (1/N) to attacker volume forever.
 
 Decision return shape:
     (action: str, marker: dict | None)
@@ -345,6 +355,15 @@ class AuditBudget:
         # leaked through). Starts at 0; sampled records emitted on
         # _sampling_counter % N == 0.
         self._sampling_counters: dict[str, int] = {}
+        # Cumulative sampled keeps across all categories — the
+        # second hard ceiling. Sampled keeps deliberately don't bump
+        # _record_count (the global cap was promised for counted
+        # records), so without their own bound the 1-in-N trickle
+        # would keep JSONL output proportional to attacker volume
+        # forever. Bounded at global_cap: once spent, over-cap events
+        # produce NO keeps at all.
+        self._sampled_keeps = 0
+        self._sampled_keeps_marker_emitted = False
         # PID dict cap. A fork-bomb-style target spawning millions
         # of distinct short-lived PIDs would otherwise grow
         # _pid_counts unbounded (~120 bytes/entry; 1M PIDs ≈ 120MB
@@ -384,25 +403,15 @@ class AuditBudget:
         """All records that were KEPT (returned downstream),
         including per-category sampled keeps.
 
-        Equals `total_records + sum(per-category sampled-keep count)`.
-        Use this when you want the "what did the audit log actually
-        get" count, vs `total_records` which is "what counted toward
-        the global budget".
+        Equals `total_records + sampled_keeps`. Use this when you
+        want the "what did the audit log actually get" count, vs
+        `total_records` which is "what counted toward the global
+        budget". Exact: sampled keeps are counted at the keep site
+        (`_sampled_keeps`), which is also how the second hard
+        ceiling — cumulative sampled keeps <= global_cap — is
+        enforced.
         """
-        # Sampled keeps land in `_sampling_counters` only on the keep
-        # path (every Nth event in over-cap categories). The counter
-        # holds the count of OVER-CAP events seen per category, of
-        # which 1-in-N were kept. Approximate the kept count via
-        # `count // sample_n` per category — exact when sample_n
-        # divides evenly, off by at most 1 per category in the
-        # general case.
-        sampled_keeps = 0
-        for cat, count in getattr(self, "_sampling_counters", {}).items():
-            cat_cfg = self.sampling_rates.get(cat)
-            sample_n = cat_cfg if isinstance(cat_cfg, int) and cat_cfg > 0 else 0
-            if sample_n > 0:
-                sampled_keeps += count // sample_n
-        return self._record_count + sampled_keeps
+        return self._record_count + self._sampled_keeps
 
     @property
     def category_counts(self) -> dict[str, int]:
@@ -494,11 +503,16 @@ class AuditBudget:
                     # Sampled record IS kept — doesn't refill the
                     # bucket (already over cap) and doesn't bump
                     # the global counter (we promised the global
-                    # cap).
-                    return KEEP, marker
-                # Not the sampled one — drop, but the marker (if
-                # any was just generated) still flushes so
-                # operators see the state-change event in-line.
+                    # cap) — PROVIDED the sampled-keep budget (the
+                    # second hard ceiling) isn't spent yet.
+                    if self._sampled_keeps < self.global_cap:
+                        self._sampled_keeps += 1
+                        return KEEP, marker
+                    marker = self._sampled_budget_marker(marker)
+                # Not the sampled one (or the sampled-keep budget is
+                # spent) — drop, but the marker (if any was just
+                # generated) still flushes so operators see the
+                # state-change event in-line.
                 return DROP, marker
             # No sampling configured: emit the "no sampling" marker
             # on the first drop.
@@ -526,15 +540,19 @@ class AuditBudget:
             # categories default to drop). A sampled keep does not
             # bump the global counter: the cap was promised; the
             # 1-in-N trickle rides above it by design, exactly as
-            # on the category-cap path.
+            # on the category-cap path — and is bounded by the same
+            # sampled-keep ceiling.
             sample_n = self.sampling_rates.get(cat, 0)
             if sample_n > 0:
                 self._sampling_counters[cat] = (
                     self._sampling_counters.get(cat, 0) + 1
                 )
                 if self._sampling_counters[cat] % sample_n == 0:
-                    self._global_cap_notified = True
-                    return KEEP, marker
+                    if self._sampled_keeps < self.global_cap:
+                        self._sampled_keeps += 1
+                        self._global_cap_notified = True
+                        return KEEP, marker
+                    marker = self._sampled_budget_marker(marker)
             self._dropped[cat] = self._dropped.get(cat, 0) + 1
             # Refund the token we just consumed in _take_token —
             # this drop is global-cap, not category-cap. Without
@@ -593,6 +611,24 @@ class AuditBudget:
         self._buckets[cat] = (tokens - 1.0, now)
         return True
 
+    def _sampled_budget_marker(self, marker: dict | None) -> dict | None:
+        """One-shot marker announcing the sampled-keep ceiling is
+        spent — from here on, over-cap floods produce NO keeps at
+        all. Never overwrites a marker the caller already generated
+        for this event (per-event marker slots are single-occupancy;
+        the exhaust announcement retries on the next refused keep)."""
+        if self._sampled_keeps_marker_emitted or marker is not None:
+            return marker
+        self._sampled_keeps_marker_emitted = True
+        return self._make_marker(
+            "sampling_budget_exceeded",
+            cap=self.global_cap,
+            note=(f"Cumulative post-cap sampled keeps reached the "
+                  f"sampling ceiling ({self.global_cap}); the 1-in-N "
+                  f"trickle stops here and further over-cap records "
+                  f"are dropped entirely."),
+        )
+
     def _make_marker(self, marker_type: str, **fields) -> dict:
         """Construct a marker record. Caller writes the dict as a
         JSONL line. Marker shape mirrors the audit_summary record
@@ -647,6 +683,7 @@ class AuditBudget:
             "type": "audit_summary",
             "audit": True,
             "total_records": self._record_count,
+            "sampled_keeps": self._sampled_keeps,
             "dropped_by_category": dict(self._dropped),
             "category_counts": dict(self._category_counts),
             "pid_counts": dict(self._pid_counts),

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from core.hash import sha256_file
 from core.logging import get_logger
-from core.zip import DEFAULT_MAX_ENTRIES, peek_total_entries
+from core.zip import DEFAULT_MAX_ENTRIES, bomb_shaped_reason, peek_eocd
 
 logger = get_logger()
 
@@ -86,24 +86,31 @@ class _ZipBombShapeError(Exception):
 
 
 def _enforce_zip_entry_cap(zip_path: Path) -> None:
-    """Raise ``_ZipBombShapeError`` if the EOCD pre-flight reports
-    over-cap.
+    """Raise ``_ZipBombShapeError`` if the EOCD pre-flight reports a
+    bomb shape.
 
-    Delegates to :func:`core.zip.peek_total_entries` (the substrate
-    primitive lifted from PR #514). A ``None`` return means "couldn't
-    parse the EOCD" — we let the caller proceed to ``ZipFile()``,
-    which will either succeed for a small valid archive or raise
-    ``BadZipFile``. Only a definitively-over-cap parse triggers the
-    early reject.
+    Delegates to :func:`core.zip.peek_eocd` +
+    :func:`core.zip.bomb_shaped_reason` (the substrate primitives
+    lifted from PR #514): the declared entry count is capped AND
+    cross-checked against the declared central-directory size — a
+    forged EOCD with a small count in front of a huge real central
+    directory would otherwise pass a count-only gate, and
+    ``ZipFile()`` then materialises the whole CD anyway (it parses
+    until the cd-size buffer is exhausted, ignoring the count). A
+    ``None`` peek means "couldn't parse the EOCD" — we let the caller
+    proceed to ``ZipFile()``, which will either succeed for a small
+    valid archive or raise ``BadZipFile``. Only a definitively
+    bomb-shaped parse triggers the early reject.
     """
-    count = peek_total_entries(zip_path)
-    if count is not None and count > _MAX_ENTRIES:
-        msg = (
-            f"zip declares {count} entries in EOCD — refusing as "
-            f"zip-bomb shape (legitimate RAPTOR project exports have "
+    summary = peek_eocd(zip_path)
+    if summary is None:
+        return
+    reason = bomb_shaped_reason(summary, max_entries=_MAX_ENTRIES)
+    if reason is not None:
+        raise _ZipBombShapeError(
+            f"{reason} (legitimate RAPTOR project exports have "
             f"<< 1000 entries)"
         )
-        raise _ZipBombShapeError(msg)
 
 
 def _collect_bounded_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:

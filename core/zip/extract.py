@@ -51,7 +51,7 @@ import os
 import zipfile
 from collections.abc import Callable
 
-from .eocd import DEFAULT_MAX_ENTRIES, peek_total_entries
+from .eocd import DEFAULT_MAX_ENTRIES, bomb_shaped_reason, peek_eocd
 from .safe_member import (
     DEFAULT_MAX_MEMBER_BYTES,
     DEFAULT_MAX_RATIO,
@@ -62,7 +62,10 @@ logger = logging.getLogger(__name__)
 
 
 class ZipEntryCountExceeded(Exception):
-    """Raised when a zip's declared entry count exceeds ``max_entry_count``.
+    """Raised when a zip's EOCD pre-flight flags a bomb shape — the
+    declared entry count exceeds ``max_entry_count``, or the declared
+    central-directory size fails the :func:`core.zip.eocd.
+    bomb_shaped_reason` cross-check against that count.
 
     Surfaces from :func:`extract_files_from_zip` when the caller opts
     into a hard failure on bomb-shaped archives (default behaviour is
@@ -140,19 +143,24 @@ def extract_files_from_zip(
 
     # Pre-flight: EOCD scan rejects bomb-shaped archives BEFORE
     # ``ZipFile.__init__`` materialises the central directory into
-    # RSS. Only attempts the peek when ``source`` is a path or
-    # bytes; file-like streams can't be peeked without consuming
-    # them (the caller can buffer + re-pass if they want the gate).
+    # RSS. The declared entry count is cross-checked against the
+    # declared central-directory size (``bomb_shaped_reason``) — a
+    # forged small count in front of a huge real CD would otherwise
+    # bypass a count-only gate, since ``ZipFile`` parses the CD until
+    # the cd-size buffer is exhausted, ignoring the count. Only
+    # attempts the peek when ``source`` is a path or bytes; file-like
+    # streams can't be peeked without consuming them (the caller can
+    # buffer + re-pass if they want the gate).
     if isinstance(source, (bytes, bytearray, str, os.PathLike)):
-        declared = peek_total_entries(source)
-        if declared is not None and declared > max_entry_count:
-            msg = (
-                f"zip declares {declared} entries in EOCD — exceeds cap "
-                f"of {max_entry_count}; refusing as bomb-shape"
-            )
+        summary = peek_eocd(source)
+        reason = (
+            bomb_shaped_reason(summary, max_entries=max_entry_count)
+            if summary is not None else None
+        )
+        if reason is not None:
             if raise_on_entry_count:
-                raise ZipEntryCountExceeded(msg)
-            logger.debug("core.zip.extract: %s", msg)
+                raise ZipEntryCountExceeded(reason)
+            logger.debug("core.zip.extract: %s", reason)
             return found
 
     fileobj = _normalise_source(source)

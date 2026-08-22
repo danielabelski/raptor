@@ -422,7 +422,7 @@ def _extract_struct_var(member_expr: str) -> str | None:
 def check_callback_lifetime_cross(
     joern: Any,
     file_path: str,
-    func_name: str,
+    _func_name: str,
     vocab: Any = None,
 ) -> CallbackLifetimeResult:
     """Tier 2: cross-function callback-lifetime check via Joern CPG.

@@ -54,7 +54,7 @@ def analyse(
             output_dir=Path(output_dir),
             options=options,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("sca.api.analyse failed: %s", exc)
         return {"status": "error", "error": str(exc)}
 

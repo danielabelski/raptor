@@ -1601,7 +1601,7 @@ def _arithmetic_check(
     constraints: list[BoundsConstraint],
     guard: GuardCondition,
     buffer_size: int | None,
-    sink_api: str,
+    _sink_api: str,
 ) -> SmtSufficiencyResult:
     """Simple arithmetic reasoning when Z3 is unavailable.
 
@@ -2352,7 +2352,7 @@ def _extract_labels(lines: list[str]) -> dict[str, int]:
 def _return_is_in_error_goto_block(
     ret_line: int,
     lines: list[str],
-    goto_targets: dict[int, str],
+    _goto_targets: dict[int, str],
     labels: dict[str, int],
     unlock_name: str,
 ) -> bool:
@@ -2372,7 +2372,7 @@ def _try_z3_lock_discipline(
     guard_text: str,
     lock_func: str,
     ret_line: int,
-    bypassed_unlocks: list[str],
+    _bypassed_unlocks: list[str],
 ) -> LockDisciplineResult | None:
     """Z3 feasibility check on the guard of a lock-held return."""
     if not guard_text:
@@ -3770,8 +3770,8 @@ def _try_z3_integer_narrowing(
     var_name: str,
     src_type: str,
     dest_type: str,
-    src_width: int,
-    dest_width: int,
+    _src_width: int,
+    _dest_width: int,
     assign_line: int,
 ) -> IntegerNarrowingResult | None:
     """Z3 check: can a value outside dest range reach the narrowing?"""
@@ -4069,7 +4069,7 @@ def _check_early_release_c(
         # Release-only heuristic: if unlock calls exist but no acquires,
         # the caller holds the lock. Treat function entry as implicit hold.
         release_only: list[tuple[int, str, str]] = []
-        for i, line in enumerate(lines):
+        for _i, line in enumerate(lines):
             stripped = line.lstrip()
             if stripped.startswith(("//", "/*")):
                 continue

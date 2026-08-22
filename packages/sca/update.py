@@ -738,7 +738,7 @@ class _PlanEntry:
     floor_raise: bool = False
 
 
-def _crosses_major(ecosystem: str, installed: str, target: str) -> bool:
+def _crosses_major(_ecosystem: str, installed: str, target: str) -> bool:
     """Heuristic: do the leading numeric segments differ?
 
     For ecosystems where the comparator understands "major" (semver,

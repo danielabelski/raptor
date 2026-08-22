@@ -39,7 +39,7 @@ from cve_diff.core.exceptions import (
 from cve_diff.infra import api_status
 from cve_diff.infra.github_client import warn_if_token_missing
 from cve_diff.llm.client import LLMCallFailed
-from cve_diff.pipeline import Pipeline, PipelineResult  # noqa: F401  (PipelineResult used in type hint)
+from cve_diff.pipeline import Pipeline, PipelineResult
 from cve_diff.report import markdown, osv_schema
 from cve_diff.report.flow import write_flow_files, write_outcome_patches
 from cve_diff.security.validators import validate_cve_id
@@ -60,7 +60,7 @@ def _install_termination_handlers() -> list[tuple[int, object]]:
     (empty entry) off the main thread, where ``signal.signal`` raises
     ``ValueError``.
     """
-    def _sig_to_exc(signum: int, frame: object) -> None:
+    def _sig_to_exc(signum: int, _frame: object) -> None:
         if signum == signal.SIGINT:
             # Preserve conventional Ctrl-C semantics (typer/click
             # translate KeyboardInterrupt into their Abort path).

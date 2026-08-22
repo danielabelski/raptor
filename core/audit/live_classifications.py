@@ -68,7 +68,7 @@ class LiveClassifications:
         logger.info("live entry point discovered: %s", func_key)
         return True
 
-    def should_upgrade_triage(self, gap_key: str, callees: list[str]) -> str | None:
+    def should_upgrade_triage(self, _gap_key: str, callees: list[str]) -> str | None:
         """Check if a function's triage should be upgraded based on live discoveries.
 
         Returns a reason string if upgrade is warranted, None otherwise.

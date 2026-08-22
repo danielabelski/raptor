@@ -499,7 +499,7 @@ def _is_null_deref(cwe: str, hypothesis: str) -> bool:
     )
 
 
-def _harness_buffer_overflow(func: str, source: str, file_path: str) -> str:
+def _harness_buffer_overflow(func: str, _source: str, _file_path: str) -> str:
     # Syntactic probe only — does not link the target; compiled=False is the
     # expected result when the target's symbols are not self-contained.
     return (
@@ -524,7 +524,7 @@ def _harness_buffer_overflow(func: str, source: str, file_path: str) -> str:
     )
 
 
-def _harness_format_string(func: str, source: str, file_path: str) -> str:
+def _harness_format_string(func: str, _source: str, _file_path: str) -> str:
     return (
         f'#include <stdio.h>\n'
         f'#include <stdlib.h>\n'
@@ -538,7 +538,7 @@ def _harness_format_string(func: str, source: str, file_path: str) -> str:
     )
 
 
-def _harness_use_after_free(func: str, source: str, file_path: str) -> str:
+def _harness_use_after_free(func: str, _source: str, _file_path: str) -> str:
     return (
         f'#include <stdlib.h>\n'
         f'#include <stdio.h>\n'
@@ -557,7 +557,7 @@ def _harness_use_after_free(func: str, source: str, file_path: str) -> str:
     )
 
 
-def _harness_null_deref(func: str, source: str, file_path: str) -> str:
+def _harness_null_deref(func: str, _source: str, _file_path: str) -> str:
     return (
         f'#include <stdio.h>\n'
         f'#include <stdlib.h>\n'
@@ -570,7 +570,7 @@ def _harness_null_deref(func: str, source: str, file_path: str) -> str:
     )
 
 
-def _harness_generic(func: str, source: str, file_path: str) -> str:
+def _harness_generic(_func: str, _source: str, _file_path: str) -> str:
     return (
         '#include <stdio.h>\n'
         '#include <stdlib.h>\n'

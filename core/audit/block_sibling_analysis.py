@@ -342,7 +342,7 @@ def _collect_branches_regex(
     return groups
 
 
-def _collect_case_groups(case_matches, lines, source, file_path, groups) -> None:
+def _collect_case_groups(case_matches, lines, source, _file_path, groups) -> None:
     """Group consecutive case statements at the same indent level."""
     indent_groups: dict[int, list] = {}
     for m in case_matches:
@@ -368,7 +368,7 @@ def _collect_case_groups(case_matches, lines, source, file_path, groups) -> None
         groups.append((func, f"switch@L{branches[0][2]}", branches))
 
 
-def _collect_if_groups_regex(lines, source, file_path, groups) -> None:
+def _collect_if_groups_regex(lines, source, _file_path, groups) -> None:
     """Find if/elif chains with ≥ MIN_BRANCHES at the same indent."""
     matches = list(_IF_ELIF_RE.finditer(source))
     if not matches:

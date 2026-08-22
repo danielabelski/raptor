@@ -260,7 +260,7 @@ def _find_pid_by_name(name: str) -> int | None:
 
 def _build_hook_targets(
     function_name: str,
-    file_path: str,
+    _file_path: str,
     ctx: dict[str, Any],
 ) -> list[str]:
     """Build the list of function names to hook.

@@ -5515,7 +5515,7 @@ class _LuaCallGraph:
 
         self._record(node, chain)
 
-    def _handle_pcall(self, name: str, args_node) -> None:
+    def _handle_pcall(self, _name: str, args_node) -> None:
         """For pcall/xpcall, record a call to the real callee argument."""
         real_args = [c for c in args_node.children if c.is_named]
         if not real_args:

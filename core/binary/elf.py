@@ -160,7 +160,7 @@ def _parse_elf_stream(f) -> ElfMetadata | None:
     rest = f.read(rest_size)
     if len(rest) < rest_size:
         return None
-    (e_type, e_machine, _e_version, _e_entry, _e_phoff,
+    (_e_type, e_machine, _e_version, _e_entry, _e_phoff,
      e_shoff, _e_flags, _e_ehsize, _e_phentsize, _e_phnum,
      e_shentsize, e_shnum, e_shstrndx) = struct.unpack(
         rest_fmt, rest,

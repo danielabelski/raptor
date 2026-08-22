@@ -349,7 +349,7 @@ def _infer_from_caller_usage(
     spec: InferredSpec,
     function_name: str,
     checklist: dict[str, Any] | None,
-    summaries: dict[str, Any] | None,
+    _summaries: dict[str, Any] | None,
     census: dict[str, Any] | None = None,
 ) -> None:
     """Infer spec from how callers use the return value.

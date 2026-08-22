@@ -284,7 +284,7 @@ def _sigterm_watchdog(grace_s: float) -> None:
     os._exit(130)
 
 
-def _handle_sigterm(signum, frame) -> None:  # signal-handler API shape
+def _handle_sigterm(_signum, _frame) -> None:  # signal-handler API shape
     _sigterm_state["count"] += 1
     if _sigterm_state["count"] >= 2:
         _run_sigterm_flush_hooks()
@@ -8210,7 +8210,7 @@ def _run_concept_discovery(
     shared: SharedState,
     gaps: list[dict[str, Any]],
     mechanical_findings: dict[str, list[dict[str, Any]]],
-    reviewed_set: set,
+    _reviewed_set: set,
 ) -> None:
     """Mine review outcomes for recurring patterns, compile into rules.
 
@@ -10166,10 +10166,10 @@ def _retry_error_outcomes(
     config: OrchestratorConfig,
     review_fn: Callable,
     checklist: dict[str, Any],
-    shared: Any,
-    llm_client: Any,
+    _shared: Any,
+    _llm_client: Any,
     start_time: float,
-    sarif_cache: Any,
+    _sarif_cache: Any,
 ) -> OrchestratorResult:
     """Retry recoverable error outcomes (json_parse, truncation, api_error)."""
     error_outcomes = [
@@ -16007,7 +16007,7 @@ def _run_clean_check_sweep(
     outcome: ReviewOutcome,
     config: OrchestratorConfig,
     evidence_index: dict[str, EvidenceRecord] | None = None,
-    joern_server=None,
+    _joern_server=None,
 ) -> str | None:
     """Run a focused tool sweep for a clean verdict.
 
@@ -17113,7 +17113,7 @@ def _re_review_disagreements(
     context_map: dict[str, Any] | None,
     evidence_index: dict[str, EvidenceRecord] | None,
     start_time: float,
-    on_progress: Callable | None,
+    _on_progress: Callable | None,
     *,
     audit_log: list[dict[str, Any]] | None = None,
     session_observations: list[dict[str, str]] | None = None,
@@ -21488,7 +21488,7 @@ def _review_flow_traces(
     result: OrchestratorResult,
     config: OrchestratorConfig,
     review_fn: Callable,
-    checklist: dict[str, Any],
+    _checklist: dict[str, Any],
     evidence_index: dict[str, EvidenceRecord] | None = None,
     joern_server=None,
     sarif_cache: SarifCache | None = None,

@@ -20,10 +20,10 @@ from typing import ClassVar
 # packages/codeql/query_runner.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
-from core.config import RaptorConfig  # noqa: E402
-from core.logging import get_logger  # noqa: E402
-from core.sandbox import SandboxSetupError  # noqa: E402
-from packages.codeql.tunables import CodeQLTunables  # noqa: E402
+from core.config import RaptorConfig
+from core.logging import get_logger
+from core.sandbox import SandboxSetupError
+from packages.codeql.tunables import CodeQLTunables
 
 logger = get_logger()
 
@@ -600,11 +600,11 @@ class QueryRunner:
                             # returns a CompletedProcess; a raised
                             # exception is a hard failure, not a
                             # registry blip.
-                            retryable=lambda exc: False,
+                            retryable=lambda _exc: False,
                             base_delay=1.0, multiplier=2.0,
                         ),
                         retry_result=lambda r: r.returncode != 0,
-                        on_retry=lambda i, exc, delay: logger.info(
+                        on_retry=lambda i, _exc, delay: logger.info(
                             "Pack download attempt %d failed; "
                             "retrying in %ds", i + 1, int(delay),
                         ),

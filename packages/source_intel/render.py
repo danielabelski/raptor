@@ -1136,7 +1136,7 @@ def _returns_nonnull_caveat_phrase(
 
 def _render_noreturn_line(
     ev: AttributeEvidence,
-    build_flags: BuildFlagsContext | None,
+    _build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render noreturn evidence.
@@ -1167,7 +1167,7 @@ def _render_noreturn_line(
 
 def _render_malloc_line(
     ev: AttributeEvidence,
-    build_flags: BuildFlagsContext | None,
+    _build_flags: BuildFlagsContext | None,
     style: str,
 ) -> str:
     """Render malloc evidence.
@@ -1473,8 +1473,8 @@ def _truncate(lines: list[str], max_lines: int | None) -> list[str]:
 def derive_mitigations_found(
     result: SourceIntelResult,
     finding_function: str | None = None,
-    finding_file: str | None = None,
-    finding_line: int | None = None,
+    _finding_file: str | None = None,
+    _finding_line: int | None = None,
 ) -> list[Mitigation]:
     """Return the structured `mitigations_found` list for a finding.
 

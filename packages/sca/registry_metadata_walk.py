@@ -478,7 +478,7 @@ def _norm_name(name: str, ecosystem: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fetch_pypi(
-    http: HttpClient, cache: JsonCache | None,
+    http: HttpClient, _cache: JsonCache | None,
     name: str, version: str,
 ) -> list[tuple[str, str]] | None:
     """``https://pypi.org/pypi/<name>/<version>/json``.
@@ -520,7 +520,7 @@ def _fetch_pypi(
 
 
 def _fetch_npm(
-    http: HttpClient, cache: JsonCache | None,
+    http: HttpClient, _cache: JsonCache | None,
     name: str, version: str,
 ) -> list[tuple[str, str]] | None:
     """``https://registry.npmjs.org/<name>/<version>``.
@@ -554,7 +554,7 @@ def _fetch_npm(
 
 
 def _fetch_crates(
-    http: HttpClient, cache: JsonCache | None,
+    http: HttpClient, _cache: JsonCache | None,
     name: str, version: str,
 ) -> list[tuple[str, str]] | None:
     """``https://crates.io/api/v1/crates/<name>/<version>/dependencies``.

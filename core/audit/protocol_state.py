@@ -736,7 +736,7 @@ def _entry_reachability(
 
 
 def _sibling_fields(
-    index: dict[str, Any], base: str, function: str, fld: str,
+    index: dict[str, Any], base: str, _function: str, fld: str,
 ) -> set[str]:
     """Fields accessed on the same base identifier anywhere in the
     index (the struct-membership approximation) minus the written

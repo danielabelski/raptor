@@ -142,10 +142,10 @@ _LIFECYCLE_FUNCTION_PATTERNS = [
 
 
 def _score_field(
-    field_name: str,
-    struct_type: str,
+    _field_name: str,
+    _struct_type: str,
     sites: dict[str, list[int]],
-    source: str,
+    _source: str,
     source_lines: list[str],
 ) -> float:
     """Score a field for lifecycle sensitivity (0.0 - 1.0).

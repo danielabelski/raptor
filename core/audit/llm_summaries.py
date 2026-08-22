@@ -124,7 +124,7 @@ def _edge_endpoints(edge: dict[str, Any]) -> tuple[str, str] | None:
 def identify_summary_candidates(
     workqueue: list[dict[str, Any]],
     taint_summary_results: dict[str, Any] | None,
-    checklist: dict[str, Any] | None,
+    _checklist: dict[str, Any] | None,
     *,
     call_edges: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -300,7 +300,7 @@ def run_llm_summary_pass(
 def _read_source(
     target_path: Path,
     file_path: str,
-    function_name: str,
+    _function_name: str,
     line_start: int | None = None,
     line_end: int | None = None,
 ) -> str | None:

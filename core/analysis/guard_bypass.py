@@ -74,7 +74,7 @@ def _find_node_at_line(cfg, line: int):
 
 
 def _find_guards(
-    cfg,
+    _cfg,
     condition_edges: list[ConditionEdge],
     source_var: str,
     guard_classifier: GuardClassifier,

@@ -62,7 +62,7 @@ def inventory(path: Path):
     # Hard cap at _INVENTORY_FILE_CAP enforces termination
     # even on loop-free pathological trees.
     import os
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
         for name in filenames:
             total_files += 1
             if total_files > _INVENTORY_FILE_CAP:

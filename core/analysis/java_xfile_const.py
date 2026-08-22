@@ -212,7 +212,7 @@ class XFileConst:
             stack.extend(n.children)
         return None
 
-    def _fold_restricted(self, node, root, depth: int,
+    def _fold_restricted(self, node, root, _depth: int,
                          allow_taint_free: bool) -> Any:
         """Fold with identifiers resolving ONLY to static-final fields
         of the same class — parameters and locals refuse."""

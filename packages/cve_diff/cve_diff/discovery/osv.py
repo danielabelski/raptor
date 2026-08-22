@@ -58,7 +58,7 @@ _COMMIT_SHA_RE = re.compile(r"[a-f0-9]{7,40}", re.IGNORECASE | re.ASCII)
 _LINUX_UPSTREAM = f"https://github.com/{LINUX_UPSTREAM_SLUG}"
 
 
-def _build_default_client(timeout_s: int) -> OsvClient:
+def _build_default_client(_timeout_s: int) -> OsvClient:
     """Construct a stand-alone :class:`packages.osv.OsvClient` for the discoverer.
 
     OSVDiscoverer is used outside the agent loop (cascade / bench paths),

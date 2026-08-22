@@ -369,7 +369,7 @@ _EVENT_LOOP_CALLS = frozenset({
 
 def _classify_lifecycle(
     function_name: str,
-    file_path: str,
+    _file_path: str,
     checklist: dict[str, Any],
 ) -> str:
     """Classify a function as init, request, shutdown, or unknown.
@@ -597,7 +597,7 @@ _BUFFER_OVERFLOW_KW = re.compile(
 
 def _refute_by_known_return_type(
     outcome,
-    config,
+    _config,
 ) -> RefutationVerdict | None:
     """Refute integer overflow claims when value comes from a bounded function.
 

@@ -389,7 +389,7 @@ class _DualControlOracle:
         self._out_dir = out_dir
         self._call_count = 0
 
-    def judge(self, candidate, context):
+    def judge(self, candidate, _context):
         from core.orchestration.driver import Verdict
         from packages.checker_synthesis.models import SynthesisedRule
         from packages.checker_synthesis.synthesise import (

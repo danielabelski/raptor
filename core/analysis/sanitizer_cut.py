@@ -920,7 +920,7 @@ def _element_exclusive_reason(
 
 def _vertex_cut_siblings_clean(
     graph, rd, sink, sink_arg: str,
-    matched_bindings, candidate_callables,
+    _matched_bindings, candidate_callables,
     *,
     java_source_text=None,
     java_file_path=None,
@@ -973,7 +973,7 @@ def _vertex_cut_siblings_clean(
 
 
 def _siblings_fold_or_refuse(
-    graph, rd, sink, sink_arg: str,
+    _graph, rd, sink, sink_arg: str,
     index, table_resolver, config_resolver, invocation_hook,
     candidate_callables,
     java_source_text=None,
@@ -1044,10 +1044,10 @@ def _rhs_is_catalog_call(rhs, candidate_callables) -> bool:
 
 def _whole_array_taint_free_reason(
     graph,
-    sources_set,
+    _sources_set,
     sink,
     sink_arg: str,
-    source_symbols,
+    _source_symbols,
     candidate_callables,
     java_source_text: str,
     java_file_path: str | None = None,

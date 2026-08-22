@@ -396,7 +396,7 @@ def _extract_guard_from_hypothesis(hypothesis: str) -> str | None:
 
 def _verify_taint_to_arithmetic(
     function_name: str,
-    hypothesis: str,
+    _hypothesis: str,
     server: Any,
 ) -> CrossFunctionVerdict | None:
     """Check if user-controlled data flows through arithmetic to a size/alloc.

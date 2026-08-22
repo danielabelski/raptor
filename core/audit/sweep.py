@@ -2189,7 +2189,7 @@ def _extract_overflow_to_oob_operands(
 
 
 def _extract_path_conditions(
-    hypothesis: str, source: str,
+    hypothesis: str, _source: str,
 ) -> list:
     """Extract condition strings for validate-path from hypothesis text.
 
@@ -2646,7 +2646,7 @@ def _wait_for_presweep_server(
 
 def run_joern_pre_sweep(
     target_path: Path,
-    checklist: dict,
+    _checklist: dict,
     cache_dir: Path | None = None,
     on_progress: Callable | None = None,
     stall_timeout: int = 600,

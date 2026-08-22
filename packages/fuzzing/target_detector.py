@@ -344,7 +344,7 @@ def _detect_macho(path: Path, magic: bytes, sys_platform: str) -> TargetInfo:
 
 def _detect_pe(
     path: Path,
-    magic: bytes,
+    _magic: bytes,
     suffix: str,
     sys_platform: str,
 ) -> TargetInfo:

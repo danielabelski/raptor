@@ -233,7 +233,7 @@ def build_image(
     tmpfile: Path | None = None
     try:
         if dockerfile_text is not None:
-            with tempfile.NamedTemporaryFile(  # noqa: SIM115 -- delete=False intentional
+            with tempfile.NamedTemporaryFile(
                 mode="w",
                 prefix="raptor-env-df-",
                 suffix=".Dockerfile",

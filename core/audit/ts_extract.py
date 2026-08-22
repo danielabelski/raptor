@@ -35,10 +35,10 @@ try:
 except ImportError:
     _TS_AVAILABLE = False
 
-    def _get_parser(lang: str) -> None:  # type: ignore[misc]
+    def _get_parser(_lang: str) -> None:  # type: ignore[misc]
         return None
 
-    def language_for_file(filepath: str) -> str | None:  # type: ignore[misc]
+    def language_for_file(_filepath: str) -> str | None:  # type: ignore[misc]
         return None
 
     _FUNCTION_TYPES: dict[str, tuple] = {}  # type: ignore[no-redef]
@@ -338,7 +338,7 @@ def _find_enclosing_function(node, lang: str):
     return None
 
 
-def _get_func_name(func_node, lang: str, src: bytes) -> str:
+def _get_func_name(func_node, _lang: str, src: bytes) -> str:
     """Extract function name from a function definition node."""
     if func_node is None:
         return "<module>"
@@ -358,7 +358,7 @@ def _get_func_name(func_node, lang: str, src: bytes) -> str:
     return "<unknown>"
 
 
-def _get_func_body(func_node: Node, lang: str):
+def _get_func_body(func_node: Node, _lang: str):
     """Get the body/block node of a function."""
     body = func_node.child_by_field_name("body")
     if body is not None:
@@ -437,7 +437,7 @@ def _parse_file(file_path: str, source: str):
     return tree, lang, src
 
 
-def _iter_functions(tree, lang: str, src: bytes, file_path: str):
+def _iter_functions(tree, lang: str, src: bytes, _file_path: str):
     """Iterate over (func_node, func_name, body_node) in a parse tree."""
     func_types = _FUNCTION_TYPES.get(lang, ())
     for node in _walk_descendants(tree.root_node):
@@ -513,7 +513,7 @@ def extract_call_chains(
     call_types = _CALL_TYPES.get(lang, ())
     results: list[CallChain] = []
 
-    for func_node, func_name, body in _iter_functions(tree, lang, src, file_path):
+    for _func_node, func_name, body in _iter_functions(tree, lang, src, file_path):
         # Track reassignment chains: var → [steps]
         var_chains: dict[str, list[CallStep]] = {}
 
@@ -632,7 +632,7 @@ def _extract_assignment_parts(
 
 
 def _extract_call_name(
-    node: Node, lang: str, src: bytes, call_types: tuple[str, ...],
+    node: Node, _lang: str, src: bytes, call_types: tuple[str, ...],
 ) -> str:
     """Extract the call name from an expression that may be a call."""
     # Java method_invocation uses "name"/"object" fields, not "function"
@@ -658,7 +658,7 @@ def _extract_call_name(
 
 
 def _extract_first_arg(
-    node: Node, lang: str, src: bytes, call_types: tuple[str, ...],
+    node: Node, _lang: str, src: bytes, _call_types: tuple[str, ...],
 ) -> str:
     """Extract the first argument's text from a call."""
     args_node = node.child_by_field_name("arguments")
@@ -792,7 +792,7 @@ def extract_string_literals(
     return results
 
 
-def _strip_string_delimiters(text: str, lang: str) -> str:
+def _strip_string_delimiters(text: str, _lang: str) -> str:
     """Remove quotes (and language prefixes like r/b/f/u) from a string literal."""
     if len(text) < 2:
         return ""
@@ -818,7 +818,7 @@ def _strip_string_delimiters(text: str, lang: str) -> str:
     return text
 
 
-def _classify_string_context(node, lang: str) -> str:
+def _classify_string_context(node, _lang: str) -> str:
     """Determine the role of a string literal from its parent context."""
     parent = node.parent
     if parent is None:
@@ -1033,7 +1033,7 @@ def extract_function_body(
         return None
     tree, lang, src = parsed
 
-    for func_node, name, body in _iter_functions(tree, lang, src, file_path):
+    for func_node, name, _body in _iter_functions(tree, lang, src, file_path):
         if name == func_name:
             text = _node_text(func_node, src)
             if len(text) > _FUNC_BODY_MAX:

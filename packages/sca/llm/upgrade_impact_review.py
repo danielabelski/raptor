@@ -79,7 +79,7 @@ def _cheap_safe_check(
 
 
 def _short_circuit_safe_result(
-    dep: Dependency, reasoning: str,
+    _dep: Dependency, reasoning: str,
 ) -> UpgradeImpactVerdict:
     """Build a safe-verdict UpgradeImpactVerdict from a cheap-tier
     ``clear_safe`` outcome. Confidence is medium, not high — the

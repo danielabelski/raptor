@@ -260,7 +260,7 @@ def _find_enclosing_function_node(node, lang: str):
     return None
 
 
-def _get_function_name(func_node, lang: str, source_bytes: bytes) -> str:
+def _get_function_name(func_node, _lang: str, source_bytes: bytes) -> str:
     """Extract function name from a function definition node."""
     if func_node is None:
         return "<module>"
@@ -377,7 +377,7 @@ def _determine_polarity(
     cond_node: Node,
     sink_line: int,
     lang: str,
-    source_bytes: bytes,
+    _source_bytes: bytes,
 ) -> str:
     """Determine if the sink is in the true-branch or else-branch.
 
@@ -576,7 +576,7 @@ def _find_preceding_guard_clauses(
     return results
 
 
-def _is_exit_only_body(if_node, lang: str, exit_types: tuple) -> bool:
+def _is_exit_only_body(if_node, _lang: str, exit_types: tuple) -> bool:
     """Check if an if-node's consequence body contains only exit statements.
 
     Handles multiple tree-sitter patterns:
@@ -610,7 +610,7 @@ def _is_exit_only_body(if_node, lang: str, exit_types: tuple) -> bool:
     return False
 
 
-def _block_statements(block_node, exit_types: tuple) -> list:
+def _block_statements(block_node, _exit_types: tuple) -> list:
     """Extract meaningful statement children from a block node.
 
     Handles Go's block → { statement_list { stmts } } nesting.

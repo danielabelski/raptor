@@ -624,12 +624,12 @@ def _render_openai_untrusted_text(block: UntrustedBlock, nonce: str, profile: Mo
     )
 
 
-def _render_secalign(block: UntrustedBlock, nonce: str, profile: ModelDefenseProfile) -> str:
+def _render_secalign(block: UntrustedBlock, _nonce: str, profile: ModelDefenseProfile) -> str:
     rendered = _content_for_envelope(block.content, profile)
     return f'[MARK_INPT]\n{rendered}\n[/MARK_INPT]'
 
 
-def _render_begin_end_marker(block: UntrustedBlock, nonce: str, profile: ModelDefenseProfile) -> str:
+def _render_begin_end_marker(block: UntrustedBlock, _nonce: str, profile: ModelDefenseProfile) -> str:
     marker = block.kind.upper()
     if not _MARKER_RE.fullmatch(marker):
         msg = (

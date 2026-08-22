@@ -223,7 +223,7 @@ def make_batch_review_fn(
 
     def batch_review_fn(
         contexts: list[dict[str, Any]],
-        config: OrchestratorConfig,
+        _config: OrchestratorConfig,
     ) -> list[ReviewOutcome]:
         if not contexts:
             return []
@@ -297,7 +297,7 @@ def make_batch_review_fn(
                 results_by_key[rkey] = r
 
         outcomes: list[ReviewOutcome] = []
-        for i, ctx in enumerate(contexts):
+        for _i, ctx in enumerate(contexts):
             ckey = f"{ctx['file']}:{ctx['function']}"
             r = results_by_key.get(ckey)
             if r is not None:

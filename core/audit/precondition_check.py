@@ -383,7 +383,7 @@ _BOUNDS_PATTERNS = [
 
 def _check_bounds(
     source: str, file: str, func: str,
-    parameter: str, expect_absent: bool,
+    _parameter: str, expect_absent: bool,
 ) -> CheckResult:
     """Check if a function performs bounds checking.
 
@@ -459,7 +459,7 @@ _SANITIZE_PATTERNS = [
 
 def _check_sanitization(
     source: str, file: str, func: str,
-    parameter: str, expect_absent: bool,
+    _parameter: str, expect_absent: bool,
 ) -> CheckResult:
     """Check if a function sanitizes/validates input.
 
@@ -507,8 +507,8 @@ def _check_sanitization(
 
 
 def _check_attacker_control(
-    source: str, file: str, func: str,
-    parameter: str, expect_absent: bool,
+    _source: str, file: str, func: str,
+    _parameter: str, expect_absent: bool,
     context_map: dict[str, Any] | None = None,
 ) -> CheckResult:
     """Check if a function's input is attacker-controlled.
@@ -639,7 +639,7 @@ _SINK_CALL_PATTERNS = [
 
 def _check_reaches_sink(
     source: str, file: str, func: str,
-    parameter: str, expect_absent: bool,
+    _parameter: str, expect_absent: bool,
 ) -> CheckResult:
     """Check if a function directly calls a dangerous API (sink).
 

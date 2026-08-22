@@ -419,7 +419,7 @@ def _relocate_by_hash(
 
 
 def _relocate_by_name(
-    lines: list[str], name: str, span_len: int,
+    lines: list[str], name: str, _span_len: int,
 ) -> int | None:
     """Best-effort 1-indexed start line for *name*'s definition."""
     pattern = _name_re(name)

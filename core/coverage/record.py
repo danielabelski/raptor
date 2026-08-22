@@ -150,7 +150,7 @@ def cleanup_manifest(run_dir: Path) -> bool:
         return False
 
 
-def build_from_semgrep(run_dir: Path, semgrep_json_path: Path,
+def build_from_semgrep(_run_dir: Path, semgrep_json_path: Path,
                        rules_applied: list[str] | None = None,
                        extra_error_json_paths: list[Path] | None = None,
                        ) -> dict[str, Any] | None:

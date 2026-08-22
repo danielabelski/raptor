@@ -347,7 +347,7 @@ def _find_new_and_resolved(
 # --- Tool gap analysis ---
 
 def _build_tool_gaps(
-    run_dirs: list[Path],
+    _run_dirs: list[Path],
     findings_by_run: dict[str, list[dict]],
     run_types: dict[str, str],
 ) -> dict[str, Any]:
@@ -418,7 +418,7 @@ def _build_action_list(
     disagreements: list[dict],
     new_resolved: dict[str, list[dict]],
     tool_gaps: dict[str, Any],
-    persistent: list[dict],
+    _persistent: list[dict],
 ) -> list[dict[str, Any]]:
     """Synthesize all analyses into a single prioritised action list."""
     actions: list[dict[str, Any]] = []

@@ -499,7 +499,7 @@ class UrllibClient:
                 None,
             )
             pool = shared if shared is not None else _new_proxy_manager(purl)
-        except Exception as exc:  # noqa: BLE001 — urllib3 raises several types
+        except Exception as exc:
             from core.security.redaction import redact_secrets
             msg = (
                 f"invalid proxy configuration for scheme "

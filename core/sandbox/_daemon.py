@@ -308,7 +308,7 @@ def _recv_until(proc, terminator, per_recv_timeout: float) -> bytes:
 # --------------------------------------------------------------------
 
 
-def _handle_ping(payload: dict) -> dict:
+def _handle_ping(_payload: dict) -> dict:
     return {"ok": True, "pong": True, "pid": os.getpid()}
 
 

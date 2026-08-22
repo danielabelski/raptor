@@ -97,7 +97,7 @@ def _pid_is_our_server(state: dict[str, Any]) -> bool:
     return "java" in comm.lower() or "joern" in comm.lower()
 
 
-def _read_state(lock_fd: int) -> dict[str, Any] | None:
+def _read_state(_lock_fd: int) -> dict[str, Any] | None:
     if not _STATE_FILE.exists():
         return None
     # The state file carries the server credential; tighten legacy
@@ -110,7 +110,7 @@ def _read_state(lock_fd: int) -> dict[str, Any] | None:
         return None
 
 
-def _write_state(lock_fd: int, state: dict[str, Any]) -> None:
+def _write_state(_lock_fd: int, state: dict[str, Any]) -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _STATE_FILE.with_suffix(".tmp")
     # 0600 from creation — the file carries the server credential.
@@ -123,7 +123,7 @@ def _write_state(lock_fd: int, state: dict[str, Any]) -> None:
     tmp.rename(_STATE_FILE)
 
 
-def _remove_state(lock_fd: int) -> None:
+def _remove_state(_lock_fd: int) -> None:
     try:
         _STATE_FILE.unlink(missing_ok=True)
     except OSError:

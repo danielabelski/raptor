@@ -167,7 +167,7 @@ def _fingerprint(fp_input, args):
     return _fingerprint_image_ref(value, args)
 
 
-def _fingerprint_image_ref(ref: str, args):
+def _fingerprint_image_ref(ref: str, _args):
     """Pull the image, extract the main binary, fingerprint it.
     Reuses the bumper's OCI extractor."""
     from core.binary import capability_fingerprint

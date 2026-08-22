@@ -921,7 +921,7 @@ def _collect_one(
 
 def _sanitise_findings(
     findings: list[dict[str, Any]],
-    clone_root: Path,
+    _clone_root: Path,
 ) -> list[dict[str, Any]]:
     """Strip file paths + transient details that don't help
     validation, keep score + dep + advisory metadata.

@@ -173,7 +173,7 @@ def _yanked_rubygems(client, name, version) -> str | None:
     return None
 
 
-def _yanked_nuget(client, name, version) -> str | None:
+def _yanked_nuget(client, _name, _version) -> str | None:
     """NuGet uses ``listed: false`` rather than a yanked flag.
     Available only via the registration-index endpoint, which our
     client doesn't expose today. Stubbed for future expansion."""

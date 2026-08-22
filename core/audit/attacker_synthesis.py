@@ -638,8 +638,8 @@ def _find_reachable_entries(
 
 
 def _check_chain_constraints(
-    outcome_a: Any,
-    outcome_b: Any,
+    _outcome_a: Any,
+    _outcome_b: Any,
     prim_a: AttackPrimitive,
     prim_b: AttackPrimitive,
 ) -> list[str]:

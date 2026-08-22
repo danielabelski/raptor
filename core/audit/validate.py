@@ -52,8 +52,8 @@ def validate_findings(
     *,
     target_path: Path,
     out_dir: Path,
-    review_fn: Any = None,
-    config: Any = None,
+    _review_fn: Any = None,
+    _config: Any = None,
 ) -> OrchestratorResult:
     """Emit audit findings and dispatch /validate.
 

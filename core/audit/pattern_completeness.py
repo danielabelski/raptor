@@ -345,7 +345,7 @@ def _detect_sibling_prefix_gaps(
 
 def _detect_char_class_exclusions(
     filename: str,
-    source: str,
+    _source: str,
     lines: list[str],
 ) -> list[PatternGap]:
     """Find negated character classes that exclude valid domain chars."""

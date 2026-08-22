@@ -96,7 +96,7 @@ def _fallback_compare(a: str, b: str) -> int:
     # Ordering tuple: (has_dev_n_or_max, pre_or_none, post_or_none).
     # Build a comparable key.
     def keyof(p):
-        release, pre, post, dev = p
+        _release, pre, post, dev = p
         # dev makes a version "lower" than the same release with no pre.
         # pre similar.
         # Convention: assign small integers to release/pre/post categories.

@@ -550,7 +550,7 @@ def collection_guard_reason(
     if method is None:
         decisions.append("no enclosing method")
         return None
-    sink_line_start, sink_line_end = _line_byte_range(
+    _sink_line_start, sink_line_end = _line_byte_range(
         source_text, sink_line)
 
     from core.analysis.cfg_builder_java import _NameResolver, build_import_map

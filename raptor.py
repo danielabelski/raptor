@@ -67,14 +67,14 @@ import core.startup.process_init  # noqa: F401
 # same archive). Re-exported here under the old private name
 # for backward compatibility with anything in this module that
 # still references _safe_cache_name.
-from core.archive import safe_cache_name as _safe_cache_name  # noqa: E402
-from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
-from core.run.output import (  # noqa: E402
+from core.archive import safe_cache_name as _safe_cache_name
+from core.run.metadata import complete_run, fail_run, start_run
+from core.run.output import (
     TargetMismatchError,
     get_output_dir,
     resolve_default_target,
 )
-from core.run.safe_io import safe_run_mkdir  # noqa: E402
+from core.run.safe_io import safe_run_mkdir
 
 
 def _extract_target(args: list) -> str | None:

@@ -579,7 +579,7 @@ def _domain_model_role(
 
 
 def _iris_spec_role(
-    names: Sequence[str], file_path: str, ctx: RoleContext,
+    names: Sequence[str], _file_path: str, ctx: RoleContext,
 ) -> RoleEvidence | None:
     """IRIS/taint specs — the spec's EvidenceTier is carried onto the
     receipt verbatim and decides the grade."""
@@ -619,7 +619,7 @@ def _iris_spec_role(
 
 
 def _sink_catalog_role(
-    names: Sequence[str], file_path: str, ctx: RoleContext,
+    names: Sequence[str], _file_path: str, ctx: RoleContext,
 ) -> RoleEvidence | None:
     """Discovered project sinks (call-graph facts for wrapper /
     side_effect reasons; naming-reason sinks stay detection-grade)."""

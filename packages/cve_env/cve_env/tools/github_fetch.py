@@ -230,7 +230,7 @@ def resolve_github_token() -> str:
         from cve_env.utils.safe_env import safe_subprocess_env
 
         outcome = run_with_timeout(
-            ["gh", "auth", "token"],  # noqa: S603,S607 -- 'gh' is on PATH in dev env
+            ["gh", "auth", "token"],
             timeout=5,
             env=safe_subprocess_env(),
         )

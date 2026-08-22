@@ -151,7 +151,6 @@ class Response:
     def close(self) -> None:
         """No-op for the buffered backend; matches ``requests.Response``
         which closes the underlying connection."""
-        pass
 
 
 class NotModified(HttpError):

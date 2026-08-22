@@ -522,9 +522,9 @@ def run_prefilter(
 def _is_trivially_clean(
     result: PrefilterResult,
     source: str,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
-    metadata: dict[str, Any] | None,
+    _metadata: dict[str, Any] | None,
     *,
     extra_dangerous: frozenset = frozenset(),
 ) -> bool:
@@ -585,7 +585,7 @@ _WRAPPER_PTR_ARITH_RE = re.compile(
 def _is_trivial_wrapper(
     source: str,
     lang: str,
-    callees: list[dict[str, Any]] | None,
+    _callees: list[dict[str, Any]] | None,
     *,
     project_sinks: frozenset | None = None,
     extra_dangerous: frozenset = frozenset(),
@@ -874,7 +874,7 @@ def _check_c_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
     *,
     extra_dangerous: frozenset = frozenset(),
@@ -1262,7 +1262,7 @@ def _check_python_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Python source for known vulnerability patterns."""
@@ -1347,7 +1347,7 @@ def _check_go_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Go source for known vulnerability patterns."""
@@ -1507,7 +1507,7 @@ def _check_rust_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Rust source for known vulnerability patterns."""
@@ -1626,7 +1626,7 @@ def _check_php_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check PHP source for known vulnerability patterns."""
@@ -1769,7 +1769,7 @@ def _check_java_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Java source for known vulnerability patterns."""
@@ -1905,7 +1905,7 @@ def _check_js_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check JavaScript/TypeScript source for known vulnerability patterns."""
@@ -2054,7 +2054,7 @@ def _check_lua_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Lua source for known vulnerability patterns."""
@@ -2170,7 +2170,7 @@ def _check_perl_patterns(
     result: PrefilterResult,
     source: str,
     line_start: int,
-    callers: list[dict[str, Any]] | None,
+    _callers: list[dict[str, Any]] | None,
     callees: list[dict[str, Any]] | None,
 ) -> None:
     """Check Perl source for known vulnerability patterns."""

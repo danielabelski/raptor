@@ -364,7 +364,7 @@ def generate_forward_reachable_blocks(
     return out
 
 
-def _render_one_entry_forward(ep: dict[str, Any], fr: dict[str, Any]) -> str:
+def _render_one_entry_forward(_ep: dict[str, Any], fr: dict[str, Any]) -> str:
     """Render one entry's forward closure as a top-down flowchart.
 
     Layout: host at top, internal callees branching down (green),

@@ -19,7 +19,7 @@ from typing import Any
 # Re-exported so ``core.ast`` consumers don't have to know it lives in
 # inventory. When the future ``core.treesitter`` lift happens, this
 # import moves and ``core.ast`` callers are unaffected.
-from core.inventory.call_graph import CallSite  # noqa: F401  (re-export)
+from core.inventory.call_graph import CallSite
 
 
 SCHEMA_VERSION = 1

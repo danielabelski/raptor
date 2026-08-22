@@ -65,7 +65,7 @@ class ConsistencyVerifier:
             EvidenceSource.GHARCHIVE: self._verify_gharchive_observation,
             EvidenceSource.WAYBACK: self._verify_url_accessible,
             EvidenceSource.SECURITY_VENDOR: self._verify_security_vendor,
-            EvidenceSource.GIT: lambda o: VerificationResult(is_valid=True, errors=["Local git verification not supported"]),
+            EvidenceSource.GIT: lambda _o: VerificationResult(is_valid=True, errors=["Local git verification not supported"]),
         }
 
         verifier = verifiers.get(source)

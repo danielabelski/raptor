@@ -473,7 +473,7 @@ class TranslationView:
 
 
 def preprocess_view(
-    path: str,
+    _path: str,
     language: str,
     content: str,
     *,

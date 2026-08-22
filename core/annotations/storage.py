@@ -439,7 +439,7 @@ def _split_sections(text: str) -> list[tuple[str, int, int]]:
 
 
 def _parse_section(
-    text: str, name: str, start: int, end: int,
+    text: str, _name: str, start: int, end: int,
 ) -> tuple[dict[str, str], str]:
     """Parse one section: returns (metadata, body)."""
     section = text[start:end]

@@ -150,7 +150,7 @@ _FIXTURES: list[_Fixture] = [
 ]
 
 
-def _lexical_decision(fx: _Fixture, path: str) -> bool:
+def _lexical_decision(fx: _Fixture, _path: str) -> bool:
     """Pure lexical decision for the fixture's shape. Calls the
     smt_barrier lexical helpers directly (no value-bound kwargs, so
     no recursion into the gate)."""

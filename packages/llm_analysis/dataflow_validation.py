@@ -1438,7 +1438,7 @@ def _tier4_smt_refine(
     # Goes onto the existing ValidationResult.evidence list so the
     # report renderer + /exploit downstream can see why the verdict
     # was refined.
-    def _smt_evidence(label: str, summary: str) -> Evidence:
+    def _smt_evidence(_label: str, summary: str) -> Evidence:
         return Evidence(
             tool="smt",
             rule="path-feasibility",

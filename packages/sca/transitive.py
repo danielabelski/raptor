@@ -886,7 +886,7 @@ def _extract_pip_compile_via(blob: bytes) -> dict[str, list[str]]:
 def _parse_lockfile_bytes(
     ecosystem: str, blob: bytes,
     parser: Callable[[Path], list[Dependency]],
-    host_manifest_path: Path,
+    _host_manifest_path: Path,
 ) -> list[Dependency] | None:
     """Most lockfile parsers take a ``Path``. Write the bytes to a
     temp file matching the parser's expected name, parse, return."""

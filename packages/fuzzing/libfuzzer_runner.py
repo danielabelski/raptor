@@ -279,7 +279,7 @@ class LibFuzzerRunner:
     def _parse_result(
         self,
         stderr: str,
-        stdout: str,
+        _stdout: str,
         elapsed: float,
     ) -> LibFuzzerResult:
         result = LibFuzzerResult(

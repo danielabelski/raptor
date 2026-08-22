@@ -156,7 +156,7 @@ def _resolve_match_function(
 def _try_replay_from_library(
     seed,
     repo_root: Path,
-    out_dir: Path,
+    _out_dir: Path,
     llm_callable,
     *,
     max_matches: int,

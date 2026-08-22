@@ -167,7 +167,7 @@ def _cmake_recipe(target: Path) -> BuildRecipe:
     return BuildRecipe(build_system="cmake", steps=steps)
 
 
-def _meson_recipe(target: Path) -> BuildRecipe:
+def _meson_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="meson",
         steps=[RecipeStep(
@@ -179,7 +179,7 @@ def _meson_recipe(target: Path) -> BuildRecipe:
     )
 
 
-def _make_recipe(target: Path) -> BuildRecipe:
+def _make_recipe(_target: Path) -> BuildRecipe:
     """Plain hand-written Makefile (no autotools/cmake/meson
     generators present). Just ``make``.
 
@@ -199,21 +199,21 @@ def _make_recipe(target: Path) -> BuildRecipe:
     )
 
 
-def _cargo_recipe(target: Path) -> BuildRecipe:
+def _cargo_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="cargo",
         steps=[RecipeStep(command="cd <target> && cargo build --release")],
     )
 
 
-def _go_recipe(target: Path) -> BuildRecipe:
+def _go_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="go",
         steps=[RecipeStep(command="cd <target> && go build ./...")],
     )
 
 
-def _poetry_recipe(target: Path) -> BuildRecipe:
+def _poetry_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="poetry",
         steps=[RecipeStep(command="cd <target> && poetry install")],
@@ -241,28 +241,28 @@ def _pip_recipe(target: Path) -> BuildRecipe:
     return BuildRecipe(build_system="pip", steps=steps)
 
 
-def _npm_recipe(target: Path) -> BuildRecipe:
+def _npm_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="npm",
         steps=[RecipeStep(command="cd <target> && npm install")],
     )
 
 
-def _yarn_recipe(target: Path) -> BuildRecipe:
+def _yarn_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="yarn",
         steps=[RecipeStep(command="cd <target> && yarn install")],
     )
 
 
-def _maven_recipe(target: Path) -> BuildRecipe:
+def _maven_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="maven",
         steps=[RecipeStep(command="cd <target> && mvn package -DskipTests")],
     )
 
 
-def _gradle_recipe(target: Path) -> BuildRecipe:
+def _gradle_recipe(_target: Path) -> BuildRecipe:
     return BuildRecipe(
         build_system="gradle",
         steps=[RecipeStep(command="cd <target> && ./gradlew build -x test")],

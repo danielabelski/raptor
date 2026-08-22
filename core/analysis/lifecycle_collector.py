@@ -101,7 +101,7 @@ def collect_read_site(
 
 def collect_field_sites_from_source(
     source: str,
-    file_path: str,
+    _file_path: str,
     field_name: str,
     struct_type: str = "",  # noqa: ARG001
 ) -> dict[str, list[int]]:

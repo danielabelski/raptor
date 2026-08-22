@@ -106,7 +106,7 @@ class DispatchTask:
         """Build the prompt for one item. Must be implemented by subclass."""
         raise NotImplementedError
 
-    def get_schema(self, item: dict[str, Any]) -> dict | None:
+    def get_schema(self, _item: dict[str, Any]) -> dict | None:
         """Schema for structured output, or None for free-form generate()."""
         return None
 
@@ -123,7 +123,7 @@ class DispatchTask:
         return 0
 
     def process_result(
-        self, item: dict[str, Any], result: DispatchResult,
+        self, _item: dict[str, Any], result: DispatchResult,
     ) -> dict[str, Any]:
         """Post-process a single result. Default: return result dict with metadata."""
         out = dict(result.result)

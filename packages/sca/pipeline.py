@@ -1325,7 +1325,7 @@ def _run_maintainer_review(client, supply_chain_findings, canonical, http, optio
 
 
 def _run_slopsquat_review(
-    client, supply_chain_findings, canonical, http, options, target=None,
+    client, supply_chain_findings, _canonical, http, options, target=None,
 ) -> None:
     """Run LLM slopsquat verdict on every ``slopsquat_suspect``
     finding. Attaches the verdict to the finding's evidence;

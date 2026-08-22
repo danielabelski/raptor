@@ -314,7 +314,7 @@ class _ChildResult:
             }
 
 
-def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
+def _run_child(_role: str, spec: dict[str, Any], result: _ChildResult) -> None:
     """Run one sandbox.run command as a child of THIS process. The fork
     inside sandbox.run inherits our user-ns + net-ns, which is the
     architectural point — target and exploit land in the same netns

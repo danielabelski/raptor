@@ -299,7 +299,7 @@ def main(argv: list | None = None) -> int:
 
     # Pass 1: filter advisories down to ones with a commit ref.
     candidates = []
-    for jp, adv in _iter_advisories(args.ghsa_root, args.years, cwes_set, eco_set):
+    for _jp, adv in _iter_advisories(args.ghsa_root, args.years, cwes_set, eco_set):
         ref = _first_commit_ref(adv)
         if ref is None:
             continue

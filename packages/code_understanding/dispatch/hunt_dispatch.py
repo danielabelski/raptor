@@ -283,7 +283,7 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
             # Handler returns success — actual variant collection happens
             # via terminal_tool_input on the loop result. This handler
             # is just the "ack" the loop dispatches before terminating.
-            handler=lambda args: json.dumps({"received": True}),
+            handler=lambda _args: json.dumps({"received": True}),
         ),
     ]
 

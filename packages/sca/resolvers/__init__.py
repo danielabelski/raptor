@@ -285,18 +285,18 @@ def _run(
 # Registry
 # ---------------------------------------------------------------------------
 
-from . import bundler as _bundler     # noqa: E402,F401
-from . import cargo as _cargo         # noqa: E402,F401
-from . import composer as _composer   # noqa: E402,F401
-from . import gomod as _gomod         # noqa: E402,F401
-from . import gradle as _gradle       # noqa: E402,F401
-from . import maven as _maven         # noqa: E402,F401
-from . import npm as _npm             # noqa: E402,F401
-from . import nuget as _nuget         # noqa: E402,F401
-from . import pip as _pip             # noqa: E402,F401
-from . import pnpm as _pnpm           # noqa: E402,F401
-from . import poetry as _poetry       # noqa: E402,F401
-from . import yarn as _yarn           # noqa: E402,F401
+from . import bundler as _bundler     # noqa: E402
+from . import cargo as _cargo         # noqa: E402
+from . import composer as _composer   # noqa: E402
+from . import gomod as _gomod         # noqa: E402
+from . import gradle as _gradle       # noqa: E402
+from . import maven as _maven         # noqa: E402
+from . import npm as _npm             # noqa: E402
+from . import nuget as _nuget         # noqa: E402
+from . import pip as _pip             # noqa: E402
+from . import pnpm as _pnpm           # noqa: E402
+from . import poetry as _poetry       # noqa: E402
+from . import yarn as _yarn           # noqa: E402
 
 
 # Resolver registry. Order matters per ecosystem in two ways:

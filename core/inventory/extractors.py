@@ -385,7 +385,7 @@ class JavaScriptExtractor:
 
         return None
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions = []
         seen = set()
         lines = content.split('\n')
@@ -544,7 +544,7 @@ class CExtractor:
         except Exception:  # noqa: BLE001 — metadata is best-effort
             return None
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions = []
         seen = set()
         lines = content.split('\n')
@@ -998,7 +998,7 @@ class JavaExtractor:
             parts.append("".join(current))
         return parts
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions = []
         current_class = None
         brace_depth = 0
@@ -1079,7 +1079,7 @@ class GoExtractor:
     # identifier — confusing greps and downstream cross-references.
     PATTERN = r'(?a)^func\s+(?:\((\w+)\s+(\*?\w+)\)\s+)?(\w+)\s*\('
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions = []
 
         for i, line in enumerate(content.split('\n'), 1):
@@ -1184,7 +1184,7 @@ class LuaExtractor:
             i += 1
         return ''.join(out)
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         lines = content.split('\n')
         functions: list[FunctionInfo] = []
         seen: set = set()
@@ -1332,7 +1332,7 @@ class PerlExtractor:
 
     _SUB_RE = re.compile(r'^\s*sub\s+([A-Za-z_]\w*)\b')
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions: list[FunctionInfo] = []
         seen: set = set()
         lines = content.split('\n')
@@ -1370,7 +1370,7 @@ class ShellExtractor:
     _POSIX_RE = re.compile(r'^\s*([A-Za-z_][\w.-]*)\s*\(\s*\)\s*\{?')
     _BASH_RE = re.compile(r'^\s*function\s+([A-Za-z_][\w.-]*)\s*(?:\(\s*\))?\s*\{?')
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions: list[FunctionInfo] = []
         seen: set = set()
         lines = content.split('\n')
@@ -1451,7 +1451,7 @@ class AsmExtractor:
         r'(?m)^\s*(?:\.globa?l|global|\.type)\s+([A-Za-z_][\w.$]*)'
     )
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         lines = content.split('\n')
         exported = set(self._GLOBL_RE.findall(content))
         labels: list[tuple] = []  # (name, 0-based line index)
@@ -1501,7 +1501,7 @@ class GitHubWorkflowExtractor:
     _STEP_ITEM_RE = re.compile(r'^(\s+)-\s')
     _RUN_RE = re.compile(r'(?m)^\s+(?:-\s+)?run:')
 
-    def extract(self, filepath: str, content: str) -> list[CodeItem]:
+    def extract(self, _filepath: str, content: str) -> list[CodeItem]:
         lines = content.split('\n')
         jobs_start = None
         for i, line in enumerate(lines):
@@ -1595,7 +1595,7 @@ class GenericExtractor:
         r'(?:public|private|protected)?\s*(?:static)?\s*\w+\s+(\w+)\s*\([^)]*\)\s*\{',
     ]
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
+    def extract(self, _filepath: str, content: str) -> list[FunctionInfo]:
         functions = []
         seen = set()
 

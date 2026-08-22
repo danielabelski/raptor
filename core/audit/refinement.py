@@ -65,7 +65,7 @@ def should_refine(
 
 
 def build_refinement_prompt(
-    ctx: dict[str, Any],
+    _ctx: dict[str, Any],
     refinement: RefinementContext,
 ) -> str:
     """Build the refinement section injected into the review context.
@@ -214,7 +214,7 @@ def should_clean_check(
 
 
 def build_clean_check_prompt(
-    ctx: dict[str, Any],
+    _ctx: dict[str, Any],
     tool_flows: str,
 ) -> str:
     """Build the clean-check prompt injected into the review context.
@@ -412,7 +412,7 @@ def _dispatch_smt(
 
 def _dispatch_coccinelle(
     rule_path: str,
-    outcome: Any,
+    _outcome: Any,
     ctx: dict[str, Any],
     config: Any,
 ) -> dict[str, str] | None:
@@ -451,7 +451,7 @@ def _dispatch_coccinelle(
 
 def _dispatch_semgrep(
     rule_path: str,
-    outcome: Any,
+    _outcome: Any,
     ctx: dict[str, Any],
     config: Any,
 ) -> dict[str, str] | None:

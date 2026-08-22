@@ -718,7 +718,7 @@ def _extract_postconditions_from_summary(
 def _infer_postcondition(
     function_name: str,
     role: str,
-    summary_text: str,
+    _summary_text: str,
 ) -> Postcondition | None:
     if role == FunctionRole.SANITISER:
         return Postcondition(

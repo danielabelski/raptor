@@ -2885,9 +2885,9 @@ def _is_sanitizer_name(name: str) -> bool:
 
 def _build_reachability_note(
     role: str,
-    function_name: str,
+    _function_name: str,
     callers: list[dict[str, Any]],
-    callees: list[dict[str, Any]],
+    _callees: list[dict[str, Any]],
     dangerous_apis: list[str],
     on_flow: bool,
 ) -> str:

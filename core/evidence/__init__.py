@@ -298,7 +298,7 @@ class EvidenceRecord:
 
 def format_evidence_prose(
     record: EvidenceRecord,
-    target_path: str | None = None,
+    _target_path: str | None = None,
 ) -> str:
     """Format an EvidenceRecord as prose for the LLM prompt.
 
@@ -668,7 +668,7 @@ def build_evidence_index(
     joern_flows: dict[str, list] | None = None,
     imported_joern_flows: dict[str, list] | None = None,
     sarif_cache: Any | None = None,
-    prefilter_results: dict[str, Any] | None = None,
+    _prefilter_results: dict[str, Any] | None = None,
     context_map_sinks: list[dict[str, Any]] | None = None,
     binary_bridge: Any | None = None,
     scope: str | list[str] | None = None,

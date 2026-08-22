@@ -580,7 +580,7 @@ class Project:
         # Sort newest first for keep_latest
         running.sort(reverse=True)
 
-        for i, (ts, d, pid) in enumerate(running):
+        for i, (_ts, d, pid) in enumerate(running):
             # If session_pid is recorded and alive, skip — session will clean up
             if pid is not None and _pid_alive(pid):
                 continue

@@ -186,7 +186,7 @@ def _classify_entry_points(
 
 def format_callee_defenses(
     callee_summaries: list[Any],
-    callees: list[dict[str, Any]] | None = None,
+    _callees: list[dict[str, Any]] | None = None,
 ) -> str:
     """Surface callee preconditions/guards as explicit defense signals.
 

@@ -67,7 +67,7 @@ def _policy_for_stats(
     return Policy.FALL_THROUGH
 
 
-def _format_policy(policy: str, n: int, sample_size_floor: int = 10) -> str:
+def _format_policy(policy: str, _n: int, sample_size_floor: int = 10) -> str:
     """Operator-friendly policy label."""
     if policy == Policy.SHORT_CIRCUIT:
         return "short-circuit"

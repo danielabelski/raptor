@@ -89,7 +89,7 @@ def render_console_table(
 
     def _truncate_to_width(s: str, w: int) -> str:
         cur = 0
-        for i, ch in enumerate(s):
+        for i, _ch in enumerate(s):
             cur = _display_width(s[: i + 1])
             if cur > w:
                 return s[:i]

@@ -2863,7 +2863,7 @@ _TS_CLASS_STEREOTYPE_DECORATORS = frozenset({
 })
 
 
-def _ts_framework_entry(name: str, item: dict[str, Any]) -> bool:
+def _ts_framework_entry(_name: str, item: dict[str, Any]) -> bool:
     """A TS/JS method dispatched by a framework / DI container with no
     in-project caller — a method-level route/handler/resolver decorator, or a
     PUBLIC method of a stereotyped (container-managed / template-bound /
@@ -2901,7 +2901,7 @@ _CSHARP_CLASS_STEREOTYPE_ATTRS = frozenset({
 })
 
 
-def _csharp_framework_entry(name: str, item: dict[str, Any]) -> bool:
+def _csharp_framework_entry(_name: str, item: dict[str, Any]) -> bool:
     """A C# method dispatched by ASP.NET with no in-project caller — a method
     routing attribute (``[HttpGet]`` / ``[Route]``) or a PUBLIC method of a
     ``[ApiController]`` / ``[Controller]`` class. Monotonic add-entries lever:
@@ -2928,7 +2928,7 @@ _RUBY_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _ruby_framework_entry(name: str, item: dict[str, Any]) -> bool:
+def _ruby_framework_entry(_name: str, item: dict[str, Any]) -> bool:
     """A Ruby method dispatched by Rails with no in-project caller. Rails uses
     CONVENTION (no annotations): a class inheriting a framework base (a
     ``*Controller`` / job / mailer / channel) has its methods invoked by the
@@ -2966,7 +2966,7 @@ _PHP_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _php_framework_entry(name: str, item: dict[str, Any]) -> bool:
+def _php_framework_entry(_name: str, item: dict[str, Any]) -> bool:
     """A PHP method dispatched by Laravel / Symfony with no in-project caller —
     a Symfony ``#[Route]`` method attribute, or a method of a class whose
     ``class_attributes`` (extends/implements bases + class-level attributes)
@@ -3021,7 +3021,7 @@ _PYTHON_FRAMEWORK_BASES = frozenset({
 })
 
 
-def _python_framework_entry(name: str, item: dict[str, Any]) -> bool:
+def _python_framework_entry(_name: str, item: dict[str, Any]) -> bool:
     """A Python method dispatched by a web framework with no in-project caller —
     a method of a class-based view (Django ``View``/generic CBVs, DRF
     ``APIView``/``ViewSet``, Flask ``MethodView``). The framework routes HTTP

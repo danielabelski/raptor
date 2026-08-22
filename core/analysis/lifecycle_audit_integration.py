@@ -24,7 +24,7 @@ def check_lifecycle_at_function(
     function_name: str,
     source: str,
     out_dir: Path,
-    line: int = 0,
+    _line: int = 0,
 ) -> list[LifecycleFinding]:
     """Check a function for lifecycle-precondition violations.
 

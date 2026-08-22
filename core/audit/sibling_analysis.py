@@ -458,7 +458,7 @@ def format_asymmetry_report(asymmetries: list[Asymmetry]) -> str:
 
 
 def format_for_prompt(
-    groups: list[SiblingGroup],
+    _groups: list[SiblingGroup],
     asymmetries: list[Asymmetry],
 ) -> str:
     """Format sibling analysis results for injection into the LLM

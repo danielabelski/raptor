@@ -42,7 +42,7 @@ from collections.abc import Sequence
 
 # Shared parsing bones (deliberate private-name imports; the summary
 # modules form one family — see java_wrapper_summaries).
-from core.analysis.java_wrapper_summaries import (  # noqa: PLC2701
+from core.analysis.java_wrapper_summaries import (
     _CLASS_DECL,
     _IDENT,
     _Refused,

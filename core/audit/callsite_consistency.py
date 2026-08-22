@@ -394,7 +394,7 @@ def clear_parse_cache() -> None:
 # Tree-sitter extraction
 # ---------------------------------------------------------------------------
 
-def _callee_name_ts(call_node: Node, lang: str, src: bytes) -> str | None:
+def _callee_name_ts(call_node: Node, _lang: str, src: bytes) -> str | None:
     """Extract the function/method name from a call node."""
     func = call_node.child_by_field_name("function")
     if func is None:

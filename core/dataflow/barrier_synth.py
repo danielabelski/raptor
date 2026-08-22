@@ -637,7 +637,7 @@ class _CodeQLAdjudicationOracle:
         self._runner = runner
         self._call_count = 0
 
-    def judge(self, candidate, context):
+    def judge(self, candidate, _context):
         from core.orchestration.driver import Verdict
 
         self._call_count += 1

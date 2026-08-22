@@ -216,7 +216,7 @@ def _iter_memory_corruption_corpus(
     from collections import defaultdict
     buckets: dict[str, list[tuple]] = defaultdict(list)
     for entry in candidates:
-        finding, label, name = entry
+        finding, label, _name = entry
         key = (
             f"{label.verdict}:{label.fp_category}"
             if label.verdict == "false_positive"

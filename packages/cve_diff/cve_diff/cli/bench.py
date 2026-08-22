@@ -484,7 +484,7 @@ def _render_bench_markdown(summary: _BenchSummary) -> str:
             if v:
                 integrity_lines.append(f"| {k} | {v} |")
 
-    pass_n, refusal_n, issue_n = _outcome_buckets(summary)
+    _pass_n, refusal_n, issue_n = _outcome_buckets(summary)
 
     return (
         f"# Bench report — {summary.sample}\n\n"
@@ -546,7 +546,7 @@ def _render_html(summary: _BenchSummary) -> str:
     pct = 100.0 * summary.passed / summary.total if summary.total else 0.0
     source_hits = sum(1 for r in summary.results if r.ok and r.shape == "source")
     non_source = summary.passed - source_hits
-    pass_n, refusal_n, issue_n = _outcome_buckets(summary)
+    _pass_n, refusal_n, issue_n = _outcome_buckets(summary)
 
     rows: list[str] = []
     for r in summary.results:

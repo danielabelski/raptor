@@ -325,7 +325,7 @@ def make_tf_helper_resolver(source_text: str, span=None,
         return None
     from core.analysis.const_fold_java import TAINT_FREE
 
-    def resolver(node: Node, refold, depth: int):
+    def resolver(node: Node, _refold, depth: int):
         if node.type != "method_invocation":
             return None
         if node.child_by_field_name("object") is not None:

@@ -174,7 +174,7 @@ def probe_anthropic() -> HealthResult:
 def probe_nvd() -> HealthResult:
     api_key = os.environ.get("NVD_API_KEY", "").strip()
     headers = {"apiKey": api_key} if api_key else {}
-    latency, body, status, err = _timed_get(
+    latency, _body, status, err = _timed_get(
         "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2016-5195",
         headers=headers,
     )
@@ -187,7 +187,7 @@ def probe_nvd() -> HealthResult:
 
 
 def probe_osv() -> HealthResult:
-    latency, body, status, err = _timed_get(
+    latency, _body, status, err = _timed_get(
         "https://api.osv.dev/v1/vulns/CVE-2016-5195"
     )
     if err:
@@ -250,7 +250,7 @@ def probe_github() -> HealthResult:
 
 
 def probe_debian() -> HealthResult:
-    latency, body, status, err = _timed_get(
+    latency, _body, status, err = _timed_get(
         "https://security-tracker.debian.org/tracker/CVE-2016-5195",
     )
     if err:
@@ -261,7 +261,7 @@ def probe_debian() -> HealthResult:
 
 
 def probe_ubuntu() -> HealthResult:
-    latency, body, status, err = _timed_get(
+    latency, _body, status, err = _timed_get(
         "https://ubuntu.com/security/cves.json?q=CVE-2016-5195",
     )
     if err:
@@ -272,7 +272,7 @@ def probe_ubuntu() -> HealthResult:
 
 
 def probe_redhat() -> HealthResult:
-    latency, body, status, err = _timed_get(
+    latency, _body, status, err = _timed_get(
         "https://access.redhat.com/hydra/rest/securitydata/cve/CVE-2016-5195.json",
     )
     if err:

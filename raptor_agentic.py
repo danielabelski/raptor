@@ -1377,7 +1377,7 @@ def run_audit_postpass(args: argparse.Namespace, target: Path, out_dir: Path) ->
                 if isinstance(report.get(key), int):
                     phase[key] = report[key]
         return phase
-    except Exception as e:  # noqa: BLE001 — post-pass must not kill the run
+    except Exception as e:
         logger.exception("audit post-pass crashed unexpectedly")
         phase["skipped_reason"] = f"unexpected {type(e).__name__}: {e}"
         phase.setdefault("duration_seconds", round(time.time() - t0, 1))

@@ -989,7 +989,7 @@ def build_rules(creds: CredentialStore) -> dict[str, ProviderRule]:
     )
 
     def _bedrock_prepare(
-        method: str, path: str, headers: Mapping[str, str], body: bytes,
+        _method: str, path: str, headers: Mapping[str, str], body: bytes,
     ) -> PreparedRequest:
         # Two Bedrock surfaces are routed through this rule, chosen by
         # URL prefix the worker addresses:

@@ -1370,7 +1370,7 @@ def _refine_constant_switches(
     def _refuse_names(_name: str, _depth: int):
         return REFUSE
 
-    for cond_node, disc, entries, join, has_default in \
+    for cond_node, disc, entries, _join, _has_default in \
             builder._switch_records:
         label_vals: list[list] = []
         ok = True

@@ -493,6 +493,6 @@ def _not_evaluated_after_tier3(d: Dependency) -> Reachability:
     )
 
 
-from .guard_quality import analyze_call_site_guards  # noqa: F401,E402
+from .guard_quality import analyze_call_site_guards  # noqa: E402
 
 __all__ = ["analyze_call_site_guards", "scan"]

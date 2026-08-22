@@ -153,7 +153,7 @@ def _availability_for_cwe(
 
 
 def _availability_detail_for_cwe(
-    cwe: str,
+    _cwe: str,
     result: dict[str, Any],
 ) -> dict[str, str]:
     """Human-readable detail strings for the primitives we opine on.

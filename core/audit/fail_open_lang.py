@@ -1356,7 +1356,7 @@ def java_class_extends(source: str, type_name: str) -> str | None:
 _GO_FUNC_TYPES = ("function_declaration", "method_declaration")
 
 
-def _go_enclosing_function(node, src: bytes):
+def _go_enclosing_function(node, _src: bytes):
     cur = node.parent
     while cur is not None:
         if cur.type in _GO_FUNC_TYPES:
@@ -1557,7 +1557,7 @@ def _go_next_use(func_node, src: bytes, var: str, after_byte: int):
     return best
 
 
-def _go_use_is_reassignment(use, src: bytes) -> bool:
+def _go_use_is_reassignment(use, _src: bytes) -> bool:
     """Is this identifier occurrence an LHS position of `=`/`:=`?"""
     cur = use
     while cur.parent is not None:
@@ -1595,7 +1595,7 @@ def _classify_go_call_site(
             )
             return site
         if t in ("assignment_statement", "short_var_declaration"):
-            err_var, names = _go_err_binding_name(cur, src)
+            err_var, _names = _go_err_binding_name(cur, src)
             if not err_var:
                 site.evidence = "unrecognised assignment shape"
                 return site
@@ -2434,8 +2434,8 @@ def _rust_next_use(func_node, src: bytes, var: str, after_byte: int):
     return best
 
 
-def _classify_rust_let(cur: Node, node, src: bytes, site, line: int,
-                       through: list[str]):
+def _classify_rust_let(cur: Node, _node, src: bytes, site, line: int,
+                       _through: list[str]):
     """Classify a ``let`` binding of the call result."""
     pattern = cur.child_by_field_name("pattern")
     if pattern is None:

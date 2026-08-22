@@ -155,7 +155,7 @@ class SourceIntelValidator:
         if result is None:
             try:
                 result = analyze(target)
-            except Exception:  # noqa: BLE001 — never let analyze crash the runner
+            except Exception:
                 logger.exception("source_intel analyze failed for %s", target)
                 return ValidatorVerdict.UNCERTAIN
             self._cache.put(target, None, result)
@@ -1293,7 +1293,7 @@ _PRIV_BACK_WALK_MAX_DEPTH = 5
 def _privilege_back_walk_suppresses(
     finding: Finding,
     result: SourceIntelResult,
-    repo_root: Path,
+    _repo_root: Path,
     *,
     max_depth: int = _PRIV_BACK_WALK_DEFAULT_DEPTH,
 ) -> bool:

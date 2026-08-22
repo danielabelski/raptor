@@ -277,7 +277,7 @@ class PipResolver:
         return Path("/tmp") / f"raptor-sca-venv-{_os.getpid()}-{proj_hash}"
 
     def _create_venv(
-        self, project_dir: Path, timeout: int,
+        self, project_dir: Path, _timeout: int,
     ) -> tuple[Path | None, str | None]:
         """Compute the ephemeral venv path; creates nothing itself.
 
@@ -491,7 +491,7 @@ class PipResolver:
         return "\n".join(parts)
 
     def _parse_batch_output(
-        self, stdout: str, stderr: str, returncode: int,
+        self, stdout: str, stderr: str, _returncode: int,
         manifests: list[tuple[Path, Path, Path | None]],
     ) -> list[ResolverResult]:
         """Split the batch sh stdout back into per-manifest

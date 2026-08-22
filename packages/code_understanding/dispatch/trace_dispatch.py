@@ -233,7 +233,7 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
                 },
                 "required": ["verdicts"],
             },
-            handler=lambda args: json.dumps({"received": True}),
+            handler=lambda _args: json.dumps({"received": True}),
         ),
     ]
 

@@ -114,7 +114,7 @@ def _records_from_finding(
 
 
 def _vote_fallback_verdict(
-    finding_id: str, finding: Mapping, *, reason: str,
+    _finding_id: str, finding: Mapping, *, reason: str,
     decision_class_prefix: str,
 ) -> CalibratedVerdict:
     """Build a vote-derived verdict when D–S cannot run on this finding.

@@ -1,6 +1,6 @@
 """Re-export from canonical location in core.concepts.contract_pairs."""
 
-from core.concepts.contract_pairs import (  # noqa: F401
+from core.concepts.contract_pairs import (
     ContractKind,
     ContractPairGroup,
     ContractPartner,

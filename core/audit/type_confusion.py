@@ -373,7 +373,7 @@ def _try_cpg_verify(
 
 
 def detect_type_confusion(
-    source_texts: dict[str, str],
+    _source_texts: dict[str, str],
     call_graphs: dict[str, Any] | None,
     joern_server: Any | None = None,
 ) -> list[TypeConfusionFinding]:

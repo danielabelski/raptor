@@ -217,7 +217,7 @@ def _run_probe() -> bool:
 
     # Parent: wait for the child to stop, attempt PTRACE_CONT, then reap.
     try:
-        wpid, status = _waitpid_eintr_safe(pid, os.WUNTRACED)
+        _wpid, status = _waitpid_eintr_safe(pid, os.WUNTRACED)
     except OSError as e:
         logger.debug("ptrace probe: waitpid failed: %s", e)
         # Best-effort cleanup; the child may be a zombie.

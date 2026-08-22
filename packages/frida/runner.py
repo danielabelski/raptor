@@ -227,7 +227,7 @@ def _resolve_device(frida_mod: Any, cfg: RunConfig):
     return frida_mod.get_local_device()
 
 
-def _attach_or_spawn(frida_mod: Any, device: Any, cfg: RunConfig
+def _attach_or_spawn(_frida_mod: Any, device: Any, cfg: RunConfig
                      ) -> tuple[Any, int]:
     """Return (session, pid). Spawned processes start suspended;
     caller must ``device.resume(pid)`` after script load.

@@ -321,7 +321,7 @@ _SOURCE_EXTS = frozenset({
 def _count_source_files(path: Path, limit: int = QUICK_FILE_LIMIT + 1) -> int:
     """Quick source-file count, short-circuiting at *limit*."""
     count = 0
-    for root, dirs, files in os.walk(path):
+    for _root, dirs, files in os.walk(path):
         dirs[:] = [
             d for d in dirs
             if not d.startswith(".") and d not in (

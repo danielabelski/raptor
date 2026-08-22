@@ -110,7 +110,7 @@ def _string_keys_from_dict(node: ast.Dict) -> set[str]:
 
 def _dict_is_dispatch(
     node: ast.Dict,
-    parents: dict[int, ast.AST],
+    _parents: dict[int, ast.AST],
 ) -> bool:
     """Heuristic: a dict literal is a dispatch table when it has >= 2
     string keys and all values are callable-shaped (names, attributes,
@@ -272,7 +272,7 @@ def _extract_if_elif_tables_from_source(
 
 def _find_string_producers(
     tree: ast.Module,
-    file: str,
+    _file: str,
 ) -> list[tuple[str, int]]:
     """Find string literals produced in the source that might be keys.
 

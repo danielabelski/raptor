@@ -434,7 +434,7 @@ def _to_z3(node: tuple, env: dict, z3mod: Any):
     raise _ParseError(msg)
 
 
-def _cmp_z3(lhs, op: str, rhs, z3mod: Any):
+def _cmp_z3(lhs, op: str, rhs, _z3mod: Any):
     return {
         "<=": lambda: lhs <= rhs,
         "<": lambda: lhs < rhs,
@@ -596,7 +596,7 @@ def _check_one_site(
     lhs: tuple,
     op: str,
     rhs: tuple,
-    variables: set[str],
+    _variables: set[str],
     line_no: int,
     code: str,
     var: str,

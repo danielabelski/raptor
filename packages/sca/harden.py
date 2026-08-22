@@ -1772,7 +1772,7 @@ def _write_report(
 
 def _print_summary(
     candidates: list[HardenCandidate],
-    changes: list[UpgradeChange],
+    _changes: list[UpgradeChange],
     out_dir: Path,
     *,
     target_kind: str = "unknown",

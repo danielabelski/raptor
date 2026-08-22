@@ -296,7 +296,7 @@ class HarnessGenerator:
             rationale=str(result.get("rationale", "")).strip(),
         )
 
-    def _fallback(self, spec: HarnessSpec, header_text: str) -> GeneratedHarness:
+    def _fallback(self, spec: HarnessSpec, _header_text: str) -> GeneratedHarness:
         source = _FALLBACK_HARNESS_C.format(
             header_basename=spec.header_path.name,
             target_function=spec.target_function,

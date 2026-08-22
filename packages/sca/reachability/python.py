@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # project's test corpus classifies the same way regardless of which
 # layer is asking.
 from .._test_paths import TEST_DIR_NAMES as _TEST_DIR_NAMES  # noqa: E402,F401
-from .._test_paths import is_test_path as _is_test_file       # noqa: E402,F401
+from .._test_paths import is_test_path as _is_test_file       # noqa: E402
 
 _DEFAULT_MAX_DEPTH = 12
 

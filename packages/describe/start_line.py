@@ -79,7 +79,7 @@ def format_start_line(target_path: Path) -> str | None:
 
 
 def _scorecard_estimate_clause(
-    target_path: Path, target_type: str | None,
+    target_path: Path, _target_type: str | None,
 ) -> str | None:
     """Return a compact estimate string from scorecard data, or None."""
     try:

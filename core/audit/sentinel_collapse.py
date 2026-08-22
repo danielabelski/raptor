@@ -359,7 +359,7 @@ def _detect_js_sentinel(
         parsed = _parse_file(path, source)
         if parsed is not None:
             tree, lang, src_bytes = parsed
-            for func_node, fname, body in _iter_functions(tree, lang, src_bytes, path):
+            for func_node, fname, _body in _iter_functions(tree, lang, src_bytes, path):
                 start = func_node.start_point[0] + 1
                 end = func_node.end_point[0] + 1
                 for ln in range(start, end + 1):

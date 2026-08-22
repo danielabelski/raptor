@@ -313,7 +313,7 @@ _BRANCH_GUARD_RE = re.compile(
 def _extract_branch_guards_from_content(
     content: str,
     line: int,
-    language: str,
+    _language: str,
 ) -> list[str]:
     """Extract branch guard conditions enclosing the given line.
 

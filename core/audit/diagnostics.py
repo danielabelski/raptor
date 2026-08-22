@@ -17,7 +17,7 @@ _MAX_DISCOVERED_PER_FUNCTION = 20
 
 
 def read_function_source(
-    target_path: Path, file_path: str, function_name: str,
+    target_path: Path, file_path: str, _function_name: str,
 ) -> str:
     """Best-effort read of a function's source from the target."""
     full = target_path / file_path

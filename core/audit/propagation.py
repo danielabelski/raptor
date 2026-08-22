@@ -222,7 +222,7 @@ def _score_from_source(
     candidate: CallerCandidate,
     source: str,
     constraint: Constraint,
-    caller_function: str,
+    _caller_function: str,
 ) -> None:
     """Score based on source text analysis."""
     call_pattern = re.compile(
@@ -558,7 +558,7 @@ def probe_beyond_ceiling(
         next_callers = get_callers(file_path, func_name, line, inventory)
         if next_callers is None:
             continue
-        for nf, nn, nl in next_callers:
+        for nf, nn, _nl in next_callers:
             key = f"{nf}:{nn}"
             all_next_callers.append(key)
             if key in entry_points:
@@ -668,7 +668,7 @@ def _try_taint_summary_resolve(
         return None
 
     if hasattr(ts, "call_arg_taint"):
-        for callee, arg_idx, pidx in ts.call_arg_taint:
+        for _callee, _arg_idx, pidx in ts.call_arg_taint:
             if pidx == param_idx:
                 return PropagationResult(
                     constraint=constraint,
@@ -1079,7 +1079,7 @@ class ConfidenceDemotion:
 def propagate_confidence(
     outcomes: list[Any],
     call_edge_index: dict[str, Any],
-    checklist_index: dict[tuple[str, str], Any] | None = None,
+    _checklist_index: dict[tuple[str, str], Any] | None = None,
     *,
     max_iterations: int = 5,
     min_callers: int = 2,

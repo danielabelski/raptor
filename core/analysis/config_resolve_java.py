@@ -374,7 +374,7 @@ class ConfigResolver:
             value=values[0], key=key, config_file=str(path),
             default=default)
 
-    def fold_hook(self, node: Node, depth: int):
+    def fold_hook(self, node: Node, _depth: int):
         """``config_resolver`` callable for the constant folder: None
         when the node is not a getProperty call (not ours), the module
         REFUSE sentinel on any refusal, else the resolved str value.

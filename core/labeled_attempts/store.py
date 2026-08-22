@@ -164,7 +164,7 @@ def _write_atomic(path: Path, payload: str, *, max_retries: int = 5) -> Path:
     # 0o600: records can carry target details and exploit payloads —
     # keep new files owner-only. Existing records are not migrated.
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    for attempt_n in range(max_retries):
+    for _attempt_n in range(max_retries):
         try:
             fd = os.open(path, flags, 0o600)
             try:

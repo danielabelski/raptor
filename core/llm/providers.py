@@ -1662,7 +1662,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     resolved_model=extract_resolved_model(completion),
                 )
 
-            except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
+            except Exception as e:
                 # A completed-but-invalid generation still spent money.
                 self._book_instructor_failure_usage(
                     e, time.monotonic() - t_start)
@@ -2690,7 +2690,7 @@ class AnthropicProvider(LLMProvider):
                     resolved_model=extract_resolved_model(completion),
                 )
 
-            except Exception as e:  # noqa: BLE001 — instructor/SDK failure funnel
+            except Exception as e:
                 # A completed-but-invalid generation still spent money.
                 self._book_instructor_failure_usage(
                     e, time.monotonic() - t_start)

@@ -125,7 +125,7 @@ def _format_args_scripting(
 # ---------------------------------------------------------------------------
 
 
-def file_to_import_path(file_path: str, target_root: Path) -> str | None:
+def file_to_import_path(file_path: str, _target_root: Path) -> str | None:
     """``core/audit/gate.py`` → ``core.audit.gate``. None for non-Python."""
     rel = file_path.replace("\\", "/")
     p = PurePosixPath(rel)
@@ -204,7 +204,7 @@ def generate_witness_script(
 
 def generate_c_harness(
     spec: DarkWitnessSpec,
-    target_root: Path,
+    _target_root: Path,
     *,
     witness_token: str = "",
 ) -> str:
@@ -278,7 +278,7 @@ def _c_format_for_type(return_type: str) -> str:
 
 def generate_go_harness(
     spec: DarkWitnessSpec,
-    target_root: Path,
+    _target_root: Path,
     *,
     witness_token: str = "",
 ) -> str:
@@ -594,7 +594,7 @@ def generate_php_harness(
 
 def generate_rust_harness(
     spec: DarkWitnessSpec,
-    target_root: Path,
+    _target_root: Path,
     *,
     witness_token: str = "",
 ) -> str:
@@ -667,7 +667,7 @@ _JAVA_IMPORT_SAFE_RE = re.compile(
 
 def generate_java_harness(
     spec: DarkWitnessSpec,
-    target_root: Path,
+    _target_root: Path,
     *,
     witness_token: str = "",
 ) -> str:

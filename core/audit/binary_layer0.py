@@ -319,7 +319,7 @@ def check_toctou(
 def check_lock_imbalance(
     function: str,
     calls: Sequence[dict[str, Any]],
-    return_paths: int = 1,
+    _return_paths: int = 1,
     file: str = "",
 ) -> list[Layer0Finding]:
     """30.7: lock acquired with no matching release anywhere in the
@@ -540,7 +540,7 @@ def check_compiler_security(
     """30.5: functions that disable compiler security features."""
     findings: list[Layer0Finding] = []
 
-    for m in _STACK_PROTECTOR_DISABLE_RE.finditer(source):
+    for _m in _STACK_PROTECTOR_DISABLE_RE.finditer(source):
         findings.append(Layer0Finding(
             pattern_id=PatternID.COMPILER_SECURITY,
             function=function,
@@ -555,7 +555,7 @@ def check_compiler_security(
         ))
         break  # one finding per function is sufficient
 
-    for m in _SECURITY_CRITICAL_ATTR_RE.finditer(source):
+    for _m in _SECURITY_CRITICAL_ATTR_RE.finditer(source):
         findings.append(Layer0Finding(
             pattern_id=PatternID.COMPILER_SECURITY,
             function=function,

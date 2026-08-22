@@ -168,7 +168,7 @@ def _closure(seeds: set[Node], adj: dict[Node, set]) -> set[Node]:
     frontier = list(seeds)
     while frontier:
         node = frontier.pop()
-        for nxt in adj.get(node, ()):  # noqa: B909 — adj not mutated
+        for nxt in adj.get(node, ()):
             if nxt not in seen:
                 seen.add(nxt)
                 frontier.append(nxt)

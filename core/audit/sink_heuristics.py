@@ -235,8 +235,8 @@ def _build_edge_maps(
 
 def _discover_wrappers(
     result: SinkHeuristicsResult,
-    sink_results: Any,
-    forward_edges: dict[tuple[str, str], set[tuple[str, str]]],
+    _sink_results: Any,
+    _forward_edges: dict[tuple[str, str], set[tuple[str, str]]],
     reverse_edges: dict[tuple[str, str], set[tuple[str, str]]],
     direct_sink_targets: dict[tuple[str, str], list[str]],
     taxonomy_keys: set[tuple[str, str]],
@@ -298,7 +298,7 @@ def _discover_by_naming(
     result: SinkHeuristicsResult,
     call_graphs: dict[str, Any] | None,
     taxonomy_keys: set[tuple[str, str]],
-    direct_sink_targets: dict[tuple[str, str], list[str]],
+    _direct_sink_targets: dict[tuple[str, str], list[str]],
     seen: set[tuple[str, str]],
 ) -> None:
     """Find functions with security-suggestive names."""

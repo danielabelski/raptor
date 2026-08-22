@@ -687,7 +687,7 @@ _ASSIGNMENT_SHAPED_RE = re.compile(
 _MAX_SUMMARY_ARGS_CHARS = 200
 
 
-def _nonneg_summary(var: Any, args_text: str, vars_: dict[str, Any],
+def _nonneg_summary(var: Any, _args_text: str, _vars: dict[str, Any],
                     profile: BVProfile) -> Any | None:
     """``result >= 0`` — meaningful only at signed profiles."""
     if not profile.signed:
@@ -695,7 +695,7 @@ def _nonneg_summary(var: Any, args_text: str, vars_: dict[str, Any],
     return ge(var, _mk_val(0, profile.width), signed=True)
 
 
-def _abs_summary(var: Any, args_text: str, vars_: dict[str, Any],
+def _abs_summary(var: Any, _args_text: str, _vars: dict[str, Any],
                  profile: BVProfile) -> Any | None:
     """``result >= 0 OR result == INT_MIN`` at signed profiles.
 
@@ -710,7 +710,7 @@ def _abs_summary(var: Any, args_text: str, vars_: dict[str, Any],
                  var == int_min)
 
 
-def _sizeof_summary(var: Any, args_text: str, vars_: dict[str, Any],
+def _sizeof_summary(var: Any, _args_text: str, _vars: dict[str, Any],
                     profile: BVProfile) -> Any | None:
     """``sizeof(...) != 0`` — signedness-neutral, always meaningful."""
     return var != _mk_val(0, profile.width)

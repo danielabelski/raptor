@@ -239,7 +239,7 @@ def _walk(node) -> Iterator[Any]:
         )
 
 
-def _unwrap(node, src: bytes):
+def _unwrap(node, _src: bytes):
     """Strip parentheses, casts and comma tails around an expression."""
     while node is not None and node.type in (
             "parenthesized_expression", "cast_expression",
@@ -1051,7 +1051,7 @@ def _analyze_definition(
 
 def _analyze_returned_var(
     var: str,
-    callee: str,
+    _callee: str,
     rel: str,
     raw: bytes,
     def_node,

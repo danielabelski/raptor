@@ -96,7 +96,7 @@ def scoped(solver: Any) -> Iterator[Any]:
     """
     try:
         solver.push()
-    except Exception as e:  # noqa: BLE001 — Z3Exception unavailable cross-version
+    except Exception as e:
         msg = f"scoped: solver.push() failed: {e}"
         raise RuntimeError(msg) from e
     try:

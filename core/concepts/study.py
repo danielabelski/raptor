@@ -2001,7 +2001,7 @@ def _stamp_contract_hashes(
 def _queue_unresolved(
     reading_list: Any,
     result: dict[str, Any],
-    context_items: list[StudyItem],
+    _context_items: list[StudyItem],
 ) -> int:
     """Queue unresolved references from an LLM batch response.
 

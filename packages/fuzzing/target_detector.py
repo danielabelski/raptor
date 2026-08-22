@@ -103,7 +103,7 @@ def detect(path: Path) -> TargetInfo:
 def _detect_file(path: Path) -> TargetInfo:
     """Detect a single file by reading its magic bytes and extension."""
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             magic = f.read(64)
     except OSError as e:
         return TargetInfo(

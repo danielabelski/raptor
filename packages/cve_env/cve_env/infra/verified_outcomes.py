@@ -72,7 +72,7 @@ def write_build_outcome(
             produced_by="cve-env",
         )
         path = Path(output_dir) / VERIFIED_OUTCOMES_FILENAME
-        with open(path, "a", encoding="utf-8") as fh:
+        with Path(path).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record.to_dict(), default=str) + "\n")
         return True
     except Exception:  # noqa: BLE001 — surfacing must never break the run

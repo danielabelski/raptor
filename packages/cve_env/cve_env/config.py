@@ -63,7 +63,7 @@ def _load_toml_config() -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             return tomllib.load(f)
     except (OSError, ValueError):
         return {}

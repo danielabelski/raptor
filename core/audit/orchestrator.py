@@ -12523,7 +12523,7 @@ def _build_concept_index_from_prep(
         study_list_path = out_dir / "study-list.json"
         if not study_list_path.is_file():
             return
-        with open(study_list_path) as f:
+        with Path(study_list_path).open() as f:
             study_list = json.load(f)
         type_names: set[str] = set()
         if isinstance(study_list, dict):

@@ -183,7 +183,7 @@ def _classify_first_bytes(path: Path) -> str:
     """Return ``binary``, ``script``, ``source``, or ``unknown`` based
     on the first 256 bytes of ``path``."""
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             head = f.read(256)
     except OSError:
         return "unknown"

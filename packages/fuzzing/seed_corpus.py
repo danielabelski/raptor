@@ -194,7 +194,7 @@ def _classify_seed(relative_path: Path) -> str | None:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as fh:
+    with Path(path).open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()

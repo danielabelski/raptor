@@ -748,7 +748,7 @@ def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
@@ -768,7 +768,7 @@ def _load_vendored_triage(out_dir: Path) -> dict[str, int]:
         return {}
     skipped = glanced = 0
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -797,7 +797,7 @@ def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
@@ -809,7 +809,7 @@ def _load_gaps(out_dir: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
@@ -821,7 +821,7 @@ def _load_not_attempted(out_dir: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
@@ -913,13 +913,13 @@ def _find_unrecorded_reads(
         return []
 
     try:
-        with open(manifest_path, encoding="utf-8", errors="replace") as f:
+        with Path(manifest_path).open(encoding="utf-8", errors="replace") as f:
             read_paths = {line.strip() for line in f if line.strip()}
     except OSError:
         return []
 
     try:
-        with open(checklist_path, encoding="utf-8") as f:
+        with Path(checklist_path).open(encoding="utf-8") as f:
             checklist = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []

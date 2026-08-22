@@ -1234,7 +1234,7 @@ def _parse_audit_log_outcomes(
     qualified_by_bare: dict[str, str] = {}
     raw_entries: list[dict[str, Any]] = []
     if log_path.exists():
-        with open(log_path) as f:
+        with Path(log_path).open() as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:
@@ -1265,7 +1265,7 @@ def _parse_audit_log_outcomes(
     # quality suppression exempts them, like any tool confirmation).
     floored_bases: set[str] = set()
     if log_path.exists():
-        with open(log_path) as f:
+        with Path(log_path).open() as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:
@@ -1708,7 +1708,7 @@ def _aggregate_spend(run_dirs: list[Path]) -> dict[str, Any] | None:
             calls = 0
             cost = 0.0
             try:
-                with open(tel_path, encoding="utf-8") as f:
+                with Path(tel_path).open(encoding="utf-8") as f:
                     for raw in f:
                         raw = raw.strip()
                         if not raw:
@@ -1955,7 +1955,7 @@ def _write_results(
         data: Any = {"meta": meta, "results": results}
     else:
         data = results
-    with open(output, "w") as f:
+    with Path(output).open("w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
 
@@ -2162,7 +2162,7 @@ def _save_debug(
                     journal_entries[fid] = entry
 
     labeled_ids = {r["function_id"] for r in results}
-    with open(debug_path, "w") as f:
+    with Path(debug_path).open("w") as f:
         for fid in sorted(labeled_ids):
             je = journal_entries.get(fid, {})
             hypotheses = je.get("hypotheses", [])
@@ -2208,7 +2208,7 @@ def _splice_results(
 def _checkpoint_write(path: Path, data: Any) -> None:
     """Atomically write a JSON checkpoint."""
     tmp = path.with_suffix(".tmp")
-    with open(tmp, "w") as f:
+    with Path(tmp).open("w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     tmp.rename(path)
@@ -2219,7 +2219,7 @@ def _checkpoint_read(path: Path) -> Any | None:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with Path(path).open() as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None

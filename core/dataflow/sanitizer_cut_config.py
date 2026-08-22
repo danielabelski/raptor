@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 VALID_MODES = ("off", "on", "strict", "shadow")
 
@@ -311,7 +312,7 @@ def load_persisted(
     if not os.path.isfile(path):
         return None
     try:
-        with open(path, encoding="utf-8") as fh:
+        with Path(path).open(encoding="utf-8") as fh:
             payload = json.load(fh)
     except (OSError, ValueError):
         return None

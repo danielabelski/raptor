@@ -140,7 +140,7 @@ def find_project_log_dirs(
                 manifest = child / ".raptor-run.json"
                 if manifest.exists():
                     try:
-                        with open(manifest, encoding="utf-8") as f:
+                        with Path(manifest).open(encoding="utf-8") as f:
                             m = json.load(f)
                         sibling_target = m.get("target_path") or m.get("target", "")
                         if sibling_target and Path(sibling_target).resolve() != target_path.resolve():

@@ -290,7 +290,7 @@ def _build_file_record(gen: PerlasmGenerator, flavour: str,
     from core.inventory.extractors import AsmExtractor
 
     try:
-        with open(cached, "rb") as fh:
+        with Path(cached).open("rb") as fh:
             raw = fh.read(_MAX_ASM_BYTES)
     except OSError as exc:
         logger.warning("perlasm: cannot read cached asm %s: %s", cached, exc)

@@ -210,7 +210,7 @@ def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
             path, size // (1024 * 1024),
             _SARIF_CHUNK_CAP // (1024 * 1024))
         return []
-    with open(path, encoding="utf-8") as f:
+    with Path(path).open(encoding="utf-8") as f:
         doc = json.load(f)
     runs = doc.get("runs")
     if not isinstance(runs, list):

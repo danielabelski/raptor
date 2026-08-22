@@ -56,8 +56,7 @@ def _read_manifest_lines(manifest_path: Path) -> set[str]:
             import fcntl as _fcntl
         except ImportError:
             _fcntl = None
-        with open(manifest_path, encoding="utf-8",
-                  errors="replace") as f:
+        with Path(manifest_path).open(encoding="utf-8", errors="replace") as f:
             if _fcntl is not None:
                 try:
                     _fcntl.flock(f, _fcntl.LOCK_SH)

@@ -391,7 +391,7 @@ def _classify_or_none(path: Path) -> tuple | None:
     except OSError:
         return None
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             head = f.read(256)
     except OSError:
         return None

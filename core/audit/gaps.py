@@ -1277,7 +1277,7 @@ def load_context_map(out_dir: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
         logger.error("malformed JSON in %s", path)

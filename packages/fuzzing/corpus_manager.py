@@ -119,7 +119,7 @@ class CorpusManager:
                 dest = self.corpus_dir / fpath.relative_to(source)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 # Bounded read — file may have grown between stat and read.
-                with open(fpath, "rb") as fh:
+                with Path(fpath).open("rb") as fh:
                     dest.write_bytes(fh.read(self._MAX_SEED_BYTES + 1)[:self._MAX_SEED_BYTES])
                 count += 1
 

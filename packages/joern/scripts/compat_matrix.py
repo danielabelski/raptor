@@ -219,7 +219,7 @@ def _download(tag: str, dest: Path) -> tuple[str, str]:
         digest = hashlib.sha256()
         try:
             with urllib.request.urlopen(url, timeout=120) as resp, \
-                    open(dest, "wb") as out:
+                    Path(dest).open("wb") as out:
                 while True:
                     chunk = resp.read(1 << 20)
                     if not chunk:

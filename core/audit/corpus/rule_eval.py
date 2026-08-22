@@ -1188,7 +1188,7 @@ def format_summary(report: dict[str, Any]) -> str:
 def _write_report(report: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "rule-eval-results.json"
-    with open(results_path, "w") as f:
+    with Path(results_path).open("w") as f:
         json.dump(report, f, indent=2)
         f.write("\n")
     summary_path = out_dir / "rule-eval-summary.txt"

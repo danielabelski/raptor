@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -78,7 +77,7 @@ def scratch_dir(
     parent: str | None = None
     if dir is not None:
         parent = str(dir)
-        os.makedirs(parent, exist_ok=True)
+        Path(parent).mkdir(parents=True, exist_ok=True)
     else:
         # Same-process backstop: a long-lived orchestrator's next
         # start_run sweep can reclaim strays with this prefix.

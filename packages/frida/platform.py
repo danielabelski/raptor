@@ -13,10 +13,10 @@ paths in the runner itself; just labels and reachability checks.
 
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 
 
 __all__ = ["HostInfo", "detect_host"]
@@ -71,10 +71,10 @@ def _macos_sip_status() -> str:
 
 def _linux_ptrace_scope() -> int | None:
     path = "/proc/sys/kernel/yama/ptrace_scope"
-    if not os.path.exists(path):
+    if not Path(path).exists():
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             return int(f.read().strip())
     except (OSError, ValueError):
         return None

@@ -99,7 +99,7 @@ def is_binary_file(filepath: Path, sample_size: int = 8192) -> bool:
     wallclock minimal.
     """
     try:
-        with open(filepath, 'rb') as f:
+        with Path(filepath).open("rb") as f:
             chunk = f.read(sample_size)
             if b'\x00' in chunk:
                 return True

@@ -34,6 +34,7 @@ import logging
 import struct
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -124,7 +125,7 @@ def parse_elf(path: Path) -> ElfMetadata | None:
     memory.
     """
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             return _parse_elf_stream(f)
     except OSError as e:
         logger.debug("core.binary.elf: read failed for %s: %s", path, e)
@@ -425,7 +426,7 @@ def is_packed(path: Path) -> str | None:
     arbitrary high-entropy sections (high FP, not deterministic).
     """
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             head = f.read(4096)
     except OSError:
         return None

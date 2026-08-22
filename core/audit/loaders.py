@@ -28,7 +28,7 @@ def load_variants(out_dir: Path) -> set[str]:
     if not path.exists():
         return set()
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
         # Visibility plumbing (docs/security.md I2-(b)): variants.json
         # is LLM-authored; log its provenance stamp (or its absence —
@@ -106,7 +106,7 @@ def load_fuzz_coverage(out_dir: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None

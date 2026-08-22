@@ -123,7 +123,7 @@ def _strip_line_suffix(key: str) -> str:
 
 def _iter_jsonl(path: Path) -> Iterable[dict]:
     try:
-        with open(path) as f:
+        with Path(path).open() as f:
             for raw in f:
                 raw = raw.strip()
                 if not raw:

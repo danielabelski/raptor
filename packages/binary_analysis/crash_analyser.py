@@ -593,7 +593,7 @@ class CrashAnalyser:
             # profile='debug' permits ptrace; all other seccomp blocks remain.
             cmd = ["gdb", "-batch", "-x", str(cmd_file), str(self.binary)]
             binary_dir = str(self.binary.parent.resolve())
-            with open(input_file, "rb") as f:
+            with Path(input_file).open("rb") as f:
                 result = _sandbox_run(
                     cmd, profile="debug",
                     target=binary_dir, output=binary_dir,
@@ -700,7 +700,7 @@ class CrashAnalyser:
             # Run LLDB with longer timeout — debugger needs ptrace.
             try:
                 binary_dir = str(self.binary.parent.resolve())
-                with open(input_file, "rb") as stdin_f:
+                with Path(input_file).open("rb") as stdin_f:
                     result = _sandbox_run(
                         ["lldb", "-s", str(cmd_file), str(self.binary)],
                         profile="debug",
@@ -791,7 +791,7 @@ class CrashAnalyser:
 
             # LLDB fallback — also a debugger, needs ptrace (profile='debug').
             binary_dir = str(self.binary.parent.resolve())
-            with open(input_file, "rb") as fh_in:
+            with Path(input_file).open("rb") as fh_in:
                 result = _sandbox_run(
                     ["lldb", "-b", "-s", str(cmd_file), str(self.binary)],
                     stdin=fh_in,
@@ -1554,7 +1554,7 @@ class CrashAnalyser:
             # the default `full` profile (seccomp incl. ptrace
             # block, Landlock, net block) is appropriate.
             binary_dir = str(self.binary.parent.resolve())
-            with open(input_file, "rb") as fh_in:
+            with Path(input_file).open("rb") as fh_in:
                 result = _sandbox_run(
                     [str(self.binary)],
                     stdin=fh_in,

@@ -673,7 +673,7 @@ def _current_content_hash(out_dir, target_path) -> str | None:
     manifest_path = Path(out_dir) / ".raptor-run.json"
     if manifest_path.exists():
         try:
-            with open(manifest_path, encoding="utf-8") as f:
+            with Path(manifest_path).open(encoding="utf-8") as f:
                 own = json.load(f)
             if isinstance(own, dict):
                 own_hash = own.get("content_hash", "")
@@ -778,7 +778,7 @@ def sibling_run_dirs(
             manifest = child / ".raptor-run.json"
             if manifest.exists():
                 try:
-                    with open(manifest, encoding="utf-8") as f:
+                    with Path(manifest).open(encoding="utf-8") as f:
                         m = json.load(f)
                     # Malformed metadata (valid JSON, wrong shape) is
                     # as disqualifying as unparseable JSON.

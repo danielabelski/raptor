@@ -118,7 +118,7 @@ def write_consensus_outcome(
             produced_by="cve-diff",
         )
         path = Path(output_dir) / VERIFIED_OUTCOMES_FILENAME
-        with open(path, "a", encoding="utf-8") as fh:
+        with Path(path).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(outcome.to_dict(), default=str) + "\n")
         return True
     except Exception:  # noqa: BLE001 — surfacing must never break the run

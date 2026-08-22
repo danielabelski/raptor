@@ -135,7 +135,7 @@ def _merge_disk(path: Path, increments: dict[str, dict[str, int]]) -> None:
     lock_path = path.with_suffix(path.suffix + ".lock")
     # ``a+`` semantics — create if absent, never written to. flock
     # operates on the inode so the lock-file's contents are irrelevant.
-    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+    with Path(lock_path).open("a+", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         try:
             if path.exists():

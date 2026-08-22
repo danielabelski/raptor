@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass
 
 from ._util import find_enclosing_function as _find_enclosing_function
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -564,7 +565,7 @@ def _get_source(
     if source_texts and fpath in source_texts:
         return source_texts[fpath]
     try:
-        with open(fpath, encoding="utf-8", errors="replace") as f:
+        with Path(fpath).open(encoding="utf-8", errors="replace") as f:
             return f.read()
     except OSError:
         return None

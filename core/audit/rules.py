@@ -20,6 +20,7 @@ import logging
 import os
 import tempfile
 from typing import Any, TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -230,7 +231,7 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
     if not manifest_path.exists():
         return {}
     try:
-        with open(manifest_path, encoding="utf-8") as f:
+        with Path(manifest_path).open(encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}

@@ -304,7 +304,7 @@ def _is_elf(path: Path) -> bool:
     """Cheap 4-byte ELF magic check — no subprocess. False on any read
     error (unreadable file is not a usable candidate anyway)."""
     try:
-        with open(path, "rb") as fh:
+        with Path(path).open("rb") as fh:
             return fh.read(4) == b"\x7fELF"
     except OSError:
         return False

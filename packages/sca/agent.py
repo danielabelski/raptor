@@ -91,7 +91,7 @@ def _find_sca_agent() -> Path | None:
         # first-block imports.
         _MAX_MARKER_BYTES = 256 * 1024
         try:
-            with open(p, encoding="utf-8", errors="replace") as fh:
+            with Path(p).open(encoding="utf-8", errors="replace") as fh:
                 text = fh.read(_MAX_MARKER_BYTES)
         except OSError:
             logger.warning(

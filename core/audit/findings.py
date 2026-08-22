@@ -11,6 +11,7 @@ import logging
 import os
 import tempfile
 from typing import Any, TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -81,7 +82,7 @@ def load_findings(out_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError:
         logger.warning("corrupt findings.json at %s", path)

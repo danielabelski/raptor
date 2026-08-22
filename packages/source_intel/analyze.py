@@ -1215,7 +1215,7 @@ def _classify_size_source(
     if not file_path or not line_no:
         return None
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with Path(file_path).open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -1407,7 +1407,7 @@ def _classify_call_site_grade(file_path: str, call_line: int) -> str:
     if not file_path or not call_line:
         return GRADE_SAME_FUNCTION
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with Path(file_path).open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return GRADE_SAME_FUNCTION
@@ -2111,7 +2111,7 @@ def _enclosing_function(file_path: str, line: int) -> str | None:
         return via_inv
     # 2. Regex fallback (only path when no inventory is cached).
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with Path(file_path).open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -2894,7 +2894,7 @@ def _local_line_uses_privileged_cap(file_path: str, line_no: int) -> bool:
     constant. Functionally equivalent to adapter's helper but
     duplicated here to break the import cycle in minimal installs."""
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with Path(file_path).open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return False

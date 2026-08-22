@@ -51,6 +51,7 @@ from core.function_taxonomy import (
     STRING_OVERFLOW_FUNCS,
     TOCTOU_FUNCS,
 )
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -283,7 +284,7 @@ def _sha256_of_file(path: Path, *, chunk_size: int = 64 * 1024) -> str:
     memory across small (binaries) + large (containers) inputs.
     """
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with Path(path).open("rb") as f:
         while True:
             chunk = f.read(chunk_size)
             if not chunk:

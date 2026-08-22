@@ -52,6 +52,7 @@ from packages.source_intel.analyze import (
     SourceIntelResult,
 )
 from typing import TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:
     from core.build.build_flags import BuildFlagsContext
@@ -564,7 +565,7 @@ def _privileged_cap_constant_on_line(
     but returns the constant name rather than a boolean (so the
     render can include it in the prose)."""
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as f:
+        with Path(file_path).open(encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None

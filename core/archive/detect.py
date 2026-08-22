@@ -38,7 +38,7 @@ def detect_format(path) -> str | None:
     """
     p = Path(path)
     try:
-        with open(p, "rb") as fh:
+        with Path(p).open("rb") as fh:
             head = fh.read(_PEEK_BYTES)
     except OSError:
         return None

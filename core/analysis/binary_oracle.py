@@ -203,9 +203,9 @@ def _stream(argv: list[str], timeout: int,
                 argv[0], proc.returncode, argv[-1],
                 (proc.stderr or "")[:200])
             return
-        if not os.path.exists(out_path):
+        if not Path(out_path).exists():
             return
-        with open(out_path, encoding="utf-8", errors="replace") as fh:
+        with Path(out_path).open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 yield line.rstrip("\n")
 

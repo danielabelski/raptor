@@ -146,7 +146,7 @@ def extract_to_dir(path, dest, *,
             # Stream the on-disk tar member-by-member ("r|*"). read_bytes()
             # would materialise the whole archive in RAM before any cap
             # applies — the caps below only bound bytes already read.
-            with open(src, "rb") as fh:
+            with Path(src).open("rb") as fh:
                 members = extract_files_from_tar(
                     _iter_file_chunks(fh), selector=_keep_files, mode="r|*",
                     max_member_bytes=max_member_bytes,

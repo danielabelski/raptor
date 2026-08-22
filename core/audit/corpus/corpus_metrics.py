@@ -525,7 +525,7 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
     [...]}`` wrapper that ``run_corpus._write_results`` emits.
     """
     if path.suffix.lower() == ".csv":
-        with open(path) as f:
+        with Path(path).open() as f:
             return list(csv.DictReader(f))
     raw = json.loads(path.read_text())
     if isinstance(raw, dict) and "results" in raw:

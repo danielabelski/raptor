@@ -1235,8 +1235,7 @@ def _append_coverage_progress(proj: Path, run_dir: Path, store,
             "llm_reviewable": view.get("llm_reviewable", 0),
             "llm_reviewed": view.get("functions_reviewed", 0),
         }
-        with open(proj / "coverage-progress.jsonl", "a",
-                  encoding="utf-8") as f:
+        with Path(proj / "coverage-progress.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
     except Exception:
         logging.getLogger(__name__).debug(

@@ -1153,7 +1153,7 @@ def cpg_method_count(cpg_path: Path) -> int | None:
     """
     try:
         size = cpg_path.stat().st_size
-        with open(cpg_path, "rb") as f:
+        with Path(cpg_path).open("rb") as f:
             if size > _CPG_MANIFEST_TAIL_BYTES:
                 f.seek(size - _CPG_MANIFEST_TAIL_BYTES)
             data = f.read()

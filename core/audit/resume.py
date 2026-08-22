@@ -458,7 +458,7 @@ def append_resume_markers(out_dir: Path, segment: int) -> None:
             "ts": ts,
         }
         path = Path(out_dir) / TELEMETRY_FILENAME
-        with open(path, "a", encoding="utf-8") as f:
+        with Path(path).open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, separators=(",", ":")) + "\n")
     except Exception:
         logger.debug("telemetry resume marker failed", exc_info=True)

@@ -461,7 +461,7 @@ def _record_matches(
         }
         try:
             line = json.dumps(record, separators=(",", ":")) + "\n"
-            with open(matches_path, "a", encoding="utf-8") as f:
+            with Path(matches_path).open("a", encoding="utf-8") as f:
                 f.write(line)
             written += 1
         except Exception:

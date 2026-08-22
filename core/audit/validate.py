@@ -230,7 +230,7 @@ def _copy_findings_for_validate(
     strongest findings whenever more than the cap qualified.
     """
     try:
-        with open(findings_path, encoding="utf-8") as f:
+        with Path(findings_path).open(encoding="utf-8") as f:
             container = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return
@@ -246,7 +246,7 @@ def _copy_findings_for_validate(
             # positional cap rather than crash the best-effort copy.
             entries = entries[:_MAX_VALIDATE_FINDINGS]
         container["findings"] = entries
-    with open(dest, "w", encoding="utf-8") as f:
+    with Path(dest).open("w", encoding="utf-8") as f:
         json.dump(container, f, indent=2)
 
 
@@ -374,7 +374,7 @@ def _emit_findings_json(
     payload["findings"] = findings
 
     path = out_dir / "findings.json"
-    with open(path, "w", encoding="utf-8") as f:
+    with Path(path).open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
     logger.info("emitted %d findings to %s", len(findings), path)

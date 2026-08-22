@@ -69,7 +69,7 @@ _PURL_TYPE = "pypi"
 @register(filenames=["uv.lock"])
 def parse(path: Path) -> list[Dependency]:
     try:
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             data = tomllib.load(f)
     except OSError as e:
         logger.warning(

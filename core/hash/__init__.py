@@ -253,7 +253,7 @@ def sha256_file(path: Path, chunk_size: int | None = None) -> str:
         chunk_size = RaptorConfig.HASH_CHUNK_SIZE
     chunk_size = _chunk_floor(chunk_size)
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with Path(path).open("rb") as f:
         for chunk in iter(lambda: f.read(chunk_size), b""):
             h.update(chunk)
     return h.hexdigest()

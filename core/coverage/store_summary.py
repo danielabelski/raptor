@@ -157,7 +157,7 @@ def format_progress_trend(store_path) -> str | None:
         return None
     rows = []
     try:
-        with open(progress, encoding="utf-8") as f:
+        with Path(progress).open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

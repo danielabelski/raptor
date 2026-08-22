@@ -131,7 +131,7 @@ class GDBDebugger:
         # blocks, namespace net/pid isolation, and Landlock active.
         try:
             if input_file:
-                with open(input_file, "rb") as f:
+                with Path(input_file).open("rb") as f:
                     result = _sandbox_run(
                         cmd, profile="debug",
                         target=binary_dir, output=script_dir,

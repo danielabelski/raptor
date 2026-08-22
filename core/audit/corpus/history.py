@@ -288,7 +288,7 @@ def build_label_records(
 def append_records(path: Path, records: list[dict[str, Any]]) -> None:
     """Append records to the JSONL store (append-only, one per line)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
+    with Path(path).open("a", encoding="utf-8") as f:
         f.writelines(json.dumps(rec, sort_keys=True) + "\n" for rec in records)
 
 
@@ -353,7 +353,7 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
     reads over the rest of an append-only store.
     """
     try:
-        f = open(path, encoding="utf-8")
+        f = Path(path).open(encoding="utf-8")
     except OSError:
         return
     with f:

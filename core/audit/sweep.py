@@ -48,7 +48,7 @@ def get_rule_role(rule_path: str) -> str:
     False for files not in the stock library.
     """
     try:
-        with open(rule_path) as f:
+        with Path(rule_path).open() as f:
             head = f.read(2048)
         m = _ROLE_RE.search(head)
         if m:

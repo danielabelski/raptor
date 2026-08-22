@@ -165,7 +165,7 @@ class DataflowVisualizer:
                     continue
                 
                 if file_path.exists():
-                    with open(file_path, encoding="utf-8", errors="replace") as f:
+                    with Path(file_path).open(encoding="utf-8", errors="replace") as f:
                         lines = f.readlines()
 
                     start = max(0, node['line'] - 6)

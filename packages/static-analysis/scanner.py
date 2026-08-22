@@ -1085,7 +1085,7 @@ def run_single_semgrep(
         # pack. Naming it in readable_paths bind-mounts it explicitly
         # instead of relying on where the install root happens to live.
         _pack_readable = list(extra_config_readable_paths or [])
-        if (not is_registry_pack and os.path.exists(config)
+        if (not is_registry_pack and Path(config).exists()
                 and str(config) not in _pack_readable):
             _pack_readable.append(str(config))
         rc, so, se = run(

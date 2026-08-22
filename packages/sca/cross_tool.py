@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -71,7 +72,7 @@ def link_related_findings(
 
 def _load_findings(path: Path) -> list[dict[str, Any]]:
     try:
-        with open(path, encoding="utf-8") as fh:
+        with Path(path).open(encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -148,7 +149,7 @@ def _scan_sarif_file(
     out: dict[str, list[str]],
 ) -> None:
     try:
-        with open(path, encoding="utf-8") as fh:
+        with Path(path).open(encoding="utf-8") as fh:
             sarif = json.load(fh)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return

@@ -325,7 +325,7 @@ def _try_auto_migrate(old_config: Path, new_config: Path) -> bool:
     })
 
     try:
-        with open(old_config, encoding="utf-8") as f:
+        with Path(old_config).open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         if not data or not isinstance(data.get('model_list'), list):

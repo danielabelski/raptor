@@ -425,7 +425,7 @@ def extract_direct_call_edges(
         with tempfile.TemporaryDirectory(
                 prefix="raptor-bo-edges-") as scratch:
             script_path = os.path.join(scratch, "axffj.r2")
-            with open(script_path, "w", encoding="utf-8") as script_file:
+            with Path(script_path).open("w", encoding="utf-8") as script_file:
                 script_file.write("\n".join(script_lines) + "\n")
             proc = _sandbox_run(
                 ["r2", "-q", "-i", script_path, str(binary_path)],

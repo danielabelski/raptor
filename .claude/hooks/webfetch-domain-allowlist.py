@@ -80,7 +80,7 @@ def _log_decision(anchor_file: str, verdict: str, host: str, url: str) -> None:
     """Best-effort audit trail next to the anchor file."""
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
-        with open(f"{anchor_file}.log", "a", encoding="utf-8") as fh:
+        with Path(f"{anchor_file}.log").open("a", encoding="utf-8") as fh:
             fh.write(f"{stamp}\t{verdict}\t{host}\t{url}\n")
     except OSError:
         # Logging never changes the verdict; an unwritable log

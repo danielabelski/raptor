@@ -5,6 +5,7 @@ is verified to stay under the base directory before open().
 """
 
 import os
+from pathlib import Path
 
 
 def read_within(base, name):
@@ -13,5 +14,5 @@ def read_within(base, name):
     if not path.startswith(base_real + os.sep):
         msg = "path escapes base directory"
         raise ValueError(msg)
-    with open(path) as f:
+    with Path(path).open() as f:
         return f.read()

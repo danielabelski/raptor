@@ -37,6 +37,7 @@ import hashlib
 import json
 import logging
 from typing import Any, TYPE_CHECKING
+from pathlib import Path
 
 if TYPE_CHECKING:  # type-only — no runtime dep
     from pathlib import Path
@@ -73,7 +74,7 @@ def _sha256_file(path: Path) -> str | None:
     """
     try:
         h = hashlib.sha256()
-        with open(path, "rb") as f:
+        with Path(path).open("rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 h.update(chunk)
         return h.hexdigest()

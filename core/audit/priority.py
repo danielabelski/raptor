@@ -365,7 +365,7 @@ def load_tool_failures(run_dirs: list[Path]) -> set[str]:
     for run_dir in run_dirs:
         for cov_file in run_dir.glob("coverage-*.json"):
             try:
-                with open(cov_file, encoding="utf-8") as f:
+                with Path(cov_file).open(encoding="utf-8") as f:
                     data = json.load(f)
                 for fp in data.get("files_failed", []):
                     failures.add(fp)
@@ -410,7 +410,7 @@ def load_new_functions(
     if not diff_path.exists():
         return set()
     try:
-        with open(diff_path, encoding="utf-8") as f:
+        with Path(diff_path).open(encoding="utf-8") as f:
             diff = json.load(f)
     except (json.JSONDecodeError, OSError):
         return set()
@@ -459,7 +459,7 @@ def _latest_sibling_checklist(
     if best is None:
         return None
     try:
-        with open(best, encoding="utf-8") as f:
+        with Path(best).open(encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
@@ -602,7 +602,7 @@ def load_flow_traces(out_dir: Path) -> list[dict[str, Any]]:
     traces = []
     for path in sorted(out_dir.glob("flow-trace-*.json")):
         try:
-            with open(path, encoding="utf-8") as f:
+            with Path(path).open(encoding="utf-8") as f:
                 traces.append(json.load(f))
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("skipping %s: %s", path, exc)

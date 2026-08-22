@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 logger = logging.getLogger("raptor.security")
 
@@ -151,7 +152,7 @@ def _proc_tty_and_ppid(pid: int):
     so the numeric fields after it parse regardless of the process name.
     """
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+        with Path(f"/proc/{pid}/stat").open(encoding="utf-8", errors="replace") as fh:
             data = fh.read()
         rp = data.rindex(")")
         fields = data[rp + 2:].split()

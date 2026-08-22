@@ -110,7 +110,7 @@ class _ValidationSiblings:
     @staticmethod
     def _load(path: Path) -> Any:
         try:
-            with open(path, encoding="utf-8") as f:
+            with Path(path).open(encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -234,7 +234,7 @@ def import_validation_results(
     from .record import _compute_hash
 
     try:
-        with open(validation_report, encoding="utf-8") as f:
+        with Path(validation_report).open(encoding="utf-8") as f:
             report = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("failed to load validation report %s: %s", validation_report, exc)

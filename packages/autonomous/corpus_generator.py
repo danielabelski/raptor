@@ -587,7 +587,7 @@ class CorpusGenerator:
                 file_size = crash_input.stat().st_size
             except OSError:
                 file_size = 0
-            with open(crash_input, "rb") as fh:
+            with Path(crash_input).open("rb") as fh:
                 content = fh.read(_CRASH_READ_CAP)
 
             # Record characteristics. `size` reflects the actual

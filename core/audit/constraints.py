@@ -26,6 +26,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from ._util import find_function_lines, safe_join
+from pathlib import Path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,7 +104,7 @@ def load_constraints(out_dir: Path) -> list[Constraint]:
     if not path.exists():
         return []
     try:
-        with open(path, encoding="utf-8") as f:
+        with Path(path).open(encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
             return []

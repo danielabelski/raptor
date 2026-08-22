@@ -241,7 +241,7 @@ def target_snapshot(target_path: Any | None) -> dict[str, Any] | None:
 
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as fh:
+    with Path(path).open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()

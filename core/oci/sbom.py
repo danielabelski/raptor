@@ -65,6 +65,29 @@ class InstalledPackage:
     version: str
 
 
+class PackageDbLimitExceeded(Exception):
+    """Raised when a single package-state file yields more records
+    than :data:`MAX_PACKAGE_RECORDS`. The input files are size-capped
+    upstream (64 MiB/member), but minimal stanzas amplify bytes into
+    Python objects at a high constant factor — a hostile registry
+    image could otherwise drive a multi-GB heap spike. Real package
+    databases top out in the low tens of thousands of records."""
+
+
+# Per-file record ceiling for the parsers below. Debian's full
+# archive is ~70k packages; a single installed-state file above this
+# is hostile or corrupt, never real.
+MAX_PACKAGE_RECORDS = 300_000
+
+
+def _check_record_cap(records: list, source: str) -> None:
+    if len(records) >= MAX_PACKAGE_RECORDS:
+        raise PackageDbLimitExceeded(
+            f"{source} exceeds {MAX_PACKAGE_RECORDS} package records "
+            f"(bomb-shape); refusing"
+        )
+
+
 # ---------------------------------------------------------------------------
 # dpkg / Debian / Ubuntu
 # ---------------------------------------------------------------------------
@@ -95,6 +118,7 @@ def parse_dpkg_status(content: bytes) -> list[InstalledPackage]:
             continue
         if not _dpkg_status_is_installed(status):
             continue
+        _check_record_cap(out, "dpkg status")
         out.append(InstalledPackage(
             ecosystem="Debian", name=package.strip(),
             version=version.strip(),
@@ -180,6 +204,7 @@ def parse_apk_installed(content: bytes) -> list[InstalledPackage]:
             elif line.startswith("V:"):
                 version = line[2:].strip()
         if package and version:
+            _check_record_cap(out, "apk installed db")
             out.append(InstalledPackage(
                 ecosystem="Alpine", name=package, version=version,
             ))
@@ -283,6 +308,7 @@ def parse_rpm_sqlite(content: bytes) -> list[InstalledPackage]:
                     continue
                 pkg = _parse_rpm_header(bytes(blob))
                 if pkg is not None:
+                    _check_record_cap(out, "rpmdb.sqlite")
                     out.append(pkg)
         finally:
             conn.close()
@@ -393,9 +419,28 @@ LAYER_FILE_PATHS = {
 }
 
 
+@dataclass(frozen=True)
+class LayerPackagesResult:
+    """Outcome of :func:`packages_from_layer_files`.
+
+    ``failures`` maps package-db path → error summary for every
+    known package-state file that was PRESENT but could not be
+    parsed (rejected, corrupt, over the record cap). A non-empty
+    mapping means the package inventory is PARTIAL — pre-fix these
+    failures were logged at debug level and the result was
+    indistinguishable from "this image has no such database".
+    """
+    packages: list[InstalledPackage]
+    failures: dict[str, str]
+
+    @property
+    def complete(self) -> bool:
+        return not self.failures
+
+
 def packages_from_layer_files(
     layer_files: dict,
-) -> list[InstalledPackage]:
+) -> LayerPackagesResult:
     """Dispatch each known path through its parser. Used by the
     consumer pipeline as the post-:func:`extract_files_from_layer`
     step.
@@ -403,23 +448,33 @@ def packages_from_layer_files(
     Multi-layer images: each layer's call to this helper returns
     its own package set; the caller overlays later-layer packages
     onto earlier-layer ones (later wins on name collision — that's
-    Docker's overlay semantics for state files)."""
+    Docker's overlay semantics for state files).
+
+    Parser failures are surfaced in the result's ``failures``
+    mapping (and logged at WARNING) so callers can distinguish an
+    absent database from a rejected or unparseable one.
+    """
     out: list[InstalledPackage] = []
+    failures: dict[str, str] = {}
     for path, parser in LAYER_FILE_PATHS.items():
         if path in layer_files:
             try:
                 out.extend(parser(layer_files[path]))
             except Exception as e:                  # noqa: BLE001
-                logger.debug(
-                    "core.oci.sbom: parser for %s failed: %s",
-                    path, e,
+                failures[path] = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "core.oci.sbom: parser for %s failed (package "
+                    "inventory will be partial): %s", path, e,
                 )
-    return out
+    return LayerPackagesResult(packages=out, failures=failures)
 
 
 __all__ = [
     "LAYER_FILE_PATHS",
+    "MAX_PACKAGE_RECORDS",
     "InstalledPackage",
+    "LayerPackagesResult",
+    "PackageDbLimitExceeded",
     "packages_from_layer_files",
     "parse_apk_installed",
     "parse_dpkg_status",

@@ -335,14 +335,17 @@ class ImageSbom:
     ``layers_failed`` counts manifest layers that were NOT scanned —
     extraction errors (corrupt blob, digest mismatch, unsupported
     compression such as zstd) plus deliberate oversized-layer skips.
-    A non-zero value marks the package inventory as PARTIAL; callers
-    must not treat it as a complete (clean) result.
+    ``package_db_failures`` counts package-state files that were
+    present but rejected by their parser (corrupt, over the record
+    cap). A non-zero value in either marks the package inventory as
+    PARTIAL; callers must not treat it as a complete (clean) result.
     """
     image_ref: str
     digest: str | None
     packages: tuple[InstalledPackage, ...]
     layer_count_scanned: int = 0
     layers_failed: int = 0
+    package_db_failures: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise for the cross-run JsonCache. Versions and names
@@ -354,6 +357,7 @@ class ImageSbom:
             "digest": self.digest,
             "layer_count_scanned": self.layer_count_scanned,
             "layers_failed": self.layers_failed,
+            "package_db_failures": self.package_db_failures,
             "packages": [
                 {"ecosystem": p.ecosystem,
                  "name": p.name,
@@ -369,6 +373,8 @@ class ImageSbom:
             digest=d.get("digest"),
             layer_count_scanned=int(d.get("layer_count_scanned", 0) or 0),
             layers_failed=int(d.get("layers_failed", 0) or 0),
+            package_db_failures=int(
+                d.get("package_db_failures", 0) or 0),
             packages=tuple(
                 InstalledPackage(
                     ecosystem=p.get("ecosystem", "") or "",
@@ -687,15 +693,23 @@ def fetch_image_sbom(
         # overlay-fs "later wins" semantics.
         layer_files.update({path: content for path, content in files.items()})
 
-    packages = tuple(packages_from_layer_files(layer_files))
+    extraction = packages_from_layer_files(layer_files)
+    for db_path, err in extraction.failures.items():
+        logger.warning(
+            "sca.dockerfile_from: package DB %s in %s was present "
+            "but could not be parsed (inventory will be partial): %s",
+            db_path, image, err,
+        )
     sbom = ImageSbom(
         image_ref=image,
         digest=target_digest,
-        packages=packages,
+        packages=tuple(extraction.packages),
         layer_count_scanned=layers_scanned,
         layers_failed=layers_failed,
+        package_db_failures=len(extraction.failures),
     )
-    if sbom_key is not None and layers_failed == 0:
+    if (sbom_key is not None and layers_failed == 0
+            and not extraction.failures):
         # Degraded (partial) results are never cached: a transient
         # per-layer failure would otherwise persist as a permanently
         # incomplete inventory under a TTL_FOREVER content-addressed

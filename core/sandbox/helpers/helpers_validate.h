@@ -69,13 +69,23 @@ int validate_mapping_args(int argc, char **argv,
                           unsigned long *pid_out,
                           char *err, size_t errsz);
 
-/* Namespace-ownership contract: the user namespace of `pid` must be
- * owned by `expect_uid` (checked via NS_GET_OWNER_UID on
- * /proc/<pid>/ns/user). Refuses when the ns cannot be opened, the ioctl
- * fails, or the owner differs. Requires no capabilities for namespaces
- * the invoker can already see. */
-int check_ns_owner(unsigned long pid, uid_t expect_uid,
-                   char *err, size_t errsz);
+/* Identity pin for the target process: opens /proc/<pid> exactly once
+ * as an O_PATH|O_DIRECTORY fd and returns it (or -1 with a reason in
+ * `err`). Every later access — the ns/user ownership check and the
+ * gid_map write — must go through openat() on this fd, never through a
+ * fresh path lookup: the fd goes stale (ESRCH/ENOENT) when the process
+ * exits, so a PID-reuse race between check and write cannot redirect
+ * the privileged write into a recycled pid's namespace. */
+int open_proc_pid_dir(unsigned long pid, char *err, size_t errsz);
+
+/* Namespace-ownership contract: the user namespace behind `proc_dirfd`
+ * (an fd from open_proc_pid_dir) must be owned by `expect_uid`, checked
+ * via NS_GET_OWNER_UID on openat(proc_dirfd, "ns/user"). `pid` is used
+ * only for refusal messages. Refuses when the ns cannot be opened, the
+ * ioctl fails, or the owner differs. Requires no capabilities for
+ * namespaces the invoker can already see. */
+int check_ns_owner_at(int proc_dirfd, unsigned long pid, uid_t expect_uid,
+                      char *err, size_t errsz);
 
 #define RAPTOR_GIDMAP_MAX_TRIPLES 8
 

@@ -443,29 +443,52 @@ static void test_ns_owner(void) {
         return;
     }
 
-    CHECK(check_ns_owner((unsigned long)child, getuid(), err,
-                         sizeof err) == 0,
+    int proc_fd = open_proc_pid_dir((unsigned long)child, err, sizeof err);
+    CHECK(proc_fd >= 0, "opens a live pid's /proc dir as the pinned fd");
+    CHECK(check_ns_owner_at(proc_fd, (unsigned long)child, getuid(), err,
+                            sizeof err) == 0,
           "accepts a self-created user namespace");
-    CHECK(check_ns_owner((unsigned long)child, getuid() + 1, err,
-                         sizeof err) != 0
+    CHECK(check_ns_owner_at(proc_fd, (unsigned long)child, getuid() + 1,
+                            err, sizeof err) != 0
               && strstr(err, "namespace ownership") != NULL,
           "refuses when the owner uid differs from the invoker");
 
     kill(child, SIGKILL);
     waitpid(child, NULL, 0);
 
+    /* PID-reuse pin: once the validated process is gone, the pinned
+     * dirfd must go stale — BOTH the ns re-check and a gid_map open
+     * through it must fail, no matter what new process now holds the
+     * numeric pid. This is the property that makes the check-then-write
+     * sequence in main() race-free. */
+    CHECK(check_ns_owner_at(proc_fd, (unsigned long)child, getuid(), err,
+                            sizeof err) != 0,
+          "pinned dirfd refuses the ns check after the process exits");
+    int stale_map = openat(proc_fd, "gid_map", O_WRONLY | O_CLOEXEC);
+    CHECK(stale_map < 0,
+          "pinned dirfd refuses a gid_map open after the process exits");
+    if (stale_map >= 0) close(stale_map);
+    close(proc_fd);
+
     if (getuid() != 0) {
         /* pid 1 lives in the init user namespace (owned by root); an
-         * unprivileged invoker is refused either at open() or at the
-         * owner comparison. */
-        CHECK(check_ns_owner(1, getuid(), err, sizeof err) != 0,
-              "refuses pid 1 (init user namespace)");
+         * unprivileged invoker is refused either at the ns/user open()
+         * or at the owner comparison. */
+        int init_fd = open_proc_pid_dir(1, err, sizeof err);
+        if (init_fd >= 0) {
+            CHECK(check_ns_owner_at(init_fd, 1, getuid(), err,
+                                    sizeof err) != 0,
+                  "refuses pid 1 (init user namespace)");
+            close(init_fd);
+        } else {
+            CHECK(1, "refuses pid 1 (init user namespace, at dir open)");
+        }
     } else {
         printf("skip pid-1 ns-owner case (running as root)\n");
     }
 
-    /* A vanished pid is refused at open(). */
-    CHECK(check_ns_owner(0x7fffffffUL, getuid(), err, sizeof err) != 0,
+    /* A vanished pid is refused at the /proc dir open. */
+    CHECK(open_proc_pid_dir(0x7fffffffUL, err, sizeof err) < 0,
           "refuses a nonexistent pid");
 }
 

@@ -24,9 +24,17 @@
  *
  *   1. NAMESPACE OWNERSHIP: the user namespace of the target PID must
  *      be owned by the invoker's real uid (NS_GET_OWNER_UID on
- *      /proc/PID/ns/user).  File caps do not change real ids, so this
+ *      ns/user).  File caps do not change real ids, so this
  *      confines the write to namespaces the caller itself created —
  *      another user's namespace, or the init namespace, is refused.
+ *      IDENTITY PINNING: /proc/PID is opened ONCE as a directory fd;
+ *      both the ns/user ownership check and the gid_map write go
+ *      through openat() on that same fd.  The numeric PID is never
+ *      re-resolved after validation, so a PID-reuse race (target dies,
+ *      PID wraps to a stranger's fresh user namespace between check
+ *      and write) cannot redirect the CAP_SETGID write: the pinned
+ *      dirfd goes stale (ESRCH/ENOENT) when the validated process
+ *      exits.
  *   2. GID CONFINEMENT: every host gid covered by the mapping triples
  *      must be the invoker's real/effective gid or one of its
  *      supplementary groups (getgroups).  The caller can only map
@@ -182,14 +190,31 @@ int validate_mapping_args(int argc, char **argv,
 }
 
 
-int check_ns_owner(unsigned long pid, uid_t expect_uid,
-                   char *err, size_t errsz) {
+int open_proc_pid_dir(unsigned long pid, char *err, size_t errsz) {
+    /* O_PATH|O_DIRECTORY: a pure handle on THIS incarnation of the pid's
+     * /proc entry, usable as the dirfd of every subsequent openat().
+     * Once the process exits, openat() through this fd fails
+     * (ESRCH/ENOENT) instead of resolving a recycled pid — that
+     * staleness IS the identity pin across check and write. */
     char path[64];
-    snprintf(path, sizeof path, "/proc/%lu/ns/user", pid);
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
+    snprintf(path, sizeof path, "/proc/%lu", pid);
+    int dirfd = open(path, O_PATH | O_DIRECTORY | O_CLOEXEC);
+    if (dirfd < 0) {
         snprintf(err, errsz, "namespace ownership: cannot open %s: %s",
                  path, strerror(errno));
+        return -1;
+    }
+    return dirfd;
+}
+
+
+int check_ns_owner_at(int proc_dirfd, unsigned long pid, uid_t expect_uid,
+                      char *err, size_t errsz) {
+    int fd = openat(proc_dirfd, "ns/user", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        snprintf(err, errsz,
+                 "namespace ownership: cannot open /proc/%lu/ns/user: %s",
+                 pid, strerror(errno));
         return -1;
     }
     uid_t owner = (uid_t)-1;
@@ -198,8 +223,8 @@ int check_ns_owner(unsigned long pid, uid_t expect_uid,
     close(fd);
     if (rc != 0) {
         snprintf(err, errsz,
-                 "namespace ownership: NS_GET_OWNER_UID on %s: %s",
-                 path, strerror(saved));
+                 "namespace ownership: NS_GET_OWNER_UID on "
+                 "/proc/%lu/ns/user: %s", pid, strerror(saved));
         return -1;
     }
     if (owner != expect_uid) {
@@ -255,18 +280,41 @@ int main(int argc, char **argv) {
     }
     free(allowed);
 
-    if (check_ns_owner(pid, getuid(), err, sizeof err) != 0) {
+    /* Pin the target process's identity: /proc/PID is resolved exactly
+     * once, and every later access (ownership check, gid_map write) is
+     * an openat() relative to this fd. If the validated process exits
+     * — even if the numeric PID is immediately reused by a stranger's
+     * fresh user namespace — the openat() fails instead of following
+     * the recycled PID. */
+    int proc_fd = open_proc_pid_dir(pid, err, sizeof err);
+    if (proc_fd < 0) {
         fprintf(stderr, "%s: refusing: %s\n", argv[0], err);
+        return 3;
+    }
+
+    if (check_ns_owner_at(proc_fd, pid, getuid(), err, sizeof err) != 0) {
+        fprintf(stderr, "%s: refusing: %s\n", argv[0], err);
+        close(proc_fd);
         return 3;
     }
 
     char path[64];
     snprintf(path, sizeof path, "/proc/%lu/gid_map", pid);
 
-    FILE *f = fopen(path, "w");
+    int map_fd = openat(proc_fd, "gid_map", O_WRONLY | O_CLOEXEC);
+    int saved = errno;
+    close(proc_fd);
+    if (map_fd < 0) {
+        fprintf(stderr, "%s: open(%s): %s\n",
+                argv[0], path, strerror(saved));
+        return 1;
+    }
+
+    FILE *f = fdopen(map_fd, "w");
     if (!f) {
-        fprintf(stderr, "%s: fopen(%s): %s\n",
+        fprintf(stderr, "%s: fdopen(%s): %s\n",
                 argv[0], path, strerror(errno));
+        close(map_fd);
         return 1;
     }
 

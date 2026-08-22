@@ -332,6 +332,36 @@ class TestGidmapAllowContract:
         assert r.returncode == 3
         assert "triples" in r.stderr
 
+    def test_refuses_pid_that_already_exited(self, built: Path) -> None:
+        """Dead-PID behaviour of the pinned-dirfd flow: the binary
+        resolves /proc/PID exactly once, so a PID whose process is gone
+        is refused up front at the identity pin (exit 3, namespace
+        ownership) — it never reaches the gid_map write."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=10)
+        r = _run([
+            str(built / "raptor-gidmap-allow"),
+            str(child.pid), "0", str(os.getgid()), "1",
+        ])
+        assert r.returncode == 3
+        assert "namespace ownership" in r.stderr
+
+    def test_gid_map_access_is_pinned_to_the_proc_dirfd(self) -> None:
+        """Source contract for the PID-reuse fix: /proc/PID is opened
+        once as a directory fd and BOTH the ns/user ownership check and
+        the gid_map write go through openat() on it. A fresh
+        path-based re-resolution of the numeric PID after validation
+        (the old ``fopen("/proc/PID/gid_map")``) would reintroduce the
+        check-to-write race."""
+        src = (HELPERS_SRC / "raptor-gidmap-allow.c").read_text()
+        assert "O_PATH | O_DIRECTORY" in src
+        assert 'openat(proc_dirfd, "ns/user"' in src
+        assert 'openat(proc_fd, "gid_map"' in src
+        assert "fopen(" not in src, (
+            "gid_map must be opened via openat() on the pinned /proc/PID "
+            "dirfd, never by re-resolving the numeric PID"
+        )
+
     def test_validation_passes_on_own_namespace(self, built: Path) -> None:
         """The RAPTOR call shape (one triple, own gid, self-created
         userns) must clear every contract check. Without CAP_SETGID the

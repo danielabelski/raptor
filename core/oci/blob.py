@@ -46,16 +46,58 @@ DEFAULT_MAX_ENTRY_COUNT = 50_000
 DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 
+class UnsupportedLayerMediaType(ValueError):
+    """Raised for a layer whose ``mediaType`` names a compression
+    this module cannot decode (e.g. ``+zstd``) or that isn't a tar
+    layer at all. Loud by design: silently skipping a valid-but-
+    undecodable layer yields a partial package inventory that is
+    indistinguishable from a clean one — an image author could pick
+    zstd layers specifically to evade scanning."""
+
+
+def _tar_mode_for_media_type(media_type: str) -> str:
+    """Map an OCI/Docker layer ``mediaType`` to the ``tarfile`` open
+    mode. Gzip and uncompressed tar layers are supported; anything
+    else (zstd, unknown) raises :class:`UnsupportedLayerMediaType`.
+
+    An empty ``media_type`` keeps the historical gzip default for
+    callers without manifest context.
+    """
+    mt = (media_type or "").split(";", 1)[0].strip().lower()
+    if not mt:
+        return "r|gz"
+    # OCI: application/vnd.oci.image.layer.v1.tar+gzip
+    # Docker: application/vnd.docker.image.rootfs.diff.tar.gzip
+    # (plus the *.foreign / nondistributable variants of each).
+    if mt.endswith(("+gzip", ".gzip")):
+        return "r|gz"
+    # Uncompressed: application/vnd.oci.image.layer.v1.tar,
+    # application/vnd.docker.image.rootfs.diff.tar.
+    if mt.endswith((".tar", "+tar")):
+        return "r|"
+    raise UnsupportedLayerMediaType(
+        f"unsupported layer mediaType {media_type!r}: only gzip and "
+        f"uncompressed tar layers can be decoded"
+    )
+
+
 def extract_files_from_layer(
     layer_chunks: Iterable[bytes],
     wanted_paths: set[str],
     *,
     max_entry_bytes: int = DEFAULT_MAX_ENTRY_BYTES,
+    media_type: str = "",
 ) -> dict[str, bytes]:
     """Pull specific files out of a streamed layer blob.
 
-    ``layer_chunks`` is the raw gzipped-tar byte stream (from
-    :meth:`OciRegistryClient.stream_blob`).
+    ``layer_chunks`` is the raw layer byte stream (from
+    :meth:`OciRegistryClient.stream_blob`). ``media_type`` is the
+    layer descriptor's ``mediaType`` from the image manifest; it
+    selects the decompression mode (gzip vs uncompressed tar) and
+    unsupported compressions raise
+    :class:`UnsupportedLayerMediaType` instead of silently yielding
+    an empty (falsely clean) result. When empty, the historical
+    gzip default applies.
     ``wanted_paths`` is the set of in-archive paths we care about,
     e.g. ``{"var/lib/dpkg/status", "lib/apk/db/installed"}``. Paths
     are matched against the tar entry name with leading ``./`` and
@@ -87,6 +129,7 @@ def extract_files_from_layer(
     author show this scanner a benign copy while the runtime saw a
     later, different one.
     """
+    mode = _tar_mode_for_media_type(media_type)
     if not wanted_paths:
         return {}
 
@@ -100,7 +143,7 @@ def extract_files_from_layer(
     found = extract_files_from_tar(
         chunk_iter,
         selector=_select,
-        mode="r|gz",
+        mode=mode,
         max_member_bytes=max_entry_bytes,
         # Layer member names are legitimately absolute; we read
         # into memory rather than extract to disk, so escape doesn't
@@ -145,5 +188,6 @@ def _normalise_tar_path(p: str) -> str:
 
 __all__ = [
     "DEFAULT_MAX_ENTRY_BYTES",
+    "UnsupportedLayerMediaType",
     "extract_files_from_layer",
 ]

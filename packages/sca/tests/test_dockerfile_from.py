@@ -926,3 +926,112 @@ def test_sbom_cache_key_distinct_per_registry():
     digest = "sha256:" + "9" * 64
     assert (_sbom_cache_key("docker.io", digest)
             != _sbom_cache_key("ghcr.io", digest))
+
+
+# ---------------------------------------------------------------------------
+# Per-layer failure surfacing — partial inventories are marked, not silent
+# ---------------------------------------------------------------------------
+
+
+def _manifest_with_layers(layers: list[dict]) -> FakeManifestResp:
+    return FakeManifestResp(
+        parsed={
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"digest": "sha256:" + "c" * 64},
+            "layers": layers,
+        },
+        content_type="application/vnd.oci.image.manifest.v1+json",
+        digest="sha256:" + "m" * 64,
+    )
+
+
+def test_failed_layer_extraction_marks_sbom_partial():
+    """One layer extracts, one blob fetch blows up. The result must
+    carry layers_failed=1 — pre-fix the failure was swallowed at
+    debug level and the partial inventory looked complete."""
+    good_blob = _make_layer_blob({
+        "var/lib/dpkg/status": (
+            b"Package: zlib1g\n"
+            b"Status: install ok installed\n"
+            b"Version: 1.0\n\n"
+        ),
+    })
+    good_digest = "sha256:" + "a" * 64
+    bad_digest = "sha256:" + "b" * 64
+    gz = "application/vnd.oci.image.layer.v1.tar+gzip"
+    manifest = _manifest_with_layers([
+        {"digest": good_digest, "size": len(good_blob), "mediaType": gz},
+        {"digest": bad_digest, "size": 128, "mediaType": gz},
+    ])
+    client = _make_client(
+        manifests={"11": manifest},
+        blobs={good_digest: good_blob},   # bad_digest missing → raises
+    )
+    sbom = fetch_image_sbom("debian:11", client=client)
+    assert sbom is not None
+    assert sbom.layer_count_scanned == 1
+    assert sbom.layers_failed == 1
+    assert {p.name for p in sbom.packages} == {"zlib1g"}
+
+
+def test_unsupported_zstd_layer_counts_as_failed():
+    """A valid zstd layer is undecodable here; it must surface as a
+    failed layer instead of silently vanishing from the inventory."""
+    blob = _make_layer_blob({"var/lib/dpkg/status": b"Package: x\n"})
+    digest = "sha256:" + "a" * 64
+    manifest = _manifest_with_layers([
+        {"digest": digest, "size": len(blob),
+         "mediaType": "application/vnd.oci.image.layer.v1.tar+zstd"},
+    ])
+    client = _make_client(manifests={"11": manifest}, blobs={digest: blob})
+    sbom = fetch_image_sbom("debian:11", client=client)
+    assert sbom is not None
+    assert sbom.layers_failed == 1
+    assert sbom.packages == ()
+
+
+def test_uncompressed_layer_media_type_extracts():
+    """An uncompressed tar layer (valid per spec) must produce
+    packages — pre-fix the hardcoded gzip mode dropped it."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tf:
+        content = (
+            b"Package: musl-ish\n"
+            b"Status: install ok installed\n"
+            b"Version: 2.0\n\n"
+        )
+        info = tarfile.TarInfo(name="var/lib/dpkg/status")
+        info.size = len(content)
+        tf.addfile(info, io.BytesIO(content))
+    plain_blob = raw.getvalue()
+    digest = "sha256:" + "a" * 64
+    manifest = _manifest_with_layers([
+        {"digest": digest, "size": len(plain_blob),
+         "mediaType": "application/vnd.oci.image.layer.v1.tar"},
+    ])
+    client = _make_client(
+        manifests={"11": manifest}, blobs={digest: plain_blob},
+    )
+    sbom = fetch_image_sbom("debian:11", client=client)
+    assert sbom is not None
+    assert sbom.layers_failed == 0
+    assert {p.name for p in sbom.packages} == {"musl-ish"}
+
+
+def test_partial_sbom_is_not_cached():
+    """Degraded results must not persist under a TTL_FOREVER key —
+    a transient layer failure would become a permanently incomplete
+    inventory."""
+    digest = "sha256:" + "b" * 64
+    gz = "application/vnd.oci.image.layer.v1.tar+gzip"
+    manifest = _manifest_with_layers([
+        {"digest": digest, "size": 128, "mediaType": gz},
+    ])
+    client = _make_client(manifests={"11": manifest}, blobs={})
+    digest_cache: dict = {}
+    sbom = fetch_image_sbom(
+        "debian:11", client=client, digest_cache=digest_cache,
+    )
+    assert sbom is not None
+    assert sbom.layers_failed == 1
+    assert digest_cache == {}

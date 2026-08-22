@@ -15,6 +15,7 @@ from core.tar import TarOpenError
 
 from core.oci.blob import (
     DEFAULT_MAX_ENTRY_BYTES,
+    UnsupportedLayerMediaType,
     extract_files_from_layer,
 )
 from core.oci.client import OciRegistryClient, RegistryError
@@ -351,3 +352,69 @@ def test_duplicate_wanted_entry_refused():
     ])
     with pytest.raises(ValueError, match="duplicate"):
         extract_files_from_layer(_stream(blob), {"var/lib/dpkg/status"})
+
+
+# ---------------------------------------------------------------------------
+# Layer mediaType dispatch
+# ---------------------------------------------------------------------------
+
+
+def _make_plain_tar(files: Dict[str, bytes]) -> bytes:
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tf:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    return raw.getvalue()
+
+
+@pytest.mark.parametrize("media_type", [
+    "application/vnd.oci.image.layer.v1.tar+gzip",
+    "application/vnd.docker.image.rootfs.diff.tar.gzip",
+    "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip",
+])
+def test_gzip_media_types_extract(media_type):
+    blob = _make_gzipped_tar({"var/lib/dpkg/status": b"x"})
+    out = extract_files_from_layer(
+        _stream(blob), {"var/lib/dpkg/status"}, media_type=media_type,
+    )
+    assert out == {"var/lib/dpkg/status": b"x"}
+
+
+@pytest.mark.parametrize("media_type", [
+    "application/vnd.oci.image.layer.v1.tar",
+    "application/vnd.docker.image.rootfs.diff.tar",
+])
+def test_uncompressed_media_types_extract(media_type):
+    """A valid uncompressed layer must yield its files — pre-fix the
+    hardcoded gzip mode failed to open it and the caller saw an
+    empty (falsely clean) result."""
+    blob = _make_plain_tar({"var/lib/dpkg/status": b"x"})
+    out = extract_files_from_layer(
+        _stream(blob), {"var/lib/dpkg/status"}, media_type=media_type,
+    )
+    assert out == {"var/lib/dpkg/status": b"x"}
+
+
+@pytest.mark.parametrize("media_type", [
+    "application/vnd.oci.image.layer.v1.tar+zstd",
+    "application/vnd.oci.image.layer.v1.squashfs",
+    "application/octet-stream",
+])
+def test_unsupported_media_types_raise_loudly(media_type):
+    """zstd (valid per OCI spec, undecodable here) and unknown media
+    types must raise instead of silently dropping the layer."""
+    blob = _make_gzipped_tar({"var/lib/dpkg/status": b"x"})
+    with pytest.raises(UnsupportedLayerMediaType):
+        extract_files_from_layer(
+            _stream(blob), {"var/lib/dpkg/status"}, media_type=media_type,
+        )
+
+
+def test_empty_media_type_defaults_to_gzip():
+    blob = _make_gzipped_tar({"var/lib/dpkg/status": b"x"})
+    out = extract_files_from_layer(
+        _stream(blob), {"var/lib/dpkg/status"}, media_type="",
+    )
+    assert out == {"var/lib/dpkg/status": b"x"}

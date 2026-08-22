@@ -37,9 +37,12 @@ Behaviour under failure:
   * Network unreachable / registry returns 5xx → log warning,
     skip that image, continue with other Dockerfiles. Don't
     abort the whole SCA run for one unreachable image.
-  * Layer extraction fails (corrupt blob, malformed package db) →
-    skip that layer, log debug. Other layers in the same image
-    still produce Deps.
+  * Layer extraction fails (corrupt blob, unsupported compression,
+    digest mismatch) → skip that layer with a WARNING and count it
+    in ``ImageSbom.layers_failed`` so the partial inventory is
+    distinguishable from a clean one (partial results are also
+    never cached). Other layers in the same image still produce
+    Deps.
   * ``--offline`` flag → skip the whole pass.
 
 Caching:
@@ -328,11 +331,18 @@ class ImageSbom:
     ``layer_count_scanned`` is for diagnostics — operators can see
     "we pulled 3 layers" in the log even when 0 packages came back
     (some images have no recognised package db, e.g. distroless).
+
+    ``layers_failed`` counts manifest layers that were NOT scanned —
+    extraction errors (corrupt blob, digest mismatch, unsupported
+    compression such as zstd) plus deliberate oversized-layer skips.
+    A non-zero value marks the package inventory as PARTIAL; callers
+    must not treat it as a complete (clean) result.
     """
     image_ref: str
     digest: str | None
     packages: tuple[InstalledPackage, ...]
     layer_count_scanned: int = 0
+    layers_failed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise for the cross-run JsonCache. Versions and names
@@ -343,6 +353,7 @@ class ImageSbom:
             "image_ref": self.image_ref,
             "digest": self.digest,
             "layer_count_scanned": self.layer_count_scanned,
+            "layers_failed": self.layers_failed,
             "packages": [
                 {"ecosystem": p.ecosystem,
                  "name": p.name,
@@ -357,6 +368,7 @@ class ImageSbom:
             image_ref=d.get("image_ref", "") or "",
             digest=d.get("digest"),
             layer_count_scanned=int(d.get("layer_count_scanned", 0) or 0),
+            layers_failed=int(d.get("layers_failed", 0) or 0),
             packages=tuple(
                 InstalledPackage(
                     ecosystem=p.get("ecosystem", "") or "",
@@ -641,9 +653,13 @@ def fetch_image_sbom(
     # ``packages_from_layer_files`` handles that ordering.
     layer_files: dict[str, bytes] = {}
     layers_scanned = 0
+    layers_failed = 0
     wanted = set(LAYER_FILE_PATHS)
     for layer in image_manifest.layers:
         if layer.size and layer.size > max_layer_bytes:
+            # Deliberate skip, but it still leaves the inventory
+            # partial — count it so callers can tell.
+            layers_failed += 1
             logger.debug(
                 "sca.dockerfile_from: skipping oversized layer %s (%d B)",
                 layer.digest, layer.size,
@@ -651,11 +667,19 @@ def fetch_image_sbom(
             continue
         try:
             chunks = client.stream_blob(ref, layer.digest)
-            files = extract_files_from_layer(chunks, wanted)
+            files = extract_files_from_layer(
+                chunks, wanted, media_type=layer.media_type,
+            )
         except Exception as e:                      # noqa: BLE001
-            logger.debug(
-                "sca.dockerfile_from: failed to extract layer %s: %s",
-                layer.digest, e,
+            # Surfaced, not swallowed: a valid-but-undecodable layer
+            # (zstd), a digest mismatch, or a corrupt blob makes the
+            # inventory PARTIAL. Pre-fix this was a debug log and the
+            # result was indistinguishable from a clean scan.
+            layers_failed += 1
+            logger.warning(
+                "sca.dockerfile_from: failed to extract layer %s of "
+                "%s (package inventory will be partial): %s",
+                layer.digest, image, e,
             )
             continue
         layers_scanned += 1
@@ -669,8 +693,13 @@ def fetch_image_sbom(
         digest=target_digest,
         packages=packages,
         layer_count_scanned=layers_scanned,
+        layers_failed=layers_failed,
     )
-    if sbom_key is not None:
+    if sbom_key is not None and layers_failed == 0:
+        # Degraded (partial) results are never cached: a transient
+        # per-layer failure would otherwise persist as a permanently
+        # incomplete inventory under a TTL_FOREVER content-addressed
+        # key.
         if digest_cache is not None:
             digest_cache[sbom_key] = sbom
         if disk_cache is not None:

@@ -870,19 +870,94 @@ class TestRetriesOptOut:
 
 
 class TestFollowRedirects:
-    """follow_redirects=False surfaces 3xx responses to the caller
-    instead of chasing them — security-scanning patterns need this."""
+    """Redirects are never followed by this backend — 3xx responses
+    surface to the caller. Non-following used to be ACCIDENTAL
+    (retries=False zeroed urllib3's redirect budget while the code
+    passed redirect=True); these tests pin it as deliberate, since
+    the post-response revalidation checks only generic URL gates and
+    following would bypass caller-level address policy (e.g. the OCI
+    registry SSRF gate)."""
 
-    def test_default_follows_redirects(self):
-        """Default behaviour passes redirect=True to urllib3."""
+    def test_redirect_pinned_false_by_default(self):
+        """The pool.request call must pass redirect=False even for
+        default follow_redirects=True — non-following must not
+        depend on retries=False side effects."""
         client, pool = _client_with_mock_pool(_stub_response(b'{"ok": true}'))
         client.get_json("https://example.com/api")
-        assert pool.request.call_args.kwargs["redirect"] is True
+        assert pool.request.call_args.kwargs["redirect"] is False
+
+    def test_redirect_pinned_false_for_stream_bytes(self):
+        """The streaming path is pinned the same way."""
+        client, pool = _client_with_mock_pool(_stub_response(b"data"))
+        list(client.stream_bytes("https://example.com/blob"))
+        assert pool.request.call_args.kwargs["redirect"] is False
 
     def test_follow_redirects_false_passed_through(self):
         client, pool = _client_with_mock_pool(_stub_response(b'{"ok": true}'))
         client.get_json("https://example.com/api", follow_redirects=False)
         assert pool.request.call_args.kwargs["redirect"] is False
+
+    def test_302_not_followed_against_real_server(self, monkeypatch):
+        """A local handler returning 302 must yield the 302 response
+        unfollowed — the follow target must never be requested. Real
+        localhost server (not a mock): this pins the wire behaviour
+        the accidental retries=False coupling used to provide."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        hits: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/followed")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    body = b"FOLLOWED"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        # The direct client snapshots proxy env at construction —
+        # drop any operator proxy so the request hits loopback.
+        for var in ("http_proxy", "HTTP_PROXY", "https_proxy",
+                    "HTTPS_PROXY", "all_proxy", "ALL_PROXY",
+                    "no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(var, raising=False)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            client = UrllibClient(circuit_breaker=_HostCircuitBreaker())
+            resp = client.request(
+                "GET", f"http://127.0.0.1:{port}/start",
+            )
+            assert resp.status == 302
+            assert resp.headers["location"] == "/followed"
+            assert resp.body == b""
+            assert hits == ["/start"], (
+                f"redirect target was requested: {hits}"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_docstring_states_redirects_not_followed(self):
+        """The request() docstring must not claim redirect
+        following — it documents the deliberate non-follow contract
+        (pre-fix it claimed 'follows up to 10 redirects')."""
+        doc = UrllibClient.request.__doc__
+        assert "Redirects are NOT followed" in doc
 
     def test_3xx_with_no_follow_raises(self):
         """3xx with follow_redirects=False reaches the >= 400 check via

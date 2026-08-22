@@ -672,9 +672,22 @@ class UrllibClient:
     ) -> Response:
         """Low-level HTTP request — returns a full :class:`Response` object.
 
-        Use this when you need response metadata (status, headers, final
-        URL after redirects). Typical case: capturing ``ETag`` /
+        Use this when you need response metadata (status, headers,
+        final URL). Typical case: capturing ``ETag`` /
         ``Last-Modified`` for a subsequent conditional request.
+
+        Redirects are NOT followed by this backend — a 3xx response
+        is returned to the caller as-is (status + ``Location``
+        header), regardless of ``follow_redirects``. This is
+        deliberate: the post-response URL revalidation checks only
+        the generic URL gates (scheme, userinfo, host presence), not
+        caller-level address policy (e.g. the OCI registry SSRF
+        policy), so transparently following a redirect would let any
+        policy-passing host bounce a request at endpoints the caller
+        never validated. Callers that need to follow a redirect must
+        read ``Location``, re-validate the target through their own
+        policy, and issue a new request. ``follow_redirects`` is
+        retained for interface compatibility only.
 
         For arbitrary HTTP methods (DELETE, PUT, PATCH, HEAD, etc.)
         callers can pass them via this method — the convenience methods
@@ -882,20 +895,24 @@ class UrllibClient:
             timeout=urllib3.Timeout(total=float(timeout)),
             preload_content=False,
             decode_content=decode,
-            redirect=True,
+            # Never follow redirects — same deliberate pin as
+            # `_fetch_once` (see its comment): with retries=False
+            # urllib3 already zeroed the redirect budget, so the old
+            # ``redirect=True`` here was dead weight one retry-
+            # plumbing refactor away from silently chasing 3xx into
+            # endpoints no caller-level address policy ever saw.
+            redirect=False,
             retries=False,
         )
         try:
-            # Re-validate the post-redirect URL BEFORE yielding any
-            # body bytes — same scheme/userinfo/host gates as the
-            # initial request. Pre-fix this streaming path followed
-            # redirects (``redirect=True``) with NO revalidation,
-            # while `_fetch_once` revalidated: a 302
-            # `Location: http://attacker.com/...` from an https://
-            # request downgraded a streamed download to cleartext
-            # silently. Same relative-path resolution as
-            # `_fetch_once` (urllib3's geturl() can return a
-            # relative path; resolve against the request URL first).
+            # Re-validate the final URL BEFORE yielding any body
+            # bytes — same scheme/userinfo/host gates as the initial
+            # request. Defence in depth now that redirects are
+            # pinned off (it would catch a backend regression that
+            # starts following again), and it still resolves the
+            # relative-path shape urllib3's geturl() can return on
+            # 200 responses that carry a ``Location:`` header (same
+            # handling as `_fetch_once`).
             final_url = resp.geturl() or url
             if isinstance(final_url, str) and final_url != url:
                 from urllib.parse import urljoin, urlparse
@@ -1256,10 +1273,19 @@ class UrllibClient:
         # decode_content=True so urllib3 transparently decompresses
         # gzip/deflate responses from servers that send them whether
         # or not we asked.
-        # redirect default True follows up to 10 redirects (urllib3 default).
-        # follow_redirects=False lets callers inspect 3xx responses —
-        # useful for security scanning patterns that need to see
-        # Location headers without chasing them.
+        # redirect=False — redirects are never followed by this
+        # backend. Pre-fix the code passed redirect=follow_redirects
+        # (default True) and non-following was ACCIDENTAL: with
+        # retries=False urllib3 zeroes the redirect budget
+        # (Retry.__init__ sets redirect=0, raise_on_redirect=False
+        # when total is False), so the 3xx came back unfollowed no
+        # matter what redirect= said. One refactor of the retry
+        # plumbing away from silently starting to follow — and the
+        # post-redirect revalidation below re-checks only generic
+        # URL gates (scheme/userinfo/host), never caller-level
+        # address policy (e.g. the OCI registry SSRF policy). Pin
+        # the intended behaviour explicitly; 3xx responses surface
+        # to the caller with their Location header intact.
         is_head = method.upper() == "HEAD"
         # ``Accept-Encoding: identity`` from the caller is the
         # raw-bytes contract (content-addressed consumers hash the
@@ -1273,7 +1299,7 @@ class UrllibClient:
             timeout=urllib3.Timeout(total=float(timeout)),
             preload_content=is_head,   # True for HEAD, False otherwise
             decode_content=decode,
-            redirect=follow_redirects,
+            redirect=False,            # never follow — see comment above
             retries=False,
         )
         try:
@@ -1404,28 +1430,27 @@ class UrllibClient:
             # lookup — servers send mixed case, callers shouldn't have
             # to remember whether a particular server uses "ETag" or
             # "etag".
-            # urllib3's geturl() returns the post-redirect URL, or the
-            # request URL when no redirect happened. It can return None
-            # (or empty string) if the response object hasn't recorded
-            # the URL yet — fall back to the request URL so callers
-            # always see something parseable. Documented contract on
+            # urllib3's geturl() returns the URL the response was
+            # actually served from (the request URL, since redirects
+            # are pinned off above). It can return None (or empty
+            # string) if the response object hasn't recorded the URL
+            # yet — fall back to the request URL so callers always
+            # see something parseable. Documented contract on
             # Response.url.
             #
-            # Re-validate the post-redirect URL via _validate_url
+            # Re-validate any changed final URL via _validate_url
             # (same scheme/userinfo/host gates as the initial
-            # request). Pre-fix urllib3 would happily follow a 302
-            # `Location: http://attacker.com/...` from an https://
-            # request — a downgrade-to-cleartext that bypasses the
-            # caller's TLS expectation. Even if the host is the
-            # same, the scheme drop leaks the full request +
-            # response body in cleartext to anyone on the network
-            # path.
+            # request). With redirect=False this is defence in
+            # depth: if a backend regression ever starts following
+            # again, an https -> http downgrade redirect
+            # (`Location: http://attacker.com/...`) still gets
+            # refused here instead of silently leaking the request
+            # and response in cleartext.
             #
-            # If post-redirect URL fails validation, raise HttpError
+            # If the final URL fails validation, raise HttpError
             # rather than returning the response — caller's expected
-            # contract (validated URL) was violated by the server's
-            # redirect, and silently returning a downgraded response
-            # would mask the violation.
+            # contract (validated URL) was violated, and silently
+            # returning the response would mask the violation.
             final_url = resp.geturl() or url
             # Only revalidate when the URL actually changed AND
             # is a real string (test fixtures may mock geturl

@@ -93,9 +93,10 @@ class Response:
     HTTP spec says headers are case-insensitive, and forcing one
     casing keeps caller code simple.
 
-    ``url`` is the final URL after any redirects (or the request URL
-    if redirects were disabled / the backend couldn't determine the
-    final URL).
+    ``url`` is the URL the response was served from — normally the
+    request URL, since the urllib backend never follows redirects
+    (3xx responses are returned as-is with their ``Location``
+    header; see :class:`core.http.urllib_backend.UrllibClient`).
     """
 
     status: int
@@ -196,8 +197,14 @@ class HttpClient(Protocol):
         cap the effective attempt count at their own backoff
         schedule length, so values larger than the schedule are
         silently equivalent to "use the whole schedule".
-      - ``follow_redirects``: True (default) follows up to 10 redirects;
-        False surfaces 3xx as ``HttpError`` for caller inspection.
+      - ``follow_redirects``: accepted for interface compatibility;
+        the urllib backend never follows redirects regardless of the
+        value. 3xx responses surface to the caller (as a
+        ``Response`` from ``request()``; the JSON/bytes conveniences
+        fail on the non-body). Following a redirect transparently
+        would bypass caller-level address policy (e.g. the OCI
+        registry SSRF gate) — callers must re-validate ``Location``
+        themselves and issue a new request.
       - ``total_timeout``: wall-clock cap on the whole retry loop in
         seconds (default 600).
     """

@@ -1384,7 +1384,7 @@ def run_audit_postpass(args: argparse.Namespace, target: Path, out_dir: Path) ->
         return phase
 
 
-def main() -> int | None:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="RAPTOR Agentic Security Testing - Scan, Analyse, Exploit, Patch",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -4327,6 +4327,12 @@ Examples:
             logger.debug("Cleaned up temp git dir: %s", _git_temp_dir)
         except Exception as e:  # noqa: BLE001
             logger.debug("Failed to clean temp git dir: %s", e)
+
+    # Successful end of the full pipeline: the run was marked complete
+    # above, in-band hard failures already called sys.exit(1)/return 2.
+    # ``main`` feeds ``sys.exit(main())`` — the exit code must be an
+    # explicit int, not an implicit-None fallthrough.
+    return 0
 
 
 #: Cap on gap-audit finding rows inlined into the agentic report —

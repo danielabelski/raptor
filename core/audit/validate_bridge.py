@@ -78,6 +78,33 @@ def _load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _sanitised_findings(
+    data: dict[str, Any] | None,
+    candidate_dir: Path,
+) -> dict[str, Any] | None:
+    """Demote unverified mechanical-evidence claims before extraction.
+
+    A /validate findings.json is LLM-writable in the skill flow, so
+    witness_execution / feasibility records and dark-verify ruling
+    markers only carry mechanical weight when they verify against the
+    producing run's provenance stamps (``core.witness.provenance``) —
+    the same chokepoint /audit feedback applies on import. Without
+    this, a forged ``feasibility.status == "analyzed"`` verdict or a
+    fabricated runtime ruling imported here would steer audit
+    prioritisation and prompt context as tool-grade history.
+    """
+    if not data:
+        return data
+    try:
+        from core.witness.provenance import sanitise_findings_evidence
+        sanitise_findings_evidence(data, candidate_dir)
+    except Exception:  # noqa: BLE001 — demote-path helper must never block the import
+        logger.debug(
+            "bridge: evidence provenance sanitise failed", exc_info=True,
+        )
+    return data
+
+
 def _extract_feasibility_verdicts(
     findings_data: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
@@ -480,6 +507,7 @@ def import_validate_evidence(
         if data and data.get("findings"):
             first = data["findings"][0]
             if first.get("feasibility") or first.get("ruling"):
+                data = _sanitised_findings(data, audit_output_dir)
                 result.source_dir = str(audit_output_dir)
                 result.source_command = "validate (co-located)"
                 result.feasibility_verdicts = _extract_feasibility_verdicts(data)
@@ -503,7 +531,9 @@ def import_validate_evidence(
             if not _check_target_match(sibling, target_path):
                 continue
 
-            sibling_findings = _load_json(sibling / "findings.json")
+            sibling_findings = _sanitised_findings(
+                _load_json(sibling / "findings.json"), sibling,
+            )
             if sibling_findings:
                 result.source_dir = str(sibling)
                 result.source_command = "validate (project sibling)"
@@ -537,7 +567,9 @@ def import_validate_evidence(
             if not _check_target_match(candidate, target_path):
                 continue
 
-            candidate_findings = _load_json(candidate / "findings.json")
+            candidate_findings = _sanitised_findings(
+                _load_json(candidate / "findings.json"), candidate,
+            )
             if candidate_findings:
                 result.source_dir = str(candidate)
                 result.source_command = "validate (global out)"

@@ -843,7 +843,7 @@ def _run_smt_path_sweep(workdir):
     paths = load_json(ap_path)
     if not isinstance(paths, list) or not paths:
         return
-    stats = sweep_attack_paths(paths)
+    stats = sweep_attack_paths(paths, run_dir=workdir)
     if stats["checked"]:
         _save_artifact(ap_path, paths)
         print(

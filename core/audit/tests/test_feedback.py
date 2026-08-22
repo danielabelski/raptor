@@ -1219,12 +1219,21 @@ class TestDowngradeReferee:
         entry = _latest_journal_entry(audit_out, "src/vuln.c", "vuln_fn")
         assert entry.verdict == "suspicious"
 
-    def test_iris_sibling_refutation_cleans(self, tmp_path: Path):
+    def test_iris_sibling_refutation_cleans(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
         ann_dir, audit_out = self._setup(tmp_path, ["semgrep"])
-        (tmp_path / "disproven.json").write_text(json.dumps([{
+        # The row must carry the IRIS gate's provenance stamp —
+        # unstamped rows are ignored (see
+        # test_feedback_sibling_provenance for the forged-row side).
+        from core.witness.provenance import stamp_iris_refutation
+        row = {
             "finding": "F-1", "lesson": "iris_tier1_refuted",
             "why_wrong": "no path under broad source model",
-        }]))
+        }
+        stamp_iris_refutation(row, tmp_path)
+        (tmp_path / "disproven.json").write_text(json.dumps([row]))
         report = self._report(tmp_path, {
             "id": "F-1",
             "ruling": {"status": "ruled_out", "disqualifier": "D-0"},
@@ -1235,14 +1244,22 @@ class TestDowngradeReferee:
         entry = _latest_journal_entry(audit_out, "src/vuln.c", "vuln_fn")
         assert entry.verdict == "clean"
 
-    def test_smt_all_paths_infeasible_cleans(self, tmp_path: Path):
+    def test_smt_all_paths_infeasible_cleans(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
         ann_dir, audit_out = self._setup(tmp_path, ["semgrep"])
-        (tmp_path / "attack-paths.json").write_text(json.dumps([
-            {"finding_id": "F-2",
-             "smt_feasibility": {"feasible": False}},
-            {"finding_id": "F-2",
-             "smt_feasibility": {"feasible": False}},
-        ]))
+        # Sweep-stamped records — unstamped ones are ignored (see
+        # test_feedback_sibling_provenance for the forged-record side).
+        from core.witness.provenance import stamp_smt_feasibility
+        paths = []
+        for _ in range(2):
+            path = {"finding_id": "F-2"}
+            record = {"feasible": False}
+            stamp_smt_feasibility(path, record, tmp_path)
+            path["smt_feasibility"] = record
+            paths.append(path)
+        (tmp_path / "attack-paths.json").write_text(json.dumps(paths))
         report = self._report(tmp_path, {
             "id": "F-2",
             "ruling": {"status": "ruled_out", "disqualifier": "D-2"},

@@ -79,13 +79,23 @@ class _ValidationSiblings:
     the Stage-B SMT sweep stamps ``smt_feasibility`` onto
     ``attack-paths.json``. Both are loaded best-effort — a missing or
     malformed sibling just means that channel contributes nothing.
+
+    Both files are LLM-writable (the /validate skill flow owns the
+    run dir), so a row only carries mechanical weight here when its
+    provenance stamp (``core.witness.provenance``) verifies for the
+    report's own directory — an unstamped or forged row is counted
+    and ignored, never an error.
     """
 
     def __init__(self, validation_report: Path) -> None:
         self.iris_refuted_ids: set[str] = set()
         self.paths_by_finding: dict[str, list[dict[str, Any]]] = {}
+        self.unverified_rows = 0
 
-        base = Path(validation_report).parent
+        from core.witness.provenance import verify_iris_refutation
+
+        base = Path(validation_report).resolve().parent
+        self._run_dir = base
         disproven = self._load(base / "disproven.json")
         if isinstance(disproven, dict):
             disproven = disproven.get("disproven", [])
@@ -96,7 +106,10 @@ class _ValidationSiblings:
                     and row.get("lesson") == "iris_tier1_refuted"
                     and row.get("finding")
                 ):
-                    self.iris_refuted_ids.add(str(row["finding"]))
+                    if verify_iris_refutation(row, base):
+                        self.iris_refuted_ids.add(str(row["finding"]))
+                    else:
+                        self.unverified_rows += 1
 
         attack_paths = self._load(base / "attack-paths.json")
         if isinstance(attack_paths, list):
@@ -106,6 +119,13 @@ class _ValidationSiblings:
                 fid = path.get("finding_id") or path.get("finding")
                 if isinstance(fid, str) and fid:
                     self.paths_by_finding.setdefault(fid, []).append(path)
+
+        if self.unverified_rows:
+            logger.warning(
+                "validation feedback: ignored %d disproven.json row(s) "
+                "without a verifying mechanical-provenance stamp",
+                self.unverified_rows,
+            )
 
     @staticmethod
     def _load(path: Path) -> Any:
@@ -118,14 +138,26 @@ class _ValidationSiblings:
     def smt_all_paths_infeasible(self, finding_id: str) -> bool:
         """True when every attack path linked to the finding carries a
         mechanical ``smt_feasibility.feasible == False`` stamp from the
-        Stage-B sweep. A single unstamped or feasible path means the
-        finding was NOT mechanically refuted."""
+        Stage-B sweep, each verifying against the sweep's provenance
+        token for this run directory. A single unstamped, forged, or
+        feasible path means the finding was NOT mechanically refuted."""
+        from core.witness.provenance import verify_smt_feasibility
+
         paths = self.paths_by_finding.get(finding_id, [])
         if not paths:
             return False
         for path in paths:
             record = path.get("smt_feasibility")
             if not isinstance(record, dict) or record.get("feasible") is not False:
+                return False
+            if not verify_smt_feasibility(path, self._run_dir):
+                self.unverified_rows += 1
+                logger.warning(
+                    "validation feedback: smt_feasibility record for "
+                    "finding %s lacks a verifying mechanical-provenance "
+                    "stamp — not counted as a mechanical refutation",
+                    finding_id,
+                )
                 return False
         return True
 

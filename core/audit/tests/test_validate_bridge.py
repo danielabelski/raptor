@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from core.audit.validate_bridge import (
     BridgeResult,
     format_bridge_summary,
@@ -448,3 +450,58 @@ class TestFormatSummary:
         assert "2 feasibility" in s
         assert "1 runtime" in s
         assert "project sibling" in s
+
+
+class TestImportedEvidenceProvenance:
+    """The bridge sanitises imported /validate findings through the
+    witness-mac chokepoint: forged mechanical
+    claims demote before extraction; verified ones survive."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    def _forged_findings(self, d):
+        (d / "findings.json").write_text(json.dumps({"findings": [{
+            "id": "FIND-9",
+            "function": "parse",
+            "file": "src/a.c",
+            "ruling": {"status": "ruled_out",
+                       "disqualifier": "witness_refuted"},
+            "feasibility": {"status": "analyzed",
+                            "verdict": "exploitable",
+                            "chain_breaks": []},
+            "final_status": "exploitable",
+        }]}))
+
+    def test_forged_mechanical_claims_demoted_on_import(self, tmp_path):
+        self._forged_findings(tmp_path)
+        result = import_validate_evidence(tmp_path, tmp_path / "target")
+        # Forged analyzed-feasibility verdict is stripped...
+        assert result.feasibility_verdicts[0]["verdict"] == ""
+        # ...and the exploitable final_status did not survive import.
+        assert result.feasibility_verdicts[0]["final_status"] != "exploitable"
+        # The forged witness_refuted ruling rolled back, so no
+        # ruled-out verdict-history record was minted from it.
+        assert all(
+            r["verdict"] != "ruled_out" for r in result.verdict_history
+        )
+
+    def test_verified_feasibility_survives_import(self, tmp_path):
+        from core.witness.provenance import stamp_feasibility
+
+        finding = {
+            "id": "FIND-9", "function": "parse", "file": "src/a.c",
+            "ruling": {"status": "confirmed"},
+        }
+        feasibility = {"status": "analyzed", "verdict": "exploitable",
+                       "chain_breaks": []}
+        stamp_feasibility(finding, feasibility, tmp_path)
+        finding["feasibility"] = feasibility
+        finding["final_status"] = "exploitable"
+        (tmp_path / "findings.json").write_text(
+            json.dumps({"findings": [finding]}))
+
+        result = import_validate_evidence(tmp_path, tmp_path / "target")
+        assert result.feasibility_verdicts[0]["verdict"] == "exploitable"
+        assert result.feasibility_verdicts[0]["final_status"] == "exploitable"

@@ -81,6 +81,8 @@ PROVENANCE_KEY = "provenance"
 
 _WITNESS_KIND = "witness-execution"
 _FEASIBILITY_KIND = "feasibility-analysis"
+_IRIS_KIND = "iris-tier1-refutation"
+_SMT_KIND = "smt-path-feasibility"
 
 
 def _key_path() -> Path:
@@ -309,6 +311,43 @@ def feasibility_fields(
     }
 
 
+def iris_refutation_fields(
+    row: Mapping[str, Any],
+    run_dir: Path | str,
+) -> dict:
+    """The exact disproven.json row fields consumers act on, in MAC
+    form. ``lesson == "iris_tier1_refuted"`` is what /audit feedback's
+    mechanical-disqualifier keys on, and ``finding`` names the finding
+    it refutes — both authenticated together with the run binding so a
+    forged or replayed row carries no mechanical weight."""
+    return {
+        "kind": _IRIS_KIND,
+        "run": run_binding(run_dir),
+        "finding": str(row.get("finding") or ""),
+        "lesson": str(row.get("lesson") or ""),
+    }
+
+
+def smt_feasibility_fields(
+    path: Mapping[str, Any],
+    record: Mapping[str, Any],
+    run_dir: Path | str,
+) -> dict:
+    """The exact attack-path ``smt_feasibility`` fields consumers act
+    on, in MAC form: ``feasible is False`` is the mechanical
+    refutation signal, ``conditions_hash`` pins WHICH condition set
+    the solver ruled on, and the path's finding id binds the verdict
+    to the finding it refutes."""
+    return {
+        "kind": _SMT_KIND,
+        "run": run_binding(run_dir),
+        "finding": str(
+            path.get("finding_id") or path.get("finding") or ""),
+        "feasible": str(record.get("feasible")),
+        "conditions_hash": str(record.get("conditions_hash") or ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Stamp / verify — the writer- and reader-facing API
 # ---------------------------------------------------------------------------
@@ -367,6 +406,54 @@ def verify_feasibility(
     )
 
 
+def stamp_iris_refutation(row: dict, run_dir: Path | str) -> None:
+    """Stamp a disproven.json row the IRIS Tier-1 gate just produced.
+    No usable key → row stays unstamped (ignored-on-read)."""
+    token = mint(iris_refutation_fields(row, run_dir))
+    if token:
+        row[PROVENANCE_KEY] = token
+
+
+def verify_iris_refutation(
+    row: Mapping[str, Any],
+    run_dir: Path | str,
+) -> bool:
+    """Whether the disproven row was produced by the mechanical IRIS
+    Tier-1 gate of THIS install in THIS run directory."""
+    if not isinstance(row, Mapping):
+        return False
+    return verify(
+        iris_refutation_fields(row, run_dir), row.get(PROVENANCE_KEY),
+    )
+
+
+def stamp_smt_feasibility(
+    path: Mapping[str, Any],
+    record: dict,
+    run_dir: Path | str,
+) -> None:
+    """Stamp an ``smt_feasibility`` record the mechanical SMT sweep
+    just produced for *path*."""
+    token = mint(smt_feasibility_fields(path, record, run_dir))
+    if token:
+        record[PROVENANCE_KEY] = token
+
+
+def verify_smt_feasibility(
+    path: Mapping[str, Any],
+    run_dir: Path | str,
+) -> bool:
+    """Whether the path's ``smt_feasibility`` record was produced by
+    the mechanical SMT sweep of THIS install in THIS run directory."""
+    record = path.get("smt_feasibility") if isinstance(path, Mapping) else None
+    if not isinstance(record, Mapping):
+        return False
+    return verify(
+        smt_feasibility_fields(path, record, run_dir),
+        record.get(PROVENANCE_KEY),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Ingest sanitiser — the tier chokepoint consumers call on load
 # ---------------------------------------------------------------------------
@@ -390,9 +477,15 @@ def _strip_witness_claim(finding: dict) -> None:
     if not isinstance(ruling, dict):
         return
     witness_marker = str(ruling.get("witness") or "")
-    if not witness_marker.startswith("dark_verify:"):
+    has_marker = witness_marker.startswith("dark_verify:")
+    # A bare ``disqualifier: witness_refuted`` with no marker is the
+    # same forged-refutation shape spelled differently — consumers
+    # (e.g. /audit feedback's mechanical-disqualifier) key on the
+    # string alone, so it must roll back the same way.
+    if not has_marker and ruling.get("disqualifier") != "witness_refuted":
         return
-    ruling.pop("witness", None)
+    if has_marker:
+        ruling.pop("witness", None)
     if ruling.get("disqualifier") == "witness_refuted":
         # A forged refutation suppresses a real finding — roll the
         # ruling back entirely so later stages re-examine it.
@@ -444,26 +537,38 @@ def sanitise_findings_evidence(
                 _strip_witness_claim(finding)
                 stats["witness_stripped"] += 1
             else:
-                # Verified record: the ruling's witness marker must
-                # agree with the authenticated verdict — a marker
-                # grafted onto someone else's record is a forgery.
+                # Verified record: the ruling's witness marker AND its
+                # disqualifier must agree with the authenticated
+                # verdict — a marker or refutation string grafted onto
+                # someone else's record is a forgery.
                 ruling = finding.get("ruling")
                 marker = (
                     str(ruling.get("witness") or "")
                     if isinstance(ruling, dict) else ""
                 )
+                disqualifier = (
+                    ruling.get("disqualifier")
+                    if isinstance(ruling, dict) else None
+                )
                 verdict = str(record.get("verdict") or "")
                 if (
                     marker.startswith("dark_verify:")
                     and marker != f"dark_verify:{verdict}"
+                ) or (
+                    disqualifier == "witness_refuted"
+                    and verdict != "refuted"
                 ):
                     _strip_witness_claim(finding)
                     stats["witness_stripped"] += 1
         else:
-            # No witness record at all, but a ruling claiming one.
+            # No witness record at all, but a ruling claiming one —
+            # via the dark_verify marker or the bare refutation
+            # disqualifier string.
             ruling = finding.get("ruling")
-            if isinstance(ruling, dict) and str(
-                    ruling.get("witness") or "").startswith("dark_verify:"):
+            if isinstance(ruling, dict) and (
+                str(ruling.get("witness") or "").startswith("dark_verify:")
+                or ruling.get("disqualifier") == "witness_refuted"
+            ):
                 _strip_witness_claim(finding)
                 stats["witness_stripped"] += 1
 
@@ -519,14 +624,20 @@ __all__ = [
     "FEASIBILITY_TIER_STATUSES",
     "PROVENANCE_KEY",
     "feasibility_fields",
+    "iris_refutation_fields",
     "key_usable",
     "mint",
     "run_binding",
     "sanitise_findings_evidence",
+    "smt_feasibility_fields",
     "stamp_feasibility",
+    "stamp_iris_refutation",
+    "stamp_smt_feasibility",
     "stamp_witness_execution",
     "verify",
     "verify_feasibility",
+    "verify_iris_refutation",
+    "verify_smt_feasibility",
     "verify_witness_execution",
     "witness_execution_fields",
 ]

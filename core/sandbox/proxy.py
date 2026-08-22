@@ -693,21 +693,39 @@ def _parse_proxy_url(url: str | None) -> tuple | None:
     tunnelling (which would be a data-exfil footgun in a corporate
     network where DIRECT egress is blocked but a bypass via the
     our-proxy-direct path would route around the corp proxy).
+
+    Only http:// is accepted. https:// used to be accepted here and
+    then silently DISCARDED — the upstream leg is opened with plain
+    asyncio.open_connection (no ssl=), so an operator who configured a
+    TLS proxy got their CONNECT metadata sent in plaintext to it. We
+    do not attempt TLS wrapping; the honest behaviour is to refuse at
+    parse time with an actionable message (mirroring the userinfo
+    rejection below).
     """
     if not url:
         return None
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme == "https":
+        msg = (
+            f"egress proxy: https:// upstream proxy URL {url!r} is not "
+            f"supported — the upstream leg is opened in plaintext, so "
+            f"honouring it would silently downgrade the TLS you asked "
+            f"for. Point HTTPS_PROXY/ALL_PROXY at an http:// CONNECT "
+            f"proxy (the tunnelled traffic itself stays end-to-end "
+            f"TLS), or unset the variable for direct egress."
+        )
+        raise ValueError(msg)
+    if parsed.scheme != "http":
         msg = (
             f"egress proxy: unsupported upstream scheme in {url!r} — "
-            f"only http:// and https:// are honoured"
+            f"only http:// is honoured"
         )
         raise ValueError(msg)
     if not parsed.hostname:
         msg = f"egress proxy: no host in upstream URL {url!r}"
         raise ValueError(msg)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or 80
     # Userinfo (auth) not supported yet — most corporate proxies that
     # require auth use Kerberos/SPNEGO or NTLM which need more than an
     # env-var password anyway. If this becomes a real need, add a

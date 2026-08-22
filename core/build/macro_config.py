@@ -28,12 +28,56 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+# Byte budgets for the target-controlled build artifacts read below.
+# These files live inside the scanned repo, so they are read hardened
+# (symlink refused, regular-file only, fstat size gate before read)
+# and bounded BEFORE the inventory's own gates ever see the content.
+# Very large real-world compile_commands.json (Chromium-scale) are
+# ~100 MiB; kernel .config files are a few hundred KiB.
+_MAX_COMPILE_COMMANDS_BYTES = 256 * 1024 * 1024
+_MAX_KCONFIG_BYTES = 8 * 1024 * 1024
+
+
+def _read_bounded(path: Path, max_bytes: int) -> str:
+    """Hardened read of a target-controlled config file.
+
+    ``O_NOFOLLOW`` refuses a symlink at the final component (ELOOP →
+    ``OSError``), the ``fstat`` gate refuses non-regular files and
+    enforces the byte budget BEFORE any read, and the bounded read
+    re-checks the cap in case the file grew in between. Raises
+    ``OSError`` or ``ValueError`` on violation — every caller already
+    degrades on those.
+    """
+    fd = os.open(str(path), os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"not a regular file: {path}")
+        if st.st_size > max_bytes:
+            raise ValueError(
+                f"file size {st.st_size} exceeds {max_bytes} byte cap: "
+                f"{path}"
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as f:
+        raw = f.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"file grew past {max_bytes} byte cap: {path}")
+    return raw.decode("utf-8", errors="replace")
 
 
 @dataclass(frozen=True)
@@ -138,7 +182,7 @@ def _scan_tokens(tokens: list[str], defined: dict[str, str],
 
 
 def _from_compile_commands(path: Path) -> MacroConfig:
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = _read_bounded(path, _MAX_COMPILE_COMMANDS_BYTES)
     try:
         entries = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
@@ -164,7 +208,7 @@ def _from_compile_commands(path: Path) -> MacroConfig:
 
 
 def _from_kconfig(path: Path) -> MacroConfig:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = _read_bounded(path, _MAX_KCONFIG_BYTES)
     defined: dict[str, str] = {}
     undefined: set = set()
     for m in re.finditer(r"^(CONFIG_[A-Z0-9_]+)=([ym])\s*$", text, re.MULTILINE):
@@ -215,7 +259,7 @@ def extract_macro_config(target: Path) -> MacroConfig:
             mc = _from_kconfig(kconfig)
             if mc:
                 return mc
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             logger.debug(".config macro parse failed: %s", exc)
 
     return MacroConfig()
@@ -240,7 +284,7 @@ def extract_build_tus(target: Path) -> frozenset | None:
     if cc is None:
         return None
     try:
-        entries = json.loads(cc.read_text(encoding="utf-8", errors="replace"))
+        entries = json.loads(_read_bounded(cc, _MAX_COMPILE_COMMANDS_BYTES))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         logger.debug("compile_commands.json TU-set parse failed: %s", exc)
         return None

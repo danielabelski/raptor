@@ -632,7 +632,7 @@ def _parse_dwarf(binary_path: Path) -> tuple[dict[int, _SubprogramDIE], list[int
     cur_scope_depth: int | None = None
     cur_scope_name: str = ""
 
-    def _commit_scope():
+    def _commit_scope() -> None:
         # Persist the pending scope's name into the depth map (anonymous
         # namespace falls back to the C++ convention). Then clear it.
         nonlocal cur_scope_depth, cur_scope_name
@@ -642,7 +642,7 @@ def _parse_dwarf(binary_path: Path) -> tuple[dict[int, _SubprogramDIE], list[int
         cur_scope_depth = None
         cur_scope_name = ""
 
-    def _flush():
+    def _flush() -> None:
         nonlocal cur_die, cur_offset, cur_is_inline_instance
         _commit_scope()
         # Store even nameless DIEs — they may carry a DW_AT_specification

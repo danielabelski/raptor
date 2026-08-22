@@ -1280,11 +1280,11 @@ def review_one_function(
     audit_log=None,
     workqueue=None,
     reviewed_set=None,
-    start_time=0.0,
+    start_time: float=0.0,
     layer_disagreements=None,
     on_progress=None,
-    review_idx=0,
-    total=0,
+    review_idx: int=0,
+    total: int=0,
     collector=None,
     graph=None,
     reviewed_outcomes=None,
@@ -9667,7 +9667,7 @@ class _ClientBudgetGate:
     gate only exposes the live spend ratio.
     """
 
-    def __init__(self, client: Any):
+    def __init__(self, client: Any) -> None:
         self._client = client
 
     def budget_ratio(self) -> float:
@@ -22925,7 +22925,7 @@ def _fuse_all_evidence(ctx: dict[str, Any]) -> None:
         ctx["fused_evidence"] = fused_text
 
 
-def _merge_validate_evidence(bridge_result, evidence_index):
+def _merge_validate_evidence(bridge_result, evidence_index) -> None:
     """Fold /validate feasibility verdicts into the evidence index."""
     if evidence_index is None:
         return
@@ -22969,10 +22969,10 @@ def _run_dark_verification(
     try:
         from .cwe_dispatch import dark_verify_applicable, dark_verify_statuses
     except ImportError:
-        def dark_verify_applicable(_cwe):
+        def dark_verify_applicable(_cwe) -> bool:
             return False
 
-        def dark_verify_statuses(_cwe):
+        def dark_verify_statuses(_cwe) -> None:
             return None
 
     def _eligible(o: ReviewOutcome) -> bool:

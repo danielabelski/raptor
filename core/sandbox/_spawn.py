@@ -578,7 +578,7 @@ def _pid1_split_for_waiter() -> None:
     if child == 0:
         return  # exec path continues as PID 2
 
-    def _forward(signum, _frame, _child=child):
+    def _forward(signum, _frame, _child=child) -> None:
         with contextlib.suppress(OSError):
             os.kill(_child, signum)
 
@@ -1038,7 +1038,7 @@ def run_sandboxed(
     # pops from this set.
     _parent_fds: set = set()
 
-    def _close_leftover():
+    def _close_leftover() -> None:
         for fd in list(_parent_fds):
             try:
                 os.close(fd)
@@ -1943,7 +1943,7 @@ def run_sandboxed(
     if _unix_scope_parent_sock is not None:
         _unix_scope_child_sock.close()
 
-        def _unix_scope_receiver():
+        def _unix_scope_receiver() -> None:
             import array as _array
             import socket as _socket_mod2
             sp = _unix_scope_parent_sock

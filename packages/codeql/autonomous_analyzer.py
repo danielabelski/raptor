@@ -186,11 +186,11 @@ class AutonomousCodeQLAnalyzer:
         llm_client,
         exploit_validator,
         multi_turn_analyzer=None,
-        enable_visualization=True,
+        enable_visualization: bool=True,
         reachability_inventory=None,
         reachability_checklist_path=None,
-        allow_unreachable=False,
-    ):
+        allow_unreachable: bool=False,
+    ) -> None:
         """
         Initialize autonomous analyzer.
 
@@ -1358,7 +1358,7 @@ class AutonomousCodeQLAnalyzer:
         )
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
 

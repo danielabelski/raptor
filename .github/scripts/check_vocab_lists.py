@@ -110,7 +110,7 @@ def _alternation_names(s: str) -> list[str]:
 
 class _Finding:
     def __init__(self, file: str, symbol: str, kind: str,
-                 count: int, sample: list[str], line: int):
+                 count: int, sample: list[str], line: int) -> None:
         self.file = file
         self.symbol = symbol
         self.kind = kind          # "literal" | "alternation"
@@ -155,7 +155,7 @@ def _literal_names(node: ast.AST) -> list[str]:
 
 
 class _Scanner(ast.NodeVisitor):
-    def __init__(self, rel: str):
+    def __init__(self, rel: str) -> None:
         self.rel = rel
         self.scope: list[str] = []
         self.assign: list[str] = []
@@ -163,20 +163,20 @@ class _Scanner(ast.NodeVisitor):
         self._seen_nodes: set[int] = set()
 
     # -- scope tracking ------------------------------------------------
-    def _walk_scoped(self, node, label):
+    def _walk_scoped(self, node, label) -> None:
         self.scope.append(label)
         self.generic_visit(node)
         self.scope.pop()
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node) -> None:
         self._walk_scoped(node, node.name)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
-    def visit_ClassDef(self, node):
+    def visit_ClassDef(self, node) -> None:
         self._walk_scoped(node, node.name)
 
-    def visit_Assign(self, node):
+    def visit_Assign(self, node) -> None:
         target = ""
         for tgt in node.targets:
             if isinstance(tgt, ast.Name):
@@ -192,7 +192,7 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
         self.assign.pop()
 
-    def visit_AnnAssign(self, node):
+    def visit_AnnAssign(self, node) -> None:
         target = node.target.id if isinstance(node.target, ast.Name) else ""
         self.assign.append(target)
         self.generic_visit(node)
@@ -207,13 +207,13 @@ class _Scanner(ast.NodeVisitor):
             return self.scope[-1]
         return "<module>"
 
-    def _record(self, kind, names, line):
+    def _record(self, kind, names, line) -> None:
         self.findings.append(_Finding(
             self.rel, self._symbol(), kind, len(names),
             sorted(names)[:6], line,
         ))
 
-    def _check_literal(self, node):
+    def _check_literal(self, node) -> None:
         if id(node) in self._seen_nodes:
             return
         names = _literal_names(node)
@@ -223,7 +223,7 @@ class _Scanner(ast.NodeVisitor):
             for sub in ast.walk(node):
                 self._seen_nodes.add(id(sub))
 
-    def visit_List(self, node):
+    def visit_List(self, node) -> None:
         self._check_literal(node)
         self.generic_visit(node)
 
@@ -231,7 +231,7 @@ class _Scanner(ast.NodeVisitor):
     visit_Set = visit_List
     visit_Dict = visit_List
 
-    def visit_Constant(self, node):
+    def visit_Constant(self, node) -> None:
         if isinstance(node.value, str) and id(node) not in self._seen_nodes:
             names = _alternation_names(node.value)
             if len(names) > MAX_SEED_NAMES:

@@ -35,7 +35,7 @@ _BS4_MAX_BYTES = 16 * 1024 * 1024
 class WebCrawler:
     """Intelligent web crawler with LLM-guided discovery."""
 
-    def __init__(self, client: WebClient, max_depth: int = 3, max_pages: int = 100):
+    def __init__(self, client: WebClient, max_depth: int = 3, max_pages: int = 100) -> None:
         self.client = client
         self.max_depth = max_depth
         self.max_pages = max_pages

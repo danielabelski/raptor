@@ -198,7 +198,7 @@ class DatabaseManager:
     # pointless to repeat for every manager a run constructs).
     _auto_cleanup_done = False
 
-    def __init__(self, db_root: Path | None = None, codeql_cli: str | None = None):
+    def __init__(self, db_root: Path | None = None, codeql_cli: str | None = None) -> None:
         """
         Initialize database manager.
 
@@ -592,7 +592,7 @@ class DatabaseManager:
             logger.warning("Failed to load metadata: %s", e)
             return None
 
-    def save_metadata(self, metadata: DatabaseMetadata):
+    def save_metadata(self, metadata: DatabaseMetadata) -> None:
         """Save database metadata to disk."""
         metadata_path = Path(metadata.database_path).parent / f"{metadata.language}-metadata.json"
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1815,7 +1815,7 @@ class DatabaseManager:
         return deleted
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
 

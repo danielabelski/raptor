@@ -351,7 +351,7 @@ class _OriginResolver:
     paths that fail to resolve.  Memoised per view build.
     """
 
-    def __init__(self, target_root: Path, workdir: Path):
+    def __init__(self, target_root: Path, workdir: Path) -> None:
         self._root = os.path.realpath(target_root)
         self._workdir = workdir
         self._cache: dict = {}

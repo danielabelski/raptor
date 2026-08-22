@@ -29,6 +29,7 @@ from pathlib import Path
 
 from core.http import HttpClient
 from core.http.egress_backend import EgressClient
+from typing import NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -148,27 +149,27 @@ class _NoopHttpClient:
         "sca.default_client(offline=True): network call refused"
     )
 
-    def request(self, method, url, **kw):
+    def request(self, method, url, **kw) -> NoReturn:
         from core.http import HttpError
         msg = f"{self._OFFLINE_MSG}: {method} {url}"
         raise HttpError(msg)
 
-    def post_json(self, url, body, *a, **kw):
+    def post_json(self, url, body, *a, **kw) -> NoReturn:
         from core.http import HttpError
         msg = f"{self._OFFLINE_MSG}: POST {url}"
         raise HttpError(msg)
 
-    def get_json(self, url, *a, **kw):
+    def get_json(self, url, *a, **kw) -> NoReturn:
         from core.http import HttpError
         msg = f"{self._OFFLINE_MSG}: GET {url}"
         raise HttpError(msg)
 
-    def get_bytes(self, url, *a, **kw):
+    def get_bytes(self, url, *a, **kw) -> NoReturn:
         from core.http import HttpError
         msg = f"{self._OFFLINE_MSG}: GET {url}"
         raise HttpError(msg)
 
-    def stream_bytes(self, url, **kw):
+    def stream_bytes(self, url, **kw) -> NoReturn:
         from core.http import HttpError
         msg = f"{self._OFFLINE_MSG}: STREAM {url}"
         raise HttpError(msg)

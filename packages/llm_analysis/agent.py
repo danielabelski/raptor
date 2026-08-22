@@ -227,7 +227,7 @@ def _enrich_finding_with_ast_view(
 class VulnerabilityContext:
     """Represents a vulnerability with full context for autonomous analysis."""
 
-    def __init__(self, finding: dict[str, Any], repo_path: Path):
+    def __init__(self, finding: dict[str, Any], repo_path: Path) -> None:
         self.finding = finding
         self.repo_path = repo_path
         self.finding_id = finding.get("finding_id")
@@ -684,7 +684,7 @@ class AutonomousSecurityAgentV2:
                  use_verified_exemplars: bool = True,
                  execute_exploits: bool = False,
                  execute_timeout: int = 5,
-                 execute_sanitizers: list | None = None):
+                 execute_sanitizers: list | None = None) -> None:
         self.repo_path = repo_path
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)

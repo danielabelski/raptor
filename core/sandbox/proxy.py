@@ -358,7 +358,7 @@ def _install_sigterm_cleanup() -> None:
     if prev is _signal.SIG_IGN:
         return
 
-    def _on_sigterm(signum, frame):
+    def _on_sigterm(signum, frame) -> None:
         inst = _instance
         if inst is not None:
             with contextlib.suppress(Exception):
@@ -807,7 +807,7 @@ class EgressProxy:
                  upstream_proxy: str | None = None,
                  no_proxy: str | None = None,
                  audit_log_only: bool = False,
-                 audit_enforce: bool = False):
+                 audit_enforce: bool = False) -> None:
         self._hosts_lock = threading.Lock()
         self._allowed_hosts: set[str] = {h.lower() for h in allowed_hosts}
         # When True, gate 1 (hostname allowlist) emits a `would_deny_host`
@@ -863,7 +863,7 @@ class EgressProxy:
         self._lanes_lock = threading.Lock()
         self._unix_lanes: dict[str, _Lane] = {}
         self._tcp_lanes: dict[int, _Lane] = {}
-        self._tcp_lane_servers: dict[int, object] = {}
+        self._tcp_lane_servers: dict[int, asyncio.AbstractServer] = {}
         self._idle_timeout = idle_timeout
         self._idle_timeout_lock = threading.Lock()
         self._total_timeout = total_timeout
@@ -1208,7 +1208,7 @@ class EgressProxy:
         if srv is None:
             return
         if self._loop is not None and self._loop.is_running():
-            async def _close():
+            async def _close() -> None:
                 srv.close()
             # Loop may shut down between the is_running() check and
             # scheduling (RuntimeError); a wedged loop times out the
@@ -1282,7 +1282,7 @@ class EgressProxy:
             return
 
         if self._loop is not None and self._loop.is_running():
-            async def _close():
+            async def _close() -> None:
                 srv.close()
             # Same failure modes as close_tcp_lane: loop shutdown race
             # (RuntimeError) or a wedged loop (TimeoutError).
@@ -1961,7 +1961,7 @@ class EgressProxy:
             with contextlib.suppress(OSError, ValueError):
                 self.unbind_unix(p)
         if drain_timeout > 0 and self._server is not None and self._loop.is_running():
-            async def _graceful():
+            async def _graceful() -> None:
                 try:
                     self._server.close()
                     await asyncio.wait_for(
@@ -1987,7 +1987,7 @@ class EgressProxy:
             except RuntimeError:
                 _graceful().close()
         elif self._loop is not None and self._loop.is_running():
-            async def _cancel_unix():
+            async def _cancel_unix() -> None:
                 stale = [t for t in self._unix_tasks if not t.done()]
                 for t in stale:
                     t.cancel()

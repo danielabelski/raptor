@@ -19,7 +19,7 @@ class ConsistencyVerifier:
         self,
         github_client: GitHubClient | None = None,
         gharchive_client: GHArchiveClient | None = None,
-    ):
+    ) -> None:
         self.github_client = github_client or GitHubClient()
         self.gharchive_client = gharchive_client or GHArchiveClient()
 

@@ -223,7 +223,7 @@ class RegistryError(RuntimeError):
     """Raised on non-2xx responses we can't recover from. Carries
     the status code + a short error string so callers can decide
     whether to retry, fall back, or surface to operators."""
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str) -> None:
         self.status = status
         super().__init__(f"registry error {status}: {message}")
 
@@ -248,7 +248,7 @@ class OciRegistryClient:
         http: HttpClient,
         *,
         credentials_lookup=None,
-    ):
+    ) -> None:
         self.http = http
         # ``credentials_lookup(registry: str) -> BasicCredentials | None``.
         # Default uses the documented chain; tests inject a stub.

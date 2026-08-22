@@ -69,7 +69,7 @@ class WitnessStore:
     manifest having parsed cleanly.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self._manifests_dir = self.root / "manifests"
         self._blobs_dir = self.root / "blobs"

@@ -14,6 +14,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +35,7 @@ try:
 except ImportError:
     _TS_AVAILABLE = False
 
-    def _get_parser(lang: str):  # type: ignore[misc]
+    def _get_parser(lang: str) -> None:  # type: ignore[misc]
         return None
 
     def language_for_file(filepath: str) -> str | None:  # type: ignore[misc]
@@ -273,11 +277,11 @@ _LOOP_TYPES: dict[str, tuple[str, ...]] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _node_text(node, src: bytes) -> str:
+def _node_text(node: Node, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
-def _node_line(node) -> int:
+def _node_line(node: Node) -> int:
     return node.start_point[0] + 1
 
 
@@ -294,7 +298,7 @@ def _walk_descendants(node):
         stack.extend(reversed(cur.children))
 
 
-def _same_node(a, b) -> bool:
+def _same_node(a: Node, b: Node) -> bool:
     """Compare two tree-sitter nodes by position (identity varies across traversals)."""
     if a is b:
         return True
@@ -354,7 +358,7 @@ def _get_func_name(func_node, lang: str, src: bytes) -> str:
     return "<unknown>"
 
 
-def _get_func_body(func_node, lang: str):
+def _get_func_body(func_node: Node, lang: str):
     """Get the body/block node of a function."""
     body = func_node.child_by_field_name("body")
     if body is not None:
@@ -562,7 +566,7 @@ def extract_call_chains(
 
 
 def _extract_assignment_parts(
-    node, lang: str, src: bytes,
+    node: Node, lang: str, src: bytes,
 ) -> tuple[str, Any]:
     """Extract (lhs_name, rhs_node) from an assignment."""
     if lang == "go":
@@ -628,7 +632,7 @@ def _extract_assignment_parts(
 
 
 def _extract_call_name(
-    node, lang: str, src: bytes, call_types: tuple[str, ...],
+    node: Node, lang: str, src: bytes, call_types: tuple[str, ...],
 ) -> str:
     """Extract the call name from an expression that may be a call."""
     # Java method_invocation uses "name"/"object" fields, not "function"
@@ -654,7 +658,7 @@ def _extract_call_name(
 
 
 def _extract_first_arg(
-    node, lang: str, src: bytes, call_types: tuple[str, ...],
+    node: Node, lang: str, src: bytes, call_types: tuple[str, ...],
 ) -> str:
     """Extract the first argument's text from a call."""
     args_node = node.child_by_field_name("arguments")

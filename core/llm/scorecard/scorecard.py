@@ -65,6 +65,7 @@ from core.llm.scorecard.freshness import (
     weighted_counts,
 )
 from core.logging import get_logger
+from types import TracebackType
 
 logger = get_logger()
 
@@ -439,7 +440,7 @@ class ModelScorecard:
         keep_models: set[str] | None = None,
         freshness_half_life_days: float | None = None,
         rng=None,
-    ):
+    ) -> None:
         """``shadow_rate`` is the probability (0-1) that a call to a
         trusted cell returns ``Policy.SHADOW`` instead of
         ``SHORT_CIRCUIT``. The consumer then runs full ANALYSE
@@ -1101,7 +1102,7 @@ class ModelScorecard:
         The ``.lock`` file is never renamed; flock on its inode is
         stable across the lifetime of the scorecard.
         """
-        def __init__(self, scorecard: ModelScorecard, *, write: bool):
+        def __init__(self, scorecard: ModelScorecard, *, write: bool) -> None:
             self.scorecard = scorecard
             self.write = write
             self.lock_fh = None
@@ -1194,7 +1195,7 @@ class ModelScorecard:
             self.data.setdefault("models", {})
             return self.data
 
-        def _check_integrity(self, path) -> None:
+        def _check_integrity(self, path: Path) -> None:
             """Verify the parsed sidecar's HMAC token; demote on
             failure. Caller holds the lock; ``self.data`` is the raw
             parsed document.
@@ -1244,7 +1245,7 @@ class ModelScorecard:
             self.data = {"version": SCHEMA_VERSION, "models": {}}
             self.scorecard._last_read_trusted = True
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None):
             try:
                 if exc_type is None and self.write:
                     # Run auto-GC inside the write lock so concurrent

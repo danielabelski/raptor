@@ -257,7 +257,7 @@ def extract_via_patch_url(cve_id: str, ref: RepoRef) -> DiffBundle | None:
 
     slug = extract_github_slug(ref.repository_url or "")
 
-    def _no_languages_fetch(_slug: str):
+    def _no_languages_fetch(_slug: str) -> None:
         # Best-effort: the patch URL path may be running against a forge
         # that doesn't expose a languages endpoint. shape_dynamic falls
         # back to its offline classifier.

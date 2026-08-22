@@ -70,6 +70,10 @@ from core.dataflow.sanitizer_catalog import (
     SanitizerBinding,
     sanitizer_callables_for_cwe,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +153,7 @@ def _modifiers(decl) -> set[str]:
     return {_text(c) for c in mods.children}
 
 
-def _param_names(decl) -> tuple[str, ...] | None:
+def _param_names(decl: Node) -> tuple[str, ...] | None:
     params = decl.child_by_field_name("parameters")
     if params is None:
         return None
@@ -377,7 +381,7 @@ def _class_inventory(root) -> tuple[dict[str, list[_ClassInfo]], set[str]]:
     return by_name, extended
 
 
-def _trivially_constructible(cls_node) -> bool:
+def _trivially_constructible(cls_node: Node) -> bool:
     """No declared constructor, or only zero-parameter constructors
     whose bodies are empty (a lone ``super();`` allowed)."""
     body = cls_node.child_by_field_name("body")
@@ -398,7 +402,7 @@ def _trivially_constructible(cls_node) -> bool:
     return True
 
 
-def _methods_of(cls_node) -> dict[tuple[str, int], list[Any]]:
+def _methods_of(cls_node: Node) -> dict[tuple[str, int], list[Any]]:
     body = cls_node.child_by_field_name("body")
     out: dict[tuple[str, int], list[Any]] = {}
     if body is None:
@@ -592,7 +596,7 @@ def derive_wrapper_summaries(
 # Call-site index + binding synthesis
 # ---------------------------------------------------------------------------
 
-def _positional_args(node) -> tuple[str | None, ...]:
+def _positional_args(node: Node) -> tuple[str | None, ...]:
     args_node = node.child_by_field_name("arguments")
     args: list[str | None] = []
     if args_node is not None:
@@ -1239,7 +1243,7 @@ class ConduitFoldResolver:
         self._calls = calls
         self.hits = 0
 
-    def __call__(self, node, refold, depth: int) -> Any:
+    def __call__(self, node: Node, refold, depth: int) -> Any:
         from core.analysis.const_fold_java import REFUSE
 
         key = (node.start_point[0] + 1, node.start_point[1])

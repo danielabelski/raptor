@@ -199,7 +199,7 @@ class _UnionFind(Generic[N]):
     path-compresses while tracking the minimum-semi label.
     """
 
-    def __init__(self, semi: dict[N, int]):
+    def __init__(self, semi: dict[N, int]) -> None:
         self._semi = semi
         self._ancestor: dict[N, N | None] = {}
         self._label: dict[N, N] = {}

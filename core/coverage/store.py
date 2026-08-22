@@ -222,7 +222,7 @@ class CoverageStore:
     / :meth:`link_finding`, persist with :meth:`save`.
     """
 
-    def __init__(self, coverage_path: Path, target: str | None = None):
+    def __init__(self, coverage_path: Path, target: str | None = None) -> None:
         self.path = Path(coverage_path)
         self.target = target
         self.content_id: str | None = None

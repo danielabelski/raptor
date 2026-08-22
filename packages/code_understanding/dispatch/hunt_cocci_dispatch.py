@@ -276,7 +276,7 @@ def _make_locked_sandbox_runner(
         # detected here (fail-closed BEFORE any tempfiles exist), while
         # ``run`` itself is resolved per call so test seams can patch
         # ``core.sandbox.run``.
-        from core import sandbox as core_sandbox  # type: ignore
+        from core import sandbox as core_sandbox  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001 — any import failure means no isolation
         from core.run.sandbox_policy import require_sandbox_or_optout
         require_sandbox_or_optout(f"{caller_label} (locked sandbox runner)", exc)

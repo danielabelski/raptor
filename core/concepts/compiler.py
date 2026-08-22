@@ -356,7 +356,7 @@ def _infer_engine(inv: Invariant) -> str:
 class _InvariantProposer:
     """Wraps the LLM call as a Proposer for the driver."""
 
-    def __init__(self, llm, inv, engine, source_snippets):
+    def __init__(self, llm, inv, engine, source_snippets) -> None:
         self._llm = llm
         self._inv = inv
         self._engine = engine
@@ -383,7 +383,7 @@ class _DualControlOracle:
 
     reliability_class = "decisive"
 
-    def __init__(self, inv, engine, out_dir):
+    def __init__(self, inv, engine, out_dir) -> None:
         self._inv = inv
         self._engine = engine
         self._out_dir = out_dir

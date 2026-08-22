@@ -28,7 +28,7 @@ class EvidenceStore:
         commits = store.filter(observation_type="commit")
     """
 
-    def __init__(self, evidence: Sequence[AnyEvidence] | None = None):
+    def __init__(self, evidence: Sequence[AnyEvidence] | None = None) -> None:
         self._evidence: list[AnyEvidence] = list(evidence) if evidence else []
         self._by_id: dict[str, AnyEvidence] = {e.evidence_id: e for e in self._evidence}
 

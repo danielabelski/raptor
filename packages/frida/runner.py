@@ -204,7 +204,7 @@ def _import_frida():
     for `raptor doctor` and for unit tests that inject a fake.
     """
     try:
-        import frida  # type: ignore
+        import frida  # type: ignore[import-untyped, import-not-found]
         return frida
     except ImportError as e:
         msg = (
@@ -346,7 +346,7 @@ def run(cfg: RunConfig,
         # terminates the run cleanly rather than orphaning the script.
         stop = threading.Event()
 
-        def _on_sigint(_signum, _frame):
+        def _on_sigint(_signum, _frame) -> None:
             stop.set()
 
         try:

@@ -84,7 +84,7 @@ class AuditVerdictAdapter(BaseVerdictAdapter):
         *,
         scorecard: Any = None,
         priors_by_class: dict[str, Any] | None = None,
-    ):
+    ) -> None:
         self._scorecard = scorecard
         self._priors_by_class = priors_by_class
 
@@ -224,7 +224,7 @@ class AdversarialReviewer:
         refute_fn: Callable[[dict[str, Any]], dict[str, Any]],
         *,
         cutoff_ratio: float = 0.85,
-    ):
+    ) -> None:
         self._refute_fn = refute_fn
         self.cutoff_ratio = cutoff_ratio
 

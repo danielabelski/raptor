@@ -14,7 +14,7 @@ def render_report(spec: ReportSpec, separator: str = "---") -> str:
     """
     lines = []
 
-    def _sep():
+    def _sep() -> None:
         if separator is not None:
             lines.append(separator)
             lines.append("")

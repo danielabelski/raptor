@@ -85,7 +85,7 @@ def _safe_git_env() -> dict[str, str]:
 class GitClient:
     """Client for local git operations."""
 
-    def __init__(self, repo_path: str = "."):
+    def __init__(self, repo_path: str = ".") -> None:
         self.repo_path = repo_path
 
     @property

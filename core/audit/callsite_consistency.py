@@ -39,6 +39,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .prompt_defence import sanitise_for_prompt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +394,7 @@ def clear_parse_cache() -> None:
 # Tree-sitter extraction
 # ---------------------------------------------------------------------------
 
-def _callee_name_ts(call_node, lang: str, src: bytes) -> str | None:
+def _callee_name_ts(call_node: Node, lang: str, src: bytes) -> str | None:
     """Extract the function/method name from a call node."""
     func = call_node.child_by_field_name("function")
     if func is None:
@@ -492,14 +496,14 @@ _ERROR_HANDLER_NODE_TYPES = frozenset({
 })
 
 
-def _contains(ancestor, node) -> bool:
+def _contains(ancestor: Node, node: Node) -> bool:
     return (
         ancestor.start_byte <= node.start_byte
         and node.end_byte <= ancestor.end_byte
     )
 
 
-def _is_blank_discard_assignment(assign_node, src: bytes) -> bool:
+def _is_blank_discard_assignment(assign_node: Node, src: bytes) -> bool:
     """True when every LHS identifier is the Go blank identifier ``_``.
 
     ``v, _ := f()`` partially captures and stays captured; only an
@@ -527,7 +531,7 @@ def _lhs_identifiers(lhs_node, src: bytes) -> list[str]:
     return names
 
 
-def _condition_consumes(parent, node) -> bool:
+def _condition_consumes(parent: Node, node) -> bool:
     """True when *parent* is a condition-bearing construct whose
     condition field contains *node* (the call feeds a truth test)."""
     field_name = _CONDITION_FIELDS.get(parent.type)
@@ -556,7 +560,7 @@ def _is_write_target(id_node) -> bool:
 
 
 def _classify_binding_usage(
-    anchor, names: list[str], lang: str, src: bytes,
+    anchor: Node, names: list[str], lang: str, src: bytes,
 ) -> str:
     """Classify a captured binding: is it later tested, read, rebound
     without a read, or never touched (§2.1 ``captured_used`` vs

@@ -219,7 +219,7 @@ class QueryRunner:
         "rust": "codeql/rust-queries:codeql-suites/rust-security-extended.qls",
     }
 
-    def __init__(self, codeql_cli: str | None = None):
+    def __init__(self, codeql_cli: str | None = None) -> None:
         """
         Initialize query runner.
 
@@ -1350,7 +1350,7 @@ def iris_overlap_summary(out_dir: Path, languages) -> dict:
     return summary
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
 

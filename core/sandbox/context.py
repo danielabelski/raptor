@@ -274,7 +274,7 @@ def _persist_proxy_events(
     *,
     output,
     target=None,
-):
+) -> None:
     """Append proxy events to ``<output>/proxy-events.jsonl``.
 
     Safe-open machinery (O_NOFOLLOW + O_NONBLOCK + ``fstat`` regular-
@@ -2356,7 +2356,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # Always set resource limits via preexec_fn
         existing_preexec = kwargs.pop("preexec_fn", None)
         if existing_preexec:
-            def combined():
+            def combined() -> None:
                 existing_preexec()  # Caller's setup first (may open FDs)
                 preexec()           # Our limits + Landlock last (restricts from here on)
             kwargs["preexec_fn"] = combined
@@ -4193,7 +4193,7 @@ def run_trusted(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return run(cmd, profile="none", **kwargs)
 
 
-def _require_userns_or_optin(entry: str, restrict_reads=True) -> bool:
+def _require_userns_or_optin(entry: str, restrict_reads: bool=True) -> bool:
     """Fail closed when the untrusted-execution contract cannot hold.
 
     The contract's credential-exfil defence is the PID/user namespace:

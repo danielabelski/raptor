@@ -139,7 +139,7 @@ class FuncDef:
         "vararg",
     )
 
-    def __init__(self, module, qualname, name, node, cls, path, nested):
+    def __init__(self, module, qualname, name, node, cls, path, nested) -> None:
         self.module = module
         self.qualname = qualname
         self.name = name
@@ -199,7 +199,7 @@ class ClassInfo:
         "qualname",
     )
 
-    def __init__(self, module, name, qualname, node, path):
+    def __init__(self, module, name, qualname, node, path) -> None:
         self.module = module
         self.name = name
         self.qualname = qualname
@@ -246,7 +246,7 @@ class Module:
         "tree",
     )
 
-    def __init__(self, path, modnames):
+    def __init__(self, path, modnames) -> None:
         self.path = path
         self.modnames = modnames        # list of dotted aliases
         self.funcs = []                 # all FuncDefs (incl. methods, nested)
@@ -288,11 +288,11 @@ def parse_module(path: Path, root: Path):
     m.lines = src.splitlines()
 
     class Visitor(ast.NodeVisitor):
-        def __init__(self):
+        def __init__(self) -> None:
             self.class_stack = []
             self.func_stack = []
 
-        def visit_ClassDef(self, node):
+        def visit_ClassDef(self, node) -> None:
             qual = ".".join([c.name for c in self.class_stack] + [node.name])
             ci = ClassInfo(m, node.name, qual, node, path)
             if not self.class_stack and not self.func_stack:
@@ -305,7 +305,7 @@ def parse_module(path: Path, root: Path):
             self.generic_visit(node)
             self.class_stack.pop()
 
-        def _def(self, node):
+        def _def(self, node) -> None:
             cls = self.class_stack[-1] if self.class_stack else None
             nested = bool(self.func_stack) or len(self.class_stack) > 1
             prefix = ".".join([c.name for c in self.class_stack]
@@ -325,7 +325,7 @@ def parse_module(path: Path, root: Path):
         visit_FunctionDef = _def
         visit_AsyncFunctionDef = _def
 
-        def visit_Import(self, node):
+        def visit_Import(self, node) -> None:
             for al in node.names:
                 alias = al.asname or al.name.split(".")[0]
                 target = al.name if al.asname else al.name.split(".")[0]
@@ -335,7 +335,7 @@ def parse_module(path: Path, root: Path):
                     m.top_names.add(alias)
             self.generic_visit(node)
 
-        def visit_ImportFrom(self, node):
+        def visit_ImportFrom(self, node) -> None:
             if node.level:      # relative import: resolve against file path
                 base_parts = rel.with_suffix("").parts[:-node.level]
                 if rel.name == "__init__.py":
@@ -355,7 +355,7 @@ def parse_module(path: Path, root: Path):
                     m.top_names.add(alias)
             self.generic_visit(node)
 
-        def visit_Assign(self, node):
+        def visit_Assign(self, node) -> None:
             for t in node.targets:
                 if isinstance(t, ast.Name):
                     if not self.class_stack and not self.func_stack:
@@ -372,22 +372,22 @@ def parse_module(path: Path, root: Path):
                             m.top_names.add(el.id)
             self.generic_visit(node)
 
-        def visit_AnnAssign(self, node):
+        def visit_AnnAssign(self, node) -> None:
             if (isinstance(node.target, ast.Name) and not self.class_stack
                     and not self.func_stack):
                 m.top_names.add(node.target.id)
             self.generic_visit(node)
 
-        def visit_Name(self, node):
+        def visit_Name(self, node) -> None:
             if isinstance(node.ctx, ast.Load):
                 m.name_loads.append((node.id, node.lineno))
             self.generic_visit(node)
 
-        def visit_Attribute(self, node):
+        def visit_Attribute(self, node) -> None:
             m.attr_loads.append((node.attr, node.lineno))
             self.generic_visit(node)
 
-        def visit_Constant(self, node):
+        def visit_Constant(self, node) -> None:
             if isinstance(node.value, str) and len(node.value) < 4000:
                 for w in IDENT_RE.findall(node.value):
                     m.str_words[w] += 1
@@ -403,7 +403,7 @@ def parse_module(path: Path, root: Path):
 # ---------------------------------------------------------------- repo index
 
 class RepoIndex:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path) -> None:
         self.root = root
         self.modules = {}           # dotted name -> Module (first alias wins)
         self.module_list = []
@@ -411,7 +411,7 @@ class RepoIndex:
         self.text_idents = set()    # all identifier-ish words in text corpus
         self.suppressions = Counter()
 
-    def build(self):
+    def build(self) -> None:
         for p in iter_files(self.root):
             if is_python_file(p):
                 mod = parse_module(p, self.root)
@@ -570,16 +570,16 @@ def check_calls(idx: RepoIndex):
         encl = {}
 
         class Encl(ast.NodeVisitor):
-            def __init__(self, out):
+            def __init__(self, out) -> None:
                 self.stack = []
                 self.out = out
 
-            def visit_ClassDef(self, node):
+            def visit_ClassDef(self, node) -> None:
                 self.stack.append(node.name)
                 self.generic_visit(node)
                 self.stack.pop()
 
-            def visit_Call(self, node):
+            def visit_Call(self, node) -> None:
                 self.out[id(node)] = (
                     self.stack[-1] if len(self.stack) == 1 else None
                 )
@@ -1279,11 +1279,11 @@ def find_serialized_classes(idx: RepoIndex) -> set:
                         ident_types[arg.arg] = cands.pop()
 
         class Ser(ast.NodeVisitor):
-            def __init__(self, ident_types):
+            def __init__(self, ident_types) -> None:
                 self.class_stack = []
                 self.ident_types = ident_types
 
-            def visit_ClassDef(self, node):
+            def visit_ClassDef(self, node) -> None:
                 self.class_stack.append(node.name)
                 self.generic_visit(node)
                 self.class_stack.pop()
@@ -1305,17 +1305,17 @@ def find_serialized_classes(idx: RepoIndex) -> set:
                         return cname
                 return None
 
-            def _mark(self, e):
+            def _mark(self, e) -> None:
                 t = self._type_of(e)
                 if t:
                     serialized.add(t)
 
-            def visit_Attribute(self, node):
+            def visit_Attribute(self, node) -> None:
                 if node.attr == "__dict__":
                     self._mark(node.value)      # json.dumps(cfg.__dict__)
                 self.generic_visit(node)
 
-            def visit_Call(self, node):
+            def visit_Call(self, node) -> None:
                 f = node.func
                 if isinstance(f, ast.Name) and f.id in _SERIALIZE_FREE_FNS \
                         and node.args:
@@ -1550,7 +1550,7 @@ def write_baseline(path: Path, keys: dict) -> None:
                     encoding="utf-8")
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, default=Path.cwd(),
                     help="repo root to scan (default: cwd — CI runs "

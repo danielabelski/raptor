@@ -64,7 +64,7 @@ def get_multi_turn_analyzer(llm_client):
         return None
 
 
-def run_autonomous_workflow(args):
+def run_autonomous_workflow(args: argparse.Namespace) -> None:
     """
     Run complete autonomous CodeQL workflow.
 
@@ -329,7 +329,7 @@ def run_autonomous_workflow(args):
     print(f"{'=' * 70}\n")
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="RAPTOR CodeQL - Fully Autonomous Security Analysis",

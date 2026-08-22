@@ -56,7 +56,7 @@ class WebClient:
 
     def __init__(self, base_url: str, timeout: int = 30, rate_limit: float = 0.5,
                  verify_ssl: bool = True, reveal_secrets: bool = False,
-                 block_private_ips: bool = True):
+                 block_private_ips: bool = True) -> None:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.rate_limit = rate_limit  # Seconds between requests

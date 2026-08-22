@@ -7,5 +7,5 @@ command line and no shell is involved.
 import os
 
 
-def run_sync():
+def run_sync() -> None:
     os.execvp("sync", ["sync"])  # constant program and arguments

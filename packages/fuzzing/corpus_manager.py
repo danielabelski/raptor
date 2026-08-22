@@ -15,7 +15,7 @@ logger = get_logger()
 class CorpusManager:
     """Manages fuzzing corpus."""
 
-    def __init__(self, corpus_dir: Path):
+    def __init__(self, corpus_dir: Path) -> None:
         self.corpus_dir = Path(corpus_dir)
         self.corpus_dir.mkdir(parents=True, exist_ok=True)
 

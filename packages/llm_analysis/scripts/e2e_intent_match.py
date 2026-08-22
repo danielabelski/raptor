@@ -44,6 +44,7 @@ from core.config import pin_raptor_dir_in_environ
 pin_raptor_dir_in_environ()
 
 from packages.llm_analysis.intent_match import intent_match
+from typing import NoReturn
 
 # ---------------------------------------------------------------------------
 # Fake LLM provider
@@ -51,7 +52,7 @@ from packages.llm_analysis.intent_match import intent_match
 
 
 class _FakeLLMResponse:
-    def __init__(self, content: str, cost_usd: float = 0.002):
+    def __init__(self, content: str, cost_usd: float = 0.002) -> None:
         self.content = content
         self.cost_usd = cost_usd
 
@@ -61,9 +62,9 @@ class FakeLLMProvider:
     one per ``.generate(...)`` call. The intent-match tiebreak
     invokes ``.generate(...)`` twice (describe + judge)."""
 
-    def __init__(self, responses):
+    def __init__(self, responses) -> None:
         self._responses = list(responses)
-        self.calls = []
+        self.calls: list[dict[str, int]] = []
 
     def generate(self, prompt, system_prompt=None, task_type=None, **kw):
         self.calls.append({"prompt_len": len(prompt)})
@@ -228,7 +229,7 @@ def scenario_6_llm_raises() -> None:
     _hr("Scenario 6: LLM raises → uncertain with llm_error")
 
     class _Bomb:
-        def generate(self, *a, **kw):
+        def generate(self, *a, **kw) -> NoReturn:
             msg = "simulated LLM API timeout"
             raise RuntimeError(msg)
 

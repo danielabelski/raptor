@@ -56,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _cmd_print(fp_input, args) -> int:
+def _cmd_print(fp_input, args: argparse.Namespace) -> int:
     """Default: compute the fingerprint, print as JSON."""
     fp = _fingerprint(fp_input, args)
     if fp is None:
@@ -69,7 +69,7 @@ def _cmd_print(fp_input, args) -> int:
     return _emit_json(fp.to_dict(), args.out)
 
 
-def _cmd_save(fp_input, args, *, store_dir: Path) -> int:
+def _cmd_save(fp_input, args: argparse.Namespace, *, store_dir: Path) -> int:
     """Save as baseline. The ``--ref`` flag specifies the store
     key (defaults to the input identifier — image ref or path)."""
     from core.binary import save_fingerprint
@@ -95,7 +95,7 @@ def _cmd_save(fp_input, args, *, store_dir: Path) -> int:
     return 0
 
 
-def _cmd_check(fp_input, args, *, store_dir: Path) -> int:
+def _cmd_check(fp_input, args: argparse.Namespace, *, store_dir: Path) -> int:
     """Compare current fingerprint against stored baseline. Prints
     the drift summary and exits:
       * 0 — no baseline OR no drift

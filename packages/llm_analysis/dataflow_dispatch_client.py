@@ -46,7 +46,7 @@ class DispatchClient:
         *,
         cost_tracker: Any | None = None,
         temperature: float = 0.0,
-    ):
+    ) -> None:
         self._dispatch_fn = dispatch_fn
         self._model = model
         self._cost_tracker = cost_tracker

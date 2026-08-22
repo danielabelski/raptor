@@ -36,7 +36,7 @@ class FakeStructuredProvider:
 
     def __init__(self, result: Any, raw: str = "raw-stub", *,
                  cost_per_call: float = 0.001,
-                 tokens_per_call: int = 100):
+                 tokens_per_call: int = 100) -> None:
         self.result = result
         self.raw = raw
         self.calls = 0

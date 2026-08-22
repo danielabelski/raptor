@@ -10,7 +10,7 @@ from __future__ import annotations
 from core.logging import get_logger
 
 try:
-    import z3  # type: ignore
+    import z3  # type: ignore[import-untyped, import-not-found]
     _Z3_AVAILABLE = True
 except ImportError as i:
     # Soft-dependency missing — expected, log at debug.

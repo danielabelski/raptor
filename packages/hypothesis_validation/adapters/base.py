@@ -171,7 +171,7 @@ def make_sandbox_runner(
     import subprocess
 
     try:
-        from core.sandbox import run as sandbox_run  # type: ignore
+        from core.sandbox import run as sandbox_run  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001 — any import failure means no isolation
         # Fail-closed: no silent bare-subprocess fallback. The tools
         # this runner feeds (semgrep / coccinelle / codeql on

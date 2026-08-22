@@ -213,7 +213,7 @@ class AFLRunner:
         custom_mutator: Path | None = None,
         seed_profile: str = "default",
         extra_afl_flags: list[str] | None = None,
-    ):
+    ) -> None:
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
             msg = f"Binary not found: {binary_path}"

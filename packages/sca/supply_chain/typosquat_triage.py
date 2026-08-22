@@ -437,7 +437,7 @@ def collect_evidence_rich(
 
 def render_evidence(ev: Evidence) -> str:
     """Render Evidence into the text block the LLM (Stage A) reasons over."""
-    def f(v, unknown="unknown"):
+    def f(v, unknown: str="unknown"):
         return unknown if v is None else v
     # Cap the (attacker-controlled) description + README so a package can't
     # blow the LLM prompt budget with a megabyte of text.

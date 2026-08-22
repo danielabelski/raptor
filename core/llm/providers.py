@@ -128,7 +128,7 @@ def _safe_float(value: Any, *, default: float) -> float:
     """
     from core.llm.coerce import to_float_safe
 
-    def _log(v, d):
+    def _log(v, d) -> None:
         logger.debug(
             "CC envelope: non-numeric cost/tokens value %r — using %r",
             v, d,
@@ -141,7 +141,7 @@ def _safe_int(value: Any, *, default: int) -> int:
     """Same as `_safe_float` for int conversion."""
     from core.llm.coerce import to_int_safe
 
-    def _log(v, d):
+    def _log(v, d) -> None:
         logger.debug(
             "CC envelope: non-int tokens value %r — using %r", v, d,
         )
@@ -305,7 +305,7 @@ def extract_resolved_model(raw: Any) -> str | None:
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig) -> None:
         import threading
         self.config = config
         self.total_tokens = 0
@@ -1404,7 +1404,7 @@ class OpenAICompatibleProvider(LLMProvider):
     Gemini (via OpenAI compat), Mistral, etc.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
         if not OPENAI_SDK_AVAILABLE:
             msg = "OpenAI SDK not installed. Run: pip install openai"
@@ -2385,7 +2385,7 @@ class AnthropicProvider(LLMProvider):
     and token counting.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
         if not ANTHROPIC_SDK_AVAILABLE:
             msg = "Anthropic SDK not installed. Run: pip install anthropic"
@@ -3386,7 +3386,7 @@ class GeminiProvider(LLMProvider):
     Falls back to OpenAICompatibleProvider if google-genai is not installed.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
         if not GENAI_SDK_AVAILABLE:
             msg = "google-genai SDK not installed: pip install google-genai"
@@ -3756,7 +3756,7 @@ class ClaudeCodeProvider:
 
     is_stub = True  # Distinguishes from real providers
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.total_tokens = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0

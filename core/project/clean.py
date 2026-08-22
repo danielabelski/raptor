@@ -55,7 +55,7 @@ def split_live_runs(dirs) -> tuple[list, list]:
     return rest, live
 
 
-def plan_clean(project, keep=1) -> dict[str, Any]:
+def plan_clean(project, keep: int=1) -> dict[str, Any]:
     """Plan which runs to delete. Returns stats with directory paths.
 
     ``keep=0`` is valid: delete as aggressively as possible, bounded by the
@@ -217,7 +217,7 @@ def execute_clean(plan: dict[str, Any],
             pass
 
 
-def clean_project(project, keep=1, dry_run=False) -> dict[str, Any]:
+def clean_project(project, keep: int=1, dry_run: bool=False) -> dict[str, Any]:
     """Clean old runs from a project. Returns stats dict.
 
     Keeps latest `keep` runs per command type.

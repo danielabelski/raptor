@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from types import TracebackType
 
 
 # Thread-local "last stage that ran" — readable by out-of-band
@@ -78,7 +79,7 @@ class HackerProgress:
     _CROSS = '✗' if _UNICODE_OK else '[FAIL]'
 
     def __init__(self, total: int | None = None, operation: str = "Processing",
-                 disabled: bool = False):
+                 disabled: bool = False) -> None:
         self.total = total
         self.operation = operation
         self.disabled = disabled
@@ -129,7 +130,7 @@ class HackerProgress:
             remaining = 0
         return self._format_time(remaining)
 
-    def update(self, current: int | None = None, message: str = ""):
+    def update(self, current: int | None = None, message: str = "") -> None:
         """Update progress display."""
         if self.disabled:
             return
@@ -181,7 +182,7 @@ class HackerProgress:
         sys.stderr.write(f"\r\033[K{status}")
         sys.stderr.flush()
 
-    def finish(self, message: str = "Complete"):
+    def finish(self, message: str = "Complete") -> None:
         """Finish progress and move to new line.
 
         Emits a final state line BEFORE the checkmark so the
@@ -216,7 +217,7 @@ class HackerProgress:
             sys.stderr.flush()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         """Context manager exit."""
         if self.disabled:
             return False
@@ -292,7 +293,7 @@ class HackerProgressBar:
     def __init__(self, *, target: str | None = None,
                  disabled: bool | None = None,
                  stream=None,
-                 bar_width: int = 12):
+                 bar_width: int = 12) -> None:
         self._stream = stream if stream is not None else sys.stderr
         # Three modes:
         #   "redraw"  — TTY: rewriting stage lines + flashes + ANSI
@@ -342,7 +343,7 @@ class HackerProgressBar:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         # Finalise any in-flight stage so the operator sees its
         # detail rather than the bar.
         if self._stage is not None:

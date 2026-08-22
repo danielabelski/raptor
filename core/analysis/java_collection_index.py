@@ -60,6 +60,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 #: Synthetic key for list elements — every write governs every read.
 ALL_ELEMENTS = "*"
@@ -261,18 +265,18 @@ def build_local_collection_index(
     lo, hi = line_span
     consumed: set[tuple[int, int]] = set()
 
-    def line_of(n) -> int:
+    def line_of(n: Node) -> int:
         return n.start_point[0] + 1
 
-    def in_span(n) -> bool:
+    def in_span(n: Node) -> bool:
         return not (n.start_point[0] + 1 > hi or n.end_point[0] + 1 < lo)
 
-    def named_args(call) -> list[Any]:
+    def named_args(call: Node) -> list[Any]:
         args = call.child_by_field_name("arguments")
         return [c for c in (args.children if args is not None else ())
                 if c.is_named]
 
-    def record_accessor(call) -> bool:
+    def record_accessor(call: Node) -> bool:
         """Record a qualifying accessor call; True when the receiver
         identifier was consumed (the shape is allowlisted), False when
         the caller must leave it for the leftover scan."""
@@ -371,7 +375,7 @@ def build_local_collection_index(
             key = ALL_ELEMENTS
         idx._scalar_copies[(lineno, lhs)] = (recv, key)
 
-    def walk(n) -> None:
+    def walk(n: Node) -> None:
         if n is None or not in_span(n):
             return
         t = n.type
@@ -539,7 +543,7 @@ class CollectionFoldResolver:
         self._index = index
         self.hits = 0
 
-    def __call__(self, node, refold, depth: int) -> Any:
+    def __call__(self, node: Node, refold, depth: int) -> Any:
         from core.analysis.const_fold_java import REFUSE
 
         site = self._index.get_site(

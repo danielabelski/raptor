@@ -407,7 +407,7 @@ class BinaryUnderstand:
         result_holder: list = [None]
         exc_holder: list = [None]
 
-        def _run():
+        def _run() -> None:
             try:
                 result_holder[0] = r2.cmd(command)
             except BaseException as e:  # noqa: BLE001 — propagate any error

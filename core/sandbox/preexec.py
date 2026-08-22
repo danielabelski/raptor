@@ -260,7 +260,7 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
 
     pdeathsig_fn = set_pdeathsig()
 
-    def _set_limits():
+    def _set_limits() -> None:
         pdeathsig_fn()
         # Fallbacks below must stay in sync with _DEFAULT_LIMITS. Callers
         # through context.sandbox() always pass the merged effective_limits
@@ -662,7 +662,7 @@ def set_pdeathsig(sig=signal.SIGKILL):
     if sys.platform != "linux":
         return lambda: None
 
-    def _apply():
+    def _apply() -> None:
         libc = _get_libc()
         if libc is not None:
             libc.prctl(_PR_SET_PDEATHSIG, sig)

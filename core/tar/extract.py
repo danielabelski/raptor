@@ -70,7 +70,7 @@ class _ChunkStream(io.RawIOBase):
     reader without intermediate buffering.
     """
 
-    def __init__(self, chunks: Iterable[bytes]):
+    def __init__(self, chunks: Iterable[bytes]) -> None:
         self._chunks = iter(chunks)
         self._buf = b""
         self._eof = False

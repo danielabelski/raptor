@@ -25,6 +25,10 @@ from .sibling_analysis import (
     SiblingType,
     find_asymmetries,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +190,7 @@ def _collect_if_branches(
     return branches
 
 
-def _walk_if_chain(node, lang, src, out, depth):
+def _walk_if_chain(node: Node, lang, src, out, depth) -> None:
     if depth > 20:
         return
 
@@ -338,7 +342,7 @@ def _collect_branches_regex(
     return groups
 
 
-def _collect_case_groups(case_matches, lines, source, file_path, groups):
+def _collect_case_groups(case_matches, lines, source, file_path, groups) -> None:
     """Group consecutive case statements at the same indent level."""
     indent_groups: dict[int, list] = {}
     for m in case_matches:
@@ -364,7 +368,7 @@ def _collect_case_groups(case_matches, lines, source, file_path, groups):
         groups.append((func, f"switch@L{branches[0][2]}", branches))
 
 
-def _collect_if_groups_regex(lines, source, file_path, groups):
+def _collect_if_groups_regex(lines, source, file_path, groups) -> None:
     """Find if/elif chains with ≥ MIN_BRANCHES at the same indent."""
     matches = list(_IF_ELIF_RE.finditer(source))
     if not matches:

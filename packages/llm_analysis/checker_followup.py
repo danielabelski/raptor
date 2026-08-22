@@ -248,7 +248,7 @@ def _try_replay_from_library(
         return None
 
 
-def _try_promote_to_library(result, repo_root: Path):
+def _try_promote_to_library(result, repo_root: Path) -> None:
     """Promote a synthesis result to the rule library if eligible."""
     try:
         import hashlib
@@ -265,7 +265,7 @@ def _try_promote_to_library(result, repo_root: Path):
         logger.debug("checker_followup: library promotion failed", exc_info=True)
 
 
-def _try_graduate_after_update(lib):
+def _try_graduate_after_update(lib) -> None:
     """Graduate eligible rules after a library update.
 
     The disk manifest already tracks targets, TP rate, and variant

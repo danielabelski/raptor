@@ -37,6 +37,10 @@ from core.analysis.config_resolve_java import (
     _string_literal_value,
     _text,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +72,7 @@ _RULES: dict[str, tuple[str, str]] = {
 }
 
 
-def _selector_family(node) -> str | None:
+def _selector_family(node: Node) -> str | None:
     """Family name when this method_invocation is a getInstance call
     on a seed selector class (bare or fully-qualified receiver)."""
     meth = node.child_by_field_name("name")

@@ -25,14 +25,14 @@ class Crash:
     size: int = 0
     timestamp: float | None = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Crash(id={self.crash_id}, signal={self.signal}, size={self.size})"
 
 
 class CrashCollector:
     """Collects and deduplicates crashes from fuzzing output."""
 
-    def __init__(self, crashes_dir: Path):
+    def __init__(self, crashes_dir: Path) -> None:
         self.crashes_dir = Path(crashes_dir)
         if not self.crashes_dir.exists():
             msg = f"Crashes directory not found: {crashes_dir}"

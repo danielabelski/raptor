@@ -60,7 +60,7 @@ class OpLockContention(RuntimeError):
     the parsed diagnostic fields when available.
     """
 
-    def __init__(self, message: str, holder: dict | None = None):
+    def __init__(self, message: str, holder: dict | None = None) -> None:
         super().__init__(message)
         self.holder = holder or {}
 

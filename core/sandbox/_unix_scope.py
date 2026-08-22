@@ -284,7 +284,7 @@ class UnixScopeSupervisor:
 
     def __init__(self, notify_fd: int,
                  allowed_socket_paths: list[str] | None = None,
-                 label: str = "sandbox"):
+                 label: str = "sandbox") -> None:
         self._fd = notify_fd
         self._label = label
         self._closed = threading.Event()

@@ -678,10 +678,10 @@ def cmd_recommend(args: argparse.Namespace) -> int:
     suffix = f" (freshness half-life {hl:g}d)" if hl else ""
     print(f"recommendation for {target_dc}{suffix}:")
 
-    def _fmt_ub(x):
+    def _fmt_ub(x) -> str:
         return f"{x:.1f}% max_miss" if x is not None else "max_miss=n/a"
 
-    def _fmt_cpc(x):
+    def _fmt_cpc(x) -> str:
         return f"${x:.4f}/call" if x is not None else "no cost data"
 
     if sc_rows:

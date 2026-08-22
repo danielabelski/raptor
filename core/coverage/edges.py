@@ -136,7 +136,7 @@ def collect_touched_edges(
     edges: list[dict[str, Any]] = []
     seen: set[tuple] = set()
 
-    def _add(caller_file, caller, callee_file, callee, call_line, source):
+    def _add(caller_file, caller, callee_file, callee, call_line, source) -> None:
         key = (caller_file, caller, callee_file, callee, call_line)
         if key in seen:
             return

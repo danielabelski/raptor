@@ -39,7 +39,7 @@ class _CacheInfo:
     telemetry) keep working after the lru_cache → _cache_unless_none swap."""
     __slots__ = ("currsize", "hits", "misses")
 
-    def __init__(self, hits: int, misses: int, currsize: int):
+    def __init__(self, hits: int, misses: int, currsize: int) -> None:
         self.hits = hits
         self.misses = misses
         self.currsize = currsize

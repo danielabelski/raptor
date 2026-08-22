@@ -364,7 +364,7 @@ async def _register_one(
             return (name, f"failed: {e}")
 
 
-async def register_agents(sage_url: str, dry_run: bool = False, force: bool = False):
+async def register_agents(sage_url: str, dry_run: bool = False, force: bool = False) -> None:
     """Register all RAPTOR agents on the SAGE network."""
 
     print("=" * 60)
@@ -503,7 +503,7 @@ async def register_agents(sage_url: str, dry_run: bool = False, force: bool = Fa
     print("=" * 60)
 
 
-def main():
+def main() -> None:
     if _SAGE_SDK_IMPORT_ERROR is not None:
         print("ERROR: sage-agent-sdk not installed.")
         print("  pip install sage-agent-sdk")

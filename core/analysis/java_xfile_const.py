@@ -33,6 +33,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +101,7 @@ class XFileConst:
     """Per-finding cross-file resolver; every lookup memoized, every
     failure a refusal (``None``)."""
 
-    def __init__(self, java_file_path: str, repo_root: str | None):
+    def __init__(self, java_file_path: str, repo_root: str | None) -> None:
         self._file = Path(java_file_path)
         self._root = Path(repo_root) if repo_root else None
         self._parser = _parser()
@@ -310,7 +314,7 @@ class XFileConst:
                       "local_variable_declaration",
                       "return_statement", "throw_statement")
 
-        def find_stmt(node):
+        def find_stmt(node: Node):
             if node.start_point[0] + 1 > lineno \
                     or node.end_point[0] + 1 < lineno:
                 return None
@@ -326,7 +330,7 @@ class XFileConst:
 
         from core.analysis.const_fold_java import REFUSE
 
-        def accepts(node) -> bool:
+        def accepts(node: Node) -> bool:
             fld = node.child_by_field_name("field") \
                 or node.child_by_field_name("name")
             obj = node.child_by_field_name("object") \

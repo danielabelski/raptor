@@ -50,6 +50,10 @@ pinned in the corpus battery regardless.
 """
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 __all__ = [
@@ -105,7 +109,7 @@ def _iter_methods(root):
         stack.extend(n.children)
 
 
-def _method_key(m) -> tuple[str, int] | None:
+def _method_key(m: Node) -> tuple[str, int] | None:
     name = m.child_by_field_name("name")
     params = m.child_by_field_name("parameters")
     if name is None or params is None:
@@ -118,7 +122,7 @@ def _method_key(m) -> tuple[str, int] | None:
     return name.text.decode(), arity
 
 
-def _param_names(m) -> set[str]:
+def _param_names(m: Node) -> set[str]:
     params = m.child_by_field_name("parameters")
     out: set[str] = set()
     if params is None:
@@ -321,7 +325,7 @@ def make_tf_helper_resolver(source_text: str, span=None,
         return None
     from core.analysis.const_fold_java import TAINT_FREE
 
-    def resolver(node, refold, depth: int):
+    def resolver(node: Node, refold, depth: int):
         if node.type != "method_invocation":
             return None
         if node.child_by_field_name("object") is not None:

@@ -167,7 +167,7 @@ class _ExprParser:
             | 'max(' expr ',' expr ')' | 'sizeof(...)' | '(' expr ')'
     """
 
-    def __init__(self, tokens: list[str]):
+    def __init__(self, tokens: list[str]) -> None:
         self._toks = tokens
         self._pos = 0
 

@@ -1254,7 +1254,7 @@ def _run_llm_stages(
     return (reviews_run, reviews_failed, cost)
 
 
-def _run_maintainer_review(client, supply_chain_findings, canonical, http, options):
+def _run_maintainer_review(client, supply_chain_findings, canonical, http, options) -> None:
     """Run maintainer-trust LLM review on flagged deps."""
     from .llm.maintainer_trust import assess_maintainer_trust
 
@@ -1326,7 +1326,7 @@ def _run_maintainer_review(client, supply_chain_findings, canonical, http, optio
 
 def _run_slopsquat_review(
     client, supply_chain_findings, canonical, http, options, target=None,
-):
+) -> None:
     """Run LLM slopsquat verdict on every ``slopsquat_suspect``
     finding. Attaches the verdict to the finding's evidence;
     severity is left alone (the mechanical heuristic +

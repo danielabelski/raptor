@@ -213,7 +213,7 @@ def install_flow_semantics(srv, target_path, out_dir=None) -> int:
     return installed
 
 
-def _ensure_cpg_loaded(srv, target_path, tunables=None):
+def _ensure_cpg_loaded(srv, target_path, tunables=None) -> bool | None:
     """Build and import the CPG for *target_path* into *srv*.
 
     Returns True if the CPG was loaded (or already was), False on failure.
@@ -248,7 +248,7 @@ def stop_joern_server(server) -> None:
     if server is None:
         return
 
-    def _do_stop():
+    def _do_stop() -> None:
         try:
             server.stop()
         except Exception:

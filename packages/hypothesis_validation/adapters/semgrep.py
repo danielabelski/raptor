@@ -39,7 +39,7 @@ class SemgrepAdapter(ToolAdapter):
             Set False for tests or trusted environments.
     """
 
-    def __init__(self, *, sandbox: bool = True):
+    def __init__(self, *, sandbox: bool = True) -> None:
         self._sandbox = sandbox
 
     @property

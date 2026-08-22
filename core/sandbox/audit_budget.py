@@ -271,7 +271,7 @@ class AuditBudget:
                  sampling_rates: dict[str, int] | None = None,
                  categorise: Callable[[str], str] | None = None,
                  clock: Callable[[], float] | None = None,
-                 ):
+                 ) -> None:
         # Defaults — copy so external dicts can't be mutated through
         # ours and vice versa.
         self.global_cap = (DEFAULT_GLOBAL_CAP

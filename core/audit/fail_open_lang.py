@@ -56,6 +56,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -491,20 +495,20 @@ def _ts_parser(language: str):
         return None
 
 
-def _ts_node_text(node, src: bytes) -> str:
+def _ts_node_text(node: Node, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode(
         "utf-8", errors="replace",
     )
 
 
-def _call_name(node, src: bytes) -> str:
+def _call_name(node: Node, src: bytes) -> str:
     fn = node.child_by_field_name("function")
     if fn is None:
         return ""
     return _ts_node_text(fn, src)
 
 
-def _line_of(node) -> int:
+def _line_of(node: Node) -> int:
     return node.start_point[0] + 1
 
 
@@ -1046,7 +1050,7 @@ def _java_throws_at_handler_level(block) -> bool:
     return False
 
 
-def _classify_java_catch(clause, src: bytes) -> tuple[str, str]:
+def _classify_java_catch(clause: Node, src: bytes) -> tuple[str, str]:
     """(outcome_kind, permissive_value) for one catch clause —
     the census classification vocabulary on the Java grammar.
 
@@ -1361,7 +1365,7 @@ def _go_enclosing_function(node, src: bytes):
     return None
 
 
-def _go_function_name(func_node, src: bytes) -> str:
+def _go_function_name(func_node: Node, src: bytes) -> str:
     if func_node is None:
         return ""
     name_node = func_node.child_by_field_name("name")
@@ -1522,7 +1526,7 @@ def go_recover_handlers(
     return out
 
 
-def _go_err_binding_name(assign, src: bytes) -> tuple[str, list[str]]:
+def _go_err_binding_name(assign: Node, src: bytes) -> tuple[str, list[str]]:
     """(last-LHS identifier, all LHS identifiers) of a Go assignment /
     short var declaration — the error binding is conventionally last."""
     left = assign.child_by_field_name("left")
@@ -1966,7 +1970,7 @@ def _classify_js_handler_body(body, src: bytes) -> tuple[str, str]:
     return OUTCOME_FALLBACK_ACTION, "substantial handler body"
 
 
-def _js_function_name(fn, src: bytes) -> str:
+def _js_function_name(fn: Node, src: bytes) -> str:
     """Name of one function node: declaration/method name, or the
     variable/property an anonymous function is bound to (one parent
     hop; never a full ancestor walk)."""
@@ -1989,7 +1993,7 @@ def _js_function_name(fn, src: bytes) -> str:
     return ""
 
 
-def _js_promise_catch_handler(node, src: bytes):
+def _js_promise_catch_handler(node: Node, src: bytes):
     """(receiver, callback_body) when *node* is a promise
     ``.catch(fn)`` call with an inline handler, else None."""
     if node.type != "call_expression":
@@ -2430,7 +2434,7 @@ def _rust_next_use(func_node, src: bytes, var: str, after_byte: int):
     return best
 
 
-def _classify_rust_let(cur, node, src: bytes, site, line: int,
+def _classify_rust_let(cur: Node, node, src: bytes, site, line: int,
                        through: list[str]):
     """Classify a ``let`` binding of the call result."""
     pattern = cur.child_by_field_name("pattern")
@@ -2739,7 +2743,7 @@ def function_parameters(
     except Exception:
         return []
 
-    def _name_of(node) -> str:
+    def _name_of(node: Node) -> str:
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             return _ts_node_text(name_node, src)

@@ -48,6 +48,10 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 _CANDIDATE_CAP = 8
 _SKIP_DIR_PARTS = frozenset({
@@ -173,7 +177,7 @@ def _string_literal_value(node) -> str | None:
     return None
 
 
-def _call_arguments(node) -> list:
+def _call_arguments(node: Node) -> list:
     args = node.child_by_field_name("arguments")
     if args is None:
         return []
@@ -302,7 +306,7 @@ class ConfigResolver:
         self.stats[reason] += 1
         return ConfigResolution(refusal=reason)
 
-    def resolve_call(self, node, *,
+    def resolve_call(self, node: Node, *,
                      allow_default: bool = False) -> ConfigResolution:
         """Resolve one ``getProperty`` method_invocation node."""
         if not self._ok:
@@ -370,7 +374,7 @@ class ConfigResolver:
             value=values[0], key=key, config_file=str(path),
             default=default)
 
-    def fold_hook(self, node, depth: int):
+    def fold_hook(self, node: Node, depth: int):
         """``config_resolver`` callable for the constant folder: None
         when the node is not a getProperty call (not ours), the module
         REFUSE sentinel on any refusal, else the resolved str value.

@@ -130,7 +130,7 @@ def _resolve_run_dir(args: argparse.Namespace,
         # Lazy import so the help/parse path doesn't need shutil.
         import shutil
 
-        def _cleanup():
+        def _cleanup() -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
         stack.callback(_cleanup)
@@ -169,7 +169,7 @@ def _format_summary(profile, *, run_dir: Path, kept: bool,
             "every event."
         )
 
-    def _section(label: str, items: list, total_label: str):
+    def _section(label: str, items: list, total_label: str) -> None:
         parts.append(f"\n{label} ({len(items)}):")
         if not items:
             parts.append(f"  (none — binary did no {total_label})")

@@ -44,6 +44,10 @@ from core.analysis.threat_model_java import (
     NON_SOURCE_JVM_CONSTANT_FIELDS,
     NON_SOURCE_SYSTEM_READS,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 
@@ -102,7 +106,7 @@ class _FoldExt:
     )
 
     def __init__(self, allow_taint_free: bool = False, xfile=None,
-                 receiver_type=None, ban_tf_system_reads: bool = False):
+                 receiver_type=None, ban_tf_system_reads: bool = False) -> None:
         self.allow_taint_free = allow_taint_free
         self.xfile = xfile
         # receiver_type(name) -> exact created class name, or None.
@@ -231,7 +235,7 @@ class JavaConstIndex:
             stack.extend(n.children)
         self.ok = True
 
-    def _note_creation(self, name: str, value) -> None:
+    def _note_creation(self, name: str, value: Node) -> None:
         """Track exact-creation-typed locals: usable as a method-call
         receiver class only when EVERY definition creates the same
         class. Any other definition shape poisons the name."""
@@ -293,7 +297,7 @@ def fold_expr(node, resolve_name, array_resolver=None,
 REFUSE = _REFUSE
 
 
-def _receiver_chain(node) -> str | None:
+def _receiver_chain(node: Node) -> str | None:
     """Dotted text of an identifier/field_access chain (``Utils`` /
     ``org.owasp.benchmark.helpers.Utils``); None for anything else."""
     if node is None:
@@ -311,7 +315,7 @@ def _receiver_chain(node) -> str | None:
     return None
 
 
-def _fold_field_access(node, ext) -> Any:
+def _fold_field_access(node: Node, ext) -> Any:
     """``File.separator``-class taint-free fields and cross-file
     static-final resolution. Only fires under an extension context —
     the default folder refuses every field access, unchanged."""
@@ -334,7 +338,7 @@ def _fold_field_access(node, ext) -> Any:
     return _REFUSE
 
 
-def _fold_tf_system_read(node, resolve_name, depth, array_resolver,
+def _fold_tf_system_read(node: Node, resolve_name, depth, array_resolver,
                          config_resolver, conduit_resolver, ext) -> Any:
     """``System.<read>("lit")`` → TAINT_FREE for authority-approved
     NON-SOURCE reads only. Under the current threat model that set is
@@ -387,7 +391,7 @@ def _fold_tf_system_read(node, resolve_name, depth, array_resolver,
     return TAINT_FREE
 
 
-def _fold(node, resolve_name, depth: int, array_resolver=None,
+def _fold(node: Node, resolve_name, depth: int, array_resolver=None,
           config_resolver=None, conduit_resolver=None, ext=None) -> Any:
     if node is None or depth > _MAX_DEPTH:
         return _REFUSE
@@ -543,7 +547,7 @@ def _fold(node, resolve_name, depth: int, array_resolver=None,
     return _REFUSE
 
 
-def _fold_xfile_call(node, ext) -> Any:
+def _fold_xfile_call(node: Node, ext) -> Any:
     """Cross-file returns-literal method calls: ``Cls.m(...)`` (static),
     ``new Cls(...).m(...)`` (exact runtime class by construction), and
     ``recv.m(...)`` where the extension context proves recv's every
@@ -584,7 +588,7 @@ _PURE_STRING_METHODS = frozenset({
 })
 
 
-def _fold_pure_call(node, resolve_name, depth: int,
+def _fold_pure_call(node: Node, resolve_name, depth: int,
                     array_resolver=None,
           config_resolver=None, conduit_resolver=None, ext=None) -> Any:
     """Fold the pure-function allowlist on a receiver that itself

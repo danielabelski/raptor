@@ -509,7 +509,7 @@ class Project:
                 and not d.name.startswith((".", "_"))
                 and d.name not in generated_dirs]
 
-    def get_run_dirs(self, sweep=False) -> list[Path]:
+    def get_run_dirs(self, sweep: bool=False) -> list[Path]:
         """List run directories sorted newest-first.
 
         Uses the timestamp embedded in the directory name when available
@@ -534,7 +534,7 @@ class Project:
             self._sweep_stale(dirs, keep_latest=in_session)
         return sorted(dirs, key=_sort_key, reverse=True)
 
-    def sweep_stale_runs(self, keep_latest=False) -> int:
+    def sweep_stale_runs(self, keep_latest: bool=False) -> int:
         """Mark stale 'running' run dirs as failed.
 
         Args:
@@ -546,7 +546,7 @@ class Project:
         """
         return self._sweep_stale(self._list_run_dirs(), keep_latest)
 
-    def _sweep_stale(self, dirs: list, keep_latest=False) -> int:
+    def _sweep_stale(self, dirs: list, keep_latest: bool=False) -> int:
         """Mark 'running' dirs as failed if their session is dead.
 
         Checks session_pid in metadata — if the PID is still alive, the
@@ -611,7 +611,7 @@ class Project:
 class ProjectManager:
     """Manages project lifecycle."""
 
-    def __init__(self, projects_dir: Path | None = None):
+    def __init__(self, projects_dir: Path | None = None) -> None:
         self.projects_dir = projects_dir or PROJECTS_DIR
         self.projects_dir.mkdir(parents=True, exist_ok=True)
 

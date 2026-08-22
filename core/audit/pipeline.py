@@ -440,7 +440,7 @@ def _has_any_mechanical_evidence(ev: str) -> bool:
 # Dual-mode accessor — works on ReviewOutcome objects and plain dicts
 # ---------------------------------------------------------------------------
 
-def _get(item, attr, dict_key=None, default=""):
+def _get(item, attr, dict_key=None, default: str=""):
     """Read a field from an object (attribute) or a dict (key)."""
     if isinstance(item, dict):
         return item.get(dict_key or attr, default)
@@ -450,7 +450,7 @@ def _get(item, attr, dict_key=None, default=""):
     return val
 
 
-def _set(item, attr, dict_key=None, value=None):
+def _set(item, attr, dict_key=None, value=None) -> None:
     """Write a field to an object or dict."""
     if isinstance(item, dict):
         item[dict_key or attr] = value
@@ -464,7 +464,7 @@ def _get_status(item):
     return getattr(item, "status", "")
 
 
-def _set_status(item, status):
+def _set_status(item, status) -> None:
     if isinstance(item, dict):
         item["actual"] = status
     else:
@@ -783,7 +783,7 @@ def dampen_file_pileup(outcomes, records: list | None = None) -> int:
             len(_get_hypothesis(outcomes[i])),
         )
 
-    def _dampen(idx, tier, group_size, kept_idx):
+    def _dampen(idx, tier, group_size, kept_idx) -> int:
         cur = _get_status(outcomes[idx])
         new = "suspicious" if cur == "finding" else cur
         info = {

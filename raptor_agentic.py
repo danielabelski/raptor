@@ -424,7 +424,7 @@ def run_command_streaming(
     logger.info("Running: %s", description)
     print(f"\n[*] {description}...")
 
-    def stream_output(pipe, storage, prefix=""):
+    def stream_output(pipe, storage, prefix: str="") -> None:
         """Read from pipe line by line and print while storing."""
         try:
             for line in iter(pipe.readline, ''):
@@ -955,7 +955,7 @@ class _PipeDrainer:
     per stream keeps both children draining while the parent waits.
     """
 
-    def __init__(self, proc: subprocess.Popen):
+    def __init__(self, proc: subprocess.Popen) -> None:
         self._proc = proc
         self._chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
         self._threads: list[threading.Thread] = []
@@ -1127,7 +1127,7 @@ def _discover_codeql_dbs(out_dir: Path) -> list:
     return dbs
 
 
-def _gap_audit_adversarial(args) -> bool:
+def _gap_audit_adversarial(args: argparse.Namespace) -> bool:
     """Whether the post-pass enables the adversarial reviewer.
 
     Auto-enabled when two or more analysis models are configured (the
@@ -1143,7 +1143,7 @@ def _gap_audit_adversarial(args) -> bool:
 
 
 def _build_audit_postpass_cmd(
-    args, target: Path, audit_dir: Path, agentic_out: Path,
+    args: argparse.Namespace, target: Path, audit_dir: Path, agentic_out: Path,
 ) -> list:
     """argv for the ``raptor-audit run`` subprocess.
 
@@ -1240,7 +1240,7 @@ def _run_audit_feedback(audit_dir: Path, validate_dir: Path) -> bool:
     return rc == 0
 
 
-def _gap_audit_skip_reason(args, llm_env, *, block_cc_dispatch: bool):
+def _gap_audit_skip_reason(args: argparse.Namespace, llm_env, *, block_cc_dispatch: bool) -> str | None:
     """None when the gap-audit post-pass can run, else the skip reason.
 
     An explicit --model or a configured external LLM always qualifies
@@ -1267,7 +1267,7 @@ def _gap_audit_skip_reason(args, llm_env, *, block_cc_dispatch: bool):
     return None
 
 
-def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
+def run_audit_postpass(args: argparse.Namespace, target: Path, out_dir: Path) -> dict:
     """Run ``raptor-audit run`` over the residual coverage gaps.
 
     Creates a proper lifecycle-managed sibling /audit run (project
@@ -1384,7 +1384,7 @@ def run_audit_postpass(args, target: Path, out_dir: Path) -> dict:
         return phase
 
 
-def main():
+def main() -> int | None:
     parser = argparse.ArgumentParser(
         description="RAPTOR Agentic Security Testing - Scan, Analyse, Exploit, Patch",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2098,7 +2098,7 @@ Examples:
             # end-of-function rmtree (line ~1033) is bypassed on the sys.exit(1)
             # paths in the except handlers below, leaking raptor_git_*/ under
             # /tmp on every failed non-git target. atexit fires on sys.exit too.
-            def _cleanup_git_temp(p=temp_dir):
+            def _cleanup_git_temp(p=temp_dir) -> None:
                 # ``atexit`` callbacks run after most interpreter
                 # shutdown teardown — by which point the logging
                 # module may have closed its file handles. Pre-fix
@@ -4417,7 +4417,7 @@ def _build_audit_report_section(audit_phase, validate_dir=None):
         lines.append(header)
         lines.append(divider)
 
-        def _cell(value, cap=120):
+        def _cell(value, cap: int=120):
             return sanitise_string(
                 str(value or "").strip(), max_chars=cap,
             ).replace("|", "\\|").replace("\n", " ")
@@ -4537,7 +4537,7 @@ def _build_aggregation_report_section(aggregation):
     from core.reporting import ReportSection
     from core.security.prompt_output_sanitise import sanitise_string
 
-    def _text(value, max_chars=1500):
+    def _text(value, max_chars: int=1500):
         return sanitise_string(str(value or "").strip(), max_chars=max_chars)
 
     lines = []
@@ -4719,7 +4719,7 @@ def _build_dataflow_validation_report_section(dv):
     )
 
 
-def _postprocess_findings(results):
+def _postprocess_findings(results) -> None:
     """Post-process LLM results: compute CVSS scores, infer CWE, check consistency."""
     from packages.cvss import score_finding
     from packages.llm_analysis.validation import check_self_contradiction

@@ -1028,7 +1028,7 @@ class LLMClient:
     """Unified LLM client with multi-provider support and fallback."""
 
     def __init__(self, config: LLMConfig | None = None,
-                 *, pinned_model: str | None = None):
+                 *, pinned_model: str | None = None) -> None:
         """Construct the LLM client.
 
         When ``pinned_model`` is set the caller commits to overriding the

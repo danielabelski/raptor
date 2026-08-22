@@ -76,7 +76,7 @@ def _clamp_parallel(requested: int) -> int:
     return requested
 
 
-def _resolve_dict_path(args, out_dir):
+def _resolve_dict_path(args: argparse.Namespace, out_dir):
     """Resolve the AFL/libFuzzer dictionary for this run.
 
     An operator-supplied ``--dict`` always wins. Otherwise, auto-

@@ -27,7 +27,7 @@ class CorpusGenerator:
     to generate targeted test cases.
     """
 
-    def __init__(self, binary_path: Path, memory=None, goal=None, source_dir: Path | None = None):
+    def __init__(self, binary_path: Path, memory=None, goal=None, source_dir: Path | None = None) -> None:
         """
         Initialize corpus generator.
 
@@ -546,7 +546,7 @@ class CorpusGenerator:
         # caller falls back to the content-hash dedupe path above.
         return 0
 
-    def learn_from_crash(self, crash_input: Path, crash_type: str):
+    def learn_from_crash(self, crash_input: Path, crash_type: str) -> None:
         """
         Learn from a crash to improve future corpus generation.
 

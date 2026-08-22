@@ -404,7 +404,7 @@ class DataflowValidator:
         self,
         llm_client,
         evidence_collector: EvidenceCollector | None = None,
-    ):
+    ) -> None:
         """
         Initialize dataflow validator.
 
@@ -1176,7 +1176,7 @@ class DataflowValidator:
         return self.validate_dataflow_path(dataflow, repo_path)
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
 

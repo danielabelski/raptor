@@ -262,7 +262,7 @@ class StageError(Exception):
     """Raised by a caller's ``stage`` callback to abort the dispatch
     with a specific reason (the lifecycle is marked failed with it)."""
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
 

@@ -665,7 +665,7 @@ def main(argv=None) -> None:
                     help="codeql database analyze timeout, seconds (default 180)")
     a = ap.parse_args(argv)
 
-    def log(m):
+    def log(m) -> None:
         print(m, flush=True)
 
     # Resolve operator overrides against tuning.json-backed defaults.

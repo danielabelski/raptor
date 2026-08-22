@@ -102,7 +102,7 @@ class SourceIntelAdapter(ToolAdapter):
             function is itself the sandboxed entry point.
     """
 
-    def __init__(self, *, cache: Any | None = None, sandbox: bool = True):
+    def __init__(self, *, cache: Any | None = None, sandbox: bool = True) -> None:
         self._cache = cache
         self._sandbox = sandbox
 

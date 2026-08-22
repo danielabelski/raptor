@@ -925,7 +925,7 @@ def check_active_project() -> str | None:
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     from core.config import RaptorConfig
 
     logo = read_logo(RaptorConfig.effective_version())

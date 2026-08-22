@@ -116,7 +116,7 @@ def shed_blocks(
     reserve_tokens: int = 0,
     content_attr: str = "content",
     kind_attr: str = "kind",
-    priority_prefixes: list = None,
+    priority_prefixes: list | None = None,
 ) -> tuple[list, list]:
     """Shed UntrustedBlock-like objects by priority.
 

@@ -22,7 +22,7 @@ from core.security.rule_of_two import is_ci
 class classproperty:
     """Descriptor that works like @property but on the class itself."""
 
-    def __init__(self, func):
+    def __init__(self, func) -> None:
         self.fget = func
 
     def __get__(self, obj, cls):

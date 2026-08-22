@@ -114,7 +114,7 @@ def _find_active_run():
     return None, None
 
 
-def main():
+def main() -> None:
     # Find active run via project symlink
     run_dir, target = _find_active_run()
     if not run_dir:

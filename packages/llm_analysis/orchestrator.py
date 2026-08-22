@@ -44,7 +44,7 @@ class CostTracker:
     cutoff signals.
     """
 
-    def __init__(self, max_cost: float = 0.0):
+    def __init__(self, max_cost: float = 0.0) -> None:
         self._lock = threading.RLock()  # Reentrant — get_summary calls _budget_ratio
         self._total_cost = 0.0
         self._total_tokens = 0
@@ -2262,7 +2262,7 @@ def _structural_grouping(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups = []
     group_counter = 0
 
-    def _add_group(criterion: str, value: str, finding_ids: list[str]):
+    def _add_group(criterion: str, value: str, finding_ids: list[str]) -> None:
         nonlocal group_counter
         if len(finding_ids) >= 2:
             group_counter += 1

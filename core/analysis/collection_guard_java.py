@@ -60,6 +60,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +194,7 @@ def _body_only_exits(consequence) -> bool:
     return False
 
 
-def _guard_dominates_sink(guard_if, sink_line: int) -> bool:
+def _guard_dominates_sink(guard_if: Node, sink_line: int) -> bool:
     """Exit-on-fail dominance: some ancestor-of-sink statement is a
     LATER sibling of the guard in the guard's parent block (covering
     decided by line — Java statements never share structure with a

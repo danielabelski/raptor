@@ -121,7 +121,7 @@ class CrashContext:
 class CrashAnalyser:
     """Analyses crashes using debugger and LLM."""
 
-    def __init__(self, binary_path: Path):
+    def __init__(self, binary_path: Path) -> None:
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
             msg = f"Binary not found: {binary_path}"

@@ -200,7 +200,7 @@ def _is_transient_artefact(path: Path) -> bool:
 
 
 def export_project(project_output_dir: Path, dest_path: Path,
-                   project_json_path: Path = None,
+                   project_json_path: Path | None = None,
                    force: bool = False) -> dict[str, str]:
     """Zip a project output directory, skipping symlinks.
 
@@ -345,7 +345,7 @@ def _demote_stampless_imported_annotations(output_dir: Path) -> None:
 
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
-                   output_base: Path = None) -> dict[str, str]:
+                   output_base: Path | None = None) -> dict[str, str]:
     """Import a zipped project.
 
     Validates the zip, extracts output data to output_base/<name>/,

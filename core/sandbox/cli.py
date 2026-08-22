@@ -34,7 +34,7 @@ def _set_cli_state(profile: str) -> None:
     state._cli_sandbox_disabled = (profile == "none")
 
 
-def disable_from_cli():
+def disable_from_cli() -> None:
     """Called by command entry points when `--no-sandbox` is passed.
 
     Produces the same post-condition as `set_cli_profile('none')` — both

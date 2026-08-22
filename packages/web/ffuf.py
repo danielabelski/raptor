@@ -46,7 +46,7 @@ class FfufConfig:
 class FfufRunner:
     """Run ffuf against a single in-scope target origin."""
 
-    def __init__(self, base_url: str, out_dir: Path, reveal_secrets: bool = False):
+    def __init__(self, base_url: str, out_dir: Path, reveal_secrets: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.out_dir = out_dir
         self.reveal_secrets = reveal_secrets

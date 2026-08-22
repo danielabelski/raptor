@@ -109,7 +109,7 @@ class FuzzingPlanner:
         self,
         memory=None,
         sage_strategy_rows: list[dict[str, Any]] | None = None,
-    ):
+    ) -> None:
         """
         Initialise the fuzzing planner.
 

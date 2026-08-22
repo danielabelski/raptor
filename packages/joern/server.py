@@ -250,7 +250,7 @@ class JoernServer:
         heap_mb: int | None = None,
         boot_timeout_s: int = _BOOT_TIMEOUT_S,
         query_timeout_s: int = _QUERY_TIMEOUT_S,
-    ):
+    ) -> None:
         self._heap_mb = heap_mb
         self._boot_timeout_s = boot_timeout_s
         self._query_timeout_s = query_timeout_s

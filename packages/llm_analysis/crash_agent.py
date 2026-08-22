@@ -411,7 +411,7 @@ class CrashAnalysisAgent:
                  record_witnesses: bool = True,
                  execute_exploits: bool = False,
                  execute_timeout: int = 5,
-                 execute_sanitizers: list | None = None):
+                 execute_sanitizers: list | None = None) -> None:
         self.binary = Path(binary_path)
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)

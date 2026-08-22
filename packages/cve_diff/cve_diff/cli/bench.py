@@ -34,6 +34,7 @@ from cve_diff.infra import api_status
 from cve_diff.infra.github_client import warn_if_token_missing
 from cve_diff.pipeline import Pipeline, PipelineResult
 from cve_diff.report import osv_schema
+from typing import NoReturn
 
 _PER_CVE_TIMEOUT_S = 300  # 5 min. Any upstream-slice clone finishes well under.
 _PACKAGE_DATA_DIR = Path(__file__).resolve().parents[2] / "data"  # packages/cve_diff/data/
@@ -54,7 +55,7 @@ class _PerCveTimeout(Exception):
     pass
 
 
-def _alarm_handler(_signum, _frame):
+def _alarm_handler(_signum, _frame) -> NoReturn:
     msg = f"exceeded {_PER_CVE_TIMEOUT_S}s budget"
     raise _PerCveTimeout(msg)
 

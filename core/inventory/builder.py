@@ -318,7 +318,7 @@ def build_inventory(
         )
         before = len(file_list)
         # separator-aware: scope "src/a" must not match "src/abc".
-        def _in_scope(f):
+        def _in_scope(f: Path):
             fp = str(f.resolve())
             return any(
                 fp == pre.rstrip("/") or fp.startswith(pre.rstrip("/") + "/")
@@ -351,7 +351,7 @@ def build_inventory(
     total_sloc = 0
     skipped = 0
 
-    def _collect_result(result):
+    def _collect_result(result) -> None:
         nonlocal total_items, total_sloc, skipped
         if result is None:
             skipped += 1
@@ -393,7 +393,7 @@ def build_inventory(
         else:
             def submit_fn(fp, pool=pool):
                 return pool.submit(_process_file_in_worker, fp)
-        def _rel_of(fp):
+        def _rel_of(fp: Path):
             try:
                 return str(fp.relative_to(target)
                            if target.is_dir() else fp.name)
@@ -402,7 +402,7 @@ def build_inventory(
 
         futures = {submit_fn(fp): fp for fp in file_list}
 
-        def _on_done(future):
+        def _on_done(future) -> None:
             nonlocal skipped
             fp = futures[future]
             try:

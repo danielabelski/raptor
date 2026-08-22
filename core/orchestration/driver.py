@@ -109,7 +109,7 @@ class DriverResult:
 # ------------------------------------------------------------------
 
 class _FnOracle:
-    def __init__(self, fn, reliability_class):
+    def __init__(self, fn, reliability_class) -> None:
         self.reliability_class = reliability_class
         self._fn = fn
 
@@ -117,13 +117,13 @@ class _FnOracle:
         return self._fn(candidate, context)
 
 
-def oracle_from_fn(fn, *, reliability_class="decisive"):
+def oracle_from_fn(fn, *, reliability_class: str="decisive"):
     """Wrap a ``(candidate, context) -> Verdict`` callable as an Oracle."""
     return _FnOracle(fn, reliability_class)
 
 
 class _FnProposer:
-    def __init__(self, fn):
+    def __init__(self, fn) -> None:
         self._fn = fn
 
     def propose(self, context, feedback, *, prior_verdict=None):

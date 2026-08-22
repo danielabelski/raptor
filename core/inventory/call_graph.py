@@ -54,6 +54,10 @@ import threading
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -859,7 +863,7 @@ class _JsCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         """Generator visitor (driven by ``_drive_visit``). We push/pop
         the enclosing-function stack on the way down/up so the
         ``CallSite.caller`` field is the innermost NAMED enclosing
@@ -1067,7 +1071,7 @@ class _JsCallGraph:
                             alias = ids[1].text.decode()
                             self.graph.imports[alias] = f"{module}.{orig}"
 
-    def _synthesise_class_from_expr(self, cls_node, name: str) -> None:
+    def _synthesise_class_from_expr(self, cls_node: Node, name: str) -> None:
         """``const Foo = class extends Bar { method() {} };``
 
         Pulls bases from class_heritage and method names from
@@ -1198,7 +1202,7 @@ class _JsCallGraph:
     # Calls + indirection
     # ------------------------------------------------------------------
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         """Every ``call_expression``. Detect:
 
           * Plain ``foo()`` and ``a.b.c()`` → recorded as CallSite.
@@ -1764,7 +1768,7 @@ class _GoCallGraph:
     # Calls + indirection
     # ------------------------------------------------------------------
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         """Every ``call_expression``. Detect:
 
           * Plain ``foo()`` and ``a.b.c()`` → recorded as CallSite.
@@ -2018,7 +2022,7 @@ class _JavaCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         """Generator visitor (driven by ``_drive_visit``). Push/pop
         enclosing-method stack so ``CallSite.caller`` carries the
         innermost named method."""
@@ -2303,7 +2307,7 @@ class _JavaCallGraph:
     # Calls + indirection
     # ------------------------------------------------------------------
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         """Every ``method_invocation``. Detect:
 
           * Plain ``foo()`` — chain ``["foo"]``.
@@ -2570,7 +2574,7 @@ class _RustCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         if node.type == self._FUNCTION_ITEM:
             name = self._first_child_of_type(node, (self._IDENT,))
             method_name = name.text.decode() if name else "<anon>"
@@ -3050,7 +3054,7 @@ class _RubyCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         if node.type == self._MODULE_NODE:
             name_node = self._first_child_of_type(node, (
                 self._CONSTANT,
@@ -3268,7 +3272,7 @@ class _RubyCallGraph:
             return rc
         return rc + [method.text.decode()]
 
-    def _record(self, node, chain: list[str]) -> None:
+    def _record(self, node: Node, chain: list[str]) -> None:
         line = node.start_point[0] + 1
         caller = self._enclosing[-1] if self._enclosing else None
         # ``self.foo()`` inside an instance method → narrow to the
@@ -3394,7 +3398,7 @@ class _CSharpCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         if node.type == self._FILE_NAMESPACE_DECL:
             # C# 10's file-scoped namespace: ``namespace Foo.Bar;``
             # with no braces. The namespace applies to every
@@ -3574,7 +3578,7 @@ class _CSharpCallGraph:
     # Typed-dispatch scope (Tier 2)
     # ------------------------------------------------------------------
 
-    def _type_name(self, type_node) -> str | None:
+    def _type_name(self, type_node: Node) -> str | None:
         """Simple type name from a C# type node, or None for predefined
         types (``int``/``string``/``void``) and unresolvable shapes.
         ``List<Foo>`` → ``List``, ``Foo.Bar`` → ``Bar``, ``Foo?``/``Foo[]``
@@ -3610,7 +3614,7 @@ class _CSharpCallGraph:
                 out[name.text.decode("utf-8", errors="replace")] = tn
         return out
 
-    def _collect_decl_types(self, var_decl_node) -> dict[str, str]:
+    def _collect_decl_types(self, var_decl_node: Node) -> dict[str, str]:
         """``name → declared type`` for a ``variable_declaration`` (the
         node inside a field_declaration / local_declaration_statement)."""
         out: dict[str, str] = {}
@@ -3897,7 +3901,7 @@ class _PhpCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         if node.type == self._NAMESPACE_DEF:
             # ``namespace Foo\Bar;`` — capture as dotted package
             # name. The namespace_name child carries the parts.
@@ -4038,7 +4042,7 @@ class _PhpCallGraph:
                 parts = self._namespace_parts(c) + parts
         return parts
 
-    def _handle_call(self, node) -> None:
+    def _handle_call(self, node: Node) -> None:
         chain = None
         if node.type == self._FUNCTION_CALL:
             chain = self._function_call_chain(node)
@@ -4429,7 +4433,7 @@ class _CCallGraph:
     # Calls
     # ------------------------------------------------------------------
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         # call_expression: function (argument_list)
         # The "function" field is the first named child before
         # argument_list.
@@ -4804,7 +4808,7 @@ class _CppCallGraph(_CCallGraph):
     # Class / struct
     # ------------------------------------------------------------------
 
-    def _visit_class_specifier(self, node):
+    def _visit_class_specifier(self, node: Node):
         name = self._class_name(node)
         if name is None:
             # Anonymous struct/class — skip class-stack tracking but
@@ -4927,7 +4931,7 @@ class _CppCallGraph(_CCallGraph):
     # Function definitions
     # ------------------------------------------------------------------
 
-    def _visit_function_definition(self, node):
+    def _visit_function_definition(self, node: Node):
         name = self._function_name(node)
         qualified_class = self._qualified_class_from_declarator(node)
         if name is None:
@@ -5245,7 +5249,7 @@ class _CppCallGraph(_CCallGraph):
                         return sub.text.decode("utf-8", errors="replace")
         return None
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         callee_node = None
         for c in node.children:
             if c.type == "argument_list":
@@ -5273,7 +5277,7 @@ class _CppCallGraph(_CCallGraph):
             receiver_class=receiver_class,
         ))
 
-    def _visit_field_initializer(self, node) -> None:
+    def _visit_field_initializer(self, node: Node) -> None:
         """Constructor initialiser list entry: ``Base(x)`` or
         ``member_(0)``. The field_identifier child names either:
           * a base class (delegating constructor call) — semantically
@@ -5564,7 +5568,7 @@ class _LuaCallGraph:
             return parts
         return []
 
-    def _record(self, node, chain: list[str]) -> None:
+    def _record(self, node: Node, chain: list[str]) -> None:
         line = node.start_point[0] + 1
         caller = self._enclosing[-1] if self._enclosing else None
         self.graph.calls.append(
@@ -5668,7 +5672,7 @@ class _ScalaCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         t = node.type
         if t == "package_clause":
             pkg = next((c for c in node.children
@@ -5757,7 +5761,7 @@ class _ScalaCallGraph:
         if parts:
             self.graph.imports[parts[-1]] = ".".join(parts)
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         callee = next(
             (c for c in node.children if c.is_named
              and c.type != self._ARGS),
@@ -5797,7 +5801,7 @@ class _ScalaCallGraph:
 
 def _flatten_dotted_chain(node, *, ident_types, binary_types,
                           this_types=(), member_wrapper=None,
-                          max_len=32):
+                          max_len: int=32):
     """Flatten a left-recursive ``a.b.c`` receiver tree into
     ``["a", "b", "c"]``, iteratively (chains can be long in
     generated code; no recursion).
@@ -5908,7 +5912,7 @@ class _KotlinCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         t = node.type
         if t == "package_header":
             qi = next((c for c in node.children
@@ -6011,7 +6015,7 @@ class _KotlinCallGraph:
         if parts:
             self.graph.imports[parts[-1]] = ".".join(parts)
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         callee = next(
             (c for c in node.children
              if c.is_named and c.type not in (self._ARGS,
@@ -6128,7 +6132,7 @@ class _SwiftCallGraph:
     def walk(self, node) -> None:
         _drive_visit(self, node)
 
-    def _visit(self, node):
+    def _visit(self, node: Node):
         t = node.type
         if t == "import_declaration":
             ident = next((c for c in node.children
@@ -6185,7 +6189,7 @@ class _SwiftCallGraph:
 
         yield from node.children
 
-    def _visit_type_decl(self, node):
+    def _visit_type_decl(self, node: Node):
         """class / struct / enum / extension / protocol declarations —
         one generator handling name resolution, base capture, and the
         extension→existing-ClassDef rebinding."""
@@ -6244,7 +6248,7 @@ class _SwiftCallGraph:
         finally:
             self._class_stack.pop()
 
-    def _visit_call(self, node) -> None:
+    def _visit_call(self, node: Node) -> None:
         callee = next(
             (c for c in node.children
              if c.is_named and c.type != self._CALL_SUFFIX),

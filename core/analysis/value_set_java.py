@@ -32,6 +32,10 @@ from __future__ import annotations
 from typing import Any
 
 from core.analysis.const_fold_java import REFUSE, fold_expr
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 _MAX_ELEMENTS = 32
 
@@ -129,12 +133,12 @@ class ArrayTableIndex:
         self.ok = True
 
     @staticmethod
-    def _spans_match(a, b) -> bool:
+    def _spans_match(a: Node, b: Node) -> bool:
         return (a is not None and b is not None
                 and a.start_byte == b.start_byte
                 and a.end_byte == b.end_byte)
 
-    def _appearance_allowed(self, ident, parent, grandparent,
+    def _appearance_allowed(self, ident: Node, parent: Node, grandparent: Node,
                             declarator_name_spans) -> bool:
         if parent is None:
             return False
@@ -178,7 +182,7 @@ def make_array_resolver(table_index: ArrayTableIndex, fold):
     :data:`_MAX_NESTING` levels rather than recursing.
     """
 
-    def resolve(node, resolve_name, depth: int) -> Any:
+    def resolve(node: Node, resolve_name, depth: int) -> Any:
         if table_index is None or not table_index.ok:
             return REFUSE
         if resolve.active >= _MAX_NESTING:

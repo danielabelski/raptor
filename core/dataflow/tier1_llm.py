@@ -234,7 +234,7 @@ def _validator_in_branch(tree, validator_line: int, sink_line: int) -> bool:
     fn = _function_containing(tree, sink_line)
     body = fn.body if fn else tree.body
 
-    def _in_branch(stmts, target):
+    def _in_branch(stmts, target) -> bool:
         for stmt in stmts:
             if isinstance(stmt, _ast.If):
                 if _spans(stmt.body, target) or _spans(stmt.orelse, target):
@@ -248,7 +248,7 @@ def _validator_in_branch(tree, validator_line: int, sink_line: int) -> bool:
                         return True
         return False
 
-    def _spans(stmts, target):
+    def _spans(stmts, target) -> bool:
         for stmt in stmts:
             if hasattr(stmt, "lineno") and hasattr(stmt, "end_lineno"):
                 if stmt.lineno <= target <= (stmt.end_lineno or stmt.lineno):

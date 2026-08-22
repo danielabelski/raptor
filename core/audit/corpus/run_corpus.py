@@ -587,7 +587,7 @@ def _start_shared_joern(target_dirs: list[Path]):
     return None
 
 
-def _stop_shared_joern(srv):
+def _stop_shared_joern(srv) -> None:
     if srv is None:
         return
     try:
@@ -1112,7 +1112,7 @@ def _run_audit_on_target(
     # not.
     progress_n = [0]
 
-    def on_progress(idx, total, outcome):
+    def on_progress(idx, total, outcome) -> None:
         if idx < 0 or not outcome.file:
             return
         # Receiver-qualified progress key: seven ``Null*.Scan`` labels

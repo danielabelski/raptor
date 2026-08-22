@@ -56,7 +56,7 @@ def _z3_available() -> bool:
     """Check whether Z3 is importable. Imported lazily to avoid forcing
     z3-solver as a hard dependency at import time."""
     try:
-        from core.smt_solver import z3_available  # type: ignore
+        from core.smt_solver import z3_available  # type: ignore[import-not-found]
         return z3_available()
     except Exception:  # noqa: BLE001 — optional dependency probe; any failure means "not available"
         return False
@@ -72,7 +72,7 @@ class SMTAdapter(ToolAdapter):
             conditions.
     """
 
-    def __init__(self, bv_profile=None):
+    def __init__(self, bv_profile=None) -> None:
         self._bv_profile = bv_profile  # resolved lazily — see _profile()
 
     @property

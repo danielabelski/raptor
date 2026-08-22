@@ -9,6 +9,7 @@ import json
 import os
 import stat as _stat
 import sys
+from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -193,11 +194,11 @@ def _format_project_tuning(entry) -> list:
 
 class _Fmt(argparse.HelpFormatter):
     """Wider help alignment for subcommand option lists."""
-    def __init__(self, prog):
+    def __init__(self, prog) -> None:
         super().__init__(prog, max_help_position=34)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="raptor project",
         usage="raptor project <command> [args]",
@@ -205,7 +206,7 @@ def main():
         formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=20),
     )
     sub = parser.add_subparsers(dest="subcommand", title="commands", metavar="")
-    _F = {"formatter_class": _Fmt}  # shorthand for subparsers
+    _F: dict[str, Any] = {"formatter_class": _Fmt}  # shorthand for subparsers
 
     # create
     p_create = sub.add_parser("create", help="Create a new project",
@@ -1176,7 +1177,7 @@ def main():
             _op_guard.__exit__(None, None, None)
 
 
-def _mutation_lock_target(mgr, args):
+def _mutation_lock_target(mgr, args: argparse.Namespace):
     """Resolve ``(project_output_dir, operation)`` for subcommands that
     mutate project state; ``None`` for read-only invocations.
 
@@ -1249,7 +1250,7 @@ def _get_active_project():
     return mgr.get_active()
 
 
-def _count_sarif_results(run_dir):
+def _count_sarif_results(run_dir: Path):
     """Count total results across all SARIF files in a run directory."""
     from core.json import load_json
     count = 0
@@ -1330,7 +1331,7 @@ def _resolve_project_or_exit(mgr, name):
     return name, p
 
 
-def _handle_trust(mgr, args) -> None:
+def _handle_trust(mgr, args: argparse.Namespace) -> None:
     """List, set, or remove operator trust markers on a project.
 
     Markers are operator assertions persisted in the project JSON
@@ -1384,7 +1385,7 @@ def _handle_trust(mgr, args) -> None:
         print(f"Trust marker '{marker}' was not set on '{name}'")
 
 
-def _handle_settings(mgr, args) -> None:
+def _handle_settings(mgr, args: argparse.Namespace) -> None:
     """List / set / unset / get registry-validated project settings."""
     key = getattr(args, "key", None)
     value = getattr(args, "value", None)
@@ -1434,7 +1435,7 @@ def _handle_settings(mgr, args) -> None:
     print(_green(f"Set {key} on '{name}'"))
 
 
-def _handle_threat_model(mgr, args) -> None:
+def _handle_threat_model(mgr, args: argparse.Namespace) -> None:
     """Create, show, export, or resync a project's threat-model artefact."""
     from core.json import load_json, save_json
     from core.threat_model import (
@@ -1672,7 +1673,7 @@ def _handle_threat_model(mgr, args) -> None:
         print(f"  - {item}")
 
 
-def _print_status(project):
+def _print_status(project) -> None:
     """Print project status."""
     from core.run import load_run_metadata
     from core.threat_model import (
@@ -1778,7 +1779,7 @@ def _print_status(project):
         print("\nNo runs.")
 
 
-def _print_provenance(project):
+def _print_provenance(project) -> None:
     """Print the project-level provenance rollup across all runs."""
     from core.run import load_run_metadata
     from core.run.provenance import aggregate_provenance, format_provenance_rollup
@@ -1789,7 +1790,7 @@ def _print_provenance(project):
     print(format_provenance_rollup(aggregate_provenance(metadatas)))
 
 
-def _print_run_provenance(project, run_query):
+def _print_run_provenance(project, run_query) -> None:
     """Print one run's provenance detail. ``run_query`` matches a run dir by
     exact name, else by unique substring."""
     from core.run import load_run_metadata
@@ -1820,7 +1821,7 @@ def _print_run_provenance(project, run_query):
     print(block or "  (no provenance manifest)")
 
 
-def _print_coverage(project, detailed=False, fail_under=None):
+def _print_coverage(project, detailed: bool=False, fail_under=None):
     """Print project coverage — the unified store-backed report (coverage
     state + per-run execution detail), plus the ``--fail-under`` check."""
     from core.coverage.store_summary import (
@@ -1866,7 +1867,7 @@ def _print_coverage(project, detailed=False, fail_under=None):
     return None
 
 
-def _print_findings(project, detailed=False):
+def _print_findings(project, detailed: bool=False) -> None:
     """Print merged findings across all runs.
 
     Code findings (each run's ``findings.json``) render first; SCA /
@@ -1893,7 +1894,7 @@ def _print_findings(project, detailed=False):
         _print_sca_findings_section(sca_findings, detailed)
 
 
-def _print_code_findings(merged, detailed=False):
+def _print_code_findings(merged, detailed: bool=False) -> None:
     """Render code findings as a grouped table (the original view)."""
     from core.reporting.findings import build_findings_summary, findings_summary_line
     from core.reporting.formatting import (
@@ -2027,7 +2028,7 @@ def _sca_finding_escalations(finding):
     return [str(r) for r in reasons] if isinstance(reasons, list) else []
 
 
-def _print_sca_findings_section(sca_findings, detailed=False):
+def _print_sca_findings_section(sca_findings, detailed: bool=False) -> None:
     """Render SCA / dependency findings in their own section.
 
     Discovered from each run's ``sca/findings.json`` (see
@@ -2082,7 +2083,7 @@ def _print_sca_findings_section(sca_findings, detailed=False):
         print()
 
 
-def _finding_label(f):
+def _finding_label(f) -> str:
     """Location-based label for a finding."""
     return f"{f.get('file', '?')}:{f.get('function', '?')}:{f.get('line', '?')}"
 
@@ -2117,7 +2118,7 @@ def _parse_since(spec: str):
 def _print_annotations(
     project, status_filter=None, source_filter=None, file_filter=None,
     cwe_filter=None, rule_id_filter=None, grep=None, since=None,
-):
+) -> None:
     """List annotations across all runs in the project.
 
     Walks every run dir's ``annotations/`` subdir plus the project's
@@ -2211,7 +2212,7 @@ def _print_annotations(
               f"{status:<14}  {source:<5}  {snippet}")
 
 
-def _print_diff(result):
+def _print_diff(result) -> None:
     """Print diff results."""
     if result["new"]:
         print(f"New ({len(result['new'])}):")
@@ -2228,7 +2229,7 @@ def _print_diff(result):
     print(f"Unchanged: {result['unchanged']}")
 
 
-def _do_correlate(project, json_out=False):
+def _do_correlate(project, json_out: bool=False) -> None:
     """Cross-run finding correlation — action-oriented output."""
     import json
 
@@ -2323,7 +2324,7 @@ def _do_correlate(project, json_out=False):
         print(f"\n  Coverage: {', '.join(cov_parts)} files")
 
 
-def _do_clean(project, keep, dry_run, yes, dedup=False):
+def _do_clean(project, keep, dry_run, yes, dedup: bool=False) -> None:
     """Clean old runs from a project. With ``dedup``, the deletion set is the
     coverage-aware lossless subset (runs fully subsumed by a survivor) rather
     than recency-based ``--keep N``."""
@@ -2406,7 +2407,7 @@ def _classify_clean_coverage(project, plan):
         return []
 
 
-def _apply_clean_coverage(project, plan, consequences):
+def _apply_clean_coverage(project, plan, consequences) -> None:
     """Snapshot to-be-deleted runs' coverage into the durable project
     ``coverage.json`` (and flip sole-source findings to found_then_lost)
     before the dirs are removed. Best-effort — never blocks the clean."""
@@ -2432,7 +2433,7 @@ def _apply_clean_coverage(project, plan, consequences):
         print(_red(f"  (coverage snapshot skipped: {e})"))
 
 
-def _do_merge(project, merge_type, yes):
+def _do_merge(project, merge_type, yes) -> None:
     """Merge runs per command type."""
     import shutil
     from datetime import datetime, timezone

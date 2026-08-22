@@ -46,6 +46,10 @@ from .callsite_consistency import (
 )
 from .fail_open_roles import SecurityFlag, security_flag_role
 from .peer_evidence import PeerEvidence, PeerExhibit
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -1522,7 +1526,7 @@ def _call_lhs_names(call_node, src: bytes) -> frozenset[str]:
     return frozenset()
 
 
-def _call_arg_idents(call_node, src: bytes) -> frozenset[str]:
+def _call_arg_idents(call_node: Node, src: bytes) -> frozenset[str]:
     """Identifier tokens inside the call's argument list."""
     args = call_node.child_by_field_name("arguments")
     if args is None:

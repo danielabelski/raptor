@@ -54,6 +54,10 @@ from core.analysis.java_wrapper_summaries import (  # noqa: PLC2701
     _straight_line_locals,
     _text,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 # ── seed vocabulary ──────────────────────────────────────────────────
 
@@ -116,7 +120,7 @@ def _simple_type(text: str) -> str:
     return text.rsplit(".", 1)[-1].strip()
 
 
-def _param_types(decl) -> tuple[str, ...] | None:
+def _param_types(decl: Node) -> tuple[str, ...] | None:
     params = decl.child_by_field_name("parameters")
     if params is None:
         return None
@@ -145,7 +149,7 @@ def _request_typed_params(decl) -> dict[str, str]:
     }
 
 
-def _frozen_request_fields(cls_node) -> frozenset[str]:
+def _frozen_request_fields(cls_node: Node) -> frozenset[str]:
     """Field names of a source-receiver type that are assigned exactly
     once, inside a constructor, from a constructor parameter of the
     same type family, and never assigned anywhere else in the class.

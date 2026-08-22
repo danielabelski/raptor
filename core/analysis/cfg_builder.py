@@ -507,7 +507,7 @@ class _PythonCFGBuilder:
     structured-block CFG idiom.
     """
 
-    def __init__(self, function_name: str, file_path: str):
+    def __init__(self, function_name: str, file_path: str) -> None:
         self.function_name = function_name
         self.file_path = file_path
         self.entry = PyCFGNode(

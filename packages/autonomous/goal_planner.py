@@ -52,13 +52,13 @@ class GoalPlanner:
     fuzzing strategies and analysis priorities.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize goal planner."""
         self.current_goal: Goal | None = None
         self.goal_history: list[Goal] = []
         logger.info("Goal-directed planner initialized")
 
-    def set_goal(self, goal: Goal):
+    def set_goal(self, goal: Goal) -> None:
         """
         Set a new goal to work towards.
 
@@ -267,7 +267,7 @@ class GoalPlanner:
 
         return [c for c, s in scored_crashes]
 
-    def update_goal_progress(self, fuzzing_state):
+    def update_goal_progress(self, fuzzing_state) -> None:
         """
         Update progress towards current goal.
 

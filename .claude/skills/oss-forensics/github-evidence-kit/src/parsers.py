@@ -47,7 +47,7 @@ class _RowContext:
 
     __slots__ = ("payload", "repository", "row", "verification", "when", "who")
 
-    def __init__(self, row: dict[str, Any], table: str | None = None):
+    def __init__(self, row: dict[str, Any], table: str | None = None) -> None:
         self.row = row
         # `.get("payload")` not `["payload"]`. Pre-fix
         # `row["payload"]` raised KeyError on rows that didn't

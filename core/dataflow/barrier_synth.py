@@ -585,7 +585,7 @@ def adjudicate(
 class _BarrierProposerAdapter:
     """Wraps a BarrierProposer callable for the driver."""
 
-    def __init__(self, proposer_fn: BarrierProposer, proposal: BarrierProposal):
+    def __init__(self, proposer_fn: BarrierProposer, proposal: BarrierProposal) -> None:
         self._fn = proposer_fn
         self._proposal = proposal
         self._refine_count = 0
@@ -625,7 +625,7 @@ class _CodeQLAdjudicationOracle:
     def __init__(
         self, proposal, after_db, before_db, work_dir,
         search_path, target_uri, target_line, codeql_bin, runner,
-    ):
+    ) -> None:
         self._proposal = proposal
         self._after_db = after_db
         self._before_db = before_db

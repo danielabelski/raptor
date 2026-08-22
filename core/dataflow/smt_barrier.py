@@ -958,7 +958,7 @@ def _value_bound_dominates(
     sink_line: int,
     cwe: str | None,
     language: str | None,
-):
+) -> bool | None:
     """Phase 7 of the value-binding arc — wire ``validator_dominates_sink``
     and ``substitution_dominates_sink`` through the value-bound gate.
 

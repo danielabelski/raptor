@@ -178,7 +178,7 @@ class LanguageDetector:
     # File suffixes to ignore (endswith match)
     IGNORE_SUFFIXES = (".lock", ".min.js", ".bundle.js")
 
-    def __init__(self, repo_path: Path, max_files: int = 10000):
+    def __init__(self, repo_path: Path, max_files: int = 10000) -> None:
         """
         Initialize language detector.
 
@@ -644,7 +644,7 @@ class LanguageDetector:
         return language in cls._extractor_langs
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
     import json

@@ -365,7 +365,7 @@ async def _seed_one(
             return (label, f"failed: {e}")
 
 
-async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
+async def seed(sage_url: str, dry_run: bool = False, force: bool = False) -> None:
     """Extract all knowledge and seed into SAGE."""
 
     print("=" * 60)
@@ -512,7 +512,7 @@ async def seed(sage_url: str, dry_run: bool = False, force: bool = False):
     print("=" * 60)
 
 
-def main():
+def main() -> None:
     if _SAGE_SDK_IMPORT_ERROR is not None:
         print("ERROR: sage-agent-sdk not installed.")
         print("  pip install sage-agent-sdk")

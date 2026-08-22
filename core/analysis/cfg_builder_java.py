@@ -76,6 +76,10 @@ from core.analysis.cfg_builder import (
     EXIT_LINENO,
     CallSite,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +284,7 @@ def _unwrap_value_expr(n):
     return n
 
 
-def _base_ident(n) -> str | None:
+def _base_ident(n: Node) -> str | None:
     """Leftmost identifier: ``a.b.c`` → ``a``; ``arr[i]`` → ``arr``."""
     if n is None:
         return None
@@ -298,7 +302,7 @@ def _base_ident(n) -> str | None:
     return None
 
 
-def _dotted_chain(n) -> str | None:
+def _dotted_chain(n: Node) -> str | None:
     """Render an identifier / field_access chain as a dotted string.
     ``org.owasp.esapi.ESAPI`` (parsed as nested field_access) →
     ``"org.owasp.esapi.ESAPI"``. Anything else → None."""
@@ -318,7 +322,7 @@ class _NameResolver:
     """FQN-resolves callable names against the file's imports."""
 
     def __init__(self, type_imports: Mapping[str, str],
-                 static_imports: Mapping[str, str]):
+                 static_imports: Mapping[str, str]) -> None:
         self.types = dict(type_imports)
         self.statics = dict(static_imports)
 
@@ -329,7 +333,7 @@ class _NameResolver:
             return f"{fqn}.{rest}" if rest else fqn
         return chain
 
-    def callable_name(self, invocation) -> str | None:
+    def callable_name(self, invocation: Node) -> str | None:
         """Resolved dotted name for one ``method_invocation`` (or
         ``object_creation_expression`` → ``new <Type>``)."""
         if invocation.type == _OBJECT_CREATION:
@@ -371,7 +375,7 @@ class _NameResolver:
         return f"{self._resolve_chain(chain)}.{simple}"
 
 
-def _arg_surface_names(invocation) -> frozenset[str]:
+def _arg_surface_names(invocation: Node) -> frozenset[str]:
     """Bare-name surface of a call's arguments — identifiers and the
     base of field / array accesses; nested calls, literals, binary
     expressions contribute nothing (same under-count rationale as the
@@ -393,7 +397,7 @@ def _arg_surface_names(invocation) -> frozenset[str]:
     return frozenset(names)
 
 
-def _arg_deep_names(invocation, resolver) -> frozenset[str]:
+def _arg_deep_names(invocation: Node, resolver) -> frozenset[str]:
     """Names referenced anywhere inside the call's argument subtrees —
     the sink-arg fallback surface (see CallSite.arg_deep_names).
     Reuses the load-position walker, so callee names are excluded and
@@ -460,7 +464,7 @@ def _walk_call_sites(
     out: list[tuple[int, int, CallSite]] = []
     root_id = id(_unwrap_value_expr(n)) if n is not None else None
 
-    def visit(node) -> None:
+    def visit(node: Node) -> None:
         if node.type in (_METHOD_INVOCATION, _OBJECT_CREATION):
             name = resolver.callable_name(node)
             is_root = id(node) == root_id or \
@@ -557,7 +561,7 @@ def _payload_from_local_var_decl(decl, resolver):
     return frozenset(calls), frozenset(defs), frozenset(uses), tuple(css)
 
 
-def _payload_from_assignment(expr, resolver):
+def _payload_from_assignment(expr: Node, resolver):
     lhs = expr.child_by_field_name("left")
     rhs = expr.child_by_field_name("right")
     op_node = expr.child_by_field_name("operator")
@@ -600,7 +604,7 @@ def _payload_from_subtree(n, resolver):
 # ---------------------------------------------------------------------------
 
 
-def _method_name(decl) -> str | None:
+def _method_name(decl: Node) -> str | None:
     n = decl.child_by_field_name("name")
     return _node_text(n) if n is not None else None
 
@@ -667,7 +671,7 @@ class _RefusedConstruct(Exception):
 
 class _JavaCFGBuilder:
     def __init__(self, function_name: str, file_path: str,
-                 resolver: _NameResolver):
+                 resolver: _NameResolver) -> None:
         self.function_name = function_name
         self.file_path = file_path
         self.resolver = resolver
@@ -710,7 +714,7 @@ class _JavaCFGBuilder:
 
     def _make_node(self, *, lineno, label, calls=frozenset(),
                    defs=frozenset(), uses=frozenset(), call_sites=(),
-                   may_escape=False) -> JavaCFGNode:
+                   may_escape: bool=False) -> JavaCFGNode:
         node = JavaCFGNode(
             kind="stmt", lineno=lineno, label=label, calls=calls,
             defs=defs, uses=uses, call_sites=call_sites,
@@ -752,7 +756,7 @@ class _JavaCFGBuilder:
             cursor = self._build_stmt(stmt, cursor)
         return cursor
 
-    def _build_stmt(self, stmt, incoming):
+    def _build_stmt(self, stmt: Node, incoming):
         t = stmt.type
         # Statement-position switch is modelled; expression_statement-
         # wrapped switch is the same statement position in older
@@ -809,7 +813,7 @@ class _JavaCFGBuilder:
         self._ambient_catch_link(node)
         return [node]
 
-    def _straight_node(self, stmt) -> JavaCFGNode:
+    def _straight_node(self, stmt: Node) -> JavaCFGNode:
         if _subtree_has_refused(stmt):
             raise _RefusedConstruct(stmt.type)
         t = stmt.type
@@ -839,7 +843,7 @@ class _JavaCFGBuilder:
             may_escape=_subtree_may_escape(stmt, self.resolver),
         )
 
-    def _cond_node(self, stmt, prefix: str) -> JavaCFGNode:
+    def _cond_node(self, stmt: Node, prefix: str) -> JavaCFGNode:
         cond = stmt.child_by_field_name("condition")
         if _subtree_has_refused(cond):
             msg = "condition"
@@ -853,7 +857,7 @@ class _JavaCFGBuilder:
             may_escape=_subtree_may_escape(cond, self.resolver),
         )
 
-    def _build_if(self, stmt, incoming):
+    def _build_if(self, stmt: Node, incoming):
         cond_node = self._cond_node(stmt, "if")
         self._link_many(incoming, cond_node)
         self._ambient_catch_link(cond_node)
@@ -879,7 +883,7 @@ class _JavaCFGBuilder:
         ))
         return then_out + else_out
 
-    def _build_while(self, stmt, incoming):
+    def _build_while(self, stmt: Node, incoming):
         header = self._cond_node(stmt, "while")
         self._link_many(incoming, header)
         self._ambient_catch_link(header)
@@ -895,7 +899,7 @@ class _JavaCFGBuilder:
         self._break_targets.pop()
         return after
 
-    def _build_do(self, stmt, incoming):
+    def _build_do(self, stmt: Node, incoming):
         # ``do body while (cond)`` — a synthetic loop-head node makes
         # the second-iteration back edge representable: incoming →
         # head → body… → cond → head (back edge) and cond → after.
@@ -920,7 +924,7 @@ class _JavaCFGBuilder:
         self._link(header, head)
         return [header]
 
-    def _build_for(self, stmt, incoming):
+    def _build_for(self, stmt: Node, incoming):
         init = stmt.child_by_field_name("init")
         cursor = incoming
         if init is not None:
@@ -948,7 +952,7 @@ class _JavaCFGBuilder:
         self._break_targets.pop()
         return [header]
 
-    def _build_enhanced_for(self, stmt, incoming):
+    def _build_enhanced_for(self, stmt: Node, incoming):
         # ``for (T i : expr) body`` — header defines the induction
         # variable and uses the iterable.
         name_node = stmt.child_by_field_name("name")
@@ -979,7 +983,7 @@ class _JavaCFGBuilder:
         self._break_targets.pop()
         return [header]
 
-    def _build_try(self, stmt, incoming):
+    def _build_try(self, stmt: Node, incoming):
         catches = [c for c in stmt.children if c.type == "catch_clause"]
         finally_clause = next(
             (c for c in stmt.children if c.type == "finally_clause"), None)
@@ -1076,7 +1080,7 @@ class _JavaCFGBuilder:
 
     # ----- switch -----
 
-    def _build_switch(self, stmt, incoming):
+    def _build_switch(self, stmt: Node, incoming):
         """Statement-position switch: classic groups with fall-through
         or arrow rules without; ``break`` targets the join node. The
         condition initially links to EVERY group entry (plus the join

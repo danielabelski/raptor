@@ -77,7 +77,7 @@ class MultiTurnAnalyser:
     5. Validates results and requests corrections if needed
     """
 
-    def __init__(self, llm_client: LLMProvider, memory=None):
+    def __init__(self, llm_client: LLMProvider, memory=None) -> None:
         """
         Initialise the multi-turn analyser.
 

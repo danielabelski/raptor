@@ -39,7 +39,7 @@ logger = get_logger()
 class WebFuzzer:
     """LLM-powered intelligent fuzzer - no static payloads."""
 
-    def __init__(self, client: WebClient, llm: LLMProvider):
+    def __init__(self, client: WebClient, llm: LLMProvider) -> None:
         self.client = client
         self.llm = llm
         self._sage_web_recall: str = ""

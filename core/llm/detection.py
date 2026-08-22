@@ -417,7 +417,7 @@ def _try_auto_migrate(old_config: Path, new_config: Path) -> bool:
         return False
 
 
-def _check_litellm_migration():
+def _check_litellm_migration() -> None:
     """Print migration guidance if old LiteLLM config exists but new config does not."""
     try:
         old_config = Path.home() / ".config/litellm/config.yaml"
@@ -853,7 +853,7 @@ def detect_llm_availability() -> LLMAvailability:
     return availability
 
 
-def _warn_unusable_keys():
+def _warn_unusable_keys() -> None:
     """Warn if API keys are set but the required SDK is missing."""
     from .model_data import PROVIDER_ENV_KEYS
 

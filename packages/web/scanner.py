@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Self
+from types import TracebackType
 
 if __name__ == "__main__":
     # Direct script invocation only — module imports rely on the
@@ -27,6 +28,10 @@ from packages.web.client import WebClient
 from packages.web.crawler import WebCrawler
 from packages.web.ffuf import FfufConfig, FfufRunner
 from packages.web.fuzzer import WebFuzzer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import argparse
 
 logger = get_logger()
 
@@ -47,7 +52,7 @@ class WebScanner:
         block_private_ips: bool = True,
         verify_findings: bool = True,
         max_verifications: int = 25,
-    ):
+    ) -> None:
         self.base_url = base_url
         self.llm = llm
         self.out_dir = out_dir
@@ -294,7 +299,7 @@ class WebScanner:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
         self.close()
 
 
@@ -397,7 +402,7 @@ Examples:
     return parser
 
 
-def build_ffuf_config(args) -> FfufConfig | None:
+def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
     """Convert parsed CLI args into an optional ffuf configuration."""
     if not args.ffuf_wordlist:
         return None

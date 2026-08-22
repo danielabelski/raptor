@@ -46,6 +46,11 @@ from .extractors import (
 )
 from .languages import LANGUAGE_MAP, detect_language
 from .lookup import lookup_function, normalise_path
+from types import TracebackType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Public re-export surface. Each name below is imported above purely
 # to make `from core.inventory import X` work for downstream callers
@@ -127,7 +132,7 @@ class _checklist_lock:
 
     __slots__ = ("_lock_file", "_lock_path")
 
-    def __init__(self, checklist_path):
+    def __init__(self, checklist_path: "Path") -> None:
         self._lock_path = checklist_path.with_suffix(".lock")
         self._lock_file = None
 
@@ -148,7 +153,7 @@ class _checklist_lock:
             raise
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         import fcntl
         import logging as _logging
         _local_logger = _logging.getLogger(__name__)
@@ -170,7 +175,7 @@ class _checklist_lock:
         return False
 
 
-def save_checklist(output_dir, data):
+def save_checklist(output_dir, data) -> None:
     """Save checklist.json, resolving symlinks and using file locking.
 
     In project mode, output_dir/checklist.json is a symlink to the
@@ -237,7 +242,7 @@ def read_checklist(output_dir):
     return data if isinstance(data, dict) else {}
 
 
-def update_checklist(output_dir, transform_fn):
+def update_checklist(output_dir, transform_fn) -> None:
     """Atomically read-modify-write checklist.json.
 
     Holds the flock across the entire read-modify-write cycle so

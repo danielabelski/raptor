@@ -587,7 +587,7 @@ class LLMDispatcher:
 
             # Override server_bind to set socket file mode immediately
             # after bind (umask is also set via _setup_socket).
-            def server_bind(self):
+            def server_bind(self) -> None:
                 old_umask = os.umask(0o077)
                 try:
                     super().server_bind()
@@ -605,7 +605,7 @@ class LLMDispatcher:
             # ``verify_request`` hook runs after accept, before the
             # handler executes. Rejecting here closes the socket
             # without ever feeding bytes to the HTTP parser.
-            def verify_request(self, request, client_address):
+            def verify_request(self, request, client_address) -> bool:
                 uid = _peer_uid(request)
                 if uid is None or uid != os.getuid():
                     dispatcher._audit(AuditEvent(
@@ -993,7 +993,7 @@ class LLMDispatcher:
                 daemon_threads = True
                 allow_reuse_address = True
 
-                def verify_request(self, request, client_address):
+                def verify_request(self, request, client_address) -> bool:
                     # Loopback-only peers. The bind address already
                     # guarantees this; the check defends against a
                     # surprising rebind and mirrors the UDS peer gate.
@@ -1360,7 +1360,7 @@ def _make_request_handler(
 
         # Disable BaseHTTPRequestHandler's reverse DNS log spam — peer
         # is always the local socket on UDS anyway.
-        def log_message(self, format, *args):
+        def log_message(self, format, *args) -> None:
             return
 
         def _send_simple(self, status: int, reason: str) -> None:
@@ -1789,10 +1789,10 @@ def _make_request_handler(
 
         # Wire all common methods to the dispatch path. Anthropic /
         # OpenAI / Gemini all use POST + GET.
-        def do_POST(self):
+        def do_POST(self) -> None:
             self._dispatch()
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             self._dispatch()
 
     return _Handler

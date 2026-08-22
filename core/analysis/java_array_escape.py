@@ -59,6 +59,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 _INT_LITERAL = "decimal_integer_literal"
@@ -220,16 +224,16 @@ def build_local_array_index(
     # appearance (declarator names, tracked-access bases).
     consumed: set[tuple[int, int]] = set()
 
-    def line_of(n) -> int:
+    def line_of(n: Node) -> int:
         return n.start_point[0] + 1
 
-    def in_span(n) -> bool:
+    def in_span(n: Node) -> bool:
         return not (n.start_point[0] + 1 > hi or n.end_point[0] + 1 < lo)
 
     def flag(lineno: int, name: str) -> None:
         idx._line_flags.setdefault(lineno, set()).add(name)
 
-    def record_access(acc, *, is_write: bool, rhs=None,
+    def record_access(acc: Node, *, is_write: bool, rhs=None,
                       compound: bool = False) -> None:
         base = acc.child_by_field_name("array")
         index_node = acc.child_by_field_name("index")
@@ -267,7 +271,7 @@ def build_local_array_index(
         if index_node is not None and index_node.type != _INT_LITERAL:
             walk(index_node)
 
-    def record_declarator(decl) -> None:
+    def record_declarator(decl: Node) -> None:
         name_node = decl.child_by_field_name("name")
         value = decl.child_by_field_name("value")
         if name_node is None or name_node.type != _IDENT:
@@ -308,7 +312,7 @@ def build_local_array_index(
                     pass
         walk(value)
 
-    def record_assignment(asgn) -> None:
+    def record_assignment(asgn: Node) -> None:
         left = asgn.child_by_field_name("left")
         right = asgn.child_by_field_name("right")
         op = asgn.child_by_field_name("operator")
@@ -354,7 +358,7 @@ def build_local_array_index(
         if right is not None:
             walk(right)
 
-    def walk(n) -> None:
+    def walk(n: Node) -> None:
         if n is None or not in_span(n):
             return
         t = n.type

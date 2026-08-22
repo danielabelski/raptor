@@ -92,7 +92,7 @@ _EVIDENCE_TYPES = {
 class VerificationOracle:
     """Replays and controls heuristic hits through the scan client."""
 
-    def __init__(self, client: WebClient):
+    def __init__(self, client: WebClient) -> None:
         self.client = client
         self.requests_used = 0
         self.errors = 0

@@ -28,7 +28,7 @@ class GHArchiveClient:  # nosemgrep: generic.secrets.security.detected-google-gc
     above to keep the example clear in operator-facing help text.)
     """
 
-    def __init__(self, project_id: str | None = None):
+    def __init__(self, project_id: str | None = None) -> None:
         self.project_id = project_id
         self._client: bigquery.Client | None = None
 

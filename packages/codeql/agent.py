@@ -224,7 +224,7 @@ class CodeQLAgent:
         repo_path: Path,
         out_dir: Path | None = None,
         codeql_cli: str | None = None
-    ):
+    ) -> None:
         """
         Initialize CodeQL agent.
 
@@ -955,7 +955,7 @@ class CodeQLAgent:
             }
         return out or None
 
-    def _save_report(self, result: CodeQLWorkflowResult):
+    def _save_report(self, result: CodeQLWorkflowResult) -> None:
         """Save workflow report to JSON.
 
         Pre-fix `save_json(..., result.to_dict())` failed entirely if
@@ -998,7 +998,7 @@ class CodeQLAgent:
         except Exception as e2:  # noqa: BLE001 — report is best-effort
             logger.error("Minimal report also failed: %s", e2)
 
-    def print_summary(self, result: CodeQLWorkflowResult):
+    def print_summary(self, result: CodeQLWorkflowResult) -> None:
         """Print workflow summary."""
         print(f"\n{'=' * 70}")
         print("CODEQL ANALYSIS SUMMARY")
@@ -1150,7 +1150,7 @@ class CodeQLAgent:
 
         return examples
 
-    def _print_dataflow_table(self, dataflow_examples: list):
+    def _print_dataflow_table(self, dataflow_examples: list) -> None:
         """Print dataflow paths in a formatted table."""
         try:
             from tabulate import tabulate
@@ -1181,7 +1181,7 @@ class CodeQLAgent:
             logger.debug("Failed to print dataflow table: %s", e)
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="RAPTOR CodeQL Agent - Autonomous CodeQL Security Analysis",

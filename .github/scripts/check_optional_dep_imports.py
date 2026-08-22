@@ -154,7 +154,7 @@ def _handler_catches_import_error(handler: ast.ExceptHandler) -> bool:
 class _ImportScan(ast.NodeVisitor):
     """Imports of optional modules, split guarded / unguarded."""
 
-    def __init__(self, mods: set[str]):
+    def __init__(self, mods: set[str]) -> None:
         self.mods = mods
         self._try_guard_depth = 0
         self.guarded: set[str] = set()

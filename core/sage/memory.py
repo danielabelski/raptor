@@ -109,7 +109,7 @@ class SageFuzzingMemory(FuzzingMemory):
         self,
         memory_file: Path | None = None,
         sage_config: SageConfig | None = None,
-    ):
+    ) -> None:
         super().__init__(memory_file=memory_file)
 
         self._sage_config = sage_config or SageConfig.from_env()
@@ -133,7 +133,7 @@ class SageFuzzingMemory(FuzzingMemory):
             self._sage_available_checked_at = now
         return self._sage_available
 
-    def save(self):
+    def save(self) -> None:
         """Save to JSON (always) and SAGE (when available)."""
         super().save()
 
@@ -157,7 +157,7 @@ class SageFuzzingMemory(FuzzingMemory):
         if stored > 0:
             logger.debug("Synced %d/%d knowledge entries to SAGE", stored, len(self.knowledge))
 
-    def remember(self, knowledge: FuzzingKnowledge):
+    def remember(self, knowledge: FuzzingKnowledge) -> None:
         """Store knowledge locally and in SAGE."""
         super().remember(knowledge)
 
@@ -174,7 +174,7 @@ class SageFuzzingMemory(FuzzingMemory):
         except Exception as e:
             logger.debug("SAGE remember failed: %s", e)
 
-    def record_campaign(self, campaign_data: dict):
+    def record_campaign(self, campaign_data: dict) -> None:
         """Record campaign locally and in SAGE."""
         super().record_campaign(campaign_data)
 

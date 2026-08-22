@@ -683,7 +683,7 @@ def _sanitize_pack_name(name: str) -> str:
 
 def run(cmd, cwd=None, timeout=RaptorConfig.DEFAULT_TIMEOUT, env=None,
         target=None, output=None, proxy_hosts=None, caller_label=None,
-        fake_home=False, readable_paths=None):
+        fake_home: bool=False, readable_paths=None):
     """Execute a command in a network-isolated sandbox and return results.
 
     When `target` and `output` are supplied, Landlock is engaged — the
@@ -2633,7 +2633,7 @@ def _validate_policy_groups(
         )
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(description="RAPTOR Automated Code Security Agent with parallel scanning")
     ap.add_argument("--repo", required=True, help="Path or Git URL")
     # Argparse accepts BOTH the hyphenated (`--policy-version`,

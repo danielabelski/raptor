@@ -128,7 +128,7 @@ class _StallMonitor:
         self,
         proc: subprocess.Popen,
         on_progress: Callable | None = None,
-    ):
+    ) -> None:
         self._proc = proc
         self._on_progress = on_progress
         self._file_times: list[float] = []

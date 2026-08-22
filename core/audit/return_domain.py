@@ -41,6 +41,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -208,13 +212,13 @@ def _parser(language: str):
     return _ts_parser(language)
 
 
-def _text(node, src: bytes) -> str:
+def _text(node: Node, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode(
         "utf-8", errors="replace",
     )
 
 
-def _line(node) -> int:
+def _line(node: Node) -> int:
     return node.start_point[0] + 1
 
 
@@ -268,7 +272,7 @@ def _int_literal(node, src: bytes) -> int | None:
     return None
 
 
-def _call_callee_identifier(node, src: bytes) -> str | None:
+def _call_callee_identifier(node: Node, src: bytes) -> str | None:
     """Callee name of a plain-identifier call (pointer/member calls
     are unresolvable without points-to analysis — excluded)."""
     if node is None or node.type != "call_expression":
@@ -664,7 +668,7 @@ def _statement_of(node) -> Any:
     return cur
 
 
-def _next_named_sibling(node) -> Any:
+def _next_named_sibling(node: Node) -> Any:
     sib = node.next_named_sibling if node is not None else None
     while sib is not None and sib.type == "comment":
         sib = sib.next_named_sibling

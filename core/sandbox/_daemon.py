@@ -179,7 +179,7 @@ def _parse_bytes_to_int(raw: bytes) -> int | None:
 
 
 def _build_fmtstr_write(spec: dict, bindings: dict) -> bytes:
-    from pwn import context, fmtstr_payload  # type: ignore
+    from pwn import context, fmtstr_payload  # type: ignore[import-untyped, import-not-found]
     prev_arch = getattr(context, "arch", None)
     context.arch = "amd64"
 

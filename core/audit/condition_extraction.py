@@ -20,6 +20,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -235,12 +239,12 @@ _EXIT_TYPES: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 
 
-def _node_text(node, source_bytes: bytes) -> str:
+def _node_text(node: Node, source_bytes: bytes) -> str:
     """Extract the text of a tree-sitter node."""
     return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
-def _node_line(node) -> int:
+def _node_line(node: Node) -> int:
     """Get 1-indexed line number for a node."""
     return node.start_point[0] + 1
 
@@ -370,7 +374,7 @@ def _extract_condition_text(cond_node, lang: str, source_bytes: bytes) -> str:
 
 
 def _determine_polarity(
-    cond_node,
+    cond_node: Node,
     sink_line: int,
     lang: str,
     source_bytes: bytes,

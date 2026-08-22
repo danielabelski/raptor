@@ -43,13 +43,13 @@ class FuzzingKnowledge:
     binary_hash: str | None = None  # Which binary did we learn this from?
     campaign_id: str | None = None  # Which fuzzing campaign?
 
-    def update_success(self):
+    def update_success(self) -> None:
         """Record a successful application of this knowledge."""
         self.success_count += 1
         self.confidence = min(1.0, self.confidence + 0.1)
         self.last_updated = time.time()
 
-    def update_failure(self):
+    def update_failure(self) -> None:
         """Record a failed application of this knowledge."""
         self.failure_count += 1
         self.confidence = max(0.0, self.confidence - 0.05)
@@ -78,7 +78,7 @@ class FuzzingMemory:
     - Share knowledge between fuzzing sessions
     """
 
-    def __init__(self, memory_file: Path | None = None):
+    def __init__(self, memory_file: Path | None = None) -> None:
         """
         Initialise fuzzing memory.
         Right now we use json and ideally we should be using sqlite or similar for scalability.
@@ -112,7 +112,7 @@ class FuzzingMemory:
         # top repeated lines in the audit trail.
         logger.debug("Fuzzing memory initialised: %d knowledge entries loaded", len(self.knowledge))
 
-    def load(self):
+    def load(self) -> None:
         """Load memory from persistent storage."""
         if not self.memory_file.exists():
             logger.debug("No existing memory file at %s", self.memory_file)
@@ -146,14 +146,14 @@ class FuzzingMemory:
         except Exception as e:  # noqa: BLE001 — memory is additive; never crash the campaign
             logger.error("Failed to load memory: %s", e)
 
-    def flush(self):
+    def flush(self) -> None:
         """Flush any pending dirty state to disk."""
         if self._dirty_count > 0:
             self.save()
             self._dirty_count = 0
             self._last_save_time = time.time()
 
-    def save(self):
+    def save(self) -> None:
         """Save memory to persistent storage."""
         try:
             data = {
@@ -182,7 +182,7 @@ class FuzzingMemory:
         except Exception as e:  # noqa: BLE001 — memory is additive; never crash the campaign
             logger.error("Failed to save memory: %s", e)
 
-    def remember(self, knowledge: FuzzingKnowledge):
+    def remember(self, knowledge: FuzzingKnowledge) -> None:
         """
         Store a piece of knowledge.
 
@@ -246,7 +246,7 @@ class FuzzingMemory:
         return results
 
     def record_strategy_success(self, strategy_name: str, binary_hash: str,
-                                crashes_found: int, exploitable_crashes: int):
+                                crashes_found: int, exploitable_crashes: int) -> None:
         """
         Record that a fuzzing strategy was successful.
 
@@ -295,7 +295,7 @@ class FuzzingMemory:
         logger.info("Recorded strategy result: %s - %s crashes", strategy_name, crashes_found)
 
     def record_crash_pattern(self, signal: str, function: str,
-                            binary_hash: str, exploitable: bool):
+                            binary_hash: str, exploitable: bool) -> None:
         """
         Record a crash pattern for learning.
 
@@ -338,7 +338,7 @@ class FuzzingMemory:
         self.remember(knowledge)
 
     def record_exploit_technique(self, technique: str, crash_type: str,
-                                binary_characteristics: dict, success: bool):
+                                binary_characteristics: dict, success: bool) -> None:
         """
         Record whether an exploit technique worked.
 
@@ -441,7 +441,7 @@ class FuzzingMemory:
         # Combine with confidence
         return exploitable_rate * knowledge.confidence
 
-    def record_campaign(self, campaign_data: dict):
+    def record_campaign(self, campaign_data: dict) -> None:
         """
         Record a complete fuzzing campaign for future reference.
 
@@ -486,7 +486,7 @@ class FuzzingMemory:
 
         return stats
 
-    def prune_low_confidence(self, threshold: float = 0.2):
+    def prune_low_confidence(self, threshold: float = 0.2) -> None:
         """
         Remove knowledge with very low confidence.
 

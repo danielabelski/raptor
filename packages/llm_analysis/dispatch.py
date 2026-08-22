@@ -55,7 +55,7 @@ class DispatchResult:
 
     def __init__(self, result: dict[str, Any], cost: float = 0.0,
                  tokens: int = 0, model: str = "", duration: float = 0.0,
-                 quality: float = 1.0, resolved_model: str | None = None):
+                 quality: float = 1.0, resolved_model: str | None = None) -> None:
         self.result = result
         self.cost = cost
         self.tokens = tokens

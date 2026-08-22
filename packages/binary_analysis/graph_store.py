@@ -225,7 +225,7 @@ def _upgrade_v1_to_v2(conn: sqlite3.Connection) -> None:
 
 
 class BinaryGraphStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._conn: sqlite3.Connection | None = None
         self._batch_depth: int = 0

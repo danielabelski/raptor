@@ -461,7 +461,7 @@ def run_sandboxed(cmd: list[str], *,
     if nproc_limit and nproc_limit > 0:
         import resource as _resource
         _nproc = int(nproc_limit)
-        def preexec():
+        def preexec() -> None:
             base_preexec()
             try:
                 _resource.setrlimit(
@@ -602,7 +602,7 @@ def run_sandboxed(cmd: list[str], *,
     # timeout path fire the DESIGNED teardown channel first — closing
     # death_w makes the still-alive shim killpg the sandbox group and
     # exit — with a killpg of the shim's own session as the backstop.
-    def _teardown_shim_tree(process):
+    def _teardown_shim_tree(process) -> None:
         """Kill the shim and its sandbox subtree on timeout/abort."""
         # 1. Death-pipe EOF: the shim's watcher loop (0.1s poll) reads
         #    EOF and SIGKILLs the sandbox process group + child, then

@@ -15,7 +15,7 @@ class WaybackClient:
     AVAILABILITY_URL = "https://archive.org/wayback/available"
     ARCHIVE_URL = "https://web.archive.org/web"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._session: Any = None
 
     @property

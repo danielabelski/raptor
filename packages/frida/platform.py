@@ -45,7 +45,7 @@ def detect_host() -> HostInfo:
     arch = platform.machine()
 
     try:
-        import frida  # type: ignore
+        import frida  # type: ignore[import-untyped, import-not-found]
         version = getattr(frida, "__version__", "unknown")
     except Exception:
         version = "unavailable"

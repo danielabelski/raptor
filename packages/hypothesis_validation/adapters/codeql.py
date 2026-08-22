@@ -140,7 +140,7 @@ class CodeQLAdapter(ToolAdapter):
         codeql_bin: str | None = None,
         *,
         sandbox: bool = True,
-    ):
+    ) -> None:
         self._database_path = Path(database_path) if database_path else None
         self._codeql_bin = codeql_bin or shutil.which("codeql")
         self._sandbox = sandbox

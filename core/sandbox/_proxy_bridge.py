@@ -25,7 +25,7 @@ _BUF_SIZE = 65536
 _SELECT_TIMEOUT = 1.0
 
 
-def _bring_up_loopback():
+def _bring_up_loopback() -> None:
     """SIOCSIFFLAGS to set IFF_UP on lo inside the current netns."""
     SIOCSIFFLAGS = 0x8914
     IFF_UP, IFF_LOOPBACK, IFF_RUNNING = 0x1, 0x8, 0x40
@@ -39,12 +39,12 @@ def _bring_up_loopback():
         s.close()
 
 
-def _run_forwarder(listen_port, unix_socket_path, death_r):
+def _run_forwarder(listen_port, unix_socket_path, death_r) -> None:
     """Single-bridge compatibility wrapper over :func:`_run_bridges`."""
     _run_bridges(((listen_port, unix_socket_path),), death_r)
 
 
-def _run_bridges(bridges, death_r):
+def _run_bridges(bridges, death_r) -> None:
     """Relay TCP connections on 127.0.0.1:<port> to each bridge's
     Unix socket.
 
@@ -74,10 +74,10 @@ def _run_bridges(bridges, death_r):
         listeners[listener.fileno()] = (listener, unix_socket_path)
 
     # pairs maps every relay fd -> its partner fd.
-    pairs = {}
+    pairs: dict[int, int] = {}
     all_fds = set(listeners) | {death_r}
 
-    def _close_pair(fd):
+    def _close_pair(fd) -> None:
         partner = pairs.pop(fd, None)
         if partner is not None:
             pairs.pop(partner, None)
@@ -179,7 +179,7 @@ def _run_bridges(bridges, death_r):
                     pass
 
 
-def _write_all(fd, data, timeout=60.0):
+def _write_all(fd, data, timeout=60.0) -> None:
     """Write all of *data* to *fd*. Raises OSError on failure."""
     import time
     deadline = time.monotonic() + timeout

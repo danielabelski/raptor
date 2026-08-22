@@ -278,7 +278,7 @@ class LogStreamer:
                  budget: _audit_budget.AuditBudget | None = None,
                  *, observe_mode: bool = False,
                  observe_nonce: str | None = None,
-                 target_pid: int | None = None):
+                 target_pid: int | None = None) -> None:
         self._run_dir = Path(run_dir)
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None

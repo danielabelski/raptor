@@ -34,7 +34,7 @@ class DataflowVisualizer:
     - DOT: Graphviz format for custom rendering
     """
 
-    def __init__(self, output_dir: Path):
+    def __init__(self, output_dir: Path) -> None:
         """
         Initialize visualizer.
 
@@ -868,7 +868,7 @@ class DataflowVisualizer:
         )
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
 

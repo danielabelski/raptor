@@ -98,7 +98,7 @@ class ExpansionBudget:
     sweeps concurrently).
     """
 
-    def __init__(self, max_expansions: int = _AUGMENT_FILE_CAP):
+    def __init__(self, max_expansions: int = _AUGMENT_FILE_CAP) -> None:
         self.max_expansions = max_expansions
         self.used = 0
         self._views: dict[tuple[str, str], ExpandedView] = {}

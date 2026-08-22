@@ -33,7 +33,7 @@ from ..helpers import (
 class GitHubAPICollector:
     """Collects evidence from GitHub API."""
 
-    def __init__(self, client: GitHubClient | None = None):
+    def __init__(self, client: GitHubClient | None = None) -> None:
         self.client = client or GitHubClient()
 
     def collect_commit(self, owner: str, repo: str, sha: str) -> CommitObservation:

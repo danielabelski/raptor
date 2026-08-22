@@ -95,7 +95,7 @@ def inventory(path: Path):
         result['truncated_at'] = _INVENTORY_FILE_CAP
     return result
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(description='RAPTOR Recon Agent - safe inventory')
     ap.add_argument('--repo', required=True, help='Path or git URL')
     ap.add_argument('--keep', action='store_true', help='Keep temp repo if cloned')

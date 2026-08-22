@@ -43,7 +43,7 @@ def _gharchive_day(timestamp: str) -> str:
 class GHArchiveCollector:
     """Collects evidence from GH Archive (BigQuery)."""
 
-    def __init__(self, client: GHArchiveClient | None = None):
+    def __init__(self, client: GHArchiveClient | None = None) -> None:
         self.client = client or GHArchiveClient()
 
     def collect_events(

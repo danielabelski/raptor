@@ -208,7 +208,7 @@ def _make_event_callback(
     if verbose_logger is None:
         return None
 
-    def _on_event(event):
+    def _on_event(event) -> None:
         # Only log the high-signal events. Skip low-signal ones (TurnStarted,
         # ToolCallReturned which would double-log).
         if isinstance(event, TurnCompleted):

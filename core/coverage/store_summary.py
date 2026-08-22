@@ -183,7 +183,7 @@ def format_progress_trend(store_path) -> str | None:
 
 
 def render_coverage(
-    run_dirs, checklist, store_path, annotations_base=None, detailed=False,
+    run_dirs, checklist, store_path, annotations_base=None, detailed: bool=False,
 ) -> str | None:
     """The unified coverage report — the single rendering path for every
     surface (/project coverage, standalone /scan, /agentic, raptor-coverage-summary).

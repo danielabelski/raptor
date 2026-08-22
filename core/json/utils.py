@@ -236,7 +236,7 @@ def _reject_non_finite_floats(data: Any) -> None:
             stack.extend(obj)
 
 
-def save_json(path: str | Path, data: Any, mode: int = None) -> None:
+def save_json(path: str | Path, data: Any, mode: int | None = None) -> None:
     """Save data as pretty-printed JSON. Handles Path/datetime serialization.
 
     Non-finite floats (NaN, Infinity) raise ``ValueError`` on BOTH

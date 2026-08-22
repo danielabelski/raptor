@@ -229,7 +229,7 @@ class BuildDetector:
         },
     }
 
-    def __init__(self, repo_path: Path):
+    def __init__(self, repo_path: Path) -> None:
         """
         Initialize build detector.
 
@@ -930,7 +930,7 @@ class BuildDetector:
         # and both the script stub AND the build dir leak UNDER self.repo_path
         # (= pollutes the target repo). Guard with try/except that walks the
         # cleanup list on failure before re-raising.
-        def _cleanup_on_failure():
+        def _cleanup_on_failure() -> None:
             for p in cleanup:
                 try:
                     if p.is_dir():
@@ -1083,7 +1083,7 @@ class BuildDetector:
             )
         return jars
 
-    def _write_build_script(self, script_path, build_dir,
+    def _write_build_script(self, script_path: Path, build_dir,
                             source_files, compiler, include_flags, define_flags):
         """Write a Python build script that compiles via subprocess.run.
 
@@ -1654,7 +1654,7 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
         )
 
 
-def main():
+def main() -> None:
     """CLI entry point for testing."""
     import argparse
     import json

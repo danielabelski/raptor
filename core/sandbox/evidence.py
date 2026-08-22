@@ -135,7 +135,7 @@ class EvidenceFile:
     appends.
     """
 
-    def __init__(self, fd: int, path: Path, st: os.stat_result):
+    def __init__(self, fd: int, path: Path, st: os.stat_result) -> None:
         self.fd = fd
         self.path = path
         self._created_dev = st.st_dev

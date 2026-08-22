@@ -142,7 +142,7 @@ def _clean_dest(dest: Path) -> None:
         import shutil
         import stat as _stat_mod
 
-        def _force_remove(func, path, _exc):
+        def _force_remove(func, path, _exc) -> None:
             try:
                 os.chmod(path, _stat_mod.S_IWRITE | _stat_mod.S_IREAD)
                 func(path)

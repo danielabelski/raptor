@@ -62,6 +62,10 @@ from core.analysis.cfg_builder import (
     EXIT_LINENO,
     CallSite,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +284,7 @@ def _node_text(n) -> str:
     return n.text.decode("utf-8", errors="replace") if n is not None else ""
 
 
-def _innermost_ident(n) -> str | None:
+def _innermost_ident(n: Node) -> str | None:
     """Leftmost identifier under ``n`` — pierces pointer declarators,
     parenthesised declarators, field expressions. Returns the bare
     base name only; field selectors aren't recorded."""
@@ -300,7 +304,7 @@ def _innermost_ident(n) -> str | None:
     return None
 
 
-def _resolve_callable_name(callee) -> str | None:
+def _resolve_callable_name(callee: Node) -> str | None:
     """Dotted-or-arrow callable name from a ``call_expression``'s
     ``function`` field. ``foo`` → ``"foo"``; ``obj.method`` →
     ``"obj.method"``; ``obj->method`` → ``"obj.method"`` (arrow
@@ -328,7 +332,7 @@ def _resolve_callable_name(callee) -> str | None:
     return None
 
 
-def _arg_surface_names(call_node) -> frozenset[str]:
+def _arg_surface_names(call_node: Node) -> frozenset[str]:
     """Conservative bare-name extraction for one call's arguments.
 
     Mirrors :func:`core.analysis.cfg_builder._arg_surface_names`:
@@ -445,7 +449,7 @@ def _walk_subtree_for_call_sites(
     out: list[tuple[int, int, CallSite]] = []
     root_id = id(_unwrap_value_expr(n)) if n is not None else None
 
-    def visit(node) -> None:
+    def visit(node: Node) -> None:
         t = node.type
         if t == _CALL_EXPR:
             callee = node.child_by_field_name("function")
@@ -575,7 +579,7 @@ def _payload_from_declaration(decl) -> tuple[frozenset[str], frozenset[str],
             tuple(cs_acc))
 
 
-def _payload_from_assignment(expr) -> tuple[frozenset[str], frozenset[str],
+def _payload_from_assignment(expr: Node) -> tuple[frozenset[str], frozenset[str],
                                              frozenset[str], tuple[CallSite, ...]]:
     """``x = f(y);`` / ``x += f(y);`` — defs={x}, RHS feeds uses + call_sites.
 
@@ -651,7 +655,7 @@ def _find_function_definition(root, function_name: str):
     return None
 
 
-def _function_name(fn_def) -> str | None:
+def _function_name(fn_def: Node) -> str | None:
     """Pull the function identifier from a ``function_definition``.
 
     Walks through pointer / parenthesised declarator wrappers until
@@ -671,7 +675,7 @@ def _function_name(fn_def) -> str | None:
     return None
 
 
-def _function_params(fn_def) -> tuple[str, ...]:
+def _function_params(fn_def: Node) -> tuple[str, ...]:
     """Ordered tuple of parameter names declared in the function's
     signature. C-style ``void`` and unnamed parameters yield no
     entry — they have no symbol to bind in the body."""
@@ -715,7 +719,7 @@ class _CPPCFGBuilder:
     ``_build_*`` takes an incoming-predecessor list and returns the
     outgoing-successor list, the structured-block CFG idiom."""
 
-    def __init__(self, function_name: str, file_path: str, language: str):
+    def __init__(self, function_name: str, file_path: str, language: str) -> None:
         self.function_name = function_name
         self.file_path = file_path
         self.language = language
@@ -855,7 +859,7 @@ class _CPPCFGBuilder:
         self._link_many(incoming, node)
         return [node]
 
-    def _straight_node(self, stmt) -> CPPCFGNode:
+    def _straight_node(self, stmt: Node) -> CPPCFGNode:
         """Compute payload and emit a stmt node. Routes to the
         specialised extractor based on ``stmt.type``."""
         t = stmt.type
@@ -883,7 +887,7 @@ class _CPPCFGBuilder:
 
     # ----- compound constructs -----
 
-    def _build_if(self, stmt, incoming):
+    def _build_if(self, stmt: Node, incoming):
         cond = stmt.child_by_field_name("condition")
         calls, defs, uses, css = _payload_from_subtree(cond)
         cond_node = self._make_node(
@@ -915,7 +919,7 @@ class _CPPCFGBuilder:
             else_out = self._build_stmts(else_body, [cond_node])
         return then_out + else_out
 
-    def _build_while(self, stmt, incoming):
+    def _build_while(self, stmt: Node, incoming):
         cond = stmt.child_by_field_name("condition")
         calls, defs, uses, css = _payload_from_subtree(cond)
         header = self._make_node(
@@ -936,7 +940,7 @@ class _CPPCFGBuilder:
         self._loop_stack.pop()
         return after_loop
 
-    def _build_for(self, stmt, incoming):
+    def _build_for(self, stmt: Node, incoming):
         # ``for (init; cond; step) body`` — model as init → header →
         # body → step → header, with header → after on exit.
         init = stmt.child_by_field_name("initializer")
@@ -985,7 +989,7 @@ class _CPPCFGBuilder:
         self._loop_stack.pop()
         return [header]
 
-    def _build_do(self, stmt, incoming):
+    def _build_do(self, stmt: Node, incoming):
         # ``do body while (cond);`` — body runs at least once, cond
         # is at the tail.
         body = stmt.child_by_field_name("body")
@@ -1026,7 +1030,7 @@ class _CPPCFGBuilder:
         self._loop_stack.pop()
         return [tail]
 
-    def _build_switch(self, stmt, incoming):
+    def _build_switch(self, stmt: Node, incoming):
         subj = stmt.child_by_field_name("condition")
         calls, defs, uses, css = _payload_from_subtree(subj)
         header = self._make_node(
@@ -1109,7 +1113,7 @@ class _CPPCFGBuilder:
         self._switch_stack.pop()
         return [join]
 
-    def _build_break(self, stmt, incoming):
+    def _build_break(self, stmt: Node, incoming):
         node = self._make_node(
             kind="stmt", lineno=stmt.start_point[0] + 1, label="break",
         )
@@ -1118,7 +1122,7 @@ class _CPPCFGBuilder:
             self._link(node, self._break_stack[-1])
         return []
 
-    def _build_continue(self, stmt, incoming):
+    def _build_continue(self, stmt: Node, incoming):
         node = self._make_node(
             kind="stmt", lineno=stmt.start_point[0] + 1, label="continue",
         )
@@ -1127,7 +1131,7 @@ class _CPPCFGBuilder:
             self._link(node, self._loop_stack[-1][1])
         return []
 
-    def _build_goto(self, stmt, incoming):
+    def _build_goto(self, stmt: Node, incoming):
         label_node = stmt.child_by_field_name("label")
         label_name = _node_text(label_node) if label_node is not None else ""
         node = self._make_node(
@@ -1139,7 +1143,7 @@ class _CPPCFGBuilder:
         self._gotos.append((node, label_name))
         return []
 
-    def _build_labeled(self, stmt, incoming):
+    def _build_labeled(self, stmt: Node, incoming):
         # ``label:`` followed by a stmt. Emit a sentinel for the
         # label that goto can target; descend into the inner stmt.
         label_node = stmt.child_by_field_name("label")
@@ -1162,7 +1166,7 @@ class _CPPCFGBuilder:
 
     # ----- driver -----
 
-    def build(self, fn_def) -> CPPCFG:
+    def build(self, fn_def: Node) -> CPPCFG:
         body = fn_def.child_by_field_name("body")
         if body is None:
             # Pure declaration — no body. Just hook entry → exit.

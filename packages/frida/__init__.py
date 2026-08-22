@@ -46,7 +46,7 @@ def available(*, force: bool = False) -> bool:
         _available = True
         return True
     try:
-        import frida  # type: ignore  # noqa: F401
+        import frida  # type: ignore[import-untyped, import-not-found]  # noqa: F401
         _available = True
     except ImportError:
         _available = False

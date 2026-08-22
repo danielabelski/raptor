@@ -70,7 +70,7 @@ class AnalysisTask(DispatchTask):
         profile: ModelDefenseProfile = CONSERVATIVE,
         *,
         allow_unreachable: bool = False,
-    ):
+    ) -> None:
         self.profile = profile
         # Operator's --allow-unreachable; threaded into the prompt
         # builder so the system message switches from "engagement
@@ -217,7 +217,7 @@ class ExploitTask(DispatchTask):
 
     _SCA_REACHABILITY_FOR_EXPLOIT = ("likely_called", "imported")
 
-    def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE):
+    def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE) -> None:
         self.profile = profile
         self._tls = threading.local()
 
@@ -286,7 +286,7 @@ class ExploitTask(DispatchTask):
     def budget_tokens_for_model(self, model) -> int:
         return _budget_for_task(self, model)
 
-    def get_schema(self, finding):
+    def get_schema(self, finding) -> None:
         return None
 
     def finalize(self, results, prior_results):
@@ -312,7 +312,7 @@ class PatchTask(DispatchTask):
         self,
         profile: ModelDefenseProfile = CONSERVATIVE,
         checkers_dir: Any | None = None,
-    ):
+    ) -> None:
         self.profile = profile
         self._tls = threading.local()
         # Optional run-dir ``checkers/`` path so the gate can replay
@@ -382,7 +382,7 @@ class PatchTask(DispatchTask):
     def get_system_prompt(self):
         return _patch_system_text(self.profile)
 
-    def get_schema(self, finding):
+    def get_schema(self, finding) -> None:
         return None
 
     def finalize(self, results, prior_results):
@@ -466,7 +466,7 @@ class ConsensusTask(DispatchTask):
     model_role = "consensus"
     budget_cutoff = 0.70
 
-    def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE):
+    def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE) -> None:
         self.profile = profile
         self._tls = threading.local()
 
@@ -618,7 +618,7 @@ class JudgeTask(DispatchTask):
         "If you disagree, explain what was missed or incorrect."
     )
 
-    def __init__(self, results_by_id=None, profile: ModelDefenseProfile = CONSERVATIVE):
+    def __init__(self, results_by_id=None, profile: ModelDefenseProfile = CONSERVATIVE) -> None:
         self.results_by_id = results_by_id or {}
         self.profile = profile
         self._tls = threading.local()
@@ -761,7 +761,7 @@ class AggregationTask(DispatchTask):
     budget_cutoff = 0.95
 
     def __init__(self, profile: ModelDefenseProfile = CONSERVATIVE,
-                 findings: list[dict[str, Any]] | None = None):
+                 findings: list[dict[str, Any]] | None = None) -> None:
         self.profile = profile
         # Original findings indexed by id so build_prompt can pull
         # SI evidence per memory-corruption finding — gives the
@@ -863,10 +863,10 @@ class AggregationTask(DispatchTask):
     def get_system_prompt(self):
         return system_with_priming(AggregationTask._SYSTEM_TEXT, self.profile)
 
-    def get_item_id(self, item):
+    def get_item_id(self, item) -> str:
         return "aggregate"
 
-    def get_item_display(self, item):
+    def get_item_display(self, item) -> str:
         return "multi-model synthesis"
 
     def get_schema(self, item):
@@ -937,7 +937,7 @@ class GroupAnalysisTask(DispatchTask):
 
     def __init__(self, results_by_id: dict[str, dict] | None = None,
                  findings: list[dict[str, Any]] | None = None,
-                 profile: ModelDefenseProfile = CONSERVATIVE):
+                 profile: ModelDefenseProfile = CONSERVATIVE) -> None:
         self.results_by_id = results_by_id or {}
         # Index original findings by finding_id so build_prompt can
         # call evidence_blocks_for_finding per group member without
@@ -1034,10 +1034,10 @@ class GroupAnalysisTask(DispatchTask):
     def get_item_id(self, group):
         return group.get("group_id", "unknown")
 
-    def get_item_display(self, group):
+    def get_item_display(self, group) -> str:
         return f"{group.get('criterion', '?')}={(group.get('criterion_value') or '?')[:30]}"
 
-    def get_schema(self, group):
+    def get_schema(self, group) -> None:
         return None
 
 
@@ -1057,7 +1057,7 @@ class RetryTask(AnalysisTask):
 
     def __init__(self, results_by_id: dict[str, dict] | None = None,
                  profile: ModelDefenseProfile = CONSERVATIVE,
-                 *, allow_unreachable: bool = False):
+                 *, allow_unreachable: bool = False) -> None:
         super().__init__(profile=profile, allow_unreachable=allow_unreachable)
         self.results_by_id = results_by_id or {}
 
@@ -1238,7 +1238,7 @@ class CrossFamilyCheckTask(AnalysisTask):
 
     def __init__(self, checker_model, results_by_id=None,
                  profile: ModelDefenseProfile = CONSERVATIVE,
-                 *, allow_unreachable: bool = False):
+                 *, allow_unreachable: bool = False) -> None:
         super().__init__(profile=profile, allow_unreachable=allow_unreachable)
         self.checker_model = checker_model
         self.results_by_id = results_by_id or {}

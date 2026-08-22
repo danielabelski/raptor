@@ -16,6 +16,10 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 logger = logging.getLogger(__name__)
 
@@ -1797,7 +1801,7 @@ class TreeSitterExtractor:
         "swift": ("class_declaration", "protocol_declaration"),
     }
 
-    def __init__(self, language: str):
+    def __init__(self, language: str) -> None:
         self.language = language
         self.func_types = self._FUNC_TYPES.get(language, ())
         self.class_types = self._CLASS_TYPES.get(language, ())
@@ -1962,7 +1966,7 @@ class TreeSitterExtractor:
         "accessibility_modifier", "comment", "override",
     })
 
-    def _ts_decorators(self, node) -> list[str]:
+    def _ts_decorators(self, node: "Node") -> list[str]:
         """Decorators on a JS/TS class or method. tree-sitter-typescript
         places ``@Foo(...)`` as a preceding SIBLING of the decorated node
         (inside class_body / export_statement), not a wrapper as Python does.
@@ -2095,7 +2099,7 @@ class TreeSitterExtractor:
                 self._walk(child, functions, class_name=class_name,
                            class_attributes=class_attributes)
 
-    def _recover_c_orphan_declarator(self, decl_node, functions: list[FunctionInfo]) -> None:
+    def _recover_c_orphan_declarator(self, decl_node: "Node", functions: list[FunctionInfo]) -> None:
         """Recover a C function from a top-level function_declarator.
 
         When macros like ZEXPORT sit between the return type and the
@@ -2142,7 +2146,7 @@ class TreeSitterExtractor:
             metadata=FunctionMetadata(visibility=None),
         ))
 
-    def _recover_c_error_node(self, error_node, functions: list[FunctionInfo]) -> None:
+    def _recover_c_error_node(self, error_node: "Node", functions: list[FunctionInfo]) -> None:
         """Extract functions from C/C++ ERROR nodes caused by macro annotations."""
         seen_names = {f.name for f in functions}
         for child in error_node.children:
@@ -2165,7 +2169,7 @@ class TreeSitterExtractor:
             elif child.named_child_count > 0:
                 self._recover_c_error_node(child, functions)
 
-    def _extract_function(self, node, class_name: str | None,
+    def _extract_function(self, node: "Node", class_name: str | None,
                           attrs: list[str],
                           class_attributes: Sequence[str] = ()) -> FunctionInfo | None:
         name = self._get_name(node)
@@ -3054,7 +3058,7 @@ def _specifier_tag_name(spec) -> str | None:
     return None
 
 
-def _typedef_name(node) -> str | None:
+def _typedef_name(node: "Node") -> str | None:
     """The new type name introduced by a C/C++ ``type_definition`` (typedef).
     ``typedef struct {…} Foo;`` -> ``Foo``; ``typedef int (*cb)(int);`` -> ``cb``.
     """

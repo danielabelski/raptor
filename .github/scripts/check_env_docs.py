@@ -230,7 +230,7 @@ CAPS_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 class Occurrence:
     __slots__ = ("file", "kind", "line")
 
-    def __init__(self, file: str, line: int, kind: str):
+    def __init__(self, file: str, line: int, kind: str) -> None:
         self.file = file
         self.line = line
         self.kind = kind  # read|write|delete|child-write|export|
@@ -297,7 +297,7 @@ class _PyScanner(ast.NodeVisitor):
     """Collects os.environ / os.getenv accesses and child-env writes."""
 
     def __init__(self, rel: str, inv: Inventory, tree: ast.Module,
-                 global_consts: dict[str, str]):
+                 global_consts: dict[str, str]) -> None:
         self.rel = rel
         self.inv = inv
         (self.os_names, self.environ_names, self.getenv_names,

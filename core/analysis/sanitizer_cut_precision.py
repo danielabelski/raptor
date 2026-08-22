@@ -142,8 +142,8 @@ class PrecisionReport:
 
 
 def _fx(name, sink_class, cwe, shape, label, source, src_ln, sink_ln,
-        language="python", suffix=".py", aux_files=None,
-        use_repo_root=False) -> CutFixture:
+        language: str="python", suffix: str=".py", aux_files=None,
+        use_repo_root: bool=False) -> CutFixture:
     return CutFixture(
         name=name, sink_class=sink_class, cwe=cwe, language=language,
         shape=shape, label=label, source=source,

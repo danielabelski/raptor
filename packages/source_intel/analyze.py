@@ -984,7 +984,7 @@ def analyze(
         if progress is not None:
             axis_base = rules_started
 
-            def on_rule(idx, _dir_total, rule_name, _base=axis_base):
+            def on_rule(idx, _dir_total, rule_name, _base=axis_base) -> None:
                 progress(_base + idx, total_rules, rule_name)
 
         try:

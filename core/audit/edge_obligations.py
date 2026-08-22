@@ -329,7 +329,7 @@ def build_edge_obligations(
     blind: list[dict] = []
     seen_blind: set[tuple] = set()
 
-    def _blind(file, caller, kind, name):
+    def _blind(file, caller, kind, name) -> None:
         key = (file, caller, kind, name)
         if key in seen_blind:
             return

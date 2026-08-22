@@ -121,7 +121,7 @@ def _format_human(profile, *, cached: bool) -> str:
     lines.append(f"  source:        {'cache' if cached else 'fresh probe'}")
     lines.append(f"  probe argv:    {profile.probe_args}")
 
-    def _section(label, items, sample=SAMPLE):
+    def _section(label, items, sample=SAMPLE) -> None:
         lines.append(f"\n{label} ({len(items)}):")
         if not items:
             lines.append("  (empty)")

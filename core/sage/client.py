@@ -154,7 +154,7 @@ _MemoryType = None
 _SAGE_SDK_AVAILABLE = False
 
 
-def _ensure_sdk():
+def _ensure_sdk() -> bool | None:
     """Lazily import sage_sdk modules."""
     global _SyncSageClient, _AgentIdentity, _MemoryType, _SAGE_SDK_AVAILABLE
     if _SAGE_SDK_AVAILABLE:
@@ -185,7 +185,7 @@ class SageClient:
             results = client.query("crash patterns for heap overflow", "raptor-crashes")
     """
 
-    def __init__(self, config: SageConfig | None = None):
+    def __init__(self, config: SageConfig | None = None) -> None:
         ensure_loopback_no_proxy()
         self._config = config or SageConfig.from_env()
         self._client = None

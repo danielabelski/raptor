@@ -41,7 +41,7 @@ logger = get_logger()
 class GDBDebugger:
     """Wrapper around GDB for automated debugging."""
 
-    def __init__(self, binary_path: Path):
+    def __init__(self, binary_path: Path) -> None:
         self.binary = Path(binary_path)
         if not self.binary.exists():
             msg = f"Binary not found: {binary_path}"

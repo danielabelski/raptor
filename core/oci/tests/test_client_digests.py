@@ -183,3 +183,43 @@ def test_ref_pinned_with_non_sha256_digest_refused() -> None:
     with pytest.raises(RegistryError, match="sha256"):
         client.fetch_manifest(ref)
     assert http.calls == []
+
+
+def test_deeply_nested_manifest_json_raises_registry_error() -> None:
+    """Registry JSON is attacker-shaped: nesting deep enough to blow
+    the parser's recursion limit must surface as RegistryError, not
+    an unhandled RecursionError crash."""
+    depth = 100_000
+    bomb = b"[" * depth + b"]" * depth
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = _client(headers={}, body=bomb)
+    with pytest.raises(RegistryError, match="parse failed"):
+        client.fetch_manifest(ref)
+
+
+def test_digest_mismatch_beats_parsing() -> None:
+    """Bytes failing the digest cross-check are never fed to the
+    JSON parser: the mismatch (integrity) error must win over the
+    parse (shape) error even when the body is a parser bomb."""
+    depth = 100_000
+    bomb = b"[" * depth + b"]" * depth
+    lying = "sha256:" + "0" * 64
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = _client(
+        headers={"Docker-Content-Digest": lying}, body=bomb,
+    )
+    with pytest.raises(RegistryError, match="digest mismatch"):
+        client.fetch_manifest(ref)
+
+
+def test_deeply_nested_tags_json_raises_registry_error() -> None:
+    depth = 100_000
+    bomb = b"[" * depth + b"]" * depth
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = OciRegistryClient(_StubHttp({
+        "/v2/acme/app/tags/list?n=100": _StubResponse(200, bomb),
+        "https://ghcr.io/v2/acme/app/tags/list?n=100":
+            _StubResponse(200, bomb),
+    }))
+    with pytest.raises(RegistryError, match="parse failed"):
+        client.list_tags(ref)

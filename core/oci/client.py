@@ -354,14 +354,6 @@ class OciRegistryClient:
                 f"manifest exceeds {_MAX_MANIFEST_BYTES}-byte cap "
                 f"for {ref.to_canonical()} (got {len(resp.content)})",
             )
-        try:
-            parsed = json.loads(resp.content)
-        except (ValueError, TypeError) as e:
-            raise RegistryError(
-                resp.status_code,
-                f"manifest JSON parse failed for "
-                f"{ref.to_canonical()}: {e}",
-            ) from e
         content_type = resp.headers.get("Content-Type", "") \
             or resp.headers.get("content-type", "")
         # The digest we report is COMPUTED from the body, never echoed
@@ -371,6 +363,8 @@ class OciRegistryClient:
         # the requested reference (fetch-by-digest / index sub-manifest
         # picks) are cross-checked against the computed value and a
         # disagreement is an integrity failure, not a soft fallback.
+        # Digest verification runs BEFORE json.loads so bytes that
+        # fail the cross-check are never fed to the parser at all.
         computed = "sha256:" + hashlib.sha256(resp.content).hexdigest()
         header_digest = resp.headers.get("Docker-Content-Digest") \
             or resp.headers.get("docker-content-digest")
@@ -388,6 +382,18 @@ class OciRegistryClient:
                 f"manifest digest mismatch for {ref.to_canonical()}: "
                 f"requested {requested_pin}, body hashes to {computed}",
             )
+        # RecursionError: registry JSON is attacker-shaped; deeply
+        # nested arrays/objects within the size cap blow the parser's
+        # recursion limit. Convert to the module's error type instead
+        # of letting it escape as an unhandled crash.
+        try:
+            parsed = json.loads(resp.content)
+        except (ValueError, TypeError, RecursionError) as e:
+            raise RegistryError(
+                resp.status_code,
+                f"manifest JSON parse failed for "
+                f"{ref.to_canonical()}: {type(e).__name__}: {e}",
+            ) from e
         return ManifestResponse(
             raw=resp.content, parsed=parsed,
             content_type=content_type.split(";", 1)[0].strip(),
@@ -444,11 +450,12 @@ class OciRegistryClient:
                 )
             try:
                 data = json.loads(resp.content)
-            except (ValueError, TypeError) as e:
+            except (ValueError, TypeError, RecursionError) as e:
+                # RecursionError: deep nesting within the byte cap.
                 raise RegistryError(
                     resp.status_code,
                     f"tags/list JSON parse failed for "
-                    f"{ref.repository}: {e}",
+                    f"{ref.repository}: {type(e).__name__}: {e}",
                 ) from e
             tags = data.get("tags") if isinstance(data, dict) else None
             if not isinstance(tags, list):
@@ -694,10 +701,12 @@ class OciRegistryClient:
             )
         try:
             payload = json.loads(resp.content)
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError, RecursionError) as e:
+            # RecursionError: deep nesting within the byte cap.
             raise RegistryError(
                 resp.status_code,
-                f"token exchange at {realm} returned non-JSON: {e}",
+                f"token exchange at {realm} returned non-JSON: "
+                f"{type(e).__name__}: {e}",
             ) from e
         # Token may be in ``token`` or ``access_token`` per the
         # registry spec — both must be supported.

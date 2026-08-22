@@ -194,9 +194,18 @@ def _ingest_sarif_file(
     sibling-run imports drop results for files that changed since the
     producing scan (line drift makes stale SARIF actively harmful).
     """
+    # Canonical bounded loader (100 MiB cap, decode-error handling):
+    # a raw read_text()+json.loads here bypassed the size guard, so a
+    # hostile / runaway SARIF artifact could balloon the orchestrator.
     try:
-        data = _json.loads(sarif_file.read_text())
-    except (OSError, _json.JSONDecodeError):
+        from core.sarif.parser import load_sarif
+        data = load_sarif(sarif_file)
+    except ImportError:
+        try:
+            data = _json.loads(sarif_file.read_text())
+        except (OSError, _json.JSONDecodeError):
+            return 0
+    if not isinstance(data, dict):
         return 0
     ingested = 0
     fresh_memo: dict[str, bool] = {}

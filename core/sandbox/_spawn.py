@@ -1878,6 +1878,20 @@ def run_sandboxed(
                 # bind with no operator-visible signal — the warning
                 # names both consequences (ns-pid lookups ENOENT AND
                 # host process visibility through the retained bind).
+                #
+                # DELIBERATE warn-and-continue, not abort: the
+                # credential contract does NOT rest on this mount.
+                # Access to sensitive per-pid files (environ, mem,
+                # fd/*) of host processes is refused by the kernel's
+                # pid-ns/user-ns ptrace_may_access rule REGARDLESS of
+                # which procfs instance is mounted — host tasks are
+                # unmapped in our user namespace. What the retained
+                # bind leaks is the world-readable listing surface
+                # (pid dentries, cmdline, stat), the documented
+                # in-policy /proc residual class. Aborting would turn
+                # an environmental quirk (kernels that disallow the
+                # second procfs mount in a nested user-ns) into a
+                # hard run failure with no credential gain.
                 _proc_rc = -1
                 try:
                     if _libc is not None:

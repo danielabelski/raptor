@@ -223,3 +223,42 @@ def test_deeply_nested_tags_json_raises_registry_error() -> None:
     }))
     with pytest.raises(RegistryError, match="parse failed"):
         client.list_tags(ref)
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction in error snippets
+# ---------------------------------------------------------------------------
+
+
+_ECHOED_BASIC = "Authorization: Basic b3BlcmF0b3I6aHVudGVyMnNlY3JldA=="
+_ECHOED_BEARER = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.c2VjcmV0cGF5bG9hZA.c2ln"
+
+
+def test_manifest_error_snippet_redacts_echoed_authorization() -> None:
+    """A peer that echoes the Authorization header into a non-200
+    body must not plant the credential into the exception text."""
+    body = f'{{"error": "denied", "echo": "{_ECHOED_BASIC}"}}'.encode()
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = OciRegistryClient(_StubHttp({
+        _URL: _StubResponse(500, body),
+    }))
+    with pytest.raises(RegistryError) as excinfo:
+        client.fetch_manifest(ref)
+    msg = str(excinfo.value)
+    assert "b3BlcmF0b3I6aHVudGVyMnNlY3JldA" not in msg
+    assert "REDACTED" in msg
+
+
+def test_blob_error_snippet_redacts_echoed_bearer() -> None:
+    digest = "sha256:" + "d" * 64
+    body = f"denied; {_ECHOED_BEARER}".encode()
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    url = f"https://ghcr.io/v2/acme/app/blobs/{digest}"
+    client = OciRegistryClient(_StubHttp({
+        url: _StubResponse(500, body),
+    }))
+    with pytest.raises(RegistryError) as excinfo:
+        list(client.stream_blob(ref, digest))
+    msg = str(excinfo.value)
+    assert "eyJhbGciOiJSUzI1NiJ9" not in msg
+    assert "REDACTED" in msg

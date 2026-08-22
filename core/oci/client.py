@@ -135,6 +135,23 @@ def _validate_realm(registry: str, realm: str) -> None:
     )
 
 
+
+def _safe_error_snippet(resp) -> str:
+    """Short response-body excerpt for error messages, with
+    credential-shaped substrings masked.
+
+    Non-2xx bodies are peer-controlled and can echo the request's
+    ``Authorization`` header (Basic base64 or bearer token) straight
+    back — a hostile or misconfigured peer would then plant the
+    operator's registry credentials into exceptions, logs, and
+    scorecards. Redact before the text ever reaches an error string;
+    the extra pre-truncation slack keeps a token that straddles the
+    200-char boundary recognisable to the redactor.
+    """
+    from core.security.redaction import redact_secrets
+    return redact_secrets(resp.text[:600], reveal_secrets=False)[:200]
+
+
 def _validate_link_next(
     raw: str | None, *, repository: str,
 ) -> str | None:
@@ -346,7 +363,7 @@ class OciRegistryClient:
             raise RegistryError(
                 resp.status_code,
                 f"manifest GET failed for {ref.to_canonical()}: "
-                f"{resp.text[:200]}",
+                f"{_safe_error_snippet(resp)}",
             )
         if len(resp.content) > _MAX_MANIFEST_BYTES:
             raise RegistryError(
@@ -440,7 +457,7 @@ class OciRegistryClient:
                 raise RegistryError(
                     resp.status_code,
                     f"tags/list failed for {ref.repository} on "
-                    f"{ref.registry}: {resp.text[:200]}",
+                    f"{ref.registry}: {_safe_error_snippet(resp)}",
                 )
             if len(resp.content) > _MAX_TAGS_BYTES:
                 raise RegistryError(
@@ -517,7 +534,7 @@ class OciRegistryClient:
             raise RegistryError(
                 resp.status_code,
                 f"blob GET failed for {digest} in "
-                f"{ref.to_canonical()}: {resp.text[:200]}",
+                f"{ref.to_canonical()}: {_safe_error_snippet(resp)}",
             )
         hasher = hashlib.sha256()
         try:
@@ -690,7 +707,7 @@ class OciRegistryClient:
             raise RegistryError(
                 resp.status_code,
                 f"token exchange at {realm} failed: "
-                f"{resp.text[:200]}",
+                f"{_safe_error_snippet(resp)}",
             )
         if len(resp.content) > _MAX_TOKEN_BYTES:
             raise RegistryError(

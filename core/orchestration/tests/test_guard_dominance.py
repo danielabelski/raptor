@@ -221,3 +221,55 @@ class TestAcquireWarmServer:
         assert isinstance(server, FakeServer)
         assert FakeServer.started
         assert FakeServer.imported == FakeCPG.path
+
+
+class TestClampPathProximity:
+    """Contract for the shared soft-demotion clamp (both the
+    reachability-delegation branch and the inline fallback)."""
+
+    @pytest.fixture(params=["delegated", "inline_fallback"])
+    def clamp(self, request, monkeypatch):
+        if request.param == "inline_fallback":
+            import sys
+            monkeypatch.setitem(
+                sys.modules,
+                "packages.exploitability_validation.reachability",
+                None,
+            )
+        from core.orchestration.guard_dominance import clamp_path_proximity
+        return clamp_path_proximity
+
+    def test_proximity_only_ever_lowered(self, clamp):
+        path = {"proximity": 5}
+        clamp(path, "why")
+        assert path["proximity"] == 1
+        path = {"proximity": 0.25}
+        clamp(path, "why")
+        assert path["proximity"] == 0.25
+
+    def test_bool_proximity_treated_as_absent(self, clamp):
+        path = {"proximity": True}
+        clamp(path, "why")
+        assert path["proximity"] == 1 and path["proximity"] is not True
+
+    def test_missing_or_junk_proximity_set_to_cap(self, clamp):
+        for prox in ({}, {"proximity": "high"}, {"proximity": None}):
+            path = dict(prox)
+            clamp(path, "why")
+            assert path["proximity"] == 1
+
+    def test_blocker_appended_once(self, clamp):
+        path = {"proximity": 3, "blockers": ["old"]}
+        clamp(path, "new")
+        clamp(path, "new")
+        assert path["blockers"] == ["old", "new"]
+
+    def test_non_list_blockers_replaced(self, clamp):
+        path = {"proximity": 3, "blockers": "junk"}
+        clamp(path, "new")
+        assert path["blockers"] == ["new"]
+
+    def test_empty_blocker_not_appended(self, clamp):
+        path = {"proximity": 3}
+        clamp(path, "")
+        assert path["blockers"] == []

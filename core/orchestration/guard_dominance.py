@@ -261,7 +261,7 @@ def apply_to_findings(
             }
             blocker = f"joern:guard-dominance — {reason}"
             for path in paths_by_finding.get(finding.get("id", ""), []):
-                _clamp(path, blocker)
+                clamp_path_proximity(path, blocker)
                 stats["demoted_paths"] += 1
         elif result.outcome == "confirmed":
             stats["corroborated"] += 1
@@ -273,8 +273,16 @@ def apply_to_findings(
     return stats
 
 
-def _clamp(path: dict[str, Any], blocker: str) -> None:
-    """Shared soft-demotion semantics (proximity only ever lowered)."""
+def clamp_path_proximity(path: dict[str, Any], blocker: str) -> None:
+    """Soft-demote an attack path using the shared reachability clamp
+    when available.
+
+    Same semantics as the dead-code demoter: proximity only ever
+    LOWERED, blocker appended, path retained. Falls back to an inline
+    implementation with identical semantics when
+    ``packages.exploitability_validation`` is not importable (core
+    never hard-imports packages).
+    """
     try:
         from packages.exploitability_validation.reachability import (
             _apply_clamp,

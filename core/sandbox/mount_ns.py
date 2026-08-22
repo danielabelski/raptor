@@ -501,7 +501,11 @@ def setup_mount_ns(target: str | None, output: str | None,
             for ns_target in etc_overlay:
                 if not isinstance(ns_target, str):
                     continue
-                if not ns_target.startswith("/etc/"):
+                # Same normalized-absolute-key rule as the 8d bind
+                # loop: startswith("/etc/") alone would still pass
+                # "/etc/../..."-style keys into the {root} concat.
+                if (not ns_target.startswith("/etc/")
+                        or os.path.normpath(ns_target) != ns_target):
                     continue
                 stub = f"{root}{ns_target}"
                 if not os.path.exists(stub):
@@ -907,6 +911,20 @@ def setup_mount_ns(target: str | None, output: str | None,
                 warn_post_fork(
                     b"RAPTOR: mount_ns: etc_overlay entry skipped - "
                     b"both keys and values must be str paths\n"
+                )
+                continue
+            # Keys are concatenated onto the staging root below —
+            # accept only normalized absolute paths so a "..", "" or
+            # relative key can never drive the pre-pivot makedirs /
+            # O_CREAT / mount(2) OUTSIDE the staging root on the host
+            # (today's producers are internal, but image-derived
+            # values will flow here; fail safe now).
+            if (not ns_target.startswith("/")
+                    or os.path.normpath(ns_target) != ns_target
+                    or ns_target == "/"):
+                warn_post_fork(
+                    b"RAPTOR: mount_ns: etc_overlay entry skipped - "
+                    b"key must be a normalized absolute path\n"
                 )
                 continue
             inside = f"{root}{ns_target}"

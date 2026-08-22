@@ -433,6 +433,57 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
                       "overlay file not visible alongside host /etc")
 
 
+class TestEtcOverlayKeyValidation(unittest.TestCase):
+    """etc_overlay keys are concatenated onto the staging root; a
+    non-normalized key (\"..\") must never drive pre-pivot file
+    creation OUTSIDE the staging root on the host."""
+
+    def setUp(self):
+        if not _mount_ns_usable():
+            self.skipTest(
+                "mount-ns unusable here (needs uidmap package + "
+                "kernel.apparmor_restrict_unprivileged_userns=0)"
+            )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_dotdot_key_cannot_escape_staging_root(self):
+        from core.sandbox._spawn import run_sandboxed
+
+        src = os.path.join(self.tmp.name, "src.conf")
+        with open(src, "w") as f:
+            f.write("payload\n")
+        escape_name = "raptor-test-overlay-escape-marker"
+        escape_path = os.path.join(tempfile.gettempdir(), escape_name)
+        if os.path.exists(escape_path):
+            os.unlink(escape_path)
+        self.addCleanup(
+            lambda: os.path.exists(escape_path)
+            and os.unlink(escape_path))
+
+        r = run_sandboxed(
+            ["true"],
+            target=self.tmp.name, output=self.tmp.name,
+            block_network=True,
+            nproc_limit=1024,
+            limits={"memory_mb": 0, "max_file_mb": 10240,
+                    "cpu_seconds": 300},
+            writable_paths=[self.tmp.name, "/tmp"],
+            readable_paths=None, allowed_tcp_ports=None,
+            seccomp_profile=None, seccomp_block_udp=False,
+            env=None, cwd=None, timeout=15,
+            capture_output=True, text=True,
+            etc_overlay={f"/../{escape_name}": src},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertFalse(os.path.exists(escape_path), (
+            f"etc_overlay '..' key escaped the staging root and "
+            f"created {escape_path} on the host"
+        ))
+        self.assertIn("normalized absolute path", r.stderr,
+                      "expected the loud key-validation skip")
+
+
 class TestGidmapAllowProbe(unittest.TestCase):
     """_gidmap_allow_available() — detection of the raptor-gidmap-allow helper."""
 

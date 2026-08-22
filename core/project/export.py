@@ -459,6 +459,98 @@ def _mark_imported_runs(output_dir: Path, archive_sha256: str) -> None:
         _namespace_imported_provenance_refs(child)
 
 
+# --- Privileged-artifact quarantine ---------------------------------
+#
+# Restored archives are unsigned; every artifact in them is
+# attacker-authored at will. Annotations get a provenance demotion
+# (readers already grade the imported tag), but the other
+# trust-bearing artifact families have NO import-marker mechanism in
+# their consumers — restoring them at their canonical paths would let
+# a forged archive mark code reviewed/clean (coverage store, review
+# journals), veto feedback, seed prompts with "mechanically-verified"
+# exemplars (verified outcomes, labeled attempts), or smuggle
+# taint-spec roles and witness manifests as locally-earned evidence.
+#
+# The seam that requires no consumer edits: move them out of the
+# canonical locations into an `_imported-quarantine/` namespace
+# (underscore-prefixed — run-dir enumeration skips it) preserving the
+# original relative layout for operator inspection. Consumers look up
+# these artifacts at fixed canonical paths (project-root
+# coverage.json / review-journal-index.json / iris-specs, per-run
+# review-journal.jsonl / verified-outcomes.jsonl /
+# iris-taint-specs-refined.json, `witnesses/` store roots discovered
+# per run dir), so a quarantined artifact is simply never consulted.
+_QUARANTINE_DIR_NAME = "_imported-quarantine"
+
+_PRIVILEGED_FILE_NAMES = frozenset({
+    "coverage.json",                  # durable coverage store
+    "coverage-progress.jsonl",        # store trend sidecar
+    "review-journal.jsonl",           # per-run review journal
+    "review-journal-index.json",      # project journal index
+    "verified-outcomes.jsonl",        # oracle-verified outcome sidecar
+    "iris-taint-specs-refined.json",  # per-run IRIS refined specs
+})
+
+_PRIVILEGED_DIR_NAMES = frozenset({
+    "witnesses",          # WitnessStore roots (manifests + blobs)
+    "iris-specs",         # project IRIS spec store
+    "labeled_attempts",   # project exemplar pool
+})
+
+
+def _quarantine_dest(qroot: Path, rel: Path) -> Path:
+    """Destination for one quarantined artifact, uniquified if the
+    archive itself shipped a colliding quarantine entry."""
+    dest = qroot / rel
+    if not dest.exists():
+        return dest
+    n = 1
+    while True:
+        candidate = dest.with_name(f"{dest.name}.imported-{n}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
+def _quarantine_imported_privileged_artifacts(output_dir: Path) -> list[str]:
+    """Move trust-bearing artifacts out of their canonical paths into
+    ``_imported-quarantine/`` (layout-preserving). Returns the moved
+    relative paths. Idempotent: an existing quarantine dir (re-import
+    of a re-exported project) is left untouched, never re-nested."""
+    root = Path(output_dir)
+    qroot = root / _QUARANTINE_DIR_NAME
+    moved: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dp = Path(dirpath)
+        if dp == root and _QUARANTINE_DIR_NAME in dirnames:
+            dirnames.remove(_QUARANTINE_DIR_NAME)
+        for name in list(dirnames):
+            if name in _PRIVILEGED_DIR_NAMES:
+                src = dp / name
+                rel = src.relative_to(root)
+                dest = _quarantine_dest(qroot, rel)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dest)
+                dirnames.remove(name)
+                moved.append(str(rel))
+        for name in filenames:
+            if name in _PRIVILEGED_FILE_NAMES:
+                src = dp / name
+                rel = src.relative_to(root)
+                dest = _quarantine_dest(qroot, rel)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dest)
+                moved.append(str(rel))
+    if moved:
+        logger.info(
+            "import: quarantined %d privileged artifact(s) under %s "
+            "(unsigned archive — coverage/journal/witness/IRIS/outcome "
+            "artifacts are not restored as locally-earned trust): %s",
+            len(moved), _QUARANTINE_DIR_NAME, ", ".join(sorted(moved)),
+        )
+    return moved
+
+
 def import_project(zip_path: Path, projects_dir: Path,
                    force: bool = False,
                    output_base: Path | None = None) -> dict[str, str]:
@@ -777,6 +869,19 @@ def import_project(zip_path: Path, projects_dir: Path,
         shutil.rmtree(staging_dir, ignore_errors=True)
         raise ValueError(
             f"Import failed while marking imported runs: {e}"
+        ) from e
+
+    # Quarantine trust-bearing artifacts (coverage store, review
+    # journals, witness stores, IRIS specs, verified outcomes,
+    # exemplar pools) out of their canonical paths — consumers must
+    # never treat archive-supplied copies as locally-earned trust.
+    # Fails the import closed like the passes above.
+    try:
+        _quarantine_imported_privileged_artifacts(staging_dir)
+    except Exception as e:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise ValueError(
+            f"Import failed while quarantining privileged artifacts: {e}"
         ) from e
 
     # --- Publish the staged tree ---

@@ -171,7 +171,17 @@ class BuildIDCache:
         (``binary_sha256``), a mismatch is a miss — a forged build-id
         cannot substitute artifacts computed for a different binary.
         Envelopes without the field (legacy / external producers)
-        remain readable at build-id scope only.
+        remain readable at build-id scope only — and build-id scope
+        is NOT a trust boundary: the cache directory is shared and
+        writable by design for external producers, so anything
+        running at the operator's uid can mint a hash-less envelope
+        under a chosen build-id and have it read back here as
+        evidence. RAPTOR's own import helpers therefore hash-verify
+        and refuse hash-less envelopes; callers that accept
+        build-id-scope reads accept that exposure. Closing it needs
+        a format-version bump making ``binary_sha256`` mandatory,
+        deferred until it can be coordinated with external producers
+        of this documented contract.
         """
         if not _valid_build_id(build_id) or not _valid_artifact(artifact):
             return None

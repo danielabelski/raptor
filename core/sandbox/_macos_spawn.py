@@ -709,6 +709,16 @@ def run_sandboxed(cmd: list[str], *,
     if audit_mode and audit_run_dir:
         from . import seatbelt_audit
         try:
+            # require_scope: the streamer must not attribute ANY
+            # host-wide Sandbox.kext event to this run until the
+            # workload's PID is registered (right after the Popen
+            # below). `log stream` is a host-wide feed — without the
+            # scope gate, every kext event on the machine (sibling
+            # RAPTOR runs, unrelated sandboxed apps, an attacker's
+            # deliberate sandbox-exec noise on a shared host) would
+            # be nonce-stamped into this run's JSONL and flow into
+            # denial summaries, triage, and calibration-derived
+            # allowlists.
             audit_streamer = seatbelt_audit.start_log_streamer(
                 Path(audit_run_dir),
                 observe_mode=bool(observe_mode),

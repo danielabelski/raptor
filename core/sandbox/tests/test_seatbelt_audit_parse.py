@@ -13,6 +13,7 @@ real kernel output, not invented.
 from __future__ import annotations
 
 import json
+import os
 
 from core.sandbox import evidence as evidence_mod
 from core.sandbox import seatbelt_audit
@@ -371,12 +372,13 @@ def _scope_record(pid: int, *, action: str = "file-write-data",
 
 
 def _no_pgid(monkeypatch):
-    """Pin the exact-PID path: process-group resolution always fails,
-    as it does for a PID that has already exited (or one from a
-    canned record that never existed on the test host)."""
+    """Pin the exact-PID path: process-group AND session resolution
+    always fail, as they do for a PID that has already exited (or one
+    from a canned record that never existed on the test host)."""
     def _raise(pid):
         raise ProcessLookupError(pid)
     monkeypatch.setattr(seatbelt_audit.os, "getpgid", _raise)
+    monkeypatch.setattr(seatbelt_audit.os, "getsid", _raise)
 
 
 def test_unscoped_streamer_accepts_any_pid(tmp_path):
@@ -420,12 +422,85 @@ def test_process_group_widens_scope(tmp_path, monkeypatch):
         except KeyError:
             raise ProcessLookupError(pid) from None
 
+    def _no_sid(pid):
+        raise ProcessLookupError(pid)
+
     monkeypatch.setattr(seatbelt_audit.os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(seatbelt_audit.os, "getsid", _no_sid)
     streamer = seatbelt_audit.LogStreamer(tmp_path)
     streamer.register_target_pid(1234)
     assert streamer._record_in_scope(_scope_record(777)) is True   # same pgid
     assert streamer._record_in_scope(_scope_record(999)) is False  # other pgid
     assert streamer._record_in_scope(_scope_record(31337)) is False  # gone
+
+
+def test_session_widens_scope(tmp_path, monkeypatch):
+    """The production caller registers the OUTER seatbelt shim, whose
+    sandbox-exec subtree runs in a DIFFERENT process group (the shim
+    forks it into its own group so it can killpg it) but the SAME
+    session. The parse-time filter must keep same-session events and
+    still reject foreign-session ones."""
+    pgids = {1234: 1234, 777: 777, 999: 999}
+    sids = {1234: 1234, 777: 1234, 999: 900}
+
+    def fake_getpgid(pid):
+        try:
+            return pgids[pid]
+        except KeyError:
+            raise ProcessLookupError(pid) from None
+
+    def fake_getsid(pid):
+        try:
+            return sids[pid]
+        except KeyError:
+            raise ProcessLookupError(pid) from None
+
+    monkeypatch.setattr(seatbelt_audit.os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(seatbelt_audit.os, "getsid", fake_getsid)
+    streamer = seatbelt_audit.LogStreamer(tmp_path)
+    streamer.register_target_pid(1234)
+    # Different pgid, same session — the shim-forked sandbox subtree.
+    assert streamer._record_in_scope(_scope_record(777)) is True
+    # Different pgid AND different session — a foreign run.
+    assert streamer._record_in_scope(_scope_record(999)) is False
+
+
+def test_session_widens_scope_real_processes(tmp_path):
+    """Same shape as above but against the real OS: a child moved
+    into its OWN process group (mirroring the shim's fork of
+    sandbox-exec) stays in our session and must remain in scope once
+    our own PID is registered."""
+    import subprocess
+    import sys
+
+    streamer = seatbelt_audit.LogStreamer(tmp_path)
+    streamer.register_target_pid(os.getpid())
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        preexec_fn=os.setpgrp,  # own pgrp, same session — shim analogue
+    )
+    try:
+        assert os.getpgid(child.pid) != os.getpgid(os.getpid())
+        assert streamer._record_in_scope(_scope_record(child.pid)) is True
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+
+def test_require_scope_drops_records_before_registration(tmp_path):
+    """require_scope=True: nothing may be attributed to this run
+    until the caller registers its child — the streamer-start-to-
+    registration window must not stamp foreign host events."""
+    streamer = seatbelt_audit.LogStreamer(tmp_path, require_scope=True)
+    assert streamer._record_in_scope(_scope_record(4444)) is False
+
+
+def test_require_scope_accepts_registered_pid(tmp_path, monkeypatch):
+    _no_pgid(monkeypatch)
+    streamer = seatbelt_audit.LogStreamer(tmp_path, require_scope=True)
+    streamer.register_target_pid(1234)
+    assert streamer._record_in_scope(_scope_record(1234)) is True
+    assert streamer._record_in_scope(_scope_record(4444)) is False
 
 
 def test_read_loop_drops_foreign_pid_records(tmp_path, monkeypatch):

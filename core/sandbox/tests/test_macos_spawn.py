@@ -124,6 +124,78 @@ def test_is_available_false_on_non_darwin():
     assert _macos_spawn.is_available() is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+def test_audit_streamer_scoped_to_run_process_tree(tmp_path, monkeypatch):
+    """Attribution scoping regression: the production audit spawn must
+    (a) start the log streamer with ``require_scope=True`` so the host-
+    wide Sandbox.kext feed is never wholesale-attributed to this run,
+    and (b) register the workload's PID on the streamer while the
+    workload is still alive — i.e. before waiting on it.
+
+    Pre-fix, the streamer was started with neither scoping layer and
+    ``register_target_pid`` was never called: every kext event on the
+    host (sibling runs, unrelated sandboxed apps, attacker noise on a
+    shared host) was nonce-stamped into this run's JSONL.
+
+    Cross-platform: SANDBOX_EXEC is swapped for a pass-through script
+    (same layering as production) and the streamer is a recording
+    fake, so no darwin host or `log stream` subprocess is needed.
+    """
+    fake = tmp_path / "fake-sandbox-exec"
+    fake.write_text('#!/bin/sh\nshift 3\nexec "$@"\n')  # drop -p <profile> --
+    fake.chmod(0o755)
+    monkeypatch.setattr(_macos_spawn, "SANDBOX_EXEC", str(fake))
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+
+    events: list[tuple] = []
+
+    class _FakeStreamer:
+        def register_target_pid(self, pid):
+            alive = True
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError, OSError):
+                alive = False
+            events.append(("register", pid, alive))
+
+        def stop(self, **kw):
+            events.append(("stop",))
+
+    def fake_start(run_dir, **kw):
+        events.append(("start", kw.get("require_scope")))
+        return _FakeStreamer()
+
+    from core.sandbox import seatbelt_audit
+    monkeypatch.setattr(seatbelt_audit, "start_log_streamer", fake_start)
+
+    r = _macos_spawn.run_sandboxed(
+        # Sleep long enough that the registration observably happens
+        # while the workload is alive; short enough to keep the suite
+        # quick.
+        ["/bin/sh", "-c", "sleep 0.4"],
+        output=str(out_dir),
+        capture_output=True, text=True, timeout=15,
+        audit_mode=True, audit_run_dir=str(audit_dir),
+    )
+    assert r.returncode == 0
+
+    kinds = [e[0] for e in events]
+    assert kinds == ["start", "register", "stop"], events
+    start_evt, register_evt, _ = events
+    assert start_evt[1] is True, (
+        "streamer must be started with require_scope=True so events "
+        "before PID registration are never wholesale-attributed"
+    )
+    assert isinstance(register_evt[1], int) and register_evt[1] > 0
+    assert register_evt[2] is True, (
+        "register_target_pid must run while the workload is still "
+        "alive (before wait), or the whole run goes unattributed"
+    )
+
+
 # --- Darwin-only behavioural tests ------------------------------------
 
 @darwin_only

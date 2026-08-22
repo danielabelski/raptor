@@ -350,11 +350,17 @@ class LogStreamer:
         warm-up attachment gate is skipped (its synthetic workload's
         events cannot match the scoped predicate).
       * parse-time — ``register_target_pid()`` marks a PID (and its
-        process group, when resolvable) as in-scope; the reader
-        thread drops every parsed record whose PID is out of scope
-        BEFORE it is nonce-stamped, budget-counted, or appended.
-        Defence in depth behind the predicate, and the only layer
-        that can widen to the process group.
+        process group AND session, when resolvable) as in-scope; the
+        reader thread drops every parsed record whose PID is out of
+        scope BEFORE it is nonce-stamped, budget-counted, or
+        appended. Defence in depth behind the predicate, and the
+        only layer that can widen beyond the exact PID. The session
+        widening is what lets registering the OUTER seatbelt shim
+        cover the sandbox-exec subtree: the shim deliberately forks
+        sandbox-exec into its own process group (so it can killpg
+        it), but every descendant stays in the shim's session until
+        it setsid()s — a setsid()'d descendant is a documented
+        residual of this layer.
 
     With no scope registered (legacy callers), attribution stays
     host-wide: kext events from unrelated sandboxed processes ARE
@@ -378,6 +384,12 @@ class LogStreamer:
     Residual: a descendant that lives shorter than one poll interval
     and whose record arrives post-exit cannot be attributed and is
     dropped — visible in the same counter.
+    Session widening applies on top: ``register_target_pid``
+    captures the registered PID's session, and same-session
+    records stay attributable — the shim forks sandbox-exec into
+    its own process group but the subtree keeps the shim's
+    session (a setsid()'d descendant is covered by the lineage
+    layers instead).
     """
 
     def __init__(self, run_dir: Path,
@@ -420,6 +432,12 @@ class LogStreamer:
         self._scope_lock = threading.Lock()
         self._scope_pids: set[int] = set()
         self._scope_pgids: set[int] = set()
+        self._scope_sids: set[int] = set()
+        # require_scope=True flips the empty-scope default from
+        # pass-all (legacy host-wide attribution) to drop-all: no
+        # record may be attributed to this run until the caller has
+        # registered its child. See the class docstring.
+        self._require_scope = bool(require_scope)
         self._target_pid = int(target_pid) if target_pid is not None else None
         if self._target_pid is not None:
             self.register_target_pid(self._target_pid)
@@ -466,13 +484,13 @@ class LogStreamer:
         self._kext_lines_parsed = 0
 
     def register_target_pid(self, pid: int) -> None:
-        """Mark ``pid`` — and its process group, when resolvable —
-        as in-scope for event attribution.
+        """Mark ``pid`` — and its process group and session, when
+        resolvable — as in-scope for event attribution.
 
         Call as soon as the sandboxed child's PID is known (it is
         usually not known when the streamer starts). Repeatable:
         each call widens the scope, so hybrid runs can register the
-        workload plus helper processes. The process-group lookup is
+        workload plus helper processes. The group/session lookups are
         best-effort — a PID that is already gone (or was never local)
         still gets exact-PID matching, just no group widening.
 
@@ -480,6 +498,14 @@ class LogStreamer:
         the records buffered while no scope was known through the
         scope gate, and starts the lineage poller so descendants of
         the registered PID stay attributable after they exit.
+        The session widening is load-bearing for the production
+        caller: the registered PID is the outer seatbelt shim, whose
+        sandbox-exec child runs in a DIFFERENT process group (the
+        shim forks it into its own group so it can killpg it) but the
+        SAME session — under ``start_new_session=True`` a fresh
+        session private to this run. When the caller opted out of a
+        new session, the scope degrades to the caller's own session:
+        wider than one run, still strictly narrower than host-wide.
         """
         pid = int(pid)
         pgid: int | None = None
@@ -487,11 +513,18 @@ class LogStreamer:
             pgid = self._getpgid(pid)
         except OSError:
             pass
+        sid: int | None = None
+        try:
+            sid = os.getsid(pid)
+        except OSError:
+            pass
         with self._scope_lock:
             self._scope_pids.add(pid)
             self._foreign_pid_cache.discard(pid)
             if pgid is not None:
                 self._scope_pgids.add(pgid)
+            if sid is not None:
+                self._scope_sids.add(sid)
             pending, self._pending = self._pending, []
         if (self._require_scope
                 and self._lineage_poller is None
@@ -568,7 +601,10 @@ class LogStreamer:
         """
         with self._scope_lock:
             if not self._scope_pids and not self._scope_pgids:
-                return True
+                # Under require_scope nothing may be attributed until
+                # a registration arrives (the reader buffers, but a
+                # direct query must not claim scope membership).
+                return not self._require_scope
             pid = record.get("target_pid")
             if not isinstance(pid, int):
                 return False
@@ -586,6 +622,13 @@ class LogStreamer:
                 return True
         except OSError:
             pass
+        if self._scope_sids:
+            try:
+                if os.getsid(pid) in self._scope_sids:
+                    self._scope_pids.add(pid)
+                    return True
+            except OSError:
+                pass
         if not self._require_scope:
             # Legacy scoped callers keep exact-PID + pgid semantics;
             # the lineage machinery engages only for owners that

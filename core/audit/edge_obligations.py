@@ -53,6 +53,77 @@ EDGE_OBLIGATIONS_FILENAME = "edge-obligations.json"
 Node = tuple  # (file, name)
 
 
+def _normalise_type(name: str) -> str:
+    """Receiver type → bare type name (strip qualifiers/pointers)."""
+    out = name.strip()
+    for tok in ("const ", "struct ", "class ", "enum "):
+        out = out.replace(tok, "")
+    return out.strip(" *&").strip()
+
+
+def _resolve_dispatch(
+    call: dict,
+    caller: str,
+    tail: str,
+    candidate_paths: list,
+    items_by_file: dict,
+) -> tuple | None:
+    """Disambiguate a multi-definition callee (CHA dispatch site).
+
+    Two mechanical witnesses, tried most-specific first; a site
+    resolves only when EXACTLY ONE candidate matches — anything less
+    certain stays an ``ambiguous_callee`` blind spot:
+
+    * typed dispatch — the call carries ``receiver_type`` /
+      ``receiver_class`` and exactly one candidate file defines a
+      class of that name whose span contains a same-named callee;
+    * binary edge — exactly one candidate's item carries a
+      ``metadata.binary_oracle_edges`` entry naming THIS caller
+      (the linker admitted one definition; the r2 edge names it).
+
+    Returns ``(definition_file, how)`` or ``None``.
+    """
+    recv = call.get("receiver_type") or call.get("receiver_class")
+    if recv:
+        recv = _normalise_type(str(recv))
+        matches = []
+        for path in candidate_paths:
+            items = items_by_file.get(path) or []
+            classes = [
+                it for it in items
+                if it.get("kind") == "class" and it.get("name") == recv
+            ]
+            for cls in classes:
+                lo = cls.get("line_start") or 0
+                hi = cls.get("line_end") or lo
+                if any(
+                    it.get("name") == tail
+                    and lo <= (it.get("line_start") or -1) <= hi
+                    for it in items
+                ):
+                    matches.append(path)
+                    break
+        if len(matches) == 1:
+            return (matches[0], "typed")
+
+    matches = []
+    for path in candidate_paths:
+        for it in items_by_file.get(path) or []:
+            if it.get("name") != tail:
+                continue
+            md = it.get("metadata") or {}
+            for be in md.get("binary_oracle_edges") or []:
+                if isinstance(be, dict) and be.get("caller") == caller:
+                    matches.append(path)
+                    break
+            else:
+                continue
+            break
+    if len(matches) == 1:
+        return (matches[0], "binary")
+    return None
+
+
 def _name_definitions(checklist: dict[str, Any]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for fe in checklist.get("files", []) or []:
@@ -153,6 +224,11 @@ def build_edge_obligations(
     seen_edges: set[tuple] = set()
     unresolved: list[tuple] = []     # (file, caller, name)
     ambiguous: list[tuple] = []
+    dispatch_how: dict[tuple, str] = {}   # (cfile,caller,efile,callee) -> witness
+    items_by_file = {
+        fe.get("path"): (fe.get("items") or fe.get("functions") or [])
+        for fe in checklist.get("files", []) or []
+    }
     for fe in checklist.get("files", []) or []:
         path = fe.get("path")
         cg = fe.get("call_graph")
@@ -178,7 +254,17 @@ def build_edge_obligations(
             elif not paths:
                 unresolved.append((path, caller, tail))
             else:
-                ambiguous.append((path, caller, tail))
+                resolved = _resolve_dispatch(
+                    call, caller, tail, paths, items_by_file)
+                if resolved is not None:
+                    efile, how = resolved
+                    key = (path, caller, efile, tail, line)
+                    if key not in seen_edges:
+                        seen_edges.add(key)
+                        edges.append(key)
+                        dispatch_how[(path, caller, efile, tail)] = how
+                else:
+                    ambiguous.append((path, caller, tail))
 
     fwd: dict[Node, set] = {}
     rev: dict[Node, set] = {}
@@ -209,9 +295,25 @@ def build_edge_obligations(
         caller_node, callee_node = (cfile, caller), (efile, callee)
         label = boundary_label.get(caller_node) or boundary_label.get(
             callee_node)
+        how = dispatch_how.get((cfile, caller, efile, callee))
         if label is not None:
             tier1.append(_record(
                 cfile, caller, efile, callee, line, f"boundary:{label}"))
+        elif (how is not None
+                and caller_node in reach_from_entries
+                and callee_node in reach_to_sinks):
+            # A resolved dispatch site ON AN ATTACK PATH is one
+            # obligation reviewed as a dedicated unit (2026-05-29
+            # design: dispatch reaches contract_ok only when the
+            # realizable target is explicitly accounted for) — the
+            # mechanical witness names the target. Resolved sites off
+            # the attack path still join the adjacency (improving both
+            # closures) but carry no paid obligation: promoting every
+            # resolved dispatch edge would balloon dedicated-unit cost
+            # on dispatch-heavy codebases far beyond the design's
+            # attack-path scoping.
+            tier1.append(_record(
+                cfile, caller, efile, callee, line, f"dispatch:{how}"))
         elif (caller_node in reach_from_entries
                 and callee_node in reach_to_sinks):
             tier2.append(_record(
@@ -258,6 +360,7 @@ def build_edge_obligations(
         "tier2": tier2,
         "blind_spots": blind,
         "stats": {
+            "dispatch_resolved": len(dispatch_how),
             "edges_total": len(edges) + len(unresolved) + len(ambiguous),
             "resolved": len(edges),
             "unresolved": len(unresolved),

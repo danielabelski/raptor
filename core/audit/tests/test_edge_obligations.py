@@ -184,3 +184,87 @@ class TestKnowledgeDegradation:
             tmp_path, checklist, None,
             extra_degraded=["no-context-map"])
         assert payload["stats"]["degraded"].count("no-context-map") == 1
+
+
+class TestDispatchResolution:
+    """CHA-ambiguous callees resolve to tier-1 via mechanical witnesses."""
+
+    def _checklist(self, tmp_path, extra_item_a=None, call_extra=None):
+        (tmp_path / "a.py").write_text("class Foo:\n    def run(self): pass\n")
+        (tmp_path / "b.py").write_text("def run(): pass\n")
+        (tmp_path / "ep.py").write_text("def handler(): run()\n")
+        item_a = {"name": "run", "kind": "method",
+                  "line_start": 2, "line_end": 2}
+        if extra_item_a:
+            item_a.update(extra_item_a)
+        call = {"line": 1, "chain": ["run"], "caller": "handler"}
+        if call_extra:
+            call.update(call_extra)
+        return {
+            "target_path": str(tmp_path),
+            "files": [
+                {"path": "a.py", "items": [
+                    {"name": "Foo", "kind": "class",
+                     "line_start": 1, "line_end": 2},
+                    item_a,
+                ], "call_graph": {"calls": []}},
+                {"path": "b.py", "items": [
+                    {"name": "run", "kind": "function",
+                     "line_start": 1, "line_end": 1},
+                ], "call_graph": {"calls": []}},
+                {"path": "ep.py", "items": [
+                    {"name": "handler", "kind": "function",
+                     "line_start": 1, "line_end": 1},
+                ], "call_graph": {"calls": [call]}},
+            ],
+        }
+
+    # The resolved callee is sink-bearing so the promoted edge is
+    # ON-PATH — promotion requires attack-path membership, not mere
+    # entry-reachability (cost scoping per the 2026-05-29 design).
+    _CM = {"entry_points": [{"file": "ep.py", "line": 1, "name": "handler"}],
+           "sinks": [{"type": "x", "location": "a.py:2"}]}
+    _CM_NO_SINK = {"entry_points":
+                   [{"file": "ep.py", "line": 1, "name": "handler"}],
+                   "sinks": []}
+
+    def test_typed_receiver_resolves_to_tier1(self, tmp_path):
+        from core.audit.edge_obligations import build_edge_obligations
+        ck = self._checklist(tmp_path, call_extra={"receiver_type": "Foo"})
+        ob = build_edge_obligations(ck, self._CM)
+        t1 = [(e["callee_file"], e["reason"]) for e in ob["tier1"]]
+        assert ("a.py", "dispatch:typed") in t1
+        assert not any(b["kind"] == "ambiguous_callee"
+                       for b in ob["blind_spots"])
+        assert ob["stats"]["dispatch_resolved"] == 1
+
+    def test_binary_edge_witness_resolves_to_tier1(self, tmp_path):
+        from core.audit.edge_obligations import build_edge_obligations
+        ck = self._checklist(tmp_path, extra_item_a={
+            "metadata": {"binary_oracle_edges": [
+                {"caller": "handler", "binary_path": "build/app"}]},
+        })
+        ob = build_edge_obligations(ck, self._CM)
+        t1 = [(e["callee_file"], e["reason"]) for e in ob["tier1"]]
+        assert ("a.py", "dispatch:binary") in t1
+
+    def test_resolved_but_off_path_carries_no_obligation(self, tmp_path):
+        # Resolution always improves the adjacency; the PAID dedicated
+        # unit exists only on the attack path. Off-path resolved sites
+        # are neither obligations nor blind spots.
+        from core.audit.edge_obligations import build_edge_obligations
+        ck = self._checklist(tmp_path, call_extra={"receiver_type": "Foo"})
+        ob = build_edge_obligations(ck, self._CM_NO_SINK)
+        assert not ob["tier1"]
+        assert not any(b["kind"] == "ambiguous_callee"
+                       for b in ob["blind_spots"])
+        assert ob["stats"]["dispatch_resolved"] == 1
+
+    def test_unwitnessed_ambiguity_stays_blind_spot(self, tmp_path):
+        from core.audit.edge_obligations import build_edge_obligations
+        ck = self._checklist(tmp_path)
+        ob = build_edge_obligations(ck, self._CM)
+        assert not ob["tier1"]
+        assert any(b["kind"] == "ambiguous_callee" and b["name"] == "run"
+                   for b in ob["blind_spots"])
+        assert ob["stats"]["dispatch_resolved"] == 0

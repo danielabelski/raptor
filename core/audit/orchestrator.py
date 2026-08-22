@@ -3252,6 +3252,41 @@ def _iris_prep_specs(
     return iris_taint_specs, project_sinks
 
 
+def _sarif_clean_files_from_cache(
+    sarif_cache: SarifCache | None,
+    checklist: dict[str, Any],
+) -> set[str]:
+    """Checklist files PROVABLY scanned with zero SARIF alerts.
+
+    The SARIF cache is positive-only: a file absent from its alert
+    index may simply never have been scanned (semgrep-only sibling
+    runs, language gaps, scoped scans). Treating that absence as
+    authoritative "clean" resolved small helpers without LLM review on
+    no evidence at all. A file only counts as sarif-clean when the
+    producing scan DECLARED it analysed the file (``runs[].artifacts``
+    coverage, tracked in ``SarifCache.scanned_files``) and recorded no
+    alert for it. No declared coverage → no clean verdicts (the gate
+    fails closed and the functions go to normal review).
+    """
+    clean: set[str] = set()
+    if not sarif_cache:
+        return clean
+    scanned = getattr(sarif_cache, "scanned_files", None) or set()
+    if not scanned:
+        return clean
+    from .sweep import _normalize_sarif_path
+
+    alerted = set(sarif_cache._by_file.keys())
+    for fi in checklist.get("files", []):
+        fp = fi.get("path", "") if isinstance(fi, dict) else ""
+        if not fp:
+            continue
+        normalized = _normalize_sarif_path(fp)
+        if normalized in scanned and normalized not in alerted:
+            clean.add(fp)
+    return clean
+
+
 def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     """Compute all mode-independent prep for the audit loop.
 
@@ -3375,23 +3410,14 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         for _db in config.codeql_db_paths:
             _codeql_pre_sweep_raw(_db, config.out_dir, sarif_cache)
 
-    sarif_clean_files: set[str] = set()
-    if sarif_cache:
-        from .sweep import _normalize_sarif_path
-
-        _sarif_alerted_files = set(sarif_cache._by_file.keys())
-        for _fi in checklist.get("files", []):
-            _fp = _fi.get("path", "")
-            if not _fp:
-                continue
-            if _normalize_sarif_path(_fp) not in _sarif_alerted_files:
-                sarif_clean_files.add(_fp)
-        if sarif_clean_files:
-            logger.info(
-                "sarif_clean: %d / %d checklist files have zero SARIF alerts",
-                len(sarif_clean_files),
-                len(sarif_clean_files) + len(_sarif_alerted_files),
-            )
+    sarif_clean_files = _sarif_clean_files_from_cache(sarif_cache, checklist)
+    if sarif_clean_files:
+        logger.info(
+            "sarif_clean: %d / %d checklist files scanned with zero "
+            "SARIF alerts",
+            len(sarif_clean_files),
+            len(sarif_clean_files) + len(sarif_cache._by_file),
+        )
 
     taint_approx_results = _load_or_build_taint_approx_raw(
         config.target_path, config.out_dir,
@@ -14580,39 +14606,33 @@ def _run_tool_chain(
                         _checklist_line_end(config, file_path, function_name)
                         or (line_start + 50 if line_start else 0),
                     )
-                    if cached is not None:
-                        if cached:
-                            correlated = [
-                                r for r in cached
-                                if evidence_matches_hypothesis(
-                                    family_for_rule(r.get("ruleId", "")),
-                                    hypothesis,
-                                    cwe,
-                                )
-                            ]
-                            if correlated:
-                                confirmed.append("sarif_cache:semgrep")
-                                logger.debug(
-                                    "sarif_cache hit: %s:%s — %d correlated "
-                                    "prior results",
-                                    file_path,
-                                    function_name,
-                                    len(correlated),
-                                )
-                            else:
-                                logger.debug(
-                                    "sarif_cache: %s:%s — %d prior results "
-                                    "uncorrelated with hypothesis; context "
-                                    "only, not confirmation",
-                                    file_path,
-                                    function_name,
-                                    len(cached),
-                                )
-                        # Cache hit skips this entry's sweep entirely, so
-                        # the per-hypothesis rule file baked into the
-                        # config would never reach the unlink finally
-                        # below — remove it here or it leaks on every
-                        # sarif_cache hit.
+                    correlated = [
+                        r for r in (cached or [])
+                        if evidence_matches_hypothesis(
+                            family_for_rule(r.get("ruleId", "")),
+                            hypothesis,
+                            cwe,
+                        )
+                    ]
+                    if correlated:
+                        # Confirm path — the ONLY case a cache hit may
+                        # substitute for the per-hypothesis sweep. The
+                        # semgrep channel outcome is recorded here; the
+                        # dynamic rule file baked into the config would
+                        # never reach the unlink finally below, so
+                        # remove it or it leaks on every cache confirm.
+                        confirmed.append("sarif_cache:semgrep")
+                        if tier_counters:
+                            _increment_tier_dict(
+                                tier_counters, "semgrep", "confirmed",
+                            )
+                        logger.debug(
+                            "sarif_cache hit: %s:%s — %d correlated "
+                            "prior results",
+                            file_path,
+                            function_name,
+                            len(correlated),
+                        )
                         _cached_rule = tool_cfg.get("rule") or ""
                         if os.path.basename(_cached_rule).startswith(
                                 "audit_sweep_"):
@@ -14621,6 +14641,22 @@ def _run_tool_chain(
                             except OSError:
                                 pass
                         continue
+                    if cached is not None:
+                        # Empty-in-range or uncorrelated cache content:
+                        # a prior scan's STOCK rules finding nothing
+                        # (or something unrelated) near these lines
+                        # says nothing about THIS hypothesis — fall
+                        # through and run the per-hypothesis rule so
+                        # the semgrep channel gets a real
+                        # confirmed/refuted/error record.
+                        logger.debug(
+                            "sarif_cache: %s:%s — %d prior in-range "
+                            "results, none correlated with hypothesis; "
+                            "running the per-hypothesis sweep",
+                            file_path,
+                            function_name,
+                            len(cached),
+                        )
 
                 rule_path = tool_cfg["rule"]
                 # keyword marks a dynamic per-hypothesis rule: only

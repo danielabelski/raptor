@@ -82,8 +82,15 @@ class SarifCache:
     directory. When the sweep engine wants to run semgrep on a file,
     it checks here first — a cache hit returns the pre-existing matches
     without spawning a subprocess.
+
+    ``scanned_files`` records the files the producing scans DECLARED
+    they analysed (SARIF ``runs[].artifacts``). The cache itself is
+    positive-only — a file absent from ``_by_file`` may simply never
+    have been scanned — so absence of alerts is only authoritative for
+    files present in ``scanned_files``.
     """
     _by_file: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    scanned_files: set = field(default_factory=set)
     hit_count: int = 0
     miss_count: int = 0
     _counter_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -209,11 +216,29 @@ def _ingest_sarif_file(
         return 0
     ingested = 0
     fresh_memo: dict[str, bool] = {}
+
+    def _fresh(normalized: str) -> bool:
+        if freshness is None:
+            return True
+        if normalized not in fresh_memo:
+            fresh_memo[normalized] = bool(freshness(normalized))
+        return fresh_memo[normalized]
+
     for run in data.get("runs", []):
         tool_name = (
             run.get("tool", {}).get("driver", {}).get("name", "")
         ).lower()
         is_codeql = "codeql" in tool_name
+        # Declared analysis coverage: only files the scan SAYS it
+        # analysed may later count as "scanned and clean". Results
+        # alone can't prove coverage (positive-only cache).
+        for artifact in run.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            art_uri = (artifact.get("location") or {}).get("uri", "")
+            art_norm = _normalize_sarif_path(art_uri)
+            if art_norm and _fresh(art_norm):
+                cache.scanned_files.add(art_norm)
         for result in run.get("results", []):
             locs = result.get("locations") or [{}]
             loc = locs[0] if locs else {}
@@ -222,11 +247,8 @@ def _ingest_sarif_file(
             normalized = _normalize_sarif_path(uri)
             if not normalized:
                 continue
-            if freshness is not None:
-                if normalized not in fresh_memo:
-                    fresh_memo[normalized] = bool(freshness(normalized))
-                if not fresh_memo[normalized]:
-                    continue
+            if not _fresh(normalized):
+                continue
             result["_sarif_source"] = "codeql" if is_codeql else "semgrep"
             _annotate_sarif_result(result, run_label=run_label)
             cache._by_file.setdefault(normalized, []).append(result)

@@ -75,6 +75,15 @@ def _check_zip_entries(infolist) -> list[str]:
 # exhaustion via infolist materialisation.
 _MAX_ENTRIES = DEFAULT_MAX_ENTRIES
 
+# Cap on the embedded ``.project.json`` metadata entry. It carries a
+# handful of short fields (name, target, description, notes, created)
+# — a few KB at most in practice. Import buffers and parses it
+# wholesale in the trusted parent BEFORE the streaming per-entry size
+# checks of the extraction loop apply, so it needs its own bound; the
+# aggregate 10 GiB declared-size fast-reject is far too coarse to
+# protect a single-entry read.
+_MAX_PROJECT_META_BYTES = 1024 * 1024
+
 
 class _ZipBombShapeError(Exception):
     """Raised when an open zipfile exceeds ``_MAX_ENTRIES``.
@@ -652,8 +661,32 @@ def import_project(zip_path: Path, projects_dir: Path,
             # --- Read project metadata ---
             if has_common_root:
                 project_name = first_part
+            # Per-entry byte cap BEFORE buffering/parsing the metadata
+            # in the trusted parent: check the declared size, then
+            # bound the actual decompressed read too (the declared
+            # size is attacker-controlled and can undersell a huge
+            # stored stream).
+            meta_info = next(
+                info for info in bounded_entries
+                if info.filename == meta_path
+            )
+            if meta_info.file_size > _MAX_PROJECT_META_BYTES:
+                raise ValueError(
+                    f"Project metadata entry {meta_path!r} declares "
+                    f"{meta_info.file_size} bytes — exceeds the "
+                    f"{_MAX_PROJECT_META_BYTES}-byte metadata cap"
+                )
+            with zf.open(meta_path) as meta_fh:
+                raw_meta = meta_fh.read(_MAX_PROJECT_META_BYTES + 1)
+            if len(raw_meta) > _MAX_PROJECT_META_BYTES:
+                raise ValueError(
+                    f"Project metadata entry {meta_path!r} exceeds the "
+                    f"{_MAX_PROJECT_META_BYTES}-byte metadata cap "
+                    f"(declared size was smaller — corrupted or "
+                    f"malicious zip)"
+                )
             try:
-                embedded_meta = json.loads(zf.read(meta_path))
+                embedded_meta = json.loads(raw_meta)
                 if not isinstance(embedded_meta, dict):
                     msg = "Corrupt .project.json in archive"
                     raise ValueError(msg)

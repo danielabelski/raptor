@@ -125,3 +125,34 @@ class ImportProjectForgedEntryCountTest(unittest.TestCase):
             msg = str(cm.exception).lower()
             self.assertIn("zip-bomb", msg)
             self.assertIn("central directory", msg)
+
+
+class ImportProjectOversizedMetadataTest(unittest.TestCase):
+    """The embedded .project.json is buffered and parsed wholesale in
+    the trusted parent BEFORE the extraction loop's streaming size
+    checks apply — it needs its own per-entry byte cap."""
+
+    def _make_zip_with_meta(self, zpath: Path, meta: str) -> None:
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(".project.json", meta)
+            zf.writestr("findings.json", '{"findings": []}')
+
+    def test_oversized_metadata_rejected(self) -> None:
+        with TemporaryDirectory() as d:
+            zpath = Path(d) / "bigmeta.zip"
+            # Valid JSON, ~2 MiB — over the 1 MiB metadata cap.
+            meta = ('{"name": "bigmeta", "padding": "'
+                    + "x" * (2 * 1024 * 1024) + '"}')
+            self._make_zip_with_meta(zpath, meta)
+            with self.assertRaises(ValueError) as cm:
+                import_project(zpath, Path(d) / "projects",
+                               output_base=Path(d) / "output")
+            self.assertIn("metadata cap", str(cm.exception))
+
+    def test_normal_metadata_still_imports(self) -> None:
+        with TemporaryDirectory() as d:
+            zpath = Path(d) / "ok.zip"
+            self._make_zip_with_meta(zpath, '{"name": "okproj"}')
+            result = import_project(zpath, Path(d) / "projects",
+                                    output_base=Path(d) / "output")
+            self.assertEqual(result["name"], "okproj")

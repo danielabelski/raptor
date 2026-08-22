@@ -231,6 +231,39 @@ def _provider_max_body_bytes() -> int:
     )
 
 
+# Upstream-relay bounds. The relay loop drains ``iter_raw()`` to EOF
+# with only PER-READ timeouts — without a cumulative byte cap and a
+# total deadline, a drip-feeding or fire-hosing (mis)behaving upstream
+# holds the handler thread and connection slot forever and can stream
+# unbounded bytes through the process. Both limits are generous but
+# finite: the largest legitimate LLM response is a few MiB and the
+# longest legitimate generation minutes, not hours.
+_RELAY_MAX_BYTES_DEFAULT = 256 * 1024 * 1024
+_RELAY_DEADLINE_S_DEFAULT = 3600
+
+
+def _relay_max_bytes() -> int:
+    return _env_int(
+        "RAPTOR_LLM_DISPATCHER_RELAY_MAX_BYTES", _RELAY_MAX_BYTES_DEFAULT,
+    )
+
+
+def _relay_deadline_s() -> int:
+    return _env_int(
+        "RAPTOR_LLM_DISPATCHER_RELAY_DEADLINE_S", _RELAY_DEADLINE_S_DEFAULT,
+    )
+
+
+class RelayLimitExceeded(OSError):
+    """Upstream response exceeded the relay byte cap or total deadline.
+
+    An ``OSError`` subclass so the handler's existing mid-stream error
+    path applies unchanged: partial usage is booked (aborted=True), a
+    ``request.error`` audit row records the class name, and the
+    connection is torn down.
+    """
+
+
 # Per-request budget reservation for scoped child tokens. The budget
 # check and the post-response booking are separated by the whole
 # upstream round-trip; without a reservation N concurrent requests all
@@ -1816,7 +1849,33 @@ def _make_request_handler(
                             continue
                         self.send_header(k, v)
                     self.end_headers()
+                    relayed_bytes = 0
+                    max_relay_bytes = _relay_max_bytes()
+                    relay_deadline = (
+                        time.monotonic() + _relay_deadline_s()
+                    )
                     for chunk in up.iter_raw():
+                        relayed_bytes += len(chunk)
+                        if relayed_bytes > max_relay_bytes:
+                            _logger.warning(
+                                "llm-dispatcher: aborting relay for "
+                                "%s — response exceeded %d bytes",
+                                provider_name, max_relay_bytes,
+                            )
+                            raise RelayLimitExceeded(
+                                "upstream response exceeded the "
+                                f"{max_relay_bytes}-byte relay cap"
+                            )
+                        if time.monotonic() > relay_deadline:
+                            _logger.warning(
+                                "llm-dispatcher: aborting relay for "
+                                "%s — total deadline (%ds) exceeded",
+                                provider_name, _relay_deadline_s(),
+                            )
+                            raise RelayLimitExceeded(
+                                "upstream relay exceeded the "
+                                f"{_relay_deadline_s()}s total deadline"
+                            )
                         if scanner is not None:
                             scanner.feed(chunk)
                         self.wfile.write(chunk)

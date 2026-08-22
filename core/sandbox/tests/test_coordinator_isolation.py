@@ -29,6 +29,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,14 @@ sys.path.insert(0, str(REPO))
 os.environ.setdefault("_RAPTOR_TRUSTED", "1")
 
 COORDINATOR = REPO / "core" / "sandbox" / "netns_coordinator.py"
+
+
+def _probe_output_dir() -> str:
+    """Filesystem boundary for probe specs. The coordinator fail-closes
+    on hostile-code profiles (target_run) that carry neither target=
+    nor output=, so every probe spec names a scratch run directory as
+    its writable surface."""
+    return tempfile.mkdtemp(prefix="raptor-coord-isolation-")
 
 
 # ----------------------------------------------------------------------
@@ -65,16 +74,19 @@ def _coordinator_works() -> bool:
     if not COORDINATOR.is_file():
         return False
     probe = "import os; print(os.readlink('/proc/self/ns/net'))"
+    out_dir = _probe_output_dir()
     request = {
         "target": {
             "cmd": [sys.executable, "-c", probe],
             "env": {}, "timeout_s": 5.0, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "exploit": {
             "cmd": [sys.executable, "-c", probe],
             "env": {}, "timeout_s": 5.0, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "wait_listen_port": 0, "wait_listen_timeout_s": 0.1,
     }
@@ -131,16 +143,19 @@ pytestmark = pytest.mark.skipif(
 def _run_probe_via_coordinator(probe_code: str, *, timeout_s: float = 5.0):
     """Run a Python probe inside the coordinator as the "target", with
     a no-op exploit. Returns (rc, stdout, stderr) of the probe."""
+    out_dir = _probe_output_dir()
     request = {
         "target": {
             "cmd": [sys.executable, "-u", "-c", probe_code],
             "env": {}, "timeout_s": timeout_s, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "exploit": {
             "cmd": [sys.executable, "-c", "pass"],
             "env": {}, "timeout_s": 1.0, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "wait_listen_port": 0, "wait_listen_timeout_s": 0.1,
     }
@@ -343,16 +358,19 @@ def test_target_and_exploit_share_same_netns():
         "import os\n"
         "print(os.readlink('/proc/self/ns/net'))\n"
     )
+    out_dir = _probe_output_dir()
     request = {
         "target": {
             "cmd": [sys.executable, "-c", probe_print_ns],
             "env": {}, "timeout_s": 5.0, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "exploit": {
             "cmd": [sys.executable, "-c", probe_print_ns],
             "env": {}, "timeout_s": 5.0, "profile": "target_run",
             "block_network": True, "allowed_tcp_ports": [],
+            "output": out_dir,
         },
         "wait_listen_port": 0, "wait_listen_timeout_s": 0.1,
     }

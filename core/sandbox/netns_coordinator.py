@@ -279,6 +279,39 @@ def _setup_namespaces() -> str:
 # Child process management
 # ----------------------------------------------------------------------
 
+# Profiles whose child command is HOSTILE code (the probed target
+# binary). ``target_run`` is the posture the paired callers give the
+# target; it is also ``_run_child``'s default when a spec omits
+# ``profile``, so bare specs resolve to hostile. A hostile-code spec
+# with no filesystem boundary — no ``target`` and no ``output`` —
+# engages neither the mount tree nor any Landlock write rule: isolation
+# degrades to network-only while the child keeps the caller's full
+# same-UID filesystem authority. main() refuses such specs outright
+# (fail closed); trusted-tool profiles (frida, debug, full, ...) keep
+# their current defaults.
+_HOSTILE_CODE_PROFILES = frozenset({"target_run"})
+
+
+def _spec_isolation_problem(role: str, spec: dict[str, Any]) -> str | None:
+    """Fail-closed gate for hostile-code child specs. Returns a
+    human-readable refusal reason, or None when the spec is acceptable.
+    Shape problems (wrong field types, missing cmd) are the province of
+    the existing request validation and ``_run_child``'s RPC-boundary
+    narrowing, not this gate."""
+    profile = spec.get("profile", "target_run")
+    if profile not in _HOSTILE_CODE_PROFILES:
+        return None
+    if spec.get("target") or spec.get("output"):
+        return None
+    return (
+        f"spec '{role}' runs hostile code (profile {profile!r}) without "
+        "any filesystem boundary: with neither target= nor output= the "
+        "sandbox engages no mount tree and no Landlock write rule, "
+        "leaving the child the caller's full filesystem authority. Pass "
+        "output= (the run directory) and/or target= on the spec, or use "
+        "a trusted-tool profile."
+    )
+
 
 class _ChildResult:
     __slots__ = (
@@ -580,6 +613,14 @@ def main() -> None:
             f"numeric field in request not coercible: {exc}",
         )
         sys.exit(2)
+
+    # Fail-closed isolation floor: a hostile-code profile with no
+    # filesystem boundary is refused before either child starts.
+    for role, spec in (("target", target_spec), ("exploit", exploit_spec)):
+        problem = _spec_isolation_problem(role, spec)
+        if problem is not None:
+            _emit_error("unbounded_hostile_spec", problem)
+            sys.exit(2)
 
     target_result = _ChildResult()
     exploit_result = _ChildResult()

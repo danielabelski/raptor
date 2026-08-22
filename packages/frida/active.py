@@ -196,6 +196,13 @@ def observe_paired(
             "timeout_s": duration_sec + 10,
             "profile": "target_run",
             "block_network": False,
+            # The target binary is HOSTILE code: confine its writes to
+            # the run directory and restrict its reads. Without a
+            # filesystem boundary the coordinator (fail-closed) refuses
+            # the spec — network-only isolation is not enough for a
+            # hostile child.
+            "output": str(run_dir),
+            "restrict_reads": True,
         },
         "exploit": {
             "cmd": frida_cmd,

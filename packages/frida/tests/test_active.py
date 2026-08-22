@@ -264,6 +264,11 @@ class TestObservePaired:
         request = json.loads(request_bytes)
         assert request["target"]["cmd"] == ["./myserver", "--port", "8080"]
         assert request["target"]["profile"] == "target_run"
+        # The target binary is hostile code: the spec must carry a
+        # filesystem boundary (the run dir as output) and restricted
+        # reads, or the coordinator's fail-closed floor refuses it.
+        assert request["target"]["output"] == str(run_dir)
+        assert request["target"]["restrict_reads"] is True
         assert request["exploit"]["profile"] == "frida"
         assert request["wait_listen_port"] == 8080
         assert "--target" in " ".join(request["exploit"]["cmd"])

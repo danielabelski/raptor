@@ -1009,6 +1009,78 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
     return result
 
 
+# Retention ceilings for the streamed child's stdout/stderr. The
+# drain loop in run_cc_streaming exists to avoid pipe deadlock, but
+# pre-fix it retained every line/chunk, so the only memory bound was
+# endpoint bandwidth x the call deadline — a hostile or compromised
+# endpoint could stream gigabytes into parent memory. Ceilings are
+# generous (the largest legitimate stream-json transcripts are a few
+# MiB) and env-overridable; a single readline allocation is bounded
+# separately so one endless unterminated line can't balloon inside
+# readline itself.
+_STREAM_STDOUT_CAP_DEFAULT = 64 * 1024 * 1024
+_STREAM_STDERR_CAP_DEFAULT = 8 * 1024 * 1024
+_STREAM_READ_MAX = 16 * 1024 * 1024
+
+
+def _env_byte_cap(name: str, default: int) -> int:
+    """Positive-int env override with silent fallback to *default*."""
+    import os
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+class _CappedCapture:
+    """Head + rolling-tail capture with a cumulative byte ceiling.
+
+    Keeps the HEAD of the stream (init/system lines, the first error
+    spew) and a rolling TAIL (the newest bytes — the authoritative
+    stream-json ``result`` event always arrives last), dropping the
+    middle once the ceiling is hit. Protocol correctness survives
+    truncation: :func:`parse_stream_json_lines` skips non-JSON
+    fragments, and the result line rides the retained tail.
+    """
+
+    def __init__(self, cap: int) -> None:
+        from collections import deque
+        self._head_cap = cap // 2
+        self._tail_cap = cap - self._head_cap
+        self._head: list = []
+        self._head_bytes = 0
+        self._tail = deque()
+        self._tail_bytes = 0
+        self.dropped_bytes = 0
+
+    def append(self, item) -> None:
+        size = len(item)
+        if not self._tail and self._head_bytes + size <= self._head_cap:
+            self._head.append(item)
+            self._head_bytes += size
+            return
+        self._tail.append(item)
+        self._tail_bytes += size
+        # Evict oldest tail items; always keep the newest one even if
+        # it alone exceeds the tail budget (single items are already
+        # bounded by the read-size caps at the append sites).
+        while self._tail_bytes > self._tail_cap and len(self._tail) > 1:
+            dropped = self._tail.popleft()
+            self._tail_bytes -= len(dropped)
+            self.dropped_bytes += len(dropped)
+
+    @property
+    def truncated(self) -> bool:
+        return self.dropped_bytes > 0
+
+    def items(self) -> list:
+        return self._head + list(self._tail)
+
+
 def run_cc_streaming(
     cmd: list[str],
     prompt: str,
@@ -1074,14 +1146,18 @@ def run_cc_streaming(
         except (BrokenPipeError, OSError):
             pass
 
-    collected: list[str] = []
+    collected = _CappedCapture(
+        _env_byte_cap("RAPTOR_CC_STREAM_STDOUT_CAP", _STREAM_STDOUT_CAP_DEFAULT),
+    )
     # Drain stderr WHILE the child runs. A child that writes more
     # than the 64KB pipe buffer to stderr (network retry spew, node
     # warnings) otherwise blocks in write(2) forever and the call
     # dies as a timeout instead of surfacing the real error. Read via
     # os.read on the raw fd — readline() on the text wrapper could
     # block on a partial line even after select() reports readiness.
-    stderr_chunks: list[bytes] = []
+    stderr_chunks = _CappedCapture(
+        _env_byte_cap("RAPTOR_CC_STREAM_STDERR_CAP", _STREAM_STDERR_CAP_DEFAULT),
+    )
     stderr_fd = proc.stderr.fileno() if proc.stderr else None
     start = _time.monotonic()
     deadline = start + timeout_s if timeout_s else None
@@ -1117,7 +1193,10 @@ def run_cc_streaming(
             if stdin_fd is not None and stdin_pos >= len(stdin_data):
                 _close_stdin()
         if proc.stdout in ready:
-            line = proc.stdout.readline()
+            # Bounded readline: an endless unterminated line otherwise
+            # accumulates inside readline itself. Oversize lines split
+            # into fragments the parser skips.
+            line = proc.stdout.readline(_STREAM_READ_MAX)
             if line:
                 collected.append(line)
         if proc.stderr in ready and stderr_fd is not None:
@@ -1130,7 +1209,11 @@ def run_cc_streaming(
     _close_stdin()
 
     if proc.stdout:
-        collected.extend(proc.stdout)
+        while True:
+            line = proc.stdout.readline(_STREAM_READ_MAX)
+            if not line:
+                break
+            collected.append(line)
     # Drain whatever stderr remains without blocking (zero-timeout
     # select guards against a grandchild holding the pipe open).
     while stderr_fd is not None:
@@ -1142,10 +1225,20 @@ def run_cc_streaming(
             break
         stderr_chunks.append(chunk)
 
+    for stream_name, capture in (
+        ("stdout", collected), ("stderr", stderr_chunks),
+    ):
+        if capture.truncated:
+            logger.warning(
+                "claude -p %s exceeded the retention ceiling — dropped "
+                "%d bytes from the middle of the stream (head and tail "
+                "kept)", stream_name, capture.dropped_bytes,
+            )
+
     if proc.returncode != 0:
-        stderr_text = b"".join(stderr_chunks).decode("utf-8", "replace")
+        stderr_text = b"".join(stderr_chunks.items()).decode("utf-8", "replace")
         from core.security.prompt_output_sanitise import escape_nonprintable
-        partial = parse_stream_json_lines(collected)
+        partial = parse_stream_json_lines(collected.items())
         # Aborts (budget cap, API refusal) exit nonzero with EMPTY
         # stderr — the cause lives in the final stream-json result
         # event. Prefer stderr when present, else the parsed event's
@@ -1170,4 +1263,4 @@ def run_cc_streaming(
         err.model = partial.model
         return err
 
-    return parse_stream_json_lines(collected)
+    return parse_stream_json_lines(collected.items())

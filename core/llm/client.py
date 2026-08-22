@@ -140,6 +140,179 @@ def is_budget_exceeded_error(exc: BaseException) -> bool:
     )
 
 
+class LLMAuthPersistentError(RuntimeError):
+    """Persistent auth-layer refusal — TERMINAL for the consuming phase.
+
+    Raised by phase drivers (via :class:`AuthFailureTracker`) when the
+    LLM transport keeps refusing with auth errors: N consecutive
+    401/403-class failures, or a single dispatcher-authoritative
+    token-death signal ("token expired" / "unknown token" from the
+    RAPTOR LLM dispatcher). At that point "the LLM said nothing" and
+    "the auth layer refused" have provably diverged: every further
+    call is a guaranteed refusal, and converting the refusals into
+    empty results reports garbage as success (observed: a >12 h audit
+    whose token expired mid-run had iris-assumptions "succeed" with
+    0/6 batches and iris.synthesise report 0 assumptions across 690
+    straight 401s).
+
+    Callers must ABORT the phase loudly and record the abort in run
+    state — never return an empty result set for it. Carries the
+    phase name on ``.phase`` for run-state recording.
+    """
+
+    def __init__(self, phase: str, message: str) -> None:
+        super().__init__(message)
+        self.phase = phase
+
+
+# Dispatcher-authoritative token-death signals: the 401 bodies emitted
+# by core/llm/dispatcher/server._validate_token, ANCHORED to the
+# error-field shape they actually ride in
+# (``{'error': 'token expired (age ...s, ttl ...s)'}`` /
+# ``{"error": "unknown token"}``) — never matched as bare substrings,
+# because exception text can quote model/target-controlled content
+# (a schema-violation message embeds model-chosen field names). One
+# anchored sighting is definitive: the dispatcher itself declared the
+# credential dead, so there is no transient interpretation to wait out.
+_TOKEN_DEATH_RE = re.compile(
+    r"error['\"]?\s*[:=]\s*['\"]\s*"
+    r"(?:token expired \(age |unknown token['\"])",
+    re.IGNORECASE,
+)
+
+
+def _exception_chain(exc: BaseException):
+    """Yield *exc* and its causal chain (``__cause__``, falling back to
+    non-suppressed ``__context__`` like traceback rendering), bounded
+    and cycle-safe."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 8:
+        seen.add(id(cur))
+        yield cur
+        if cur.__cause__ is not None:
+            cur = cur.__cause__
+        elif not cur.__suppress_context__:
+            cur = cur.__context__
+        else:
+            cur = None
+
+
+def is_auth_refusal(exc: BaseException) -> bool:
+    """True when *exc* signals an auth-layer refusal (401/403 class).
+
+    Classification prefers STRUCTURAL signals over message text, in
+    causal-chain order (this client's wrapped ``RuntimeError`` carries
+    the original failure on ``__cause__``):
+
+    1. Response-shape failures (schema violations, JSON decode errors)
+       are NEVER auth — their messages quote model-chosen content
+       and decode coordinates ("line 2 column 401"), which must not
+       be able to impersonate a credential failure.
+    2. Typed SDK auth errors and a transport-layer ``status_code`` of
+       401/403 are auth.
+    3. Only when no structural signal exists does the word-boundary,
+       status-context-anchored text classifier run — the STRICT auth
+       subset (``is_auth_status_text``), not the auth/billing union:
+       quota bursts and billing caps have their own handling and must
+       not read as credential death.
+    """
+    if isinstance(exc, LLMAuthPersistentError):
+        return True
+    if not isinstance(exc, Exception):
+        return False
+    for e in _exception_chain(exc):
+        if isinstance(e, (SchemaUnknownFieldError, json.JSONDecodeError)):
+            return False
+        if _OPENAI_AVAILABLE:
+            try:
+                if isinstance(e, _openai_module.AuthenticationError):
+                    return True
+            except AttributeError:
+                pass
+        if _ANTHROPIC_AVAILABLE:
+            try:
+                if isinstance(e, _anthropic_module.AuthenticationError):
+                    return True
+            except AttributeError:
+                pass
+        status = getattr(e, "status_code", None)
+        if (
+            isinstance(status, int)
+            and not isinstance(status, bool)
+            and status in (401, 403)
+        ):
+            return True
+    from core.llm.structured_call import is_auth_status_text
+    return is_auth_status_text(str(exc))
+
+
+class AuthFailureTracker:
+    """Consecutive-auth-failure counter with phase-abort semantics.
+
+    Phase drivers feed every LLM-call outcome through
+    :meth:`note_success` / :meth:`note_failure`. The tracker trips
+    terminal when ``threshold`` CONSECUTIVE auth-classified failures
+    accumulate (any success or non-auth failure resets the streak),
+    or immediately when a failure carries an explicit dispatcher
+    token-death signal. Once tripped it stays tripped;
+    :meth:`raise_if_tripped` converts the state into a phase-named
+    :class:`LLMAuthPersistentError`.
+
+    Thread-safe — batch drivers fan calls out via ``run_parallel``.
+    """
+
+    def __init__(self, phase: str, threshold: int = 3) -> None:
+        self.phase = phase
+        self.threshold = max(1, int(threshold))
+        self._consecutive = 0
+        self._tripped = False
+        self._last: str = ""
+        self._lock = threading.Lock()
+
+    @property
+    def tripped(self) -> bool:
+        return self._tripped
+
+    def note_success(self) -> None:
+        with self._lock:
+            self._consecutive = 0
+
+    def note_failure(self, exc: BaseException) -> bool:
+        """Record one failed call; returns the (possibly new) tripped
+        state. Non-auth failures reset the consecutive-401 streak —
+        they show the auth layer still admits calls. The instant-trip
+        arm requires the dispatcher's anchored error-field shape
+        (``_TOKEN_DEATH_RE``) on an already-auth-classified failure,
+        never a bare substring over arbitrary exception text."""
+        if not is_auth_refusal(exc):
+            with self._lock:
+                self._consecutive = 0
+            return self._tripped
+        msg = str(exc)
+        explicit = bool(_TOKEN_DEATH_RE.search(msg))
+        with self._lock:
+            self._consecutive += 1
+            self._last = msg
+            if explicit or self._consecutive >= self.threshold:
+                self._tripped = True
+            return self._tripped
+
+    def raise_if_tripped(self) -> None:
+        if not self._tripped:
+            return
+        with self._lock:
+            last = _sanitize_log_message(self._last)[:500]
+            n = self._consecutive
+        raise LLMAuthPersistentError(
+            self.phase,
+            f"{self.phase}: aborting after {n} consecutive auth "
+            f"failure(s) — the LLM auth layer is refusing every call "
+            f"(last error: {last}). Refusing to report empty results "
+            f"as phase success.",
+        )
+
+
 # ── Process-level scorecard flush aggregation ─────────────────────────
 #
 # Each LLMClient used to register its own atexit flush, and each flush
@@ -2412,7 +2585,13 @@ class LLMClient:
                     error_msg += "\n→ Check API keys and network connectivity"
 
             logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            # ``from last_error`` preserves the causal chain: consumers
+            # that classify failures structurally (the persistent-auth
+            # phase-abort tracker walks __cause__ for typed SDK errors
+            # and response-shape failures) must not be reduced to
+            # substring-matching over a message that may quote
+            # model/target-controlled text.
+            raise RuntimeError(error_msg) from last_error
 
     def supports_prompt_caching_for(
         self, model_config: ModelConfig | None = None,
@@ -2999,7 +3178,13 @@ class LLMClient:
                     error_msg += "\n→ Check API keys and network connectivity"
 
             logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            # ``from last_error`` preserves the causal chain: consumers
+            # that classify failures structurally (the persistent-auth
+            # phase-abort tracker walks __cause__ for typed SDK errors
+            # and response-shape failures) must not be reduced to
+            # substring-matching over a message that may quote
+            # model/target-controlled text.
+            raise RuntimeError(error_msg) from last_error
 
     def get_stats(self) -> dict[str, Any]:
         """Get usage statistics with per-provider, per-task-type, and token split breakdowns."""

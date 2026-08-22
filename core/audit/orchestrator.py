@@ -862,6 +862,13 @@ class OrchestratorResult:
     error_counts: dict[str, int] = field(default_factory=dict)
     error_retries: int = 0
     error_retry_recovered: int = 0
+    # Phases that ABORTED on persistent auth-layer refusal (see
+    # _record_phase_abort): "<phase>: <error>" strings. Also persisted
+    # to <out_dir>/phase-aborts.json so audit-report.json (rebuilt
+    # from the out_dir) surfaces them to downstream consumers — a
+    # phase in this list produced NO trustworthy output, which is
+    # different from a phase that ran and found nothing.
+    phase_aborts: list[str] = field(default_factory=list)
     tier_counters: dict[str, TierCounters] = field(
         default_factory=_make_tier_counters,
     )
@@ -2747,13 +2754,20 @@ def review_one_function(
                     outcome.file,
                     outcome.function,
                 )
-        except Exception:
-            logger.debug(
-                "mid-loop synthesis failed for %s:%s",
-                outcome.file,
-                outcome.function,
-                exc_info=True,
-            )
+        except Exception as exc:
+            from core.llm.client import LLMAuthPersistentError
+            if isinstance(exc, LLMAuthPersistentError):
+                # Dead credential, not a bad seed: record the phase
+                # abort (deduplicated) instead of a per-function
+                # debug line that reads as "no rule synthesised".
+                _record_phase_abort(config, result, exc)
+            else:
+                logger.debug(
+                    "mid-loop synthesis failed for %s:%s",
+                    outcome.file,
+                    outcome.function,
+                    exc_info=True,
+                )
 
     # ── Publish outcome before chain injection ─────────────────────────
     # The outcome, taint summaries, and constraints must be visible
@@ -5340,6 +5354,109 @@ def _cleanup_after_executor_failure(
 
 
 
+_PHASE_ABORTS_FILENAME = "phase-aborts.json"
+
+
+def _record_phase_abort(config: Any, result: Any, exc: Exception) -> None:
+    """Record a phase-level ABORT on persistent LLM auth refusal.
+
+    Fail-closed counterpart to the phases' degrade paths: when a
+    phase raises ``LLMAuthPersistentError`` (dead dispatcher token,
+    revoked key — every call refused), its output is auth-refusal
+    zero-fill, not a real empty result. Three sinks, deduplicated per
+    phase: an ERROR log line, ``result.phase_aborts`` (run summary),
+    and ``<out_dir>/phase-aborts.json`` — the sidecar survives the
+    process and is folded into ``audit-report.json`` by
+    ``generate_report``, so downstream consumers of the run state see
+    "phase aborted", never "phase found nothing".
+    """
+    phase = str(getattr(exc, "phase", "") or "unknown")
+    entry_text = f"{phase}: {exc}"
+    if result is not None:
+        with result._lock:
+            already = any(
+                a.split(":", 1)[0] == phase for a in result.phase_aborts
+            )
+            if not already:
+                result.phase_aborts.append(entry_text)
+        if already:
+            logger.debug("phase abort repeat suppressed: %s", phase)
+            return
+    logger.error(
+        "PHASE ABORT — %s. The phase produced NO trustworthy output "
+        "(recorded in %s); its empty results must not be read as "
+        "\"nothing found\".",
+        entry_text, _PHASE_ABORTS_FILENAME,
+    )
+    out_dir = getattr(config, "out_dir", None)
+    if not out_dir:
+        return
+    try:
+        path = Path(out_dir) / _PHASE_ABORTS_FILENAME
+        records: list = []
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                records = loaded
+        if any(
+            isinstance(r, dict) and r.get("phase") == phase
+            for r in records
+        ):
+            return
+        records.append({
+            "phase": phase,
+            "error": str(exc),
+            "ts": time.time(),
+        })
+        path.write_text(
+            json.dumps(records, indent=2), encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — recording must not mask the abort
+        logger.warning(
+            "phase-abort sidecar write failed for %s", phase,
+            exc_info=True,
+        )
+
+
+def _clear_phase_abort(config: Any, *phases: str) -> None:
+    """Supersede stale sidecar abort records for *phases*.
+
+    A run that aborted a phase, then was reopened/resumed with a fixed
+    credential and COMPLETED the phase, must not keep reporting "Phase
+    aborts" for output that now exists — the sidecar survives in the
+    shared out_dir across segments. Called by each protected phase
+    driver on successful completion; a phase that aborted THIS call
+    never reaches its clear (the abort path returns first). Best-effort
+    like the recorder.
+    """
+    out_dir = getattr(config, "out_dir", None)
+    if not out_dir:
+        return
+    path = Path(out_dir) / _PHASE_ABORTS_FILENAME
+    if not path.is_file():
+        return
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, list):
+            return
+        keep = [
+            r for r in loaded
+            if not (isinstance(r, dict) and r.get("phase") in phases)
+        ]
+        if len(keep) == len(loaded):
+            return
+        if keep:
+            path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        else:
+            path.unlink()
+        logger.info(
+            "phase abort record(s) superseded — %s completed on this "
+            "run", ", ".join(sorted(set(phases))),
+        )
+    except Exception:  # noqa: BLE001 — supersede is best-effort
+        logger.debug("phase-abort supersede failed", exc_info=True)
+
+
 def _iris_refine_and_bypass(
     config: OrchestratorConfig,
     gaps: list[dict[str, Any]],
@@ -5347,6 +5464,7 @@ def _iris_refine_and_bypass(
     joern_server: Any,
     checklist: dict[str, Any],
     iris_taint_specs: list,
+    result: Any = None,
 ) -> tuple[Any, list[Any]]:
     """IRIS post-loop seam: refinement loop + bypass detection.
 
@@ -5355,6 +5473,9 @@ def _iris_refine_and_bypass(
     cold-profile run skips the refine loop, its prior_specs store
     reads, and the bypass analyzer entirely (announced once at run
     start by _apply_profile_gates).
+
+    ``result`` (the run's OrchestratorResult, when the caller has it)
+    receives the phase-abort record on persistent LLM auth refusal.
     """
     if not getattr(config, "iris", True):
         return None, []
@@ -5557,8 +5678,21 @@ def _iris_refine_and_bypass(
                     _write_iris_bypass_findings(
                         config.out_dir, iris_bypass_findings,
                     )
-    except Exception:
-        logger.debug("IRIS refinement/bypass failed", exc_info=True)
+    except Exception as exc:
+        from core.llm.client import LLMAuthPersistentError
+        if isinstance(exc, LLMAuthPersistentError):
+            # Persistent auth refusal: the refine loop's output would
+            # be zero-filled refusals (observed: iris-assumptions 0/6,
+            # iris.synthesise 0 assumptions after 690 straight 401s).
+            # Abort the phase loudly and record it in run state — do
+            # NOT let the debug-level degrade path read as success.
+            _record_phase_abort(config, result, exc)
+        else:
+            logger.debug("IRIS refinement/bypass failed", exc_info=True)
+    else:
+        # Completed without an abort: supersede any stale sidecar
+        # record a prior (reopened/resumed) segment left behind.
+        _clear_phase_abort(config, "iris-synth", "iris-assumptions")
     return bypass_runner, iris_bypass_findings
 
 
@@ -7120,6 +7254,7 @@ def _run_audit_body(
         joern_server,
         checklist,
         iris_taint_specs,
+        result=result,
     )
 
     if result.findings >= 2 and config.out_dir:
@@ -12698,9 +12833,19 @@ def _synthesize_external_seeds(
 
     queued = 0
     for ext in seeds:
-        synth = synthesize_from_external_seed(
-            ext, config, synthesis_count=result.synthesis_amplified,
-        )
+        try:
+            synth = synthesize_from_external_seed(
+                ext, config, synthesis_count=result.synthesis_amplified,
+            )
+        except Exception as exc:
+            from core.llm.client import LLMAuthPersistentError
+            if isinstance(exc, LLMAuthPersistentError):
+                # Every remaining seed would hit the same dead
+                # credential — abort the phase loudly instead of
+                # reporting "0 seeds synthesised" as success.
+                _record_phase_abort(config, result, exc)
+                return queued
+            raise
         if synth is None:
             continue
         with result._lock:
@@ -12734,6 +12879,9 @@ def _synthesize_external_seeds(
                 logger.debug(
                     "external seed rule persist failed", exc_info=True,
                 )
+    # Completed without an abort: supersede any stale sidecar record
+    # from a prior (reopened/resumed) segment.
+    _clear_phase_abort(config, "checker-synthesis")
     return queued
 
 
@@ -16268,12 +16416,25 @@ def _auto_synthesize_rules(
             continue
 
         exemplars = cwe_mechanism_findings[key]
-        synth = synthesize_and_sweep(
-            exemplars[0],
-            config,
-            seen_keys,
-            synthesis_count=synthesis_count,
-        )
+        try:
+            synth = synthesize_and_sweep(
+                exemplars[0],
+                config,
+                seen_keys,
+                synthesis_count=synthesis_count,
+            )
+        except Exception as exc:
+            from core.llm.client import LLMAuthPersistentError
+            if isinstance(exc, LLMAuthPersistentError):
+                # Dead credential: abort the PHASE, keep the RUN. An
+                # uncaught escape here reaches the CLI's generic
+                # failure path — lifecycle=failed, no report, the
+                # whole main loop's paid findings unreported — which
+                # is strictly worse than the fail-open this machinery
+                # replaced.
+                _record_phase_abort(config, result, exc)
+                return
+            raise
         if not synth:
             continue
         synthesis_count += 1
@@ -16285,6 +16446,10 @@ def _auto_synthesize_rules(
             key,
             len(synth.hits),
         )
+
+    # Completed without an auth abort (the abort path returns early):
+    # supersede any stale sidecar record from a prior segment.
+    _clear_phase_abort(config, "checker-synthesis")
 
 
 def _run_critique(
@@ -19599,6 +19764,13 @@ def _adversarial_refute_pass(
             )
             return
 
+    # Per-finding refuter failures are no-ops by contract, but a
+    # PERSISTENT auth refusal (dead dispatcher token) is a different
+    # animal: the tracker distinguishes it and the pass aborts loudly
+    # below instead of no-op'ing through every positive outcome.
+    from core.llm.client import AuthFailureTracker
+    auth_tracker = AuthFailureTracker("adversarial-refute")
+
     dispatched = 0
     for i, outcome in enumerate(result.outcomes):
         if outcome.status not in ("finding", "suspicious"):
@@ -19643,11 +19815,22 @@ def _adversarial_refute_pass(
             body=outcome.body,
             source=source,
             model_name=refuter_model,
+            auth_tracker=auth_tracker,
         )
         if ref is None:
             _increment_tier_dict(
                 result.tier_counters, "adversarial_refute", "errors",
             )
+            if auth_tracker.tripped:
+                # Not N independent refuter hiccups — the auth layer
+                # is refusing every call. Abort the pass loudly; a
+                # silently no-op'd adversarial pass ships findings
+                # unchallenged while claiming they were attacked.
+                try:
+                    auth_tracker.raise_if_tripped()
+                except Exception as exc:  # noqa: BLE001 — typed abort from the tracker
+                    _record_phase_abort(config, result, exc)
+                return
             continue
 
         result.cost_tracker.record_call(
@@ -19803,6 +19986,10 @@ def _adversarial_refute_pass(
             log_entry["prior_status"], log_entry["status"],
             (ref.defeating_mechanism or ref.counter_argument)[:120],
         )
+
+    # Completed without an auth abort (the abort path returns early):
+    # supersede any stale sidecar record from a prior segment.
+    _clear_phase_abort(config, "adversarial-refute")
 
 
 _C_EXTS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx"})

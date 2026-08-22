@@ -150,7 +150,8 @@ def refine_loop(
             if new_assumptions:
                 from .assumptions import merge_assumptions
                 assumptions = merge_assumptions(assumptions, new_assumptions)
-        except Exception:
+        except Exception as exc:
+            _reraise_auth_abort(exc)
             logger.debug(
                 "iris.refine: assumption synthesis failed",
                 exc_info=True,
@@ -273,7 +274,8 @@ def refine_loop(
                     feedback=fb_dict,
                     target_path=target_path,
                 )
-            except Exception:
+            except Exception as exc:
+                _reraise_auth_abort(exc)
                 logger.debug("Re-synthesis failed, keeping existing specs", exc_info=True)
                 revised = []
             if revised:
@@ -290,7 +292,8 @@ def refine_loop(
                     assumptions = merge_assumptions(
                         assumptions, new_assumptions,
                     )
-            except Exception:
+            except Exception as exc:
+                _reraise_auth_abort(exc)
                 logger.debug(
                     "iris.refine: assumption re-synthesis failed",
                     exc_info=True,
@@ -342,6 +345,22 @@ def _inject_bypass_candidates(
     return new_candidates
 
 
+def _reraise_auth_abort(exc: Exception) -> None:
+    """Re-raise phase-abort auth errors through the refine loop's
+    degrade-to-heuristic exception handling.
+
+    Every synthesis leg here degrades on failure by design (transient
+    LLM errors must not kill refinement) — but a persistent
+    auth-layer refusal is fail-closed by contract: the phase must
+    abort loudly, never zero-fill, so the typed abort punches through
+    to the orchestrator's run-state recording.
+    """
+    from core.llm.client import LLMAuthPersistentError
+
+    if isinstance(exc, LLMAuthPersistentError):
+        raise exc
+
+
 def _initial_synthesis(
     candidates: list[CandidateFunction],
     llm_client: Any,
@@ -357,7 +376,8 @@ def _initial_synthesis(
                 prior_specs=prior_specs,
                 target_path=target_path,
             )
-        except Exception:
+        except Exception as exc:
+            _reraise_auth_abort(exc)
             logger.debug(
                 "iris.refine: LLM synthesis failed, falling back to heuristic",
                 exc_info=True,

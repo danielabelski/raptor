@@ -94,6 +94,12 @@ class _BudgetExhaustedSkip(Exception):
     ``core.llm.client.LLMBudgetExceededError``)."""
 
 
+class _AuthAbortSkip(Exception):
+    """Internal marker: batch skipped without an LLM call because the
+    auth-failure tracker already tripped (terminal — see
+    ``core.llm.client.LLMAuthPersistentError``)."""
+
+
 def _run_batches(
     batches: list[_Batch],
     do_batch: Any,
@@ -102,7 +108,8 @@ def _run_batches(
     label: str,
     on_error: Any | None = None,
 ) -> list[Any]:
-    """Fan out *do_batch* over *batches* with budget-terminal semantics.
+    """Fan out *do_batch* over *batches* with budget- and
+    auth-terminal semantics.
 
     ``LLMBudgetExceededError`` is a terminal contract for the run
     (see ``core.llm.client``): once one batch hits it, every further
@@ -117,13 +124,27 @@ def _run_batches(
     before each batch, so a budget already spent by earlier pipeline
     stages (or an earlier synthesis leg) stops the loop before the
     first call.
+
+    PERSISTENT AUTH REFUSAL is fail-closed: when the auth layer keeps
+    refusing (three consecutive auth-classified failures, or one
+    explicit dispatcher token-death signal — ``AuthFailureTracker``),
+    the loop stops submitting and this function RAISES
+    ``LLMAuthPersistentError`` instead of returning the zero-filled
+    batch results.  "The LLM said nothing" must stay distinguishable
+    from "the auth layer refused every call" — the observed failure
+    was a >12 h audit whose expired dispatcher token turned
+    iris-assumptions into an apparent 0-of-6-batches success.
     """
-    from core.llm.client import is_budget_exceeded_error
+    from core.llm.client import (
+        AuthFailureTracker,
+        is_budget_exceeded_error,
+    )
     from core.llm.concurrency import run_parallel
 
     exhausted = threading.Event()
     lock = threading.Lock()
     skipped = [0]
+    auth = AuthFailureTracker(label)
     probe = getattr(llm_client, "is_budget_exhausted", None)
 
     def _fn(batch: _Batch) -> Any:
@@ -135,14 +156,22 @@ def _run_batches(
                 pass
         if exhausted.is_set():
             raise _BudgetExhaustedSkip()
-        return do_batch(batch)
+        if auth.tripped:
+            raise _AuthAbortSkip()
+        result = do_batch(batch)
+        auth.note_success()
+        return result
 
     def _handle_error(batch: _Batch, exc: Exception) -> Any:
         if isinstance(exc, _BudgetExhaustedSkip):
             with lock:
                 skipped[0] += 1
+        elif isinstance(exc, _AuthAbortSkip):
+            pass
         elif is_budget_exceeded_error(exc):
             exhausted.set()
+        else:
+            auth.note_failure(exc)
         return on_error(batch, exc) if on_error else None
 
     mw = getattr(llm_client, "recommended_max_workers", 1)
@@ -157,6 +186,9 @@ def _run_batches(
             "iris.synthesise: %s: budget exhausted, dropping remaining "
             "%d batch(es)", label, skipped[0],
         )
+    # Raises LLMAuthPersistentError — the phase result would be
+    # auth-refusal zero-fill, not a real (possibly empty) synthesis.
+    auth.raise_if_tripped()
     return results
 
 

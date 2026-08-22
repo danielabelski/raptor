@@ -190,13 +190,23 @@ def run_refutation(
     body: str,
     source: str,
     model_name: str | None = None,
+    auth_tracker: Any = None,
 ) -> RefutationResult | None:
     """Make the refutation LLM call and parse the result.
 
     Returns None on any failure (call error, schema miss, unusable
     verdict) — callers must treat None as "no refutation happened".
+
+    ``auth_tracker`` (a ``core.llm.client.AuthFailureTracker`` owned
+    by the calling pass) distinguishes "no refutation happened" from
+    "the auth layer refused": call failures feed it, successes reset
+    it, and once it trips the calls short-circuit to None without a
+    network round trip — the PASS then aborts loudly instead of
+    treating a dead credential as N harmless per-finding errors.
     """
     if llm_client is None:
+        return None
+    if auth_tracker is not None and auth_tracker.tripped:
         return None
     prompt, system = build_refutation_prompt(
         file, function, hypothesis, body, source,
@@ -217,12 +227,16 @@ def run_refutation(
             system_prompt=system,
             **kwargs,
         )
-    except Exception:
+    except Exception as exc:
+        if auth_tracker is not None:
+            auth_tracker.note_failure(exc)
         logger.debug(
             "refutation call failed for %s:%s", file, function,
             exc_info=True,
         )
         return None
+    if auth_tracker is not None:
+        auth_tracker.note_success()
 
     from core.llm.structured_call import unwrap_structured_response
     call = unwrap_structured_response(response)

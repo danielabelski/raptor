@@ -44,15 +44,36 @@ from typing import Any
 #     the substring caught everything credit-shaped.
 # Word-boundary regex via `\b...\b` keeps the keywords but
 # anchors them to token boundaries.
+#
+# Bare 401/403 only when preceded by a status-context word (HTTP,
+# status, code) — "line 401" / "column 401" in a stack trace or JSON
+# decode error otherwise false-positives. The context arm accepts an
+# optional colon (`\s*:?\s*`): the genuine SDK shape is
+# ``Error code: 401 - ...`` and a plain `\s+` never matched it.
+_STATUS_40X = r"(?:http|status|code)\s*:?\s*40[13]\b"
+
 AUTH_KEYWORDS_RE = re.compile(
-    # Bare 401/403 only when preceded by a status-context word
-    # (HTTP, status, code) — "line 401" in a stack trace
-    # otherwise false-positives. Word words remain unconstrained.
-    r"\b((?:http|status|code)\s+40[13]\b|"
+    r"\b(" + _STATUS_40X + r"|"
     r"40[13]\s+(?:unauthorized|forbidden)|"
     r"authentication|unauthorized|invalid api key|billing|"
     r"quota|rate limit|insufficient_quota|credits?|"
     r"api[_ ]?key (?:invalid|expired|missing))\b",
+    re.IGNORECASE,
+)
+
+# STRICT auth-refusal subset: 401/403 status context + credential
+# vocabulary ONLY — no billing/quota/rate-limit terms. Consumers that
+# treat "auth refused" as terminal (the persistent-401 phase-abort
+# tracker) must not trip on a burst of 429s or a billing cap, which
+# are transient/budget classes with their own handling.
+AUTH_STATUS_RE = re.compile(
+    r"\b(" + _STATUS_40X + r"|"
+    r"40[13]\s+(?:unauthorized|forbidden)|"
+    r"authentication(?:[_ ]error)?|unauthorized|"
+    r"permission denied|access denied|"
+    r"invalid (?:api[_ ]?key|x-api-key)|"
+    r"api[_ ]?key (?:invalid|expired|missing|not valid)|"
+    r"incorrect api key)\b",
     re.IGNORECASE,
 )
 
@@ -82,6 +103,15 @@ def is_auth_error_text(error_str: str) -> bool:
     ``core.llm.client._is_auth_error``; this is the string-side check.
     """
     return bool(AUTH_KEYWORDS_RE.search(error_str or ""))
+
+
+def is_auth_status_text(error_str: str) -> bool:
+    """True when an error string indicates a STRICT auth refusal
+    (401/403 status context or credential vocabulary), excluding the
+    billing/quota/rate-limit terms :func:`is_auth_error_text` also
+    accepts. The persistent-auth phase-abort path uses this — quota
+    bursts must never read as credential death."""
+    return bool(AUTH_STATUS_RE.search(error_str or ""))
 
 
 def is_content_filter_text(error_str: str) -> bool:

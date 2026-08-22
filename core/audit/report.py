@@ -195,8 +195,32 @@ def generate_report(
     if presweep:
         report["joern_presweep"] = presweep
 
+    # Phase aborts (persistent LLM auth refusal): a listed phase
+    # produced NO trustworthy output — its empty results must not be
+    # read as "phase ran and found nothing". Written at abort time by
+    # the orchestrator (_record_phase_abort).
+    phase_aborts = load_phase_aborts(out_dir)
+    if phase_aborts:
+        report["phase_aborts"] = phase_aborts
+
     report["summary"] = _format_summary(report)
     return report
+
+
+def load_phase_aborts(out_dir: Path) -> list[dict[str, Any]]:
+    """Load ``phase-aborts.json`` records from *out_dir* (empty list
+    when absent or unreadable — reporting must not fail the run)."""
+    path = Path(out_dir) / "phase-aborts.json"
+    if not path.is_file():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — reporting must not fail the run
+        logger.debug("phase-aborts load failed", exc_info=True)
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [r for r in loaded if isinstance(r, dict)]
 
 
 def format_summary(report: dict[str, Any]) -> str:
@@ -1089,6 +1113,25 @@ def _format_summary(report: dict[str, Any]) -> str:
                 f"taint-flow evidence is incomplete (functions read as "
                 f"'no flows' rather than 'not swept'). Re-run /audit "
                 f"or /agentic to regenerate the sweep."
+            )
+
+    phase_aborts = report.get("phase_aborts")
+    if phase_aborts:
+        lines.append("")
+        lines.append(
+            f"### ⚠️ Phase aborts ({len(phase_aborts)})"
+        )
+        lines.append(
+            "These phases ABORTED on persistent LLM auth refusal "
+            "(expired/revoked credential — every call 401'd). Their "
+            "output is missing, not empty: do not read the absence "
+            "of results as \"phase ran clean\". Fix the credential "
+            "and re-run. See phase-aborts.json."
+        )
+        for rec in phase_aborts[:10]:
+            lines.append(
+                f"  - {_line(rec.get('phase', '?'), max_chars=40)}: "
+                f"{_line(rec.get('error', '?'), max_chars=200)}"
             )
 
     promotion_alarms = report.get("promotion_alarms")

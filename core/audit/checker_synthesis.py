@@ -176,8 +176,21 @@ def _build_llm_callable(config: Any):
     if not hasattr(client, "generate_structured"):
         return None
 
+    # Persistent-auth fail-closed: the synthesis engine (packages.
+    # checker_synthesis) catches exceptions around its LLM calls, so
+    # an auth abort cannot propagate from inside it. The tracker rides
+    # the callable instead; the phase drivers check it AFTER the
+    # engine returns (see _raise_if_auth_tripped) and abort the phase
+    # rather than reporting refusal-shaped "no synthesis" as success.
+    from core.llm.client import AuthFailureTracker
+    auth_tracker = AuthFailureTracker("checker-synthesis")
+
     def _call(prompt: str, schema: dict[str, Any], system_prompt: str):
         from core.security.prompt_framing import with_audit_framing
+        if auth_tracker.tripped:
+            # Terminal: every further call is a guaranteed refusal —
+            # skip the network round trip; the phase driver raises.
+            return None
         try:
             data, _full = client.generate_structured(
                 prompt=prompt,
@@ -196,12 +209,27 @@ def _build_llm_callable(config: Any):
                 # this call class before it completes.
                 timeout_s=SYNTHESIS_TIMEOUT_S,
             )
+            auth_tracker.note_success()
             return data
         except Exception as exc:  # noqa: BLE001 — any transport failure degrades to no-synthesis
+            auth_tracker.note_failure(exc)
             logger.debug("checker_synthesis LLM call failed: %s", exc)
             return None
 
+    _call.auth_tracker = auth_tracker
     return _call, client
+
+
+def _raise_if_auth_tripped(llm_callable: Any) -> None:
+    """Raise ``LLMAuthPersistentError`` when *llm_callable*'s auth
+    tracker tripped during an engine run. Called by the phase drivers
+    after each engine leg — inside the engine the callable degrades
+    each refused call to ``None`` (the engine's own contract), so
+    without this check a dead dispatcher token turns the whole phase
+    into an apparent "nothing synthesised" success."""
+    tracker = getattr(llm_callable, "auth_tracker", None)
+    if tracker is not None:
+        tracker.raise_if_tripped()
 
 
 def _seed_from_outcome(outcome: Any) -> Any | None:
@@ -482,11 +510,15 @@ def synthesize_and_sweep(
                 model_id=getattr(llm_client, "model_name", "") or "",
             )
         except Exception:
+            # Persistent auth refusal outranks the degrade path — the
+            # phase aborts loudly instead of reading as "no rule".
+            _raise_if_auth_tripped(llm_callable)
             logger.warning(
                 "audit synthesis: full synthesis failed for %s:%s",
                 seed.file, seed.function, exc_info=True,
             )
             return None
+        _raise_if_auth_tripped(llm_callable)
 
     if cs_result.rule is None:
         logger.debug(
@@ -608,11 +640,15 @@ def synthesize_from_external_seed(
             ),
         )
     except Exception:
+        # Persistent auth refusal outranks the degrade path — the
+        # phase aborts loudly instead of reading as "no rule".
+        _raise_if_auth_tripped(llm_callable)
         logger.warning(
             "external seed synthesis failed for %s (%s)",
             seed.file, getattr(seed, "provenance", ""), exc_info=True,
         )
         return None
+    _raise_if_auth_tripped(llm_callable)
 
     if cs_result.rule is None:
         logger.debug(

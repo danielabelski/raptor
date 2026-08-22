@@ -37,6 +37,90 @@ def _landlock_ok():
     return check_landlock_available()
 
 
+class TestTruncateGapStamp(unittest.TestCase):
+    """On Landlock ABI 1/2 (pre-6.2 kernels) the
+    TRUNCATE right is silently absent from the handled write mask.
+    Mirror the metadata-gap treatment: warn once at ruleset build and
+    stamp sandbox_info["landlock_truncate_unrestricted"] on
+    Landlock-only runs. Hermetic via a monkeypatched ABI probe."""
+
+    def setUp(self):
+        if not _landlock_ok():
+            self.skipTest("Landlock unavailable on this host")
+        from core.sandbox import landlock as ll
+        if ll._get_landlock_abi() < 2:
+            # Patching the probe UP past the real kernel ABI would
+            # put unsupported bits (REFER) in the handled mask.
+            self.skipTest("host Landlock ABI < 2")
+        self._out = tempfile.TemporaryDirectory(prefix="raptor-truncgap-")
+        self.addCleanup(self._out.cleanup)
+        self.out = self._out.name
+
+    def _ll_run(self, cmd, abi):
+        from core.sandbox import sandbox
+        with patch("core.sandbox.landlock._get_landlock_abi",
+                   return_value=abi), \
+             patch("core.sandbox.context.check_net_available",
+                   return_value=False), \
+             patch("core.sandbox.context.check_mount_available",
+                   return_value=False):
+            with sandbox(output=self.out, block_network=False) as run:
+                return run(cmd, capture_output=True, text=True, timeout=60)
+
+    def test_abi2_landlock_only_run_stamps_truncate_gap(self):
+        r = self._ll_run(["/bin/true"], abi=2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(
+            r.sandbox_info.get("landlock_truncate_unrestricted"),
+            "ABI<3 Landlock-only posture must stamp the TRUNCATE gap",
+        )
+
+    def test_abi3_landlock_only_run_does_not_stamp(self):
+        r = self._ll_run(["/bin/true"], abi=3)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(
+            "landlock_truncate_unrestricted", r.sandbox_info,
+            "ABI>=3 handles TRUNCATE — the gap stamp must not appear",
+        )
+
+
+class TestTruncateGapWarning(unittest.TestCase):
+    """The build-time degradation notice: one process-wide WARNING
+    when a filesystem-governing ruleset is built on a pre-3 ABI, none
+    on ABI>=3, none for net-only rulesets."""
+
+    def test_warns_once_on_pre3_abi_fs_ruleset(self):
+        from core.sandbox import landlock as ll
+        with patch.object(ll, "_truncate_warned", False), \
+             patch.object(ll, "_get_landlock_abi", return_value=2):
+            with self.assertLogs("core.sandbox.landlock",
+                                 level="WARNING") as cm:
+                ll._make_landlock_preexec(["/tmp"])
+            self.assertTrue(
+                any("TRUNCATE" in m for m in cm.output),
+                f"expected a TRUNCATE degradation warning: {cm.output}")
+            # Second build in the same process: throttled to once.
+            with self.assertNoLogs("core.sandbox.landlock",
+                                   level="WARNING"):
+                ll._make_landlock_preexec(["/tmp"])
+
+    def test_no_warning_on_abi3(self):
+        from core.sandbox import landlock as ll
+        with patch.object(ll, "_truncate_warned", False), \
+             patch.object(ll, "_get_landlock_abi", return_value=3), \
+             self.assertNoLogs("core.sandbox.landlock", level="WARNING"):
+            ll._make_landlock_preexec(["/tmp"])
+
+    def test_no_warning_for_net_only_ruleset(self):
+        # A net-only deny governs no filesystem access — the missing
+        # TRUNCATE right is irrelevant there.
+        from core.sandbox import landlock as ll
+        with patch.object(ll, "_truncate_warned", False), \
+             patch.object(ll, "_get_landlock_abi", return_value=2), \
+             self.assertNoLogs("core.sandbox.landlock", level="WARNING"):
+            ll._make_landlock_preexec([], deny_all_tcp_connect=True)
+
+
 class TestMetadataGapStamp(unittest.TestCase):
     def setUp(self):
         if not _landlock_ok():

@@ -4134,6 +4134,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 and not result.sandbox_info["mount_ns_active"]
                 and writable_paths and check_landlock_available()):
             result.sandbox_info["landlock_metadata_ops_unrestricted"] = True
+            # Landlock TRUNCATE gap (ABI < 3, kernel < 6.2, stamped
+            # honestly like the metadata gap above): the TRUNCATE
+            # access right doesn't exist before ABI 3, so truncate(2)
+            # / open(O_TRUNC) on same-UID files OUTSIDE the writable
+            # allowlist still succeeds when Landlock is the only
+            # filesystem barrier. Under mount-ns the read-only binds
+            # close this (EROFS). landlock.py warns once at ruleset
+            # build time; the stamp lets forensic readers see the
+            # posture per run.
+            if _get_landlock_abi() < 3:
+                result.sandbox_info["landlock_truncate_unrestricted"] = True
         if _degraded_tcp_deny:
             result.sandbox_info["degraded_net_deny"] = True
         if _use_proxy_netns:

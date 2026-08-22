@@ -324,6 +324,31 @@ def _warn_scoping_unavailable_once(abi: int) -> None:
     )
 
 
+_truncate_warned = False
+
+
+def _warn_truncate_unavailable_once(abi: int) -> None:
+    """One process-wide notice that the TRUNCATE access right (ABI v3)
+    is unavailable, matching the throttled-warning convention of the
+    other ABI-gated degradations. On such kernels truncate(2) /
+    open(O_TRUNC) on same-UID files OUTSIDE the writable allowlist
+    still succeeds whenever Landlock is the only filesystem barrier
+    (mount-ns read-only binds close it with EROFS); the per-run
+    posture stamp is ``landlock_truncate_unrestricted`` in
+    sandbox_info, next to the metadata-ops stamp."""
+    global _truncate_warned
+    if _truncate_warned:
+        return
+    _truncate_warned = True
+    logger.warning(
+        "Landlock TRUNCATE right unavailable (kernel ABI %d < 3, "
+        "pre-6.2): truncation of same-UID files outside the writable "
+        "allowlist is NOT restricted in Landlock-only posture on this "
+        "kernel; content read/write rules are unaffected. Runs are "
+        "stamped landlock_truncate_unrestricted.", abi,
+    )
+
+
 def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None = None,
                            readable_paths: list | None = None,
                            deny_all_tcp_connect: bool = False):
@@ -485,6 +510,14 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     _net_only = (deny_all_tcp_connect and not paths
                  and not restrict_reads and ports is None)
     _handled_fs = 0 if _net_only else (_write_access | _read_access)
+    # ABI < 3 (pre-6.2): the TRUNCATE right doesn't exist, so the
+    # handled write mask silently lacks it — announce the degradation
+    # once whenever this ruleset actually governs filesystem writes,
+    # mirroring the scoping (ABI 6) treatment above. The per-run
+    # sandbox_info stamp (landlock_truncate_unrestricted) is applied
+    # at the context layer next to the metadata-ops stamp.
+    if _handled_fs and 1 <= _abi < 3:
+        _warn_truncate_unavailable_once(_abi)
     _net_access = (
         LANDLOCK_ACCESS_NET_CONNECT_TCP
         if ((ports is not None or deny_all_tcp_connect) and _abi >= 4)

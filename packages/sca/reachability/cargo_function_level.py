@@ -31,6 +31,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, Reachability
+from ._shared import extract_qualified_symbols as _extract_qualified
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -59,26 +60,6 @@ def build_cargo_symbol_map(
         if qualified:
             out.setdefault(dep_key, []).extend(qualified)
     return {k: list(dict.fromkeys(v)) for k, v in out.items()}
-
-
-def _extract_qualified(advisory: Any, dep_name: str) -> list[str]:
-    out: list[str] = []
-    es = getattr(advisory, "ecosystem_specific", None) or {}
-    ds = getattr(advisory, "database_specific", None) or {}
-    for source in (es, ds):
-        if not isinstance(source, dict):
-            continue
-        for imp in source.get("imports") or []:
-            if not isinstance(imp, dict):
-                continue
-            path = imp.get("path") or dep_name
-            symbols = imp.get("symbols") or []
-            out.extend(f"{path}.{s}" for s in symbols if isinstance(s, str) and s and isinstance(path, str))
-        for key in ("affected_symbols", "affected_functions"):
-            v = source.get(key)
-            if isinstance(v, list) and dep_name:
-                out.extend(f"{dep_name}.{s}" for s in v if isinstance(s, str))
-    return out
 
 
 def refine_cargo_verdicts(

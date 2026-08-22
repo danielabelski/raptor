@@ -1,0 +1,69 @@
+"""Contract tests for ``packages/sca/reachability/_shared``.
+
+These test the FUNCTIONS' contracts (what callers rely on), not the
+consolidation itself — the per-ecosystem modules re-export the
+helpers under their historical private names.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from packages.sca.reachability._shared import extract_qualified_symbols
+
+
+def _adv(es=None, ds=None):
+    return SimpleNamespace(ecosystem_specific=es, database_specific=ds)
+
+
+class TestExtractQualifiedSymbols:
+    def test_imports_symbols_qualified_with_path(self):
+        adv = _adv(es={"imports": [{"path": "foo::bar", "symbols": ["baz", "qux"]}]})
+        assert extract_qualified_symbols(adv, "dep") == [
+            "foo::bar.baz", "foo::bar.qux",
+        ]
+
+    def test_import_path_falls_back_to_dep_name(self):
+        adv = _adv(es={"imports": [{"symbols": ["run"]}]})
+        assert extract_qualified_symbols(adv, "mygem") == ["mygem.run"]
+
+    def test_flat_lists_qualified_with_dep_name(self):
+        adv = _adv(
+            es={"affected_symbols": ["a"]},
+            ds={"affected_functions": ["b"]},
+        )
+        assert extract_qualified_symbols(adv, "dep") == ["dep.a", "dep.b"]
+
+    def test_both_sources_consulted_in_order(self):
+        adv = _adv(
+            es={"imports": [{"path": "p", "symbols": ["one"]}]},
+            ds={"imports": [{"path": "q", "symbols": ["two"]}]},
+        )
+        assert extract_qualified_symbols(adv, "dep") == ["p.one", "q.two"]
+
+    def test_non_dict_sources_skipped(self):
+        adv = _adv(es=["not-a-dict"], ds="also-not")
+        assert extract_qualified_symbols(adv, "dep") == []
+
+    def test_missing_attrs_default_empty(self):
+        assert extract_qualified_symbols(object(), "dep") == []
+
+    def test_non_string_symbols_skipped(self):
+        adv = _adv(es={
+            "imports": [{"path": "p", "symbols": ["ok", 3, None, ""]}],
+            "affected_symbols": ["fine", 7],
+        })
+        assert extract_qualified_symbols(adv, "dep") == ["p.ok", "dep.fine"]
+
+    def test_empty_dep_name_disables_flat_lists_only(self):
+        adv = _adv(es={
+            "imports": [{"path": "p", "symbols": ["s"]}],
+            "affected_symbols": ["t"],
+        })
+        # imports[] still qualify via explicit path; flat lists need
+        # a dep_name to qualify with.
+        assert extract_qualified_symbols(adv, "") == ["p.s"]
+
+    def test_non_string_path_skipped(self):
+        adv = _adv(es={"imports": [{"path": 42, "symbols": ["s"]}]})
+        assert extract_qualified_symbols(adv, "dep") == []

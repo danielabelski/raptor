@@ -21,12 +21,196 @@ Workers don't need a custom SDK shim — the LLM SDKs sit on top of
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
+import time
 
 import httpx
 
+_logger = logging.getLogger(__name__)
+
 _TOKEN_HEADER = "X-Raptor-Token"
+
+# Worker-token renewal (mirrors server._TOKEN_RENEW_PATH). The
+# dispatcher's worker-token TTL bounds time-since-last-renewal, not
+# total run length: a still-valid token may re-arm its window via
+# POST /_token/renew on the UDS plane. The client below renews
+# proactively so runs longer than the TTL (the observed failure:
+# 8 h TTL, >12 h audit segment, 690 straight 401s) keep a live token
+# for as long as they keep dispatching. A worker that goes silent
+# for longer than the TTL still expires — that is the L4 security
+# property, unchanged.
+_RENEW_PATH = "/_token/renew"
+_RENEW_MARGIN_MIN_S = 30.0
+_RENEW_MARGIN_MAX_S = 3600.0
+_RENEW_RETRY_BACKOFF_S = 30.0
+
+
+class _TokenRenewalAuth(httpx.Auth):
+    """httpx auth hook that proactively renews the worker token.
+
+    The token header itself rides the client's default headers (set
+    in :func:`_make_httpx_client`); this hook's only job is the
+    renewal side-channel. Before a request whose token is past its
+    renewal threshold (unknown expiry counts — the first request
+    always renews to learn ``expires_at``), the hook sends
+    ``POST /_token/renew`` OUT OF BAND on a dedicated short-timeout
+    client over the same UDS, then lets the real request proceed.
+
+    Out-of-band (rather than a yielded auth-flow request) is what
+    makes "renewal failures never fail the caller's request" true at
+    the TRANSPORT level too: an exception raised while sending a
+    yielded auth-flow request propagates out of ``Client.send`` before
+    the main request is ever attempted, so a slow-to-accept dispatcher
+    inside the renewal margin would have converted healthy requests
+    into failures. Here every renewal exception is swallowed (logged
+    at debug, retried after a backoff); HTTP-status failures behave as
+    before — a genuinely dead token still 401s on the main request,
+    and a dispatcher without the endpoint (403/404/405) disables
+    further attempts.
+
+    Thread-safe: one renewal in flight at a time; concurrent requests
+    skip the renewal leg rather than stampede or block.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        socket_path: str | None = None,
+        renew_client: httpx.Client | None = None,
+    ) -> None:
+        self._token = token
+        self._socket_path = socket_path
+        self._renew_http = renew_client   # injectable for tests
+        self._renew_http_lock = threading.Lock()
+        self._expires_at: float | None = None   # unknown until first renew
+        self._margin_s = _RENEW_MARGIN_MIN_S
+        self._lock = threading.Lock()
+        self._renew_inflight = False
+        self._disabled = (
+            socket_path is None and renew_client is None
+        ) or os.environ.get(
+            "RAPTOR_LLM_TOKEN_RENEW", "",
+        ).lower() in ("0", "false", "no")
+
+    # -- scheduling ----------------------------------------------------
+
+    def _claim_renewal(self) -> bool:
+        """True when THIS call should perform the renewal leg (and has
+        claimed the in-flight slot). Callers must release via
+        :meth:`_release_renewal`."""
+        if self._disabled:
+            return False
+        with self._lock:
+            if self._renew_inflight:
+                return False
+            due = (
+                self._expires_at is None
+                or time.time() >= self._expires_at - self._margin_s
+            )
+            if due:
+                self._renew_inflight = True
+            return due
+
+    def _release_renewal(self) -> None:
+        with self._lock:
+            self._renew_inflight = False
+
+    def _renew_transport(self) -> httpx.Client | None:
+        """The dedicated renewal-leg client (lazily built over the
+        UDS). Separate from the caller's client so a renewal-leg
+        transport failure can never surface as the caller's."""
+        if self._renew_http is not None:
+            return self._renew_http
+        with self._renew_http_lock:
+            if self._renew_http is None:
+                if not self._socket_path:
+                    self._disabled = True
+                    return None
+                self._renew_http = httpx.Client(
+                    transport=httpx.HTTPTransport(uds=self._socket_path),
+                    timeout=httpx.Timeout(10.0, connect=5.0),
+                )
+            return self._renew_http
+
+    def _maybe_renew(self) -> None:
+        """Best-effort proactive renewal. Never raises."""
+        if not self._claim_renewal():
+            return
+        try:
+            http = self._renew_transport()
+            if http is None:
+                return
+            response = http.post(
+                "http://_" + _RENEW_PATH,
+                headers={_TOKEN_HEADER: self._token},
+            )
+            self._note_renew_response(response)
+        except Exception:  # noqa: BLE001 — renewal must never fail the caller
+            _logger.debug(
+                "llm-dispatcher client: token renewal attempt failed "
+                "(will retry after backoff)", exc_info=True,
+            )
+            with self._lock:
+                self._expires_at = (
+                    time.time() + _RENEW_RETRY_BACKOFF_S + self._margin_s
+                )
+        finally:
+            self._release_renewal()
+
+    def _note_renew_response(self, response: httpx.Response) -> None:
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                expires_at = float(data.get("expires_at") or 0.0)
+                ttl_s = float(data.get("ttl_s") or 0.0)
+            except (ValueError, TypeError):
+                expires_at, ttl_s = 0.0, 0.0
+            with self._lock:
+                if expires_at > 0:
+                    self._expires_at = expires_at
+                if ttl_s > 0:
+                    # Renew when less than the margin remains. Half
+                    # the TTL for short windows; capped at an hour so
+                    # an 8 h token renews roughly once an hour under
+                    # steady traffic, and floored so one long LLM call
+                    # can't straddle the threshold un-renewed.
+                    self._margin_s = min(
+                        _RENEW_MARGIN_MAX_S,
+                        max(_RENEW_MARGIN_MIN_S, ttl_s * 0.5),
+                    )
+            return
+        if response.status_code in (403, 404, 405):
+            # Endpoint absent (older dispatcher) or this token kind is
+            # not renewable — stop paying the extra round trip.
+            self._disabled = True
+            _logger.debug(
+                "llm-dispatcher client: token renewal unavailable "
+                "(%d) — proactive renewal disabled", response.status_code,
+            )
+            return
+        # 401 = token already dead (the main request will surface the
+        # same 401 to the SDK); 5xx = transient. Back off so a dead
+        # token doesn't double every request with a futile renew leg.
+        with self._lock:
+            self._expires_at = time.time() + _RENEW_RETRY_BACKOFF_S + self._margin_s
+
+    # -- httpx auth flows -----------------------------------------------
+
+    def sync_auth_flow(self, request):
+        request.headers[_TOKEN_HEADER] = self._token
+        self._maybe_renew()
+        yield request
+
+    async def async_auth_flow(self, request):
+        # No renewal on the async flow: the out-of-band renewal client
+        # is synchronous and must not block an event loop. No RAPTOR
+        # worker uses an async client against the dispatcher today; if
+        # one appears, its token simply behaves like a non-refreshing
+        # client's (hard 401 at TTL).
+        request.headers[_TOKEN_HEADER] = self._token
+        yield request
 
 
 def read_token(fd: int | None = None) -> str:
@@ -114,12 +298,19 @@ def _make_httpx_client(
     using; setting it on the SDK client AFTER construction is a
     no-op for the underlying httpx, so it has to flow in through
     here.
+
+    The client also carries :class:`_TokenRenewalAuth`, which
+    proactively re-arms the worker token's TTL window before expiry
+    (out-of-band POST ``/_token/renew`` over the same UDS) so runs
+    longer than the dispatcher's token TTL keep dispatching instead
+    of 401-ing mid-run. Set ``RAPTOR_LLM_TOKEN_RENEW=0`` to opt out.
     """
     transport = httpx.HTTPTransport(uds=socket_path)
     request_timeout = timeout if timeout is not None else 60.0
     return httpx.Client(
         transport=transport,
         headers={_TOKEN_HEADER: token},
+        auth=_TokenRenewalAuth(token, socket_path),
         timeout=httpx.Timeout(request_timeout, connect=5.0),
     )
 

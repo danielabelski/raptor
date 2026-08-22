@@ -68,8 +68,19 @@ class TestProxyCredentialSetup:
         with pytest.raises(RuntimeError, match="netns"):
             sd._setup_cc_proxy_credentials("5.00", 900, "test")
 
-    def test_mints_and_derives_route(self, monkeypatch):
-        monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/llm.sock")
+    @staticmethod
+    def _socket_dir(monkeypatch, tmp_path):
+        """Point RAPTOR_LLM_SOCKET at a fake dispatcher socket dir that
+        also carries the child-plane socket (the bridge target)."""
+        worker = tmp_path / "llm.sock"
+        worker.touch()
+        child = tmp_path / "llm-child.sock"
+        child.touch()
+        monkeypatch.setenv("RAPTOR_LLM_SOCKET", str(worker))
+        return worker, child
+
+    def test_mints_and_derives_route(self, monkeypatch, tmp_path):
+        _worker, child = self._socket_dir(monkeypatch, tmp_path)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
         monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-8")
         monkeypatch.delenv("ANTHROPIC_SMALL_FAST_MODEL", raising=False)
@@ -94,8 +105,10 @@ class TestProxyCredentialSetup:
         assert creds.base_url == (
             f"http://127.0.0.1:{sd._CC_PROXY_BRIDGE_PORT}"
         )
+        # The bridge terminates inside the sandbox — it must target the
+        # child-plane socket, never the full-capability worker socket.
         assert creds.bridges == {
-            sd._CC_PROXY_BRIDGE_PORT: "/tmp/llm.sock",
+            sd._CC_PROXY_BRIDGE_PORT: str(child),
         }
         assert captured["budget_usd"] == 5.0
         assert captured["models"] == ["claude-opus-4-8"]
@@ -103,11 +116,11 @@ class TestProxyCredentialSetup:
         assert captured["ttl_s"] == 900 + 600
         assert captured["label"] == "prepass"
 
-    def test_bedrock_install_same_origin(self, monkeypatch):
+    def test_bedrock_install_same_origin(self, monkeypatch, tmp_path):
         """Route selection lives in cc_subprocess_env (it follows the
         CLI's backend mode) — the mint side always hands out the
         gateway origin, Bedrock install or not."""
-        monkeypatch.setenv("RAPTOR_LLM_SOCKET", "/tmp/llm.sock")
+        self._socket_dir(monkeypatch, tmp_path)
         monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
         self._allow_netns(monkeypatch)
         import core.llm.dispatcher.client as client_mod
@@ -127,6 +140,19 @@ class TestProxyCredentialSetup:
         self._allow_netns(monkeypatch)
         with pytest.raises(RuntimeError, match="budget"):
             sd._setup_cc_proxy_credentials("not-a-number", 60, "x")
+
+    def test_missing_child_plane_socket_fails_fast(
+        self, monkeypatch, tmp_path,
+    ):
+        """No child-plane socket next to the worker socket → refuse.
+        Falling back to bridging the worker socket would silently hand
+        the sandbox the admin plane (renewal + /_child/*)."""
+        worker = tmp_path / "llm.sock"
+        worker.touch()
+        monkeypatch.setenv("RAPTOR_LLM_SOCKET", str(worker))
+        self._allow_netns(monkeypatch)
+        with pytest.raises(RuntimeError, match="child-plane"):
+            sd._setup_cc_proxy_credentials("5.00", 900, "test")
 
 
 class TestSettlement:

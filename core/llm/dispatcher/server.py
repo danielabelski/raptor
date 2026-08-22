@@ -22,6 +22,31 @@ Five security layers, in the order an attacker must defeat them:
       fresh token. Connections after ``request_budget`` requests or
       ``ttl_s`` seconds are rejected; an explicit ``revoke`` flips
       the record to terminal state.
+
+      **Renewal (worker tokens, worker UDS plane only):** a worker
+      holding a still-valid token may POST ``/_token/renew`` to
+      re-arm its TTL window from "now". The TTL therefore bounds
+      *time since last renewal*, not total run length — a live worker
+      on a >TTL run renews its way through (the worker-side client
+      does this proactively, see ``client._TokenRenewalAuth``), while
+      a stranded or leaked token still dies within one TTL of its
+      holder going silent. Renewal never resurrects: expired /
+      revoked / exhausted tokens fail validation before the renew
+      handler is reachable, so a non-refreshing client hits the same
+      hard 401 at TTL it always did. Scoped child tokens are NOT
+      renewable — their short TTL is sized by the minting caller to
+      the child's run length by design.
+
+      **"UDS plane" is not "sandbox-unreachable":** credential-proxy
+      sandboxes bridge an in-netns loopback port to a dispatcher
+      socket (``core/sandbox/_proxy_bridge``), and the relay runs as
+      the host UID — a bridged connection passes peer-UID
+      verification. Sandbox bridges therefore MUST target
+      ``child_socket_path`` (the second, child-plane UDS bound at
+      init), whose handler carries the loopback-TCP surface: scoped
+      child tokens only, no ``/_child/*`` management, no renewal.
+      The full-capability worker plane (``socket_path``) is for
+      trusted same-UID RAPTOR processes only and is never bridged.
   L5. **Audit log.** Every accept / reject / dispatch event lands
       in a JSONL log. Body content is intentionally never logged.
 
@@ -119,6 +144,13 @@ _CHILD_ALLOWED_PROVIDERS = frozenset({"anthropic", "bedrock"})
 # plane refuses them wholesale so a child holding only its scoped
 # bearer token can never mint, revoke, or read other tokens.
 _CHILD_ADMIN_PREFIX = "/_child/"
+# Worker-token renewal endpoint — same UDS-only, worker-token-gated
+# plane as /_child/*. POST with a still-valid worker token re-arms
+# its TTL window (see the L4 docstring above). Renewal requests pass
+# through the normal validation gate first, so a token that already
+# expired gets the standard hard 401 — renewal extends live tokens,
+# it never resurrects dead ones.
+_TOKEN_RENEW_PATH = "/_token/renew"
 
 _UPSTREAM_DEFAULT_TIMEOUT_S = 600    # read/write/pool timeout on the
                                      # dispatcher→provider leg. Must be
@@ -492,6 +524,15 @@ class LLMDispatcher:
         # group/other-readable on a multi-user host.
         os.chmod(self._sock_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions
         self.socket_path = self._sock_dir / "llm.sock"
+        # Child-plane UDS: same peer-UID gate, REDUCED surface (scoped
+        # child tokens only — no worker tokens, no /_child/* admin, no
+        # /_token/renew). This is the only dispatcher socket that may
+        # be bridged into a sandbox (see the L4 docstring): the bridge
+        # relay runs as the host UID, so anything it terminates on
+        # passes peer-UID verification and must not carry admin
+        # capability. Derivable from socket_path by name so worker-side
+        # code (skill_dispatch) can find it without a second env var.
+        self.child_socket_path = self._sock_dir / "llm-child.sock"
 
         # Audit log
         self._audit_path = audit_path
@@ -517,6 +558,10 @@ class LLMDispatcher:
             # accumulate after init failures.
             try:
                 self.socket_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                self.child_socket_path.unlink(missing_ok=True)
             except OSError:
                 pass
             try:
@@ -585,6 +630,25 @@ class LLMDispatcher:
             daemon=True,
         )
         self._thread.start()
+
+        # Child-plane UDS — the reduced-surface socket sandbox bridges
+        # terminate on. plane="child_uds" (any non-"uds" plane) refuses
+        # worker tokens, /_child/* management, and /_token/renew; only
+        # scoped child tokens dispatch. Same peer-UID gate as the
+        # worker socket (the relay is same-UID; the gate still screens
+        # other local users).
+        child_handler_cls = _make_request_handler(
+            dispatcher, plane="child_uds",
+        )
+        self._child_server = _UnixThreadingHTTPServer(
+            str(self.child_socket_path), child_handler_cls,
+        )
+        self._child_thread = threading.Thread(
+            target=self._child_server.serve_forever,
+            name=f"raptor-llm-dispatcher-child-{run_id}",
+            daemon=True,
+        )
+        self._child_thread.start()
 
         # Quiet third-party loggers (httpx HTTP-request lines,
         # google.genai AFC banner, etc.) so operator output during
@@ -730,6 +794,39 @@ class LLMDispatcher:
             "budget_usd": rec.budget_usd,
             "request_budget": rec.request_budget,
         }
+
+    def renew_worker_token(self, rec: _TokenRecord) -> float:
+        """Re-arm *rec*'s expiry window from now; return the new
+        ``expires_at``.
+
+        The L4 refresh contract: only reachable for a token that just
+        PASSED validation (live, unexpired, unrevoked, within budget)
+        on the peer-UID-verified UDS plane. The TTL keeps its teeth —
+        it now bounds time-since-last-renewal, so a stranded or leaked
+        token still dies within one TTL of its holder going silent,
+        while a live worker on a run longer than the TTL renews its
+        way through instead of 401-ing mid-run (the observed failure:
+        an 8 h TTL decapitating hour 9+ of a >12 h audit segment).
+        Renewal counts against the request budget like any other
+        request — the budget bounds total token use and is not
+        extended here.
+        """
+        now = time.time()
+        with self._tokens_lock:
+            rec.expires_at = now + self._token_ttl_s
+            expires_at = rec.expires_at
+        self._audit(AuditEvent(
+            ts=now, event="token.renew",
+            peer_pid=None, peer_uid=None,
+            token_id=_short(rec.value), worker_label=rec.worker_label,
+            status="ok",
+            extra={
+                "ttl_s": self._token_ttl_s,
+                "expires_at": expires_at,
+                "age_s": round(now - rec.issued_at, 1),
+            },
+        ))
+        return expires_at
 
     def revoke_child(self, token_id: str) -> bool:
         """Flip a child token to terminal ``revoked`` state.
@@ -1016,6 +1113,15 @@ class LLMDispatcher:
             )
             errors.append("server_close")
         try:
+            self._child_server.shutdown()
+            self._child_server.server_close()
+        except Exception:
+            _logger.warning(
+                "llm-dispatcher: child-plane server shutdown failed",
+                exc_info=True,
+            )
+            errors.append("child_shutdown")
+        try:
             if self._upstream_http is not None:
                 self._upstream_http.close()
         except Exception:
@@ -1023,7 +1129,7 @@ class LLMDispatcher:
                 "llm-dispatcher: upstream client close failed", exc_info=True,
             )
             errors.append("upstream_http_close")
-        # Remove socket file then dir
+        # Remove socket files then dir
         try:
             self.socket_path.unlink(missing_ok=True)
         except Exception:
@@ -1032,6 +1138,14 @@ class LLMDispatcher:
                 self.socket_path, exc_info=True,
             )
             errors.append("socket_unlink")
+        try:
+            self.child_socket_path.unlink(missing_ok=True)
+        except Exception:
+            _logger.warning(
+                "llm-dispatcher: socket unlink failed for %s",
+                self.child_socket_path, exc_info=True,
+            )
+            errors.append("child_socket_unlink")
         try:
             self._sock_dir.rmdir()
         except FileNotFoundError:
@@ -1235,9 +1349,12 @@ def _make_request_handler(
     without mutable global state.
 
     ``plane`` selects the transport surface: ``"uds"`` (the peer-UID-
-    verified Unix socket — workers, and the parent/worker child-token
-    management endpoints) or ``"tcp"`` (the loopback listener for CLI
-    children — scoped child tokens only, management refused).
+    verified worker Unix socket — workers, token renewal, and the
+    parent/worker child-token management endpoints), ``"tcp"`` (the
+    loopback listener for CLI children), or ``"child_uds"`` (the
+    second Unix socket sandbox bridges terminate on). Every non-"uds"
+    plane carries the reduced surface: scoped child tokens only,
+    management and renewal refused.
     """
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -1287,9 +1404,12 @@ def _make_request_handler(
             # from the wire beyond headers until the token clears) ----
             token = self._presented_token()
             rec, reason = dispatcher._validate_token(token)
-            if rec is not None and plane == "tcp" and rec.kind != "child":
-                # Full-power worker tokens never authenticate on the
-                # plane without peer-UID verification.
+            if rec is not None and plane != "uds" and rec.kind != "child":
+                # Full-power worker tokens authenticate ONLY on the
+                # worker UDS plane: the TCP loopback lacks peer-UID
+                # verification, and the child-plane UDS is bridged
+                # into sandboxes (the relay's passing peer-UID says
+                # nothing about the in-sandbox originator).
                 rec, reason = None, "worker tokens are not accepted here"
             if rec is None:
                 dispatcher._audit(AuditEvent(
@@ -1299,6 +1419,37 @@ def _make_request_handler(
                     worker_label=None, status="reject", reason=reason,
                 ))
                 self._send_simple(401, reason or "unauthorized")
+                return
+
+            # ---- worker-token renewal (/_token/renew) ----
+            if self.path.split("?", 1)[0] == _TOKEN_RENEW_PATH:
+                if plane != "uds" or rec.kind != "worker":
+                    # Same gate shape as /_child/*: the endpoint does
+                    # not exist off the peer-UID-verified socket, and
+                    # a scoped child token can never stretch the short
+                    # TTL its minter sized to the child's run.
+                    dispatcher._audit(AuditEvent(
+                        ts=time.time(), event="token.renew",
+                        peer_pid=None, peer_uid=None,
+                        token_id=(rec.token_id or _short(rec.value)),
+                        worker_label=rec.worker_label,
+                        status="reject",
+                        reason=f"plane={plane} kind={rec.kind}",
+                    ))
+                    self._send_simple(
+                        403,
+                        "token renewal requires a worker token on "
+                        "the dispatcher socket",
+                    )
+                    return
+                if self.command != "POST":
+                    self._send_simple(405, "token renewal is POST-only")
+                    return
+                expires_at = dispatcher.renew_worker_token(rec)
+                self._send_json(200, {
+                    "expires_at": expires_at,
+                    "ttl_s": dispatcher._token_ttl_s,
+                })
                 return
 
             # ---- child-token management plane (/_child/*) ----

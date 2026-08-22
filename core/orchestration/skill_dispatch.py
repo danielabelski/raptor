@@ -124,6 +124,22 @@ def _setup_cc_proxy_credentials(
         raise RuntimeError(
             f"invalid pass budget {budget_usd!r} for proxy-mode mint"
         ) from None
+    # The bridge terminates INSIDE the sandbox as the host UID, so it
+    # must target the dispatcher's child-plane socket (scoped child
+    # tokens only — no worker tokens, no /_child/* management, no
+    # /_token/renew), never the full-capability worker socket. The
+    # child plane lives next to the worker socket under a fixed name
+    # (LLMDispatcher.child_socket_path); fail fast when absent rather
+    # than falling back to the worker socket — a fallback would
+    # silently hand the sandbox the admin plane.
+    child_socket = Path(socket_path).with_name("llm-child.sock")
+    if not child_socket.exists():
+        raise RuntimeError(
+            f"{_CC_CREDENTIAL_MODE_ENV}=proxy requires the dispatcher's "
+            "child-plane socket (llm-child.sock next to the worker "
+            "socket) — the running dispatcher predates the child plane; "
+            "restart the run through the current launcher"
+        )
     # Model pins the child will actually request — the CLI resolves
     # its model from these envs; unpinned installs mint an
     # any-model token (the USD budget stays the effective cap).
@@ -154,7 +170,7 @@ def _setup_cc_proxy_credentials(
         token=minted["token"],
         token_id=minted["token_id"],
         base_url=f"http://127.0.0.1:{_CC_PROXY_BRIDGE_PORT}",
-        bridges={_CC_PROXY_BRIDGE_PORT: socket_path},
+        bridges={_CC_PROXY_BRIDGE_PORT: str(child_socket)},
         budget_usd=budget,
     )
 

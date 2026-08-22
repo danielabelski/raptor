@@ -159,7 +159,8 @@ default with a debug log — a typo never breaks dispatcher startup.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RAPTOR_LLM_DISPATCHER_UPSTREAM_TIMEOUT_S` | `600` | Read/write/pool timeout in seconds on the dispatcher→provider forwarding leg, re-read per request. The connect timeout stays fixed at 10 s: a provider that cannot finish the TCP/TLS handshake in 10 s is down, and a long connect timeout only delays failover. |
-| `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` | `28800` (8 h) | Lifetime of a worker's one-shot auth token; bump for kernel-scale runs that outlive the default. The in-process self-serve route (`core/llm/dispatcher/lifecycle.py`) sizes its own token to 7 days when this is unset — an explicit value pins both. |
+| `RAPTOR_LLM_DISPATCHER_TOKEN_TTL_S` | `28800` (8 h) | Lifetime of a worker's one-shot auth token; bump for kernel-scale runs that outlive the default. The in-process self-serve route (`core/llm/dispatcher/lifecycle.py`) sizes its own token to 7 days when this is unset — an explicit value pins both. Workers renew a still-valid token in place before expiry (see `RAPTOR_LLM_TOKEN_RENEW`), so for a live worker the TTL bounds time-since-last-renewal, not total run length. |
+| `RAPTOR_LLM_TOKEN_RENEW` | enabled | Worker-side proactive token renewal on the dispatcher socket (`POST /_token/renew` shortly before the token's TTL window closes). Set `0` / `false` / `no` to opt out — the worker then keeps the original fixed TTL and runs longer than it will 401 at expiry. |
 
 The third knob, `RAPTOR_LLM_DISPATCHER_TOKEN_BUDGET` (default
 `10000`) — requests allowed per worker token — is read only through

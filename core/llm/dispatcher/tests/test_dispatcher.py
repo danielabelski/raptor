@@ -288,6 +288,207 @@ class TestLayer4TokenLifecycle:
             assert r.status_code == 401
             assert "revoked" in r.text
 
+    # ---- renewal (the L4 refresh contract) ----------------------------
+    #
+    # A still-valid worker token may re-arm its TTL window via
+    # POST /_token/renew on the UDS plane. The TTL bounds
+    # time-since-last-renewal; expiry stays a hard 401 for any
+    # client that stops renewing (the tests above are unchanged).
+
+    @staticmethod
+    def _mint_worker_token(d) -> str:
+        _socket_path, fd = d.allocate_worker(label="renew-test")
+        token = os.read(fd, 64).decode().strip()
+        os.close(fd)
+        return token
+
+    def test_renew_rearms_expiry_window(self, dispatcher):
+        token = self._mint_worker_token(dispatcher)
+        rec = dispatcher._tokens[token]
+        original_expiry = rec.expires_at
+        time.sleep(0.05)
+        transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.post("http://_/_token/renew",
+                       headers={_TOKEN_HEADER: token})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ttl_s"] == 3600
+        assert data["expires_at"] > original_expiry
+        assert rec.expires_at == data["expires_at"]
+        ev = _wait_for_audit_event(dispatcher, "token.renew")
+        assert ev is not None
+        assert ev["status"] == "ok"
+        # Correlation prefix only — never the full token.
+        assert ev["token_id"] == token[:12]
+
+    def test_expired_token_cannot_renew(self, fake_creds, tmp_path):
+        """Renewal extends live tokens; it never resurrects dead ones.
+        A worker that let its token expire gets the same hard 401 on
+        the renew endpoint as on any dispatch request."""
+        d = LLMDispatcher(
+            run_id="renew-expired", creds=fake_creds,
+            audit_path=tmp_path / "audit.jsonl",
+            token_ttl_s=0, token_budget=10,
+        )
+        try:
+            token = self._mint_worker_token(d)
+            transport = httpx.HTTPTransport(uds=str(d.socket_path))
+            with httpx.Client(transport=transport, timeout=5.0) as c:
+                r = c.post("http://_/_token/renew",
+                           headers={_TOKEN_HEADER: token})
+            assert r.status_code == 401
+            assert "expired" in r.text
+        finally:
+            d.shutdown()
+
+    def test_child_token_cannot_renew(self, dispatcher):
+        """Scoped child tokens are not renewable — their short TTL is
+        sized by the minting caller to the child's run length."""
+        token, _info = dispatcher.allocate_child(
+            "child-renew", budget_usd=1.0,
+        )
+        transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.post("http://_/_token/renew",
+                       headers={_TOKEN_HEADER: token})
+        assert r.status_code == 403
+        assert "worker token" in r.text
+
+    def test_renew_refused_on_tcp_plane(self, dispatcher):
+        """The renewal endpoint does not exist off the peer-UID-
+        verified socket: child tokens get 403, worker tokens are
+        refused by the TCP plane wholesale (401)."""
+        port = dispatcher.enable_loopback_listener()
+        child_token, _info = dispatcher.allocate_child(
+            "tcp-child", budget_usd=1.0,
+        )
+        worker_token = self._mint_worker_token(dispatcher)
+        with httpx.Client(timeout=5.0) as c:
+            r = c.post(
+                f"http://127.0.0.1:{port}/_token/renew",
+                headers={"Authorization": f"Bearer {child_token}"},
+            )
+            assert r.status_code == 403
+            r = c.post(
+                f"http://127.0.0.1:{port}/_token/renew",
+                headers={_TOKEN_HEADER: worker_token},
+            )
+            assert r.status_code == 401
+            assert "not accepted" in r.text
+
+    def test_renew_is_post_only(self, dispatcher):
+        token = self._mint_worker_token(dispatcher)
+        transport = httpx.HTTPTransport(uds=str(dispatcher.socket_path))
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.get("http://_/_token/renew",
+                      headers={_TOKEN_HEADER: token})
+        assert r.status_code == 405
+
+    def test_client_auth_renews_proactively(self, fake_creds, tmp_path):
+        """The worker-side httpx client re-arms the token before each
+        request when inside the renewal margin (ttl <= 2x margin floor
+        here, so every request renews) — no worker code changes, no
+        env/FD contract changes."""
+        from core.llm.dispatcher.client import _make_httpx_client
+
+        upstream = _CaptiveUpstream()
+        d = LLMDispatcher(
+            run_id="renew-client", creds=fake_creds,
+            audit_path=tmp_path / "audit.jsonl",
+            token_ttl_s=30, token_budget=100,
+        )
+        from core.llm.dispatcher.auth import ProviderRule
+        original = d._rules["anthropic"]
+        d._rules["anthropic"] = ProviderRule(
+            name=original.name,
+            upstream_base_url=upstream.base_url,
+            inject_headers=original.inject_headers,
+            strip_request_headers=original.strip_request_headers,
+        )
+        try:
+            token = self._mint_worker_token(d)
+            rec = d._tokens[token]
+            with _make_httpx_client(str(d.socket_path), token) as c:
+                r1 = c.post("http://_/anthropic/v1/messages", content=b"{}")
+                assert r1.status_code == 200
+                expiry_after_first = rec.expires_at
+                time.sleep(0.1)
+                r2 = c.post("http://_/anthropic/v1/messages", content=b"{}")
+                assert r2.status_code == 200
+            assert expiry_after_first > rec.issued_at + 29
+            assert rec.expires_at > expiry_after_first
+            renews = [
+                e for e in _read_audit(d) if e["event"] == "token.renew"
+            ]
+            assert len(renews) >= 2
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_renew_transport_failure_never_fails_caller(self):
+        """Reviewer PoC-C inverted: the renewal leg is out-of-band on a
+        dedicated client, so a transport-level failure there (timeout,
+        dead socket) must never surface as the caller's request
+        failing — the main request proceeds and its own status stays
+        authoritative."""
+        from core.llm.dispatcher.client import _TokenRenewalAuth
+
+        def _renew_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("renew leg timed out")
+
+        def _main_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"ok": True})
+
+        renew_client = httpx.Client(
+            transport=httpx.MockTransport(_renew_handler),
+        )
+        auth = _TokenRenewalAuth("tok-abc", renew_client=renew_client)
+        with httpx.Client(
+            transport=httpx.MockTransport(_main_handler), auth=auth,
+        ) as c:
+            # First request: expiry unknown -> renewal fires (and its
+            # transport blows up); the caller's request must succeed.
+            r = c.post("http://_/anthropic/v1/messages", content=b"{}")
+        assert r.status_code == 200
+
+    def test_client_renewal_outlives_original_ttl(self, fake_creds, tmp_path):
+        """End-to-end regression for the incident class: a worker that
+        keeps dispatching PAST the original TTL keeps a live token
+        (each request re-arms the window), while the raw non-renewing
+        client above (test_token_expiry) still hard-401s at TTL."""
+        from core.llm.dispatcher.client import _make_httpx_client
+
+        upstream = _CaptiveUpstream()
+        d = LLMDispatcher(
+            run_id="renew-outlive", creds=fake_creds,
+            audit_path=tmp_path / "audit.jsonl",
+            token_ttl_s=2, token_budget=100,
+        )
+        from core.llm.dispatcher.auth import ProviderRule
+        original = d._rules["anthropic"]
+        d._rules["anthropic"] = ProviderRule(
+            name=original.name,
+            upstream_base_url=upstream.base_url,
+            inject_headers=original.inject_headers,
+            strip_request_headers=original.strip_request_headers,
+        )
+        try:
+            token = self._mint_worker_token(d)
+            issued_at = d._tokens[token].issued_at
+            deadline = issued_at + 3.0   # 1.5x the 2s TTL
+            with _make_httpx_client(str(d.socket_path), token) as c:
+                while time.time() < deadline:
+                    r = c.post(
+                        "http://_/anthropic/v1/messages", content=b"{}",
+                    )
+                    assert r.status_code == 200, r.text
+                    assert "expired" not in r.text
+                    time.sleep(0.25)
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
 
 # ---------------------------------------------------------------------------
 # L5 — audit log
@@ -741,6 +942,146 @@ class TestSubprocessE2E:
             assert req["messages"][0]["content"] == "subproc ping"
         finally:
             upstream.shutdown()
+            d.shutdown()
+
+
+class TestChildPlaneSocket:
+    """The second UDS (``child_socket_path``) is the ONLY dispatcher
+    socket sandbox bridges may terminate on: scoped child tokens
+    dispatch, but worker tokens, ``/_child/*`` management, and
+    ``/_token/renew`` are refused — the bridge relay runs as the host
+    UID, so a passing peer-UID check says nothing about the in-sandbox
+    originator."""
+
+    def _worker_token(self, d) -> str:
+        _sock, fd = d.allocate_worker(label="victim-worker")
+        token = os.read(fd, 64).decode().strip()
+        os.close(fd)
+        return token
+
+    def test_child_socket_exists_next_to_worker_socket(self, dispatcher):
+        assert dispatcher.child_socket_path.exists()
+        assert dispatcher.child_socket_path.parent == \
+            dispatcher.socket_path.parent
+        assert dispatcher.child_socket_path.name == "llm-child.sock"
+
+    def test_worker_token_refused_on_child_plane(self, dispatcher):
+        token = self._worker_token(dispatcher)
+        transport = httpx.HTTPTransport(
+            uds=str(dispatcher.child_socket_path),
+        )
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.post("http://_/anthropic/v1/messages",
+                       content=b"{}", headers={_TOKEN_HEADER: token})
+            assert r.status_code == 401
+            assert "not accepted" in r.text
+            r = c.post("http://_/_token/renew",
+                       headers={_TOKEN_HEADER: token})
+            assert r.status_code == 401
+            assert "not accepted" in r.text
+
+    def test_child_token_cannot_renew_on_child_plane(self, dispatcher):
+        token, _info = dispatcher.allocate_child(
+            "bridged-child", budget_usd=1.0,
+        )
+        transport = httpx.HTTPTransport(
+            uds=str(dispatcher.child_socket_path),
+        )
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.post("http://_/_token/renew",
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 403
+
+    def test_child_admin_refused_on_child_plane(self, dispatcher):
+        token, _info = dispatcher.allocate_child(
+            "bridged-child", budget_usd=1.0,
+        )
+        transport = httpx.HTTPTransport(
+            uds=str(dispatcher.child_socket_path),
+        )
+        with httpx.Client(transport=transport, timeout=5.0) as c:
+            r = c.post("http://_/_child/mint",
+                       json={"budget_usd": 1.0},
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 403
+
+    def test_child_token_dispatches_on_child_plane(self, fake_creds, tmp_path):
+        """The reduced plane still serves its purpose: a scoped child
+        token's model call forwards upstream."""
+        upstream = _CaptiveUpstream()
+        d = LLMDispatcher(
+            run_id="child-plane", creds=fake_creds,
+            audit_path=tmp_path / "audit.jsonl",
+            token_ttl_s=3600, token_budget=100,
+        )
+        from core.llm.dispatcher.auth import ProviderRule
+        original = d._rules["anthropic"]
+        d._rules["anthropic"] = ProviderRule(
+            name=original.name,
+            upstream_base_url=upstream.base_url,
+            inject_headers=original.inject_headers,
+            strip_request_headers=original.strip_request_headers,
+        )
+        try:
+            token, _info = d.allocate_child("bridged-child", budget_usd=5.0)
+            transport = httpx.HTTPTransport(uds=str(d.child_socket_path))
+            with httpx.Client(transport=transport, timeout=5.0) as c:
+                r = c.post(
+                    "http://_/anthropic/v1/messages",
+                    json={"model": "claude-3-haiku-20240307",
+                          "messages": []},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            assert r.status_code == 200
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_stolen_worker_token_cannot_renew_through_bridge(
+        self, fake_creds, tmp_path,
+    ):
+        """Reviewer PoC-D inverted: the exact sandbox relay
+        (core/sandbox/_proxy_bridge._run_bridges), now pointed at the
+        child-plane socket the way skill_dispatch wires it — a stolen
+        worker token gets 401, not a renewed TTL window."""
+        pytest.importorskip("core.sandbox._proxy_bridge")
+        from core.sandbox._proxy_bridge import _run_bridges
+
+        d = LLMDispatcher(
+            run_id="bridge-renew", creds=fake_creds,
+            audit_path=tmp_path / "audit.jsonl",
+            token_ttl_s=3600, token_budget=100,
+        )
+        death_w = None
+        try:
+            token = self._worker_token(d)
+            rec = d._tokens[token]
+            original_expiry = rec.expires_at
+
+            probe = socket.socket()
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            probe.close()
+            death_r, death_w = os.pipe()
+            threading.Thread(
+                target=_run_bridges,
+                args=([(port, str(d.child_socket_path))], death_r),
+                daemon=True,
+            ).start()
+            time.sleep(0.3)
+
+            with httpx.Client(timeout=5.0) as c:
+                r = c.post(
+                    f"http://127.0.0.1:{port}/_token/renew",
+                    headers={_TOKEN_HEADER: token},
+                )
+            assert r.status_code == 401
+            assert "not accepted" in r.text
+            assert rec.expires_at == original_expiry
+        finally:
+            if death_w is not None:
+                os.write(death_w, b"x")
+                os.close(death_w)
             d.shutdown()
 
 

@@ -55,6 +55,9 @@
   "artifacts:orphan_reader::coverage-codeql.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:orphan_reader::coverage-read.json": {
+   "note": "writer exists but constructs the name dynamically: core/coverage/record.py write_record(tool_name=\"read\") emits coverage-<tool>.json; the store_summary reader added by coverage-uplift names it literally. Deliberate plugin-writes/core-reads design, invisible to the literal-name index."
+  },
   "artifacts:orphan_reader::coverage-semgrep.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -292,6 +295,9 @@
   "artifacts:write_only_artifact::pipeline-summary.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
+  "artifacts:write_only_artifact::pipeline-tail.json": {
+   "note": "reader exists: core/audit/resume.py reads it via the PIPELINE_TAIL_FILENAME constant, so the literal name appears only at the constant definition \u2014 same dynamic-name pattern as coverage-read.json"
+  },
   "artifacts:write_only_artifact::post-loop-findings.json": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -514,6 +520,12 @@
   "dead:dead_method:core/audit/tests/test_return_census.py:TestCpgUsage._fake_server_rows": {
    "note": "test scaffolding kept for the planned CPG-backed census cases; harmless"
   },
+  "dead:dead_method:core/llm/dispatcher/client.py:_TokenRenewalAuth.async_auth_flow": {
+   "note": "httpx framework hook: httpx.Client/AsyncClient invoke the Auth subclass's sync_auth_flow/async_auth_flow generators dynamically during send() \u2014 no in-repo caller names them (same pattern as any httpx.Auth override)"
+  },
+  "dead:dead_method:core/llm/dispatcher/client.py:_TokenRenewalAuth.sync_auth_flow": {
+   "note": "httpx framework hook: httpx.Client/AsyncClient invoke the Auth subclass's sync_auth_flow/async_auth_flow generators dynamically during send() \u2014 no in-repo caller names them (same pattern as any httpx.Auth override)"
+  },
   "dead:dead_method:packages/autonomous/corpus_generator.py:CorpusGenerator.generate_mutated_seed": {
    "note": "kept: feature seed \u2014 autonomous fuzzing loop (operator decision 2026-08-16, reaffirmed 2026-08-17); unwired since introduction"
   },
@@ -635,16 +647,16 @@
    "note": "nested src-layout false positive: pytest.ini's pythonpath entry (and the launcher shim's sys.path entry) is packages/cve_env, so bare `cve_env` resolves at runtime to the inner package packages/cve_env/cve_env/ where config.py exists; the indexer's packages/<pkg> alias rule maps `cve_env` to the outer __init__.py, a namespace anchor that exists only so pytest importlib mode namespaces the test tree"
   },
   "imports:import_missing_symbol:packages/cve_env/tests/unit/conftest.py:cve_env:config": {
-   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
+   "note": "nested src-layout false positive \u2014 same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
   },
   "imports:import_missing_symbol:packages/cve_env/tests/unit/test_cli.py:cve_env:cli": {
-   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
+   "note": "nested src-layout false positive \u2014 same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
   },
   "imports:import_missing_symbol:packages/cve_env/tests/unit/test_cve_id_label_threading.py:cve_env:config": {
-   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
+   "note": "nested src-layout false positive \u2014 same resolution as the cli.py:cve_env:config entry (inner package carries config.py)"
   },
   "imports:import_missing_symbol:packages/cve_env/tests/unit/test_facade_contract.py:cve_env:cli": {
-   "note": "nested src-layout false positive — same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
+   "note": "nested src-layout false positive \u2014 same resolution as the cli.py:cve_env:config entry (inner package carries cli.py)"
   },
   "imports:import_missing_symbol:packages/sca/osv.py:cvss:CVSS4": {
    "note": "deliberate optional dependency: 'from cvss import CVSS4' targets the third-party cvss PyPI package (CVSS v4.0 reference scorer), not the in-repo packages/cvss module the resolver maps it to; the import is ImportError-guarded and degrades to the database-provided severity label when the package is absent"
@@ -663,12 +675,6 @@
   },
   "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
    "note": "kept: autonomous fuzzing loop feature seed (operator decision 2026-08-16; re-affirmed 2026-08-17 config-orphan pass \u2014 goal_progress and strategies_tried deleted as shadowed by Goal.progress / successful_strategies). This is the natural input the wired loop derives coverage_plateau_duration from."
-  },
-  "artifacts:orphan_reader::coverage-read.json": {
-   "note": "writer exists but constructs the name dynamically: core/coverage/record.py write_record(tool_name=\"read\") emits coverage-<tool>.json; the store_summary reader added by coverage-uplift names it literally. Deliberate plugin-writes/core-reads design, invisible to the literal-name index."
-  },
-  "artifacts:write_only_artifact::pipeline-tail.json": {
-   "note": "reader exists: core/audit/resume.py reads it via the PIPELINE_TAIL_FILENAME constant, so the literal name appears only at the constant definition \u2014 same dynamic-name pattern as coverage-read.json"
   }
  },
  "version": 1

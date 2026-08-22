@@ -78,8 +78,13 @@ def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
 @pytest.fixture(scope="module")
 def built(tmp_path_factory) -> Path:
     """Copy the helper sources into a tree shaped like the checkout
-    (``pkg/helpers/`` next to ``pkg/netns_coordinator.py``) and build
-    both production binaries there via the Makefile.
+    (``core/sandbox/helpers/`` next to
+    ``core/sandbox/netns_coordinator.py`` — the launcher derives the
+    coordinator's import root from that fixed depth) and build both
+    production binaries there via the Makefile.
+
+    The stub coordinator prints its RAPTOR_DIR and full environment key
+    set so tests can assert the launcher's fixed-environment contract.
 
     Modes are pinned to the umask-002 user-private-group layout
     (0775 dirs, 0664 script) that real checkouts carry on Debian/Ubuntu:
@@ -87,19 +92,24 @@ def built(tmp_path_factory) -> Path:
     because the group is the owner's own primary group.
     """
     base = tmp_path_factory.mktemp("helper-contracts")
-    pkg = base / "pkg"
+    pkg = base / "core" / "sandbox"
     helpers = pkg / "helpers"
     helpers.mkdir(parents=True)
     for name in SOURCES:
         shutil.copy(HELPERS_SRC / name, helpers / name)
     coord = pkg / "netns_coordinator.py"
-    coord.write_text("print('COORD-OK')\n")
+    coord.write_text(
+        "import os\n"
+        "print('COORD-OK')\n"
+        "print('RAPTOR_DIR=' + os.environ.get('RAPTOR_DIR', '<unset>'))\n"
+        "print('ENV=' + ','.join(sorted(os.environ)))\n"
+    )
     coord.chmod(0o664)
-    for p in (base, pkg, helpers):
+    for p in (base, base / "core", pkg, helpers):
         p.chmod(0o775)
     # Pin the group to the owner's primary group so the UPG rule applies
     # even on hosts where the tmp tree inherits a setgid group.
-    for p in (base, pkg, helpers, coord):
+    for p in (base, base / "core", pkg, helpers, coord):
         os.chown(p, -1, _primary_gid())
     r = _run(["make", "-C", str(helpers)], timeout=120)
     if r.returncode != 0:
@@ -268,6 +278,60 @@ class TestCoordLauncherContract:
         r = _run([str(built / "raptor-coord-launcher"), interp, str(coord)])
         assert r.returncode != 3
         assert "refusing to launch" not in r.stderr
+
+    def test_hostile_caller_environment_is_discarded(self, built: Path) -> None:
+        """A direct caller's environment must not survive into the
+        coordinator: an inherited RAPTOR_DIR (which the coordinator
+        inserts into sys.path) or PYTHONPATH would run caller-chosen
+        Python under the grant, voiding the script pin. The launcher
+        clears the environment and rebuilds a fixed minimal one whose
+        RAPTOR_DIR is derived from the pinned script's canonical path."""
+        interp = _trusted_interpreter()
+        if interp is None:
+            pytest.skip("no interpreter satisfies the trusted-path check")
+        coord = built.parent / "netns_coordinator.py"
+        hostile = dict(_ENV)
+        hostile["RAPTOR_DIR"] = "/dev/shm/hostile-import-root"
+        hostile["PYTHONPATH"] = "/dev/shm/hostile-import-root"
+        hostile["PYTHONSTARTUP"] = "/dev/shm/hostile-startup.py"
+        r = subprocess.run(
+            [str(built / "raptor-coord-launcher"), interp, str(coord)],
+            capture_output=True, text=True, timeout=30, check=False,
+            env=hostile,
+        )
+        if r.returncode == 1 and ("unshare" in r.stderr
+                                  or "write_id_maps" in r.stderr):
+            pytest.skip("host LSM blocks unprivileged userns setup "
+                        "for this binary")
+        assert r.returncode == 0, r.stderr
+        # RAPTOR_DIR is the checkout root derived from the pinned script
+        # (<root>/core/sandbox/netns_coordinator.py), not the caller's.
+        derived_root = os.path.realpath(built.parents[2])
+        assert f"RAPTOR_DIR={derived_root}" in r.stdout
+        assert "hostile-import-root" not in r.stdout
+        # The whole environment is the fixed minimal set — nothing of
+        # the caller's environ (PYTHONPATH, PYTHONSTARTUP, HOME, ...)
+        # survives the clear.
+        assert ("ENV=LANG,LC_ALL,PATH,RAPTOR_COORD_FROM_LAUNCHER,"
+                "RAPTOR_COORD_REEXEC_GUARD,RAPTOR_DIR") in r.stdout
+
+    def test_launcher_source_pins_clearenv_and_derived_root(self) -> None:
+        """String-level contract for the environment scrub (the C-source
+        counterpart of the behavioural test above, and the anchor for
+        review: the coordinator's ``sys.path.insert(0,
+        os.environ["RAPTOR_DIR"])`` hard lookup stays as-is BECAUSE the
+        launcher is the one supplying a trustworthy value)."""
+        src = (HELPERS_SRC / "raptor-coord-launcher.c").read_text()
+        assert "clearenv()" in src
+        assert "derive_raptor_dir(" in src
+        assert '"/core/sandbox/netns_coordinator.py"' in src
+        assert 'setenv("RAPTOR_DIR", raptor_dir' in src
+        assert 'getenv("RAPTOR_DIR")' not in src, (
+            "the launcher must never read the caller's RAPTOR_DIR"
+        )
+        assert src.index("clearenv()") < src.index("execv(interp"), (
+            "the environment must be cleared before the exec"
+        )
 
     def test_refuses_nonexistent_interpreter(self, built: Path) -> None:
         coord = built.parent / "netns_coordinator.py"

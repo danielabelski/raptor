@@ -44,6 +44,16 @@ int check_trusted_path(const char *path, uid_t trusted_uid, int expect_dir,
 int check_invoker_identity(uid_t invoker_uid, uid_t invoker_euid,
                            uid_t trusted_uid, char *err, size_t errsz);
 
+/* Import-root derivation: given the CANONICALISED pinned coordinator
+ * script path (which must end in /core/sandbox/netns_coordinator.py),
+ * writes the checkout root — the only value the launcher will export
+ * as RAPTOR_DIR — into `out`. Refuses relative paths, paths at the
+ * wrong depth/name, and undersized buffers. The launcher derives the
+ * interpreter's import root from this instead of the caller's
+ * environment, which is cleared before exec. */
+int derive_raptor_dir(const char *script_real, char *out, size_t outsz,
+                      char *err, size_t errsz);
+
 /* Full exec-target contract for the coord launcher:
  *   - argc must be exactly 3: [launcher, interpreter, script]
  *   - realpath(argv[2]) must equal

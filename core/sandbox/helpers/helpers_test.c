@@ -301,6 +301,45 @@ static void test_exec_target(void) {
 
 
 /* ------------------------------------------------------------------ */
+/* raptor-coord-launcher: derive_raptor_dir                             */
+/* ------------------------------------------------------------------ */
+
+static void test_derive_raptor_dir(void) {
+    char out[PATH_MAX];
+    char err[512];
+
+    CHECK(derive_raptor_dir(
+              "/home/op/raptor/core/sandbox/netns_coordinator.py",
+              out, sizeof out, err, sizeof err) == 0
+              && strcmp(out, "/home/op/raptor") == 0,
+          "derives the checkout root from the pinned script path");
+    CHECK(derive_raptor_dir("/core/sandbox/netns_coordinator.py",
+                            out, sizeof out, err, sizeof err) == 0
+              && strcmp(out, "/") == 0,
+          "derives '/' for a checkout at the filesystem root");
+    CHECK(derive_raptor_dir("/home/op/raptor/netns_coordinator.py",
+                            out, sizeof out, err, sizeof err) != 0
+              && strstr(err, "import-root derivation") != NULL,
+          "refuses a coordinator path at the wrong checkout depth");
+    CHECK(derive_raptor_dir("/home/op/raptor/core/sandbox/other.py",
+                            out, sizeof out, err, sizeof err) != 0,
+          "refuses a non-coordinator script name");
+    CHECK(derive_raptor_dir("core/sandbox/netns_coordinator.py",
+                            out, sizeof out, err, sizeof err) != 0,
+          "refuses a relative script path");
+    CHECK(derive_raptor_dir(
+              "/home/opcore/sandbox/netns_coordinator.py",
+              out, sizeof out, err, sizeof err) != 0,
+          "refuses a suffix match that is not on a component boundary");
+    char tiny[4];
+    CHECK(derive_raptor_dir(
+              "/home/op/raptor/core/sandbox/netns_coordinator.py",
+              tiny, sizeof tiny, err, sizeof err) != 0,
+          "refuses when the root exceeds the caller buffer");
+}
+
+
+/* ------------------------------------------------------------------ */
 /* raptor-coord-launcher: check_invoker_identity                        */
 /* ------------------------------------------------------------------ */
 
@@ -527,6 +566,7 @@ static void test_ns_owner(void) {
 
 int main(void) {
     test_exec_target();
+    test_derive_raptor_dir();
     test_invoker_identity();
     test_parse_strict_ulong();
     test_mapping_args();

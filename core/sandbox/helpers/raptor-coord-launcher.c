@@ -55,7 +55,13 @@
  *   4. write /proc/self/uid_map ("0 EUID 1"), setgroups ("deny"), gid_map
  *   5. ioctl(SIOCSIFFLAGS, lo, IFF_UP | IFF_LOOPBACK | IFF_RUNNING)
  *   6. capset(empty)  -- drops every capability
- *   7. setenv(RAPTOR_COORD_FROM_LAUNCHER=1)  -- signal to coord.py
+ *   7. clearenv() + fixed minimal environment: PATH=/usr/bin:/bin,
+ *      LANG/LC_ALL=C, RAPTOR_DIR derived from the pinned script's
+ *      canonical path (NEVER from the caller's environment — an
+ *      inherited RAPTOR_DIR/PYTHONPATH would steer the interpreter's
+ *      import path and void the script pin), plus the RAPTOR_COORD_*
+ *      sentinels (FROM_LAUNCHER=1 signals coord.py to skip its own
+ *      unshare)
  *   8. execv(interpreter, {interpreter, script}) -- both canonicalised
  *
  * After step 6 the process has no caps in its parent userns; the only
@@ -183,6 +189,48 @@ int check_invoker_identity(uid_t invoker_uid, uid_t invoker_euid,
                  (unsigned)trusted_uid);
         return -1;
     }
+    return 0;
+}
+
+
+int derive_raptor_dir(const char *script_real, char *out, size_t outsz,
+                      char *err, size_t errsz) {
+    /* The pinned coordinator script lives at a FIXED depth in the
+     * checkout: <root>/core/sandbox/netns_coordinator.py. The import
+     * root handed to the interpreter is derived from that canonical
+     * path — never read from the caller's environment — so a direct
+     * invoker cannot point the coordinator's sys.path at their own
+     * module tree under the grant. */
+    static const char suffix[] = "/core/sandbox/netns_coordinator.py";
+    const size_t sufl = sizeof suffix - 1;
+    size_t slen = strlen(script_real);
+    if (script_real[0] != '/' || slen < sufl
+            || strcmp(script_real + (slen - sufl), suffix) != 0) {
+        snprintf(err, errsz,
+                 "import-root derivation: canonical coordinator path %s "
+                 "does not end in %s — cannot derive the checkout root",
+                 script_real, suffix);
+        return -1;
+    }
+    size_t rootlen = slen - sufl;
+    if (rootlen == 0) {
+        /* Checkout unpacked at the filesystem root. */
+        if (outsz < 2) {
+            snprintf(err, errsz, "import-root derivation: caller buffer "
+                     "too small");
+            return -1;
+        }
+        out[0] = '/';
+        out[1] = '\0';
+        return 0;
+    }
+    if (rootlen + 1 > outsz) {
+        snprintf(err, errsz, "import-root derivation: checkout root "
+                 "exceeds the caller buffer");
+        return -1;
+    }
+    memcpy(out, script_real, rootlen);
+    out[rootlen] = '\0';
     return 0;
 }
 
@@ -443,6 +491,18 @@ int main(int argc, char **argv) {
         return 3;
     }
 
+    /* Derive the coordinator's Python import root from the pinned,
+     * already-canonicalised script path, BEFORE any privileged step.
+     * The inherited environment is discarded below; RAPTOR_DIR must
+     * come from the validated checkout, never from the caller. */
+    char raptor_dir[PATH_MAX];
+    if (derive_raptor_dir(script, raptor_dir, sizeof raptor_dir,
+                          err, sizeof err) != 0) {
+        fprintf(stderr, "raptor-coord-launcher: refusing to launch: %s\n",
+                err);
+        return 3;
+    }
+
     /* Capture parent-userns euid/egid BEFORE unshare. See write_id_maps()
      * docstring. */
     uid_t parent_uid = geteuid();
@@ -486,9 +546,30 @@ int main(int argc, char **argv) {
         return log_errno("capset(empty) — failed to drop caps before exec");
     }
 
-    /* Signal to the coordinator that its namespaces are already set up
-     * and it must NOT re-do the unshare. */
-    setenv("RAPTOR_COORD_FROM_LAUNCHER", "1", 1);
+    /* Discard the caller's environment wholesale and construct a fixed
+     * minimal one. On a direct invocation the inherited environ is
+     * attacker input: RAPTOR_DIR (which netns_coordinator.py inserts
+     * into sys.path — hard lookup by repo doctrine, so the launcher
+     * must be the one supplying a trustworthy value) and PYTHONPATH
+     * both steer the interpreter's module resolution, which would run
+     * caller-chosen Python under the grant and void the script pin.
+     * AT_SECURE strips only the LD_ and glibc classes, not Python's
+     * environment surface.
+     *
+     * RAPTOR_COORD_FROM_LAUNCHER=1 signals the coordinator that its
+     * namespaces are already set up and it must NOT re-do the unshare;
+     * RAPTOR_COORD_REEXEC_GUARD=1 keeps the coordinator's re-exec
+     * loop-breaker armed now that the caller's copy is cleared. */
+    if (clearenv() != 0
+            || setenv("PATH", "/usr/bin:/bin", 1) != 0
+            || setenv("LANG", "C", 1) != 0
+            || setenv("LC_ALL", "C", 1) != 0
+            || setenv("RAPTOR_DIR", raptor_dir, 1) != 0
+            || setenv("RAPTOR_COORD_REEXEC_GUARD", "1", 1) != 0
+            || setenv("RAPTOR_COORD_FROM_LAUNCHER", "1", 1) != 0) {
+        return log_errno("clearenv/setenv — could not construct the "
+                         "fixed coordinator environment");
+    }
 
     /* execv the CANONICALISED interpreter+script from validation — not
      * the raw argv — so the validated paths are the executed paths.

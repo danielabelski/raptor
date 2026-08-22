@@ -57,7 +57,11 @@ import sys
 # (or via the launcher binary which execs us). RAPTOR's Python-path rule:
 # never add anything to sys.path except os.environ["RAPTOR_DIR"], hard
 # lookup so a missing env var fails loudly. Caller (TcpAdapter) is
-# responsible for setting RAPTOR_DIR in the subprocess env.
+# responsible for setting RAPTOR_DIR in the subprocess env. On the
+# launcher path the caller's environment never reaches this lookup: the
+# launcher clearenv()s and exports a RAPTOR_DIR derived from its own
+# pinned script's canonical path, so a direct invoker of the launcher
+# cannot steer this insert at a hostile module tree.
 sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 import base64

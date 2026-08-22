@@ -551,8 +551,25 @@ class TestEngineParity:
         assert sites and all(s.engine == "cpg" for s in sites)
 
     def test_ts_rows_default_engine_tag(self):
+        # Grammar-gated like the parser_tier fixture: on hosts
+        # without the C grammar the census falls back to the regex
+        # extractor, whose rows are tagged "regex" — the ts tag can
+        # only be asserted where the ts extractor actually ran.
+        if not ts_parser_available("c"):
+            pytest.skip("tree-sitter C grammar unavailable")
         src = "int f(void) { doWork(); return 0; }\n"
         census = build_return_census({"a.c": src})
         for c in census.values():
             for site in c.sites:
                 assert site.engine == "ts"
+
+    def test_in_file_rows_never_tagged_cpg(self):
+        # The provenance boundary the deviation safety rule rests on
+        # holds on every host: in-file rows are "ts" or "regex",
+        # never "cpg".
+        src = "int f(void) { doWork(); return 0; }\n"
+        census = build_return_census({"a.c": src})
+        sites = [s for c in census.values() for s in c.sites]
+        assert sites
+        for site in sites:
+            assert site.engine in ("ts", "regex")

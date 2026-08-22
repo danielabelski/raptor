@@ -77,6 +77,16 @@ _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 # grammar would admit algorithms we can't verify.
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_TAGS_BYTES = 16 * 1024 * 1024
+# Aggregate budgets across ALL tags/list pages. The per-page byte cap
+# resets each iteration, so without these a hostile registry
+# (selectable via target-derived image refs) could feed 50 pages ×
+# 16 MiB of tag data that gets retained wholesale — and cached — by
+# callers. Docker Hub's biggest real repos are low-thousands of tags.
+_MAX_TAGS_TOTAL_BYTES = 64 * 1024 * 1024
+_MAX_TAGS_TOTAL_COUNT = 50_000
+# OCI tag grammar caps names at 128 chars; anything longer is not a
+# real tag and only inflates the retained list.
+_MAX_TAG_LENGTH = 128
 _MAX_TOKEN_BYTES = 256 * 1024  # token-exchange responses are tiny
 
 
@@ -442,10 +452,19 @@ class OciRegistryClient:
         rare; the cap prevents an unbounded walk from a
         misconfigured Link chain.
 
+        Aggregate budgets: cumulative response bytes and total tag
+        count are bounded across pages (the per-page caps alone let a
+        hostile registry stream max_pages × 16 MiB into a retained —
+        and downstream-cached — list). Exceeding either budget raises
+        :class:`RegistryError` rather than silently truncating.
+        Tags longer than the OCI grammar's 128-char maximum are
+        dropped like other non-tag entries.
+
         Raises :class:`RegistryError` on non-200 or malformed
         response.
         """
         all_tags: list[str] = []
+        total_bytes = 0
         next_url: str | None = (
             f"/v2/{ref.repository}/tags/list?n={per_page}"
         )
@@ -465,6 +484,14 @@ class OciRegistryClient:
                     f"tags/list exceeds {_MAX_TAGS_BYTES}-byte cap "
                     f"for {ref.repository} (got {len(resp.content)})",
                 )
+            total_bytes += len(resp.content)
+            if total_bytes > _MAX_TAGS_TOTAL_BYTES:
+                raise RegistryError(
+                    resp.status_code,
+                    f"tags/list pagination exceeds aggregate "
+                    f"{_MAX_TAGS_TOTAL_BYTES}-byte budget for "
+                    f"{ref.repository} on {ref.registry}",
+                )
             try:
                 data = json.loads(resp.content)
             except (ValueError, TypeError, RecursionError) as e:
@@ -482,8 +509,19 @@ class OciRegistryClient:
                     f"for {ref.repository}",
                 )
             # Filter to non-empty strings — registries occasionally
-            # include nulls for in-progress pushes.
-            all_tags.extend(t for t in tags if isinstance(t, str) and t)
+            # include nulls for in-progress pushes. Overlong entries
+            # violate the OCI tag grammar (128-char max) and are
+            # dropped the same way.
+            all_tags.extend(
+                t for t in tags
+                if isinstance(t, str) and t and len(t) <= _MAX_TAG_LENGTH
+            )
+            if len(all_tags) > _MAX_TAGS_TOTAL_COUNT:
+                raise RegistryError(
+                    resp.status_code,
+                    f"tags/list exceeds {_MAX_TAGS_TOTAL_COUNT}-tag "
+                    f"budget for {ref.repository} on {ref.registry}",
+                )
 
             # Follow ``Link: <url>; rel="next"`` if present.
             # Must be a relative path under ``/v2/`` for the same

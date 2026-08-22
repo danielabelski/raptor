@@ -278,6 +278,9 @@ class TestMacosSpawnWiring:
             PIPE=subprocess.PIPE,
         )
         monkeypatch.setattr(_macos_spawn, "subprocess", fake_subprocess)
+        # Keep the post-wait descendant sweep hermetic: no real ps, no
+        # signals from this test (the sweep has its own dedicated tests).
+        monkeypatch.setattr(_macos_spawn, "_ps_snapshot", lambda: [])
         return _macos_spawn.run_sandboxed(
             ["/usr/bin/true"], env={}, audit_run_dir=str(tmp_path),
             **kwargs)

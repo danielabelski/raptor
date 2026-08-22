@@ -136,6 +136,185 @@ def is_available() -> bool:
     return os.path.exists(SANDBOX_EXEC)
 
 
+# ---- post-wait descendant sweep ----------------------------------------
+#
+# macOS teardown is process-group based (death-pipe → sandbox pgrp
+# SIGKILL in the shim; killpg of the shim session as backstop) and the
+# groups only cover processes that stayed IN them. The allow-default
+# seatbelt profile does not deny setsid, so a fork+setsid descendant
+# leaves both kill groups — and macOS has no pid-namespace cascade to
+# catch it. The sweep below walks the process table (macOS has no
+# /proc; `ps -axo pid,ppid,pgid` is the portable enumeration) from the
+# shim pid, collects descendants transitively via the ppid chain (a
+# setsid call changes pgid/session, NOT ppid — the walk still finds the
+# escapee while its ancestors are alive), and SIGKILLs them. Applied on
+# every exit path: normal completion, timeout, and exception/abort.
+#
+# Known blind spot, by construction: once a descendant's intermediate
+# ancestors have exited, it reparents to launchd (ppid 1) and a fresh
+# snapshot can no longer attribute it — from that point it is
+# indistinguishable from an unrelated process. Callers therefore pass a
+# snapshot captured while the tree was still alive (the timeout path
+# snapshots BEFORE killing; the shim keeps a periodic one); a
+# descendant that forked, setsid'd, and was orphaned entirely between
+# snapshots escapes attribution. The mirrored sweep in
+# libexec/raptor-seatbelt-shim (keep the logic in sync — the shim runs
+# `python -I` with no repo on sys.path and cannot import this module)
+# owns the normal-completion path, where it can still see the live tree.
+
+# Candidate absolute paths first (macOS pins ps at /bin/ps); bare "ps"
+# as a last resort for unusual PATH layouts.
+_PS_CANDIDATES = ("/bin/ps", "/usr/bin/ps", "ps")
+_PS_ARGS = ["-axo", "pid=,ppid=,pgid="]
+_SWEEP_MAX_PASSES = 3
+_PS_TIMEOUT_S = 10
+
+
+def _parse_ps_table(text: str) -> list:
+    """Parse `ps -axo pid=,ppid=,pgid=` output into (pid, ppid, pgid)
+    int tuples. Unparseable lines are skipped (ps localisation noise,
+    truncated reads) — the sweep is best-effort."""
+    table = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            table.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            continue
+    return table
+
+
+def collect_descendants(table, root_pid, extra_pgids=(), protect=()):
+    """Pure kill-list derivation: (pid, ppid, pgid) table in → pid set out.
+
+    Collects, transitively, every process reachable from ``root_pid``
+    via the ppid chain (a setsid escapee changed its pgid, not its
+    ppid, so it is still collected while its ancestors live), plus
+    every member of ``extra_pgids`` (process groups known to belong to
+    the sandbox — catches group members whose ppid chain already
+    broke) and THEIR ppid-descendants. ``root_pid`` itself, pids <= 1,
+    and anything in ``protect`` are never returned; processes with no
+    ancestry path to the root and no membership in ``extra_pgids`` are
+    never returned, however suspicious they look. Bounded: each pid is
+    visited at most once, so a cyclic/garbage table cannot hang the
+    walk.
+
+    Blind spot (see module comment above): a descendant already
+    reparented to pid 1 in THIS table is unreachable from the root —
+    bridging that needs a snapshot taken while the tree was alive,
+    which _sweep_descendants handles.
+    """
+    kids = {}
+    pgid_members = {}
+    for pid, ppid, pgid in table:
+        kids.setdefault(ppid, []).append(pid)
+        pgid_members.setdefault(pgid, []).append(pid)
+    out = set()
+    visited = {root_pid}
+    stack = [root_pid]
+    for pg in extra_pgids:
+        for pid in pgid_members.get(pg, ()):
+            if pid not in visited:
+                visited.add(pid)
+                out.add(pid)
+                stack.append(pid)
+    while stack:
+        cur = stack.pop()
+        for child in kids.get(cur, ()):
+            if child in visited:
+                continue
+            visited.add(child)
+            out.add(child)
+            stack.append(child)
+    banned = set(protect)
+    banned.add(root_pid)
+    return {p for p in out if p > 1 and p not in banned}
+
+
+def _ps_snapshot():
+    """(pid, ppid, pgid) table from ps, or None when unavailable.
+    Best-effort by design — a missing/hung ps must not break the run
+    result path."""
+    for ps in _PS_CANDIDATES:
+        try:
+            proc = subprocess.run(
+                [ps, *_PS_ARGS], capture_output=True, text=True,
+                timeout=_PS_TIMEOUT_S, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            return _parse_ps_table(proc.stdout)
+    return None
+
+
+def _kill_pid(pid: int) -> None:
+    """SIGKILL one pid, best-effort. Module-level so tests can observe
+    the sweep hermetically without patching os.kill globally."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _sweep_descendants(root_pid, *, live_snapshot=None, extra_pgids=(),
+                       snapshot_fn=None, max_passes=_SWEEP_MAX_PASSES):
+    """Post-wait sweep: SIGKILL every process still attributable to the
+    shim's tree, independent of process group. Best-effort, bounded to
+    ``max_passes`` snapshot+kill rounds (later rounds catch children
+    forked while the earlier round was killing).
+
+    ``live_snapshot`` is a (pid, ppid, pgid) table captured while the
+    tree was still alive: descendants recorded there are still killed
+    after they reparent to launchd, provided they still exist AND still
+    carry the pgid the snapshot saw (a cheap pid-reuse guard — a
+    recycled pid lands in a different process group; a process only
+    changes its own pgid via setsid/setpgid, which cannot silently
+    recreate the recorded value for an unrelated process in practice).
+
+    Returns the set of pids signalled (for logging/tests).
+    """
+    snapshot_fn = snapshot_fn or _ps_snapshot
+    protect = {os.getpid(), os.getppid()}
+    known = {}
+    if live_snapshot:
+        live_pgids = {pid: pgid for pid, _ppid, pgid in live_snapshot}
+        for pid in collect_descendants(
+                live_snapshot, root_pid,
+                extra_pgids=extra_pgids, protect=protect):
+            known[pid] = live_pgids.get(pid)
+    swept = set()
+    for _ in range(max_passes):
+        table = snapshot_fn()
+        if not table:
+            break
+        current_pgid = {pid: pgid for pid, _ppid, pgid in table}
+        targets = collect_descendants(
+            table, root_pid, extra_pgids=extra_pgids, protect=protect)
+        for pid, seen_pgid in known.items():
+            if (pid not in targets and pid in current_pgid
+                    and current_pgid[pid] == seen_pgid):
+                targets.add(pid)
+        targets = {p for p in targets if p > 1 and p not in protect
+                   and p != root_pid}
+        if not targets:
+            break
+        for pid in sorted(targets):
+            _kill_pid(pid)
+        for pid in targets:
+            known.setdefault(pid, current_pgid.get(pid))
+        swept |= targets
+    if swept:
+        logger.warning(
+            "macOS sandbox teardown: post-wait sweep SIGKILLed %d "
+            "orphaned descendant process(es): %s",
+            len(swept), sorted(swept),
+        )
+    return swept
+
+
 def run_sandboxed(cmd: list[str], *,
                   target: str | None = None,
                   output: str | None = None,
@@ -638,6 +817,15 @@ def run_sandboxed(cmd: list[str], *,
     # exit — with a killpg of the shim's own session as the backstop.
     def _teardown_shim_tree(process) -> None:
         """Kill the shim and its sandbox subtree on timeout/abort."""
+        # 0. Snapshot the process table FIRST, while the tree is still
+        #    alive: a fork+setsid descendant has left both kill groups
+        #    below, but its ppid chain back to the shim is intact until
+        #    its ancestors die — after the kills it reparents to
+        #    launchd and a fresh snapshot can no longer attribute it.
+        try:
+            _live_table = _ps_snapshot()
+        except Exception:
+            _live_table = None
         # 1. Death-pipe EOF: the shim's watcher loop (0.1s poll) reads
         #    EOF and SIGKILLs the sandbox process group + child, then
         #    exits. This reaches the sandbox-exec pgrp, which is NOT
@@ -663,6 +851,17 @@ def run_sandboxed(cmd: list[str], *,
             process.kill()
         except OSError:
             pass
+        # 3. Post-wait descendant sweep, independent of process group:
+        #    catches setsid escapees the two killpg's above cannot
+        #    reach. Best-effort with logging — teardown must never
+        #    raise over sweep failure.
+        try:
+            _sweep_descendants(process.pid, live_snapshot=_live_table)
+        except Exception:
+            logger.warning(
+                "macOS sandbox teardown: descendant sweep failed",
+                exc_info=True,
+            )
 
     ready = b""
     if input is not None and stdin is not None:
@@ -733,6 +932,22 @@ def run_sandboxed(cmd: list[str], *,
                 _teardown_shim_tree(_process)
                 raise
             _retcode = _process.poll()
+        # Post-wait descendant sweep on the NORMAL-completion path
+        # too — pre-fix, normal completion just reaped the shim and a
+        # fork+setsid descendant survived the run outright. By this
+        # point the shim has exited, so its own exit-time sweep (see
+        # libexec/raptor-seatbelt-shim, which still saw the live tree)
+        # is the primary owner of this path; this parent-side pass is
+        # the backstop for a shim that died without sweeping, and can
+        # only attribute descendants whose ppid chain or process group
+        # still connects them to the (dead) shim pid. Best-effort.
+        try:
+            _sweep_descendants(_process.pid)
+        except Exception:
+            logger.warning(
+                "macOS sandbox: post-run descendant sweep failed",
+                exc_info=True,
+            )
         result = subprocess.CompletedProcess(
             sandbox_cmd, _retcode, _stdout, _stderr,
         )

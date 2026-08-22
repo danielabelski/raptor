@@ -431,3 +431,39 @@ def test_run_execs_realpath_and_binds_resolved_tool_dir(
 
     assert seen["cmd"][0] == str(real.resolve())
     assert seen["kwargs"]["tool_paths"] == [str(real.resolve().parent)]
+
+
+def test_run_refuses_oversize_results_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A results file over the byte budget is refused before the read
+    — the run degrades to zero results like any unparseable output."""
+    import os
+
+    from packages.web import ffuf as ffuf_mod
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf",
+    )
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(
+            json.dumps({"results": [{"url": "https://example.test/a",
+                                     "status": 200}]}),
+            encoding="utf-8",
+        )
+        # Sparse-extend past the cap: the stat gate fires before any
+        # read, so no data is materialised.
+        os.truncate(output_path, ffuf_mod._MAX_FFUF_OUTPUT_BYTES + 1)
+        return SimpleNamespace(returncode=0, stderr=None)
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist, path_template="FUZZ"))
+    assert result["returncode"] == 0
+    assert result["result_count"] == 0
+    assert result["results"] == []

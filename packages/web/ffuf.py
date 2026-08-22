@@ -8,7 +8,6 @@ origin before spawning the external binary.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -16,11 +15,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from core.json.bounded import load_json_bounded
 from core.logging import get_logger
 from core.sandbox import run_untrusted_networked
 from core.security.redaction import is_secret_field_name, redact_secrets
 
 logger = get_logger()
+
+# Byte ceiling for the ffuf results file. ffuf writes it from
+# responses served by the attacker-controlled web target, so its
+# size is adversary-influenced. Each result row is a small dict —
+# even saturated wordlist runs stay far under this cap.
+_MAX_FFUF_OUTPUT_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -265,12 +271,18 @@ class FfufRunner:
         results: list[dict[str, Any]] = []
         if output_file.exists():
             try:
-                parsed = json.loads(output_file.read_text(encoding="utf-8", errors="replace"))
+                # Size-gated BEFORE the read: an over-budget results
+                # file raises with the observed size and is reported
+                # below like any other unparseable output.
+                parsed = load_json_bounded(
+                    output_file, max_bytes=_MAX_FFUF_OUTPUT_BYTES,
+                )
                 if isinstance(parsed, dict):
                     raw_results = parsed.get("results") or []
                     if isinstance(raw_results, list):
                         results = [r for r in raw_results if isinstance(r, dict)]
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            except ValueError as exc:
+                # Malformed JSON, undecodable bytes, or over budget.
                 logger.warning("Could not parse ffuf JSON output: %s", exc)
 
         summarized_results = [self._summarize_result(r) for r in results[: config.report_limit]]

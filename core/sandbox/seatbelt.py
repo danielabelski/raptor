@@ -171,7 +171,10 @@ def build_profile(*,
         write-allowlist exception clause.
       block_network: emit (deny network*).
       allowed_tcp_ports: emit (allow network-outbound (remote tcp ...))
-        for each port — typically used for the egress proxy.
+        for each port. A port equal to proxy_port (the egress-proxy
+        lane, folded into this list by the context layer) is skipped:
+        the loopback-scoped proxy rules already cover it, and a
+        wildcard would open the lane port to every remote address.
       use_egress_proxy: shorthand — implies block_network=True except
         for proxy_port. Caller passes the actual proxy_port number.
       proxy_port: loopback port the egress proxy listens on. Required
@@ -614,7 +617,25 @@ def build_profile(*,
                 f"(allow network-outbound "
                 f"(remote tcp6 \"localhost:{int(proxy_port)}\"))"
             )
-        parts.extend(f"(allow network-outbound (remote tcp \"*:{int(port)}\"))" for port in allowed_tcp_ports or ())
+        for port in (allowed_tcp_ports or ()):
+            # The proxy lane port is folded into allowed_tcp_ports by
+            # the context layer (TCP-only path — always taken on
+            # darwin), so without this skip the builder emitted BOTH
+            # the loopback-scoped lane rules above AND an any-address
+            # wildcard for the same port: a child could read the port
+            # from HTTPS_PROXY and dial attacker-host:<laneport>
+            # directly, bypassing the hostname allowlist and proxy
+            # telemetry. Unlike the Linux tier-2 port pin (a kernel
+            # limitation — Landlock is port-only by design), SBPL can
+            # express the address scope, and the loopback tcp4/tcp6
+            # rules already cover the lane — never widen them.
+            # Caller-declared non-lane ports keep their wildcard.
+            if use_egress_proxy and proxy_port \
+                    and int(port) == int(proxy_port):
+                continue
+            parts.append(
+                f"(allow network-outbound (remote tcp \"*:{int(port)}\"))"
+            )
     elif allowed_tcp_ports:
         # Standalone port allowlist (no block_network, no proxy): the
         # old `block_network or use_egress_proxy` gate emitted NO

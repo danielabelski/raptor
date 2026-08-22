@@ -238,6 +238,47 @@ def test_egress_proxy_emits_both_v4_and_v6():
     assert "tcp6" in p
 
 
+def test_egress_proxy_lane_port_never_gets_wildcard_rule():
+    """The proxy lane port is folded into allowed_tcp_ports by the
+    context layer (TCP-only path — always taken on darwin), so
+    pre-fix the builder emitted BOTH the loopback-scoped lane rules
+    AND a wildcard `(remote tcp "*:<laneport>")` for the same port —
+    letting a child read the port from HTTPS_PROXY and dial
+    attacker-host:<laneport> directly, bypassing the hostname
+    allowlist and proxy telemetry. The loopback tcp4/tcp6 rules
+    already cover the lane; the wildcard must be suppressed for the
+    lane port while caller-declared non-lane ports keep theirs."""
+    lane = 4567
+    p = seatbelt.build_profile(
+        use_egress_proxy=True,
+        proxy_port=lane,
+        allowed_tcp_ports=[lane, 8443],
+    )
+    # Loopback-scoped lane rules stay (both address families).
+    assert f'(remote tcp4 "localhost:{lane}")' in p
+    assert f'(remote tcp6 "localhost:{lane}")' in p
+    # No any-address wildcard for the lane port.
+    assert f'"*:{lane}"' not in p
+    # A declared non-lane port keeps its wildcard rule.
+    assert '(allow network-outbound (remote tcp "*:8443"))' in p
+
+
+def test_egress_proxy_lane_only_ports_list_emits_no_wildcard():
+    """The production darwin shape: allowed_tcp_ports == [lane_port]
+    exactly (context.py replaces the caller list with the lane).
+    The profile must contain NO wildcard network-outbound rule at
+    all — only the loopback pair."""
+    lane = 4567
+    p = seatbelt.build_profile(
+        use_egress_proxy=True,
+        proxy_port=lane,
+        allowed_tcp_ports=[lane],
+    )
+    assert '(remote tcp "*:' not in p
+    assert f'localhost:{lane}' in p
+    assert "(deny network*)" in p
+
+
 def test_allowed_tcp_ports_emitted():
     """Caller-supplied port allowlist (e.g. allowed_tcp_ports=[443])
     becomes (allow network-outbound (remote tcp "*:443")) clauses."""

@@ -136,6 +136,87 @@ _LOG_LINE_RE = re.compile(
 _PARSE_DIAG_MIN_LINES = 10
 _PARSE_DIAG_MIN_RATIO = 0.5
 
+# Scope/lineage filter tunables (see LogStreamer's class docstring).
+# The `log stream` predicate filters by kext SENDER only — records
+# from EVERY sandboxed process on the host come through, so without
+# a scoping gate a concurrent RAPTOR run (or a hostile same-host
+# sandboxed process minting records that would steer an
+# observe-derived allowlist) pollutes this run's JSONL with the
+# run's own nonce stamped on.
+#   * poll interval: the lineage poller snapshots the process tree so
+#     descendants seen alive are still attributable when their kext
+#     records arrive AFTER they exit (the kernel→log pipeline has
+#     ~1.5s latency; short workloads routinely deliver post-exit).
+#   * pending cap: records arriving between streamer start and the
+#     first register_target_pid are buffered (bounded) and filtered
+#     on registration.
+#   * foreign cache cap: negative attribution results are memoised;
+#     cleared wholesale past the cap so PID reuse cannot poison the
+#     cache indefinitely.
+_LINEAGE_POLL_INTERVAL_S = 0.2
+_PENDING_BUFFER_CAP = 512
+_FOREIGN_CACHE_CAP = 4096
+
+# ppid-chain walk bound in the scope filter — defends against a
+# cyclic/corrupt process-table probe ever looping the reader thread.
+_LINEAGE_WALK_MAX = 64
+
+
+def _default_get_ppid(pid: int) -> int | None:
+    """Best-effort parent PID lookup. /proc on Linux; ps(1) fallback
+    (macOS has no /proc). None when the process is gone or unreadable."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read().decode("utf-8", errors="replace")
+        return int(data.rpartition(")")[2].split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(int(pid))],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout.strip()
+        return int(out) if out else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _default_list_pid_ppids() -> list[tuple[int, int]]:
+    """Best-effort (pid, ppid) snapshot of the whole process table.
+    /proc scan on Linux; one ps(1) invocation elsewhere. Empty list on
+    failure — the poller then contributes nothing this tick."""
+    pairs: list[tuple[int, int]] = []
+    try:
+        entries = [d for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        entries = []
+    if entries:
+        for d in entries:
+            try:
+                with open(f"/proc/{d}/stat", "rb") as fh:
+                    data = fh.read().decode("utf-8", errors="replace")
+                pairs.append(
+                    (int(d), int(data.rpartition(")")[2].split()[1]))
+                )
+            except (OSError, ValueError, IndexError):
+                continue
+        return pairs
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                pairs.append((int(parts[0]), int(parts[1])))
+            except ValueError:
+                continue
+    return pairs
+
 
 # Live-escalation: credential-path matching is shared with triage.py's
 # post-hoc `credential_path_touch` signal via the leaf
@@ -272,17 +353,52 @@ class LogStreamer:
     written into this run's JSONL, and allowlists derived from it
     can be contaminated by them. Register the child PID as soon as
     it is known to close that window.
+
+    ``require_scope=True`` (what ``_macos_spawn`` passes) removes the
+    legacy pass-through entirely: the caller promises to call
+    ``register_target_pid()`` as soon as the workload is spawned.
+    Until then, records are buffered (bounded) rather than appended;
+    afterwards, only records attributable to the registered scope are
+    admitted. Attribution widens beyond exact PID + process group to
+    the workload's process LINEAGE: a background poller snapshots the
+    process tree so descendants seen alive stay attributable when
+    their kext records arrive after they exit (the kernel→log
+    pipeline delivers post-exit for short workloads), and a live
+    ppid-chain walk catches descendants the poller has not seen yet.
+    Foreign records are dropped, counted, and surfaced via a
+    ``foreign_records_dropped`` field on the audit_summary record.
+    Residual: a descendant that lives shorter than one poll interval
+    and whose record arrives post-exit cannot be attributed and is
+    dropped — visible in the same counter.
     """
 
     def __init__(self, run_dir: Path,
                  budget: _audit_budget.AuditBudget | None = None,
                  *, observe_mode: bool = False,
                  observe_nonce: str | None = None,
-                 target_pid: int | None = None) -> None:
+                 target_pid: int | None = None,
+                 require_scope: bool = False,
+                 get_ppid=None,
+                 getpgid=None,
+                 list_pid_ppids=None,
+                 lineage_poll_interval: float = _LINEAGE_POLL_INTERVAL_S) -> None:
         self._run_dir = Path(run_dir)
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
         self._stopped = threading.Event()
+        # Scope-required + lineage state (see class docstring). All of
+        # it is guarded by _scope_lock. The process-tree probes are
+        # injectable so tests drive attribution deterministically
+        # without a real /proc, ps, or getpgid.
+        self._require_scope = bool(require_scope)
+        self._pending: list[dict] = []
+        self._foreign_records_dropped = 0
+        self._foreign_pid_cache: set[int] = set()
+        self._get_ppid = get_ppid or _default_get_ppid
+        self._getpgid = getpgid or os.getpgid
+        self._list_pid_ppids = list_pid_ppids or _default_list_pid_ppids
+        self._lineage_poll_interval = float(lineage_poll_interval)
+        self._lineage_poller: threading.Thread | None = None
         # PID scoping state (see class docstring). _target_pid drives
         # the predicate-level narrowing in start(); the pid/pgid sets
         # drive the parse-time filter in _read_loop. Guarded by a
@@ -346,46 +462,136 @@ class LogStreamer:
         workload plus helper processes. The process-group lookup is
         best-effort — a PID that is already gone (or was never local)
         still gets exact-PID matching, just no group widening.
+
+        Under ``require_scope=True`` this call additionally: flushes
+        the records buffered while no scope was known through the
+        scope gate, and starts the lineage poller so descendants of
+        the registered PID stay attributable after they exit.
         """
         pid = int(pid)
         pgid: int | None = None
         try:
-            pgid = os.getpgid(pid)
+            pgid = self._getpgid(pid)
         except OSError:
             pass
         with self._scope_lock:
             self._scope_pids.add(pid)
+            self._foreign_pid_cache.discard(pid)
             if pgid is not None:
                 self._scope_pgids.add(pgid)
+            pending, self._pending = self._pending, []
+        if (self._require_scope
+                and self._lineage_poller is None
+                and self._lineage_poll_interval > 0):
+            self._lineage_poller = threading.Thread(
+                target=self._lineage_poll_loop, daemon=True,
+            )
+            self._lineage_poller.start()
+        # Flush the pre-registration buffer through the gate. The
+        # scope is set before the swap above, so a record the reader
+        # processes concurrently either lands in `pending` (swapped
+        # and flushed here) or sees the non-empty scope directly —
+        # never lost, never double-filtered.
+        for record in pending:
+            self._filter_and_append(record)
+
+    def _lineage_poll_loop(self) -> None:
+        """Periodically fold live descendants of the registered scope
+        into it. Runs until stop() sets the event; one final refresh
+        after that catches late spawns."""
+        try:
+            while not self._stopped.wait(self._lineage_poll_interval):
+                self._refresh_lineage_from_tree()
+            self._refresh_lineage_from_tree()
+        except Exception:
+            # A dead poller degrades attribution for post-exit
+            # records (they fall back to the live ppid walk) — worth
+            # a warning, never a crash.
+            logger.warning("seatbelt audit lineage poller crashed",
+                           exc_info=True)
+
+    def _refresh_lineage_from_tree(self) -> None:
+        """One poller tick: walk the (pid, ppid) snapshot and add
+        every transitive child of an in-scope PID to the scope."""
+        pairs = self._list_pid_ppids()
+        if not pairs:
+            return
+        children: dict[int, list[int]] = {}
+        for pid, ppid in pairs:
+            children.setdefault(ppid, []).append(pid)
+        with self._scope_lock:
+            frontier = list(self._scope_pids)
+            while frontier:
+                parent = frontier.pop()
+                for child in children.get(parent, ()):
+                    if child in self._scope_pids:
+                        continue
+                    self._scope_pids.add(child)
+                    # An earlier walk-miss may have negative-cached a
+                    # pid the tree now attributes; lineage wins.
+                    self._foreign_pid_cache.discard(child)
+                    frontier.append(child)
+                    try:
+                        self._scope_pgids.add(self._getpgid(child))
+                    except OSError:
+                        pass
 
     def _record_in_scope(self, record: dict) -> bool:
         """Parse-time PID filter (see class docstring).
 
         With no scope registered, every record passes — legacy
-        host-wide attribution, documented as unguaranteed. With a
-        scope, a record is in-scope when its PID was registered
-        directly, or when its process group matches a registered
-        one (catches children the target forked, which the
-        predicate-level narrowing cannot). A PID whose group cannot
-        be resolved (process already exited, or a foreign PID the
-        kernel refuses) is out of scope — reject rather than
-        attribute an unverifiable event to this run.
+        host-wide attribution, documented as unguaranteed (callers
+        under ``require_scope=True`` never reach this arm: records
+        are buffered until registration). With a scope, a record is
+        in-scope when its PID was registered directly, or when its
+        process group matches a registered one (catches children the
+        target forked, which the predicate-level narrowing cannot).
+        Under ``require_scope=True`` attribution additionally covers
+        the workload's process lineage: PIDs folded in by the tree
+        poller, and a live ppid-chain walk up to a registered PID. A
+        PID that cannot be attributed by any layer is out of scope —
+        reject rather than attribute an unverifiable event to this
+        run.
         """
         with self._scope_lock:
-            pids = frozenset(self._scope_pids)
-            pgids = frozenset(self._scope_pgids)
-        if not pids and not pgids:
-            return True
-        pid = record.get("target_pid")
-        if not isinstance(pid, int):
-            return False
-        if pid in pids:
-            return True
-        if pgids:
-            try:
-                return os.getpgid(pid) in pgids
-            except OSError:
+            if not self._scope_pids and not self._scope_pgids:
+                return True
+            pid = record.get("target_pid")
+            if not isinstance(pid, int):
                 return False
+            return self._pid_in_scope_locked(pid)
+
+    def _pid_in_scope_locked(self, pid: int) -> bool:
+        """Attribution for one PID. Caller holds ``_scope_lock``."""
+        if pid in self._scope_pids:
+            return True
+        if pid in self._foreign_pid_cache:
+            return False
+        try:
+            if self._getpgid(pid) in self._scope_pgids:
+                self._scope_pids.add(pid)
+                return True
+        except OSError:
+            pass
+        if not self._require_scope:
+            # Legacy scoped callers keep exact-PID + pgid semantics;
+            # the lineage machinery engages only for owners that
+            # promised a registration (require_scope=True).
+            return False
+        chain: list[int] = []
+        cur = pid
+        for _ in range(_LINEAGE_WALK_MAX):
+            if cur in self._scope_pids:
+                self._scope_pids.update(chain)
+                return True
+            chain.append(cur)
+            parent = self._get_ppid(cur)
+            if not parent or parent == cur or parent == 1:
+                break
+            cur = parent
+        if len(self._foreign_pid_cache) > _FOREIGN_CACHE_CAP:
+            self._foreign_pid_cache.clear()
+        self._foreign_pid_cache.update(chain)
         return False
 
     def _build_predicate(self) -> str:
@@ -695,68 +901,87 @@ class LogStreamer:
                 # regex/format health only — foreign-but-well-formed
                 # events dropped by scoping must not read as drift.
                 self._kext_lines_parsed += 1
-                if not self._record_in_scope(record):
-                    # Host-wide kext event from a process outside the
-                    # registered scope — a sibling sandboxed run or an
-                    # unrelated sandboxed app. Drop BEFORE the budget
-                    # and the append so foreign events are never
-                    # nonce-stamped into this run's JSONL and never
-                    # consume its audit budget.
-                    continue
-                # Defer all budget logic to AuditBudget.evaluate.
-                # Returns (KEEP|DROP, optional marker dict). Marker
-                # is appended FIRST so it lands in the JSONL right
-                # before the (or not, if dropped) original record —
-                # operators see the suppression in-line.
-                #
-                # Hold the append lock across budget.evaluate AND
-                # the marker/record appends so:
-                #   (a) summary_record() called from stop() on the
-                #       parent thread sees a consistent snapshot of
-                #       budget internals (no "dict changed size
-                #       during iteration").
-                #   (b) the marker lands in the JSONL immediately
-                #       before its associated record without another
-                #       writer slipping a record in between.
-                try:
-                    self._maybe_escalate_credential_path(record)
-
-                    with self._append_lock:
-                        decision, marker = self._budget.evaluate(
-                            record["syscall"], record["target_pid"],
-                        )
-                        if marker is not None:
-                            self._append_record_locked(marker)
-                        # Global-cap notice: the Linux tracer surfaces
-                        # this on stderr; there is no tracer on macOS,
-                        # so pre-fix the global cap suppressed
-                        # silently (only the sub-caps got in-band
-                        # markers). Emit the one-shot marker into the
-                        # stream where operators actually look.
-                        if self._budget.pop_global_cap_notice():
-                            self._append_record_locked(
-                                self._budget.global_cap_marker(),
-                            )
-                        if decision != _audit_budget.DROP:
-                            self._append_record_locked(record)
-                except OSError:
-                    # Best-effort. Don't crash the reader thread on
-                    # transient FS errors — a missed record is
-                    # acceptable, a dead reader thread is not.
-                    #
-                    # WARNING (F070 W21 promote): operators rarely run
-                    # with DEBUG enabled, so pre-fix every dropped
-                    # audit record was invisible. Mirrors the family-
-                    # wide DEBUG -> WARNING convention from c5a4505
-                    # and 8edf0f6 (sibling F069 in proxy.py).
-                    logger.warning("seatbelt audit append failed",
-                                   exc_info=True)
+                self._filter_and_append(record)
         except Exception:
             # WARNING (F070 W21 promote): a dead reader thread means
             # ALL subsequent audit records for this run are lost. The
             # operator MUST see this — same rationale as the L447
             # append-failure promote above.
             logger.warning("seatbelt audit reader thread crashed",
+                           exc_info=True)
+
+    def _filter_and_append(self, record: dict) -> None:
+        """Scope gate + budget + JSONL append for one parsed record."""
+        if self._require_scope:
+            with self._scope_lock:
+                if not self._scope_pids and not self._scope_pgids:
+                    # No scope registered yet — the workload cannot
+                    # have produced records, but buffer (bounded)
+                    # rather than drop so the spawn/registration race
+                    # loses nothing. If registration never happens,
+                    # stop() drops the buffer as unattributable.
+                    if len(self._pending) < _PENDING_BUFFER_CAP:
+                        self._pending.append(record)
+                    else:
+                        self._foreign_records_dropped += 1
+                    return
+        if not self._record_in_scope(record):
+            # Host-wide kext event from a process outside the
+            # registered scope — a sibling sandboxed run or an
+            # unrelated sandboxed app. Drop BEFORE the budget
+            # and the append so foreign events are never
+            # nonce-stamped into this run's JSONL and never
+            # consume its audit budget.
+            with self._scope_lock:
+                self._foreign_records_dropped += 1
+            return
+        # Defer all budget logic to AuditBudget.evaluate.
+        # Returns (KEEP|DROP, optional marker dict). Marker
+        # is appended FIRST so it lands in the JSONL right
+        # before the (or not, if dropped) original record —
+        # operators see the suppression in-line.
+        #
+        # Hold the append lock across budget.evaluate AND
+        # the marker/record appends so:
+        #   (a) summary_record() called from stop() on the
+        #       parent thread sees a consistent snapshot of
+        #       budget internals (no "dict changed size
+        #       during iteration");
+        #   (b) the marker lands in the JSONL immediately
+        #       before its associated record without another
+        #       writer slipping a record in between.
+        try:
+            self._maybe_escalate_credential_path(record)
+
+            with self._append_lock:
+                decision, marker = self._budget.evaluate(
+                    record["syscall"], record["target_pid"],
+                )
+                if marker is not None:
+                    self._append_record_locked(marker)
+                # Global-cap notice: the Linux tracer surfaces
+                # this on stderr; there is no tracer on macOS,
+                # so pre-fix the global cap suppressed
+                # silently (only the sub-caps got in-band
+                # markers). Emit the one-shot marker into the
+                # stream where operators actually look.
+                if self._budget.pop_global_cap_notice():
+                    self._append_record_locked(
+                        self._budget.global_cap_marker(),
+                    )
+                if decision != _audit_budget.DROP:
+                    self._append_record_locked(record)
+        except OSError:
+            # Best-effort. Don't crash the reader thread on
+            # transient FS errors — a missed record is
+            # acceptable, a dead reader thread is not.
+            #
+            # WARNING (F070 W21 promote): operators rarely run
+            # with DEBUG enabled, so pre-fix every dropped
+            # audit record was invisible. Mirrors the family-
+            # wide DEBUG -> WARNING convention from c5a4505
+            # and 8edf0f6 (sibling F069 in proxy.py).
+            logger.warning("seatbelt audit append failed",
                            exc_info=True)
 
     def _append_record(self, record: dict) -> None:
@@ -842,6 +1067,27 @@ class LogStreamer:
             # gets killed by interpreter shutdown.
             if self._reader is not None and self._reader.is_alive():
                 self._reader.join(timeout=3.0)
+        # Lineage poller: signalled via _stopped above; its loop does
+        # one final tree refresh on the way out. Bounded join.
+        if (self._lineage_poller is not None
+                and self._lineage_poller.is_alive()):
+            self._lineage_poller.join(timeout=2.0)
+        # Records still pending mean no scope was ever registered
+        # (the spawn failed before register_target_pid) — they are
+        # unattributable, so drop + count as foreign.
+        with self._scope_lock:
+            if self._pending:
+                self._foreign_records_dropped += len(self._pending)
+                self._pending = []
+            foreign_dropped = self._foreign_records_dropped
+        if foreign_dropped:
+            logger.info(
+                "seatbelt audit: dropped %d kext record(s) from outside "
+                "the workload's process scope (records from other "
+                "sandboxed processes on this host, or descendants that "
+                "exited before they could be attributed)",
+                foreign_dropped,
+            )
         # Final summary record. Always emitted regardless of proc
         # state so operators see one of:
         #   - 0 records, 0 drops → audit ran cleanly, nothing to log
@@ -879,6 +1125,9 @@ class LogStreamer:
                 # (extra keys tolerated by consumers per contract).
                 summary["kext_lines_seen"] = seen
                 summary["kext_lines_parsed"] = parsed
+                # Scope-gate diagnostic: how many records were
+                # rejected as outside the workload's process scope.
+                summary["foreign_records_dropped"] = foreign_dropped
                 # Stamp nonce on the summary so an observe-mode
                 # parser attributes it to this run and rejects one
                 # spoofed by a target binary writing a fake summary
@@ -908,6 +1157,7 @@ def start_log_streamer(run_dir: Path, *,
                        observe_mode: bool = False,
                        observe_nonce: str | None = None,
                        target_pid: int | None = None,
+                       require_scope: bool = False,
                        ) -> LogStreamer:
     """Convenience: instantiate + start a LogStreamer.
 
@@ -930,9 +1180,17 @@ def start_log_streamer(run_dir: Path, *,
     for the trade-offs). Callers that only learn the child PID after
     spawn should instead call ``register_target_pid()`` on the
     returned streamer for parse-time scoping.
+
+    `require_scope`: engage the mandatory scope gate — the caller
+    promises to call ``register_target_pid(pid)`` as soon as the
+    workload is spawned; until then records are buffered, and from
+    then on only records attributable to the registered scope's
+    process lineage are admitted (foreign sandboxed processes on the
+    host are dropped + counted). _macos_spawn passes True.
     """
     s = LogStreamer(run_dir, observe_mode=observe_mode,
                     observe_nonce=observe_nonce,
-                    target_pid=target_pid)
+                    target_pid=target_pid,
+                    require_scope=require_scope)
     s.start()
     return s

@@ -513,6 +513,12 @@ def run_sandboxed(cmd: list[str], *,
                 Path(audit_run_dir),
                 observe_mode=bool(observe_mode),
                 observe_nonce=observe_nonce,
+                # Mandatory scope gate: the kext sender predicate
+                # alone admits every sandboxed process on the host —
+                # only records attributable to OUR workload's process
+                # tree may be nonce-stamped into this run's JSONL.
+                # The shim PID is registered right after Popen below.
+                require_scope=True,
             )
         except Exception as exc:
             logger.warning(
@@ -649,6 +655,43 @@ def run_sandboxed(cmd: list[str], *,
             pass_fds=(status_w, death_r, *tuple(pass_fds or ())),
         ) as _process:
             try:
+                # Register the workload root with the audit streamer's
+                # scope gate: everything the sandboxed workload does
+                # descends from the shim process, so registering its
+                # PID (plus lineage widening inside the streamer) is
+                # what keeps host-wide kext events from unrelated
+                # sandboxed processes out of this run's JSONL. When
+                # the run's evidence MUST be attributable — observe
+                # mode feeds derived allowlists, audit_required is an
+                # explicit fail-closed contract — a registration
+                # failure refuses the run rather than proceeding
+                # unscoped (the raise lands in the BaseException arm
+                # below, which tears down the shim tree).
+                if audit_streamer is not None:
+                    try:
+                        audit_streamer.register_target_pid(_process.pid)
+                    except Exception as _scope_exc:
+                        logger.warning(
+                            "seatbelt audit: failed to register the "
+                            "workload root with the log streamer; "
+                            "audit records will be dropped as "
+                            "unattributable",
+                            exc_info=True,
+                        )
+                        if observe_mode or audit_required:
+                            from .errors import SandboxSetupError
+                            raise SandboxSetupError(
+                                f"audit scoping could not be "
+                                f"established for the sandboxed "
+                                f"workload "
+                                f"({type(_scope_exc).__name__}: "
+                                f"{_scope_exc}) — refusing to run "
+                                f"with host-wide, unattributable "
+                                f"audit evidence.",
+                                "check the log-streamer state, or "
+                                "drop observe/audit_required to "
+                                "accept unattributed degradation.",
+                            ) from _scope_exc
                 _stdout, _stderr = _process.communicate(
                     input, timeout=timeout,
                 )

@@ -1670,9 +1670,11 @@ class LLMClient:
     def _is_entry_stale(self, data: dict[str, Any]) -> bool:
         """Return True if a cache entry's ``timestamp`` is older than
         ``cache_ttl_seconds``. Entries without a timestamp are treated
-        as fresh — they predate this version of the code and we can't
-        say how old they are; better to honour them than mass-evict on
-        upgrade."""
+        as fresh here — but only entries that passed the provenance
+        gate (``cache_integrity.verify_entry``) reach this check, and
+        this install's writer always stamps a timestamp, so the
+        lenient branch is a belt-and-braces default, not a trust
+        decision."""
         ttl = self.config.cache_ttl_seconds
         if not ttl:
             return False
@@ -1691,6 +1693,15 @@ class LLMClient:
         # Non-strict: corrupt cache is silently skipped (regenerated on next call)
         data = load_json(cache_file)
         if data is None:
+            return None
+        # Provenance gate: cache entries replay into review verdicts,
+        # and the cache dir is same-user-writable plain JSON — an
+        # unstamped or tampered entry is a MISS (re-fetched, honest
+        # result overwrites), never replayed. See core.llm.cache_integrity.
+        from core.llm import cache_integrity
+        if not cache_integrity.verify_entry(cache_file.stem, data):
+            logger.debug("Cache entry failed provenance check "
+                         "(unstamped or tampered) — miss: %s", cache_key)
             return None
         if self._is_entry_stale(data):
             logger.debug("Cache stale (TTL): %s", cache_key)
@@ -1711,15 +1722,16 @@ class LLMClient:
             return
 
         from core.json import save_json
+        from core.llm import cache_integrity
         cache_file = self.config.cache_dir / f"{cache_key}.json"
         try:
-            save_json(cache_file, {
+            save_json(cache_file, cache_integrity.stamp(cache_file.stem, {
                     "content": response.content,
                     "model": response.model,
                     "provider": response.provider,
                     "tokens_used": response.tokens_used,
                     "timestamp": time.time(),
-                }, mode=0o600)
+                }), mode=0o600)
             # Reset failure counter on a successful write — recovery
             # from a transient EBUSY shouldn't carry the strike count
             # forward. _stats_lock protects against torn writes under
@@ -1827,6 +1839,12 @@ class LLMClient:
         data = load_json(cache_file)
         if data is None:
             return None
+        # Provenance gate — see _get_cached_response for the rationale.
+        from core.llm import cache_integrity
+        if not cache_integrity.verify_entry(cache_file.stem, data):
+            logger.debug("Structured cache entry failed provenance check "
+                         "(unstamped or tampered) — miss: %s", cache_key)
+            return None
         # Both fields are required for a usable replay; treat partial
         # entries (e.g. truncated by an interrupted writer) as a miss.
         if "result" not in data or "raw" not in data:
@@ -1845,19 +1863,20 @@ class LLMClient:
             return
 
         from core.json import save_json
+        from core.llm import cache_integrity
         cache_file = self.config.cache_dir / f"structured-{cache_key}.json"
         try:
             # mode=0o600 — structured LLM responses can contain proprietary
             # code, scan findings, and vulnerability details. Symmetric with
             # the unstructured _save_to_cache path at line 539.
-            save_json(cache_file, {
+            save_json(cache_file, cache_integrity.stamp(cache_file.stem, {
                 "result": response.result,
                 "raw": response.raw,
                 "model": response.model,
                 "provider": response.provider,
                 "tokens_used": response.tokens_used,
                 "timestamp": time.time(),
-            }, mode=0o600)
+            }), mode=0o600)
         except Exception as e:  # noqa: BLE001
             # _stats_lock — see _save_to_cache above for the rationale.
             with self._stats_lock:

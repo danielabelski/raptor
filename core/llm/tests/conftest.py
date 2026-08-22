@@ -39,6 +39,22 @@ def _isolate_scorecard(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_cache_mac_key(tmp_path_factory, monkeypatch):
+    """Point XDG_DATA_HOME at a per-test tmp dir.
+
+    Every ``LLMClient`` cache write now mints an HMAC key under
+    ``$XDG_DATA_HOME/raptor/llm-cache-mac.key``
+    (``core.llm.cache_integrity``); without this isolation, any test
+    that constructs a client would lazily create — or depend on — the
+    developer's real key file. Same pattern as
+    ``core/llm/scorecard/tests/conftest.py``.
+    """
+    monkeypatch.setenv(
+        "XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg-data")),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_llm_egress_state(monkeypatch):
     """Reset egress module flag, clear proxy env vars, and pin
     OLLAMA_HOST for every test in this directory.

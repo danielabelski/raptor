@@ -339,6 +339,12 @@ def test_ttl_expired_entry_treated_as_miss(tmp_path: Path) -> None:
     assert len(cache_files) == 1
     data = json.loads(cache_files[0].read_text(encoding="utf-8"))
     data["timestamp"] = time.monotonic() - 120
+    # Re-stamp after the edit: the provenance gate
+    # (core.llm.cache_integrity) reads a hand-edited entry as a miss
+    # by design; this test is about TTL semantics, so keep the entry
+    # authenticated.
+    from core.llm import cache_integrity
+    cache_integrity.stamp(cache_files[0].stem, data)
     cache_files[0].write_text(json.dumps(data), encoding="utf-8")
 
     client.generate_structured("p", {"type": "object"})
@@ -358,6 +364,12 @@ def test_ttl_unset_keeps_entries_indefinitely(tmp_path: Path) -> None:
     cache_files = list(client.config.cache_dir.glob("structured-*.json"))
     data = json.loads(cache_files[0].read_text(encoding="utf-8"))
     data["timestamp"] = 0.0
+    # Re-stamp after the edit: the provenance gate
+    # (core.llm.cache_integrity) reads a hand-edited entry as a miss
+    # by design; this test is about TTL semantics, so keep the entry
+    # authenticated.
+    from core.llm import cache_integrity
+    cache_integrity.stamp(cache_files[0].stem, data)
     cache_files[0].write_text(json.dumps(data), encoding="utf-8")
 
     fake.calls = 0
@@ -367,10 +379,12 @@ def test_ttl_unset_keeps_entries_indefinitely(tmp_path: Path) -> None:
 
 
 def test_entries_without_timestamp_serve_as_fresh(tmp_path: Path) -> None:
-    """A pre-existing cache entry that lacks a ``timestamp`` field
-    (written by an older code version) must not be evicted en masse on
-    upgrade — we treat it as fresh and let it serve. TTL only applies
-    going forward."""
+    """An AUTHENTICATED entry that lacks a ``timestamp`` field is
+    treated as fresh (TTL only applies going forward). Note the
+    provenance gate narrows the old contract: an UNSTAMPED legacy
+    entry now reads as a miss (see test_cache_integrity) — the
+    leniency here is only reachable for entries this install's writer
+    stamped."""
     import json
     client = _client(tmp_path, cache_ttl_seconds=1.0)
     fake = _FakeProvider({"k": "v"})
@@ -380,6 +394,12 @@ def test_entries_without_timestamp_serve_as_fresh(tmp_path: Path) -> None:
     cache_files = list(client.config.cache_dir.glob("structured-*.json"))
     data = json.loads(cache_files[0].read_text(encoding="utf-8"))
     del data["timestamp"]
+    # Re-stamp after the edit: the provenance gate
+    # (core.llm.cache_integrity) reads a hand-edited entry as a miss
+    # by design; this test is about TTL semantics, so keep the entry
+    # authenticated.
+    from core.llm import cache_integrity
+    cache_integrity.stamp(cache_files[0].stem, data)
     cache_files[0].write_text(json.dumps(data), encoding="utf-8")
 
     fake.calls = 0

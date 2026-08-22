@@ -1302,7 +1302,7 @@ def run_protocol_state_prepass(
                 == "entry_reachable"
                 else "suspicious"
             )
-            first = next(
+            first: dict[str, Any] = next(
                 (s for s in (res.invariant or {}).get("per_site", [])
                  if s.get("verdict") == "violable"), {},
             )

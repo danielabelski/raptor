@@ -193,9 +193,9 @@ class CrashAnalyser:
             
         return available
 
-    def _load_symbol_table(self) -> dict[str, str]:
+    def _load_symbol_table(self) -> dict[int, str]:
         """Load symbol table from binary for address-to-function mapping."""
-        symbols = {}
+        symbols: dict[int, str] = {}
         
         if not self._available_tools.get("nm", False):
             logger.warning("nm not available - symbol table resolution will be limited")
@@ -1397,7 +1397,7 @@ class CrashAnalyser:
 
     def _analyze_memory_regions(self, context: CrashContext) -> dict[str, str]:
         """Analyze memory regions around crash address."""
-        info = {}
+        info: dict[str, str] = {}
         
         if not context.crash_address or not context.crash_address.startswith("0x"):
             return info

@@ -302,6 +302,8 @@ class XFileConst:
         taint-free tier (b36 port). A sink call routinely spans lines
         (three-argument prepareCall), so the scope is the smallest
         statement intersecting the line — uncovered occurrences win."""
+        covered: set[str]
+        uncovered: set[str]
         covered, uncovered = set(), set()
         if self._parser is None:
             return covered

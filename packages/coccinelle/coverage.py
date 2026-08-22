@@ -12,7 +12,7 @@ def to_coverage_record(results: list[SpatchResult]) -> dict | None:
     """
     files = set()
     rules = []
-    failures = []
+    failures: list[dict[str, str]] = []
 
     for r in results:
         files.update(r.files_examined)

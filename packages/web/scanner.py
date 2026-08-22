@@ -96,7 +96,7 @@ class WebScanner:
 
         # Phase 2: Intelligent Fuzzing
         fuzzing_findings = []
-        probe_contexts = []
+        probe_contexts: list[tuple[Any, str, str, str]] = []
 
         if self.fuzzer:
             logger.info("Phase 2: Intelligent Fuzzing")

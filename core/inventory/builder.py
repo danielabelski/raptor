@@ -95,7 +95,7 @@ def _extract_python_dunder_all(content: str) -> list[str] | None:
     names: list[str] = []
     saw_declaration = False
     for node in tree.body:
-        targets = []
+        targets: list[ast.Name] = []
         value = None
         if isinstance(node, ast.Assign):
             targets.extend(t for t in node.targets if isinstance(t, ast.Name) and t.id == "__all__")
@@ -1067,7 +1067,7 @@ def _process_single_file(
             config=macro_config,
         )
         parse_text = view.parse_text
-        tree_cache = {}
+        tree_cache: dict[str, Any] = {}
         items = extract_items(str(filepath), language, parse_text, _tree_cache=tree_cache)
         # Safety net: every SLOC-bearing line outside an extracted item becomes
         # an interstitial item, so non-function code (top-level statements,

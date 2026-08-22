@@ -1027,6 +1027,12 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
 class LLMClient:
     """Unified LLM client with multi-provider support and fallback."""
 
+    # Lazily-created per-run accounting attributes (created on first use
+    # by _record_usage / _record_schema_validity).
+    _fired_usage: dict[str, dict[str, Any]]
+    _paid_test_ctxs: set[str]
+    _fired_schema: dict[str, dict[str, int]]
+
     def __init__(self, config: LLMConfig | None = None,
                  *, pinned_model: str | None = None) -> None:
         """Construct the LLM client.

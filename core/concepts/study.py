@@ -1802,7 +1802,7 @@ def _parse_batch_response(
             relevant_cwes=bp.get("relevant_cwes") or [],
         ) for bp in raw.get("bug_patterns") or []]
 
-    struct_annotations = []
+    struct_annotations: list[dict[str, Any]] = []
     for sa in raw.get("struct_annotations") or []:
         if not isinstance(sa, dict) or not sa.get("struct_name"):
             continue

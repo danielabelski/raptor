@@ -646,7 +646,7 @@ def orchestrate(
 
     # Resolve model roles
     from core.llm.config import resolve_model_roles
-    role_resolution = {"analysis_model": None, "code_model": None,
+    role_resolution: dict[str, Any] = {"analysis_model": None, "code_model": None,
                        "consensus_models": [], "judge_models": [],
                        "aggregate_models": [], "fallback_models": [],
                        "analysis_models": []}
@@ -941,7 +941,7 @@ def orchestrate(
                   " control-char sanitisation, role separation)\n", file=sys.stderr)
 
     # --- Per-finding analysis ---
-    results_by_id = {}
+    results_by_id: dict[str, Any] = {}
     # Fast-tier scorecard prefilter — only wires up on the external-LLM
     # path because the cheap call uses ``client.generate_structured``
     # which the CC-prep / CC-fallback paths don't drive. Returns a

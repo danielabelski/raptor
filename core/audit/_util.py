@@ -135,7 +135,7 @@ def extract_context_map_set(
     """
     if not context_map:
         return set()
-    result = set()
+    result: set[str] = set()
     for item in context_map.get(section, []):
         if nested_key:
             for func in item.get(nested_key, []):

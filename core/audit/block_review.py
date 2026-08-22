@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -167,11 +168,11 @@ def analyze_complexity(
     for node in nodes:
         if _is_branch_node(cfg, node):
             branch_count += 1
-            node_uses = getattr(node, "uses", frozenset())
+            node_uses: Iterable[str] = getattr(node, "uses", frozenset())
             if tainted_names & set(node_uses):
                 taint_branch_count += 1
 
-        node_calls = getattr(node, "calls", frozenset())
+        node_calls: Iterable[str] = getattr(node, "calls", frozenset())
         for call in node_calls:
             base = call.rsplit(".", 1)[-1] if "." in call else call
             if base in dangerous or call in dangerous:
@@ -206,7 +207,7 @@ def _count_paths_to_dangerous(
     """
     sink_nodes = set()
     for node in nodes:
-        calls = getattr(node, "calls", frozenset())
+        calls: Iterable[str] = getattr(node, "calls", frozenset())
         for call in calls:
             base = call.rsplit(".", 1)[-1] if "." in call else call
             if base in dangerous or call in dangerous:

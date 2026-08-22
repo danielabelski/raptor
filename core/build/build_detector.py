@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from shlex import quote
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from core.logging import get_logger
 from core.sandbox import SandboxSetupError
@@ -525,7 +525,7 @@ class BuildDetector:
             re.MULTILINE | re.IGNORECASE,
         )
         seen_missing = set()
-        sources = []
+        sources: list[Path] = []
         # Also scan local .h files — many projects use a gateway
         # header (e.g. curl's ``curl_setup.h``) that does the
         # ``#include "curl_config.h"`` so the .c files never
@@ -1018,7 +1018,7 @@ class BuildDetector:
 
     def _detect_build_params(self, language: str):
         """Detect source files, compiler, and include/define flags."""
-        source_files = []
+        source_files: list[Path] = []
         if language == "cpp":
             for ext in (".c", ".cc", ".cpp", ".cxx"):
                 source_files.extend(self.repo_path.rglob(f"*{ext}"))
@@ -1397,7 +1397,7 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             return None
 
         # Parse gcc/g++ errors from stderr
-        failures = []
+        failures: list[dict[str, Any]] = []
         for line in result.stderr.split("\n"):
             if ": error:" in line or ": fatal error:" in line:
                 parts = line.split(":", 1)

@@ -774,7 +774,7 @@ def dampen_file_pileup(outcomes, records: list | None = None) -> int:
         ev = _get_evidence(outcomes[i])
         return ev and not ev.startswith(NON_MECHANICAL)
 
-    tokens = {}
+    tokens: dict[int, frozenset] = {}
 
     def _rank_key(i):
         return (

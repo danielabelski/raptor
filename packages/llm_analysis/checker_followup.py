@@ -208,7 +208,7 @@ def _try_replay_from_library(
         if len(variants) > max_matches:
             variants = variants[:max_matches]
 
-        triage_list = []
+        triage_list: list[Any] = []
         if variants:
             triage_list, t_errors = _triage(
                 seed, rule, variants, llm_callable, max_triage_calls,

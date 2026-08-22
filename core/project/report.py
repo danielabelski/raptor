@@ -320,7 +320,7 @@ def export_findings_directory(
     findings_dir.mkdir(parents=True, exist_ok=True)
 
     counts = {"confirmed": 0, "needs-review": 0, "ruled-out": 0}
-    manifest = {"findings": []}
+    manifest: dict[str, Any] = {"findings": []}
     jsonl_records = []
     aggregate_path = findings_dir / f"{_slug(project_name, fallback='project')}.md"
     aggregate_path.write_text(

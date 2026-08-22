@@ -235,7 +235,7 @@ class WebClient:
 
     def _send_scoped_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Send a request while enforcing target scope across redirects."""
-        history = []
+        history: list[requests.Response] = []
         current_url = url
         current_method = method.upper()
         request_kwargs = dict(kwargs)
@@ -422,7 +422,7 @@ class WebClient:
 
         total_requests = len(self.request_history)
         total_duration = sum(r['duration'] for r in self.request_history)
-        status_codes = {}
+        status_codes: dict[int, int] = {}
 
         for req in self.request_history:
             code = req['status_code']

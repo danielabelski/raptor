@@ -122,7 +122,7 @@ def load_ground_truth(target_path: Path) -> list[GroundTruthEntry]:
     ):
         if candidate.exists():
             data = json.loads(candidate.read_text())
-            entries = []
+            entries: list[GroundTruthEntry] = []
             items = data if isinstance(data, list) else data.get("vulnerabilities", [])
             for item in items:
                 entries.append(GroundTruthEntry(

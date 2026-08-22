@@ -210,7 +210,7 @@ def _rank_candidates(
     # a single ranking call, so re-hashing the same content M times
     # was pure waste. See `_find_stale_files` docstring.
     disk_hash_cache: dict[str, str | None] = {}
-    scored = []
+    scored: list[tuple[int, int, Path, set[str]]] = []
     for d in candidates:
         u_checklist = load_json(d / "checklist.json")
         if not u_checklist:

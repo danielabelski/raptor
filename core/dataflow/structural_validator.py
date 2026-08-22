@@ -320,7 +320,7 @@ def _extract_branch_guards_from_content(
     Uses tree-sitter when available, falls back to regex for
     simple ``if (...)`` patterns.
     """
-    guards = []
+    guards: list[str] = []
     lines = content.splitlines()
     if line < 1 or line > len(lines):
         return guards

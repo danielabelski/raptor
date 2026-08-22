@@ -40,7 +40,7 @@ _mount_ns_available_cache = None
 # cache records whether the ACTUAL flag-set engages, decided by running
 # it against `true`. Dict (not a single slot) because different calls
 # use different flag-sets (block_network on/off, mount on/off).
-_unshare_engage_cache = {}
+_unshare_engage_cache: dict[tuple[str, ...], tuple[bool | None, str]] = {}
 # Landlock cache uses -1 for "unavailable", >0 for ABI version, None for unchecked.
 _landlock_cache = None
 # _unix_scope_cache: True when the AF_UNIX connect-scoping supervisor

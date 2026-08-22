@@ -527,7 +527,7 @@ def _extract_rust_preconditions(
     body: str,
 ) -> list[tuple[str, str]]:
     """Extract precondition patterns from Rust function body."""
-    preconditions = []
+    preconditions: list[tuple[str, str]] = []
     # assert! / debug_assert!
     assert_re = re.compile(r"(?:debug_)?assert!\s*\(\s*([^,)]+)")
     for match in assert_re.finditer(body):

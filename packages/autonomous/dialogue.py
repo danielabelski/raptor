@@ -234,7 +234,7 @@ class MultiTurnAnalyser:
         logger.info("=" * 70)
 
 
-        messages = []
+        messages: list[Message] = []
         current_code = exploit_code
 
         for iteration in range(1, max_iterations + 1):

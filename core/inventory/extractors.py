@@ -1819,7 +1819,7 @@ class TreeSitterExtractor:
                 logger.warning("tree-sitter parse failed for %s: %s", filepath, e)
                 return []  # Caller will fall back to regex extractor
         self._source_lines = content.splitlines(True)
-        functions = []
+        functions: list[FunctionInfo] = []
         self._walk(_tree.root_node, functions, class_name=None, class_attributes=())
         return functions
 
@@ -3384,7 +3384,7 @@ def count_sloc(content: str, language: str, _tree=None) -> int:
 
 def _count_comment_lines_ts(node) -> int:
     """Count lines occupied by comment nodes in a tree-sitter tree."""
-    comment_lines = set()
+    comment_lines: set[int] = set()
     _collect_comment_lines(node, comment_lines)
     return len(comment_lines)
 

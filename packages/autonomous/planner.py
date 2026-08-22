@@ -119,7 +119,7 @@ class FuzzingPlanner:
         """
         self.memory = memory
         self.sage_strategy_rows: list[dict[str, Any]] = list(sage_strategy_rows or [])
-        self.decision_history = []
+        self.decision_history: list[dict[str, Any]] = []
         logger.info("Autonomous Fuzzing Planner initialised")
 
     def decide_next_action(self, state: FuzzingState) -> Action:

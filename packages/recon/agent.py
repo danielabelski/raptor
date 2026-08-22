@@ -47,8 +47,8 @@ _INVENTORY_FILE_CAP = 200_000
 
 
 def inventory(path: Path):
-    counts = {}
-    langs = {}
+    counts: dict[str, int] = {}
+    langs: dict[str, int] = {}
     total_files = 0
     truncated = False
     # `os.walk(followlinks=False)` instead of `path.rglob("*")`:

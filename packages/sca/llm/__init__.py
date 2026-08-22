@@ -302,7 +302,7 @@ def _select_checker(client) -> str | None:
     try:
         from core.security.llm_family import select_cross_family_checker
         primary = _resolve_model_id(client)
-        candidates = []
+        candidates: list[str] = []
         cfg = client.config
         if hasattr(cfg, "consensus_models"):
             candidates.extend(

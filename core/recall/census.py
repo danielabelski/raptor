@@ -154,6 +154,7 @@ def build_census(
         text = _read_clean_source(entry, source_root)
         if text is None:
             unreadable += 1
+            matched: list[str]
             primary, matched = UNCLASSIFIED, []
         else:
             primary, matched = classify_source(text, entry.get("cwe") or "")

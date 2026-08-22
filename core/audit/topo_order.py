@@ -247,7 +247,7 @@ def resolve_scc_summaries(
 def _serialise_summaries(summaries: dict[str, Any]) -> str:
     """Serialise summaries for comparison between iterations."""
     import json
-    stable = {}
+    stable: dict[str, Any] = {}
     for k, v in sorted(summaries.items()):
         if v is None:
             stable[k] = None

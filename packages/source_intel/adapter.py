@@ -1678,7 +1678,7 @@ def _extract_function_body(
     matching `}`). Returns (body_lines_list, close_line_index).
     """
     depth = 0
-    body = []
+    body: list[str] = []
     seen_open = False
     for i in range(fn_open_line, len(lines)):
         line = lines[i]

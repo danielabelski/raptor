@@ -109,7 +109,7 @@ def _extract_runtime_evidence(
         return []
 
     findings = findings_data.get("findings", [])
-    evidence = []
+    evidence: list[dict[str, Any]] = []
     for f in findings:
         evidence.extend({
                     "finding_id": f.get("id", ""),

@@ -140,6 +140,7 @@ def build_fn_census(
         text = _read_source(entry, source_root)
         if text is None:
             unreadable += 1
+            matched: list[str]
             primary, matched = UNCLASSIFIED, []
         else:
             primary, matched = classify_fn_source(text)

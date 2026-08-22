@@ -82,7 +82,7 @@ class CrashCollector:
 
         logger.info("Found %d crash files", len(crash_files))
 
-        crashes = []
+        crashes: list[Crash] = []
         seen_keys = set()
 
         for crash_file in crash_files:

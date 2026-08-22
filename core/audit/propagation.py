@@ -1254,7 +1254,7 @@ def _get_callees_from_index(
     call_edge_index: dict[str, Any],
 ) -> list[tuple[str, str]]:
     """Get callee (file, function) pairs from the call-edge index."""
-    callees = []
+    callees: list[tuple[str, str]] = []
     edges = call_edge_index.get(key) or []
     if not isinstance(edges, list):
         return callees

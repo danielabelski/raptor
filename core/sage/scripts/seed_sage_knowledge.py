@@ -15,6 +15,7 @@ Requires:
 import argparse
 import asyncio
 import sys
+from typing import Any
 from pathlib import Path
 
 # Add repo root to path
@@ -126,7 +127,7 @@ def extract_llm_prompts() -> list[dict]:
 
 def extract_personas() -> list[dict]:
     """Extract expert persona definitions."""
-    memories = []
+    memories: list[dict[str, Any]] = []
     personas_dir = REPO_ROOT / "tiers" / "personas"
 
     if not personas_dir.exists():

@@ -55,7 +55,7 @@ class CorpusGenerator:
         """
         logger.info("Analyzing binary for corpus generation hints...")
 
-        analysis = {
+        analysis: dict[str, Any] = {
             "formats_detected": [],
             "keywords_found": [],
             "file_extensions": [],
@@ -158,7 +158,7 @@ class CorpusGenerator:
 
     def _analyze_source_context(self) -> dict[str, Any]:
         """Read nearby source/docs to discover command-style input grammars."""
-        analysis = {"commands_detected": []}
+        analysis: dict[str, Any] = {"commands_detected": []}
         commands: set[str] = set()
         if not self.source_dir:
             return analysis

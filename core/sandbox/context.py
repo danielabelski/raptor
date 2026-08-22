@@ -14,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 import threading
 import time
 from contextlib import contextmanager
@@ -799,7 +800,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _profile_for_defaults = "none"
     else:
         _profile_for_defaults = profile
-    _profile_defaults = (
+    _profile_defaults: Mapping[str, object] = (
         PROFILES.get(_profile_for_defaults)
         if _profile_for_defaults else None
     ) or {}

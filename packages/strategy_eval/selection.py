@@ -88,7 +88,7 @@ def format_report(outcomes: list[SelectionOutcome]) -> str:
 def uncovered_strategies(outcomes: list[SelectionOutcome]) -> list[str]:
     """Bundled strategies with no positive selection case — the eval would
     silently stop covering them."""
-    covered = set()
+    covered: set[str] = set()
     for o in outcomes:
         covered.update(o.case.expect_selected)
     return sorted({s.name for s in load_all()} - covered)

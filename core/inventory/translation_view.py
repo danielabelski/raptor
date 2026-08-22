@@ -424,7 +424,7 @@ def _blank_ranges(content: str, ranges: list[tuple[int, int]]) -> str:
     if not ranges:
         return content
     lines = content.split("\n")
-    dead = set()
+    dead: set[int] = set()
     for lo, hi in ranges:
         dead.update(range(lo, hi + 1))
     out = []

@@ -266,7 +266,7 @@ def dispatch_task(
             return []
 
     # Build work items: (model, item) pairs
-    work = []
+    work: list[tuple[Any, Any]] = []
     for model in models:
         work.extend((model, item) for item in selected)
 

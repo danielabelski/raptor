@@ -714,7 +714,7 @@ def _run_audit(
         else joern_server
     )
 
-    results = []
+    results: list[dict[str, Any]] = []
     run_dirs: list[Path] = []
     n_groups = len(by_repo)
     try:
@@ -1654,7 +1654,7 @@ def _run_probe(
     logger.debug("probe: %d items, %d workers (model=%s)",
                  len(llm_items), workers, model_name)
 
-    llm_results = run_parallel(
+    llm_results: list[dict[str, Any] | None] = run_parallel(
         llm_items, _probe_one,
         max_workers=workers, model=model_name, label="probe",
     )
@@ -3099,7 +3099,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 results.extend(run_results)
             wall_s = time.monotonic() - t0
-            run_dirs = []
+            run_dirs: list[Path] = []
 
             if len(models) > 1:
                 _print_cross_model_summary(results, models)

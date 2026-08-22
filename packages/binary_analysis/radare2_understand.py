@@ -1087,7 +1087,7 @@ class BinaryUnderstand:
                 # Try both the raw name and bare basename — call sites
                 # may reference either.
                 candidates = {current, current.split(".")[-1]}
-                seen_callers = set()
+                seen_callers: set[str] = set()
                 for cand in candidates:
                     seen_callers.update(callers.get(cand, ()))
                 for caller in seen_callers:

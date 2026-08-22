@@ -276,7 +276,7 @@ def run_llm_summary_pass(
         return None
 
     from core.llm.concurrency import run_parallel
-    raw = run_parallel(
+    raw: list[tuple[str, FunctionSummary] | None] = run_parallel(
         items_with_source, _do_one,
         max_workers=client.recommended_max_workers,
         label="llm-summaries",

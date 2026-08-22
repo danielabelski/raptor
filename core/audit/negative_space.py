@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -296,7 +296,7 @@ def discover_conventions(
 
     vocab_auth_patterns: list[str] = []
     if domain_vocab is not None:
-        preds = getattr(domain_vocab, "auth_predicates", frozenset())
+        preds: Collection[tuple[str, str]] = getattr(domain_vocab, "auth_predicates", frozenset())
         vocab_auth_patterns = [
             rf"\b{re.escape(name)}\s*\("
             for name, _kind in sorted(preds)
@@ -707,7 +707,7 @@ def check_resource_exhaustion(
 
         unbounded_re = _UNBOUNDED_ALLOC
         if domain_vocab is not None:
-            extra = getattr(domain_vocab, "allocators", frozenset())
+            extra: Collection[str] = getattr(domain_vocab, "allocators", frozenset())
             if extra:
                 alloc_alts = "|".join(
                     re.escape(n) for n in sorted(extra, key=len, reverse=True)

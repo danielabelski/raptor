@@ -295,7 +295,7 @@ def build_from_codeql(sarif_path: Path) -> dict[str, Any] | None:
 
     files = []
     packs = []
-    rules = []
+    rules: list[str] = []
     failures = []
     version = ""
 

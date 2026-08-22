@@ -11,6 +11,7 @@ import argparse
 import os
 import sys
 import time
+from typing import Any
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1015,7 +1016,7 @@ class CodeQLAgent:
         # Count dataflow paths across all SARIF files
         total_dataflow_paths = 0
         total_dataflow_steps = 0
-        dataflow_examples = []
+        dataflow_examples: list[dict[str, Any]] = []
 
         if result.sarif_files:
             from core.sarif.parser import load_sarif as _load_sarif
@@ -1080,7 +1081,7 @@ class CodeQLAgent:
         `load_sarif` when the caller doesn't provide it (preserves
         the standalone-call API).
         """
-        examples = []
+        examples: list[dict[str, Any]] = []
         try:
             if sarif_data is None:
                 from core.sarif.parser import load_sarif

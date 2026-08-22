@@ -74,12 +74,58 @@ def test_file_only_match_scores_4():
     assert score == 4
 
 
-def test_binary_hash_fallback_scores_2():
-    """No structured signals match, but the witness ran against
-    some target binary — weak but non-zero signal."""
+def test_binary_hash_without_finding_hash_scores_0():
+    """The witness carries a binary hash but the finding side has no
+    hash and no readable binary — nothing to compare, so the binary
+    criterion must award nothing (the old "hash-pending" rule scored
+    2 on mere truthiness of both sides)."""
     w = _make_witness({}, target_binary_hash="deadbeef" * 8)
     score, _ = score_witness_for_finding(w, _FINDING)
+    assert score == 0
+
+
+def test_binary_hash_equality_scores_2():
+    w = _make_witness({}, target_binary_hash="deadbeef" * 8)
+    finding = dict(_FINDING)
+    finding["feasibility"] = {
+        "binary_path": "/usr/bin/svc",
+        "binary_sha256": "deadbeef" * 8,
+    }
+    score, reason = score_witness_for_finding(w, finding)
     assert score == 2
+    assert "hash match" in reason
+
+
+def test_binary_hash_mismatch_scores_0():
+    w = _make_witness({}, target_binary_hash="deadbeef" * 8)
+    finding = dict(_FINDING)
+    finding["feasibility"] = {
+        "binary_path": "/usr/bin/svc",
+        "binary_sha256": "cafef00d" * 8,
+    }
+    score, _ = score_witness_for_finding(w, finding)
+    assert score == 0
+
+
+def test_binary_hash_computed_from_disk(tmp_path):
+    """When the finding has no explicit hash field, the feasibility
+    binary_path is hashed from disk and compared."""
+    import hashlib
+
+    binary = tmp_path / "svc"
+    binary.write_bytes(b"binary content")
+    digest = hashlib.sha256(b"binary content").hexdigest()
+    w = _make_witness({}, target_binary_hash=digest)
+    finding = {
+        "id": "FIND-0002",
+        "feasibility": {"binary_path": str(binary)},
+    }
+    score, reason = score_witness_for_finding(w, finding)
+    assert score == 2
+    assert "hash match" in reason
+
+    w_other = _make_witness({}, target_binary_hash="ab" * 32)
+    assert score_witness_for_finding(w_other, finding)[0] == 0
 
 
 def test_no_signal_scores_0():

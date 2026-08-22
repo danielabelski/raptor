@@ -25,9 +25,13 @@ Ranking (higher score → better match):
        one file has multiple findings.
 
   2   Same target binary
-       The witness's ``target_binary_hash`` matches a finding's
-       binary. Fuzz witnesses lean on this (no source-level ids
-       — they were produced before any LLM classification).
+       The witness's ``target_binary_hash`` EQUALS the finding's
+       binary content hash — taken from an explicit hash field on
+       the finding/feasibility record when present, else computed
+       from the feasibility ``binary_path`` on disk. Fuzz witnesses
+       lean on this (no source-level ids — they were produced
+       before any LLM classification). When the finding side has no
+       hash and no readable binary, this criterion awards nothing.
 
   0   No structured signal
        Falls through; consumer can still use the witness as a
@@ -50,11 +54,16 @@ signal, not an error.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
 
 from core.witness.types import Witness, WitnessOutcome, WitnessSource
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -120,14 +129,69 @@ def score_witness_for_finding(
         return 4, "file match"
 
     # Binary-hash fallback for fuzz witnesses (no finding_id /
-    # source structure). We don't hash the finding's binary path
-    # here — caller's responsibility — but if a target_binary_hash
-    # exists at all on the witness, that's evidence it ran
-    # against *some* binary, which is more than zero signal.
-    if witness.target_binary_hash and binary_path:
-        return 2, "same target binary (hash-pending)"
+    # source structure). Awards ONLY on actual hash equality: the
+    # old "hash-pending" rule scored 2 whenever both sides were
+    # merely truthy, so any witness with any binary hash matched
+    # any finding that named any binary path.
+    if witness.target_binary_hash:
+        finding_hash = _finding_binary_hash(finding, binary_path)
+        if finding_hash and (
+            finding_hash.lower()
+            == str(witness.target_binary_hash).lower()
+        ):
+            return 2, "same target binary (hash match)"
 
     return 0, "no structured signal"
+
+
+# (path, mtime, size) → sha256 — scoring loops every witness against
+# every finding, so the same binary would otherwise be re-hashed per
+# pair.
+_binary_hash_memo: dict[tuple[str, float, int], str] = {}
+
+
+def _finding_binary_hash(
+    finding: dict[str, Any],
+    binary_path: str | None,
+) -> str | None:
+    """The finding side's binary content hash, or None.
+
+    Prefers an explicit hash field on the finding / feasibility
+    record; otherwise computes SHA-256 of the feasibility
+    ``binary_path`` when it points at a readable file. No hash and no
+    readable binary → None (the caller awards nothing).
+    """
+    feasibility = finding.get("feasibility")
+    containers = [finding]
+    if isinstance(feasibility, dict):
+        containers.append(feasibility)
+    for container in containers:
+        for key in ("target_binary_hash", "binary_sha256", "binary_hash"):
+            value = container.get(key)
+            if isinstance(value, str) and value:
+                return value
+    if not binary_path:
+        return None
+    try:
+        p = Path(binary_path)
+        st = p.stat()
+        memo_key = (str(p), st.st_mtime, st.st_size)
+        cached = _binary_hash_memo.get(memo_key)
+        if cached:
+            return cached
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        digest = h.hexdigest()
+        _binary_hash_memo[memo_key] = digest
+        return digest
+    except OSError:
+        logger.debug(
+            "witness matching: cannot hash finding binary %s",
+            binary_path, exc_info=True,
+        )
+        return None
 
 
 def best_match_for_finding(

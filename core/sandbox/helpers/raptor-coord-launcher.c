@@ -35,6 +35,15 @@
  *      (they cannot create files owned by root or the operator). The
  *      same ownership/mode check applies to the pinned script and to
  *      the launcher's own directory.
+ *   4. INVOKER IDENTITY: the invoking real AND effective uid must both
+ *      be the trusted owner uid (the launcher binary's own owner — the
+ *      operator who granted the capability / LSM profile), or root.
+ *      Root is unconditionally trusted, mirroring the ownership rule in
+ *      check_trusted_path (a root-owned install means the intended
+ *      invoker is root; root also gains nothing from the grant it does
+ *      not already have). Without this check, ANY local user with
+ *      traverse+execute access to the checkout could consume the
+ *      userns/netns grant; with it, only the granting identity can.
  *
  * The validation functions live in standalone form (helpers_validate.h)
  * and are exercised without any capability grant by `make test`.
@@ -157,9 +166,31 @@ int check_trusted_path(const char *path, uid_t trusted_uid, int expect_dir,
 }
 
 
+int check_invoker_identity(uid_t invoker_uid, uid_t invoker_euid,
+                           uid_t trusted_uid, char *err, size_t errsz) {
+    /* Root is unconditionally trusted, mirroring check_trusted_path's
+     * ownership rule: a root-owned install is meant to be invoked by
+     * root, and root gains nothing from the grant anyway. */
+    if (invoker_uid == 0 && invoker_euid == 0) {
+        return 0;
+    }
+    if (invoker_uid != trusted_uid || invoker_euid != trusted_uid) {
+        snprintf(err, errsz,
+                 "invoker identity: invoked by uid %u (euid %u), but this "
+                 "launcher's userns grant belongs to its owner (uid %u) — "
+                 "only the granting identity (or root) may consume it",
+                 (unsigned)invoker_uid, (unsigned)invoker_euid,
+                 (unsigned)trusted_uid);
+        return -1;
+    }
+    return 0;
+}
+
+
 int validate_exec_target(int argc, char **argv, const char *self_exe,
                          char *interp_out, size_t interp_cap,
                          char *script_out, size_t script_cap,
+                         uid_t *trusted_uid_out,
                          char *err, size_t errsz) {
     if (argc != 3) {
         snprintf(err, errsz,
@@ -261,6 +292,9 @@ int validate_exec_target(int argc, char **argv, const char *self_exe,
     }
     strcpy(interp_out, interp_real);
     strcpy(script_out, script_real);
+    if (trusted_uid_out != NULL) {
+        *trusted_uid_out = trusted_uid;
+    }
     return 0;
 }
 
@@ -388,10 +422,22 @@ int main(int argc, char **argv) {
     char interp[PATH_MAX];
     char script[PATH_MAX];
     char err[2 * PATH_MAX];
+    uid_t trusted_uid = (uid_t)-1;
     if (validate_exec_target(argc, argv, self_exe,
                              interp, sizeof interp,
                              script, sizeof script,
-                             err, sizeof err) != 0) {
+                             &trusted_uid, err, sizeof err) != 0) {
+        fprintf(stderr, "raptor-coord-launcher: refusing to launch: %s\n",
+                err);
+        return 3;
+    }
+
+    /* INVOKER IDENTITY (contract item 4): only the trusted owner (or
+     * root) may consume the capability/LSM grant. Checked BEFORE the
+     * unshare so a foreign local user with traverse+execute access to
+     * the checkout gets a refusal, not a namespace. */
+    if (check_invoker_identity(getuid(), geteuid(), trusted_uid,
+                               err, sizeof err) != 0) {
         fprintf(stderr, "raptor-coord-launcher: refusing to launch: %s\n",
                 err);
         return 3;

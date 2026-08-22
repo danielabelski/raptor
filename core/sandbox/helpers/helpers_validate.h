@@ -34,6 +34,16 @@
 int check_trusted_path(const char *path, uid_t trusted_uid, int expect_dir,
                        const char *what, char *err, size_t errsz);
 
+/* Invoker-identity contract: the invoking real AND effective uid must
+ * both equal `trusted_uid` (the launcher binary's owner, i.e. the
+ * operator who applied the capability / LSM grant), or both be root.
+ * Root is unconditionally trusted, mirroring check_trusted_path's
+ * ownership rule. Refuses any other identity so a foreign local user
+ * with traverse+execute access to the checkout cannot consume the
+ * userns grant. */
+int check_invoker_identity(uid_t invoker_uid, uid_t invoker_euid,
+                           uid_t trusted_uid, char *err, size_t errsz);
+
 /* Full exec-target contract for the coord launcher:
  *   - argc must be exactly 3: [launcher, interpreter, script]
  *   - realpath(argv[2]) must equal
@@ -42,10 +52,13 @@ int check_trusted_path(const char *path, uid_t trusted_uid, int expect_dir,
  *     check_trusted_path() against the launcher binary's owner uid
  * On acceptance the canonicalised interpreter and script paths are
  * written to interp_out / script_out (the caller execs those, not the
- * raw argv values). */
+ * raw argv values), and the launcher binary's owner uid is stored in
+ * *trusted_uid_out when non-NULL (main() feeds it to
+ * check_invoker_identity before any privileged operation). */
 int validate_exec_target(int argc, char **argv, const char *self_exe,
                          char *interp_out, size_t interp_cap,
                          char *script_out, size_t script_cap,
+                         uid_t *trusted_uid_out,
                          char *err, size_t errsz);
 
 /* --- raptor-gidmap-allow.c ---------------------------------------- */

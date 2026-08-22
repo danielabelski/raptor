@@ -223,6 +223,38 @@ class TestCoordLauncherContract:
         assert r.returncode == 3
         assert "primary group" in r.stderr
 
+    def test_invoker_identity_gate_precedes_unshare(self) -> None:
+        """A refusal for a FOREIGN uid cannot be exercised end-to-end
+        without a second account, so pin the source contract instead:
+        main() feeds the trusted owner uid reported by
+        validate_exec_target into check_invoker_identity BEFORE the
+        unshare, so a local user with traverse+execute access to the
+        checkout gets a refusal, never a namespace. The identity
+        comparison itself (owner accepted, root accepted, foreign /
+        mixed uids refused) is exercised with synthetic uids by the C
+        harness (``make test``)."""
+        src = (HELPERS_SRC / "raptor-coord-launcher.c").read_text()
+        gate = src.index("check_invoker_identity(getuid(), geteuid()")
+        unshare = src.index("if (unshare(CLONE_NEWUSER | CLONE_NEWNET)")
+        assert gate < unshare, (
+            "the invoker-identity check must run before the privileged "
+            "unshare"
+        )
+
+    def test_invoker_matching_owner_is_not_refused(self, built: Path) -> None:
+        """The identity gate must not break the legitimate caller: the
+        test build is owned by the invoking uid, so the canonical argv
+        shape must still clear every contract check (exit 3 refusal not
+        taken; later steps may still fail on hosts that block
+        unprivileged userns)."""
+        interp = _trusted_interpreter()
+        if interp is None:
+            pytest.skip("no interpreter satisfies the trusted-path check")
+        coord = built.parent / "netns_coordinator.py"
+        r = _run([str(built / "raptor-coord-launcher"), interp, str(coord)])
+        assert r.returncode != 3
+        assert "invoker identity" not in r.stderr
+
     def test_accepts_umask002_checkout_layout(self, built: Path) -> None:
         """The fixture tree carries the user-private-group layout real
         umask-002 checkouts have (0775 dirs, 0664 script). Validation

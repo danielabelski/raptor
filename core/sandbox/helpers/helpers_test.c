@@ -95,8 +95,13 @@ static void test_exec_target(void) {
     char *argv_ok[] = { launcher, interp, script, NULL };
 
     CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) == 0,
+                               so, sizeof so, NULL, err, sizeof err) == 0,
           "accepts the canonical [interpreter, script] shape");
+    uid_t tuid = (uid_t)-1;
+    CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
+                               so, sizeof so, &tuid, err, sizeof err) == 0
+              && tuid == getuid(),
+          "reports the launcher binary's owner as the trusted uid");
     char expect[PATH_MAX];
     CHECK(realpath(interp, expect) != NULL && strcmp(io, expect) == 0,
           "returns the canonicalised interpreter path");
@@ -104,17 +109,17 @@ static void test_exec_target(void) {
           "returns the canonicalised script path");
 
     CHECK(validate_exec_target(2, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0,
+                               so, sizeof so, NULL, err, sizeof err) != 0,
           "refuses argc=2 (missing script)");
     char *argv_extra[] = { launcher, interp, script, script, NULL };
     CHECK(validate_exec_target(4, argv_extra, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0
+                               so, sizeof so, NULL, err, sizeof err) != 0
               && strstr(err, "argument contract") != NULL,
           "refuses extra argv beyond [interpreter, script]");
 
     char *argv_other[] = { launcher, interp, other, NULL };
     CHECK(validate_exec_target(3, argv_other, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0
+                               so, sizeof so, NULL, err, sizeof err) != 0
               && strstr(err, "script pin") != NULL,
           "script pin refuses a co-located but different script");
 
@@ -122,12 +127,12 @@ static void test_exec_target(void) {
     snprintf(missing, sizeof missing, "%s/nonexistent", base);
     char *argv_missing[] = { launcher, missing, script, NULL };
     CHECK(validate_exec_target(3, argv_missing, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0,
+                               so, sizeof so, NULL, err, sizeof err) != 0,
           "refuses a nonexistent interpreter");
 
     chmod(interp, 0777);
     CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0
+                               so, sizeof so, NULL, err, sizeof err) != 0
               && strstr(err, "interpreter") != NULL,
           "refuses an other-writable interpreter");
     chmod(interp, 0755);
@@ -140,7 +145,7 @@ static void test_exec_target(void) {
             && chown(interp, (uid_t)-1, self_pw->pw_gid) == 0) {
         chmod(interp, 0775);
         CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) == 0,
+                                   so, sizeof so, NULL, err, sizeof err) == 0,
               "accepts a group-writable interpreter under the owner's "
               "primary group (UPG)");
         chmod(interp, 0755);
@@ -163,7 +168,7 @@ static void test_exec_target(void) {
             && chown(interp, (uid_t)-1, shared_gid) == 0) {
         chmod(interp, 0775);
         CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) != 0
+                                   so, sizeof so, NULL, err, sizeof err) != 0
                   && strstr(err, "primary group") != NULL,
               "refuses a group-writable interpreter under a shared "
               "(non-primary) group");
@@ -178,7 +183,7 @@ static void test_exec_target(void) {
 
     chmod(script, 0666);
     CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0
+                               so, sizeof so, NULL, err, sizeof err) != 0
               && strstr(err, "coordinator script") != NULL,
           "refuses an other-writable pinned script");
     chmod(script, 0644);
@@ -187,14 +192,14 @@ static void test_exec_target(void) {
             && chown(script, (uid_t)-1, self_pw->pw_gid) == 0) {
         chmod(script, 0664);
         CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) == 0,
+                                   so, sizeof so, NULL, err, sizeof err) == 0,
               "accepts a UPG group-writable pinned script (mode 0664)");
         chmod(script, 0644);
     }
 
     chmod(helpers, 0777);
     CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) != 0
+                               so, sizeof so, NULL, err, sizeof err) != 0
               && strstr(err, "directory") != NULL,
           "refuses an other-writable helpers directory");
     chmod(helpers, 0755);
@@ -203,7 +208,7 @@ static void test_exec_target(void) {
             && chown(helpers, (uid_t)-1, self_pw->pw_gid) == 0) {
         chmod(helpers, 0775);
         CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) == 0,
+                                   so, sizeof so, NULL, err, sizeof err) == 0,
               "accepts a UPG group-writable helpers directory "
               "(mode 0775)");
         chmod(helpers, 0755);
@@ -212,7 +217,7 @@ static void test_exec_target(void) {
             && chown(helpers, (uid_t)-1, shared_gid) == 0) {
         chmod(helpers, 0775);
         CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) != 0
+                                   so, sizeof so, NULL, err, sizeof err) != 0
                   && strstr(err, "primary group") != NULL,
               "refuses a shared-group-writable helpers directory");
         chmod(helpers, 0755);
@@ -255,7 +260,7 @@ static void test_exec_target(void) {
     }
 
     CHECK(validate_exec_target(3, argv_ok, launcher, io, sizeof io,
-                               so, sizeof so, err, sizeof err) == 0,
+                               so, sizeof so, NULL, err, sizeof err) == 0,
           "accepts again once modes are restored");
 
     /* Ownership rule, exercised directly: a file owned by this uid is
@@ -279,7 +284,7 @@ static void test_exec_target(void) {
         char *argv_sys[] = { launcher, (char *)"/usr/bin/python3", script,
                              NULL };
         CHECK(validate_exec_target(3, argv_sys, launcher, io, sizeof io,
-                                   so, sizeof so, err, sizeof err) == 0,
+                                   so, sizeof so, NULL, err, sizeof err) == 0,
               "accepts a root-owned system interpreter");
     } else {
         printf("skip root-owned interpreter case (/usr/bin/python3 "
@@ -292,6 +297,33 @@ static void test_exec_target(void) {
     unlink(launcher);
     rmdir(helpers);
     rmdir(base);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* raptor-coord-launcher: check_invoker_identity                        */
+/* ------------------------------------------------------------------ */
+
+static void test_invoker_identity(void) {
+    char err[512];
+
+    CHECK(check_invoker_identity(1000, 1000, 1000, err, sizeof err) == 0,
+          "accepts the trusted owner (uid==euid==owner)");
+    CHECK(check_invoker_identity(0, 0, 1000, err, sizeof err) == 0,
+          "accepts root regardless of the owner uid");
+    CHECK(check_invoker_identity(0, 0, 0, err, sizeof err) == 0,
+          "accepts root for a root-owned install");
+    CHECK(check_invoker_identity(1001, 1001, 1000, err, sizeof err) != 0
+              && strstr(err, "invoker identity") != NULL,
+          "refuses a foreign local user");
+    CHECK(check_invoker_identity(1000, 1001, 1000, err, sizeof err) != 0,
+          "refuses when only the real uid matches (euid differs)");
+    CHECK(check_invoker_identity(1001, 1000, 1000, err, sizeof err) != 0,
+          "refuses when only the effective uid matches (uid differs)");
+    CHECK(check_invoker_identity(1000, 1000, 0, err, sizeof err) != 0,
+          "refuses a non-root invoker of a root-owned install");
+    CHECK(check_invoker_identity(0, 1000, 1000, err, sizeof err) != 0,
+          "refuses a mixed root/non-root identity");
 }
 
 
@@ -495,6 +527,7 @@ static void test_ns_owner(void) {
 
 int main(void) {
     test_exec_target();
+    test_invoker_identity();
     test_parse_strict_ulong();
     test_mapping_args();
     test_ns_owner();

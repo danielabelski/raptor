@@ -1518,10 +1518,24 @@ def format_context_for_prompt(
             "block_analysis", ctx["block_analysis"], 0))
 
     if ctx.get("project_context"):
-        pp = ["\n### Project context (cross-run learnings)"]
+        # Cross-run learnings are LLM-authored text persisted in the
+        # project dir and restored VERBATIM by /project import — an
+        # unsigned archive can seed them with instructions. Envelope
+        # the block like every other untrusted section (nonce +
+        # autofetch strip + tag-forgery neutralisation via
+        # wrap_untrusted); the heading stays outside the envelope.
+        body_pc = []
         for lrn in ctx["project_context"][:5]:
             text = lrn.get("text", lrn) if isinstance(lrn, dict) else str(lrn)
-            pp.append(f"- {text}")
+            body_pc.append(f"- {text}")
+        pp = [
+            "\n### Project context (cross-run learnings)",
+            wrap_untrusted(
+                "\n".join(body_pc),
+                kind="project-learnings",
+                origin="project-context-store",
+            ),
+        ]
         sections.append(PromptSection("project_context", "\n".join(pp), 3))
 
     if ctx.get("session_observations"):

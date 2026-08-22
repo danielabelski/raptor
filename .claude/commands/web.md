@@ -45,6 +45,47 @@ channel accepts repeatable `--ffuf-header 'Header-Name: value'` and
 `--ffuf-cookie 'session=...'` for authenticated discovery. See also
 `--ffuf-wordlist`.)
 
+## ffuf content discovery (opt-in)
+
+ffuf runs sandboxed (egress pinned to the target host) whenever
+`--ffuf-wordlist` is set. Common recipes — `python3 raptor.py web --help`
+for the full flag list:
+
+```bash
+# Deep directory discovery: recursion + extensions
+python3 raptor.py web --url https://target --ffuf-wordlist dirs.txt \
+  --ffuf-recursion --ffuf-extensions '.php,.bak'
+
+# POST parameter discovery (fixed URL, FUZZ in the body)
+python3 raptor.py web --url https://target --ffuf-wordlist params.txt \
+  --ffuf-path 'api/login' --ffuf-method POST --ffuf-data 'FUZZ=1' \
+  --ffuf-header 'Content-Type: application/x-www-form-urlencoded'
+
+# Virtual-host discovery (fixed URL, FUZZ in the Host header)
+python3 raptor.py web --url https://target --ffuf-wordlist subdomains.txt \
+  --ffuf-vhost
+
+# Multi-wordlist: parameter name x value (clusterbomb)
+python3 raptor.py web --url https://target \
+  --ffuf-wordlist params.txt --ffuf-wordlist 'values.txt:W2' \
+  --ffuf-path 'search?FUZZ=W2'
+
+# Secret hunting in response bodies
+python3 raptor.py web --url https://target --ffuf-wordlist dirs.txt \
+  --ffuf-match-regex 'AKIA[0-9A-Z]{16}'
+```
+
+Operational notes:
+
+- Recursion and clusterbomb apply a default `-rate 50` unless
+  `--ffuf-rate` is set; recursion also caps each sub-job with
+  `-maxtime-job`.
+- Every run is capped by ffuf's own `-maxtime` (`--ffuf-max-runtime`,
+  default 300s) so partial results are always flushed; `timed_out` in
+  the report marks a run the backstop had to kill.
+- `--ffuf-stop-on-403` stops early when >95% of responses are 403 —
+  the usual WAF signal.
+
 ## Important Notes
 
 - Only scan applications you own or have permission to test

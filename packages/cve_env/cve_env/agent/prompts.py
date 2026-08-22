@@ -1393,6 +1393,43 @@ def render_user_prompt(cve: CveRecord, host: HostInfo, run_id: str = "",
         else ""
     )
     prefill_block = _render_prefill_block(prefill)
+    if cve.operator_described:
+        # No-CVE run: the operator CHOSE this setup. Their description
+        # is authoritative first-class instruction (operator
+        # provenance), not a hint to re-verify — there is no NVD
+        # record. The verify DAG remains the only success oracle.
+        # Sanitized like the CVE hint (exploit-disclosure language
+        # trips the AUP filter on the very first turn) but with a cap
+        # sized for a full description rather than a one-line hint.
+        _desc = sanitize_exploit_text(
+            cve.description, max_chars=4000) or "(empty after sanitizing)"
+        return f"""\
+# Operator-described target (no CVE)
+- id: {cve.cve_id}
+- product (operator-asserted): {cve.product or "(not asserted)"}
+- version (operator-asserted): {cve.version or "(not asserted)"}
+
+## Description (operator-asserted, authoritative)
+{_desc}
+
+There is NO CVE for this run: do not call `nvd_lookup` (there is no
+record; it rejects non-CVE ids). The operator chose this setup —
+treat the description, product and version above as first-class
+instructions. Where the description is ambiguous, prefer the most
+literal reading over speculation. If a product/version is given,
+the environment must verify against it (version assertions); a
+mismatch is a failure, not a shrug.
+
+# Host
+- arch: {host.arch}
+- os: {host.os}
+- docker_backend: {host.docker_backend or "(auto-detect)"}
+- rosetta_available: {host.rosetta_available}
+{run_id_block}{prefill_block}
+Build a reproducible Docker environment matching this description and \
+verify it end-to-end. Return when `verify.passed == True`, or call \
+`give_up(reason, detail)` if stuck.
+"""
     return f"""\
 # CVE
 - id: {cve.cve_id}

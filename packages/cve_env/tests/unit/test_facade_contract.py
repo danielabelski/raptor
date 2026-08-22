@@ -61,6 +61,8 @@ FACADE_OUTCOME_KEYS = frozenset({
     "over_budget_stages_list",
     # /cve-diff pre-fill provenance (None when off/miss) — additive.
     "prefill",
+    # --describe provenance label (False on CVE runs) — additive.
+    "operator_described",
 })
 
 # build flag → (argparse dest, shipped default). The grammar half of

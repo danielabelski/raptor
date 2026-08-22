@@ -89,13 +89,77 @@ def _validate_cve_id(value: str) -> str:
     return value
 
 
-def _cmd_build(args: argparse.Namespace) -> int:
-    cve = CveRecord(
-        cve_id=args.cve_id,
+def _describe_record(args: argparse.Namespace) -> CveRecord:
+    """Build the operator-described (no-CVE) record for ``--describe``.
+
+    The description is an operator ASSERTION — the operator chose the
+    setup, so it enters the run with operator provenance, not as
+    untrusted scan output. When the flag value names a readable file
+    the file's text is used, otherwise the value itself. The synthetic
+    ``DESC-<sha256[:12]>`` id keys everything a CVE id normally keys
+    (audit dir, spec-store replay, container labels): the same
+    description replays the same recorded environment.
+    """
+    import hashlib
+
+    raw = args.describe
+    path = Path(raw)
+    if path.is_file():
+        # A value naming an existing file is read as a file — say so
+        # loudly (a pasted fingerprint that HAPPENS to name a file
+        # would otherwise be silently content-swapped), and an
+        # existing-but-unreadable file is an error, never silently
+        # re-interpreted as literal text.
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"--describe names an existing file that cannot be "
+                  f"read ({exc}); fix the file or pass literal text "
+                  f"that does not name an existing path",
+                  file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(f"--describe: read {len(raw)} chars from file {path}",
+              file=sys.stderr)
+    else:
+        print("--describe: using the literal text as the description",
+              file=sys.stderr)
+    text = raw.strip()
+    if not text:
+        print("--describe is empty (file or text)", file=sys.stderr)
+        raise SystemExit(2)
+    # json array encoding: unambiguous field boundaries (a plain join
+    # would let a newline inside --product alias a different triple).
+    digest = hashlib.sha256(json.dumps(
+        [text, args.product or "", args.version or ""],
+        ensure_ascii=True).encode("utf-8")).hexdigest()[:12]
+    return CveRecord(
+        cve_id=f"DESC-{digest}",
         product=args.product or "",
         version=args.version or "",
-        description=args.description or "",
+        description=text,
+        operator_described=True,
     )
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    if getattr(args, "describe", None):
+        if args.cve_id:
+            # usage errors keep argparse's exit-code convention (2)
+            print("give either a CVE id or --describe, not both",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        cve = _describe_record(args)
+    elif args.cve_id:
+        cve = CveRecord(
+            cve_id=args.cve_id,
+            product=args.product or "",
+            version=args.version or "",
+            description=args.description or "",
+        )
+    else:
+        print("a CVE id (CVE-YYYY-NNNN) or --describe is required",
+              file=sys.stderr)
+        raise SystemExit(2)
     host_arch = detect_host_arch()
     host = HostInfo(
         arch=host_arch.arch,
@@ -127,7 +191,13 @@ def _cmd_build(args: argparse.Namespace) -> int:
         prefill = None
         prefill_mode = getattr(args, "prefill", "off")
         prefill_from = getattr(args, "prefill_from", None)
-        if prefill_from or prefill_mode == "auto":
+        # Operator-described runs have no /cve-diff discovery universe
+        # to pre-fill from — but replay below still applies in full
+        # (specs key on the DESC- id, and --prefill-from names an
+        # explicit run dir for the replay search too, so it must
+        # survive).
+        skip_fix_pointer = cve.operator_described
+        if not skip_fix_pointer and (prefill_from or prefill_mode == "auto"):
             from core.orchestration.cvediff_bridge import find_fix_pointer
 
             pointer = find_fix_pointer(
@@ -155,7 +225,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         # pre-fill; a failed or unsupported replay falls through to the
         # normal (pre-filled) agent build, which is always correct.
         outcome = None
-        if prefill_from or prefill_mode == "auto":
+        if prefill_from or prefill_mode == "auto" or cve.operator_described:
             outcome = _attempt_replay(cve, prefill_from)
 
         # Use getattr with config defaults so test fixtures that build a
@@ -211,6 +281,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
             # /cve-diff pre-fill provenance (None when pre-fill was off or
             # found nothing) — additive outcome key, facade-contract safe.
             "prefill": prefill,
+            # Provenance label: True for --describe runs — the target was
+            # operator-asserted, not CVE-pinned; downstream consumers
+            # weigh the (weaker) oracle accordingly. Additive outcome
+            # key, appended to FACADE_OUTCOME_KEYS deliberately.
+            "operator_described": cve.operator_described,
         }
         # Write sidecar before stdout so the result survives a SIGKILL that
         # fires after build() returns but before the stdout pipe flushes.
@@ -922,7 +997,21 @@ def _build_argparser() -> argparse.ArgumentParser:
     b.add_argument(
         "cve_id",
         type=_validate_cve_id,
-        help="e.g. CVE-2018-7600 (format: CVE-YYYY-NNNN+)",
+        nargs="?",
+        default=None,
+        help="e.g. CVE-2018-7600 (format: CVE-YYYY-NNNN+). Omit when "
+             "using --describe.",
+    )
+    b.add_argument(
+        "--describe", default=None, metavar="TEXT_OR_FILE",
+        help="operator-described target instead of a CVE id: free-form "
+             "description of the environment to build (inline text, or "
+             "a path to a text file). The description is an operator "
+             "assertion — you choose the setup; it is treated as "
+             "first-class instruction, not re-verified against NVD. "
+             "Pair with --product/--version to enable version "
+             "assertions in the verify plan. Outcomes are labelled "
+             "operator-described and replay under a DESC-<hash> id.",
     )
     b.add_argument("--product", default=None, help="product name hint")
     b.add_argument(

@@ -95,13 +95,21 @@ Why renamed:
 
 @dataclass(frozen=True)
 class CveRecord:
-    """Minimum fields the agent needs to reason about a CVE."""
+    """Minimum fields the agent needs to reason about a CVE.
+
+    ``operator_described`` marks a no-CVE run (``--describe``): the id
+    is a synthetic ``DESC-<hash>`` and product/version/description are
+    operator ASSERTIONS — the operator chose the setup, so the agent
+    treats them as first-class instructions rather than hints to
+    re-verify against NVD (there is no NVD record to verify against).
+    """
 
     cve_id: str
     product: str = ""
     version: str = ""
     description: str = ""
     references: tuple[str, ...] = ()
+    operator_described: bool = False
 
 
 @dataclass(frozen=True)

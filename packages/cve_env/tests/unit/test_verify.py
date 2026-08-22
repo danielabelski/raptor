@@ -987,8 +987,10 @@ def test_phase61_check_http_rejects_public_ip(mock_req: Any) -> None:
 
 @patch("core.container.proc.subprocess.run")
 @patch("core.env.verify.socket.create_connection")
+@patch("cve_env.tools.verify._published_run_ports",
+       return_value=frozenset({6379}))
 def test_verify_dispatches_tcp_probe_check_with_port_target_alias(
-    mock_conn: Any, mock_subproc: Any
+    _mock_ports: Any, mock_conn: Any, mock_subproc: Any
 ) -> None:
     """S29 Phase A (2026-05-04): `port_target` aliased to `host_port`. Surfaced
     by the S28 kwarg-frequency scan (CVE-2014-0160 prior bench, manual-1777*
@@ -1019,8 +1021,10 @@ def test_verify_dispatches_tcp_probe_check_with_port_target_alias(
 
 @patch("core.container.proc.subprocess.run")
 @patch("core.env.verify.socket.create_connection")
+@patch("cve_env.tools.verify._published_run_ports",
+       return_value=frozenset({6379}))
 def test_verify_dispatches_tcp_probe_check_with_host_alias(
-    mock_conn: Any, mock_subproc: Any
+    _mock_ports: Any, mock_conn: Any, mock_subproc: Any
 ) -> None:
     """E1.1 (S28, 2026-05-04): `host` is a common LLM-synonym for `host_ip`.
     bench50-20260504-010418 CVE-2018-2628 turn 19 hit
@@ -1056,8 +1060,10 @@ def test_verify_dispatches_tcp_probe_check_with_host_alias(
 
 @patch("core.container.proc.subprocess.run")
 @patch("core.env.verify.socket.create_connection")
+@patch("cve_env.tools.verify._published_run_ports",
+       return_value=frozenset({6379}))
 def test_verify_dispatches_tcp_probe_check_with_aliases(
-    mock_conn: Any, mock_subproc: Any
+    _mock_ports: Any, mock_conn: Any, mock_subproc: Any
 ) -> None:
     """LLM aliases: port→host_port, data→send_text, marker→expected_response_contains."""
     mock_subproc.return_value.returncode = 0
@@ -1624,3 +1630,116 @@ def test_agent_http_failure_still_fails_verify(
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+# ── tcp probe destination pinning (agent plans are untrusted) ─────────
+
+
+@patch("core.container.proc.subprocess.run")
+@patch("core.env.verify.socket.create_connection")
+@patch("cve_env.tools.verify._published_run_ports",
+       return_value=frozenset())
+def test_verify_tcp_probe_unpublished_port_fails_closed(
+    _mock_ports: Any, mock_conn: Any, mock_subproc: Any
+) -> None:
+    """A plan-supplied host_port that no cve-env container publishes is
+    refused before any socket is opened — a hostile plan cannot aim
+    probe payloads at unrelated host-local services."""
+    mock_subproc.return_value.returncode = 0
+    mock_subproc.return_value.stdout = '{"Status": "running", "Running": true}'
+    mock_subproc.return_value.stderr = ""
+    out = verify(
+        container_id="cid",
+        host_ip="127.0.0.1",
+        host_port=8080,
+        plan=[
+            {
+                "type": "tcp_probe_check",
+                "host_port": 9999,
+                "send_text": "PING",
+                "expected_response_contains": "+PONG",
+            }
+        ],
+    )
+    assert out["passed"] is False
+    assert "not a published endpoint" in out["reason"]
+    mock_conn.assert_not_called()
+
+
+@patch("core.container.proc.subprocess.run")
+@patch("core.env.verify.socket.create_connection")
+@patch("cve_env.tools.verify._published_run_ports",
+       return_value=frozenset({6379}))
+def test_verify_tcp_probe_host_ip_pinned_to_endpoint(
+    _mock_ports: Any, mock_conn: Any, mock_subproc: Any
+) -> None:
+    """A plan-supplied host_ip (private-range SSRF steering) is
+    discarded; the probe connects to the verify-level endpoint address."""
+    mock_subproc.return_value.returncode = 0
+    mock_subproc.return_value.stdout = '{"Status": "running", "Running": true}'
+    mock_subproc.return_value.stderr = ""
+    mock_conn.return_value = _FakeTCPSocket(response=b"+PONG\r\n")
+    out = verify(
+        container_id="cid",
+        host_ip="127.0.0.1",
+        host_port=8080,
+        plan=[
+            {
+                "type": "tcp_probe_check",
+                "host_ip": "192.168.1.1",  # target-controlled steering
+                "host_port": 6379,
+                "send_text": "PING",
+                "expected_response_contains": "+PONG",
+            }
+        ],
+    )
+    assert out["passed"] is True, out
+    args, _ = mock_conn.call_args
+    assert args[0] == ("127.0.0.1", 6379)  # pinned address, allowed port
+
+
+def test_published_run_ports_scopes_to_this_runs_containers() -> None:
+    """The port allowlist is per-run: only the probed container and the
+    ids this process launched count; a concurrent FOREIGN cve-env run's
+    published sidecar port must never enter this run's allowlist
+    (adversarial-review F3 PoC, inverted). Only 127.0.0.1 bindings
+    count, and enumeration failure yields the empty set (fail closed)."""
+    from types import SimpleNamespace
+
+    from cve_env.tools import verify as verify_mod
+    from cve_env.tools.docker_run import (
+        record_session_container,
+        reset_failed_attempts,
+    )
+
+    reset_failed_attempts()
+    ours = "a" * 64
+    sidecar = "b" * 64
+    foreign = "f" * 64
+    record_session_container(sidecar)  # e.g. a compose redis
+
+    ok = SimpleNamespace(
+        returncode=0, timed_out=False, stderr="",
+        stdout=(
+            f"{ours[:12]}\t127.0.0.1:49155->80/tcp, 127.0.0.1:49156->443/tcp\n"
+            f"{sidecar[:12]}\t127.0.0.1:6379->6379/tcp\n"
+            f"{foreign[:12]}\t127.0.0.1:32804->6379/tcp\n"  # foreign run
+            f"{sidecar[:12]}\t0.0.0.0:3306->3306/tcp\n"  # non-loopback
+        ),
+    )
+    try:
+        with patch("cve_env.utils.run.run_with_timeout", return_value=ok):
+            ports = verify_mod._published_run_ports(ours)
+        assert ports == frozenset({49155, 49156, 6379})
+        assert 32804 not in ports  # the foreign run's port stays out
+
+        fail = SimpleNamespace(returncode=1, timed_out=False,
+                               stdout="", stderr="x")
+        with patch("cve_env.utils.run.run_with_timeout", return_value=fail):
+            assert verify_mod._published_run_ports(ours) == frozenset()
+
+        # No probed id and no session registry: nothing to enumerate.
+        reset_failed_attempts()
+        assert verify_mod._published_run_ports("") == frozenset()
+    finally:
+        reset_failed_attempts()

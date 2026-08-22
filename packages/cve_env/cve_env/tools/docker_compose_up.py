@@ -255,6 +255,13 @@ def docker_compose_up_payload(
     # Register for later teardown.
     _ACTIVE_STACKS[cve_id] = (project, rewritten, staging)
 
+    # Register every stack container as session-launched so the verify
+    # tool's per-run port allowlist covers compose sidecars too.
+    from cve_env.tools.docker_run import record_session_container
+
+    for c in containers:
+        record_session_container(c.container_id)
+
     return {
         "ok": True,
         "cve_id": cve_id,

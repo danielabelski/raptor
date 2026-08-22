@@ -20,6 +20,10 @@ fails an otherwise-passing verify).
 HTTP/TCP probes only target loopback/private addresses (the published
 container-port surfaces) — a public ``host_ip`` is refused so nothing
 driving a verify plan can turn this engine into an SSRF primitive.
+Plans themselves are untrusted: :func:`verify_plan` discards any
+plan-supplied ``host_ip`` (probes pin to the endpoint address) and
+honors a per-step ``tcp_probe_check`` port only when it is in the
+caller's published-port allowlist.
 Probes connect DIRECTLY (no proxy): the targets are always
 host-local, so the operator egress proxy must not be consulted.
 
@@ -1355,6 +1359,7 @@ def verify_plan(
     *,
     executors: dict[str, Callable[..., CheckResult]] | None = None,
     endpoint: tuple[str, int] | None = None,
+    allowed_tcp_ports: frozenset[int] | set[int] | None = None,
     version_literal: str = "",
     version_cmd_pattern: re.Pattern[str] | None = None,
     hooks: VerifyHooks = _NO_HOOKS,
@@ -1369,6 +1374,18 @@ def verify_plan(
     ``{"passed", "results", "reason"}``; when the caller supplied a
     ``quality_warning`` hook and it fires on a passing plan, the
     summary gains ``verify_quality_warning``.
+
+    Plans are untrusted input (LLM-authored, or replayed from on-disk
+    spec artifacts), so probe destinations are pinned: a plan-supplied
+    ``host_ip`` is DISCARDED for every check type — probes always
+    target the endpoint's address, exactly like the HTTP checks. The
+    per-step ``host_port`` override on ``tcp_probe_check`` (the
+    documented way to probe compose sidecar services) is honored only
+    when the port is the endpoint's own port or in
+    ``allowed_tcp_ports`` — callers with multi-service surfaces pass
+    their published-port set; the default is endpoint-only, so a
+    hostile plan cannot aim probe payloads at unrelated host-local or
+    private-network services.
     """
     if executors is None:
         if handle is None:
@@ -1441,7 +1458,12 @@ def verify_plan(
             out = executors["http_request_check"](**payload_kwargs)
         elif ctype == "tcp_probe_check":
             tcp_kwargs = normalize_kwargs(step_kwargs, TCP_PROBE_KEY_ALIASES)
+            # Plan-supplied host_ip is discarded — probes are pinned to
+            # the endpoint address (see the docstring's SSRF note).
+            tcp_kwargs.pop("host_ip", None)
             _tcp_port_raw = tcp_kwargs.pop("host_port", host_port)
+            _port_allowlist = {host_port} | set(allowed_tcp_ports or ())
+            _port_allowlist.discard(0)
             if not isinstance(_tcp_port_raw, int):
                 out = {
                     "type": "tcp_probe_check",
@@ -1451,10 +1473,19 @@ def verify_plan(
                         f"got {type(_tcp_port_raw).__name__}"
                     ),
                 }
+            elif _tcp_port_raw not in _port_allowlist:
+                out = {
+                    "type": "tcp_probe_check",
+                    "passed": False,
+                    "reason": (
+                        f"tcp_probe_check step: host_port {_tcp_port_raw} "
+                        "is not a published endpoint of this environment "
+                        f"(allowed: {sorted(_port_allowlist)})"
+                    ),
+                }
             else:
-                tcp_host_ip = str(tcp_kwargs.pop("host_ip", host_ip))
                 out = executors["tcp_probe_check"](
-                    host_ip=tcp_host_ip, host_port=_tcp_port_raw,
+                    host_ip=host_ip, host_port=_tcp_port_raw,
                     **tcp_kwargs,
                 )
         else:

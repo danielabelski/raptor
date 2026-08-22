@@ -257,3 +257,42 @@ def test_docker_run_pull_timeout_surfaces_pivot(mock_sleep: Any, mock_rwt: Any) 
     # internal retry. A 2nd full timeout window (600s) would push the docker_run
     # budget to ~1205s, risking the 1440s wall-guard the timeout exists to beat.
     assert mock_rwt.call_count == 1
+
+
+# -- session container registry (verify tcp-probe allowlist scope) -----------
+
+
+def test_successful_launch_records_session_container(monkeypatch) -> None:
+    """docker_run registers the launched container id in the per-run
+    session registry that scopes the verify tool's tcp-probe port
+    allowlist; reset clears it (per-CVE state contract)."""
+    from core.container.containers import LaunchResult
+    from cve_env.tools import docker_run as dr
+
+    dr.reset_failed_attempts()
+    cid = "e" * 64
+    monkeypatch.setattr(
+        dr, "launch_container",
+        lambda **kw: LaunchResult(ok=True, container_id=cid,
+                                  host_port=49001, container_port=80))
+    result = dr.docker_run(image="nginx:1.25", container_port=80)
+    assert result.ok
+    assert cid in dr.session_container_ids()
+    dr.reset_failed_attempts()
+    assert dr.session_container_ids() == frozenset()
+
+
+def test_failed_launch_not_recorded(monkeypatch) -> None:
+    from core.container.containers import LaunchResult
+    from cve_env.tools import docker_run as dr
+
+    dr.reset_failed_attempts()
+    monkeypatch.setattr(
+        dr, "launch_container",
+        lambda **kw: LaunchResult(ok=False, container_id="d" * 64,
+                                  reason="no_host_port",
+                                  reason_class="unknown", stderr="x"))
+    result = dr.docker_run(image="nginx:1.25", container_port=80)
+    assert not result.ok
+    assert dr.session_container_ids() == frozenset()
+    dr.reset_failed_attempts()

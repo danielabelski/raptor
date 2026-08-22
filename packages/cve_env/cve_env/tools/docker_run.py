@@ -62,17 +62,38 @@ OWNER_LABEL = "cve-env.owner"
 # prompt discourages this but the guard enforces it.
 _FAILED_ATTEMPTS: set[tuple[str, str]] = set()
 
+# Container ids THIS process launched (docker_run + docker_compose_up).
+# The verify tool's tcp-probe port allowlist is scoped to exactly these
+# containers, so under concurrent cve-env runs one run's plan can never
+# aim probe payloads at a sibling run's published sidecar ports —
+# labels alone cannot provide that scope (the owner label is
+# product-global and label values are prompt-threaded).
+_SESSION_CONTAINER_IDS: set[str] = set()
+
 # Registry of per-CVE module-level state so the parametric lock-test in
 # tests/unit/test_reset_registry_complete.py can verify the reset function
 # clears every named global. Adding a new per-CVE global without appending
 # to this tuple AND clearing it in reset_failed_attempts() is the bug shape.
-_RESET_GLOBALS: tuple[str, ...] = ("_FAILED_ATTEMPTS",)
+_RESET_GLOBALS: tuple[str, ...] = ("_FAILED_ATTEMPTS", "_SESSION_CONTAINER_IDS")
 
 
 def reset_failed_attempts() -> None:
     """Clear the sticky-retry memory. The agent loop calls this at the start of
     each ``build(cve_id)`` so one CVE's failed attempts don't bleed into the next."""
     _FAILED_ATTEMPTS.clear()
+    _SESSION_CONTAINER_IDS.clear()
+
+
+def record_session_container(container_id: str) -> None:
+    """Register a container this process launched (see
+    ``_SESSION_CONTAINER_IDS``). Empty ids ignored."""
+    if container_id:
+        _SESSION_CONTAINER_IDS.add(container_id)
+
+
+def session_container_ids() -> frozenset[str]:
+    """Container ids this process launched (docker_run + compose)."""
+    return frozenset(_SESSION_CONTAINER_IDS)
 
 
 @dataclass
@@ -255,6 +276,7 @@ def docker_run(
     )
 
     if launch.ok:
+        record_session_container(launch.container_id)
         return RunResult(
             ok=True,
             container_id=launch.container_id,

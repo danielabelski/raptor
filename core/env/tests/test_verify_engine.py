@@ -361,3 +361,58 @@ def test_http_exchange_watchdog_stops_dripping_headers() -> None:
         srv.close()
     # Watchdog fires at 2x timeout; without it this blocks ~55 min.
     assert _time.monotonic() - start < 5.0
+# ── tcp_probe destination pinning (plans are untrusted) ───────────────
+
+
+def _tcp_spy(seen: list[dict[str, Any]]):
+    def spy(**kw: Any) -> dict[str, Any]:
+        seen.append(kw)
+        return {"type": "tcp_probe_check", "passed": True, "details": {}}
+    return spy
+
+
+def _pin_executors(seen: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "container_status": lambda: {
+            "type": "container_status", "passed": True, "details": {}},
+        "tcp_probe_check": _tcp_spy(seen),
+    }
+
+
+def test_tcp_probe_plan_host_ip_is_discarded() -> None:
+    seen: list[dict[str, Any]] = []
+    out = ev.verify_plan(
+        plan=[{"type": "tcp_probe_check", "host": "10.11.12.13",
+               "host_port": 8080, "send_text": "PING",
+               "expected_response_contains": "PONG"}],
+        executors=_pin_executors(seen),
+        endpoint=("127.0.0.1", 8080),
+    )
+    assert out["passed"], out
+    assert seen and seen[0]["host_ip"] == "127.0.0.1"  # pinned, not 10.x
+
+
+def test_tcp_probe_port_outside_allowlist_fails_closed() -> None:
+    seen: list[dict[str, Any]] = []
+    out = ev.verify_plan(
+        plan=[{"type": "tcp_probe_check", "host_port": 9999,
+               "send_text": "x", "expected_response_contains": "y"}],
+        executors=_pin_executors(seen),
+        endpoint=("127.0.0.1", 8080),
+    )
+    assert not out["passed"]
+    assert "not a published endpoint" in out["reason"]
+    assert seen == []  # probe never dispatched
+
+
+def test_tcp_probe_allowed_tcp_ports_extends_allowlist() -> None:
+    seen: list[dict[str, Any]] = []
+    out = ev.verify_plan(
+        plan=[{"type": "tcp_probe_check", "host_port": 6379,
+               "send_text": "PING", "expected_response_contains": "PONG"}],
+        executors=_pin_executors(seen),
+        endpoint=("127.0.0.1", 8080),
+        allowed_tcp_ports={6379},
+    )
+    assert out["passed"], out
+    assert seen and seen[0]["host_port"] == 6379

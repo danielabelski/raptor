@@ -478,6 +478,61 @@ def _inject_functional_smoke(
     return _core_inject_functional_smoke(plan)
 
 
+def _published_run_ports(probed_container_id: str) -> frozenset[int]:
+    """Loopback host ports published by THIS run's containers.
+
+    The per-step ``host_port`` override on ``tcp_probe_check`` exists so
+    compose stacks / sidecar services (redis, mysql, ...) can be probed
+    on their own published ports. The engine pins per-step ports to an
+    allowlist; this computes it from exactly the containers this run is
+    entitled to probe: the container under verification plus the ids
+    this process launched (``docker_run`` / ``docker_compose_up``
+    session registry). Scoping by container id — not by label — keeps
+    the allowlist per-run under concurrent cve-env runs: the owner
+    label is product-global and label values are prompt-threaded, so a
+    sibling run's published sidecar ports must never enter this run's
+    allowlist. Fails closed: any enumeration failure returns the empty
+    set (the primary endpoint port stays allowed engine-side).
+    """
+    from cve_env.tools.docker_run import OWNER_LABEL, session_container_ids
+    from cve_env.utils.run import run_with_timeout
+
+    run_ids = set(session_container_ids())
+    if probed_container_id:
+        run_ids.add(probed_container_id)
+    if not run_ids:
+        return frozenset()
+    outcome = run_with_timeout(
+        [
+            "docker", "ps",
+            "--filter", f"label={OWNER_LABEL}=cve-env",
+            "--format", "{{.ID}}\t{{.Ports}}",
+        ],
+        timeout=15,
+    )
+    if outcome.timed_out or outcome.returncode != 0:
+        return frozenset()
+    import re as _re
+
+    ports: set[int] = set()
+    for line in (outcome.stdout or "").splitlines():
+        short_id, _, port_text = line.partition("\t")
+        short_id = short_id.strip()
+        # docker ps prints truncated (12-char) ids; the registry holds
+        # full 64-char ids — prefix-match ours, drop everyone else's.
+        if not short_id or not any(
+            rid.startswith(short_id) or short_id.startswith(rid)
+            for rid in run_ids
+        ):
+            continue
+        for match in _re.finditer(r"127\.0\.0\.1:(\d+)->", port_text):
+            try:
+                ports.add(int(match.group(1)))
+            except ValueError:  # pragma: no cover — \d+ always int-parses
+                continue
+    return frozenset(ports)
+
+
 def verify(
     *,
     container_id: str,
@@ -495,6 +550,11 @@ def verify(
     close systematic plan gaps (injected smoke probes grade, never
     gate). Dispatch goes through THIS module's check functions so the
     suite's patch seams keep intercepting.
+
+    Plans are agent-authored (untrusted): the engine pins probe
+    addresses to the endpoint and per-step ``tcp_probe_check`` ports to
+    the published loopback ports of this run's own containers
+    (see :func:`_published_run_ports`).
     """
     executors = {
         "container_status": lambda: check_container_status(container_id),
@@ -512,6 +572,7 @@ def verify(
         plan=plan,
         executors=executors,
         endpoint=(host_ip, host_port),
+        allowed_tcp_ports=_published_run_ports(container_id),
         version_literal=cve_version,
         version_cmd_pattern=VERSION_ASSERTION_CMD_PATTERN,
         hooks=_HOOKS,

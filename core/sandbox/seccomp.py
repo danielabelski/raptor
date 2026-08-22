@@ -67,6 +67,25 @@ def _SCMP_ACT_TRACE(msg_num: int = 0):
 _AUDIT_EXTRA_TRACE_SYSCALLS = (
     "open", "openat", "openat2",  # b3: filesystem path coverage
     "connect",                    # b3: outbound network attempts
+    # Filesystem-mutation families: destructive / namespace-changing
+    # ops that need no open() and were previously invisible to the
+    # audit JSONL — including exactly the metadata ops (chmod / chown
+    # / xattr) the Landlock metadata gap leaves unrestricted at the
+    # enforcement layer. Legacy non-at names (unlink, rename, link,
+    # symlink, mkdir, mknod, chmod, chown, lchown) resolve to -1 on
+    # at-only ABIs (aarch64); the install loop skips negative
+    # resolutions so listing them is harmless there.
+    "unlink", "unlinkat",
+    "rename", "renameat", "renameat2",
+    "link", "linkat",
+    "symlink", "symlinkat",
+    "mkdir", "mkdirat",
+    "mknod", "mknodat",
+    "truncate",
+    "chmod", "fchmodat",
+    "chown", "fchownat", "lchown",
+    "setxattr", "lsetxattr",
+    "removexattr", "lremovexattr",
 )
 
 # Additional syscalls traced under observe mode ON TOP OF the audit

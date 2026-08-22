@@ -292,6 +292,114 @@ class TestDenialTypeMapping:
                 if name in stat_family:
                     assert name in tracer._NAME_TO_TYPE
 
+    @pytest.mark.parametrize("name", sorted(tracer._MUTATION_PATH_ARGS))
+    def test_mutation_family_typed_as_path_syscall(self, name):
+        # Mutation syscalls are file-path syscalls — "write" bucket,
+        # never the "seccomp" fallback reserved for blocklist hits.
+        assert tracer._denial_type(name) == "write"
+
+
+class TestMutationSyscallCoverage:
+    """The audit trace set must cover filesystem
+    mutations that need no open() — unlink/rename/link/symlink/mkdir/
+    mknod/truncate/chmod/chown/xattr — including exactly the metadata
+    ops the Landlock ABI gap leaves unrestricted at enforcement."""
+
+    MUTATIONS = (
+        "unlink", "unlinkat", "rename", "renameat", "renameat2",
+        "link", "linkat", "symlink", "symlinkat", "mkdir", "mkdirat",
+        "mknod", "mknodat", "truncate", "chmod", "fchmodat",
+        "chown", "fchownat", "lchown", "setxattr", "lsetxattr",
+        "removexattr", "lremovexattr",
+    )
+
+    def test_all_mutations_in_seccomp_audit_trace_set(self):
+        # Without the seccomp TRACE rule the kernel never notifies
+        # the tracer — the tracer-side tables alone do nothing.
+        from core.sandbox import seccomp
+        for name in self.MUTATIONS:
+            assert name in seccomp._AUDIT_EXTRA_TRACE_SYSCALLS, (
+                f"{name} missing from the audit trace set — mutation "
+                f"invisible to the audit JSONL")
+
+    def test_all_mutations_have_path_arg_index(self):
+        for name in self.MUTATIONS:
+            idx = tracer._path_arg_index(name)
+            assert idx is not None, (
+                f"{name}: no path arg index — record would carry no "
+                f"path")
+            assert 0 <= idx <= 5
+
+    def test_mutation_path_arg_positions_match_abi(self):
+        # Pin the per-syscall ABI positions: a drifted index makes
+        # the tracer deref the wrong argument.
+        expected = {
+            "unlink": (0, None), "unlinkat": (1, 0),
+            "rename": (0, None), "renameat": (1, 0),
+            "renameat2": (1, 0),
+            # link/linkat: the NEW path (created entry) is logged.
+            "link": (1, None), "linkat": (3, 2),
+            # symlink/symlinkat: linkpath — `target` is an arbitrary
+            # string, not necessarily a path.
+            "symlink": (1, None), "symlinkat": (2, 1),
+            "mkdir": (0, None), "mkdirat": (1, 0),
+            "mknod": (0, None), "mknodat": (1, 0),
+            "truncate": (0, None),
+            "chmod": (0, None), "fchmodat": (1, 0),
+            "chown": (0, None), "fchownat": (1, 0),
+            "lchown": (0, None),
+            "setxattr": (0, None), "lsetxattr": (0, None),
+            "removexattr": (0, None), "lremovexattr": (0, None),
+        }
+        assert tracer._MUTATION_PATH_ARGS == expected
+
+    def test_x86_64_mutation_syscall_numbers(self):
+        # arch/x86/entry/syscalls/syscall_64.tbl transcription pins.
+        t = tracer._X86_64_SYSCALL_NAMES
+        assert t[87] == "unlink"
+        assert t[263] == "unlinkat"
+        assert t[82] == "rename"
+        assert t[316] == "renameat2"
+        assert t[86] == "link"
+        assert t[88] == "symlink"
+        assert t[83] == "mkdir"
+        assert t[133] == "mknod"
+        assert t[76] == "truncate"
+        assert t[90] == "chmod"
+        assert t[92] == "chown"
+        assert t[94] == "lchown"
+        assert t[188] == "setxattr"
+        assert t[197] == "removexattr"
+
+    def test_aarch64_mutation_syscall_numbers(self):
+        # include/uapi/asm-generic/unistd.h transcription pins.
+        # aarch64 is at-only: legacy non-at names must be absent.
+        t = tracer._AARCH64_SYSCALL_NAMES
+        assert t[35] == "unlinkat"
+        assert t[38] == "renameat"
+        assert t[276] == "renameat2"
+        assert t[37] == "linkat"
+        assert t[36] == "symlinkat"
+        assert t[34] == "mkdirat"
+        assert t[33] == "mknodat"
+        assert t[45] == "truncate"
+        assert t[53] == "fchmodat"
+        assert t[54] == "fchownat"
+        assert t[5] == "setxattr"
+        assert t[14] == "removexattr"
+        assert "unlink" not in t.values()
+        assert "rename" not in t.values()
+        assert "chmod" not in t.values()
+
+    def test_every_tabled_mutation_syscall_is_mapped(self):
+        # No tabled mutation may hit the "seccomp" type fallback or
+        # lack a path-arg entry.
+        for info in tracer._ARCH_INFO.values():
+            for name in info["syscall_table"].values():
+                if name in self.MUTATIONS:
+                    assert name in tracer._NAME_TO_TYPE
+                    assert name in tracer._MUTATION_PATH_ARGS
+
 
 class TestRegisterDecode:
     """Decoder is arch-agnostic: takes a raw user_regs_struct buffer +

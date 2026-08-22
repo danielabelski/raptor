@@ -326,6 +326,91 @@ class TestAuditModeBasicFlow:
             assert r["audit"] is True
             assert r["type"] == "write"  # openat → write per taxonomy
 
+    def test_audit_mode_records_filesystem_mutation_events(self, tmp_path):
+        """Inverted: mutations that need no open() —
+        unlink/rename/mkdir/chmod — must land in the audit JSONL with
+        a resolved path. Pre-fix the trace set was only open/openat/
+        openat2 + connect, so these were invisible."""
+        ok, reason = _audit_prereqs_ok()
+        if not ok:
+            pytest.skip(reason)
+        import os.path
+        if not os.path.exists("/usr/bin/python3"):
+            pytest.skip("/usr/bin/python3 not present")
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("x")
+
+        code = (
+            "import os, sys; "
+            f"p = {str(victim)!r}; "
+            "os.chmod(p, 0o600); "
+            f"q = {str(tmp_path / 'renamed.txt')!r}; "
+            "os.rename(p, q); "
+            "os.unlink(q); "
+            f"os.mkdir({str(tmp_path / 'newdir')!r})"
+        )
+        result = run_sandboxed(
+            ["/usr/bin/python3", "-c", code],
+            target=str(tmp_path), output=str(tmp_path),
+            block_network=False, nproc_limit=0, limits={},
+            writable_paths=[str(tmp_path)],
+            readable_paths=None,
+            allowed_tcp_ports=None,
+            seccomp_profile="full", seccomp_block_udp=False,
+            env=None, cwd=None, timeout=15,
+            audit_mode=True, audit_run_dir=str(run_dir),
+            # verbose: mutations inside writable_paths are correctly
+            # dropped by filtered audit (allowed under enforcement);
+            # this test pins the trace-set + path-extraction plumbing.
+            audit_verbose=True,
+        )
+        assert result.returncode == 0, (
+            f"audit-mode mutation target failed: rc={result.returncode}, "
+            f"stderr={result.stderr[:300]!r}"
+        )
+
+        jsonl = (run_dir / evidence_mod.AUDIT_SUBDIR
+                 / tracer_mod._DENIALS_FILENAME)
+        assert jsonl.exists(), \
+            "tracer didn't write any audit records — handshake broken?"
+        records = [json.loads(line) for line in
+                   jsonl.read_text().splitlines() if line]
+        by_syscall = {}
+        for r in records:
+            if r.get("syscall"):
+                by_syscall.setdefault(r["syscall"], []).append(r)
+
+        # glibc routes the legacy entry points through the at-variants
+        # on modern kernels — accept either name per family.
+        for family, names in (
+            ("unlink", ("unlink", "unlinkat")),
+            ("rename", ("rename", "renameat", "renameat2")),
+            ("chmod", ("chmod", "fchmodat")),
+            ("mkdir", ("mkdir", "mkdirat")),
+        ):
+            hits = [r for n in names for r in by_syscall.get(n, [])]
+            assert hits, (
+                f"expected at least one {family} audit record "
+                f"(any of {names}); syscalls seen: "
+                f"{sorted(by_syscall)}"
+            )
+            for r in hits:
+                assert r["audit"] is True
+                assert r["type"] == "write", (
+                    f"{r['syscall']}: mutation records must use the "
+                    f"'write' path-syscall type, got {r['type']!r}")
+        # Path extraction: the unlink-family record must carry the
+        # victim's resolved absolute path.
+        unlink_paths = [r.get("path") for n in ("unlink", "unlinkat")
+                        for r in by_syscall.get(n, [])]
+        assert any(p and "renamed.txt" in p for p in unlink_paths), (
+            f"unlink record lacks the resolved victim path: "
+            f"{unlink_paths!r}"
+        )
+
 
 class TestAuditModeMultiProcess:
     """TRACEFORK / TRACEVFORK / TRACECLONE in the SEIZE options means

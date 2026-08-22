@@ -284,6 +284,33 @@ _X86_64_SYSCALL_NAMES = {
     2: "open",
     257: "openat",
     437: "openat2",          # Linux 5.6+, used by glibc/io_uring
+    # Filesystem-mutation syscalls (audit-mode trace set) — mutations
+    # that need no open() (unlink/rename/metadata ops) and were
+    # previously invisible to the audit JSONL. Numbers from
+    # arch/x86/entry/syscalls/syscall_64.tbl.
+    87: "unlink",
+    263: "unlinkat",
+    82: "rename",
+    264: "renameat",
+    316: "renameat2",
+    86: "link",
+    265: "linkat",
+    88: "symlink",
+    266: "symlinkat",
+    83: "mkdir",
+    258: "mkdirat",
+    133: "mknod",
+    259: "mknodat",
+    76: "truncate",
+    90: "chmod",
+    268: "fchmodat",
+    92: "chown",
+    260: "fchownat",
+    94: "lchown",
+    188: "setxattr",
+    189: "lsetxattr",
+    197: "removexattr",
+    198: "lremovexattr",
     # Stat-family syscalls (observe-mode only — claude-style binaries
     # probe candidate config locations via stat without ever opening,
     # so observation needs these to surface "binary looked at X").
@@ -325,6 +352,25 @@ _AARCH64_SYSCALL_NAMES = {
     # File-path syscalls (b3)
     56: "openat",
     437: "openat2",          # Linux 5.6+, same number on x86_64+aarch64
+    # Filesystem-mutation syscalls (audit-mode trace set). aarch64 is
+    # an at-only ABI: the legacy non-at names (unlink, rename, link,
+    # symlink, mkdir, mknod, chmod, chown, lchown) do not exist, so
+    # only the *at variants (plus truncate and the xattr family)
+    # appear here. Numbers from include/uapi/asm-generic/unistd.h.
+    35: "unlinkat",
+    38: "renameat",
+    276: "renameat2",
+    37: "linkat",
+    36: "symlinkat",
+    34: "mkdirat",
+    33: "mknodat",
+    45: "truncate",
+    53: "fchmodat",
+    54: "fchownat",
+    5: "setxattr",
+    6: "lsetxattr",
+    14: "removexattr",
+    15: "lremovexattr",
     # Stat-family syscalls (observe-mode only). aarch64 doesn't have
     # the legacy `stat`/`lstat` syscalls — userspace uses newfstatat
     # exclusively. faccessat2 was added in 5.8 and shares its number
@@ -413,6 +459,19 @@ _NAME_TO_TYPE = {
     # summary._suggested_fix and the cross-module drift test).
     "stat": "write", "lstat": "write", "newfstatat": "write",
     "access": "write", "faccessat": "write", "faccessat2": "write",
+    # Filesystem-mutation syscalls (audit trace set): file-path
+    # syscalls with unconditional write intent — same "write" bucket.
+    "unlink": "write", "unlinkat": "write",
+    "rename": "write", "renameat": "write", "renameat2": "write",
+    "link": "write", "linkat": "write",
+    "symlink": "write", "symlinkat": "write",
+    "mkdir": "write", "mkdirat": "write",
+    "mknod": "write", "mknodat": "write",
+    "truncate": "write",
+    "chmod": "write", "fchmodat": "write",
+    "chown": "write", "fchownat": "write", "lchown": "write",
+    "setxattr": "write", "lsetxattr": "write",
+    "removexattr": "write", "lremovexattr": "write",
     "connect": "network",
     "socket": "seccomp",   # AF_UNIX/PACKET/NETLINK family check still seccomp-style
     "ioctl": "seccomp",
@@ -645,6 +704,42 @@ def _read_tracee_bytes(pid: int, addr: int, n_bytes: int) -> bytes | None:
     return bytes(buf[:n])
 
 
+# Filesystem-mutation syscalls traced under audit mode:
+# name → (path_arg_index, dirfd_arg_index | None).
+#
+# The path argument chosen per syscall is the MUTATED namespace
+# entry, with its governing dirfd (None = resolve against the
+# tracee's cwd, open(2)-style):
+# - unlink(path) / unlinkat(dirfd, path, flags): the removed entry.
+# - rename family: the OLD path (the object being renamed); the
+#   destination is recoverable from the raw `args` on the record.
+# - link(old, new) / linkat(olddirfd, old, newdirfd, new, flags):
+#   the NEW path — the created directory entry is the mutation (the
+#   old path is only read).
+# - symlink(target, linkpath) / symlinkat(target, newdirfd,
+#   linkpath): the linkpath — `target` is an arbitrary string, not
+#   necessarily a real path.
+# - mkdir/mknod/truncate/chmod/chown/lchown + at-variants and the
+#   xattr family: the single path argument.
+#
+# All entries carry unconditional write intent (there is no
+# read-only unlink), so the audit filter checks them against
+# writable_paths only.
+_MUTATION_PATH_ARGS: dict[str, tuple[int, int | None]] = {
+    "unlink": (0, None), "unlinkat": (1, 0),
+    "rename": (0, None), "renameat": (1, 0), "renameat2": (1, 0),
+    "link": (1, None), "linkat": (3, 2),
+    "symlink": (1, None), "symlinkat": (2, 1),
+    "mkdir": (0, None), "mkdirat": (1, 0),
+    "mknod": (0, None), "mknodat": (1, 0),
+    "truncate": (0, None),
+    "chmod": (0, None), "fchmodat": (1, 0),
+    "chown": (0, None), "fchownat": (1, 0), "lchown": (0, None),
+    "setxattr": (0, None), "lsetxattr": (0, None),
+    "removexattr": (0, None), "lremovexattr": (0, None),
+}
+
+
 def _path_arg_index(syscall_name: str) -> int | None:
     """Return the index of the path argument for a given syscall, or
     None if the syscall has no path argument worth dereferencing.
@@ -677,6 +772,11 @@ def _path_arg_index(syscall_name: str) -> int | None:
         return 0
     if syscall_name in ("newfstatat", "faccessat", "faccessat2"):
         return 1
+    # Filesystem-mutation syscalls: per-syscall (path, dirfd) arg
+    # positions live in _MUTATION_PATH_ARGS above.
+    mut = _MUTATION_PATH_ARGS.get(syscall_name)
+    if mut is not None:
+        return mut[0]
     return None
 
 
@@ -1632,6 +1732,22 @@ def _handle_waitpid_event(
                 # Use the absolute path on the record — relative
                 # paths are ambiguous to a parser / operator.
                 path = abs_path
+            elif name in _MUTATION_PATH_ARGS and path is not None:
+                # Filesystem-mutation syscalls: resolve the mutated
+                # path against its governing dirfd (per-syscall arg
+                # positions in _MUTATION_PATH_ARGS). All mutations
+                # carry write intent — there is no read-only unlink —
+                # so the filter below checks writable_paths.
+                _p_idx, dirfd_idx = _MUTATION_PATH_ARGS[name]
+                dirfd = (args[dirfd_idx] if dirfd_idx is not None
+                         else _AT_FDCWD)
+                # Signed dirfd — same AT_FDCWD wrap handling as the
+                # open-family branch above.
+                if dirfd > 0x7fffffffffffffff:
+                    dirfd = dirfd - (1 << 64)
+                abs_path = resolve_path(wpid, path, dirfd)
+                write_intent = True
+                path = abs_path
             elif name == "connect":
                 # Decode sockaddr at args[1], length at args[2]. The
                 # decoded ip:port goes into `path` so the parser's
@@ -1657,7 +1773,16 @@ def _handle_waitpid_event(
                 # ALLOWED under enforcement. The signal then becomes
                 # "what would have been blocked" — the operator's
                 # actual question.
-                if name in ("openat", "open", "openat2") and abs_path is not None:
+                # Mutation syscalls flow through the same allowlist
+                # check with write_intent=True: a mutation inside
+                # writable_paths would have been allowed under
+                # enforcement, so filtered mode drops it; a mutation
+                # OUTSIDE writable_paths is kept — this includes the
+                # metadata ops (chmod/chown/xattr) Landlock's ABI gap
+                # leaves unenforced, which is exactly the signal the
+                # operator needs the audit tier to surface.
+                if (name in ("openat", "open", "openat2")
+                        or name in _MUTATION_PATH_ARGS) and abs_path is not None:
                     # When read_allowlist is None, Landlock is in
                     # restrict_reads=False mode (allows all reads).
                     # Reads can never be would-blocked, so we drop

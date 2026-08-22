@@ -60,9 +60,12 @@ class TestTracerCoversAllBlockedSyscalls:
         )
 
     def test_aarch64_tracer_table_covers_seccomp_blocklist(self):
-        # NOTE: aarch64 has no `open` syscall (only `openat`), so
-        # `open` is intentionally absent from _AARCH64_SYSCALL_NAMES.
-        # We exclude it from the expected set on aarch64.
+        # NOTE: aarch64 is an at-only ABI — the legacy non-at path
+        # syscalls (open, unlink, rename, link, symlink, mkdir,
+        # mknod, chmod, chown, lchown) do not exist there; libseccomp
+        # resolves them to -1 and the install loop skips them, so the
+        # tracer can never see them. Exclude them from the expected
+        # set on aarch64.
         from core.sandbox.seccomp import (
             _AUDIT_EXTRA_TRACE_SYSCALLS,
             _SECCOMP_BLOCK_ALWAYS,
@@ -73,8 +76,9 @@ class TestTracerCoversAllBlockedSyscalls:
         expected = (set(_SECCOMP_BLOCK_ALWAYS)
                     | set(_SECCOMP_BLOCK_UNLESS_DEBUG)
                     | set(_AUDIT_EXTRA_TRACE_SYSCALLS))
-        # aarch64 doesn't have plain `open` — only `openat`.
-        expected.discard("open")
+        # Legacy non-at syscalls absent from the aarch64 ABI.
+        expected -= {"open", "unlink", "rename", "link", "symlink",
+                     "mkdir", "mknod", "chmod", "chown", "lchown"}
         known = set(_AARCH64_SYSCALL_NAMES.values())
         missing = expected - known
         assert missing == set(), (

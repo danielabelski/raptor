@@ -73,6 +73,26 @@ anti-anti-debug story is a separate engineering effort (PID-ns
 isolation, syscall timing normalization, /proc lying, etc.) — not
 a tweak to this tracer.
 
+**Audit-record fidelity is best-effort (argument-read TOCTOU,
+accepted residual).** At a SECCOMP_RET_TRACE stop this tracer reads
+pathname / open_how / sockaddr buffers from the tracee's memory to
+build the record and to decide KEEP vs suppress, then resumes the
+stopped thread; the kernel re-reads those buffers when it executes
+the syscall. A sibling thread in the tracee can rewrite the buffer
+in that window, so an audit RECORD can misdescribe — or the
+allowlist filter can drop the record for — what actually executed.
+ENFORCEMENT is unaffected: every deny is either a kernel-evaluated
+argument rule (SCMP_ACT_ERRNO on register-visible arguments) or an
+execute-on-behalf supervisor working on a pidfd_getfd dup
+(_unix_scope.py), neither of which trusts a userspace re-read.
+Only the observability tier races. This is within the documented
+audit contract (an operator-workflow observation tier, not malware
+analysis — see the anti-debug section above); closing it would need
+a ptrace syscall-entry re-validation rewrite that is not
+proportionate to the tier. The end-of-run audit_summary record is
+stamped ``record_fidelity="best_effort"`` so downstream readers see
+the caveat in-band.
+
 Invocation:
     python -m core.sandbox.tracer <child_pid> <run_dir> [<sync_fd> [<config_path>]]
 
@@ -1573,6 +1593,13 @@ def trace(target_pid: int, run_dir: Path,
     # wrote a fake summary into the JSONL claiming budget_truncated=True).
     try:
         _summary = budget.summary_record()
+        # Record-fidelity caveat, stamped in-band: tracee argument
+        # buffers are read from userspace memory at the TRACE stop
+        # and can be rewritten by sibling threads before the kernel
+        # consumes them (accepted residual — module docstring).
+        # Downstream readers of the summary see the contract without
+        # having to know tracer internals.
+        _summary["record_fidelity"] = "best_effort"
         if _observe_nonce is not None:
             _summary["nonce"] = _observe_nonce
         _write_record_dict(run_dir, _summary, filename=_filename)
@@ -1675,6 +1702,15 @@ def _handle_waitpid_event(
             # The filter logic below short-circuits to drop legitimate
             # events when audit_filter is configured for filtered
             # mode (i.e., the `audit` profile).
+            #
+            # TOCTOU residual (accepted — see the module docstring's
+            # record-fidelity section): the string/struct reads below
+            # and the KEEP/suppress decision they feed race sibling
+            # threads in the tracee, which can rewrite the buffer
+            # before the kernel consumes it. Records are best-effort;
+            # enforcement is NOT decided here (kernel-argument ERRNO
+            # rules + the execute-on-behalf connect supervisor are
+            # TOCTOU-free by construction).
             should_log = True
             path = None
             path_idx = _path_arg_index(name)

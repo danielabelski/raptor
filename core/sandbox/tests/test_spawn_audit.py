@@ -411,6 +411,48 @@ class TestAuditModeBasicFlow:
             f"{unlink_paths!r}"
         )
 
+    def test_audit_summary_stamps_record_fidelity(self, tmp_path):
+        """Accepted residual: tracee argument buffers
+        are read at the TRACE stop and can be rewritten by sibling
+        threads before the kernel consumes them, so audit RECORDS are
+        best-effort (enforcement is unaffected). The end-of-run
+        audit_summary must carry the caveat in-band."""
+        ok, reason = _audit_prereqs_ok()
+        if not ok:
+            pytest.skip(reason)
+        import os.path
+        if not os.path.exists("/usr/bin/python3"):
+            pytest.skip("/usr/bin/python3 not present")
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        result = run_sandboxed(
+            ["/usr/bin/python3", "-c", "print('hi')"],
+            target=str(tmp_path), output=str(tmp_path),
+            block_network=False, nproc_limit=0, limits={},
+            writable_paths=[str(tmp_path)],
+            readable_paths=None,
+            allowed_tcp_ports=None,
+            seccomp_profile="full", seccomp_block_udp=False,
+            env=None, cwd=None, timeout=15,
+            audit_mode=True, audit_run_dir=str(run_dir),
+            audit_verbose=True,
+        )
+        assert result.returncode == 0, result.stderr[:300]
+        jsonl = (run_dir / evidence_mod.AUDIT_SUBDIR
+                 / tracer_mod._DENIALS_FILENAME)
+        assert jsonl.exists()
+        records = [json.loads(line) for line in
+                   jsonl.read_text().splitlines() if line]
+        summaries = [r for r in records
+                     if r.get("type") == "audit_summary"]
+        assert summaries, f"no audit_summary record: {records!r}"
+        for s in summaries:
+            assert s.get("record_fidelity") == "best_effort", (
+                f"audit_summary must stamp the record-fidelity "
+                f"caveat: {s!r}"
+            )
+
 
 class TestAuditModeMultiProcess:
     """TRACEFORK / TRACEVFORK / TRACECLONE in the SEIZE options means

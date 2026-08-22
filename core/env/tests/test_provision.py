@@ -113,3 +113,82 @@ def test_provision_launch_failure_surfaces_class(tmp_path) -> None:
         out = pv.provision(_image_spec(), workdir=tmp_path)
     assert not out.ok and out.reason == "launch_failed"
     assert out.reason_class == "manifest_unknown"
+
+
+# ── failure paths clean up (no orphaned containers / work dirs) ───────
+
+
+def test_launch_failure_removes_labeled_artifacts_and_workdir(
+        tmp_path, monkeypatch) -> None:
+    """A launch that failed AFTER `docker run` succeeded (no_host_port)
+    leaves a RUNNING container; the failure outcome must remove every
+    provision-labeled artifact and the provisioner-owned work dir."""
+    from core.container.containers import LaunchResult
+
+    owned = tmp_path / "owned-work"
+    owned.mkdir()
+    monkeypatch.setattr(pv.tempfile, "mkdtemp",
+                        lambda prefix="": str(owned))
+
+    removed: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        pv, "remove_labeled_containers",
+        lambda label, value: removed.append(("containers", label, value)))
+    monkeypatch.setattr(
+        pv, "remove_labeled_images",
+        lambda label, value: removed.append(("images", label, value)))
+    monkeypatch.setattr(
+        pv, "launch_container",
+        lambda **kw: LaunchResult(
+            ok=False, container_id=_CID, container_port=80,
+            reason="no_host_port", reason_class="unknown",
+            stderr="no 127.0.0.1 host binding"))
+
+    out = pv.provision(_image_spec())  # no workdir → provisioner-owned
+    assert not out.ok and out.reason == "launch_failed"
+    kinds = {k for k, _, _ in removed}
+    assert kinds == {"containers", "images"}
+    values = {v for _, _, v in removed}
+    assert len(values) == 1 and all(v for v in values)  # the provision nonce
+    assert all(label == pv.OWNER_LABEL for _, label, _ in removed)
+    assert not owned.exists()  # owned work dir removed
+
+
+def test_caller_workdir_survives_launch_failure(tmp_path, monkeypatch) -> None:
+    from core.container.containers import LaunchResult
+
+    monkeypatch.setattr(pv, "remove_labeled_containers", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
+    monkeypatch.setattr(
+        pv, "launch_container",
+        lambda **kw: LaunchResult(ok=False, reason="run_failed",
+                                  reason_class="transport", stderr="x"))
+    out = pv.provision(_image_spec(), workdir=tmp_path)
+    assert not out.ok
+    assert tmp_path.exists()  # caller owns it; provision must not delete
+
+
+def test_validation_refusals_leave_no_workdir(monkeypatch) -> None:
+    """Refusals that precede any artifact creation never call mkdtemp."""
+    calls: list[str] = []
+    monkeypatch.setattr(pv.tempfile, "mkdtemp",
+                        lambda prefix="": calls.append(prefix) or "/nonexistent")
+    out = pv.provision(EnvironmentSpec(name="x", source=SourceSpec(kind="image")))
+    assert not out.ok and out.reason == "unsupported_source"
+    assert calls == []
+
+
+def test_teardown_removes_owned_workdir(tmp_path, monkeypatch) -> None:
+    owned = tmp_path / "owned-work"
+    owned.mkdir()
+    monkeypatch.setattr(pv.tempfile, "mkdtemp",
+                        lambda prefix="": str(owned))
+    with patch("core.container.containers.run_cli", side_effect=_docker_ok), \
+         patch("core.container.lifecycle.run_cli", side_effect=_docker_ok):
+        out = pv.provision(_image_spec())
+    assert out.ok, (out.reason, out.detail)
+    env = out.environment
+    assert env is not None and env.owned_workdir == owned
+    assert owned.exists()  # alive while the environment lives
+    env.teardown()
+    assert not owned.exists()

@@ -21,6 +21,7 @@ half-provisioned.
 from __future__ import annotations
 
 import logging
+import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -57,6 +58,9 @@ class Environment:
     image_ref: str
     provision_id: str
     verify_result: dict[str, Any] | None = None
+    #: Work dir the provisioner created itself (mkdtemp) — removed at
+    #: teardown. None when the caller supplied ``workdir`` (caller owns it).
+    owned_workdir: Path | None = None
 
     @property
     def tier(self) -> str:
@@ -70,6 +74,8 @@ class Environment:
         self.handle.teardown()
         remove_labeled_containers(OWNER_LABEL, self.provision_id)
         remove_labeled_images(OWNER_LABEL, self.provision_id)
+        if self.owned_workdir is not None:
+            shutil.rmtree(self.owned_workdir, ignore_errors=True)
 
 
 @dataclass
@@ -101,22 +107,21 @@ def provision(
     otherwise the environment is returned with ``verify_result``
     attached for the caller to weigh. ``output_dir`` (a run directory)
     receives the run-local ``environment-spec.json``. ``workdir`` hosts
-    build contexts and exported rootfs trees (a private tmpdir when
-    omitted).
+    build contexts and exported rootfs trees; when omitted a private
+    tmpdir is created, owned by the provisioner — removed on every
+    failure path and by ``Environment.teardown()``. Failure outcomes
+    never leak artifacts: provision-labeled containers/images and the
+    owned work dir are cleaned up before returning.
     """
     if runtime not in ("docker", "sandbox"):
         msg = f"unknown runtime {runtime!r}"
         raise ValueError(msg)
-    provision_id = uuid.uuid4().hex[:12]
-    labels = {OWNER_LABEL: provision_id}
-    work = Path(workdir) if workdir else Path(
-        tempfile.mkdtemp(prefix="raptor-env-"))
 
-    # 1. Materialize an image ref.
+    # 0. Pure validation — refuse before creating any artifact so the
+    # refusal paths have nothing to clean up.
     kind = spec.source.kind
     if kind == "image":
-        image_ref = spec.source.image_ref
-        if not image_ref:
+        if not spec.source.image_ref:
             return ProvisionOutcome(
                 ok=False, reason="unsupported_source", reason_class="unknown",
                 detail="source.kind=image requires source.image_ref",
@@ -127,6 +132,37 @@ def provision(
                 ok=False, reason="unsupported_source", reason_class="unknown",
                 detail="source.kind=dockerfile requires source.dockerfile",
             )
+    else:
+        return ProvisionOutcome(
+            ok=False, reason="unsupported_source", reason_class="unknown",
+            detail=(
+                f"source.kind={kind!r} is not provisioned here — compose "
+                "stacks go through core.container.compose; repo source "
+                "builds keep their planner surface"
+            ),
+        )
+
+    provision_id = uuid.uuid4().hex[:12]
+    labels = {OWNER_LABEL: provision_id}
+    created_work = workdir is None
+    work = Path(workdir) if workdir else Path(
+        tempfile.mkdtemp(prefix="raptor-env-"))
+
+    def _fail(**kw: Any) -> ProvisionOutcome:
+        """Failure outcome + exact-scope cleanup. A launch that failed
+        AFTER ``docker run`` succeeded (e.g. ``no_host_port``) leaves a
+        RUNNING container behind; every provision-labeled artifact is
+        removed here, along with the provisioner-owned work dir."""
+        remove_labeled_containers(OWNER_LABEL, provision_id)
+        remove_labeled_images(OWNER_LABEL, provision_id)
+        if created_work:
+            shutil.rmtree(work, ignore_errors=True)
+        return ProvisionOutcome(ok=False, **kw)
+
+    # 1. Materialize an image ref.
+    if kind == "image":
+        image_ref = spec.source.image_ref
+    else:  # dockerfile
         image_ref = f"raptor-env-local:{provision_id}"
         ctx = work / "build-context"
         ctx.mkdir(parents=True, exist_ok=True)
@@ -137,20 +173,11 @@ def provision(
             labels=labels,
         )
         if not built.ok:
-            return ProvisionOutcome(
-                ok=False, reason="build_failed",
+            return _fail(
+                reason="build_failed",
                 reason_class=built.reason_class,
                 detail=built.stderr_tail[-1000:],
             )
-    else:
-        return ProvisionOutcome(
-            ok=False, reason="unsupported_source", reason_class="unknown",
-            detail=(
-                f"source.kind={kind!r} is not provisioned here — compose "
-                "stacks go through core.container.compose; repo source "
-                "builds keep their planner surface"
-            ),
-        )
 
     # 2. Instantiate the runtime.
     handle: RuntimeHandle
@@ -164,8 +191,8 @@ def provision(
             local_prefixes=("raptor-env-local",),
         )
         if not launch.ok:
-            return ProvisionOutcome(
-                ok=False, reason="launch_failed",
+            return _fail(
+                reason="launch_failed",
                 reason_class=launch.reason_class,
                 detail=launch.stderr[-1000:],
             )
@@ -179,8 +206,8 @@ def provision(
         rootfs = work / "rootfs"
         exported = export_rootfs(image_ref, rootfs)
         if not exported.ok:
-            return ProvisionOutcome(
-                ok=False, reason="export_failed",
+            return _fail(
+                reason="export_failed",
                 reason_class=exported.reason_class,
                 detail=exported.stderr[-1000:],
             )
@@ -190,18 +217,27 @@ def provision(
             for pair in cfg.env:
                 key, _, value = pair.partition("=")
                 env.setdefault(key, value)
-        handle = SandboxHandle(
-            rootfs,
-            env=env or None,
-            workdir=(spec.run.workdir
-                     or (cfg.workdir if cfg is not None else "")),
-        )
+        try:
+            handle = SandboxHandle(
+                rootfs,
+                env=env or None,
+                workdir=(spec.run.workdir
+                         or (cfg.workdir if cfg is not None else "")),
+            )
+        except (RuntimeError, ValueError) as exc:
+            # "failures are data": the rootfs-mode preflight refusing is
+            # a launch failure, and the exported tree must not leak.
+            return _fail(
+                reason="launch_failed", reason_class="unknown",
+                detail=str(exc)[:1000],
+            )
 
     environment = Environment(
         spec=spec,
         handle=handle,
         image_ref=image_ref,
         provision_id=provision_id,
+        owned_workdir=(work if created_work else None),
     )
 
     # 3. Adjudicate the spec's verify plan.
@@ -214,7 +250,7 @@ def provision(
         )
         environment.verify_result = result
         if not result.get("passed") and fail_on_verify:
-            environment.teardown()
+            environment.teardown()  # also removes the owned work dir
             return ProvisionOutcome(
                 ok=False, reason="verify_failed", reason_class="unknown",
                 detail=str(result.get("reason") or ""),

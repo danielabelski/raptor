@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import ClassVar
 
 from core.audit.summary_cache import (
@@ -239,3 +240,29 @@ class TestLoadSummaryCache:
         cache = load_summary_cache(tmp_path)
         assert isinstance(cache, SummaryCache)
         assert cache.cache_dir == tmp_path
+
+
+class TestManifestSizeCap:
+    def test_oversize_manifest_skipped_next_candidate_tried(
+        self, tmp_path: Path,
+    ) -> None:
+        """An over-cap manifest is skipped BEFORE being read; later
+        candidate manifests still detect the version."""
+        import os
+
+        from core.audit.summary_cache import _MAX_MANIFEST_BYTES
+
+        # requirements.txt is tried first — make it over-cap via a
+        # sparse truncate (the stat gate fires before any read).
+        req = tmp_path / "requirements.txt"
+        req.write_text("django==4.2.1\n")
+        os.truncate(req, _MAX_MANIFEST_BYTES + 1)
+
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"dependencies": {"django": "4.2.1"}}')
+
+        assert detect_library_version(tmp_path, "django") == "4.2.1"
+
+    def test_under_cap_manifest_unchanged(self, tmp_path: Path) -> None:
+        (tmp_path / "requirements.txt").write_text("django==4.2.1\n")
+        assert detect_library_version(tmp_path, "django") == "4.2.1"

@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = "core/audit/summary_cache"
 
+# Byte ceiling for target dependency manifests read by
+# detect_library_version. The largest legitimate manifests in the
+# wild are monorepo package-lock.json files at 30-40 MB; 50 MB
+# matches the SCA parsers' cap for the same file class.
+_MAX_MANIFEST_BYTES = 50 * 1024 * 1024
+
 
 @dataclass
 class CachedSummary:
@@ -232,6 +238,18 @@ def detect_library_version(
         manifest = target_path / filename
         if manifest.is_file():
             try:
+                # Size gate BEFORE the read: these files live in the
+                # scanned target, so a hostile manifest must not be
+                # buffered unbounded. Over-cap files are skipped and
+                # the next candidate manifest is tried.
+                size = manifest.stat().st_size
+                if size > _MAX_MANIFEST_BYTES:
+                    logger.warning(
+                        "detect_library_version: skipping %s "
+                        "(%d bytes exceeds the %d-byte cap)",
+                        manifest, size, _MAX_MANIFEST_BYTES,
+                    )
+                    continue
                 version = parser(manifest.read_text(), library)
                 if version:
                     return version

@@ -1111,30 +1111,37 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     # --- lifecycle start ---
+    # Explicit --out runs go through lifecycle start too. Pre-fix the
+    # --out branch only mkdir'd the directory: no .raptor-run.json was
+    # ever written, the end-of-run lifecycle complete failed with
+    # "call start_run() first", and the supervisor-advertised
+    # `raptor-audit resume <dir>` refused the directory as "not a run
+    # directory" — an explicit-out run was silently unresumable.
+    lifecycle_cmd = [
+        str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
+        "start", "audit", "--target", str(target_path),
+    ]
     if args.out:
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        lifecycle = subprocess.run(
-            [str(_RAPTOR_DIR / "libexec" / "raptor-run-lifecycle"),
-             "start", "audit", "--target", str(target_path)],
-            capture_output=True, text=True,
-            check=False,
-        )
-        if lifecycle.returncode != 0:
-            print(f"lifecycle start failed: {lifecycle.stderr.strip()}",
-                  file=sys.stderr)
-            return 1
-        out_dir = None
-        for line in lifecycle.stdout.strip().splitlines():
-            if line.startswith("OUTPUT_DIR="):
-                out_dir = Path(line.split("=", 1)[1])
-                break
-        if not out_dir:
-            print("lifecycle start did not produce OUTPUT_DIR", file=sys.stderr)
-            return 1
-        for line in lifecycle.stdout.strip().splitlines():
-            print(line)
+        lifecycle_cmd += ["--out", str(out_dir)]
+    lifecycle = subprocess.run(
+        lifecycle_cmd, capture_output=True, text=True, check=False,
+    )
+    if lifecycle.returncode != 0:
+        print(f"lifecycle start failed: {lifecycle.stderr.strip()}",
+              file=sys.stderr)
+        return 1
+    out_dir = None
+    for line in lifecycle.stdout.strip().splitlines():
+        if line.startswith("OUTPUT_DIR="):
+            out_dir = Path(line.split("=", 1)[1])
+            break
+    if not out_dir:
+        print("lifecycle start did not produce OUTPUT_DIR", file=sys.stderr)
+        return 1
+    for line in lifecycle.stdout.strip().splitlines():
+        print(line)
 
     # --- build checklist ---
     checklist_path = out_dir / "checklist.json"

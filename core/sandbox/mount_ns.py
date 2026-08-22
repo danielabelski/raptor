@@ -651,38 +651,46 @@ def setup_mount_ns(target: str | None, output: str | None,
     # evidence-file close still detects tampering after the fact.
     for _evdir_base in {p for p in (output, target) if p}:
         _evdir = f"{root}{_evdir_base}/.audit"
-        # lstat, never stat: the .audit entry inside the TARGET bind is
-        # attacker-authored content (a hostile repo can ship it). A
-        # relative symlink here would make isdir() follow it and the
-        # mount(2) below stack the ro-tmpfs onto an arbitrary in-root
+        # Pin the mount target with an O_PATH dirfd, never a pathname:
+        # the .audit entry inside the TARGET bind is attacker-authored
+        # content (a hostile repo can ship it), and the OUTPUT bind can
+        # be shared with an already-executing sibling sandbox — a
+        # symlink (shipped, or rmdir+swapped between a check and the
+        # mount) would steer the ro-tmpfs onto an arbitrary in-root
         # directory (e.g. {root}/usr — hiding the interpreter, forcing
-        # an X-status and the automatic backend retry: an attacker-
-        # triggerable posture-downgrade lever). Refuse symlinks and
-        # non-directories outright; the run proceeds WITHOUT the
-        # shadow and the evidence-file inode verification remains the
-        # (documented) tamper backstop.
+        # an X-status and the automatic backend retry: a posture-
+        # downgrade lever). O_PATH|O_NOFOLLOW|O_DIRECTORY refuses
+        # symlinks and non-directories ATOMICALLY, and mounting via
+        # /proc/self/fd/<fd> targets exactly the pinned directory with
+        # no re-resolution window. Refusals proceed WITHOUT the shadow;
+        # the evidence-file inode verification remains the (documented)
+        # tamper backstop. Single read-only tmpfs mount — no remount
+        # step that would need a second (re-raceable) resolution.
         try:
-            _evst = os.lstat(_evdir)
-        except OSError:
+            _evfd = os.open(_evdir, os.O_PATH | os.O_NOFOLLOW
+                            | os.O_DIRECTORY | os.O_CLOEXEC)
+        except FileNotFoundError:
             continue
-        if not stat_module.S_ISDIR(_evst.st_mode):
-            if stat_module.S_ISLNK(_evst.st_mode):
+        except OSError as exc:
+            if exc.errno in (_ELOOP, 20):  # ELOOP / ENOTDIR
                 warn_post_fork(
                     b"RAPTOR: mount_ns: refusing evidence-dir shadow "
-                    b"- .audit is a symlink (hostile-tree shape); "
-                    b"relying on evidence-file inode verification\n"
+                    b"- .audit is a symlink or non-directory "
+                    b"(hostile-tree shape); relying on evidence-file "
+                    b"inode verification\n"
                 )
             continue
         try:
-            _mount("tmpfs", _evdir, "tmpfs", 0, "mode=700")
-            _mount("tmpfs", _evdir, None,
-                   MS_REMOUNT | MS_BIND | MS_RDONLY)
+            _mount("tmpfs", f"/proc/self/fd/{_evfd}", "tmpfs",
+                   MS_RDONLY, "mode=700")
         except OSError as exc:
             warn_post_fork(
                 b"RAPTOR: mount_ns: evidence-dir shadow mount failed "
                 b"(errno=%d); relying on evidence-file inode "
                 b"verification\n" % (exc.errno or 0)
             )
+        finally:
+            os.close(_evfd)
 
     # 8b. Bind any extra read-only paths the caller requested (via
     # readable_paths in the public sandbox API). Each is bind-mounted

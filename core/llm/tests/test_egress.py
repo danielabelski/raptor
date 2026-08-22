@@ -182,6 +182,17 @@ class TestEnableLLMEgress:
         assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:51234"
         assert os.environ["https_proxy"] == "http://127.0.0.1:51234"
 
+    def test_sets_http_proxy_to_chokepoint_too(self, stub_proxy):
+        """Plain ``http://`` endpoints consult HTTP_PROXY, not
+        HTTPS_PROXY. Pre-fix only HTTPS_PROXY was pointed at the
+        chokepoint, so exactly those calls connected DIRECT and
+        bypassed the hostname allowlist entirely. Both spellings must
+        carry the chokepoint pointer."""
+        cfg = _config(primary=_model(provider="anthropic"))
+        egress.enable_llm_egress(cfg)
+        assert os.environ["HTTP_PROXY"] == "http://127.0.0.1:51234"
+        assert os.environ["http_proxy"] == "http://127.0.0.1:51234"
+
     def test_appends_loopback_to_no_proxy(self, stub_proxy):
         cfg = _config(primary=_model(provider="anthropic"))
         egress.enable_llm_egress(cfg)

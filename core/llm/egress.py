@@ -10,10 +10,12 @@ in-process SDK calls used by /agentic external-LLM dispatch, /codeql's
 autonomous_analyzer, etc. — have historically gone direct, with no
 chokepoint to enforce hostname allowlist or surface egress for audit.
 
-This module closes that gap by setting ``HTTPS_PROXY`` in the parent
-process env to point at the same in-process proxy CC already uses.
+This module closes that gap by setting ``HTTPS_PROXY`` — and
+``HTTP_PROXY``, so plain ``http://`` endpoints cannot slip past the
+chokepoint by consulting the un-set variable — in the parent process
+env to point at the same in-process proxy CC already uses.
 ``httpx``-based SDKs (anthropic, openai, google-genai all use httpx
-under the hood) honour the env var and route accordingly.
+under the hood) honour the env vars and route accordingly.
 
 Hostname allowlist comes from ``LLMConfig`` itself — the operator's own
 configured ``api_base`` per ``ModelConfig`` is the authoritative
@@ -470,6 +472,15 @@ def enable_llm_egress(config: LLMConfig) -> None:
     # carries the TLS). Snapshot the operator's values first so
     # operator_proxy_env() can hand trusted subprocesses the real
     # route instead of our loopback pointer.
+    #
+    # HTTP_PROXY is pointed at the chokepoint too: a plain ``http://``
+    # remote endpoint consults HTTP_PROXY, so leaving it unset let
+    # exactly those calls connect DIRECT and bypass the hostname
+    # allowlist entirely. The chokepoint is CONNECT-only, so
+    # non-loopback plain-http calls now fail CLOSED at the proxy (400)
+    # instead of escaping it — loopback endpoints (Ollama, local
+    # vLLM/LiteLLM) are unaffected via the NO_PROXY augmentation in
+    # Step 4.
     if _original_proxy_env is None:
         _original_proxy_env = {
             k: v for k in _PROXY_VAR_NAMES
@@ -477,6 +488,8 @@ def enable_llm_egress(config: LLMConfig) -> None:
         }
     os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy.port}"
     os.environ["https_proxy"] = os.environ["HTTPS_PROXY"]
+    os.environ["HTTP_PROXY"] = os.environ["HTTPS_PROXY"]
+    os.environ["http_proxy"] = os.environ["HTTPS_PROXY"]
 
     # Step 4: ensure local-loop hosts (Ollama, vLLM-localhost,
     # LiteLLM-localhost) bypass the chokepoint. Union with whatever

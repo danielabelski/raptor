@@ -1303,6 +1303,11 @@
     "count": 11,
     "kind": "literal"
   },
+  "core/sandbox/_daemon.py::_handle_spawn": {
+    "count": 10,
+    "kind": "literal",
+    "note": "RPC reply payload keys (wire shape of the spawn verb, not a name vocabulary)"
+  },
   "core/sandbox/context.py::_NETWORKED_ALLOWED_KWARGS": {
     "count": 18,
     "kind": "literal"
@@ -1325,6 +1330,11 @@
     "kind": "literal",
     "note": "proxy tunnel-event telemetry field names (framework record keys, not target API names)"
   },
+  "core/sandbox/proxy.py::_PROXY_EVENT_RESULTS": {
+    "count": 11,
+    "kind": "literal",
+    "note": "pinned proxy event-result enum, drift-pinned by the structural test in test_audit_filter.py \u2014 a fixed taxonomy, not learnable vocabulary"
+  },
   "core/sandbox/seatbelt.py::MACOS_STRICT_MACH_SERVICES": {
     "count": 17,
     "kind": "literal"
@@ -1334,9 +1344,19 @@
     "kind": "literal",
     "note": "Linux syscall names (kernel ABI escape primitives kept SCMP_ACT_ERRNO under audit mode), not target API name vocabulary \u2014 fixed security policy, same class as the seccomp blocklists"
   },
+  "core/sandbox/seccomp.py::_AUDIT_EXTRA_TRACE_SYSCALLS": {
+    "count": 27,
+    "kind": "literal",
+    "note": "Linux syscall names traced under audit mode (open/connect + filesystem-mutation families) \u2014 kernel ABI vocabulary, same class as the seccomp blocklists"
+  },
   "core/sandbox/seccomp.py::_SECCOMP_BLOCK_ALWAYS": {
     "count": 13,
     "kind": "literal"
+  },
+  "core/sandbox/tracer.py::_MUTATION_PATH_ARGS": {
+    "count": 23,
+    "kind": "literal",
+    "note": "kernel syscall ABI path-argument index table for the audit tracer \u2014 fixed kernel taxonomy mirroring _AUDIT_EXTRA_TRACE_SYSCALLS"
   },
   "core/sandbox/tracer.py::_NAME_TO_TYPE": {
     "count": 12,

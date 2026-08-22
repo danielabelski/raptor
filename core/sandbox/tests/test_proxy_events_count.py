@@ -401,3 +401,68 @@ class TestAnchoredOverflow:
         assert "recount_overflow" in sidecar["flags"]
         integrity, _ = _events_integrity(run)
         assert integrity == "tampered"
+
+
+class TestParentMemoryFloor:
+    """Delta over the sidecar mechanism: simultaneous erasure of the
+    events file AND its count sidecar is on-disk-consistent (the
+    sidecar design's documented residual) — the parent-memory mirror
+    closes it for in-lifecycle triage."""
+
+    def _persist(self, out, n):
+        import core.sandbox.context as context_mod
+        events = [{"host": f"h{i}.example", "port": 443,
+                   "result": "denied_host"} for i in range(n)]
+        context_mod._persist_proxy_events(events, output=str(out))
+
+    def test_both_artifacts_erased_reads_as_tampering(
+            self, tmp_path, monkeypatch):
+        import core.sandbox.context as context_mod
+        from core.sandbox import summary as summary_mod
+        from core.sandbox import triage as triage_mod
+        monkeypatch.setattr(summary_mod, "_proxy_persist_state", {})
+        monkeypatch.setattr(context_mod, "_PROXY_STREAM_STATE", {})
+        self._persist(tmp_path, 3)
+        (tmp_path / triage_mod.PROXY_EVENTS_FILENAME).unlink()
+        (tmp_path / triage_mod.PROXY_EVENTS_COUNT_FILENAME).unlink()
+        report = triage_mod.triage_run(tmp_path, allow_legacy=False)
+        assert report is not None, (
+            "erasing both artifacts must not read as no-telemetry "
+            "while the parent's own record says events existed")
+        assert report["inputs"]["integrity"]["proxy_events"] == (
+            "tampered")
+        assert any("parent-memory" in str(sig.get("evidence"))
+                   for sig in report["signals"]
+                   if sig["type"] == "telemetry_tampering")
+
+    def test_parent_memory_never_excuses(self, tmp_path, monkeypatch):
+        """A consistent on-disk stream + sidecar stays verified even
+        when parent memory has a LOWER count (one-way floor)."""
+        import core.sandbox.context as context_mod
+        from core.sandbox import summary as summary_mod
+        from core.sandbox import triage as triage_mod
+        monkeypatch.setattr(summary_mod, "_proxy_persist_state", {})
+        monkeypatch.setattr(context_mod, "_PROXY_STREAM_STATE", {})
+        self._persist(tmp_path, 2)
+        self._persist(tmp_path, 1)
+        report = triage_mod.triage_run(tmp_path, allow_legacy=False)
+        assert report is not None
+        assert report["inputs"]["integrity"]["proxy_events"] == (
+            "verified")
+
+    def test_fresh_process_retriage_unaffected(self, tmp_path,
+                                               monkeypatch):
+        """No parent memory (fresh process) keeps the sidecar-only
+        semantics — the documented residual stays documented for
+        post-hoc re-triage, no false tampering."""
+        import core.sandbox.context as context_mod
+        from core.sandbox import summary as summary_mod
+        from core.sandbox import triage as triage_mod
+        monkeypatch.setattr(summary_mod, "_proxy_persist_state", {})
+        monkeypatch.setattr(context_mod, "_PROXY_STREAM_STATE", {})
+        self._persist(tmp_path, 3)
+        (tmp_path / triage_mod.PROXY_EVENTS_FILENAME).unlink()
+        (tmp_path / triage_mod.PROXY_EVENTS_COUNT_FILENAME).unlink()
+        monkeypatch.setattr(summary_mod, "_proxy_persist_state", {})
+        report = triage_mod.triage_run(tmp_path, allow_legacy=False)
+        assert report is None

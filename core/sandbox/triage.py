@@ -53,6 +53,7 @@ from core.sandbox.summary import (
     AUDIT_DEGRADED_FILE,
     MAX_DENIALS_PER_RUN,
     SUMMARY_FILE,
+    get_proxy_persist_state,
     get_run_posture,
     reassert_audit_degraded,
 )
@@ -434,10 +435,18 @@ def triage_run(run_dir: Path, *,
     # A surviving count sidecar with the events file gone is the
     # whole-file-deletion shape: events were written, then erased.
     # It must drive a (tampered) report, never silence.
+    # The parent-memory persist mirror joins the gate too: a target
+    # that erased BOTH the events file and its count sidecar leaves
+    # the on-disk artifacts consistent-empty (the sidecar mechanism's
+    # documented residual) — in-lifecycle, the parent's own record
+    # says events existed, and silence would launder the erasure.
+    _pm_persist = get_proxy_persist_state(run_dir)
     if (raw_summary is None and not raw_proxy_events
             and raw_audit_degraded is None and not marker_restored):
         if not allow_legacy and (summary_destroyed or events_destroyed
-                                 or degraded_destroyed or count_present):
+                                 or degraded_destroyed or count_present
+                                 or (_pm_persist or {}).get(
+                                     "expected_count")):
             pass  # fall through: unusable artifacts drive a report
         else:
             if not allow_legacy:
@@ -472,6 +481,34 @@ def triage_run(run_dir: Path, *,
             count_record=(None if provenance_unavailable
                           else raw_events_count),
             over_bound=events_over_bound))
+    # Parent-memory floor over the sidecar cross-check (one-way: it
+    # may condemn a shortened/erased stream, never excuse anything a
+    # verifier already flagged). Covers the residual the on-disk
+    # mechanism documents: simultaneous erasure of the events file
+    # AND its sidecar is on-disk-consistent, but the parent's own
+    # in-process record still knows how many lines it wrote.
+    if _pm_persist:
+        _pm_expected = int(_pm_persist.get("expected_count") or 0)
+        _pm_found = len(raw_proxy_events or [])
+        if _pm_expected and _pm_found < _pm_expected:
+            events_integrity = _INTEGRITY_TAMPERED
+            if not count_note:
+                count_note = (
+                    f"proxy-events stream is short of the parent-"
+                    f"memory written count ({_pm_found} on disk, "
+                    f"{_pm_expected} persisted by this process) — "
+                    f"erasure of the events file"
+                    + ("" if count_present
+                       else " and its count sidecar"))
+        _pm_flags = [f for f in _pm_persist.get("flags") or []]
+        if _pm_flags and events_integrity != _INTEGRITY_TAMPERED:
+            events_integrity = _INTEGRITY_TAMPERED
+            if not count_note:
+                count_note = (
+                    "writer-flagged proxy-events tampering "
+                    "(parent-memory record): "
+                    + ", ".join(sorted(_pm_flags)))
+
     audit_degraded, degraded_integrity = (
         _verify_audit_degraded(
             raw_audit_degraded, _run_binding, allow_legacy=_verify_legacy))
@@ -500,7 +537,7 @@ def triage_run(run_dir: Path, *,
             posture_source = "summary"
     key_exposed = (posture is not None
                    and not posture.get("mac_key_hidden", True))
-    key_demoted: List[str] = []
+    key_demoted: list[str] = []
     if key_exposed:
         if (raw_summary is not None
                 and summary_integrity == _INTEGRITY_VERIFIED):

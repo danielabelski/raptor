@@ -137,6 +137,14 @@ _MARKER_MAX_BYTES = 1024 * 1024
 # itself: a target that could read the key can mint a summary claiming
 # the key was hidden. Guarded by _lock.
 _run_postures: dict[str, dict] = {}
+# Parent-memory mirror of the proxy-events count sidecar, keyed by
+# OUTPUT dir: {"expected_count": int, "flags": [str, ...]}. The MAC'd
+# on-disk sidecar closes suffix/whole truncation of the events file,
+# but a target erasing BOTH artifacts leaves nothing on disk — this
+# record (out of the target's reach) lets in-lifecycle triage read
+# that shape as tampering instead of "no telemetry". One-way: it may
+# condemn a shortened/erased stream, never excuse anything.
+_proxy_persist_state: dict[str, dict] = {}
 
 # Read bound for the denials JSONL. An honest file is capped at
 # MAX_DENIALS_PER_RUN records of well-under-PIPE_BUF lines (~40 MB
@@ -389,6 +397,39 @@ def _suggested_fix(denial_type: str, **details: Any) -> str:
         return ("syscall blocked by seccomp; use `--sandbox network-only` or "
                 "`--sandbox none` to drop seccomp")
     return "review denial; no specific suggestion available"
+
+
+def record_proxy_persist_state(run_dir: Path, *,
+                               expected_count: int,
+                               flags: "list[str] | None" = None) -> None:
+    """Parent-memory mirror of the proxy-events count sidecar.
+
+    Monotonic on expected_count; flags accumulate. Best-effort —
+    never raises. See _proxy_persist_state for the trust model."""
+    try:
+        run_key = str(Path(run_dir).resolve())
+    except OSError:
+        return
+    with _lock:
+        cur = _proxy_persist_state.setdefault(
+            run_key, {"expected_count": 0, "flags": []})
+        cur["expected_count"] = max(int(expected_count),
+                                    int(cur["expected_count"]))
+        for f in flags or []:
+            if f not in cur["flags"]:
+                cur["flags"].append(f)
+
+
+def get_proxy_persist_state(run_dir: Path) -> "dict | None":
+    """Parent-memory persist mirror for ``run_dir`` (a copy), or None
+    when no sandbox call persisted proxy events in this process."""
+    try:
+        run_key = str(Path(run_dir).resolve())
+    except OSError:
+        return None
+    with _lock:
+        cur = _proxy_persist_state.get(run_key)
+        return dict(cur) if cur is not None else None
 
 
 def record_run_posture(run_dir: Path, *, mount_ns_active: bool,

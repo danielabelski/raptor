@@ -350,6 +350,20 @@ def _write_proxy_count_sidecar(output, count, flags, run_binding):
     the caller."""
     from . import proxy as _proxy_mod
     from . import telemetry_mac as _tmac
+    # Parent-memory mirror FIRST (out of the target's reach and not
+    # dependent on a mintable token): the sidecar closes suffix/whole
+    # truncation of the EVENTS file, but a target that erases BOTH
+    # artifacts leaves nothing on disk — in-lifecycle triage then
+    # consults this record (summary.get_proxy_persist_state) instead
+    # of reading the run as telemetry-free. Strictly one-way: the
+    # record condemns shortened/erased streams, never excuses.
+    try:
+        from . import summary as _summary_pm
+        _summary_pm.record_proxy_persist_state(
+            Path(output), expected_count=int(count),
+            flags=sorted(str(f) for f in flags))
+    except Exception:  # noqa: BLE001 — accounting is best-effort
+        logger.debug("proxy persist accounting failed", exc_info=True)
     token = _tmac.mint(_tmac.proxy_events_count_fields(
         count, flags, run_binding))
     if not token:

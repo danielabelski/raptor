@@ -186,6 +186,17 @@ class TestTriageDemotion:
             events.append(event)
         (tmp_path / triage_mod.PROXY_EVENTS_FILENAME).write_text(
             "\n".join(json.dumps(e) for e in events) + "\n")
+        # Under lifecycle semantics a stamped stream needs its count
+        # sidecar or it reads as tampered before the key-exposure
+        # demotion applies — mint a consistent one, as the writer
+        # would have.
+        (tmp_path / triage_mod.PROXY_EVENTS_COUNT_FILENAME).write_text(
+            json.dumps({
+                "count": 3, "flags": [],
+                "mac": telemetry_mac.mint(
+                    telemetry_mac.proxy_events_count_fields(
+                        3, [], run)),
+            }))
         result = triage_mod.triage_run(tmp_path, allow_legacy=False)
         assert result["inputs"]["integrity"]["proxy_events"] == "legacy"
         assert any("could not hide the telemetry-mac key" in c

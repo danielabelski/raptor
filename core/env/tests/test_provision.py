@@ -13,6 +13,7 @@ from core.env.store import load_run_spec
 _CID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 _PORTS = '{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"49001"}]}'
 _STATE = '{"Running": true, "Status": "running"}'
+_CONTAINER_IP = "172.19.0.2"
 
 
 def _image_spec(**kw: Any) -> EnvironmentSpec:
@@ -30,6 +31,9 @@ def _docker_ok(cmd: list[str], **_kw: Any) -> RunOutcome:
     if cmd[:3] == ["docker", "run", "-d"]:
         return RunOutcome(returncode=0, stdout=f"{_CID}\n", stderr="",
                           timed_out=False)
+    if ".IPAddress" in " ".join(cmd):
+        return RunOutcome(returncode=0, stdout=f"{_CONTAINER_IP}\n",
+                          stderr="", timed_out=False)
     if "NetworkSettings" in " ".join(cmd):
         return RunOutcome(returncode=0, stdout=_PORTS, stderr="",
                           timed_out=False)
@@ -40,16 +44,68 @@ def _docker_ok(cmd: list[str], **_kw: Any) -> RunOutcome:
 
 
 def test_provision_image_docker_runtime(tmp_path) -> None:
+    """Default policy (isolated): a per-provision --internal network,
+    endpoint at the container's own address on it."""
     spec = _image_spec(verify_plan=[{"type": "container_status"}])
-    with patch("core.container.containers.run_cli", side_effect=_docker_ok):
+    seen: list[list[str]] = []
+
+    def docker(cmd: list[str], **kw: Any) -> RunOutcome:
+        seen.append(list(cmd))
+        return _docker_ok(cmd, **kw)
+
+    with patch("core.container.containers.run_cli", side_effect=docker):
         out = pv.provision(spec, output_dir=tmp_path, workdir=tmp_path)
     assert out.ok, (out.reason, out.detail)
     env = out.environment
     assert env is not None and env.tier == "docker"
     assert env.verified()
-    assert env.handle.endpoint() == ("127.0.0.1", 49001)
+    assert env.handle.endpoint() == (_CONTAINER_IP, 80)
     # The run-local spec record landed.
     assert load_run_spec(tmp_path) == spec
+    net_creates = [c for c in seen if c[:3] == ["docker", "network", "create"]]
+    assert len(net_creates) == 1 and "--internal" in net_creates[0]
+    run_cmd = next(c for c in seen if c[:3] == ["docker", "run", "-d"])
+    assert "--network" in run_cmd
+    assert "-p" not in run_cmd  # isolated: no published loopback port
+
+
+def test_provision_unrestricted_uses_bridge_published_port(tmp_path) -> None:
+    """mode=unrestricted keeps the original product behaviour: default
+    bridge, ephemeral 127.0.0.1 binding, no per-provision network."""
+    from core.env.spec import NetworkPolicy
+
+    spec = _image_spec(network=NetworkPolicy(mode="unrestricted"),
+                       verify_plan=[{"type": "container_status"}])
+    seen: list[list[str]] = []
+
+    def docker(cmd: list[str], **kw: Any) -> RunOutcome:
+        seen.append(list(cmd))
+        return _docker_ok(cmd, **kw)
+
+    with patch("core.container.containers.run_cli", side_effect=docker):
+        out = pv.provision(spec, workdir=tmp_path)
+    assert out.ok, (out.reason, out.detail)
+    assert out.environment is not None
+    assert out.environment.handle.endpoint() == ("127.0.0.1", 49001)
+    assert not any(c[:3] == ["docker", "network", "create"] for c in seen)
+    run_cmd = next(c for c in seen if c[:3] == ["docker", "run", "-d"])
+    assert "--network" not in run_cmd and "-p" in run_cmd
+
+
+def test_provision_refuses_unenforceable_network_policy(tmp_path) -> None:
+    """egress_hosts has no enforcement mechanism; unknown modes are
+    hostile shapes. Both refuse before any artifact exists."""
+    from core.env.spec import NetworkPolicy
+
+    hosts = _image_spec(
+        network=NetworkPolicy(egress_hosts=("pypi.org",)))
+    out = pv.provision(hosts, workdir=tmp_path)
+    assert not out.ok and out.reason == "unsupported_network_policy"
+    assert "egress_hosts" in out.detail
+
+    weird = _image_spec(network=NetworkPolicy(mode="bridge-ish"))
+    out = pv.provision(weird, workdir=tmp_path)
+    assert not out.ok and out.reason == "unsupported_network_policy"
 
 
 def test_provision_verify_failure_tears_down(tmp_path) -> None:
@@ -135,8 +191,13 @@ def test_launch_failure_removes_labeled_artifacts_and_workdir(
         pv, "remove_labeled_containers",
         lambda label, value: removed.append(("containers", label, value)))
     monkeypatch.setattr(
+        pv, "remove_labeled_networks",
+        lambda label, value: removed.append(("networks", label, value)))
+    monkeypatch.setattr(
         pv, "remove_labeled_images",
         lambda label, value: removed.append(("images", label, value)))
+    monkeypatch.setattr(
+        pv, "create_internal_network", lambda name, labels=None: (True, ""))
     monkeypatch.setattr(
         pv, "launch_container",
         lambda **kw: LaunchResult(
@@ -147,7 +208,7 @@ def test_launch_failure_removes_labeled_artifacts_and_workdir(
     out = pv.provision(_image_spec())  # no workdir → provisioner-owned
     assert not out.ok and out.reason == "launch_failed"
     kinds = {k for k, _, _ in removed}
-    assert kinds == {"containers", "images"}
+    assert kinds == {"containers", "networks", "images"}
     values = {v for _, _, v in removed}
     assert len(values) == 1 and all(v for v in values)  # the provision nonce
     assert all(label == pv.OWNER_LABEL for _, label, _ in removed)
@@ -158,7 +219,10 @@ def test_caller_workdir_survives_launch_failure(tmp_path, monkeypatch) -> None:
     from core.container.containers import LaunchResult
 
     monkeypatch.setattr(pv, "remove_labeled_containers", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
     monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
+    monkeypatch.setattr(
+        pv, "create_internal_network", lambda name, labels=None: (True, ""))
     monkeypatch.setattr(
         pv, "launch_container",
         lambda **kw: LaunchResult(ok=False, reason="run_failed",

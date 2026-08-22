@@ -205,3 +205,67 @@ def test_disk_full_retry_prunes_dangling_images_only() -> None:
     prunes = [c for c in calls if "prune" in c]
     assert prunes == [["docker", "image", "prune", "-f"]]
     assert not any(c[:3] == ["docker", "system", "prune"] for c in calls)
+
+
+# ── network / publish threading ───────────────────────────────────────
+
+
+def _fake_run_ip(captured: list[list[str]] | None = None,
+                 ip: str = "172.19.0.2"):
+    def fake(cmd: list[str], **_kw: Any) -> RunOutcome:
+        if captured is not None:
+            captured.append(list(cmd))
+        if ".IPAddress" in " ".join(cmd):
+            return RunOutcome(returncode=0, stdout=f"{ip}\n", stderr="",
+                              timed_out=False)
+        stdout = _PORTS_JSON if "inspect" in cmd else f"{_CID}\n"
+        return RunOutcome(returncode=0, stdout=stdout, stderr="",
+                          timed_out=False)
+    return fake
+
+
+def test_launch_on_network_without_publish_reports_container_ip() -> None:
+    captured: list[list[str]] = []
+    with patch.object(cc, "run_cli", side_effect=_fake_run_ip(captured)):
+        result = cc.launch_container(
+            image="nginx@sha256:" + "c" * 64, container_port=80,
+            network="raptor-env-net-abc123", publish=False,
+        )
+    assert result.ok, (result.reason, result.stderr)
+    assert result.host_ip == "172.19.0.2"
+    assert result.host_port == 80 and result.container_port == 80
+    run_cmd = next(c for c in captured if c[:3] == ["docker", "run", "-d"])
+    assert "--network" in run_cmd
+    assert run_cmd[run_cmd.index("--network") + 1] == "raptor-env-net-abc123"
+    assert "-p" not in run_cmd  # internal networks cannot publish
+
+
+def test_launch_rejects_bad_network_shapes() -> None:
+    bad = cc.launch_container(
+        image="x:1", container_port=80,
+        network='evil"}}{{', publish=False)
+    assert not bad.ok and bad.reason == "invalid_network"
+    no_net = cc.launch_container(image="x:1", container_port=80,
+                                 publish=False)
+    assert not no_net.ok and no_net.reason == "invalid_network"
+
+
+def test_create_internal_network_builds_labeled_command() -> None:
+    captured: list[list[str]] = []
+    with patch.object(cc, "run_cli", side_effect=_fake_run(captured)):
+        ok, err = cc.create_internal_network(
+            "raptor-env-net-abc123", labels={"raptor-env.id": "abc123"})
+    assert ok and err == ""
+    assert captured == [[
+        "docker", "network", "create", "--internal",
+        "--label", "raptor-env.id=abc123", "raptor-env-net-abc123",
+    ]]
+    assert cc.create_internal_network('x"; rm -rf /')[0] is False
+
+
+def test_read_container_ip_polls_and_validates() -> None:
+    with patch.object(cc, "run_cli", side_effect=_fake_run_ip()):
+        ip, diag = cc.read_container_ip(_CID, network="netname")
+    assert ip == "172.19.0.2" and diag == ""
+    ip, diag = cc.read_container_ip(_CID, network='bad"name')
+    assert ip is None and "invalid network name" in diag

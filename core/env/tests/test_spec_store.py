@@ -99,3 +99,14 @@ def test_slug_rejects_empty_and_traversal_shapes(tmp_path) -> None:
     p = store.path_for("../../etc/passwd")
     assert p.parent == tmp_path
     assert ".." not in p.name
+
+
+def test_network_policy_mode_round_trips_and_defaults_isolated() -> None:
+    """mode is additive: old specs (no field) deserialize to the
+    fail-closed default; explicit values survive the round trip."""
+    assert NetworkPolicy().mode == "isolated"
+    assert NetworkPolicy.from_dict({}).mode == "isolated"
+    spec = EnvironmentSpec(
+        name="x", network=NetworkPolicy(mode="unrestricted"))
+    reloaded = EnvironmentSpec.from_json(spec.to_json())
+    assert reloaded.network.mode == "unrestricted"

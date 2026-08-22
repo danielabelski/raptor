@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,10 @@ from core.container.failures import classify_docker_stderr, is_retry_eligible
 from core.container.proc import run_cli
 
 logger = logging.getLogger(__name__)
+
+#: Docker network-name grammar (also keeps interpolation into the
+#: ``docker inspect`` Go template below injection-proof).
+_NETWORK_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 HARDENED_CAP_DROP: tuple[str, ...] = ("ALL",)
 HARDENED_CAP_ADD: tuple[str, ...] = (
@@ -82,8 +87,9 @@ class LaunchResult:
     host_port: int = 0
     container_port: int = 0
     host_ip: str = "127.0.0.1"
-    reason: str = ""  # "" | invalid_env_key | pull_timeout | run_failed |
-    #                   no_container_id | no_host_port
+    reason: str = ""  # "" | invalid_env_key | invalid_network | pull_timeout |
+    #                   run_failed | no_container_id | no_host_port |
+    #                   no_container_ip
     reason_class: str = "ok"
     logs_tail: str = ""
     stderr: str = ""
@@ -143,6 +149,73 @@ def read_allocated_host_port(
     )
 
 
+def create_internal_network(
+    name: str,
+    *,
+    labels: dict[str, str] | None = None,
+    timeout_s: float = 30.0,
+) -> tuple[bool, str]:
+    """Create a ``--internal`` bridge network. Returns ``(ok, diagnostic)``.
+
+    Internal networks are the daemon's egress-isolation primitive:
+    attached containers cannot reach LAN / cloud-metadata / Internet
+    addresses or other docker networks, while the host still reaches
+    them directly at their per-network container address
+    (published-port bindings are NOT available on internal networks —
+    pair with ``launch_container(publish=False)``). Residual: the
+    host's own bridge gateway address stays reachable from inside, so
+    ``0.0.0.0``-bound host services are exposed to the container;
+    loopback-bound ones are not (see NetworkPolicy). ``labels`` stamp
+    ownership for exact-scope cleanup via
+    :func:`core.container.lifecycle.remove_labeled_networks`.
+    """
+    if not _NETWORK_NAME_RE.fullmatch(name or ""):
+        return False, f"invalid network name {name!r}"
+    cmd = ["docker", "network", "create", "--internal"]
+    for k, v in (labels or {}).items():
+        cmd.extend(["--label", f"{k}={v}"])
+    cmd.append(name)
+    outcome = run_cli(cmd, timeout=timeout_s)
+    if outcome.timed_out:
+        return False, "docker network create timed out"
+    if outcome.returncode != 0:
+        return False, (outcome.stderr or "").strip()[-400:]
+    return True, ""
+
+
+def read_container_ip(
+    container_id: str,
+    *,
+    network: str,
+    timeout_s: float = 10.0,
+) -> tuple[str | None, str]:
+    """Poll ``docker inspect`` for the container's address on ``network``.
+
+    Returns ``(ip, "")`` or ``(None, diagnostic)``. The address can lag
+    ``run -d`` by a tick, same as port bindings.
+    """
+    if not _NETWORK_NAME_RE.fullmatch(network or ""):
+        return None, f"invalid network name {network!r}"
+    fmt = ('{{(index .NetworkSettings.Networks "%s").IPAddress}}' % network)
+    deadline = time.monotonic() + timeout_s
+    last = ""
+    while time.monotonic() < deadline:
+        outcome = run_cli(
+            ["docker", "inspect", "--format", fmt, container_id],
+            timeout=_INSPECT_POLL_TIMEOUT_S,
+        )
+        if outcome.returncode == 0:
+            ip = (outcome.stdout or "").strip()
+            if ip and "<no value>" not in ip:
+                return ip, ""
+            last = ip or "(empty)"
+        time.sleep(0.3)
+    return None, (
+        f"no address on network {network!r} for {container_id[:12]} "
+        f"(last={last!r})"
+    )
+
+
 def container_logs_tail(container_id: str, n: int = 80,
                         max_bytes: int = 4000) -> str:
     """Last ``n`` lines of ``docker logs`` (stdout+stderr combined),
@@ -189,6 +262,8 @@ def launch_container(
     cpus: str = "2",
     pids_limit: int = 512,
     run_timeout_s: float = 600.0,
+    network: str | None = None,
+    publish: bool = True,
 ) -> LaunchResult:
     """Launch a single container with an ephemeral ``127.0.0.1`` binding.
 
@@ -201,6 +276,13 @@ def launch_container(
     for retry-eligible stderr classes; a stalled pull (wall timeout)
     fails fast instead — an identical re-pull won't recover and would
     double the wall spend.
+
+    ``network`` attaches the container to a named docker network
+    instead of the default bridge. ``publish=False`` (requires
+    ``network`` — internal networks cannot publish) skips the ``-p``
+    binding and reports the container's own address on that network as
+    the endpoint: ``host_ip`` = container IP, ``host_port`` =
+    ``container_port``.
     """
     # Reject env keys containing '=' — a caller-controlled key like
     # "FOO=BAR" would produce `-e FOO=BAR=value`, creating misnamed env
@@ -214,6 +296,24 @@ def launch_container(
                 reason_class="unknown",
                 stderr=f"env key(s) contain '=': {bad_keys!r}",
             )
+    if network is not None and not _NETWORK_NAME_RE.fullmatch(network):
+        return LaunchResult(
+            ok=False,
+            reason="invalid_network",
+            reason_class="unknown",
+            stderr=f"invalid network name {network!r}",
+        )
+    if not publish and network is None:
+        return LaunchResult(
+            ok=False,
+            reason="invalid_network",
+            reason_class="unknown",
+            stderr=(
+                "publish=False requires network= — without a named "
+                "network there is no per-network container address to "
+                "report as the endpoint"
+            ),
+        )
 
     cmd: list[str] = ["docker", "run", "-d", "--name",
                       f"{name_prefix}-{uuid.uuid4().hex[:12]}"]
@@ -226,7 +326,10 @@ def launch_container(
     cmd.extend(["--memory", memory, "--memory-swap", memory])
     cmd.extend(["--cpus", cpus])
     cmd.extend(["--pids-limit", str(pids_limit)])
-    cmd.extend(["-p", f"127.0.0.1::{container_port}"])
+    if network is not None:
+        cmd.extend(["--network", network])
+    if publish:
+        cmd.extend(["-p", f"127.0.0.1::{container_port}"])
     for k, v in (labels or {}).items():
         cmd.extend(["--label", f"{k}={v}"])
     if platform:
@@ -303,6 +406,26 @@ def launch_container(
             reason="no_container_id",
             reason_class="unknown",
             stderr=proc.stderr.strip()[-4000:],
+        )
+
+    if not publish:
+        assert network is not None  # noqa: S101 — gated above
+        ip, ip_diag = read_container_ip(container_id, network=network)
+        if ip is None:
+            return LaunchResult(
+                ok=False,
+                container_id=container_id,
+                container_port=container_port,
+                reason="no_container_ip",
+                logs_tail=container_logs_tail(container_id),
+                stderr=ip_diag,
+            )
+        return LaunchResult(
+            ok=True,
+            container_id=container_id,
+            host_port=container_port,
+            container_port=container_port,
+            host_ip=ip,
         )
 
     host_port, port_diag = read_allocated_host_port(

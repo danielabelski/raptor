@@ -122,9 +122,37 @@ class RunSpec:
 
 @dataclass(frozen=True)
 class NetworkPolicy:
-    """Egress policy for the provisioned environment. Empty = no egress."""
+    """Egress policy for the provisioned environment's runtime.
+
+    ``mode="isolated"`` (default): the docker runtime launches on a
+    per-provision ``--internal`` network — the host still reaches the
+    service directly at its container address, and the container
+    cannot reach LAN / cloud-metadata / Internet addresses, other
+    docker networks, or external DNS. **Known residual:** the host
+    itself remains reachable at the network's bridge gateway address,
+    so host services bound on ``0.0.0.0`` (including docker-proxy
+    listeners other tools published on ``0.0.0.0``) are reachable from
+    inside; loopback-bound host services are not. Closing that
+    requires host-level firewall authority (a DOCKER-USER rule) RAPTOR
+    does not own — docker's ``gateway_mode=isolated`` removes
+    host<->container connectivity entirely, which would break the
+    verify endpoint. The sandbox runtime blocks network outright.
+
+    ``mode="unrestricted"`` opts into the daemon's default bridge
+    (full egress — the original cve-env product behaviour) on the
+    docker runtime; the sandbox runtime stays network-blocked
+    regardless (stricter than declared is the fail-closed direction).
+
+    ``egress_hosts`` (host-scoped egress) has no enforcement mechanism
+    on either runtime yet — ``provision()`` refuses a spec carrying it
+    rather than silently granting broader access. Image BUILD-time
+    network (``RUN`` steps pulling packages) is a build concern
+    (:mod:`core.env.build` / :mod:`core.container.build`), not governed
+    by this policy.
+    """
 
     egress_hosts: tuple[str, ...] = ()
+    mode: str = "isolated"  # isolated | unrestricted
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NetworkPolicy:

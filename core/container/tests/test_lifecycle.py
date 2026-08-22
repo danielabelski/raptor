@@ -71,3 +71,23 @@ def test_prune_targets_dangling_only() -> None:
     with patch.object(lc, "run_cli", side_effect=_fake(captured)):
         lc.prune_dangling_images()
     assert captured == [["docker", "image", "prune", "-f"]]
+
+
+def test_remove_labeled_networks_scopes_by_label() -> None:
+    captured: list[list[str]] = []
+
+    def run(cmd: list[str], **_kw: Any) -> RunOutcome:
+        captured.append(list(cmd))
+        if cmd[:4] == ["docker", "network", "ls", "-q"]:
+            return RunOutcome(returncode=0, stdout="n1\nn2\n", stderr="",
+                              timed_out=False)
+        return RunOutcome(returncode=0, stdout="", stderr="",
+                          timed_out=False)
+
+    with patch.object(lc, "run_cli", side_effect=run):
+        n = lc.remove_labeled_networks("raptor-env.id", "abc123")
+    assert n == 2
+    assert captured[0] == ["docker", "network", "ls", "-q",
+                           "--filter", "label=raptor-env.id=abc123"]
+    assert captured[1] == ["docker", "network", "rm", "n1", "n2"]
+    assert lc.remove_labeled_networks("raptor-env.id", "") == 0

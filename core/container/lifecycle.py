@@ -32,6 +32,31 @@ def remove_labeled_containers(label: str, value: str,
     return len(ids) if outcome.returncode == 0 else 0
 
 
+def remove_labeled_networks(label: str, value: str,
+                            timeout: float = 30.0) -> int:
+    """``docker network rm`` every network labeled ``label=value``.
+
+    Returns the count removed (0 when none matched or on any failure).
+    Call AFTER :func:`remove_labeled_containers` — a network with
+    attached containers refuses removal.
+    """
+    if not value:
+        return 0
+    list_result = run_cli(
+        ["docker", "network", "ls", "-q",
+         "--filter", f"label={label}={value}"],
+        timeout=timeout,
+    )
+    if list_result.returncode != 0:
+        return 0
+    ids = [i.strip() for i in (list_result.stdout or "").splitlines()
+           if i.strip()]
+    if not ids:
+        return 0
+    outcome = run_cli(["docker", "network", "rm", *ids], timeout=timeout)
+    return len(ids) if outcome.returncode == 0 else 0
+
+
 def prune_labeled_dangling(label: str, value: str,
                            timeout: float = 60.0) -> bool:
     """Prune DANGLING images carrying ``label=value``.

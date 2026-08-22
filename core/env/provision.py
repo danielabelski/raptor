@@ -29,11 +29,12 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from core.container.build import build_image
-from core.container.containers import launch_container
+from core.container.containers import create_internal_network, launch_container
 from core.container.export import export_rootfs
 from core.container.lifecycle import (
     remove_labeled_containers,
     remove_labeled_images,
+    remove_labeled_networks,
 )
 from core.env.handle import DockerHandle, RuntimeHandle, SandboxHandle
 from core.env.store import save_run_spec
@@ -73,6 +74,7 @@ class Environment:
         """Tear down the instance and remove provision-scoped artifacts."""
         self.handle.teardown()
         remove_labeled_containers(OWNER_LABEL, self.provision_id)
+        remove_labeled_networks(OWNER_LABEL, self.provision_id)
         remove_labeled_images(OWNER_LABEL, self.provision_id)
         if self.owned_workdir is not None:
             shutil.rmtree(self.owned_workdir, ignore_errors=True)
@@ -82,8 +84,9 @@ class Environment:
 class ProvisionOutcome:
     ok: bool
     environment: Environment | None = None
-    reason: str = ""  # "" | unsupported_source | build_failed |
-    #                   launch_failed | export_failed | verify_failed
+    reason: str = ""  # "" | unsupported_source | unsupported_network_policy |
+    #                   build_failed | network_failed | launch_failed |
+    #                   export_failed | verify_failed
     reason_class: str = "ok"
     detail: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
@@ -100,6 +103,19 @@ def provision(
     hooks: VerifyHooks | None = None,
 ) -> ProvisionOutcome:
     """Provision ``spec`` on the chosen runtime and adjudicate its plan.
+
+    The spec's :class:`~core.env.spec.NetworkPolicy` is enforced on
+    the docker runtime: ``mode="isolated"`` (default) launches on a
+    per-provision ``--internal`` network, with the endpoint at the
+    container's own network address — no LAN / metadata / Internet /
+    cross-network reach, though the host's bridge gateway address
+    remains reachable (see the NetworkPolicy docstring for the exact
+    residual); ``mode="unrestricted"`` uses the default bridge with a
+    published loopback port. Non-empty ``egress_hosts`` and unknown modes are
+    refused (``unsupported_network_policy``) — there is no host-scoped
+    enforcement mechanism yet, and silently granting broader access
+    would falsify the declared policy. The sandbox runtime blocks
+    network regardless.
 
     ``verify=True`` runs the spec's verify plan through the handle
     (version literal = ``spec.version``); with ``fail_on_verify`` the
@@ -141,6 +157,27 @@ def provision(
                 "builds keep their planner surface"
             ),
         )
+    net_mode = spec.network.mode
+    if net_mode not in ("isolated", "unrestricted"):
+        return ProvisionOutcome(
+            ok=False, reason="unsupported_network_policy",
+            reason_class="unknown",
+            detail=(
+                f"network.mode={net_mode!r} is not supported "
+                "(isolated | unrestricted)"
+            ),
+        )
+    if spec.network.egress_hosts:
+        return ProvisionOutcome(
+            ok=False, reason="unsupported_network_policy",
+            reason_class="unknown",
+            detail=(
+                "host-scoped egress_hosts enforcement is not implemented "
+                "on any runtime — drop egress_hosts (isolated = no "
+                "egress), or declare network.mode='unrestricted' "
+                "explicitly if the environment genuinely needs egress"
+            ),
+        )
 
     provision_id = uuid.uuid4().hex[:12]
     labels = {OWNER_LABEL: provision_id}
@@ -154,6 +191,7 @@ def provision(
         RUNNING container behind; every provision-labeled artifact is
         removed here, along with the provisioner-owned work dir."""
         remove_labeled_containers(OWNER_LABEL, provision_id)
+        remove_labeled_networks(OWNER_LABEL, provision_id)
         remove_labeled_images(OWNER_LABEL, provision_id)
         if created_work:
             shutil.rmtree(work, ignore_errors=True)
@@ -182,6 +220,20 @@ def provision(
     # 2. Instantiate the runtime.
     handle: RuntimeHandle
     if runtime == "docker":
+        # Thread the spec's network policy to the daemon: isolated =
+        # a per-provision --internal network (no egress; the endpoint
+        # is the container's own address on it), unrestricted = the
+        # default bridge with a published loopback port.
+        network_name: str | None = None
+        if net_mode == "isolated":
+            network_name = f"raptor-env-net-{provision_id}"
+            net_ok, net_err = create_internal_network(
+                network_name, labels=labels)
+            if not net_ok:
+                return _fail(
+                    reason="network_failed", reason_class="unknown",
+                    detail=net_err,
+                )
         launch = launch_container(
             image=image_ref,
             container_port=spec.run.port or 80,
@@ -189,6 +241,8 @@ def provision(
             labels=labels,
             env=spec.run.env_dict() or None,
             local_prefixes=("raptor-env-local",),
+            network=network_name,
+            publish=(net_mode != "isolated"),
         )
         if not launch.ok:
             return _fail(

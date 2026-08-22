@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 RUN_CONFIG_FILENAME = "audit-run-config.json"
 
+# Byte budget for loading the persisted run config. Real configs are
+# a few KiB; 8 MiB is generous headroom while keeping a planted
+# oversize file unread.
+_RUN_CONFIG_MAX_BYTES = 8 * 1024 * 1024
+
 #: Staged by a launcher that owns this run's validation at the
 #: pipeline level (the /agentic --gap-audit post-pass runs the audit
 #: with --no-validate and validates the findings itself). When the
@@ -76,13 +81,21 @@ def save_run_config(out_dir: Path, config: dict[str, Any]) -> Path:
 
 
 def load_run_config(out_dir: Path) -> dict[str, Any] | None:
-    """Load ``audit-run-config.json``, or ``None`` when absent/corrupt."""
+    """Load ``audit-run-config.json``, or ``None`` when absent/corrupt.
+
+    Bounded load: resume reads whatever directory the operator points
+    it at, so the st_size gate (before any read) keeps an oversize
+    config from being buffered — it degrades to ``None`` like a
+    corrupt one. Real run configs are a few KiB.
+    """
+    from core.json.utils import load_json
+
     path = Path(out_dir) / RUN_CONFIG_FILENAME
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = load_json(path, strict=True, max_bytes=_RUN_CONFIG_MAX_BYTES)
+    except (OSError, ValueError):
         logger.warning("could not read %s", path, exc_info=True)
         return None
     return data if isinstance(data, dict) else None

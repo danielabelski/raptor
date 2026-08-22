@@ -58,6 +58,21 @@ class TestRunConfigPersistence(unittest.TestCase):
             (out / RUN_CONFIG_FILENAME).write_text("{nope")
             self.assertIsNone(load_run_config(out))
 
+    def test_oversize_returns_none(self):
+        # Over the byte budget: refused on stat, never buffered —
+        # even though the padded JSON itself is valid.
+        import core.audit.resume as resume_mod
+        with TemporaryDirectory() as d:
+            out = Path(d)
+            cfg = {"version": 1, "padding": "x" * 4096}
+            (out / RUN_CONFIG_FILENAME).write_text(json.dumps(cfg))
+            saved = resume_mod._RUN_CONFIG_MAX_BYTES
+            resume_mod._RUN_CONFIG_MAX_BYTES = 64
+            try:
+                self.assertIsNone(load_run_config(out))
+            finally:
+                resume_mod._RUN_CONFIG_MAX_BYTES = saved
+
 
 class TestEligibility(unittest.TestCase):
 

@@ -8,6 +8,7 @@ nodes — so symlink-escape attacks are impossible by construction.
 """
 
 import logging
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from core.zip import (
 
 from .compression import decompress_single, looks_like_tar
 from .detect import detect_format
-from .errors import DecompressionLimitExceeded, UnsupportedArchive
+from .errors import ArchiveError, DecompressionLimitExceeded, UnsupportedArchive
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ def _write_members(members: dict[str, bytes], dest: Path,
         raise DecompressionLimitExceeded(msg)
     total = 0
     written = 0
+    dropped = 0
     for name, data in members.items():
         total += len(data)
         if total > max_total:
@@ -98,6 +100,7 @@ def _write_members(members: dict[str, bytes], dest: Path,
         target = _safe_dest_path(dest, name)
         if target is None:
             logger.warning("core.archive: dropping out-of-tree member %r", name)
+            dropped += 1
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -108,9 +111,10 @@ def _write_members(members: dict[str, bytes], dest: Path,
             # slipped the safety gate, a disk error) crash extraction of
             # attacker-controlled input — skip it and carry on.
             logger.warning("core.archive: skipping unwritable member %r (%s)", name, e)
+            dropped += 1
             continue
         written += 1
-    return {"files": written, "bytes": total}
+    return {"files": written, "bytes": total, "dropped": dropped}
 
 
 def extract_to_dir(path, dest, *,
@@ -118,11 +122,15 @@ def extract_to_dir(path, dest, *,
                    max_files: int = DEFAULT_MAX_FILES,
                    max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES) -> dict[str, Any]:
     """Extract a Tier-1 archive (``path``) into ``dest``; return a summary dict
-    ``{"format", "files", "bytes"}``.
+    ``{"format", "files", "bytes", "dropped"}`` (``dropped`` counts members
+    rejected at the write boundary — out-of-tree or unwritable names).
 
     Tier 1: zip, tar, ``.tar.{gz,xz,bz2}``, and single-file gz/bz2/xz/zst.
     Raises ``UnsupportedArchive`` for unknown formats and
-    ``DecompressionLimitExceeded`` / ``ArchiveError`` on unsafe or corrupt input.
+    ``DecompressionLimitExceeded`` / ``ArchiveError`` on unsafe or corrupt
+    input — a corrupt or truncated tar REFUSES instead of returning an
+    empty "success" summary that downstream consumers would treat as a
+    complete extraction.
     """
     src = Path(path)
     dest = Path(dest)
@@ -163,6 +171,11 @@ def extract_to_dir(path, dest, *,
                 members = {_single_file_name(src): raw}
     except (ZipTotalBytesExceeded, TarTotalBytesExceeded, TarEntryCountExceeded) as e:
         raise DecompressionLimitExceeded(str(e)) from e
+    except tarfile.TarError as e:
+        # TarOpenError (unreadable archive) + mid-stream ReadError on a
+        # truncated tar. Both REFUSE, typed, instead of leaking raw
+        # tarfile exceptions or converting corruption into empty success.
+        raise ArchiveError(f"corrupt or unreadable tar archive: {e}") from e
 
     stats = _write_members(members, dest, max_total_bytes, max_files)
     stats["format"] = fmt

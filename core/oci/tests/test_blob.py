@@ -7,6 +7,10 @@ import io
 import tarfile
 from typing import Dict
 
+import pytest
+
+from core.tar import TarOpenError
+
 from core.oci.blob import (
     DEFAULT_MAX_ENTRY_BYTES,
     extract_files_from_layer,
@@ -159,15 +163,18 @@ def test_empty_wanted_set_returns_empty():
     assert extract_files_from_layer(_stream(blob), set()) == {}
 
 
-def test_invalid_gzip_returns_empty():
-    """A blob that isn't actually gzipped tar (corruption,
-    unexpected media-type) must not crash; the caller treats
-    'no findings' as success."""
-    out = extract_files_from_layer(
-        iter([b"this is not a gzipped tar"]),
-        {"var/lib/dpkg/status"},
-    )
-    assert out == {}
+def test_invalid_gzip_refuses():
+    """A blob that isn't actually gzipped tar (corruption, unexpected
+    media-type) now REFUSES with TarOpenError instead of returning an
+    empty dict a caller would treat as "no findings" success. The
+    per-layer consumers (sca dockerfile_from / image_binary_extract)
+    guard each layer and skip it — corrupt input no longer masquerades
+    as a clean scan result at this seam."""
+    with pytest.raises(TarOpenError):
+        extract_files_from_layer(
+            iter([b"this is not a gzipped tar"]),
+            {"var/lib/dpkg/status"},
+        )
 
 
 def test_empty_layer():

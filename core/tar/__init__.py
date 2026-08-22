@@ -40,6 +40,7 @@ Limitations:
 
 from .extract import (
     TarEntryCountExceeded,
+    TarOpenError,
     TarTotalBytesExceeded,
     extract_files_from_tar,
 )
@@ -53,6 +54,7 @@ from .safe_member import (
 __all__ = [
     "DEFAULT_MAX_MEMBER_BYTES",
     "TarEntryCountExceeded",
+    "TarOpenError",
     "TarTotalBytesExceeded",
     "UnsafeMemberReason",
     "extract_files_from_tar",

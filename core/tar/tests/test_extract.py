@@ -14,7 +14,11 @@ import tarfile
 import pytest
 from typing import List, Optional
 
-from core.tar.extract import TarTotalBytesExceeded, extract_files_from_tar
+from core.tar.extract import (
+    TarOpenError,
+    TarTotalBytesExceeded,
+    extract_files_from_tar,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -269,25 +273,27 @@ def test_directory_member_skipped():
     assert out == {"adir/inside.txt": b"data"}
 
 
-def test_invalid_archive_returns_empty():
-    """Garbage bytes → empty dict, no crash. Consumers can decide
-    whether to log/warn — we just don't blow up."""
-    out = extract_files_from_tar(
-        b"this is not a tar archive",
-        selector=_select_all,
-        mode="r:*",
-    )
-    assert out == {}
+def test_invalid_archive_refuses():
+    """Garbage bytes → TarOpenError (fail closed). Returning an empty
+    dict converted corrupt attacker-influenced input into a
+    "successfully empty" result downstream consumers treated as a
+    complete extraction."""
+    with pytest.raises(TarOpenError):
+        extract_files_from_tar(
+            b"this is not a tar archive",
+            selector=_select_all,
+            mode="r:*",
+        )
 
 
-def test_invalid_gzip_stream_returns_empty():
-    """Truncated / corrupt gzip stream → empty, no crash."""
-    out = extract_files_from_tar(
-        _chunks(b"\x1f\x8b\x00\x00garbage", size=2),
-        selector=_select_all,
-        mode="r|gz",
-    )
-    assert out == {}
+def test_invalid_gzip_stream_refuses():
+    """Truncated / corrupt gzip stream → TarOpenError (fail closed)."""
+    with pytest.raises(TarOpenError):
+        extract_files_from_tar(
+            _chunks(b"\x1f\x8b\x00\x00garbage", size=2),
+            selector=_select_all,
+            mode="r|gz",
+        )
 
 
 def test_empty_archive_returns_empty():

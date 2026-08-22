@@ -254,5 +254,49 @@ class TestHardening(unittest.TestCase):
             self.assertTrue((out / "good.txt").exists())
 
 
+class TestFailClosedCorruptArchives(unittest.TestCase):
+    """A corrupt/truncated tar REFUSES (typed) instead of returning an
+    empty success summary that consumers treat as a complete extraction."""
+
+    def test_corrupt_tar_raises_archive_error(self) -> None:
+        with TemporaryDirectory() as td:
+            src = Path(td) / "corrupt.tar"
+            # Valid-looking 512-byte header block then garbage: detected
+            # as tar, unreadable as one.
+            info = tarfile.TarInfo("a.txt")
+            info.size = 4
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tf:
+                tf.addfile(info, io.BytesIO(b"data"))
+            src.write_bytes(buf.getvalue()[:600] + b"\x00garbage" * 40)
+            with self.assertRaises(ArchiveError):
+                extract_to_dir(src, Path(td) / "out")
+
+    def test_truncated_tar_gz_raises(self) -> None:
+        with TemporaryDirectory() as td:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tf:
+                info = tarfile.TarInfo("f.txt")
+                payload = b"x" * 4096
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+            whole = gzip.compress(buf.getvalue())
+            src = Path(td) / "trunc.tar.gz"
+            src.write_bytes(whole[: len(whole) // 2])
+            with self.assertRaises(ArchiveError):
+                extract_to_dir(src, Path(td) / "out")
+
+    def test_summary_reports_dropped_members(self) -> None:
+        with TemporaryDirectory() as td:
+            src = Path(td) / "ok.tar"
+            with tarfile.open(src, mode="w") as tf:
+                info = tarfile.TarInfo("good.txt")
+                info.size = 2
+                tf.addfile(info, io.BytesIO(b"ok"))
+            stats = extract_to_dir(src, Path(td) / "out")
+            self.assertEqual(stats["files"], 1)
+            self.assertEqual(stats["dropped"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

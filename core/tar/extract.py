@@ -109,6 +109,15 @@ def _to_fileobj(source: bytes | Iterable[bytes]) -> io.IOBase:
     return _ChunkStream(source)
 
 
+class TarOpenError(tarfile.TarError):
+    """Raised when the source is not a readable tar archive (corrupt,
+    truncated-at-open, or wrong format). Subclasses ``tarfile.TarError``
+    so callers that already guard whole-archive failures keep working;
+    the alternative — returning an empty dict — silently converted
+    corrupt attacker-influenced input into a "successfully empty"
+    result downstream consumers treated as complete."""
+
+
 class TarEntryCountExceeded(Exception):
     """Raised when a tar's member count exceeds ``max_entry_count`` (opt-in).
     Tar has no central directory, so this bounds a million-tiny-entries walk."""
@@ -168,12 +177,9 @@ def extract_files_from_tar(
         # ``TarError`` covers ReadError + CompressionError + other
         # malformed-archive cases. ``OSError`` covers truncated
         # gzip streams that surface from the underlying decompress
-        # rather than tarfile itself.
-        logger.debug(
-            "core.tar.extract: not a valid tar archive (%s); skipping",
-            e,
-        )
-        return found
+        # rather than tarfile itself. FAIL CLOSED: a corrupt archive
+        # must surface as an error, not as a successfully-empty result.
+        raise TarOpenError(f"not a readable tar archive: {e}") from e
 
     try:
         total_bytes = 0
@@ -245,5 +251,6 @@ def extract_files_from_tar(
 
 
 __all__ = [
+    "TarOpenError",
     "extract_files_from_tar",
 ]

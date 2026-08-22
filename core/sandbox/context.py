@@ -4788,6 +4788,38 @@ def _require_userns_or_optin(entry: str, restrict_reads: bool=True) -> bool:
             "minimal profile, or set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 "
             "to explicitly accept rlimits-only containment.",
         )
+    # libseccomp is part of the untrusted-execution contract on
+    # Linux, not an optional layer: the AF_UNIX blocklist, the
+    # io_uring/keyring/bpf escape-primitive blocks and the argument
+    # rules (dgram socketpair, MSG_FASTOPEN) all live in the filter.
+    # strict fail-closes at profile resolution; the default full
+    # profile silently degraded to FILTERLESS with only a warning —
+    # the exact silent-downgrade shape the userns gate below exists
+    # to refuse. Same explicit operator override governs it.
+    if not _seccomp.check_seccomp_available():
+        if os.environ.get(
+            "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "",
+        ).strip().lower() in ("1", "true", "yes", "on"):
+            logger.warning(
+                "%s: libseccomp unavailable — running UNTRUSTED code "
+                "WITHOUT a seccomp filter (operator override "
+                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED): socket-family, "
+                "escape-primitive and send-flag argument blocks are "
+                "all inactive for this call.", entry,
+            )
+        else:
+            from .errors import SandboxSetupError
+            raise SandboxSetupError(
+                f"{entry}: libseccomp is unavailable or non-functional "
+                f"on this host — the untrusted-execution contract "
+                f"includes the seccomp syscall filter (socket-family "
+                f"blocklist, escape-primitive blocks, send-flag "
+                f"argument rules), which would silently not engage.",
+                "install libseccomp (libseccomp2 package), or set "
+                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to explicitly "
+                "accept running untrusted code without a syscall "
+                "filter.",
+            )
     if check_net_available():
         return False
     if os.environ.get(

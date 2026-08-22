@@ -81,3 +81,45 @@ class TestStrictRequiresSeccomp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUntrustedRequiresSeccomp(unittest.TestCase):
+    """The untrusted preflight must refuse to run attacker-derived
+    code FILTERLESS: with libseccomp absent, the AF_UNIX blocklist,
+    escape-primitive blocks and send-flag argument rules all silently
+    vanish — previously only strict aborted; run_untrusted degraded
+    with a warning."""
+
+    def _call(self):
+        return ctx._require_userns_or_optin("run_untrusted()",
+                                            restrict_reads=True)
+
+    def test_linux_without_libseccomp_fails_closed(self):
+        if sys.platform != "linux":
+            self.skipTest("Linux gate")
+        with patch.object(ctx._seccomp, "check_seccomp_available",
+                          return_value=False), \
+             patch.dict(ctx.os.environ,
+                        {"RAPTOR_ALLOW_DEGRADED_UNTRUSTED": ""}):
+            with self.assertRaises(SandboxSetupError) as cm:
+                self._call()
+            self.assertIn("seccomp", str(cm.exception).lower())
+
+    def test_operator_override_engages_degraded_mode(self):
+        if sys.platform != "linux":
+            self.skipTest("Linux gate")
+        with patch.object(ctx._seccomp, "check_seccomp_available",
+                          return_value=False), \
+             patch.dict(ctx.os.environ,
+                        {"RAPTOR_ALLOW_DEGRADED_UNTRUSTED": "1"}):
+            self._call()  # must not raise
+
+    def test_darwin_arm_untouched_by_seccomp_gate(self):
+        """macOS has no libseccomp; the seatbelt arm must return
+        before the seccomp gate is consulted."""
+        with patch.object(ctx.sys, "platform", "darwin"), \
+             patch.object(ctx, "check_seatbelt_available",
+                          return_value=True), \
+             patch.object(ctx._seccomp, "check_seccomp_available",
+                          return_value=False):
+            self.assertFalse(self._call())

@@ -479,3 +479,16 @@ class TestSMTAdapterUnavailable:
         with patch.object(a, "is_available", return_value=True):
             ev = a.run("", tmp_path)
         assert not ev.success
+
+
+class TestParseSarifBudget:
+    def test_oversize_sarif_is_parse_failure(self, tmp_path: Path) -> None:
+        """A SARIF over the bounded loader's cap is a tool failure
+        (None), never an empty refutation. Sparse truncate: the stat
+        gate fires before any read."""
+        import os
+
+        p = tmp_path / "x.sarif"
+        p.write_text(json.dumps({"runs": []}))
+        os.truncate(p, 100 * 1024 * 1024 + 1)
+        assert _parse_sarif(p) is None

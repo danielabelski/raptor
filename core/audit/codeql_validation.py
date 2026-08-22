@@ -26,13 +26,14 @@ satisfiability.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.sarif.parser import load_sarif
 
 from ._util import is_valid_identifier
 
@@ -203,7 +204,21 @@ def validate_dataflow_claim(
             )
 
             if result.sarif_path.exists():
-                sarif_data = json.loads(result.sarif_path.read_text())
+                # Bounded canonical loader (100 MiB stat gate before
+                # the read): the SARIF is CodeQL output over the
+                # analysed target, which can inflate it through paths
+                # and snippets.
+                sarif_data = load_sarif(result.sarif_path)
+                if sarif_data is None:
+                    return ValidationResult(
+                        claim=claim,
+                        confirmed=None,
+                        error=(
+                            "SARIF output unreadable or over the "
+                            "100 MiB size cap"
+                        ),
+                        query_text=query_text,
+                    )
                 match_count = _count_sarif_results(sarif_data)
                 smt_pruned = 0
                 smt_receipts: list[dict[str, Any]] = []

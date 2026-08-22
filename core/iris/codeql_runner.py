@@ -7,12 +7,12 @@ Adapts ``compile_codeql_config`` → temp QL pack → ``run_custom_queries``
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
 
 from core.run.scratch import scratch_dir
+from core.sarif.parser import load_sarif
 
 from .refine import RefinementFeedback
 from .specs import TaintSpec, compile_codeql_config
@@ -47,9 +47,12 @@ def _write_temp_pack(
 
 def _parse_sarif_matches(sarif_path: Path) -> list[dict[str, Any]]:
     """Extract match records from a SARIF file."""
-    try:
-        data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    # Bounded canonical loader (100 MiB stat gate before the read):
+    # the SARIF is CodeQL output over the analysed target, which can
+    # inflate it through paths and snippets. None-on-failure matches
+    # the previous empty-matches degradation.
+    data = load_sarif(sarif_path)
+    if data is None:
         return []
 
     matches = []

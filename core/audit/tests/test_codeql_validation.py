@@ -564,3 +564,37 @@ class TestScopeContainment:
         from core.audit.codeql_backend import _path_in_scope_dirs
 
         assert _path_in_scope_dirs(tmp_path / "anything.py", None)
+
+
+class TestSarifBudget:
+    def test_oversize_sarif_is_inconclusive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A SARIF over the bounded loader's cap grades as a tool
+        failure (confirmed=None with a size-naming error), never as a
+        refuted claim. Sparse truncate: the stat gate fires before
+        any read."""
+        import os
+        from dataclasses import dataclass as dc
+
+        db = tmp_path / "db"
+        db.mkdir()
+
+        @dc
+        class FakeResult:
+            sarif_path: Path
+            queries: tuple = ()
+            extension_pack: object = None
+            elapsed_seconds: float = 0.1
+
+        def mock_analyze(db_path, queries, output_path, **kwargs):
+            output_path.write_text(json.dumps({"runs": []}))
+            os.truncate(output_path, 100 * 1024 * 1024 + 1)
+            return FakeResult(sarif_path=output_path)
+
+        import core.dataflow.codeql_augmented_run as codeql_mod
+        monkeypatch.setattr(codeql_mod, "analyze", mock_analyze)
+
+        result = validate_dataflow_claim(_claim(), db_path=db)
+        assert result.confirmed is None
+        assert "size cap" in result.error

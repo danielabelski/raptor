@@ -17,13 +17,13 @@ the hypothesis. IRIS achieved 2x CodeQL's recall (55 vs 27 CVEs) using
 this pattern.
 """
 
-import json
 import logging
 import shutil
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from core.sarif.parser import load_sarif
 from packages.codeql.tunables import CodeQLTunables
 
 from .base import ToolAdapter, ToolCapability, ToolEvidence, make_sandbox_runner
@@ -679,8 +679,15 @@ def _parse_sarif(sarif_path: Path) -> list[dict] | None:
     raise; hostile SARIF can put non-numeric values where startLine
     belongs).
     """
+    # Bounded canonical loader (100 MiB stat gate before the read):
+    # the SARIF is CodeQL output over the analysed target, which can
+    # inflate it through paths and snippets. None-on-failure keeps
+    # the tool-failure contract distinct from genuine no-matches.
+    data = load_sarif(sarif_path)
+    if data is None:
+        logger.warning("codeql SARIF parse failed: %s", sarif_path)
+        return None
     try:
-        data = json.loads(sarif_path.read_text(encoding="utf-8"))
         matches: list[dict] = []
         for run in data.get("runs", []) or []:
             for result in run.get("results", []) or []:

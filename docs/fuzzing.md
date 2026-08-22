@@ -30,6 +30,11 @@ The primary engine on Linux.  RAPTOR wraps `afl-fuzz` with support for:
 - **CmpLog, power schedules, custom mutators, deterministic mode**:
   available through the Python API (`AFLRunner` in `packages/fuzzing/`)
   for pipeline callers; no CLI flags.
+- **Env build-on-demand** (`--env-build`, `--no-env-build`,
+  `--env-target <rel>`, `--keep-env-rootfs`): build a source tree
+  AFL-instrumented in the pinned AFL++ image and fuzz it from the
+  image's rootfs under the sandbox -- see
+  [Env Build-on-Demand](#env-build-on-demand-source-trees).
 
 For best results, compile the target with AFL instrumentation
 (`afl-clang-fast` or `afl-clang-lto`) and AddressSanitizer
@@ -66,7 +71,7 @@ appropriate approach.  The detector recognises:
 | `java-class` | Java class file | Not yet orchestrated |
 | `java-archive` | Java JAR archive | Not yet orchestrated |
 | `apk` | Android APK archive | Not yet orchestrated |
-| `source-c` | C source / header files | Harness generation then libFuzzer |
+| `source-c` | C/C++ sources (file or tree) | Env build-on-demand (trees, trust-gated) or harness generation then libFuzzer |
 | `source-cpp` | C++ source / header files | Harness generation then libFuzzer |
 | `rust-crate` | Rust crate (Cargo.toml present) | `cargo-fuzz` |
 | `python-pkg` | Python package (pyproject.toml / setup.py) | Atheris |
@@ -265,6 +270,52 @@ compile-verified and then executed inside the [sandbox](sandbox.md) (Landlock +
 seccomp + namespaces + network block).  The observed outcome
 (`EXIT_SIGNAL`, `SANITIZER_REPORT`, `NO_OBVIOUS_EFFECT`, etc.) is threaded
 into the recorded Witness.
+
+## Env Build-on-Demand (source trees)
+
+A source tree with no fuzzable binary can be built AFL-instrumented on
+demand and fuzzed at native speed -- no harness required for
+repo-native executables.
+
+```
+/fuzz /path/to/source-repo              # project 'build' marker set
+python3 raptor.py fuzz --binary /path/to/source-repo --env-build
+```
+
+What happens:
+
+1. **Consent gate.** Building a repo executes repo-influenced code, so
+   the build fires only when the project `build` trust marker
+   (`/project trust build`) or the per-run `--env-build` flag
+   authorises it.  `--no-env-build` disables it for one run even with
+   the marker set (negative flag wins).  Without consent the plan
+   declines with a hint and the classic harness route is unchanged.
+2. **Build command resolution.** Operator setting first
+   (`/project set build-command`), detector synthesis otherwise.  A
+   synthesised command is used but loudly labelled GUESSED -- the
+   provenance record (`env-build.json`) and campaign log both carry it.
+3. **Instrumented build.** The repo is copied into a build context and
+   built with `CC=afl-clang-fast CXX=afl-clang-fast++` inside the
+   pinned AFL++ image (`core.env.build.AFL_BUILD_IMAGE`), network
+   disabled.  ELF executables are extracted read-only (0444) with
+   SHA-256 checksums.
+4. **In-image campaign.** The image is exported to a rootfs under the
+   run directory and afl-fuzz runs from it under the sandbox's
+   image-rootfs mode: the binary and afl-fuzz share the image's libc
+   and AFL version by construction, and the campaign keeps the full
+   sandbox observation tier (network deny, Landlock write scoping).
+   The output directory is bound at its original path, so crash
+   collection, telemetry, and stats work exactly as in host-mode
+   campaigns.  Corpus and dictionary are staged under the output
+   directory (only the output bind is visible post-pivot).
+5. **Cleanup.** The exported rootfs is several GB; it is deleted when
+   the campaign ends.  Pass `--keep-env-rootfs` to retain it (e.g. to
+   replay crashes in-image), and `--env-target <rel>` to choose among
+   multiple built binaries.
+
+There is no docker fallback for the campaign: if the sandbox's
+image-rootfs mode is unavailable, the env-build path refuses rather
+than running the target under a weaker containment tier.
 
 ## Harness Generation
 

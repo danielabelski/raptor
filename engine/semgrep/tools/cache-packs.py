@@ -38,6 +38,11 @@ CACHE_DIR = SEMGREP_ENGINE_DIR / "rules" / "registry-cache"
 REGISTRY_URL = "https://semgrep.dev/c/p/{pack_id}"
 FETCH_TIMEOUT = 30
 
+# Cap on a single registry response, enforced at the socket read —
+# never buffer more than this no matter what the server streams.
+# Real packs are ~1-5 MB of YAML/JSON; 32 MiB is a generous ceiling.
+MAX_PACK_BYTES = 32 * 1024 * 1024
+
 # Every pack RAPTOR may request at scan time.  Derived from
 # RaptorConfig.BASELINE_SEMGREP_PACKS + POLICY_GROUP_TO_SEMGREP_PACK
 # + target-type catalog entries.  Keep in sync manually — the list
@@ -66,10 +71,18 @@ def fetch_pack(pack_id: str) -> bytes:
     req = Request(url, headers={"Accept": "application/json"})
     try:
         resp = urlopen(req, timeout=FETCH_TIMEOUT)
-        data = resp.read()
+        # Bounded read: one extra byte past the cap detects "too
+        # large" without ever buffering an unbounded response.
+        data = resp.read(MAX_PACK_BYTES + 1)
     except URLError as exc:
         msg = f"  FAILED: {pack_id} — {exc}"
         raise SystemExit(msg) from exc
+    if len(data) > MAX_PACK_BYTES:
+        msg = (
+            f"  FAILED: {pack_id} — registry response exceeds the "
+            f"{MAX_PACK_BYTES}-byte cap; refusing oversize pack"
+        )
+        raise SystemExit(msg)
 
     # Registry may return YAML; normalise to JSON.
     try:

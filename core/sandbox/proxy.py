@@ -137,6 +137,13 @@ class _Lane:
     # concurrent runs, and without lane scoping any sandbox could
     # egress to hosts a sibling run allowlisted.
     allowed_hosts: "frozenset[str] | None" = None
+    # Per-lane destination-PORT allowlist. None = any port (legacy
+    # lanes). The hostname gates alone authorise HOST only — without
+    # a port dimension a child promised "listed hosts on port 443"
+    # could CONNECT to any 1-65535 service on those hosts. Always
+    # enforcing (like gate 2): the port contract is declared by the
+    # caller, not learned, so audit-mode leniency does not apply.
+    allowed_ports: "frozenset[int] | None" = None
     # Root pids (host pid-ns view) of the sandbox process trees that
     # may connect to this lane's UNIX socket. Populated per run by the
     # spawn layer (add_lane_peer_root) and drained afterwards. The
@@ -325,6 +332,12 @@ _PROXY_EVENT_RESULTS = frozenset({
     # _serve_tunnel). Always enforcing; the tunnel is closed after
     # the 200 with nothing forwarded upstream.
     "denied_sni",
+    # Lane destination-port deny: the lane carries a declared port
+    # contract (run_untrusted_networked: {443}) and the CONNECT names
+    # another port. Always enforcing, like gate 2 — the port policy
+    # is caller-declared, not learned, so audit-mode leniency does
+    # not apply.
+    "denied_port",
     # DNS resolution failed (NXDOMAIN, timeout)
     "dns_failed",
     # Upstream (or backend) refused / unreachable
@@ -566,6 +579,14 @@ def _normalise_lane_hosts(hosts) -> "frozenset[str] | None":
     if not hosts:
         return None
     return frozenset(h.lower() for h in hosts if h)
+
+
+def _normalise_lane_ports(ports) -> "frozenset[int] | None":
+    """Destination-port allowlist for a lane; None/empty -> None (any
+    port — legacy lanes without a port contract)."""
+    if not ports:
+        return None
+    return frozenset(int(p) for p in ports)
 
 
 def _hex_v4(ip: str) -> str:
@@ -1282,7 +1303,8 @@ class EgressProxy:
                 )
 
     def bind_unix(self, path: str, *, label: str = "sandbox",
-                  allowed_hosts: "Iterable[str] | None" = None) -> None:
+                  allowed_hosts: "Iterable[str] | None" = None,
+                  allowed_ports: "Iterable[int] | None" = None) -> None:
         """Start an additional asyncio Unix socket server at *path*.
 
         Reuses ``_handle_client`` — the CONNECT protocol is transport-
@@ -1300,7 +1322,8 @@ class EgressProxy:
         import os as _os
 
         lane = _Lane(label=label,
-                     allowed_hosts=_normalise_lane_hosts(allowed_hosts))
+                     allowed_hosts=_normalise_lane_hosts(allowed_hosts),
+                     allowed_ports=_normalise_lane_ports(allowed_ports))
         with self._lanes_lock:
             self._unix_lanes[path] = lane
 
@@ -1322,7 +1345,8 @@ class EgressProxy:
         logger.info("egress proxy: unix socket bound at %s", path)
 
     def bind_tcp_lane(self, *, label: str = "sandbox",
-                      allowed_hosts: "Iterable[str] | None" = None) -> int:
+                      allowed_hosts: "Iterable[str] | None" = None,
+                      allowed_ports: "Iterable[int] | None" = None) -> int:
         """Start a dedicated loopback listener with its own lane.
 
         For sandbox tiers that cannot use a unix socket (Landlock-TCP
@@ -1342,7 +1366,8 @@ class EgressProxy:
             raise RuntimeError(msg)
 
         lane = _Lane(label=label,
-                     allowed_hosts=_normalise_lane_hosts(allowed_hosts))
+                     allowed_hosts=_normalise_lane_hosts(allowed_hosts),
+                     allowed_ports=_normalise_lane_ports(allowed_ports))
 
         async def _bind():
             srv = await asyncio.start_server(
@@ -2585,6 +2610,29 @@ class EgressProxy:
                 self._record(event)
                 await self._write_error(writer, 403, "Forbidden")
                 return
+
+        # Policy gate 1b: lane destination-port contract. A lane
+        # created for the networked-untrusted helper declares the
+        # ports its docstring promises ({443}); hostname authorisation
+        # alone would let the child reach ANY 1-65535 service on the
+        # allowlisted hosts. Always enforcing (gate-2 semantics): the
+        # port set is caller-declared, not something audit mode needs
+        # leniency to learn.
+        if (lane is not None
+                and lane.allowed_ports is not None
+                and port not in lane.allowed_ports):
+            _preason = (f"destination port {port} not in lane port "
+                        f"allowlist {sorted(lane.allowed_ports)}")
+            logger.warning(
+                f"egress proxy: DENY {host}:{port} — {_preason}"
+            )
+            event.update(result="denied_port", reason=_preason,
+                         duration=time.monotonic() - t_start)
+            self._record(event)
+            _record_proxy_denial(host, port, None,
+                                 "port_not_in_lane_allowlist")
+            await self._write_error(writer, 403, "Forbidden")
+            return
 
         # Decide path: direct or via upstream proxy.
         use_upstream = (self._upstream is not None

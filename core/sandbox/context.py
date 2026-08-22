@@ -664,6 +664,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             allowed_tcp_ports: list | None = None, profile: str | None = None,
             disabled: bool = False,
             use_egress_proxy: bool = False, proxy_hosts: list | None = None,
+            proxy_allowed_ports: list | None = None,
             restrict_reads=_UNSET, readable_paths: list | None = None,
             caller_label: str | None = None,
             fake_home=_UNSET,
@@ -746,6 +747,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  Python AND CodeQL's Java stack). Pair with
                  `proxy_hosts=[...]` to declare the hostname
                  allowlist.
+        proxy_allowed_ports: Destination-port allowlist for this
+                 context's proxy lane (gate 1b, always enforcing).
+                 None = any port (legacy behaviour). The networked
+                 untrusted helper passes [443] to make its docstring
+                 contract real — hostname authorisation alone would
+                 let the child CONNECT to any 1-65535 service on an
+                 allowlisted host.
         proxy_hosts: Hostname allowlist for the egress proxy. Union'd
                  with any existing allowlist if the proxy singleton is
                  already running. Required when use_egress_proxy=True.
@@ -1269,8 +1277,10 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # Scope this lane to THIS sandbox's hosts — the
                     # proxy's global allowlist is a union across
                     # concurrent runs (cross-run confused-deputy
-                    # defence; gate 1 checks both).
+                    # defence; gate 1 checks both) — and to the
+                    # caller-declared destination ports (gate 1b).
                     allowed_hosts=proxy_hosts,
+                    allowed_ports=proxy_allowed_ports,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -1376,6 +1386,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     label=caller_label or "sandbox",
                     # Same lane-scoping as the unix-socket tier above.
                     allowed_hosts=proxy_hosts,
+                    allowed_ports=proxy_allowed_ports,
                 )
             except Exception as _lane_exc:  # noqa: BLE001 — fail closed to enforcing
                 _proxy_tcp_lane_port = None
@@ -4504,6 +4515,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         profile: str | None = None, disabled: bool = False, limits: dict | None = None,
         map_root: bool = False,
         use_egress_proxy: bool = False, proxy_hosts: list | None = None,
+        proxy_allowed_ports: list | None = None,
         require_proxy_netns: bool = False,
         restrict_reads=_UNSET, readable_paths: list | None = None,
         caller_label: str | None = None,
@@ -4538,6 +4550,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  disabled=disabled, limits=limits, map_root=map_root,
                  use_egress_proxy=use_egress_proxy,
                  proxy_hosts=proxy_hosts,
+                 proxy_allowed_ports=proxy_allowed_ports,
                  require_proxy_netns=require_proxy_netns,
                  restrict_reads=restrict_reads,
                  readable_paths=readable_paths,
@@ -4851,6 +4864,9 @@ def run_untrusted_networked(
         proxy with hostname allowlist (the only network this child can
         reach is the listed hosts on port 443).
       * ``allowed_tcp_ports=[443]`` — only HTTPS to the proxy.
+      * ``proxy_allowed_ports=[443]`` — the proxy's own lane refuses
+        CONNECTs to any other destination port, making the
+        hosts-on-443 contract real at the enforcement point.
       * ``block_network=False`` — must be False so the proxy is
         reachable from inside the sandbox.
 
@@ -4955,7 +4971,14 @@ def run_untrusted_networked(
         use_egress_proxy=True,
         require_proxy_netns=True,
         proxy_hosts=list(proxy_hosts),
+        # The docstring contract is "the listed hosts on port 443".
+        # allowed_tcp_ports is consumed by the LOCAL pin (and replaced
+        # by the lane port on the TCP tier); the proxy-side lane port
+        # allowlist is what actually bounds the DESTINATION port of a
+        # CONNECT — without it any 1-65535 port on an allowlisted
+        # host was reachable.
         allowed_tcp_ports=[443],
+        proxy_allowed_ports=[443],
         omit_proc_reads=_degraded_no_pidns,
         strict_env=True,
         strip_trust_markers=not keep_trust_markers,

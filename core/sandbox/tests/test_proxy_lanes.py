@@ -185,17 +185,19 @@ class TestContextWiring:
                 self.calls = []
 
             def bind_unix(self, path, *, label="sandbox",
-                          allowed_hosts=None):
+                          allowed_hosts=None, allowed_ports=None):
                 self.calls.append(("bind_unix", path, label))
                 self.lane_hosts = allowed_hosts
+                self.lane_ports = allowed_ports
 
             def unbind_unix(self, path):
                 self.calls.append(("unbind_unix", path))
 
             def bind_tcp_lane(self, *, label="sandbox",
-                              allowed_hosts=None):
+                              allowed_hosts=None, allowed_ports=None):
                 self.calls.append(("bind_tcp_lane", label))
                 self.lane_hosts = allowed_hosts
+                self.lane_ports = allowed_ports
                 return 18081
 
             def close_tcp_lane(self, port):

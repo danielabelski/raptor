@@ -188,9 +188,18 @@ def extract_files_from_tar(
     unique_keys: bool = False,
     max_total_bytes: int | None = None,
     max_entry_count: int | None = 50_000,
+    sink: Callable[[str, bytes], None] | None = None,
 ) -> dict[str, bytes]:
     """Walk ``source`` (a tar archive) and return selected members
     as a ``{key: bytes}`` dict.
+
+    ``sink``: when provided, each selected member's bytes are handed
+    to ``sink(key, data)`` as soon as they are read and are NOT
+    retained — the returned dict maps each key to ``b""`` so
+    ``expected_count`` / ``unique_keys`` semantics are unchanged.
+    For consumers that write members straight to disk this bounds
+    peak memory to one member instead of the whole selection.
+    Exceptions raised by the sink abort the walk and propagate.
 
     ``selector(member)`` returns the dict key for members to keep,
     or ``None`` to skip. Members are first checked by
@@ -298,7 +307,12 @@ def extract_files_from_tar(
                 data = f.read()
             finally:
                 f.close()
-            found[key] = data
+            if sink is not None:
+                sink(key, data)
+                del data
+                found[key] = b""
+            else:
+                found[key] = data
             if expected_count is not None and len(found) >= expected_count:
                 break
     finally:

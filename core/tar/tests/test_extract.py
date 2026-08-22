@@ -562,3 +562,36 @@ def test_legitimate_long_name_under_budget_extracts():
         max_total_bytes=1024 * 1024,
     )
     assert found == {long_name: b"payload"}
+
+
+# ---------------------------------------------------------------------------
+# sink mode — members stream out instead of accumulating in the dict
+# ---------------------------------------------------------------------------
+
+
+def test_sink_receives_members_and_dict_holds_placeholders():
+    raw = _make_tar([("a.txt", b"alpha"), ("b.txt", b"beta")])
+    streamed = {}
+    found = extract_files_from_tar(
+        raw, selector=lambda m: m.name, mode="r:",
+        sink=streamed.__setitem__,
+    )
+    assert streamed == {"a.txt": b"alpha", "b.txt": b"beta"}
+    # Placeholders keep expected_count / unique_keys semantics without
+    # retaining the bytes.
+    assert found == {"a.txt": b"", "b.txt": b""}
+
+
+def test_sink_exception_aborts_walk():
+    raw = _make_tar([("a.txt", b"alpha"), ("b.txt", b"beta")])
+    seen = []
+
+    def sink(key, data):
+        seen.append(key)
+        raise RuntimeError("budget blown")
+
+    with pytest.raises(RuntimeError, match="budget blown"):
+        extract_files_from_tar(
+            raw, selector=lambda m: m.name, mode="r:", sink=sink,
+        )
+    assert seen == ["a.txt"]

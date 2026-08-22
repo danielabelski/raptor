@@ -297,6 +297,100 @@ class TestFailClosedCorruptArchives(unittest.TestCase):
             self.assertEqual(stats["files"], 1)
             self.assertEqual(stats["dropped"], 0)
 
+class TestStreamingExtraction(unittest.TestCase):
+    """Members must stream to disk — never accumulate in a dict up to
+    the multi-GiB aggregate budget — and the single-file decompressor
+    must read in bounded chunks, never one budget-sized allocation."""
+
+    def test_tar_paths_never_route_through_write_members(self):
+        # Structural streaming assertion: the dict-buffering writer is
+        # off-limits for tar-shaped inputs (zip legitimately keeps it —
+        # its primitive is seek-based and returns member bytes).
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            _tar(d / "a.tar", {"x.txt": b"plain"}, mode="w")
+            _tar(d / "a.tar.gz", {"y.txt": b"compressed"}, mode="w:gz")
+            with mock.patch(
+                    "core.archive.extract._write_members",
+                    side_effect=AssertionError("tar members must stream")):
+                stats = extract_to_dir(d / "a.tar", d / "out1")
+                self.assertEqual(stats["files"], 1)
+                stats = extract_to_dir(d / "a.tar.gz", d / "out2")
+                self.assertEqual(stats["files"], 1)
+            self.assertEqual((d / "out1" / "x.txt").read_bytes(), b"plain")
+            self.assertEqual((d / "out2" / "y.txt").read_bytes(),
+                             b"compressed")
+
+    def test_decompression_reads_are_chunked(self):
+        # No single read() against the lazy decompressor may request
+        # more than the chunk size — the retired implementation asked
+        # for max_bytes + 1 (up to 1 GiB + 1) in one call.
+        from core.archive.compression import (
+            _CHUNK_BYTES,
+            _OPENERS,
+            decompress_single,
+        )
+        content = b"z" * (3 * _CHUNK_BYTES // 2)
+        requested = []
+        real_open = _OPENERS["gz"]
+
+        class _Recorder:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, n=-1):
+                requested.append(n)
+                return self._fh.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+                return False
+
+        with TemporaryDirectory() as d:
+            p = Path(d) / "big.gz"
+            with gzip.open(p, "wb") as f:
+                f.write(content)
+            with mock.patch.dict(
+                    _OPENERS,
+                    {"gz": lambda path, mode="rb":
+                        _Recorder(real_open(path, mode))}):
+                data = decompress_single(p, "gz", max_bytes=1 << 30)
+        self.assertEqual(data, content)
+        self.assertTrue(requested)
+        self.assertLessEqual(max(requested), _CHUNK_BYTES)
+
+    def test_multichunk_single_file_round_trips(self):
+        # The streamed single-file writer must reassemble multi-chunk
+        # output byte-for-byte and report accurate stats.
+        from core.archive.compression import _CHUNK_BYTES
+        content = bytes(range(256)) * ((2 * _CHUNK_BYTES) // 256 + 17)
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            with gzip.open(d / "blob.bin.gz", "wb") as f:
+                f.write(content)
+            stats = extract_to_dir(d / "blob.bin.gz", d / "out")
+            self.assertEqual(stats["files"], 1)
+            self.assertEqual(stats["bytes"], len(content))
+            self.assertEqual((d / "out" / "blob.bin").read_bytes(), content)
+
+    def test_streamed_tar_budget_and_count_caps_hold(self):
+        # Streaming must keep the aggregate-byte and file-count caps
+        # with the same error type.
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            _tar(d / "big.tar.gz", {"a": b"x" * 100, "b": b"y" * 100},
+                 mode="w:gz")
+            with self.assertRaises(DecompressionLimitExceeded):
+                extract_to_dir(d / "big.tar.gz", d / "o1",
+                               max_total_bytes=150)
+            _tar(d / "many.tar.gz", {f"f{i}": b"x" for i in range(6)},
+                 mode="w:gz")
+            with self.assertRaises(DecompressionLimitExceeded):
+                extract_to_dir(d / "many.tar.gz", d / "o2", max_files=3)
+
 
 if __name__ == "__main__":
     unittest.main()

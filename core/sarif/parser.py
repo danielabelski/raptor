@@ -495,7 +495,12 @@ def load_sarif(sarif_path: Path) -> dict[str, Any] | None:
 
     try:
         data = json.loads(content or "{}")
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, RecursionError) as e:
+        # RecursionError: json.loads recurses per nesting level, so a
+        # deeply-nested (~>1000 levels) hostile SARIF blows the Python
+        # recursion limit. That must land on the same reject-with-None
+        # path as malformed JSON — load_sarif is the safe-load
+        # boundary; letting RecursionError escape crashed the caller.
         logger.error("SARIF: invalid JSON in %s: %s", sarif_path, e)
         return None
 

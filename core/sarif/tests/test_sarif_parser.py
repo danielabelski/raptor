@@ -157,6 +157,35 @@ class TestLoadSarif(unittest.TestCase):
 
             self.assertIsNone(load_sarif(path))
 
+    def test_returns_none_for_deeply_nested_json(self):
+        # json.loads recurses per nesting level; deep enough nesting
+        # raises RecursionError, which must stay inside the safe-load
+        # contract (None) instead of escaping to the caller. The
+        # triggering depth is interpreter-dependent (3.14's C scanner
+        # goes far past sys.getrecursionlimit()), so probe for a depth
+        # this interpreter actually rejects.
+        from core.sarif.parser import load_sarif
+
+        doc = None
+        for depth in (2_000, 100_000, 1_000_000):
+            candidate = "[" * depth + "]" * depth
+            try:
+                json.loads(candidate)
+            except RecursionError:
+                doc = candidate
+                break
+            except ValueError:
+                doc = candidate  # depth-capped build: also a safe reject
+                break
+        if doc is None:
+            self.skipTest("interpreter parses all probed depths")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "deep.sarif"
+            path.write_text(doc)
+
+            self.assertIsNone(load_sarif(path))
+
 
 class TestMergeSarif(unittest.TestCase):
     """Test merge_sarif — combines multiple SARIF files."""

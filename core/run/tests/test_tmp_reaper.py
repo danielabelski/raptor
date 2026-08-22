@@ -316,6 +316,28 @@ class TestRunReaping:
     def test_missing_parent_is_noop(self, tmp_path):
         assert reap_stale_runs(tmp_path / "absent") == []
 
+    def test_oversize_metadata_skipped_unread(self, out_root):
+        # A metadata file over the byte budget must not be parsed
+        # (bounded load) — the dir is skipped, not reaped, even
+        # though the padded JSON is valid and says failed+stale.
+        import json
+        from datetime import datetime, timedelta, timezone
+        d = out_root / "scan-001"
+        d.mkdir()
+        ts = datetime.now(timezone.utc) - timedelta(days=45)
+        (d / ".raptor-run.json").write_text(json.dumps({
+            "version": 2, "command": "scan", "status": "failed",
+            "timestamp": ts.isoformat(), "extra": {},
+            "padding": "x" * (2 << 20),
+        }))
+        assert reap_stale_runs(out_root) == []
+        assert d.is_dir()
+
+    def test_metadata_at_budget_still_reaped(self, out_root):
+        failed = self._run_dir(out_root, "scan-001", "failed")
+        assert (failed / ".raptor-run.json").stat().st_size <= (1 << 20)
+        assert reap_stale_runs(out_root) == [failed]
+
 
 class TestStartRunHook:
 

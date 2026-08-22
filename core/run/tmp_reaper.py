@@ -156,6 +156,10 @@ _DEFAULT_RUN_AGE_D = 30.0
 # this module import-light (metadata imports US at start_run time).
 _RUN_METADATA_FILE = ".raptor-run.json"
 
+# Real run metadata is a few hundred bytes; 1 MiB is generous
+# headroom while keeping a planted oversize file unread.
+_RUN_METADATA_MAX_BYTES = 1 << 20
+
 
 def _max_age_seconds() -> float | None:
     """Age floor in seconds, or None when the sweep is disabled."""
@@ -378,12 +382,15 @@ def _reap_runs(parent: Path, now: float | None) -> list[Path]:
         if d.name.startswith((".", "_")):
             continue
         meta_path = d / _RUN_METADATA_FILE
-        try:
-            import json
+        # Bounded load (st_size gate before read): the sweep runs at
+        # the start of every run over whatever the parent dir holds,
+        # so a planted multi-GiB metadata file must not be buffered
+        # just to decide reapability. Oversize/malformed/unreadable
+        # all degrade to None → skip, matching the old best-effort
+        # except-continue behaviour.
+        from core.json.utils import load_json
 
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+        meta = load_json(meta_path, max_bytes=_RUN_METADATA_MAX_BYTES)
         if not isinstance(meta, dict):
             continue
         if meta.get("status") not in ("failed", "cancelled"):

@@ -155,10 +155,9 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
             continue
         existing = f.get(PROVENANCE_REFS_FIELD)
         if isinstance(existing, list) and any(
-            isinstance(r, dict) and r.get("run_id") == ref["run_id"]
-            for r in existing
+            _is_canonical_ref(r, ref) for r in existing
         ):
-            # Idempotent — already stamped for this run.
+            # Idempotent — the canonical stamp for this run is present.
             continue
         # Plural-from-day-1: always a list. New stamp = single-element.
         if isinstance(existing, list):
@@ -181,6 +180,21 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
         logger.warning("stamp_findings: write failed %s: %s", path, e)
         return -1
     return new_count
+
+
+def _is_canonical_ref(candidate: Any, ref: dict[str, Any]) -> bool:
+    """Whether *candidate* IS the canonical stamp this writer produces.
+
+    Idempotency must only trigger on the exact ref this module writes
+    (same keys, same values — run_id, manifest_path, ts). A forged or
+    pre-seeded entry that merely CLAIMS the current run_id (different
+    manifest_path, attacker-chosen ts, extra smuggled keys) must not
+    suppress canonical stamping — the canonical ref is appended
+    alongside it and downstream consumers see the genuine back-link.
+    Re-running on an already-stamped file stays a no-op: the canonical
+    ref is deterministic for a given run (manifest-derived ts).
+    """
+    return isinstance(candidate, dict) and candidate == ref
 
 
 def _resolve_findings_list(

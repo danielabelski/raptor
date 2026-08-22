@@ -186,3 +186,66 @@ def test_complete_run_stamping_failure_does_not_break_lifecycle(
         (tmp_path / RUN_METADATA_FILE).read_text()
     )
     assert manifest["status"] == "completed"
+
+
+# --- forged / pre-seeded refs must not suppress the canonical stamp ------
+
+
+def test_forged_ref_claiming_run_id_does_not_suppress_stamp(
+    tmp_path: Path,
+) -> None:
+    """A pre-seeded provenance_refs entry that merely CLAIMS the
+    current run_id (attacker-chosen manifest_path / ts) must not
+    suppress the canonical stamp — only the exact canonical ref this
+    writer produces counts for idempotency."""
+    _write_manifest(tmp_path)
+    forged = {
+        "run_id": tmp_path.name,
+        "manifest_path": "/attacker/controlled/.raptor-run.json",
+        "ts": "1999-01-01T00:00:00+00:00",
+    }
+    (tmp_path / "findings.json").write_text(json.dumps([
+        {"id": "f1", PROVENANCE_REFS_FIELD: [dict(forged)]},
+    ]))
+
+    counts = stamp_findings_in_run(tmp_path)
+    assert counts["findings_stamped"] == 1
+
+    data = json.loads((tmp_path / "findings.json").read_text())
+    refs = data[0][PROVENANCE_REFS_FIELD]
+    canonical = build_provenance_ref(tmp_path)
+    assert canonical in refs, "canonical stamp must be appended"
+    assert forged in refs, "existing entries are preserved, not trusted"
+
+
+def test_forged_ref_with_extra_keys_does_not_suppress_stamp(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(tmp_path)
+    canonical = build_provenance_ref(tmp_path)
+    smuggled = dict(canonical)
+    smuggled["payload"] = "smuggled-content"
+    (tmp_path / "findings.json").write_text(json.dumps([
+        {"id": "f1", PROVENANCE_REFS_FIELD: [smuggled]},
+    ]))
+
+    counts = stamp_findings_in_run(tmp_path)
+    assert counts["findings_stamped"] == 1
+    data = json.loads((tmp_path / "findings.json").read_text())
+    assert canonical in data[0][PROVENANCE_REFS_FIELD]
+
+
+def test_canonical_stamp_still_idempotent_after_forged_entry(
+    tmp_path: Path,
+) -> None:
+    """After the canonical stamp lands next to a forged entry,
+    re-running stamps nothing further."""
+    _write_manifest(tmp_path)
+    forged = {"run_id": tmp_path.name, "manifest_path": "/evil"}
+    (tmp_path / "findings.json").write_text(json.dumps([
+        {"id": "f1", PROVENANCE_REFS_FIELD: [forged]},
+    ]))
+    assert stamp_findings_in_run(tmp_path)["findings_stamped"] == 1
+    assert stamp_findings_in_run(tmp_path)["findings_stamped"] == 0
+    data = json.loads((tmp_path / "findings.json").read_text())
+    assert len(data[0][PROVENANCE_REFS_FIELD]) == 2

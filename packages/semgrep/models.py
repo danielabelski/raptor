@@ -3,6 +3,16 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.json.bounded import loads_bounded
+
+# Byte ceiling for semgrep tool output (SARIF on stdout and the
+# --json-output file). Both are produced over a scanned — possibly
+# hostile — repository, which can inflate them arbitrarily through
+# file paths, match snippets, and error messages. Large legitimate
+# scans reach tens of MB; 128 MiB matches the cap used for SARIF
+# artifacts elsewhere while refusing DoS-scale payloads.
+_MAX_TOOL_OUTPUT_BYTES = 128 * 1024 * 1024
+
 
 @dataclass
 class SemgrepFinding:
@@ -129,15 +139,18 @@ def parse_sarif(text: str) -> list[SemgrepFinding]:
     """Parse SARIF JSON text into SemgrepFinding objects.
 
     Returns an empty list on malformed input rather than raising — Semgrep
-    sometimes emits empty output on rule errors.
+    sometimes emits empty output on rule errors. Over-budget input
+    (> ``_MAX_TOOL_OUTPUT_BYTES``) is refused the same way, with the
+    size logged by the bounded loader.
     """
-    import json
-
-    if not text or not text.strip():
+    if not text:
         return []
     try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+        data = loads_bounded(text, max_bytes=_MAX_TOOL_OUTPUT_BYTES)
+    except ValueError:
+        # Malformed, whitespace-only, or over-budget output.
+        return []
+    if not isinstance(data, dict):
         return []
 
     findings: list[SemgrepFinding] = []
@@ -162,20 +175,22 @@ def parse_json_output(text: str) -> dict[str, Any]:
     per-file failures). Warn-level entries stay out of ``errors`` —
     they land in ``files_failed`` (when path-bearing) so a large scan
     with a few unparseable files is not reported as an engine failure.
-    """
-    import json
 
+    Over-budget input (> ``_MAX_TOOL_OUTPUT_BYTES``) returns the same
+    empty values, with the size logged by the bounded loader.
+    """
     out: dict[str, Any] = {
         "files_examined": [],
         "files_failed": [],
         "semgrep_version": "",
         "errors": [],
     }
-    if not text or not text.strip():
+    if not text:
         return out
     try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+        data = loads_bounded(text, max_bytes=_MAX_TOOL_OUTPUT_BYTES)
+    except ValueError:
+        # Malformed, whitespace-only, or over-budget output.
         return out
     if not isinstance(data, dict):
         return out

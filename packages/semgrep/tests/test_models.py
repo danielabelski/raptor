@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from packages.semgrep.models import (
@@ -256,3 +258,60 @@ class TestParseJsonOutput:
 
     def test_empty_input_has_errors_key(self):
         assert parse_json_output("")["errors"] == []
+
+
+class TestOutputBudget:
+    """Tool output over the byte budget is refused before the parse."""
+
+    _SARIF = json.dumps({
+        "runs": [{
+            "results": [{
+                "ruleId": "r1",
+                "message": {"text": "m"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": "a.py"},
+                        "region": {"startLine": 1},
+                    },
+                }],
+            }],
+        }],
+    })
+
+    def test_parse_sarif_under_budget_unchanged(self) -> None:
+        findings = parse_sarif(self._SARIF)
+        assert [f.rule_id for f in findings] == ["r1"]
+
+    def test_parse_sarif_over_budget_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from packages.semgrep import models
+
+        monkeypatch.setattr(
+            models, "_MAX_TOOL_OUTPUT_BYTES", len(self._SARIF) - 1,
+        )
+        assert parse_sarif(self._SARIF) == []
+
+    def test_parse_sarif_non_object_root_is_refused(self) -> None:
+        assert parse_sarif("[1, 2, 3]") == []
+
+    def test_parse_json_output_over_budget_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from packages.semgrep import models
+
+        payload = json.dumps({
+            "version": "1.99.0",
+            "paths": {"scanned": ["a.py"]},
+            "errors": [],
+        })
+        out = parse_json_output(payload)
+        assert out["files_examined"] == ["a.py"]
+        assert out["semgrep_version"] == "1.99.0"
+
+        monkeypatch.setattr(
+            models, "_MAX_TOOL_OUTPUT_BYTES", len(payload) - 1,
+        )
+        out = parse_json_output(payload)
+        assert out["files_examined"] == []
+        assert out["semgrep_version"] == ""

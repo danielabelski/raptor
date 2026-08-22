@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from packages.semgrep.models import SemgrepResult
 from packages.semgrep.runner import (
     _config_to_name,
     build_cmd,
@@ -569,3 +570,83 @@ class TestIntegration:
         result = run_rule(target, "p/python", timeout=120)
         # paths.scanned should include at least our file
         assert any("x.py" in f for f in result.files_examined) or result.files_examined == []
+
+
+class TestOutputBudget:
+    """Over-budget tool output must surface as a FAILED scan — never
+    as a verified-clean one. Semgrep exits 0/1 on a successful scan
+    regardless of output size, so without an error entry a hostile
+    repo could inflate the output past the cap and suppress its own
+    findings (empty findings + empty errors + rc 0 reads as clean)."""
+
+    def test_oversize_json_output_is_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import packages.semgrep.runner as runner_mod
+
+        target = tmp_path / "src"
+        target.mkdir()
+        json_path = tmp_path / "out.json"
+        # Pad the --json payload so ONLY it exceeds the cap — the
+        # SARIF stdout must stay under budget and keep parsing.
+        payload = _make_json_output(
+            scanned=[f"f{i}.py" for i in range(200)],
+        )
+        assert len(payload) - 1 > len(_make_sarif())
+        monkeypatch.setattr(
+            runner_mod, "_MAX_TOOL_OUTPUT_BYTES", len(payload) - 1,
+        )
+        with patch("packages.semgrep.runner.is_available", return_value=True), \
+             patch("subprocess.run") as mock_run:
+            def side_effect(cmd, **kwargs):
+                idx = cmd.index("--json-output")
+                Path(cmd[idx + 1]).write_text(payload)
+                return MagicMock(stdout=_make_sarif(), stderr="", returncode=0)
+            mock_run.side_effect = side_effect
+            result = run_rule(target, "p/x", json_output_path=json_path,
+                              unsandboxed=True)
+        # Metadata is unavailable AND the scan reports the refusal.
+        assert result.files_examined == []
+        assert result.findings  # stdout SARIF (under budget) still parses
+        assert any("bytes" in e and "budget" in e for e in result.errors)
+        assert not result.ok
+        assert result.json_output == ""  # oversized text never retained
+
+    def test_oversize_sarif_stdout_is_a_failed_scan_not_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Inverted suppression PoC: rc=0 with SARIF stdout past the
+        budget must yield errors (size-naming), not a clean result."""
+        import packages.semgrep.runner as runner_mod
+
+        target = tmp_path / "src"
+        target.mkdir()
+        sarif_payload = _make_sarif()
+
+        def _run(sarif_text: str) -> SemgrepResult:
+            with patch("packages.semgrep.runner.is_available",
+                       return_value=True), \
+                 patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    stdout=sarif_text, stderr="", returncode=0,
+                )
+                return run_rule(target, "p/x", unsandboxed=True)
+
+        # Control: under budget, the finding surfaces and the run is ok.
+        baseline = _run(sarif_payload)
+        assert baseline.findings
+        assert baseline.ok
+
+        # Over budget: findings are gone WITH an error naming the size
+        # — a failed scan, never verified silence.
+        monkeypatch.setattr(
+            runner_mod, "_MAX_TOOL_OUTPUT_BYTES", len(sarif_payload) - 1,
+        )
+        result = _run(sarif_payload)
+        assert result.findings == []
+        assert any(
+            str(len(sarif_payload)) in e and "budget" in e
+            for e in result.errors
+        )
+        assert not result.ok
+        assert result.sarif == ""  # oversized text never retained

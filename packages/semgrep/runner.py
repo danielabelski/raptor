@@ -19,6 +19,7 @@ and JSON output. Callers add their own concerns on top:
     convenience run_rules() that runs sequentially.
 """
 
+import logging
 import shutil
 import subprocess
 import time
@@ -27,7 +28,14 @@ from tempfile import NamedTemporaryFile
 
 from core.run.toolprobe import probe
 
-from .models import SemgrepResult, parse_json_output, parse_sarif
+from .models import (
+    _MAX_TOOL_OUTPUT_BYTES,
+    SemgrepResult,
+    parse_json_output,
+    parse_sarif,
+)
+
+logger = logging.getLogger(__name__)
 
 _SEMGREP_BIN = "semgrep"
 _DEFAULT_TIMEOUT = 900
@@ -281,11 +289,44 @@ def run_rule(
             )
         elapsed = int((time.monotonic() - start) * 1000)
 
+        # Budget gates on both tool outputs. Semgrep exits 0/1 on a
+        # successful scan regardless of output size, so an over-budget
+        # payload must surface as a scan ERROR — empty findings with
+        # empty errors at rc 0 would read as a verified-clean scan,
+        # handing a hostile repo a finding-suppression primitive
+        # (inflate the output past the cap and every real finding
+        # vanishes with the noise). The oversized text is also NOT
+        # retained on the result, so downstream serialisers never
+        # persist an attacker-sized payload.
+        budget_errors: list[str] = []
         sarif_text = proc.stdout or ""
+        if len(sarif_text) > _MAX_TOOL_OUTPUT_BYTES:
+            msg = (
+                f"semgrep SARIF output is {len(sarif_text)} characters"
+                f" — exceeds the {_MAX_TOOL_OUTPUT_BYTES}-byte budget;"
+                " scan results unavailable (failed scan, not a clean"
+                " one)"
+            )
+            logger.warning("%s", msg)
+            budget_errors.append(msg)
+            sarif_text = ""
         json_text = ""
         if json_path.exists():
+            # Size gate BEFORE the read: the --json payload is
+            # produced over the scanned (possibly hostile) repo,
+            # which can inflate it arbitrarily.
             try:
-                json_text = json_path.read_text(encoding="utf-8")
+                json_size = json_path.stat().st_size
+                if json_size > _MAX_TOOL_OUTPUT_BYTES:
+                    msg = (
+                        f"semgrep --json output is {json_size} bytes"
+                        f" — exceeds the {_MAX_TOOL_OUTPUT_BYTES}-byte"
+                        " budget; scan metadata unavailable"
+                    )
+                    logger.warning("%s: %s", msg, json_path)
+                    budget_errors.append(msg)
+                else:
+                    json_text = json_path.read_text(encoding="utf-8")
             except OSError:
                 json_text = ""
     finally:
@@ -296,15 +337,16 @@ def run_rule(
     parsed_json = parse_json_output(json_text)
 
     # Engine failure must never read as verified silence: surface the
-    # real errors array, and when semgrep exits outside {0, 1} (0 = no
-    # findings / clean, 1 = findings under --error) without a parseable
-    # errors payload (invalid rule YAML, internal crash on a hostile
-    # source file, signal kill — the tool never analysed the code, and
-    # semgrep sometimes emits empty SARIF before --json-output is
-    # written), synthesise an error from the returncode + stderr so
-    # every caller inherits the error-vs-refuted distinction instead
-    # of reading empty findings as a refutation.
-    errors: list[str] = list(parsed_json["errors"])
+    # budget refusals and the real errors array, and when semgrep
+    # exits outside {0, 1} (0 = no findings / clean, 1 = findings
+    # under --error) without a parseable errors payload (invalid rule
+    # YAML, internal crash on a hostile source file, signal kill — the
+    # tool never analysed the code, and semgrep sometimes emits empty
+    # SARIF before --json-output is written), synthesise an error from
+    # the returncode + stderr so every caller inherits the
+    # error-vs-refuted distinction instead of reading empty findings
+    # as a refutation.
+    errors: list[str] = budget_errors + list(parsed_json["errors"])
     if proc.returncode not in (0, 1) and not errors:
         stderr_tail = (proc.stderr or "").strip()[-500:]
         errors.append(

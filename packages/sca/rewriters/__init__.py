@@ -38,6 +38,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.atomic_fs import write_text_atomically as _atomic_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,6 +218,45 @@ def _resolve(path: Path) -> RewriterFn | None:
             )
             continue
     return None
+
+
+def rewrite_file_with(
+    path: Path,
+    edits: list[RewriteEdit],
+    apply_one: Callable[[str, RewriteEdit], tuple[str, RewriteResult]],
+) -> list[RewriteResult]:
+    """Read ``path``, thread every edit through ``apply_one``, and
+    write the result back atomically when anything applied.
+
+    Shared driver for rewriters whose entry point is "read the file,
+    apply each edit in sequence against the evolving text, write
+    once at the end". A read failure fails every edit; a write
+    failure fails the edits that had applied while keeping the
+    results of those that hadn't.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return [RewriteResult(edit=ed, applied=False,
+                              reason=f"error: read failed: {e}")
+                for ed in edits]
+
+    new_text = text
+    results: list[RewriteResult] = []
+    for edit in edits:
+        new_text, result = apply_one(new_text, edit)
+        results.append(result)
+
+    if any(r.applied for r in results):
+        try:
+            _atomic_write(path, new_text)
+        except OSError as e:
+            return [RewriteResult(
+                edit=r.edit, applied=False,
+                reason=f"error: write failed: {e}",
+            ) if r.applied else r
+            for r in results]
+    return results
 
 
 def apply_version_edit(

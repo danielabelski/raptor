@@ -35,9 +35,7 @@ from __future__ import annotations
 import logging
 import re
 
-from core.atomic_fs import write_text_atomically as _atomic_write
-
-from . import RewriteEdit, RewriteResult, register
+from . import RewriteEdit, RewriteResult, register, rewrite_file_with
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -163,29 +161,7 @@ def rewrite_libs_versions_toml(
     section: ``"version:<key>"``, ``"library:<alias>"``, or
     ``"plugin:<alias>"``.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        return [RewriteResult(edit=ed, applied=False,
-                              reason=f"error: read failed: {e}")
-                for ed in edits]
-
-    new_text = text
-    results: list[RewriteResult] = []
-    for edit in edits:
-        new_text, result = _apply_one(new_text, edit)
-        results.append(result)
-
-    if any(r.applied for r in results):
-        try:
-            _atomic_write(path, new_text)
-        except OSError as e:
-            return [RewriteResult(
-                edit=r.edit, applied=False,
-                reason=f"error: write failed: {e}",
-            ) if r.applied else r
-            for r in results]
-    return results
+    return rewrite_file_with(path, edits, _apply_one)
 
 
 def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:

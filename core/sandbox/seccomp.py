@@ -462,6 +462,12 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     core/sandbox/_unix_scope.py supervisor, and socket(AF_UNIX,
     SOCK_DGRAM) is denied (datagram sendto-with-address would bypass
     the connect chokepoint; nothing sandboxed needs unix datagrams).
+    socketpair(AF_UNIX, SOCK_DGRAM) is denied alongside it — Linux
+    permits sendto/sendmsg with an explicit destination on a
+    socketpair half, recreating the same destination-bearing datagram
+    primitive without any connect(2) reaching the supervisor.
+    SOCK_STREAM / SOCK_SEQPACKET socketpair stays unfiltered (Python
+    multiprocessing forkserver and Rust's spawn plumbing need it).
     Fail-closed: if the notify fd cannot be created or exported the
     child exits 126 — an unsupervised NOTIFY filter would leave every
     connect(2) blocking forever. Mutually exclusive with audit_mode
@@ -534,6 +540,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     resolved_blocks = [(name, _resolve(name)) for name in blocked_syscalls]
     # Sockets: filter by argument (family). Same syscall number, multiple rules.
     socket_num = _resolve("socket")
+    socketpair_num = _resolve("socketpair")
     connect_num = (_resolve("connect")
                    if unix_scope_export_sock is not None else -1)
     # ioctl — filter only specific cmd numbers (TIOCSTI for tty injection).
@@ -541,18 +548,36 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     # reject the known-dangerous ones.
     ioctl_num = _resolve("ioctl")
 
+    # socketpair(AF_UNIX, SOCK_DGRAM) is denied exactly when the
+    # matching socket(AF_UNIX, SOCK_DGRAM) is denied: either AF_UNIX
+    # is in the family blocklist (default posture) or connect scoping
+    # is engaged (AF_UNIX allowed but datagrams denied). A dgram
+    # socketpair half accepts sendto/sendmsg with an EXPLICIT
+    # destination address, so leaving socketpair unfiltered recreates
+    # the destination-bearing datagram primitive those denies exist
+    # to remove — without any connect(2) reaching the supervisor.
+    # SOCK_STREAM / SOCK_SEQPACKET socketpair stays unfiltered in all
+    # postures (see the rule-installation comment below).
+    deny_unix_dgram_socketpair = (
+        (profile != "frida" and not allow_unix_sockets)
+        or unix_scope_export_sock is not None
+    )
+
     # Gap 6: warn once per process when intended blocks silently skip
     # because the syscall isn't defined on this architecture. libseccomp
     # returns a negative value for unresolved names — RISC-V older cores
     # and some cross-compiled builds hit this for specific syscalls. We
     # name the missing ones so operators can decide if the gap is tolerable.
-    # (socketpair() is deliberately NOT filtered — see the comment in the
-    # rule-installation loop below — so we don't report it as "missing".)
+    # (socketpair() is filtered only for the AF_UNIX+SOCK_DGRAM shape —
+    # see the rule-installation comment below — so it's reported as
+    # "missing" only when that rule was going to be installed.)
     missing = [name for name, num in resolved_blocks if num < 0]
     if socket_num < 0:
         missing.append("socket")
     if ioctl_num < 0:
         missing.append("ioctl")
+    if deny_unix_dgram_socketpair and socketpair_num < 0:
+        missing.append("socketpair")
     if missing and state.warn_once("_seccomp_arch_missing_warned"):
         logger.warning(
             "Sandbox: seccomp could not resolve syscall(s) %s on this architecture — those blocks are NOT installed. Likely harmless on x86_64/aarch64 (this should be empty); investigate on other architectures if any entries appear.", missing
@@ -809,19 +834,44 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                          b" -- refusing to exec without filter\n")
                             os._exit(126)
 
-                # socketpair() is DELIBERATELY NOT filtered here. Unlike
-                # socket(AF_UNIX) which returns a socket that can then
-                # connect() to a filesystem path (e.g. /var/run/docker.sock
-                # — a real escape vector), socketpair() returns two
-                # already-connected sockets within a single process with
-                # NO external address. The "peer" is the other half of the
-                # pair, not anything reachable on the host. Blocking
-                # socketpair(AF_UNIX) was attempted as defence-in-depth
-                # but broke Rust's std::process::Command — Rust uses
-                # AF_UNIX socketpair internally for fork+exec error
-                # reporting (the child writes its exec errno through the
-                # pair back to the parent). With no real security benefit
-                # and real compatibility cost, we leave socketpair alone.
+                # socketpair(): only the AF_UNIX + SOCK_DGRAM shape is
+                # filtered. SOCK_STREAM / SOCK_SEQPACKET socketpair is
+                # DELIBERATELY left alone: it returns two already-
+                # connected sockets with NO external address — the
+                # "peer" is the other half of the pair — and blocking
+                # it breaks Rust's std::process::Command (AF_UNIX
+                # socketpair for fork+exec error reporting) and Python
+                # multiprocessing. The DGRAM shape is different: Linux
+                # permits sendto/sendmsg with an EXPLICIT destination
+                # on a connected dgram socket, so a dgram socketpair
+                # half can address any reachable pathname/abstract
+                # dgram socket directly — recreating the primitive the
+                # socket(AF_UNIX, SOCK_DGRAM) denies exist to remove,
+                # with no connect(2) ever reaching the supervisor.
+                # MASKED_EQ with SOCK_TYPE_MASK on arg 1 so
+                # SOCK_CLOEXEC / SOCK_NONBLOCK flag bits can't dodge
+                # the rule; MASKED_EQ low-32 on the family (arg 0) for
+                # the same reason as the socket() family rules.
+                # hard_deny: same escape-primitive rationale as the
+                # socket()-argument rules — this must not downgrade to
+                # allow-and-log under audit mode.
+                if deny_unix_dgram_socketpair and socketpair_num >= 0:
+                    args = (_ScmpArgCmp * 2)(
+                        _ScmpArgCmp(arg=0, op=_SCMP_CMP_MASKED_EQ,
+                                    datum_a=_ARG32_MASK,
+                                    datum_b=_AF_UNIX),
+                        _ScmpArgCmp(arg=1, op=_SCMP_CMP_MASKED_EQ,
+                                    datum_a=_SOCK_TYPE_MASK,
+                                    datum_b=_SOCK_DGRAM),
+                    )
+                    ret = lib.seccomp_rule_add_array(
+                        ctx, hard_deny, socketpair_num, 2, args,
+                    )
+                    if ret < 0:
+                        _os_write(2, b"RAPTOR: seccomp socketpair DGRAM"
+                                     b" rule failed -- refusing to exec"
+                                     b" without filter\n")
+                        os._exit(126)
 
                 # ioctl(fd, <cmd>, ...) — filter by cmd argument (arg 1).
                 # Blocks tty-input injection (TIOCSTI) and two other tty

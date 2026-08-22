@@ -11,6 +11,9 @@ Battery shapes pinned here (variant family, not just the exemplar):
   supervisor refuses symlinked paths wholesale);
 - SOCK_DGRAM AF_UNIX creation → EPERM (datagram sendto-with-address
   would bypass the connect chokepoint);
+- SOCK_DGRAM AF_UNIX socketpair → EPERM (a dgram socketpair half
+  accepts sendto with an explicit destination — same primitive, no
+  connect(2) ever reaching the supervisor);
 - SOCK_SEQPACKET connect to the output socket → must fail (family
   covers all connection-oriented types);
 - the legitimate use stays working: bind + connect a pathname socket
@@ -189,6 +192,63 @@ class TestHostSocketInOutputDenied(_Base):
         self.assertIn("DENIED", r.stdout,
                       f"AF_UNIX SOCK_DGRAM must be denied under connect "
                       f"scoping (sendto-with-address bypass): {r.stdout!r}")
+
+    def test_unix_dgram_socketpair_denied(self):
+        """socketpair(AF_UNIX, SOCK_DGRAM) yields a
+        descriptor that accepts sendto() with an explicit destination —
+        the same primitive the socket(AF_UNIX, SOCK_DGRAM) deny removes,
+        with no connect(2) ever reaching the supervisor. The pair
+        creation must be denied and the host dgram listener must never
+        receive the datagram."""
+        path = os.path.join(self.out, "hostdgram")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        srv.bind(path)
+        srv.settimeout(0.5)
+        self.addCleanup(srv.close)
+        prog = textwrap.dedent(f"""
+            import socket
+            try:
+                a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            except OSError as e:
+                print("DENIED", e.errno)
+                raise SystemExit(0)
+            try:
+                a.sendto(b"pwned", {path!r})
+                print("SENT")
+            except OSError as e:
+                print("SENDTO_DENIED", e.errno)
+        """)
+        r = self._spawn(prog)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("DENIED", r.stdout,
+                      f"AF_UNIX SOCK_DGRAM socketpair must be denied "
+                      f"(sendto-with-explicit-destination bypass): "
+                      f"{r.stdout!r}")
+        try:
+            data = srv.recv(64)
+        except (TimeoutError, OSError):
+            data = None
+        self.assertIsNone(
+            data, "host dgram listener received a datagram from the "
+                  "sandboxed child via a dgram socketpair half")
+
+    def test_unix_dgram_socketpair_cloexec_flag_bits_still_denied(self):
+        """SOCK_CLOEXEC / SOCK_NONBLOCK bits in the type argument must
+        not dodge the socketpair dgram rule (masked matching)."""
+        prog = textwrap.dedent("""
+            import socket
+            t = socket.SOCK_DGRAM | socket.SOCK_CLOEXEC | socket.SOCK_NONBLOCK
+            try:
+                socket.socketpair(socket.AF_UNIX, t)
+                print("CREATED")
+            except OSError as e:
+                print("DENIED", e.errno)
+        """)
+        r = self._spawn(prog)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("DENIED", r.stdout,
+                      f"flag bits in the socketpair type argument dodged "
+                      f"the dgram deny: {r.stdout!r}")
 
 
 class TestLegitimateUsesKeepWorking(_Base):

@@ -5,6 +5,8 @@ Autonomous Web Security Scanner
 Combines crawling, fuzzing, and LLM analysis for complete web app testing.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
@@ -20,7 +22,6 @@ if __name__ == "__main__":
     sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.json import save_json
-from core.llm.providers import LLMProvider
 from core.logging import get_logger
 from core.run.safe_io import safe_run_mkdir
 from core.sandbox import SANDBOX_ENGAGE_EXIT_CODE, SandboxSetupError
@@ -33,6 +34,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import argparse
 
+    from core.llm.client import LLMClient
+
 logger = get_logger()
 
 
@@ -42,7 +45,7 @@ class WebScanner:
     def __init__(
         self,
         base_url: str,
-        llm: LLMProvider | None,
+        llm: LLMClient | None,
         out_dir: Path,
         verify_ssl: bool = True,
         reveal_secrets: bool = False,

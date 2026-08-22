@@ -222,6 +222,26 @@ class TestPythonExtractor:
         funcs = PythonExtractor().extract("test.py", code)
         assert funcs[0].checked_by == []
 
+    def test_mixed_payload_functions_and_top_level_items(self):
+        # Contract pin: extract() returns a MIX of FunctionInfo (defs)
+        # and plain CodeItem `top_level` units (module-scope calls).
+        # The declared return type is list[CodeItem] -- the annotation
+        # previously claimed list[FunctionInfo] while shipping this mix.
+        code = (
+            "import os\n"
+            "def foo(): pass\n"
+            "os.system('true')\n"
+        )
+        items = PythonExtractor().extract("test.py", code)
+        funcs = [i for i in items if isinstance(i, FunctionInfo)]
+        top_level = [i for i in items if i.kind == "top_level"]
+        assert [f.name for f in funcs] == ["foo"]
+        assert len(top_level) == 1
+        assert top_level[0].line_start == 3
+        # The top_level unit is a base CodeItem, not a FunctionInfo.
+        assert not isinstance(top_level[0], FunctionInfo)
+        assert isinstance(top_level[0], CodeItem)
+
 
 class TestJavaScriptExtractor:
     def test_function_declaration(self):

@@ -162,6 +162,16 @@ class TestLLMCallableFromClient:
         c = _NoLLMClient()
         assert _llm_callable_from_client(c) is None
 
+    def test_returns_none_for_stub_provider(self):
+        # ClaudeCodeProvider DOES define generate_structured (it
+        # returns (None, None)), so a hasattr probe cannot route it
+        # off — pre-fix the stub sailed through and every seed burned
+        # a synthesis attempt that logged "non-dict response". The
+        # adapter now checks the is_stub marker structurally.
+        from core.llm.providers import ClaudeCodeProvider
+        assert hasattr(ClaudeCodeProvider(), "generate_structured")
+        assert _llm_callable_from_client(ClaudeCodeProvider()) is None
+
     def test_swallows_llm_exception(self):
         c = StubLLMClient(responses=[RuntimeError("transport error")])
         callable = _llm_callable_from_client(c)

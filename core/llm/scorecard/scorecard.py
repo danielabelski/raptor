@@ -1245,7 +1245,7 @@ class ModelScorecard:
             self.data = {"version": SCHEMA_VERSION, "models": {}}
             self.scorecard._last_read_trusted = True
 
-        def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None):
+        def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> Literal[False]:
             try:
                 if exc_type is None and self.write:
                     # Run auto-GC inside the write lock so concurrent

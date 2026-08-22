@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import datetime
 from types import TracebackType
+from typing import Literal
 
 
 # Thread-local "last stage that ran" — readable by out-of-band
@@ -217,7 +218,7 @@ class HackerProgress:
             sys.stderr.flush()
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> Literal[False]:
         """Context manager exit."""
         if self.disabled:
             return False
@@ -343,7 +344,7 @@ class HackerProgressBar:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> Literal[False]:
         # Finalise any in-flight stage so the operator sees its
         # detail rather than the bar.
         if self._stage is not None:

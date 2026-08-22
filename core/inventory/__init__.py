@@ -47,7 +47,7 @@ from .extractors import (
 from .languages import LANGUAGE_MAP, detect_language
 from .lookup import lookup_function, normalise_path
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -153,7 +153,7 @@ class _checklist_lock:
             raise
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> Literal[False]:
         import fcntl
         import logging as _logging
         _local_logger = _logging.getLogger(__name__)

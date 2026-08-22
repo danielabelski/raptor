@@ -144,8 +144,11 @@ class PythonExtractor:
     annotations), return_type. Always available — uses stdlib ast.
     """
 
-    def extract(self, filepath: str, content: str) -> list[FunctionInfo]:
-        functions = []
+    def extract(self, filepath: str, content: str) -> list[CodeItem]:
+        # Mixed payload: FunctionInfo for defs/methods PLUS plain
+        # CodeItem ``top_level`` units from _top_level_items — the
+        # declared type is honest about both (FunctionInfo <: CodeItem).
+        functions: list[CodeItem] = []
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
@@ -154,7 +157,7 @@ class PythonExtractor:
             functions.extend(self._top_level_items(tree))
         except SyntaxError as e:
             logger.warning("Failed to parse %s: %s", filepath, e)
-            functions = self._regex_fallback(content)
+            functions = list(self._regex_fallback(content))
 
         return functions
 
@@ -189,7 +192,7 @@ class PythonExtractor:
                 out.append(b.attr)
         return out
 
-    def _walk(self, node: ast.AST, functions: list[FunctionInfo],
+    def _walk(self, node: ast.AST, functions: list[CodeItem],
               class_name: str | None,
               class_attributes: Sequence[str] = ()) -> None:
         """Walk AST collecting functions with metadata."""
@@ -2769,10 +2772,14 @@ _REGEX_EXTRACTORS = {
 }
 
 
-def extract_functions(filepath: str, language: str, content: str) -> list[FunctionInfo]:
+def extract_functions(filepath: str, language: str, content: str) -> list[CodeItem]:
     """Extract functions from a file using the best available extractor.
 
     Priority: tree-sitter (rich metadata) → Python AST → regex (basic).
+
+    The Python AST path also yields plain ``top_level`` :class:`CodeItem`
+    units alongside :class:`FunctionInfo` — the declared return type
+    reflects that mixed payload.
     """
     # Try tree-sitter first (rich metadata for all languages)
     if _TS_AVAILABLE:
@@ -2780,7 +2787,7 @@ def extract_functions(filepath: str, language: str, content: str) -> list[Functi
             extractor = TreeSitterExtractor(language)
             results = extractor.extract(filepath, content)
             if results:  # Empty = parse failed, fall through
-                return results
+                return list(results)
         except RuntimeError:
             pass  # Grammar not installed for this language
 
@@ -2790,7 +2797,7 @@ def extract_functions(filepath: str, language: str, content: str) -> list[Functi
 
     # Regex fallback (basic metadata)
     extractor = _REGEX_EXTRACTORS.get(language, GenericExtractor())
-    return extractor.extract(filepath, content)
+    return list(extractor.extract(filepath, content))
 
 
 def compute_interstitial_items(

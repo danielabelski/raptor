@@ -38,15 +38,24 @@ def _llm_callable_from_client(
     llm_client, cost_tracker=None,
 ) -> Any | None:
     """Adapt RAPTOR's ``LLMClient`` to checker_synthesis's
-    ``LLMCallable`` Protocol. Returns None when the client doesn't
-    expose ``generate_structured`` (e.g. ClaudeCodeProvider in
-    prep-only mode -- checker synthesis can't run without an LLM).
+    ``LLMCallable`` Protocol. Returns None when the client can't do
+    real generation: no ``generate_structured`` at all, or a stub
+    provider (``is_stub`` marker — ClaudeCodeProvider in prep-only
+    mode DOES define ``generate_structured``, but it always returns
+    ``(None, None)``; checker synthesis can't run without an LLM, so
+    routing it through would burn a per-seed synthesis attempt per
+    finding with misleading "non-dict response" diagnostics instead
+    of one clean skip).
 
     When *cost_tracker* is provided, each call checks the budget
     before invoking the LLM and returns None (skipped) when the
     budget is exhausted.
     """
     if not hasattr(llm_client, "generate_structured"):
+        return None
+    if getattr(llm_client, "is_stub", False):
+        # Prep-only stub: generate_structured exists but is a
+        # documented always-(None, None). Skip synthesis cleanly.
         return None
     from core.llm.task_types import TaskType
 

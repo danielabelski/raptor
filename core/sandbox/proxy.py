@@ -50,6 +50,11 @@ Safety hooks baked in:
   _vet_upstream_target).
 - DNS pinning: one resolve per tunnel, then connect to that exact IP.
   No mid-tunnel re-resolution — removes the DNS-rebinding window.
+- TLS identity peek (best-effort): after the 200, the client's first
+  TLS record is peeked; a complete ClientHello whose SNI differs from
+  the authorised CONNECT hostname closes the tunnel (cheap domain-
+  fronting defence). Non-TLS, SNI-less, fragmented, or inconclusive
+  first bytes pass through unchanged and are forwarded verbatim.
 - Idle timeout: 300s. Total tunnel duration cap: 3600s. Either bound
   limits how long one compromised child can hold resources open.
 - Concurrent tunnels: capped at 4096 (configurable; sized for npm
@@ -254,6 +259,20 @@ _PROXY_HANDSHAKE_DEADLINE_S = 30.0
 _PROXY_HANDSHAKE_MAX_HEADER_BYTES = 16 * 1024
 _PROXY_HANDSHAKE_MAX_HEADERS = 100
 
+# CONNECT TLS-identity peek. After the 200 the proxy peeks the
+# client's first TLS record and, when it parses as a complete
+# ClientHello carrying an SNI, requires that SNI to match the
+# authorised CONNECT hostname (domain-fronting defence — see the
+# check in _serve_tunnel for the honest scope statement). The peek is
+# bounded: at most one max-size TLS record (2^14 payload + 5 header
+# bytes) and a short deadline, after which the tunnel proceeds
+# unchecked. 3s is generous for a client that is going to speak TLS
+# at all (a ClientHello follows the 200 immediately) while keeping
+# the added first-byte latency for silent/server-speaks-first
+# protocols small.
+_TLS_PEEK_MAX_BYTES = 2 ** 14 + 5
+_TLS_PEEK_TIMEOUT_S = 3.0
+
 # TCP keepalive for established tunnel legs. Corporate proxies, NAT
 # gateways, and stateful firewalls drop connection state for tunnels
 # that go quiet — a thinking model can be silent for minutes while
@@ -299,6 +318,13 @@ _PROXY_EVENT_RESULTS = frozenset({
     # emits `denied_resolved_ip` AND additionally writes a
     # supplementary record to summary via record_denial.
     "denied_resolved_ip",
+    # CONNECT TLS-identity deny: the client's first TLS record parsed
+    # as a complete ClientHello whose SNI does not match the
+    # authorised CONNECT hostname (domain-fronting defence,
+    # best-effort — see _peek_tls_identity / the check in
+    # _serve_tunnel). Always enforcing; the tunnel is closed after
+    # the 200 with nothing forwarded upstream.
+    "denied_sni",
     # DNS resolution failed (NXDOMAIN, timeout)
     "dns_failed",
     # Upstream (or backend) refused / unreachable
@@ -826,6 +852,99 @@ def _split_addrinfo_by_family(
         # Other families (AF_UNIX etc) ignored — getaddrinfo with
         # SOCK_STREAM on a hostname won't yield them in practice.
     return v6, v4
+
+
+def _client_hello_server_name(body: bytes) -> str | None:
+    """server_name (RFC 6066) from a ClientHello handshake body, or
+    None when the extension is absent. Raises ValueError/IndexError/
+    UnicodeDecodeError on malformed input — the caller treats any
+    parse failure as inconclusive (pass through), never as a match.
+    """
+    pos = 0
+    pos += 2 + 32                                # client_version + random
+    sid_len = body[pos]
+    pos += 1 + sid_len                           # session_id
+    cs_len = int.from_bytes(body[pos:pos + 2], "big")
+    pos += 2 + cs_len                            # cipher_suites
+    comp_len = body[pos]
+    pos += 1 + comp_len                          # compression_methods
+    if pos == len(body):
+        return None                              # no extensions block
+    ext_total = int.from_bytes(body[pos:pos + 2], "big")
+    pos += 2
+    end = pos + ext_total
+    if end > len(body):
+        raise ValueError("extensions length overruns ClientHello body")
+    while pos + 4 <= end:
+        ext_type = int.from_bytes(body[pos:pos + 2], "big")
+        ext_len = int.from_bytes(body[pos + 2:pos + 4], "big")
+        pos += 4
+        if pos + ext_len > end:
+            raise ValueError("extension overruns extensions block")
+        if ext_type == 0:                        # server_name
+            data = body[pos:pos + ext_len]
+            if len(data) < 2:
+                raise ValueError("short server_name extension")
+            list_end = 2 + int.from_bytes(data[:2], "big")
+            if list_end > len(data):
+                raise ValueError("server_name_list overruns extension")
+            lpos = 2
+            while lpos + 3 <= list_end:
+                name_type = data[lpos]
+                name_len = int.from_bytes(data[lpos + 1:lpos + 3], "big")
+                lpos += 3
+                if lpos + name_len > list_end:
+                    raise ValueError("server_name overruns list")
+                if name_type == 0:               # host_name
+                    return data[lpos:lpos + name_len].decode("ascii")
+                lpos += name_len
+            return None
+        pos += ext_len
+    return None
+
+
+def _parse_tls_client_hello_sni(buf: bytes) -> "tuple[str, str | None]":
+    """Classify the first bytes a CONNECT client sends after the 200.
+
+    Returns ``(status, sni)``:
+
+    - ``("incomplete", None)`` — could still become a complete first
+      TLS record; the peek loop should read more (it is bounded by
+      byte cap and deadline, so "incomplete" never spins forever).
+    - ``("sni", hostname)`` — a complete, well-formed ClientHello in
+      the first record, carrying a server_name.
+    - ``("pass", None)`` — everything else: non-TLS first bytes, a
+      non-ClientHello record, a ClientHello without SNI, a hello
+      fragmented across records, or malformed structure. Best-effort
+      by design: doubt always passes through, never blocks.
+    """
+    if not buf:
+        return ("incomplete", None)
+    if buf[0] != 0x16:                           # not a handshake record
+        return ("pass", None)
+    if len(buf) >= 2 and buf[1] != 0x03:         # not an SSL3+/TLS version
+        return ("pass", None)
+    if len(buf) < 5:
+        return ("incomplete", None)
+    rec_len = int.from_bytes(buf[3:5], "big")
+    if rec_len < 4 or rec_len > 2 ** 14:         # RFC 8446 record limit
+        return ("pass", None)
+    if len(buf) < 5 + rec_len:
+        return ("incomplete", None)
+    record = buf[5:5 + rec_len]
+    if record[0] != 0x01:                        # not a ClientHello
+        return ("pass", None)
+    hs_len = int.from_bytes(record[1:4], "big")
+    if hs_len > rec_len - 4:
+        # ClientHello spans multiple records — inconclusive.
+        return ("pass", None)
+    try:
+        sni = _client_hello_server_name(record[4:4 + hs_len])
+    except (ValueError, IndexError):             # incl. UnicodeDecodeError
+        return ("pass", None)
+    if sni is None:
+        return ("pass", None)
+    return ("sni", sni)
 
 
 class EgressProxy:
@@ -2682,6 +2801,46 @@ class EgressProxy:
             host, port, event.get("resolved_ip", "?"),
         )
 
+        # CONNECT TLS-identity check. Everything up to here authorised
+        # the PLAINTEXT CONNECT authority and dialled its vetted IP —
+        # nothing ties the TLS session INSIDE the tunnel to that
+        # authorised name, so a child could CONNECT to an allowlisted
+        # host and send a ClientHello bearing a different SNI to reach
+        # another tenant behind the same shared front end (domain
+        # fronting). Peek the client's first TLS record: iff it parses
+        # as a complete ClientHello carrying an SNI, require the SNI
+        # to equal the authorised CONNECT hostname (case-insensitive).
+        # This is HONESTLY a best-effort hardening layer, not a
+        # guarantee: non-TLS first bytes, SNI-less hellos, records
+        # fragmented across TLS records, malformed structure, and a
+        # peek deadline expiry all pass through unchanged, and
+        # Encrypted ClientHello hides the name entirely — the layer
+        # only removes the cheapest fronting path. Peeked bytes are
+        # forwarded upstream below, so passing tunnels stay
+        # byte-identical to a non-peeking proxy.
+        peeked, client_sni = await self._peek_tls_identity(reader)
+        if client_sni is not None and client_sni.lower() != host.lower():
+            # The SNI is attacker-controlled — sanitise before it can
+            # reach a live terminal (same rationale as the CONNECT
+            # target check above).
+            _safe_sni = sanitise_for_terminal(client_sni)
+            logger.warning(
+                "egress proxy: DENY %s:%s — TLS ClientHello SNI %r "
+                "does not match the authorised CONNECT host "
+                "(domain-fronting attempt); tunnel closed",
+                host, port, _safe_sni,
+            )
+            event.update(result="denied_sni",
+                         reason=f"TLS SNI {_safe_sni!r} != CONNECT host",
+                         duration=time.monotonic() - t_start)
+            self._record(event)
+            # 200 already went out — the deny is the close itself.
+            # The peeked bytes are dropped: nothing reaches upstream.
+            with contextlib.suppress(OSError, RuntimeError):
+                up_writer.close()
+                await up_writer.wait_closed()
+            return
+
         # Record the event NOW (not at close) so short tunnels that
         # complete right around when the caller's subprocess.run returns
         # still show up in events_since(). The event dict is mutable and
@@ -2693,6 +2852,16 @@ class EgressProxy:
         total = {"c2u": 0, "u2c": 0}  # byte counters
         result = "allowed"
         reason: str | None = None
+        # Forward the peeked first bytes so the upstream sees the
+        # byte stream a non-peeking proxy would have relayed. A dead
+        # upstream here surfaces immediately in the relay loop below,
+        # so the failure is only suppressed, never lost.
+        if peeked:
+            with contextlib.suppress(ConnectionResetError,
+                                     BrokenPipeError):
+                up_writer.write(peeked)
+                await up_writer.drain()
+                total["c2u"] += len(peeked)
         # The relay pair runs under `_supervise_relay` rather than a
         # bare `asyncio.wait_for(..., timeout=self._total_timeout)`.
         # The historical wait_for severed EVERY tunnel at the absolute
@@ -2748,6 +2917,41 @@ class EgressProxy:
                     "egress proxy: CLOSE %s:%s (c2u=%s u2c=%s)",
                     host, port, total["c2u"], total["u2c"],
                 )
+
+    async def _peek_tls_identity(
+        self, reader: asyncio.StreamReader,
+    ) -> "tuple[bytes, str | None]":
+        """Bounded peek at the client's first bytes after the 200.
+
+        Returns ``(peeked_bytes, sni)`` where *sni* is the hostname
+        from a complete first-record ClientHello, or None when the
+        bytes are non-TLS / SNI-less / fragmented / malformed or the
+        client sent nothing within the peek deadline. The peeked
+        bytes are the caller's to forward upstream — they have been
+        consumed from *reader* and must not be dropped on the pass
+        path, or working tunnels would lose their first bytes.
+        """
+        buf = b""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _TLS_PEEK_TIMEOUT_S
+        while len(buf) < _TLS_PEEK_MAX_BYTES:
+            status, sni = _parse_tls_client_hello_sni(buf)
+            if status != "incomplete":
+                return buf, sni
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return buf, None
+            try:
+                chunk = await asyncio.wait_for(
+                    reader.read(_TLS_PEEK_MAX_BYTES - len(buf)),
+                    timeout=remaining,
+                )
+            except (asyncio.TimeoutError, OSError, ConnectionError):
+                return buf, None
+            if not chunk:                        # client EOF mid-peek
+                return buf, None
+            buf += chunk
+        return buf, None
 
     async def _relay(self, src: asyncio.StreamReader,
                      dst: asyncio.StreamWriter,

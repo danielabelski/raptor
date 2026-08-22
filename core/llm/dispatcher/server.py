@@ -1932,6 +1932,8 @@ def _make_request_handler(
 
             # ---- forward to upstream + stream response back ----
             _up_http_version = None
+            response_started = False
+            response_is_sse = False
             try:
                 with dispatcher._upstream_client().stream(
                     method, url, content=body, headers=forwarded,
@@ -1947,6 +1949,10 @@ def _make_request_handler(
                         )
                     except Exception:
                         _up_http_version = None
+                    response_is_sse = "text/event-stream" in (
+                        up.headers.get("content-type") or ""
+                    )
+                    response_started = True
                     self.send_response(up.status_code)
                     for k, v in up.headers.items():
                         # Strip hop-by-hop headers only. ``content-
@@ -2029,12 +2035,53 @@ def _make_request_handler(
                     token_id=_short(rec.value), worker_label=rec.worker_label,
                     status="error", reason=type(exc).__name__,
                 ))
-                # Best-effort failure response. If headers already sent
-                # there's nothing useful to do.
-                try:
-                    self._send_simple(502, f"upstream error: {type(exc).__name__}")
-                except OSError:
-                    pass
+                if not response_started:
+                    # Nothing on the wire yet — a clean HTTP error
+                    # response is still possible.
+                    try:
+                        self._send_simple(
+                            502,
+                            f"upstream error: {type(exc).__name__}",
+                        )
+                    except OSError:
+                        pass
+                    return
+                # Headers (and possibly body bytes) already sent: a
+                # second HTTP message here would land INSIDE the open
+                # body — SSE consumers parsed the pre-fix
+                # ``HTTP/1.0 502`` text as event data and saw silent
+                # truncation dressed as a successful stream. For an
+                # SSE response, terminate with a well-formed terminal
+                # error event naming the abort reason so consumers
+                # observe a typed failure; for anything else write
+                # nothing — the short body / dropped connection IS
+                # the transport error the consumer must see.
+                if response_is_sse:
+                    # RelayLimitExceeded messages are our own
+                    # constants; other exception texts (httpx) can
+                    # embed URLs/request context — name the type only.
+                    detail = (
+                        str(exc)
+                        if isinstance(exc, RelayLimitExceeded)
+                        else type(exc).__name__
+                    )
+                    frame = (
+                        b"event: error\ndata: " + json.dumps({
+                            "type": "error",
+                            "error": {
+                                "type": "relay_aborted",
+                                "message": (
+                                    f"dispatcher relay aborted: {detail}"
+                                ),
+                            },
+                        }).encode("utf-8") + b"\n\n"
+                    )
+                    try:
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                    except OSError:
+                        pass
+                self.close_connection = True
 
         def _child_admin(self, rec: _TokenRecord) -> None:
             """Handle /_child/{mint,revoke,spend} for a validated

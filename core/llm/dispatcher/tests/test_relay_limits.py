@@ -40,8 +40,9 @@ def fake_creds():
 class _Upstream:
     """Captive provider stub. ``mode``:
 
-    * ``"firehose"`` — 64 KiB body, sent at once.
-    * ``"drip"``     — one small chunk every 0.3s for ~6s.
+    * ``"firehose"``     — 64 KiB JSON body, sent at once.
+    * ``"sse_firehose"`` — 64 KiB of well-formed SSE events, at once.
+    * ``"drip"``         — one small chunk every 0.3s for ~6s.
     """
 
     def __init__(self, mode: str):
@@ -55,14 +56,30 @@ class _Upstream:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length:
                     self.rfile.read(length)
-                if outer.mode == "firehose":
-                    payload = b"x" * (64 * 1024)
+                if outer.mode in ("firehose", "sse_firehose"):
+                    if outer.mode == "firehose":
+                        payload = b"x" * (64 * 1024)
+                        ctype = "application/json"
+                    else:
+                        event = (
+                            b'data: {"type":"content_block_delta",'
+                            b'"delta":{"type":"text_delta",'
+                            b'"text":"xxxx"}}\n\n'
+                        )
+                        payload = event * 800  # ~64 KiB of valid SSE
+                        ctype = "text/event-stream"
                     self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Type", ctype)
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
+                    # Flushed pieces so the relay observes multiple
+                    # chunks: some body bytes reach the client BEFORE
+                    # the byte cap aborts the stream.
                     try:
-                        self.wfile.write(payload)
+                        for i in range(0, len(payload), 2048):
+                            self.wfile.write(payload[i:i + 2048])
+                            self.wfile.flush()
+                            time.sleep(0.005)
                     except OSError:
                         pass
                     return
@@ -165,6 +182,61 @@ class TestRelayLimits:
             # The relay stopped within a chunk of the cap instead of
             # forwarding all 64 KiB.
             assert len(received) < 64 * 1024
+            assert _wait_relay_abort(d)
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_cap_abort_mid_sse_emits_terminal_error_event(
+        self, fake_creds, tmp_path, monkeypatch,
+    ):
+        """Cap-abort after a 200 + partial SSE body must NOT write a
+        second HTTP message into the open body (pre-fix an
+        ``HTTP/1.0 502`` landed there and SSE consumers parsed it as
+        event data — silent truncation dressed as success). The
+        stream must end with a well-formed terminal SSE error event
+        naming the abort reason, then close."""
+        monkeypatch.setenv(
+            "RAPTOR_LLM_DISPATCHER_RELAY_MAX_BYTES", "4096",
+        )
+        upstream = _Upstream("sse_firehose")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token = _worker_token(d)
+            received = _post(d, token)
+            # The 200 + partial body had been sent before the abort.
+            assert received
+            assert b"HTTP/1.0" not in received
+            assert b"HTTP/1.1" not in received
+            # Terminal typed error event, at the tail of the stream.
+            assert b"event: error" in received[-512:]
+            assert b"relay cap" in received[-512:]
+            assert received.endswith(b"\n\n")
+            # Audit row still records the abort.
+            assert _wait_relay_abort(d)
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_cap_abort_mid_json_closes_without_http_error_message(
+        self, fake_creds, tmp_path, monkeypatch,
+    ):
+        """Non-SSE mid-body abort: nothing more is written — no
+        second HTTP message, no SSE frame — so the consumer sees a
+        short body / dropped connection (a transport error), never a
+        truncated-but-apparently-successful payload."""
+        monkeypatch.setenv(
+            "RAPTOR_LLM_DISPATCHER_RELAY_MAX_BYTES", "4096",
+        )
+        upstream = _Upstream("firehose")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token = _worker_token(d)
+            received = _post(d, token)
+            assert received
+            assert b"HTTP/1.0" not in received
+            assert b"event: error" not in received
+            assert set(received) == {ord("x")}  # body bytes only
             assert _wait_relay_abort(d)
         finally:
             upstream.shutdown()

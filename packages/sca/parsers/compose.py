@@ -50,6 +50,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.oci.image_ref import split_image_ref as _split_image_ref
+
 from ..models import Confidence, Dependency, PinStyle
 from ..models import classify_pin_style as _classify_pin_style
 from . import register
@@ -215,28 +217,3 @@ def _build_dep(
         source_kind="compose",
         source_extra={"service": service_name, "image_ref": image},
     )
-
-
-def _split_image_ref(ref: str) -> tuple:
-    """Split an OCI image reference into (name, tag).
-
-    ``postgres:16`` → ``("postgres", "16")``
-    ``ghcr.io/x/y:1.2`` → ``("ghcr.io/x/y", "1.2")``
-    ``alpine`` (no tag) → ``("alpine", None)``
-    ``foo@sha256:abc...`` → ``("foo", "sha256:abc...")``  (digest pin)
-    """
-    # Digest pin first (``name@sha256:...``).
-    if "@" in ref:
-        name, _, digest = ref.rpartition("@")
-        if ":" in name.rsplit("/", 1)[-1]:
-            name = name.rsplit(":", 1)[0]
-        return name, digest or None
-    # Tag pin (last colon, but only AFTER the last slash so we
-    # don't confuse a registry port like ``localhost:5000``).
-    last_slash = ref.rfind("/")
-    rest = ref[last_slash + 1:] if last_slash >= 0 else ref
-    if ":" in rest:
-        prefix = ref[:last_slash + 1] if last_slash >= 0 else ""
-        rest_name, _, tag = rest.partition(":")
-        return prefix + rest_name, tag or None
-    return ref, None

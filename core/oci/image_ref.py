@@ -160,4 +160,35 @@ def parse_image_ref(s: str) -> ImageRef:
     )
 
 
-__all__ = ["ImageRef", "parse_image_ref"]
+def split_image_ref(ref: str) -> tuple[str, str | None]:
+    """Split an OCI image reference into ``(name, tag-or-digest)``.
+
+    ``postgres:16`` → ``("postgres", "16")``
+    ``ghcr.io/x/y:1.2`` → ``("ghcr.io/x/y", "1.2")``
+    ``alpine`` (no tag) → ``("alpine", None)``
+    ``foo@sha256:abc...`` → ``("foo", "sha256:abc...")``  (digest pin)
+
+    Lightweight, lossy sibling of :func:`parse_image_ref`: no
+    registry / repository canonicalisation, no implicit defaults,
+    never raises. Container-manifest parsers use it to pull a name +
+    pin out of whatever operators wrote, without imposing Docker Hub
+    conventions on the name.
+    """
+    # Digest pin first (``name@sha256:...``).
+    if "@" in ref:
+        name, _, digest = ref.rpartition("@")
+        if ":" in name.rsplit("/", 1)[-1]:
+            name = name.rsplit(":", 1)[0]
+        return name, digest or None
+    # Tag pin (last colon, but only AFTER the last slash so we
+    # don't confuse a registry port like ``localhost:5000``).
+    last_slash = ref.rfind("/")
+    rest = ref[last_slash + 1:] if last_slash >= 0 else ref
+    if ":" in rest:
+        prefix = ref[:last_slash + 1] if last_slash >= 0 else ""
+        rest_name, _, tag = rest.partition(":")
+        return prefix + rest_name, tag or None
+    return ref, None
+
+
+__all__ = ["ImageRef", "parse_image_ref", "split_image_ref"]

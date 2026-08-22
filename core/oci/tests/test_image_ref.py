@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.oci.image_ref import ImageRef, parse_image_ref
+from core.oci.image_ref import ImageRef, parse_image_ref, split_image_ref
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +187,43 @@ def test_repository_only_digest_with_no_repo_part_rejected():
     we reject rather than silently producing an empty repository."""
     with pytest.raises(ValueError, match="repository"):
         parse_image_ref("@sha256:" + "d" * 64)
+
+
+# ---------------------------------------------------------------------------
+# split_image_ref — the light, lossy splitter used by manifest parsers
+# ---------------------------------------------------------------------------
+
+def test_split_tag_pin():
+    assert split_image_ref("postgres:16") == ("postgres", "16")
+
+
+def test_split_registry_path_tag():
+    assert split_image_ref("ghcr.io/x/y:1.2") == ("ghcr.io/x/y", "1.2")
+
+
+def test_split_no_tag_returns_none():
+    assert split_image_ref("alpine") == ("alpine", None)
+
+
+def test_split_digest_pin():
+    sha = "sha256:" + "a" * 64
+    assert split_image_ref(f"foo@{sha}") == ("foo", sha)
+
+
+def test_split_tag_plus_digest_drops_tag():
+    sha = "sha256:" + "b" * 64
+    assert split_image_ref(f"foo:1.2@{sha}") == ("foo", sha)
+
+
+def test_split_registry_port_not_confused_with_tag():
+    assert split_image_ref("localhost:5000/app") == (
+        "localhost:5000/app", None,
+    )
+    assert split_image_ref("localhost:5000/app:2.0") == (
+        "localhost:5000/app", "2.0",
+    )
+
+
+def test_split_never_canonicalises():
+    # No library/ prefix, no docker.io default, no latest default.
+    assert split_image_ref("python") == ("python", None)

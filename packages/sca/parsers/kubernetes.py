@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import logging
 
+from core.oci.image_ref import split_image_ref as _split_image_ref
+
 from ..models import Confidence, Dependency, PinStyle
 from ..models import classify_pin_style as _classify_pin_style
 from . import register
@@ -254,21 +256,3 @@ def _build_dep(
         source_kind="k8s",
         source_extra=extra,
     )
-
-
-def _split_image_ref(ref: str) -> tuple:
-    """Same logic as ``compose._split_image_ref`` and ``gitlab_ci._split_image_ref``.
-    Duplicated for parser-loose-coupling; refactor into
-    ``core.oci.image_ref`` if a fourth consumer surfaces."""
-    if "@" in ref:
-        name, _, digest = ref.rpartition("@")
-        if ":" in name.rsplit("/", 1)[-1]:
-            name = name.rsplit(":", 1)[0]
-        return name, digest or None
-    last_slash = ref.rfind("/")
-    rest = ref[last_slash + 1:] if last_slash >= 0 else ref
-    if ":" in rest:
-        prefix = ref[:last_slash + 1] if last_slash >= 0 else ""
-        rest_name, _, tag = rest.partition(":")
-        return prefix + rest_name, tag or None
-    return ref, None

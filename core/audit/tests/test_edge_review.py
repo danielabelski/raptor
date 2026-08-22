@@ -196,7 +196,7 @@ class _StubLLM:
         return _StubResponse(result=dict(self._result), cost=0.01,
                              model="stub-model", usage=None)
 
-    def is_budget_exhausted(self):
+    def is_budget_exhausted(self, estimated_cost=0.1):
         return False
 
 

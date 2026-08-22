@@ -362,9 +362,18 @@ def run_edge_pass(
     spans = item_spans(checklist)
     budget_client = getattr(config, "llm_budget_client", None) or llm
 
+    # Pins are explicit operator intent and outrank the edge pass:
+    # reserve budget for their function reviews so a large tier-1 set
+    # cannot crowd them out (observed live: --budget 4 with 16 tier-1
+    # edges — the pinned deep-dives never ran). The reserve rides the
+    # existing is_budget_exhausted(estimated_cost=...) headroom check.
+    _PIN_RESERVE_USD = 1.0
+    pin_reserve = len(getattr(config, "pins", None) or []) * _PIN_RESERVE_USD
+
     for i, rec in enumerate(gaps):
         try:
-            if budget_client.is_budget_exhausted():
+            if budget_client.is_budget_exhausted(
+                    estimated_cost=0.1 + pin_reserve):
                 summary["skipped_budget"] = len(gaps) - i
                 logger.info(
                     "edge pass: budget exhausted — %d tier-1 edge(s) "
@@ -389,6 +398,7 @@ def run_edge_pass(
             response = llm.generate_structured(
                 prompt, EDGE_REVIEW_SCHEMA,
                 system_prompt=_EDGE_SYSTEM_PROMPT,
+                call_class="edge_review",
             )
             call = unwrap_structured_response(
                 response,

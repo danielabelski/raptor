@@ -425,8 +425,17 @@ class TestResumeCliGates:
         # resumable, so the CLI proceeded instead of refusing.
         # complete_run is idempotent on a completed run (the terminal-
         # status guard only refuses CHANGES of terminal state).
+        # A LEGITIMATELY completed run has its report on disk — write
+        # it via the production path first, or (under randomised
+        # order, before the report test has run) the CLI's
+        # contradicted-completion detector fires its --reopen message
+        # instead of the generic completed refusal under test.
+        from core.audit.report import generate_report, write_report
         from core.run import complete_run
-        complete_run(resumed_run["out"])
+        out = resumed_run["out"]
+        if not (out / "audit-report.json").is_file():
+            write_report(generate_report(out), out)
+        complete_run(out)
 
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume",

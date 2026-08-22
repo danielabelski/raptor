@@ -48,6 +48,9 @@ Artifact envelope schema (every ``{artifact}.json``)::
       "build_id": "<hex>",          # matches the directory name
       "artifact": "<name>",         # matches the file stem
       "source_command": "<str>",    # free-text producer tag
+      "binary_sha256": "<hex>",     # OPTIONAL: content hash of the
+                                    # binary the artifact was computed
+                                    # from (additive; absent = legacy)
       "data": { ... }               # artifact payload (see below)
     }
 
@@ -107,6 +110,28 @@ _KNOWN_ARTIFACTS = frozenset({
 })
 
 
+def _valid_artifact(artifact: str) -> bool:
+    """Only the documented artifact names may be read or written.
+
+    Enforcing the allowlist in get/put (not just documenting it) keeps
+    a crafted artifact name from traversing outside the entry dir when
+    joined into ``{artifact}.json`` and keeps undocumented files in the
+    shared, externally-writable cache from entering RAPTOR's evidence
+    lanes.
+    """
+    return artifact in _KNOWN_ARTIFACTS
+
+
+def _binary_sha256(binary_path: str | Path) -> str | None:
+    """SHA-256 of the binary an artifact describes, or None."""
+    try:
+        from core.hash import sha256_file
+
+        return sha256_file(Path(binary_path))
+    except Exception:  # noqa: BLE001 — unhashable binary = no binding
+        return None
+
+
 @dataclass
 class BuildIDCache:
     """Persistent binary analysis cache keyed by build-ID."""
@@ -115,12 +140,18 @@ class BuildIDCache:
     _index: dict[str, dict[str, Path]] = field(default_factory=dict)
 
     def has(self, build_id: str, artifact: str) -> bool:
-        if not _valid_build_id(build_id):
+        if not _valid_build_id(build_id) or not _valid_artifact(artifact):
             return False
         path = self._artifact_path(build_id, artifact)
         return path.is_file()
 
-    def get(self, build_id: str, artifact: str) -> dict[str, Any] | None:
+    def get(
+        self,
+        build_id: str,
+        artifact: str,
+        *,
+        expected_binary_sha256: str | None = None,
+    ) -> dict[str, Any] | None:
         """Read a cached entry.
 
         Returns the on-disk envelope written by put() — the dict
@@ -131,9 +162,18 @@ class BuildIDCache:
         Tolerant by design (the cache is shared with external
         consumers): a missing artifact file, unreadable JSON, or an
         envelope written under a NEWER format version all read as a
-        cache miss (None), never an error.
+        cache miss (None), never an error. Artifact names outside the
+        documented allowlist are always a miss.
+
+        ``expected_binary_sha256`` binds the read to binary content:
+        when the caller knows the hash of the binary it is asking
+        about AND the envelope records the producer-side hash
+        (``binary_sha256``), a mismatch is a miss — a forged build-id
+        cannot substitute artifacts computed for a different binary.
+        Envelopes without the field (legacy / external producers)
+        remain readable at build-id scope only.
         """
-        if not _valid_build_id(build_id):
+        if not _valid_build_id(build_id) or not _valid_artifact(artifact):
             return None
         path = self._artifact_path(build_id, artifact)
         if not path.is_file():
@@ -150,6 +190,16 @@ class BuildIDCache:
                 "— treating as miss", path, version, _FORMAT_VERSION,
             )
             return None
+        recorded_sha = entry.get("binary_sha256") or ""
+        if expected_binary_sha256 and recorded_sha \
+                and recorded_sha != expected_binary_sha256:
+            logger.warning(
+                "build-id cache: %s records binary_sha256 %s but the "
+                "current binary hashes to %s — content mismatch under "
+                "the same build-id; treating as miss",
+                path, recorded_sha[:16], expected_binary_sha256[:16],
+            )
+            return None
         return entry
 
     def put(
@@ -158,14 +208,29 @@ class BuildIDCache:
         artifact: str,
         data: dict[str, Any],
         source_command: str = "",
+        binary_sha256: str = "",
     ) -> Path | None:
         """Write an artifact envelope; returns the path, or None when
         the build_id is rejected (non-hex — could otherwise traverse
-        outside cache_dir via a crafted id)."""
+        outside cache_dir via a crafted id) or the artifact name is
+        outside the documented allowlist (same traversal shape, plus
+        undocumented files must not enter the shared layout).
+
+        ``binary_sha256`` (optional, additive envelope field) records
+        the content hash of the binary the artifact was computed from
+        so readers can bind cache hits to binary content, not just the
+        linker-choosable build-id."""
         if not _valid_build_id(build_id):
             logger.warning(
                 "build-ID cache: rejected invalid build_id %r (artifact %s)",
                 build_id, artifact,
+            )
+            return None
+        if not _valid_artifact(artifact):
+            logger.warning(
+                "build-ID cache: rejected unknown artifact %r "
+                "(build_id %s); allowed: %s",
+                artifact, build_id, sorted(_KNOWN_ARTIFACTS),
             )
             return None
         entry_dir = self.cache_dir / build_id
@@ -180,6 +245,8 @@ class BuildIDCache:
             "source_command": source_command,
             "data": data,
         }
+        if binary_sha256:
+            wrapped["binary_sha256"] = binary_sha256
 
         fd, tmp = tempfile.mkstemp(dir=str(entry_dir), suffix=".tmp")
         try:
@@ -379,8 +446,15 @@ def store_oracle_verdicts(
     for bid, payload in payloads.items():
         if not payload["verdicts"]:
             continue
+        # Content binding: stamp the analysed binary's hash into the
+        # envelope so later readers can reject a forged build-id
+        # carrying artifacts for a different binary.
+        sha = ""
+        if payload.get("binary_path"):
+            sha = _binary_sha256(payload["binary_path"]) or ""
         if cache.put(bid, "oracle-verdicts", payload,
-                     source_command=source_command) is not None:
+                     source_command=source_command,
+                     binary_sha256=sha) is not None:
             written += 1
     if written:
         logger.info(

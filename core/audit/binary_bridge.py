@@ -316,14 +316,21 @@ def load_binary_bridge(
     *,
     target_path: Path | None = None,
     build_id_cache: object | None = None,
+    current_build_ids: dict[str, str] | None = None,
 ) -> BinaryBridgeResult | None:
     """Load all binary analysis artifacts from sibling run directories.
 
     When *target_path* is set, only sibling runs that analysed the same
     target are considered (via ``.raptor-run.json`` target_path match).
     When *build_id_cache* is provided, cached layer0 findings are merged
-    in addition to sibling-directory scanning.  Returns None when no
-    binary analysis output is found.
+    in addition to sibling-directory scanning — but ONLY for the
+    build-ids named in *current_build_ids* (``{build_id: binary_path}``
+    of the binaries actually present in this run's target set, the
+    cache-side mirror of ``find_binary_run_dirs``'s target matching).
+    Without that scoping every entry an external writer ever left in
+    the shared cache merged into every audit as current-target sink
+    evidence. No known build-ids → nothing merges (fail closed).
+    Returns None when no binary analysis output is found.
     """
     run_dirs = find_binary_run_dirs(out_dir, target_path=target_path)
 
@@ -331,7 +338,9 @@ def load_binary_bridge(
 
     if build_id_cache is not None:
         try:
-            _merge_from_build_cache(result, build_id_cache)
+            _merge_from_build_cache(
+                result, build_id_cache, current_build_ids,
+            )
         except Exception:
             logger.debug("build_id_cache merge failed", exc_info=True)
 
@@ -367,28 +376,65 @@ def load_binary_bridge(
 def _merge_from_build_cache(
     result: BinaryBridgeResult,
     cache: object,
+    current_build_ids: dict[str, str] | None = None,
 ) -> None:
-    """Pull cached binary artifacts keyed by build-ID into the bridge result."""
-    if not hasattr(cache, "cache_dir") or not cache.cache_dir.is_dir():
+    """Pull cached binary artifacts for the CURRENT binaries into the result.
+
+    The shared build-ID cache is externally writable (documented public
+    contract, optionally a network mount) and its keys are
+    linker-choosable. Only entries whose build-id belongs to a binary
+    actually present in this run's target set may merge, and only via
+    ``cache.get`` (envelope + format-version + artifact-allowlist
+    validation). When the entry envelope records the producing binary's
+    content hash, it must match the current binary's hash — a forged
+    build-id then cannot substitute artifacts computed for a different
+    binary. No known current build-ids → nothing merges.
+    """
+    if not current_build_ids or not hasattr(cache, "get"):
+        if current_build_ids is None:
+            logger.debug(
+                "build_id_cache merge skipped: no current-run build-ids "
+                "known — cached layer0 findings stay out of this audit",
+            )
         return
-    for entry_dir in cache.cache_dir.iterdir():
-        if not entry_dir.is_dir():
-            continue
-        layer0_path = entry_dir / "layer0-findings.json"
-        if layer0_path.is_file():
+    for build_id, binary_path in current_build_ids.items():
+        expected_sha = None
+        if binary_path and Path(binary_path).is_file():
             try:
-                data = json.loads(layer0_path.read_text())
-                inner = data.get("data", data)
-                for f in inner.get("findings", []):
-                    caller = f.get("function", "")
-                    sink = f.get("target", "")
-                    if caller and sink:
-                        result.sink_edges.append(BinarySinkEdge(
-                            caller=caller,
-                            sink=sink,
-                            evidence_tier="layer0",
-                            confidence="layer0",
-                            binary_path=f.get("binary_path", ""),
-                        ))
-            except Exception:
+                from .build_id_cache import _binary_sha256
+
+                expected_sha = _binary_sha256(binary_path)
+            except Exception:  # noqa: BLE001 — binding check degrades to build-id scope
+                expected_sha = None
+        try:
+            envelope = cache.get(
+                build_id, "layer0-findings",
+                expected_binary_sha256=expected_sha,
+            )
+        except TypeError:
+            # Older cache object without the binding kwarg.
+            envelope = cache.get(build_id, "layer0-findings")
+        except Exception:
+            logger.debug(
+                "build_id_cache read failed for %s", build_id,
+                exc_info=True,
+            )
+            continue
+        if not isinstance(envelope, dict):
+            continue
+        inner = envelope.get("data", envelope)
+        if not isinstance(inner, dict):
+            continue
+        for f in inner.get("findings", []):
+            if not isinstance(f, dict):
                 continue
+            caller = f.get("function", "")
+            sink = f.get("target", "")
+            if caller and sink:
+                result.sink_edges.append(BinarySinkEdge(
+                    caller=caller,
+                    sink=sink,
+                    evidence_tier="layer0",
+                    confidence="layer0",
+                    binary_path=f.get("binary_path", ""),
+                ))

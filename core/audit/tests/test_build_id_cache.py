@@ -302,11 +302,18 @@ class TestBridgeRoundTrip:
 
         out_dir = tmp_path / "out" / "run1"
         out_dir.mkdir(parents=True)
-        result = load_binary_bridge(out_dir, build_id_cache=cache)
+        # Cache merges are scoped to the current run's binaries: the
+        # build-id must be named for the entry to merge.
+        result = load_binary_bridge(
+            out_dir, build_id_cache=cache,
+            current_build_ids={"ab12cd34": "/build/app"},
+        )
         assert result is not None
         assert ("parse_header", "sprintf") in {
             (e.caller, e.sink) for e in result.sink_edges
         }
+        # Without the scoping (unknown current binaries) nothing merges.
+        assert load_binary_bridge(out_dir, build_id_cache=cache) is None
 
     def test_partial_cache_tolerated(self, tmp_path):
         """A build-ID dir holding only SOME artifacts (e.g. written by

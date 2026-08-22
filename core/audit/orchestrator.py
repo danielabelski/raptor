@@ -3290,6 +3290,39 @@ def _iris_prep_specs(
     return iris_taint_specs, project_sinks
 
 
+def _current_binary_build_ids(
+    config, checklist: dict[str, Any] | None,
+) -> dict[str, str]:
+    """``{build_id: binary_path}`` for the binaries in THIS run's target set.
+
+    Sourced from the enriched inventory's ``binary_oracle`` summary
+    (the same block the peer-group and triage consumers read), which
+    already passed the provenance filter + source-coverage floor.
+    Empty when no binary oracle ran — cache merges then stay fail
+    closed rather than adopting every build-id in the shared cache.
+    """
+    out: dict[str, str] = {}
+    inventory = next(
+        (
+            c for c in (config.inventory, checklist)
+            if isinstance(c, dict) and c.get("binary_oracle")
+        ),
+        None,
+    )
+    if inventory is None:
+        return out
+    summary = inventory.get("binary_oracle")
+    if not isinstance(summary, dict):
+        return out
+    for b in summary.get("binaries") or []:
+        if not isinstance(b, dict):
+            continue
+        bid = b.get("build_id") or ""
+        if isinstance(bid, str) and bid:
+            out[bid] = str(b.get("path", "") or "")
+    return out
+
+
 def _sarif_clean_files_from_cache(
     sarif_cache: SarifCache | None,
     checklist: dict[str, Any],
@@ -3506,6 +3539,10 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             config.out_dir,
             target_path=config.target_path,
             build_id_cache=_build_id_cache,
+            # Scope cache merges to the binaries of THIS run's target
+            # set — the shared cache holds every build-id any run (or
+            # external writer) ever cached.
+            current_build_ids=_current_binary_build_ids(config, checklist),
         )
 
     evidence_index = build_evidence_index(

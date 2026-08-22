@@ -428,7 +428,10 @@ def run_edge_pass(
             summary["suspicious"] += 1
         if on_progress is not None:
             try:
-                on_progress(i + 1, len(gaps), outcome)
+                # 0-based: format_progress_line renders ``idx + 1``
+                # (the function loop's convention). Passing i+1 here
+                # double-incremented — the run printed [2/16]..[17/16].
+                on_progress(i, len(gaps), outcome)
             except Exception:  # noqa: BLE001
                 logger.debug("edge progress callback failed", exc_info=True)
     return summary, tier2_by_caller

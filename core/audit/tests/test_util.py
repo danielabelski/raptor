@@ -11,6 +11,7 @@ from core.audit._util import (
     find_function_lines,
     is_valid_identifier,
     safe_join,
+    safe_joern_name_lenient,
 )
 
 
@@ -162,3 +163,39 @@ class TestExtractContextMapSet:
         }
         result = extract_context_map_set(cmap, "entry_points")
         assert result == {"a.c:f"}
+
+
+class TestSafeJoernNameLenient:
+    """Contract for the shared lenient Joern-name escaper."""
+
+    def test_plain_and_qualified_names_pass(self):
+        assert safe_joern_name_lenient("process_input") == "process_input"
+        assert safe_joern_name_lenient("pkg.MyClass.method") == "pkg.MyClass.method"
+
+    def test_injection_rejected(self):
+        assert safe_joern_name_lenient('foo"); sys.exit(1); //') is None
+
+    def test_empty_rejected(self):
+        assert safe_joern_name_lenient("") is None
+
+    def _force_fallback(self, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "packages.joern.runner", None)
+
+    def test_fallback_accepts_dotted_and_underscored(self, monkeypatch):
+        self._force_fallback(monkeypatch)
+        assert safe_joern_name_lenient("a.b_c.d9") == "a.b_c.d9"
+
+    def test_fallback_rejects_control_chars_and_separators(self, monkeypatch):
+        self._force_fallback(monkeypatch)
+        assert safe_joern_name_lenient("tab\tname") is None
+        assert safe_joern_name_lenient("foo-bar") is None
+        assert safe_joern_name_lenient("foo bar") is None
+
+    def test_fallback_escapes_backslash_and_quote(self, monkeypatch):
+        # Escaping only matters for values that survive validation;
+        # isalnum() lets unicode letters through unescaped, while a
+        # backslash or quote never reaches the escape (not alnum).
+        self._force_fallback(monkeypatch)
+        assert safe_joern_name_lenient("λfunc") == "λfunc"
+        assert safe_joern_name_lenient('na"me') is None

@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ._util import safe_joern_name_lenient as _safe_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,24 +53,6 @@ _COPY_SINK_NAMES = (
 _INIT_NAMES = (
     "memset", "memcpy", "kzalloc", "kcalloc", "vzalloc",
 )
-
-
-def _safe_name(value: str) -> str | None:
-    try:
-        from packages.joern.runner import (
-            _escape_scala_string,
-            _validate_substitution_value,
-        )
-    except ImportError:
-        if not value or not value.replace(".", "").replace("_", "").isalnum():
-            return None
-        if any(ord(ch) < 0x20 for ch in value):
-            return None
-        return value.replace("\\", "\\\\").replace('"', '\\"')
-
-    if not _validate_substitution_value(value):
-        return None
-    return _escape_scala_string(value)
 
 
 def _run_query(server: Any, query: str) -> list | None:

@@ -70,6 +70,40 @@ def safe_joern_name(value: str) -> str | None:
     return _escape_scala_string(value)
 
 
+def safe_joern_name_lenient(value: str) -> str | None:
+    """Validate and escape a name for Joern query interpolation.
+
+    Returns the escaped string or None if the value is unsafe.
+
+    Sibling of :func:`safe_joern_name` with an identical primary path
+    (``packages.joern.runner`` validate + escape) but a LENIENT
+    ImportError fallback: dotted names are accepted when stripping
+    ``.`` / ``_`` leaves ``str.isalnum()`` content (so unicode
+    letters and leading digits pass), control characters are
+    rejected, and backslashes / double quotes are escaped. The strict
+    sibling's fallback only accepts ASCII identifier paths. Merging
+    the two means picking one fallback acceptance set — a behaviour
+    change deliberately not taken during consolidation.
+    """
+    try:
+        from packages.joern.runner import (
+            _escape_scala_string,
+            _validate_substitution_value,
+        )
+    except ImportError:
+        # Fallback: basic validation
+        if not value or not value.replace(".", "").replace("_", "").isalnum():
+            return None
+        # Reject control characters (codepoint < 0x20)
+        if any(ord(ch) < 0x20 for ch in value):
+            return None
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    if not _validate_substitution_value(value):
+        return None
+    return _escape_scala_string(value)
+
+
 def find_function_in_checklist(
     checklist: dict[str, Any],
     file_path: str,

@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
+from ._util import safe_joern_name_lenient as _safe_name
+
 
 if TYPE_CHECKING:
     from .condition_extraction import SinkGuard
@@ -146,30 +148,6 @@ class InterproceduralGuardResult:
 #   - callers: .caller.fullName.l
 #   - guards:  .ast.isControlStructure.condition.code.l
 #   - packages/joern/runner.py _build_taint_query: reachableByFlows
-
-
-def _safe_name(value: str) -> str | None:
-    """Validate and escape a name for Joern query interpolation.
-
-    Returns the escaped string or None if the value is unsafe.
-    """
-    try:
-        from packages.joern.runner import (
-            _escape_scala_string,
-            _validate_substitution_value,
-        )
-    except ImportError:
-        # Fallback: basic validation
-        if not value or not value.replace(".", "").replace("_", "").isalnum():
-            return None
-        # Reject control characters (codepoint < 0x20)
-        if any(ord(ch) < 0x20 for ch in value):
-            return None
-        return value.replace("\\", "\\\\").replace('"', '\\"')
-
-    if not _validate_substitution_value(value):
-        return None
-    return _escape_scala_string(value)
 
 
 def _build_guard_identifiers_query(

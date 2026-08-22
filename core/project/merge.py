@@ -351,6 +351,14 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
                 continue
             if _is_known_file(item.name):
                 continue
+            if item.name.startswith("raptor-rootfs-") and \
+                    item.name.endswith(".tar"):
+                # Orphaned image-export staging tar (multi-GB; a crash
+                # mid-export leaves it, the exporter's finally removes
+                # it on every normal path) — never merge-duplicate it.
+                logger.debug("Skipping rootfs staging tar in merge: %s",
+                             item)
+                continue
             if not _resolves_inside(item, run_root):
                 logger.debug(
                     "Skipping artefact resolving outside run dir: %s", item
@@ -388,6 +396,13 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
             if not item.is_dir():
                 continue
             if item.name.startswith("."):
+                continue
+            if item.name == "afl-rootfs":
+                # An operator-kept env-build rootfs (--keep-env-rootfs)
+                # is a multi-GB exported image tree — campaign
+                # substrate, not an analysis artefact.
+                logger.debug("Skipping kept env rootfs in merge: %s",
+                             item)
                 continue
             if not _resolves_inside(item, run_root):
                 logger.debug(

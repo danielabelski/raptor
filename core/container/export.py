@@ -165,8 +165,17 @@ def export_rootfs(
 
     tar_path: Path | None = None
     try:
+        # Stage the tar NEXT TO the destination, not in the default
+        # temp dir: the flattened image can be many GB, and on hosts
+        # where /tmp is a tmpfs a handful of concurrent exports
+        # exhausts it (observed live: multiple AFL++-image exports
+        # filled a 248G tmpfs). dest_dir's filesystem must hold the
+        # unpacked rootfs anyway, so it can hold the tar first.
+        staging_dir = Path(dest_dir).parent
+        staging_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(prefix="raptor-rootfs-",
                                          suffix=".tar",
+                                         dir=str(staging_dir),
                                          delete=False) as fd:
             tar_path = Path(fd.name)
         export = run_cli(

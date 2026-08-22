@@ -453,3 +453,35 @@ class TestSarifMerge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEnvBuildTransientsSkipped(unittest.TestCase):
+    """Env-build campaign substrate never reaches merged output: an
+    orphaned image-export staging tar (crash mid-export) and an
+    operator-kept afl-rootfs tree are multi-GB transients, not
+    analysis artefacts."""
+
+    def test_rootfs_staging_tar_not_merged(self):
+        with TemporaryDirectory() as d:
+            run = Path(d) / "run_a"
+            run.mkdir()
+            (run / "findings.json").write_text("[]")
+            (run / "raptor-rootfs-x1y2z3.tar").write_text("fake tar")
+            (run / "keepme.txt").write_text("real artefact")
+            out = Path(d) / "merged"
+            merge_runs([run], out)
+            self.assertFalse((out / "raptor-rootfs-x1y2z3.tar").exists())
+            self.assertTrue((out / "keepme.txt").exists())
+
+    def test_kept_afl_rootfs_dir_not_merged(self):
+        with TemporaryDirectory() as d:
+            run = Path(d) / "run_a"
+            (run / "afl-rootfs" / "usr").mkdir(parents=True)
+            (run / "afl-rootfs" / "usr" / "big").write_text("x")
+            (run / "findings.json").write_text("[]")
+            (run / "afl" / "main").mkdir(parents=True)
+            (run / "afl" / "main" / "fuzzer_stats").write_text("k:v")
+            out = Path(d) / "merged"
+            merge_runs([run], out)
+            self.assertFalse((out / "afl-rootfs").exists())
+            self.assertTrue((out / "afl").exists())

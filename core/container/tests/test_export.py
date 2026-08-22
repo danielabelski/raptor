@@ -123,3 +123,40 @@ def test_export_rootfs_create_failure_classified(tmp_path: Path) -> None:
     assert not outcome.ok
     assert outcome.reason == "create_failed"
     assert outcome.reason_class == "manifest_unknown"
+
+
+def test_export_tar_staged_next_to_dest_not_default_tmp(
+        tmp_path: Path) -> None:
+    """The flattened-image tar (potentially many GB) must be staged on
+    dest_dir's filesystem, never the default temp dir — on tmpfs /tmp
+    hosts a few concurrent exports exhaust the mount (observed live).
+    """
+    tar = tmp_path / "canned.tar"
+    info = tarfile.TarInfo("bin/init")
+    info.size = 2
+    _tar_with([(info, b"#!")], tar)
+    tar_dests: list[Path] = []
+
+    def fake(cmd: list[str], **_kw: Any) -> RunOutcome:
+        if cmd[:2] == ["docker", "create"]:
+            return RunOutcome(returncode=0, stdout="cid123\n", stderr="",
+                              timed_out=False)
+        if cmd[:2] == ["docker", "export"]:
+            out_path = Path(cmd[cmd.index("-o") + 1])
+            tar_dests.append(out_path)
+            out_path.write_bytes(tar.read_bytes())
+            return RunOutcome(returncode=0, stdout="", stderr="",
+                              timed_out=False)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return RunOutcome(returncode=0, stdout=_INSPECT, stderr="",
+                              timed_out=False)
+        return RunOutcome(returncode=0, stdout="", stderr="",
+                          timed_out=False)
+
+    dest = tmp_path / "deep" / "run" / "rootfs"
+    with patch.object(ex, "run_cli", side_effect=fake):
+        outcome = ex.export_rootfs("nginx@sha256:" + "a" * 64, dest)
+    assert outcome.ok, outcome.reason
+    assert len(tar_dests) == 1
+    assert tar_dests[0].parent == dest.parent
+    assert not tar_dests[0].exists()  # staged tar removed after extract

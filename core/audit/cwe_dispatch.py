@@ -551,7 +551,93 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": None,
         "sinks": [],
     },
+    # Inclusion of functionality from untrusted control sphere — the
+    # code-inclusion taint shape. The joern+sinks-only entry follows
+    # the CWE-90 precedent; the code-loading sink vocabulary extends
+    # the include/require names CWE-22 already carries. NOTE: the
+    # joern runner matches dotted sinks by trailing segment
+    # (``sink.split(".")[-1]``), so ``System.load`` would degrade to
+    # the ultra-generic ``load`` (yaml.load/json.load/pickle.load…) —
+    # deliberately omitted; ``System.loadLibrary`` keeps its
+    # distinctive tail.
+    "CWE-829": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": None,
+        "sinks": ["include", "include_once", "require", "require_once",
+                  "dlopen", "LoadLibrary", "LoadLibraryA", "LoadLibraryW",
+                  "System.loadLibrary",
+                  "importlib.import_module", "__import__"],
+    },
 }
+
+# Classes a deterministic tool CANNOT adjudicate — by policy, not by
+# gap. These are quality/operational properties, not exploitability
+# claims: no tool output (pattern match, taint path, SMT model) can
+# state the harm, so a synthesized checker "confirming" one is always
+# a shape assertion, never evidence. Suspicious verdicts in these
+# families stay at hypothesis grade with the reason recorded — they
+# are NOT on-demand checker-synthesis candidates (the long
+# instrumented run watched synthesis promote empty-audit-hook and
+# irrelevant-code shapes to finding/high on self-referential pattern
+# matches).
+#
+# Known gap (next pass): the park is class-exact, so logging-family
+# CWE drift bypasses it — a review emitting the operational-logging
+# neighbours CWE-779 (logging of excessive data) or CWE-223 (omission
+# of security-relevant information) is a concrete class and keeps the
+# synthesis lane open. NOT CWE-117 (log injection), which is
+# taint-verifiable and must never be parked. Extend the family or add
+# drift telemetry when a run shows drift evidence.
+CWE_NOT_TOOL_VERIFIABLE: dict[str, str] = {
+    # Insufficient logging: "enough logging" is an operational
+    # detectability judgment; absence of a log call names no harm
+    # mechanism a tool could test.
+    "CWE-778": (
+        "insufficient logging is an operational/detectability "
+        "property — no deterministic tool output can adjudicate "
+        "'enough logging'; not an exploitability claim"
+    ),
+    # Irrelevant code: a code-quality property; a pattern matching
+    # dead/extraneous code asserts a shape, not attacker-facing harm.
+    "CWE-1164": (
+        "irrelevant/extraneous code is a code-quality property with "
+        "no attacker-facing harm mechanism for a tool to test"
+    ),
+}
+
+
+def not_tool_verifiable_reason(cwe: str) -> str:
+    """Policy reason a CWE class is not tool-verifiable ('' when it is).
+
+    Classes in :data:`CWE_NOT_TOOL_VERIFIABLE` never earn tool chains
+    or synthesized checkers — findings stay at hypothesis/suspicious
+    grade with this reason recorded.
+    """
+    normalized = (cwe or "").upper().strip()
+    if normalized and not normalized.startswith("CWE-"):
+        normalized = f"CWE-{normalized}"
+    return CWE_NOT_TOOL_VERIFIABLE.get(normalized, "")
+
+
+def is_placeholder_cwe(cwe: str) -> bool:
+    """True when *cwe* is a placeholder, not a real class.
+
+    Reviews emit ``CWE-NOINFO`` / ``CWE-000`` / ``CWE-Other`` when the
+    model has no class in mind. Real CWE identifiers have a positive
+    numeric tail; anything else is a placeholder and must not seed
+    dispatch, inference bypass, or checker synthesis. Empty input is
+    "absent", not a placeholder — callers handle it separately.
+    """
+    normalized = (cwe or "").upper().strip()
+    if not normalized:
+        return False
+    if normalized.startswith("CWE-"):
+        normalized = normalized[4:]
+    if not normalized.isdigit():
+        return True
+    return int(normalized) == 0
 
 
 def lookup(cwe: str) -> dict[str, Any] | None:
@@ -641,6 +727,14 @@ _HYPOTHESIS_CWE_MAP = [
       r"memory\s+exhaustion|resource\s+exhaustion|"
       r"grows?\s+without\s+(?:bound|limit|cap)|no\s+backpressure"),
      "CWE-770"),
+    # Untrusted-inclusion family (appended: first-match-wins, so
+    # pre-existing behaviour is unchanged; "...inject" phrasings keep
+    # routing to the earlier CWE-78/94 rows).
+    ((r"(?:includ|inclusion|import|load)\w*.{0,40}untrusted"
+      r".{0,25}(?:content|code|source|sphere|url|librar|module)|"
+      r"untrusted.{0,40}(?:inclusion|functionality)|"
+      r"(?:remote|untrusted).{0,25}(?:code|script|librar\w+|module)"
+      r".{0,30}(?:includ|import|load)"), "CWE-829"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

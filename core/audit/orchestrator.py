@@ -13810,7 +13810,22 @@ def _effective_cwe(
     review = outcome.review_result or {}
     cwe = review.get("cwe_class") or review.get("cwe") or ""
     if cwe:
-        return cwe
+        # Placeholder classes (CWE-NOINFO / CWE-000 / CWE-Other) are
+        # not classes — they starve dispatch exactly like an empty
+        # field, and worse: they used to ride into checker synthesis
+        # as literal seed CWEs. Treat them as absent so the keyword
+        # inference below gets its re-classification shot; the
+        # original value is stamped for the journal.
+        try:
+            from .cwe_dispatch import is_placeholder_cwe
+        except ImportError:
+            return cwe
+        if not is_placeholder_cwe(cwe):
+            return cwe
+        if outcome.review_result is not None and not review.get(
+            "cwe_placeholder",
+        ):
+            outcome.review_result["cwe_placeholder"] = cwe
 
     inferred_prior = review.get("cwe_inferred") or ""
     if inferred_prior:
@@ -14242,6 +14257,9 @@ def _warn_unmapped_cwe(cwe: str) -> None:
 
     Without this, a CWE outside every dispatch table silently produces
     an empty chain and the claim is never mechanically tested.
+    Policy-parked classes get their own line: they are unmapped by
+    decision, and their suspicious verdicts do NOT become synthesis
+    candidates.
     """
     norm = cwe.upper().strip()
     if not norm.startswith("CWE-"):
@@ -14249,6 +14267,21 @@ def _warn_unmapped_cwe(cwe: str) -> None:
     if norm in _UNMAPPED_CWES_LOGGED:
         return
     _UNMAPPED_CWES_LOGGED.add(norm)
+    try:
+        from .cwe_dispatch import not_tool_verifiable_reason
+    except ImportError:
+        policy_reason = ""
+    else:
+        policy_reason = not_tool_verifiable_reason(norm)
+    if policy_reason:
+        logger.info(
+            "review emitted %s — class is not tool-verifiable by "
+            "policy (%s); verdicts in this family stay at "
+            "hypothesis/suspicious grade and are excluded from "
+            "on-demand checker synthesis",
+            norm, policy_reason,
+        )
+        return
     logger.warning(
         "review emitted %s but no tool-chain dispatch entry exists — "
         "CWE-seeded verification will not run for this class "
@@ -18407,6 +18440,48 @@ def _promote_suspicious(
             )
 
 
+def _record_synthesis_refusal(
+    config: OrchestratorConfig,
+    outcome: ReviewOutcome,
+    cwe: str,
+    refusal: str,
+) -> None:
+    """Persist a synthesis-policy refusal to ``suppressions.jsonl``.
+
+    ``dropped=False`` — the outcome survives at suspicious grade; the
+    record exists so an operator can tell policy-capped from ordinary
+    suspicious after the run (the pre-sweep journal entry cannot carry
+    it, and re-journal fires only on status change). Same single-writer
+    shape as the oracle-triage skip trail; readers tolerate extra keys.
+    """
+    out_dir = getattr(config, "out_dir", None)
+    if not out_dir:
+        return
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+    except ImportError:
+        return
+    key = f"{outcome.file}:{outcome.function}"
+    record_suppression(
+        Path(out_dir),
+        finding={
+            "finding_id": f"audit-synthesis-policy:{key}:{outcome.line or 0}",
+            "rule_id": "audit:synthesis-policy",
+            "file_path": outcome.file,
+            "line": outcome.line or 0,
+            "function": outcome.function,
+        },
+        verdict="synthesis_policy_refused",
+        reason=refusal,
+        dropped=False,
+        extra={
+            "stage": "on-demand-synthesis",
+            "cwe": cwe or "",
+            "status": outcome.status,
+        },
+    )
+
+
 def _synthesize_unmapped_suspicious(
     result: OrchestratorResult,
     config: OrchestratorConfig,
@@ -18436,6 +18511,37 @@ def _synthesize_unmapped_suspicious(
     """
     if not getattr(config, "on_demand_synthesis", True):
         return
+    try:
+        from .checker_synthesis import ondemand_synthesis_refusal_reason
+    except ImportError:
+        pass
+    else:
+        refusal = ondemand_synthesis_refusal_reason(
+            cwe, hypothesis, outcome.review_result,
+        )
+        if refusal:
+            # Policy parking, never silent: the durable surface is a
+            # suppressions.jsonl record (dropped=false — the outcome
+            # SURVIVES at suspicious grade; same shape as the
+            # oracle-triage skip trail, /review surfaces it), plus the
+            # tier-telemetry skip counter and this log line. The
+            # in-memory review_result stamp additionally reaches any
+            # consumer that serializes the outcome after the sweep
+            # (checkpoints, corpus grader) — but the journal entry was
+            # already written pre-sweep, so it is NOT the record of
+            # this refusal.
+            if outcome.review_result is not None:
+                outcome.review_result["synthesis_refused"] = refusal
+            _record_synthesis_refusal(config, outcome, cwe, refusal)
+            _increment_tier_dict(
+                result.tier_counters, "synthesis_on_demand", "skipped",
+            )
+            logger.info(
+                "on-demand synthesis refused %s:%s — %s "
+                "(outcome stays %s)",
+                outcome.file, outcome.function, refusal, outcome.status,
+            )
+            return
     try:
         from .checker_synthesis import synthesize_verification_rule
 

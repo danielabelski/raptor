@@ -178,6 +178,41 @@ def _load_annotation(ann_dir: Path | None, file: str, function: str):
         return None
 
 
+def _load_suppression_records(
+    out_dir: Path | None, file: str, function: str,
+) -> list[dict]:
+    """Chokepoint records for this function from suppressions.jsonl.
+
+    Covers both dropped findings (binary-oracle, vendored triage) and
+    dropped=false survivor records (synthesis-policy refusals) — the
+    latter distinguish policy-capped suspicious from ordinary
+    suspicious. Tolerant reader: unknown keys ignored, bad lines
+    skipped.
+    """
+    if not out_dir:
+        return []
+    path = out_dir / "suppressions.jsonl"
+    if not path.is_file():
+        return []
+    records = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("file_path") == file and rec.get("function") == function:
+                records.append(rec)
+    except OSError:
+        return []
+    return records
+
+
 def _annotations_dir(out_dir: Path | None) -> Path | None:
     if not out_dir:
         return None
@@ -227,15 +262,19 @@ def cmd_show(args):
         index = {}
 
     if args.function:
-        _show_function(args.file, args.function, cm, entries, index, ann_dir, args)
+        _show_function(
+            args.file, args.function, cm, entries, index, ann_dir, args,
+            out_dir=out_dir,
+        )
     else:
         _show_file(args.file, cm, entries, index, ann_dir, args)
 
 
-def _show_function(file, function, cm, entries, index, ann_dir, args):
+def _show_function(file, function, cm, entries, index, ann_dir, args, out_dir=None):
     key = f"{file}:{function}"
     role = _context_map_role(cm, file, function)
     ann = _load_annotation(ann_dir, file, function)
+    suppressions = _load_suppression_records(out_dir, file, function)
 
     journal_entry = None
     for e in reversed(entries):
@@ -281,6 +320,18 @@ def _show_function(file, function, cm, entries, index, ann_dir, args):
         print("  Unresolved questions:")
         for q in journal_entry.reading_list_items:
             print(f"    - {_line(q)}")
+
+    if suppressions:
+        print()
+        print("  Chokepoint records:")
+        for rec in suppressions:
+            verdict = _line(str(rec.get("verdict", "")), max_chars=40)
+            dropped = rec.get("dropped", True)
+            kind = "dropped" if dropped else "survived (policy-capped)"
+            print(f"    {verdict} [{kind}]")
+            reason = str(rec.get("reason", ""))
+            if reason:
+                print(f"      {_line(reason, max_chars=160)}")
 
     if ann:
         print()

@@ -388,7 +388,7 @@
     "kind": "literal"
   },
   "core/audit/cwe_dispatch.py::CWE_TO_TOOL_DISPATCH": {
-    "count": 10,
+    "count": 11,
     "kind": "literal"
   },
   "core/audit/dark_verify/_execute.py::_DANGEROUS_INTERP_FUNCS": {

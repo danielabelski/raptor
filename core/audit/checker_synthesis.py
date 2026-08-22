@@ -693,6 +693,77 @@ def synthesize_from_external_seed(
     )
 
 
+# The review schema's impact.primitive enum (llm_review.REVIEW_SCHEMA
+# properties.impact.properties.primitive.enum) — re-validated at the
+# harm gate because the schema constrains only conforming reviews;
+# LLM drift can emit "none"/"n/a", which state no harm and must not
+# open the synthesis lane. Pinned against the schema by test.
+_KNOWN_IMPACT_PRIMITIVES = frozenset({
+    "read", "write", "execute", "auth_bypass", "dos", "info_leak",
+})
+
+
+def ondemand_synthesis_refusal_reason(
+    cwe: str,
+    hypothesis: str,
+    review: dict[str, Any] | None = None,
+) -> str:
+    """Why the on-demand verification lane may not synthesize for this
+    hypothesis ('' when it may).
+
+    Two policy gates, both structural (never prose heuristics):
+
+    1. Not-tool-verifiable classes
+       (``cwe_dispatch.CWE_NOT_TOOL_VERIFIABLE`` — CWE-778, CWE-1164):
+       quality/operational properties where a rule "confirming" the
+       hypothesis is always a shape assertion, never harm evidence.
+
+    2. Harm gate: a placeholder or absent class (CWE-NOINFO, CWE-000,
+       empty) must be backed by a stated harm — the review's
+       structured ``impact.primitive`` (what the attacker gains,
+       validated against the schema enum), or a hypothesis naming a
+       recognized harm mechanism (``infer_cwe_from_hypothesis`` —
+       structural reuse of the keyword dispatch table). A hypothesis
+       that states neither has stated no harm; the long instrumented
+       run watched exactly this shape promote "empty function body
+       cannot cause memory unsafety" to finding/high through a
+       self-referential pattern match.
+
+    Refused outcomes stay at suspicious/hypothesis grade; the
+    orchestrator chokepoint persists the reason to
+    ``suppressions.jsonl`` so the parking is never silent.
+    """
+    try:
+        from .cwe_dispatch import (
+            infer_cwe_from_hypothesis,
+            is_placeholder_cwe,
+            not_tool_verifiable_reason,
+        )
+    except ImportError:
+        return ""
+
+    reason = not_tool_verifiable_reason(cwe)
+    if reason:
+        return f"not tool-verifiable by policy: {reason}"
+    if not cwe or is_placeholder_cwe(cwe):
+        impact = (review or {}).get("impact") or {}
+        primitive = (
+            impact.get("primitive") if isinstance(impact, dict) else ""
+        ) or ""
+        if primitive.strip().lower() in _KNOWN_IMPACT_PRIMITIVES:
+            return ""
+        if infer_cwe_from_hypothesis(hypothesis or "") is None:
+            stated = cwe or "no CWE"
+            return (
+                f"no harm-stating hypothesis: the review stated no "
+                f"concrete defect class ({stated}), no impact "
+                f"primitive, and the hypothesis names no recognized "
+                f"harm mechanism — re-classify with a concrete CWE "
+                f"for tool verification"
+            )
+    return ""
+
+
 @dataclass
 class OnDemandSynthesisResult:
     """Result of an on-demand verification synthesis attempt.
@@ -772,6 +843,21 @@ def synthesize_verification_rule(
             "(no plausible defect); a rule distilled from it could "
             "only confirm circularly",
             getattr(outcome, "file", ""), getattr(outcome, "function", ""),
+        )
+        return None
+
+    effective_cwe = cwe or review.get("cwe_class") or review.get("cwe") or ""
+    refusal = ondemand_synthesis_refusal_reason(
+        effective_cwe, hypothesis, review,
+    )
+    if refusal:
+        # Belt-and-braces for non-orchestrator callers — the
+        # orchestrator records the reason on the outcome before it
+        # ever gets here (see _synthesize_unmapped_suspicious).
+        logger.info(
+            "on-demand synthesis refused for %s:%s — %s",
+            getattr(outcome, "file", ""), getattr(outcome, "function", ""),
+            refusal,
         )
         return None
 

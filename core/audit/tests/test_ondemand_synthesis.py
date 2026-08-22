@@ -94,7 +94,13 @@ def _outcome(status="suspicious", hypothesis="off-by-one in ring buffer wrap"):
         file="a.c", function="f", status=status,
         body="looks off", hypothesis=hypothesis, line=3,
     )
-    o.review_result = {"hypothesis": hypothesis}
+    # The lane requires a stated harm (harm gate): the structured
+    # impact primitive stands in for a concrete CWE here — see
+    # test_cwe_dispatch_policy.py for the refusal paths.
+    o.review_result = {
+        "hypothesis": hypothesis,
+        "impact": {"primitive": "write"},
+    }
     return o
 
 

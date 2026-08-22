@@ -967,6 +967,21 @@ with an interactive-TTY stamp (or legacy pre-stamp notes) earn
 human-grade weight in readers.  LLM review outcomes are recorded in the
 review journal instead.
 
+**Imported archives and human-grade notes.**  `/project import` demotes
+every annotation restored from an archive to `provenance=imported`
+(hint tier) — archives are unsigned, so a stamp inside one carries no
+operator authority.  Archives imported before the import-demotion
+hardening were restored byte-for-byte: a note forged with a human-grade
+stamp (`source=human` plus an interactive-TTY provenance) in such an
+import still reads as human-grade today, and those older imports carry
+no marker that would identify them after the fact.  `raptor doctor`
+prints an advisory listing projects with human-grade annotations it
+cannot attribute to a local or imported origin.  If you have ever
+imported archives from sources you don't fully trust, review those
+notes (`/annotate ls`, `/annotate show <file> <function>`), then
+re-stamp the ones you recognise by re-saving them interactively
+(`/annotate edit`) and remove the rest (`/annotate rm`).
+
 ---
 
 ### /scorecard

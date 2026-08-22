@@ -179,6 +179,167 @@ def _module_dep_warnings() -> list[str]:
     return out
 
 
+# Bounded-scan caps for the imported-annotation advisory sweep. Doctor
+# is on-demand, but a project output dir can hold arbitrarily many runs
+# and notes — the sweep reads at most this much before reporting what
+# it has.
+_ADVISORY_MAX_PROJECTS = 50
+_ADVISORY_MAX_RUN_DIRS = 100
+_ADVISORY_MAX_NOTES = 500
+
+# The registry ``target`` value ``import_project`` records when the
+# archive's embedded metadata omitted a target — the only import
+# breadcrumb the registry carried before the persisted import marker
+# existed. Presence is a strong import-origin hint; absence proves
+# nothing (the archive controls its own embedded target).
+_IMPORTED_TARGET_SENTINEL = "(imported)"
+
+
+def _human_grade_note_count(output_dir) -> int:
+    """Count human-grade annotations under *output_dir*'s canonical
+    annotation locations (``<out>/annotations`` plus each top-level
+    run dir's ``annotations/``), skipping any run dir that carries the
+    persisted import marker (those trees were demoted at import time).
+
+    Bounded by ``_ADVISORY_MAX_RUN_DIRS`` / ``_ADVISORY_MAX_NOTES`` —
+    an under-count on a pathological layout is acceptable for an
+    advisory.
+    """
+    from pathlib import Path
+
+    from core.annotations.provenance import is_human_grade
+    from core.annotations.storage import (
+        annotation_file_mtime,
+        iter_all_annotations,
+    )
+    from core.project.findings_utils import IMPORTED_RUN_MARKER_FILE
+
+    output_dir = Path(output_dir)
+    bases = []
+    root_base = output_dir / "annotations"
+    if root_base.is_dir() and not root_base.is_symlink():
+        bases.append(root_base)
+    scanned_dirs = 0
+    for child in sorted(output_dir.iterdir()):
+        if scanned_dirs >= _ADVISORY_MAX_RUN_DIRS:
+            break
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")) or child.name in (
+            "annotations", "findings",
+        ):
+            continue
+        scanned_dirs += 1
+        if (child / IMPORTED_RUN_MARKER_FILE).is_file():
+            # Post-hardening imported run: every restored note was
+            # demoted to provenance=imported at import time.
+            continue
+        ann_base = child / "annotations"
+        if ann_base.is_dir() and not ann_base.is_symlink():
+            bases.append(ann_base)
+
+    count = 0
+    seen = 0
+    for base in bases:
+        for ann in iter_all_annotations(base):
+            seen += 1
+            if seen > _ADVISORY_MAX_NOTES:
+                return count
+            mtime = annotation_file_mtime(base, ann.file)
+            if is_human_grade(ann.metadata, note_mtime=mtime):
+                count += 1
+    return count
+
+
+def _imported_annotation_advisories(projects_dir=None) -> list[str]:
+    """INFO-grade advisory sweep: human-grade annotations that may
+    predate the import-demotion hardening.
+
+    Projects imported BEFORE the hardening landed had their archive's
+    annotations restored byte-faithfully — a forged human-grade stamp
+    (``source=human`` + interactive-TTY provenance) in such an import
+    reads as operator authority forever, and those imports carry no
+    persisted ``.raptor-imported.json`` marker, so they cannot be
+    retro-identified from the artifacts alone. A blanket migration
+    would wrongly demote legitimate local operator notes, so this is
+    an advisory, never a fix:
+
+      * Projects whose registry ``target`` is the import sentinel
+        (see ``_IMPORTED_TARGET_SENTINEL`` — the one pre-marker
+        registry breadcrumb import ever recorded) AND that contain
+        human-grade notes in unmarked trees get a targeted advisory.
+      * Every other project containing such notes is listed
+        generically: the notes cannot be machine-attributed to a
+        local vs imported origin; operators who ever imported
+        archives from untrusted sources should review them.
+
+    Cheap (bounded scan), skippable (empty list when no projects are
+    registered), and advisory-only — the caller renders these outside
+    the failure/warning counts so they never affect the exit code.
+    """
+    try:
+        from pathlib import Path
+
+        from core.project.findings_utils import IMPORTED_RUN_MARKER_FILE
+        from core.project.project import ProjectManager
+    except Exception:  # noqa: BLE001 — advisory sweep, never fatal
+        return []
+    try:
+        mgr = ProjectManager(projects_dir=projects_dir)
+        projects = mgr.list_projects()
+    except Exception:  # noqa: BLE001
+        return []
+    if not projects:
+        return []
+
+    targeted: list[tuple[str, int]] = []
+    generic: list[str] = []
+    for project in projects[:_ADVISORY_MAX_PROJECTS]:
+        try:
+            out_dir = Path(project.output_dir)
+            if not out_dir.is_dir():
+                continue
+            if (out_dir / IMPORTED_RUN_MARKER_FILE).is_file():
+                # Post-hardening import: restored notes were demoted
+                # at import; human-grade notes here are local writes.
+                continue
+            count = _human_grade_note_count(out_dir)
+        except Exception:  # noqa: BLE001 — one bad project stays quiet
+            logging.getLogger(__name__).debug(
+                "imported-annotation sweep failed for project %s",
+                project.name, exc_info=True,
+            )
+            continue
+        if not count:
+            continue
+        if project.target == _IMPORTED_TARGET_SENTINEL:
+            targeted.append((project.name, count))
+        else:
+            generic.append(project.name)
+
+    lines: list[str] = []
+    for name, count in targeted:
+        lines.append(
+            f"project '{name}' was imported (registry target "
+            f"'(imported)') and carries {count} human-grade "
+            f"annotation(s) with no import marker — notes restored "
+            f"before the import-demotion hardening read with operator "
+            f"authority; review with /annotate ls, then re-stamp "
+            f"(/annotate edit) or remove any you don't recognise"
+        )
+    if generic:
+        names = ", ".join(f"'{n}'" for n in generic)
+        lines.append(
+            f"human-grade annotations found in project(s) {names} — "
+            f"notes predating the import-demotion hardening cannot be "
+            f"machine-attributed to a local vs imported origin; if "
+            f"you ever imported project archives from untrusted "
+            f"sources, review them with /annotate ls, then re-stamp "
+            f"(/annotate edit) or remove any you don't recognise"
+        )
+    return lines
+
+
 def _gather() -> tuple[
     list[tuple[str, bool]],  # tool_results
     list[str],               # tool_warnings
@@ -188,6 +349,7 @@ def _gather() -> tuple[
     list[str],               # env_warnings
     str | None,           # lang_line
     str | None,           # project_line
+    list[str],               # advisories
 ]:
     """Run every check and return the same shape ``init.main`` builds.
 
@@ -226,6 +388,10 @@ def _gather() -> tuple[
         from .aws_imds import aws_imds_advisories
         env_warnings += aws_imds_advisories()
         project_line = check_active_project()
+        # Doctor-only depth: imported-annotation provenance sweep.
+        # Advisory severity — rendered outside the failure/warning
+        # counts, never affects the exit code (even under --strict).
+        advisories = _imported_annotation_advisories()
     finally:
         logging.disable(logging.NOTSET)
 
@@ -234,6 +400,7 @@ def _gather() -> tuple[
         llm_lines, llm_warnings,
         env_parts, env_warnings,
         lang_line, project_line,
+        advisories,
     )
 
 
@@ -246,10 +413,15 @@ def _render(
     env_warnings: Iterable[str],
     lang_line: str | None,
     project_line: str | None,
+    advisories: Iterable[str] = (),
     *,
     verbose: bool,
 ) -> tuple[str, int, int]:
     """Render the doctor output. Returns (text, n_failures, n_warnings).
+
+    ``advisories`` are INFO-grade lines rendered under an ADVISORIES
+    heading — counted in neither failures nor warnings, so they never
+    change the exit code (not even under ``--strict``).
 
     Failure classification:
       * ``check_env`` mixes pass/fail signals — entries containing
@@ -363,6 +535,13 @@ def _render(
                 )
             else:
                 out.append(f"  ! {escape_nonprintable(w)}")
+
+    advisory_lines = [a for a in advisories if a]
+    if advisory_lines:
+        out.append("")
+        out.append("ADVISORIES:")
+        for a in advisory_lines:
+            out.append(f"  i {escape_nonprintable(a)}")
 
     if verbose and passes:
         out.append("")

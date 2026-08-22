@@ -25,6 +25,7 @@ def _gather_stub(
     env_warnings=(),
     lang_line=None,
     project_line=None,
+    advisories=(),
 ):
     """Build a _gather()-shaped tuple for tests."""
     return (
@@ -32,6 +33,7 @@ def _gather_stub(
         list(llm_lines), list(llm_warnings),
         list(env_parts), list(env_warnings),
         lang_line, project_line,
+        list(advisories),
     )
 
 
@@ -590,3 +592,140 @@ class TestNonprintableEscaping:
         assert "!" in out
         # Em-dash (a printable Unicode codepoint) must survive.
         assert "—" in out
+
+
+# ---------------------------------------------------------------------------
+# Imported-annotation advisory sweep
+# ---------------------------------------------------------------------------
+
+
+def _write_note(base, source_file, function, metadata):
+    from core.annotations.models import Annotation
+    from core.annotations.storage import write_annotation
+
+    write_annotation(base, Annotation(
+        file=source_file, function=function,
+        body="reviewed", metadata=metadata,
+    ))
+
+
+_HUMAN_GRADE_META = {
+    "status": "clean", "source": "human",
+    "tty": "stdin", "provenance": "interactive-tty",
+}
+
+
+def _make_project(tmp_path, name, *, target="/src/app"):
+    """Fabricate a registered project with an output dir under tmp_path."""
+    from core.project.project import ProjectManager
+
+    mgr = ProjectManager(projects_dir=tmp_path / "registry")
+    out_dir = tmp_path / "out" / name
+    mgr.create(name, target, output_dir=str(out_dir), resolve_target=False)
+    return out_dir
+
+
+class TestImportedAnnotationAdvisories:
+    def test_no_projects_is_skipped(self, tmp_path):
+        assert doctor._imported_annotation_advisories(
+            projects_dir=tmp_path / "registry",
+        ) == []
+
+    def test_human_grade_notes_get_generic_advisory(self, tmp_path):
+        out_dir = _make_project(tmp_path, "proj1")
+        _write_note(out_dir / "annotations", "src/a.py", "f",
+                    _HUMAN_GRADE_META)
+        lines = doctor._imported_annotation_advisories(
+            projects_dir=tmp_path / "registry",
+        )
+        assert len(lines) == 1
+        assert "'proj1'" in lines[0]
+        assert "cannot be machine-attributed" in lines[0]
+        assert "/annotate ls" in lines[0]
+
+    def test_imported_target_breadcrumb_gets_targeted_advisory(
+        self, tmp_path,
+    ):
+        """The one pre-marker registry breadcrumb: import registers
+        target='(imported)' when the archive metadata omitted a target.
+        Such projects get a targeted line, not the generic one."""
+        out_dir = _make_project(tmp_path, "oldimport", target="(imported)")
+        run = out_dir / "scan_20260101-000000"
+        run.mkdir(parents=True)
+        _write_note(run / "annotations", "src/b.py", "g",
+                    _HUMAN_GRADE_META)
+        lines = doctor._imported_annotation_advisories(
+            projects_dir=tmp_path / "registry",
+        )
+        assert len(lines) == 1
+        assert "'oldimport'" in lines[0]
+        assert "(imported)" in lines[0]
+        assert "1 human-grade annotation(s)" in lines[0]
+
+    def test_marker_covered_trees_are_skipped(self, tmp_path):
+        """Runs (and whole projects) carrying the persisted import
+        marker were demoted at import time — never advised on."""
+        import json
+
+        out_marked_run = _make_project(tmp_path, "postfix-run")
+        run = out_marked_run / "scan_20260101-000000"
+        run.mkdir(parents=True)
+        (run / ".raptor-imported.json").write_text(
+            json.dumps({"imported": True}))
+        _write_note(run / "annotations", "src/c.py", "h",
+                    _HUMAN_GRADE_META)
+
+        out_marked_root = _make_project(tmp_path, "postfix-root")
+        (out_marked_root / ".raptor-imported.json").write_text(
+            json.dumps({"imported": True}))
+        _write_note(out_marked_root / "annotations", "src/d.py", "i",
+                    _HUMAN_GRADE_META)
+
+        assert doctor._imported_annotation_advisories(
+            projects_dir=tmp_path / "registry",
+        ) == []
+
+    def test_hint_tier_notes_not_flagged(self, tmp_path):
+        """Demoted (provenance=imported) and non-tty notes are hint
+        tier — no operator authority, nothing to advise about."""
+        out_dir = _make_project(tmp_path, "hints")
+        _write_note(out_dir / "annotations", "src/e.py", "j", {
+            "status": "clean", "source": "human",
+            "provenance": "imported",
+        })
+        _write_note(out_dir / "annotations", "src/e.py", "k", {
+            "status": "clean", "source": "human",
+            "tty": "none", "provenance": "non-tty",
+        })
+        _write_note(out_dir / "annotations", "src/e.py", "l", {
+            "status": "clean", "source": "agent",
+            "tty": "stdin", "provenance": "interactive-tty",
+        })
+        assert doctor._imported_annotation_advisories(
+            projects_dir=tmp_path / "registry",
+        ) == []
+
+    def test_advisories_render_without_affecting_counts(self, capsys):
+        text, n_fail, n_warn = _render(
+            *_gather_stub(
+                tool_results=[("semgrep", True)],
+                advisories=["human-grade annotations found in 'p'"],
+            ),
+            verbose=False,
+        )
+        assert n_fail == 0
+        assert n_warn == 0
+        assert "ADVISORIES:" in text
+        assert "i human-grade annotations found in 'p'" in text
+
+    def test_advisories_do_not_fail_strict(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            doctor, "_gather",
+            lambda: _gather_stub(
+                tool_results=[("semgrep", True)],
+                advisories=["human-grade annotations found in 'p'"],
+            ),
+        )
+        rc = main(["--strict"])
+        assert rc == 0
+        assert "ADVISORIES:" in capsys.readouterr().out

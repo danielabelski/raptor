@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
+import os
 import tarfile
 from typing import Dict
 
@@ -15,6 +17,37 @@ from core.oci.blob import (
     DEFAULT_MAX_ENTRY_BYTES,
     extract_files_from_layer,
 )
+from core.oci.client import OciRegistryClient, RegistryError
+from core.oci.image_ref import parse_image_ref
+
+
+class _StubResponse:
+    def __init__(self, status_code: int, body: bytes,
+                 headers: dict | None = None):
+        self.status_code = status_code
+        self.content = body
+        self.text = body.decode("utf-8", errors="replace")
+        self.headers = headers or {}
+
+    def iter_content(self, chunk_size: int = 65536):
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
+
+    def close(self):
+        pass
+
+
+class _StubHttp:
+    def __init__(self, responses: dict):
+        self._responses = responses
+        self.calls: list[dict] = []
+
+    def request(self, method: str, url: str, **kwargs):
+        self.calls.append({"method": method, "url": url,
+                           "headers": kwargs.get("headers")})
+        if url not in self._responses:
+            return _StubResponse(404, b'{"errors": []}')
+        return self._responses[url]
 
 
 def _make_gzipped_tar(files: Dict[str, bytes]) -> bytes:
@@ -223,3 +256,98 @@ def test_directories_skipped():
     )
     # Directory not extracted; file is.
     assert out == {"var/lib/dpkg/status": b"package data"}
+
+
+# ---------------------------------------------------------------------------
+# Digest verification — extracted content is never returned from an
+# unverified stream prefix
+# ---------------------------------------------------------------------------
+
+
+def _make_gzipped_tar_entries(entries) -> bytes:
+    """Like ``_make_gzipped_tar`` but takes (name, bytes) pairs so
+    duplicate entry names can be encoded (a dict can't hold them)."""
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tf:
+        for name, content in entries:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    return gzip.compress(raw.getvalue())
+
+
+class _SentinelUnverified(Exception):
+    """Raised by the stub stream when it is exhausted — stands in for
+    stream_blob's end-of-stream digest check."""
+
+
+def _verifying_stream(blob: bytes, *, chunk_size: int = 1024):
+    """Mimics ``OciRegistryClient.stream_blob``: yields chunks, then
+    performs a verification step that only runs when the caller
+    consumes the iterator to EOF."""
+    for i in range(0, len(blob), chunk_size):
+        yield blob[i:i + chunk_size]
+    raise _SentinelUnverified("digest mismatch")
+
+
+def test_early_exit_does_not_skip_source_verification():
+    """The wanted file appears early, followed by filler the walk
+    can early-exit past. The end-of-stream check (a digest mismatch
+    in production) must still fire — content from an unverified
+    stream prefix must never be returned."""
+    # Incompressible filler: compressible padding would collapse to a
+    # handful of chunks that the tar reader's own buffering consumes,
+    # masking the early-exit skip this test guards against.
+    blob = _make_gzipped_tar({
+        "var/lib/dpkg/status": b"Package: foo\n",
+        "filler/a": os.urandom(300_000),
+        "filler/b": os.urandom(300_000),
+    })
+    with pytest.raises(_SentinelUnverified):
+        extract_files_from_layer(
+            _verifying_stream(blob), {"var/lib/dpkg/status"},
+        )
+
+
+def test_stream_blob_digest_mismatch_refuses_extracted_content():
+    """End-to-end with the real client: a blob whose bytes do not
+    hash to the requested digest must raise instead of handing the
+    SBOM path unverified file content."""
+    blob = _make_gzipped_tar({
+        "var/lib/dpkg/status": b"Package: foo\n",
+        "filler/a": os.urandom(300_000),
+        "filler/b": os.urandom(300_000),
+    })
+    lying = "sha256:" + "c" * 64
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    url = f"https://ghcr.io/v2/acme/app/blobs/{lying}"
+    client = OciRegistryClient(_StubHttp({url: _StubResponse(200, blob)}))
+    with pytest.raises(RegistryError, match="digest mismatch"):
+        extract_files_from_layer(
+            client.stream_blob(ref, lying), {"var/lib/dpkg/status"},
+        )
+
+
+def test_stream_blob_matching_digest_extracts_normally():
+    blob = _make_gzipped_tar({"var/lib/dpkg/status": b"Package: foo\n"})
+    good = "sha256:" + hashlib.sha256(blob).hexdigest()
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    url = f"https://ghcr.io/v2/acme/app/blobs/{good}"
+    client = OciRegistryClient(_StubHttp({url: _StubResponse(200, blob)}))
+    out = extract_files_from_layer(
+        client.stream_blob(ref, good), {"var/lib/dpkg/status"},
+    )
+    assert out == {"var/lib/dpkg/status": b"Package: foo\n"}
+
+
+def test_duplicate_wanted_entry_refused():
+    """A layer carrying the same wanted path twice is hostile: the
+    early-exit walk kept the FIRST occurrence while overlay-fs
+    runtime semantics apply the LAST. Refuse instead of silently
+    scanning the copy the runtime never sees."""
+    blob = _make_gzipped_tar_entries([
+        ("var/lib/dpkg/status", b"Package: benign-decoy\n"),
+        ("var/lib/dpkg/status", b"Package: actually-installed\n"),
+    ])
+    with pytest.raises(ValueError, match="duplicate"):
+        extract_files_from_layer(_stream(blob), {"var/lib/dpkg/status"})

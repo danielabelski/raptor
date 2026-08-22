@@ -71,6 +71,21 @@ def extract_files_from_layer(
     Skips entries larger than ``max_entry_bytes`` with a debug log
     — defends against pathological / malicious inputs without
     inflating memory.
+
+    Integrity: ``layer_chunks`` typically comes from
+    :meth:`OciRegistryClient.stream_blob`, which verifies the blob's
+    sha256 only once the stream is consumed to EOF. The early-exit
+    walk used to stop as soon as every wanted path had been seen,
+    which skipped that verification entirely — extracted content
+    was returned from an unauthenticated prefix of the blob. Now the
+    remaining stream is always drained to EOF before results are
+    returned, so a digest mismatch raises (from the source iterator)
+    instead of handing back unverified bytes. The walk also covers
+    the whole archive (no early exit) and refuses duplicate wanted
+    paths (``unique_keys``): first-occurrence-wins plus early exit
+    diverged from tar/overlay last-wins semantics, letting an image
+    author show this scanner a benign copy while the runtime saw a
+    later, different one.
     """
     if not wanted_paths:
         return {}
@@ -81,8 +96,9 @@ def extract_files_from_layer(
         name = _normalise_tar_path(member.name)
         return name if name in normalised_wanted else None
 
-    return extract_files_from_tar(
-        layer_chunks,
+    chunk_iter = iter(layer_chunks)
+    found = extract_files_from_tar(
+        chunk_iter,
         selector=_select,
         mode="r|gz",
         max_member_bytes=max_entry_bytes,
@@ -90,13 +106,24 @@ def extract_files_from_layer(
         # into memory rather than extract to disk, so escape doesn't
         # apply.
         allow_absolute_paths=True,
-        # Early-exit once we've found everything — saves streaming
-        # through the rest of the layer.
-        expected_count=len(normalised_wanted),
+        # No expected_count early exit: the walk must see the whole
+        # archive so a duplicated wanted path can't shadow the copy
+        # the runtime actually sees, and the source has to be
+        # consumed to EOF for digest verification anyway. The
+        # max_total_bytes cap below bounds the decompression work.
+        unique_keys=True,
         # Explicit caps for untrusted registry layers.
         max_entry_count=DEFAULT_MAX_ENTRY_COUNT,
         max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
     )
+    # Drain the source to EOF before returning anything. stream_blob
+    # only performs its sha256 check on exhaustion; returning after
+    # an early exit would skip the check by construction, so no
+    # extracted content leaves this function until the source
+    # iterator has run to completion (raising on digest mismatch).
+    for _ in chunk_iter:
+        pass
+    return found
 
 
 _LEADING_PREFIX_RE = re.compile(r"^(?:\.?/)+")

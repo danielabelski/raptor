@@ -619,9 +619,27 @@ class OciRegistryClient:
         rewrites to ``registry-1.docker.io`` (the v2 API endpoint).
         On 401, parse the ``WWW-Authenticate`` challenge, exchange
         for a bearer token (cached), and retry once. Subsequent
-        failures bubble up as :class:`RegistryError`."""
-        from .registry_hosts import api_endpoint_for
-        full_url = f"https://{api_endpoint_for(registry)}{url_path}"
+        failures bubble up as :class:`RegistryError`.
+
+        Address policy runs twice here: ``api_endpoint_for`` applies
+        the parse-time gate to the NAME, then
+        ``validate_resolved_registry_addresses`` re-validates the
+        addresses the host actually resolves to. The second gate is
+        what stops DNS rebinding / private-DNS answers: a
+        target-derived registry with an innocent-looking hostname
+        must not drive this client at loopback / RFC1918 /
+        link-local / metadata endpoints (including NAT64-embedded
+        IPv4 in AAAA answers)."""
+        from .registry_hosts import (
+            api_endpoint_for,
+            validate_resolved_registry_addresses,
+        )
+        endpoint = api_endpoint_for(registry)
+        try:
+            validate_resolved_registry_addresses(endpoint)
+        except ValueError as exc:
+            raise RegistryError(0, str(exc)) from exc
+        full_url = f"https://{endpoint}{url_path}"
         req_headers = dict(headers) if headers else {}
         # First attempt with whatever auth is already cached for
         # this registry's most-recent (realm, service, scope) tuple —

@@ -549,3 +549,70 @@ class TestRootfsStagingHardening:
                 binary_in_rootfs="/src/app",
                 cmplog_binary=cmplog,
             )
+
+
+class TestCampaignFailureVerdict:
+    """A campaign whose every instance died without a clean exit and
+    found nothing must not read as a clean no-findings result."""
+
+    def _run(self, tmp_path, monkeypatch, returncode, plant_crash=False):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        TestSandboxedCampaign._instrumented(monkeypatch)
+
+        def fake_sandbox_run(cmd, **kwargs):
+            return sp.CompletedProcess(cmd, returncode,
+                                       stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_sandbox_run)
+        runner = TestSandboxedCampaign._make_runner(tmp_path)
+        runner.campaign_failed = False
+        if plant_crash:
+            crashes = runner.output_dir / "main" / "crashes"
+            crashes.mkdir(parents=True)
+            (crashes / "id:000000,sig:11").write_bytes(b"x")
+        runner.run_fuzzing(duration=0, parallel_jobs=1)
+        return runner
+
+    def test_all_instances_dead_no_crashes_is_failed(self, tmp_path,
+                                                     monkeypatch):
+        runner = self._run(tmp_path, monkeypatch, returncode=1)
+        assert runner.campaign_failed is True
+
+    def test_clean_exit_is_not_failed(self, tmp_path, monkeypatch):
+        runner = self._run(tmp_path, monkeypatch, returncode=0)
+        assert runner.campaign_failed is False
+
+    def test_crashes_override_dirty_exits(self, tmp_path, monkeypatch):
+        runner = self._run(tmp_path, monkeypatch, returncode=1,
+                           plant_crash=True)
+        assert runner.campaign_failed is False
+
+
+class TestCampaignEnvHygiene:
+    def test_identity_vars_stripped_from_campaign_env(self, tmp_path,
+                                                      monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        TestSandboxedCampaign._instrumented(monkeypatch)
+        seen_envs = []
+
+        def fake_sandbox_run(cmd, **kwargs):
+            seen_envs.append(dict(kwargs.get("env") or {}))
+            return sp.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_sandbox_run)
+        for var in ("USER", "HOSTNAME", "LOGNAME", "PWD"):
+            monkeypatch.setenv(var, "leak-probe")
+        runner = TestSandboxedCampaign._make_runner(tmp_path)
+        runner.campaign_failed = False
+        runner.run_fuzzing(duration=0, parallel_jobs=1)
+        assert seen_envs
+        for env in seen_envs:
+            for var in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
+                        "RAPTOR_DIR", "RAPTOR_OUT_DIR",
+                        "_RAPTOR_TRUSTED", "CLAUDECODE"):
+                assert var not in env
+            assert env.get("AFL_SKIP_CPUFREQ") == "1"

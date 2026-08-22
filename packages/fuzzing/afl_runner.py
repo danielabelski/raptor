@@ -298,6 +298,10 @@ class AFLRunner:
         # Telemetry: instantiated lazily by run() to avoid creating
         # the events file when callers only build commands for tests.
         self.telemetry = None
+        # Set by run_fuzzing: True when every instance died without a
+        # clean exit and nothing was found (see the verdict comment
+        # there). Callers turn this into a non-zero exit.
+        self.campaign_failed = False
 
         # Env-built campaigns (sandbox image-rootfs mode): afl-fuzz
         # and the target binary come from the exported AFL++ image
@@ -729,6 +733,19 @@ class AFLRunner:
                 # added explicitly below.
                 from core.config import RaptorConfig
                 afl_env = RaptorConfig.get_safe_env()
+                # The fuzzed binary is untrusted (often attacker-built)
+                # and can getenv() anything here. get_safe_env strips
+                # credentials but keeps operator-identity and
+                # RAPTOR-internal markers the target has no legitimate
+                # use for — drop the direct ones. (Not exhaustive:
+                # HOME/PATH/XDG_* stay because the toolchain needs
+                # them and may still embed the username in non-rootfs
+                # campaigns; OLDPWD is belt-and-braces — the allowlist
+                # already excludes it.)
+                for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD",
+                              "OLDPWD", "RAPTOR_DIR", "RAPTOR_OUT_DIR",
+                              "_RAPTOR_TRUSTED", "CLAUDECODE"):
+                    afl_env.pop(ident, None)
                 afl_env.setdefault("AFL_SKIP_CPUFREQ", "1")
                 afl_env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
                 afl_env.setdefault("AFL_FORKSRV_INIT_TMOUT", "10000")
@@ -886,6 +903,31 @@ class AFLRunner:
         # Count final crashes across all instances
         crash_files = self._collect_all_crash_files()
         total_crashes = len(crash_files)
+
+        # Campaign-failure verdict: every instance died without a clean
+        # exit and nothing was found. Pre-fix a campaign whose afl-fuzz
+        # aborted at startup (bad corpus, missing target, forkserver
+        # failure) still flowed into "CAMPAIGN COMPLETE" with exit 0
+        # and stats {} — a run that executed zero inputs read as a
+        # clean no-findings result. The errors were logged, but logs
+        # are not exit codes. A clean-exit instance (afl-fuzz returns
+        # 0 on -V expiry and on graceful SIGTERM stop) or any crash
+        # found keeps the campaign successful — and an instance still
+        # alive at verdict time (SIGTERM unanswered, sandbox timeout
+        # pending) blocks the all-dead conclusion rather than being
+        # miscounted as a dirty exit.
+        self.campaign_failed = total_crashes == 0 and not any(
+            inst.is_running()
+            or (inst.error is None and inst.returncode() == 0)
+            for inst in all_instances
+        )
+        if self.campaign_failed:
+            logger.error(
+                "CAMPAIGN FAILED: all %d instance(s) exited without a "
+                "clean completion and no crashes were recorded — see "
+                "the per-instance stderr logs above",
+                len(all_instances),
+            )
         # Single directory containing every collected crash — with parallel
         # secondaries, returning only main/crashes would count secondary
         # crashes in the total above but silently exclude them from the

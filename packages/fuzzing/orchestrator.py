@@ -613,6 +613,8 @@ class FuzzingOrchestrator:
             runner.telemetry.stop()
         return {
             "fuzzer": "afl",
+            "campaign_failed": bool(getattr(runner, "campaign_failed",
+                                            False)),
             "crashes": crashes,
             # None (not "None") when the campaign produced no crashes
             # and AFL never created a crashes directory — downstream

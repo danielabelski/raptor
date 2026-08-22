@@ -511,6 +511,17 @@ Examples:
             logger.exception("Campaign failed")
             sys.exit(1)
 
+        if result.get("campaign_failed"):
+            print()
+            print("=" * 70)
+            print("CAMPAIGN FAILED")
+            print("=" * 70)
+            print("Every AFL instance exited without a clean completion "
+                  "and no crashes were recorded — zero inputs may have "
+                  "executed. See the per-instance logs under "
+                  f"{out_dir / 'afl' / 'raptor-logs'}")
+            sys.exit(1)
+
         print()
         print("=" * 70)
         print("CAMPAIGN COMPLETE")
@@ -686,6 +697,13 @@ Examples:
             timeout_ms=args.timeout,
             max_crashes=args.max_crashes,
         )
+
+        if afl_runner.campaign_failed:
+            print("\n✗ Fuzzing campaign FAILED: every AFL instance "
+                  "exited without a clean completion and no crashes "
+                  "were recorded.")
+            print(f"  - Instance logs: {out_dir / 'afl_output' / 'raptor-logs'}")
+            sys.exit(1)
 
         print("\n✓ Fuzzing complete:")
         print(f"  - Duration: {args.duration}s")

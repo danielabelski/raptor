@@ -692,3 +692,25 @@ class TestScrubIdentityEnv:
         assert seen, "showmap did not reach the sandbox"
         assert "USER" not in seen["env"]
         assert seen["env"]["HOME"] == "/tmp"
+
+
+class TestNoAffinity:
+    def test_campaign_skips_afl_core_binding(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        TestSandboxedCampaign._instrumented(monkeypatch)
+        seen = {}
+
+        def fake_sandbox_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_sandbox_run)
+        runner = TestSandboxedCampaign._make_runner(tmp_path)
+        runner.campaign_failed = False
+        runner.run_fuzzing(duration=0, parallel_jobs=1)
+        # Private PID namespaces make AFL's free-core scan blind, so
+        # every parallel instance would bind the same lowest CPU; the
+        # scheduler spreads them instead.
+        assert seen["env"]["AFL_NO_AFFINITY"] == "1"

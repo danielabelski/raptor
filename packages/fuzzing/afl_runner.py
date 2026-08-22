@@ -45,28 +45,9 @@ AFL_PATHS_FOUND_KEYS = (
 _AFL_CRASH_EXECS_RE = re.compile(r"(?:^|,)execs:(\d+)(?:,|$)")
 
 
-def scrub_identity_env(env: dict) -> dict:
-    """Strip operator/host identity from an env destined for an
-    UNTRUSTED target execution (fuzz campaign, showmap replay,
-    libFuzzer harness). ``get_safe_env()`` removes credentials but
-    keeps identity the target has no legitimate use for: direct vars,
-    ``XDG_*`` values and ``/home/<user>`` PATH components (username
-    bearing), and RAPTOR-internal markers. HOME gets a neutral value —
-    ``/tmp`` is a fresh per-sandbox tmpfs in every mode. Mutates and
-    returns *env*.
-    """
-    for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
-                  "RAPTOR_DIR", "RAPTOR_OUT_DIR", "_RAPTOR_TRUSTED",
-                  "CLAUDECODE"):
-        env.pop(ident, None)
-    for key in [k for k in env if k.startswith("XDG_")]:
-        env.pop(key, None)
-    env["HOME"] = "/tmp"
-    if "PATH" in env:
-        env["PATH"] = os.pathsep.join(
-            p for p in env["PATH"].split(os.pathsep)
-            if not p.startswith("/home/"))
-    return env
+# Re-exported for callers/tests; implementation shared with the
+# libFuzzer runner and the capability probes.
+from packages.fuzzing.env_hygiene import scrub_identity_env  # noqa: E402
 
 
 class _SandboxedAFLInstance:
@@ -769,6 +750,16 @@ class AFLRunner:
                 # campaign mount-ns binds system dirs only.)
                 afl_env = scrub_identity_env(RaptorConfig.get_safe_env())
                 afl_env.setdefault("AFL_SKIP_CPUFREQ", "1")
+                # Skip AFL's own core binding. Each instance runs in a
+                # private PID namespace, so AFL's free-core scan sees
+                # only itself and every parallel instance would bind
+                # the same lowest CPU (serialising -M/-S campaigns);
+                # the kernel scheduler spreads them across the
+                # sandbox's affinity set instead. Also removes the
+                # persona/cpuset corner (a fingerprint overlay that
+                # claims CPUs outside the real cgroup mask can no
+                # longer trip AFL's bind-or-die logic).
+                afl_env.setdefault("AFL_NO_AFFINITY", "1")
                 afl_env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
                 afl_env.setdefault("AFL_FORKSRV_INIT_TMOUT", "10000")
                 if self.sandbox_rootfs is not None:

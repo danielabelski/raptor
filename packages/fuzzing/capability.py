@@ -21,6 +21,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from core.config import RaptorConfig
+from packages.fuzzing.env_hygiene import scrub_identity_env
 from core.run.workdir import exec_workdir
 from packages.binary_analysis.radare2_understand import probe_capability as _probe_radare2_capability
 
@@ -307,7 +308,7 @@ def _probe_version(binary: str, args: list[str]) -> str:
             capture_output=True,
             text=True,
             timeout=10,
-            env=RaptorConfig.get_safe_env(),
+            env=scrub_identity_env(RaptorConfig.get_safe_env()),
         )
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         for line in output.splitlines():
@@ -363,7 +364,7 @@ def _probe_clang_sanitiser(clang: str, sanitizer: str) -> bool:
             capture_output=True,
             text=True,
             timeout=30,
-            env=RaptorConfig.get_safe_env(),
+            env=scrub_identity_env(RaptorConfig.get_safe_env()),
         )
         return result.returncode == 0
     except Exception:
@@ -397,7 +398,7 @@ def _check_macos_afl_shmem(afl_fuzz: str) -> bool:
             out = tmp_path / "out"
             seeds.mkdir()
             (seeds / "seed").write_bytes(b"seed\n")
-            env = RaptorConfig.get_safe_env()
+            env = scrub_identity_env(RaptorConfig.get_safe_env())
             env.setdefault("AFL_SKIP_CPUFREQ", "1")
             env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
             result = subprocess.run(

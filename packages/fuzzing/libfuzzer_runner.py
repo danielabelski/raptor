@@ -154,7 +154,7 @@ class LibFuzzerRunner:
 
         # The harness is untrusted target code — same identity scrub
         # as the AFL campaign env.
-        from packages.fuzzing.afl_runner import scrub_identity_env
+        from packages.fuzzing.env_hygiene import scrub_identity_env
         env = scrub_identity_env(RaptorConfig.get_safe_env())
         env.setdefault(
             "ASAN_OPTIONS",

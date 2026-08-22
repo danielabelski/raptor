@@ -220,6 +220,76 @@ def test_enrich_skips_non_native_items(built_demo: Path) -> None:
 
 
 @pytest.mark.slow
+def test_enrich_guessed_build_downgrades_suppression(
+        built_demo: Path) -> None:
+    """S5.4 ratified rule: an env-built binary whose build command was
+    GUESSED (detector synthesis) enriches but never earns suppression
+    — same conservative shape as the stripped-binary downgrade."""
+    inv = _synthetic_inventory_for_fixture()
+    enrich_inventory_with_binary_oracle(
+        inv, built_demo, no_suppression_paths={str(built_demo)})
+    summary = inv["binary_oracle"]
+    assert summary["earns_suppression"] is False
+    assert summary["any_env_built_guessed"] is True
+    # enrichment verdicts still present (existence proofs are safe)
+    assert summary["counts"]["classified"] > 0
+
+
+@pytest.mark.slow
+def test_enrich_operator_command_build_keeps_suppression(
+        built_demo: Path) -> None:
+    """An empty no-suppression set (operator-set command, or no env
+    build at all) leaves the earned property intact."""
+    inv = _synthetic_inventory_for_fixture()
+    enrich_inventory_with_binary_oracle(
+        inv, built_demo, no_suppression_paths=())
+    assert inv["binary_oracle"]["earns_suppression"] is True
+    assert inv["binary_oracle"]["any_env_built_guessed"] is False
+
+
+@pytest.mark.slow
+@pytest.mark.slow
+def test_guessed_build_never_reaches_the_suppression_gates(
+        built_demo: Path) -> None:
+    """S5.4 adversarial-review F1: the summary flag is decorative — the
+    LIVE gates (reachability.binary_oracle_absent feeding the pre-LLM
+    chokepoint and /validate demoter; extract_verdicts feeding audit
+    binary_verdicts) gate PER ITEM, so the guessed-build downgrade
+    must be enforced there. A guessed env-built binary's absent
+    verdicts must never pass either gate."""
+    from core.analysis.binary_oracle import extract_verdicts
+    from core.analysis.reachability import binary_oracle_absent
+
+    inv = _synthetic_inventory_for_fixture()
+    enrich_inventory_with_binary_oracle(
+        inv, built_demo, no_suppression_paths={str(built_demo)})
+    verdicts = extract_verdicts(inv)
+    assert "absent" not in verdicts.values(), (
+        "guessed-build absent verdicts leaked into audit "
+        f"binary_verdicts: {verdicts}")
+    for f in inv.get("files") or []:
+        for item in f.get("items") or []:
+            bo = (item.get("metadata") or {}).get("binary_oracle")
+            if bo and bo.get("classification") == "absent":
+                assert not binary_oracle_absent(
+                    inv, f.get("path", ""), item.get("name", "")), (
+                    f"chokepoint fired on guessed build for "
+                    f"{item.get('name')}")
+
+
+@pytest.mark.slow
+def test_full_grade_build_still_passes_the_gates(
+        built_demo: Path) -> None:
+    """Symmetry check: with no no-suppress set, absent verdicts keep
+    flowing to both gates (the corpus-earned behaviour)."""
+    from core.analysis.binary_oracle import extract_verdicts
+
+    inv = _synthetic_inventory_for_fixture()
+    enrich_inventory_with_binary_oracle(inv, built_demo)
+    assert "absent" in extract_verdicts(inv).values()
+
+
+@pytest.mark.slow
 def test_enrich_writes_inventory_summary(built_demo: Path) -> None:
     """Top-level summary with ``earns_suppression: True`` — earned by the
     Inc 3 precision corpus (841/841 absent verdicts correct across 5

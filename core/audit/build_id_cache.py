@@ -346,6 +346,11 @@ def store_oracle_verdicts(
         payloads[bid] = {
             "binary_path": b.get("path", ""),
             "tier": b.get("tier", "unknown"),
+            # Authority marker travels with the cached verdicts so a
+            # future reader can never resurrect suppression authority
+            # a guessed env-build never had (absent key = full grade,
+            # matching the per-item gates).
+            "suppression_grade": b.get("suppression_grade", True),
             "verdicts": {},
         }
 

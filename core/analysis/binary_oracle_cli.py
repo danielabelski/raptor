@@ -288,8 +288,102 @@ def _project_binaries() -> tuple[list[Path], str | None]:
         return [], None
 
 
+def _env_build_debug_binaries(repo: Path) -> tuple[list[str], bool]:
+    """Build debug binaries on demand when NOTHING else resolved.
+
+    Consent: the project ``build`` trust marker
+    (``core.project.trust.resolve_build_execution`` — the same gate as
+    /validate's Stage E build-on-demand; no per-run flag on this path).
+    The build command resolves operator-first
+    (``core.build.resolve``); the build runs in the network-isolated
+    container with debug info and ALL extracted ELF artifacts feed the
+    oracle (it is multi-binary native: alive-in-any).
+
+    Returns ``(paths, guessed)`` where ``guessed`` is True when the
+    command came from detector synthesis rather than an operator
+    setting — the caller then withholds suppression authority
+    (operator-ratified rule: suppression follows who chose the build
+    configuration). Every failure returns ``([], False)`` with the
+    reason logged; the oracle degrades to no-binary as before.
+    """
+    try:
+        from core.project.trust import resolve_build_execution
+        if not resolve_build_execution(None, target_path=repo):
+            print(
+                "binary-oracle: no binaries anywhere and env "
+                "build-on-demand is not authorised — set the project "
+                "'build' trust marker to let the oracle build a debug "
+                "binary, or pass --binary / /project binary add"
+            )
+            return [], False
+        from core.build.resolve import resolve_build_command
+        resolved = resolve_build_command(repo)
+        if resolved is None:
+            print(
+                "binary-oracle: no binaries anywhere and no build "
+                "command resolves (no /project set build-command, "
+                "nothing detected) — oracle runs without a binary"
+            )
+            return [], False
+        command, source = resolved
+        # Fail-CLOSED naming: anything not explicitly operator-set is
+        # treated as guessed (a future third source defaults untrusted).
+        guessed = not source.startswith("project-setting:")
+        print(f"binary-oracle: env build-on-demand: '{command}' "
+              f"({source})")
+        from core.env.build import containerized_build
+        from core.env.spec import ToolchainSpec
+        out_dir = _envbuild_out_dir()
+        product = containerized_build(
+            repo, command, out_dir=out_dir,
+            toolchain=ToolchainSpec(debug=True),
+        )
+        if not product.ok:
+            print(f"binary-oracle: env build failed ({product.reason}): "
+                  f"{product.detail[:200]} — oracle runs without a "
+                  f"binary")
+            return [], False
+        paths = [str(pth) for pth in product.artifacts.values()]
+        note = (", GUESSED build command — absent verdicts will "
+                "not suppress" if guessed else "")
+        print(f"binary-oracle: env-built {len(paths)} debug binary(s) "
+              f"(provenance: env-built{note})")
+        for pth in paths:
+            print(f"  {pth}")
+        print("  persist for future runs: /project binary add <path>")
+        return paths, guessed
+    except Exception as exc:  # noqa: BLE001 — degrade, never fail the run
+        logger.debug("binary-oracle env build errored", exc_info=True)
+        print(f"binary-oracle: env build errored "
+              f"({type(exc).__name__}: {str(exc)[:200]}) — oracle runs "
+              f"without a binary")
+        return [], False
+
+
+def _envbuild_out_dir() -> Path:
+    """The active run dir when one exists (artifacts live with the
+    run), else a private tmpdir (bench/library use)."""
+    try:
+        from core.sandbox.summary import get_active_run_dir
+        active = get_active_run_dir()
+        if active:
+            return Path(active) / "env-build-oracle"
+    except Exception:  # noqa: BLE001 — placement is best-effort
+        pass
+    import atexit
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="raptor-oracle-envbuild-"))
+    # Artifacts must outlive the resolve call (the oracle reads them
+    # later in-process) but not the process.
+    atexit.register(shutil.rmtree, tmp, True)
+    return tmp
+
+
 def resolve_binary_paths(args, repo: Path, target_kind: str,
-                         parser=None) -> tuple[str, ...]:
+                         parser=None,
+                         no_suppress_out: list | None = None,
+                         ) -> tuple[str, ...]:
     """Compose the final tuple of binary paths from three sources:
     ``--binary`` (explicit), auto-detect, and the active project's
     persisted ``binaries``. Deduplicated, order preserved (explicit
@@ -341,12 +435,32 @@ def resolve_binary_paths(args, repo: Path, target_kind: str,
     proj_paths, proj_name = _project_binaries()
     added = 0
     for p in proj_paths:
+        if not Path(p).is_file():
+            # A dangling store entry (e.g. a run-dir artifact deleted
+            # by /project clean) must not silently satisfy "we have
+            # binaries" — that would suppress the env-build fallback
+            # AND leave the oracle binary-less.
+            logger.warning(
+                "binary-oracle: project binary %s no longer exists — "
+                "ignoring (remove with /project binary remove)", p)
+            continue
         if str(p) not in seen:
             seen[str(p)] = True
             added += 1
     if proj_name and added:
         print(f"--project '{proj_name}' contributes {added} binary(s) "
               f"from /project binary store.")
+
+    if not seen:
+        # NOTHING resolved from any source: build a debug binary on
+        # demand (marker-gated). Explicit --binary flows never reach
+        # here; an operator opt-out (--no-binary-oracle) returned
+        # earlier.
+        env_paths, guessed = _env_build_debug_binaries(repo)
+        for p in env_paths:
+            seen.setdefault(p, True)
+        if guessed and env_paths and no_suppress_out is not None:
+            no_suppress_out.extend(env_paths)
 
     return tuple(seen.keys())
 
@@ -363,13 +477,16 @@ def apply_to_config(args, repo: Path, parser=None) -> tuple[str, ...]:
     """Resolve binary paths AND mutate ``RaptorConfig``. Single call
     site for both CLIs so they can't diverge."""
     from core.config import RaptorConfig
+    no_suppress: list = []
     paths = resolve_binary_paths(
         args, repo, resolve_target_kind(args), parser=parser,
+        no_suppress_out=no_suppress,
     )
     # ALWAYS assign — never gate on truthiness — so a prior run's
     # value cannot leak into this one in long-lived processes
     # (Claude Code, library use, chained pytest).
     RaptorConfig.BINARY_ORACLE_PATHS = paths
+    RaptorConfig.BINARY_ORACLE_NO_SUPPRESS = tuple(no_suppress)
     RaptorConfig.BINARY_ORACLE_EDGES = bool(
         getattr(args, "binary_edges", False))
     return paths

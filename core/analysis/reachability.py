@@ -2564,6 +2564,16 @@ def binary_oracle_absent(
         if any(isinstance(b, dict) and b.get("tier") != "full"
                for b in per_binary):
             return False
+        # (c) ANY contributing binary lacks suppression grade — an
+        # env-built binary whose build command was GUESSED (detector
+        # synthesis): a guessed container configuration can compile
+        # out features the real build includes, so its absence is not
+        # suppression evidence (S5.4 operator-ratified rule; absent
+        # key = legacy inventory = full grade).
+        if any(isinstance(b, dict)
+               and b.get("suppression_grade") is False
+               for b in per_binary):
+            return False
         any_confirmed = True
     return any_confirmed
 

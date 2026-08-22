@@ -545,7 +545,10 @@ def build_inventory(
     if bin_paths:
         try:
             from core.analysis.binary_oracle import enrich_inventory_with_binary_oracle
-            enrich_inventory_with_binary_oracle(inventory, bin_paths)
+            enrich_inventory_with_binary_oracle(
+                inventory, bin_paths,
+                no_suppression_paths=RaptorConfig.BINARY_ORACLE_NO_SUPPRESS,
+            )
             # Persist per-binary verdicts into the build-ID-keyed cache
             # so later runs (and external consumers of the shared cache
             # dir) can reuse them without re-analysing the binary.

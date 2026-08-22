@@ -399,6 +399,11 @@ class RaptorConfig:
     # subprocess boundaries; revisit if /validate or another helper grows
     # one).
     BINARY_ORACLE_PATHS: tuple[str, ...] = ()
+    # Subset of BINARY_ORACLE_PATHS whose absent verdicts must NOT earn
+    # suppression: env-built binaries whose build command was guessed
+    # (detector synthesis) rather than operator-set. Always re-assigned
+    # alongside BINARY_ORACLE_PATHS (never gate on truthiness).
+    BINARY_ORACLE_NO_SUPPRESS: tuple[str, ...] = ()
 
     # Inc 2b Tier 1: when True, extract direct call edges from each
     # binary in BINARY_ORACLE_PATHS (via r2) and annotate inventory

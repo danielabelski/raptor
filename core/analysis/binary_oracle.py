@@ -1093,6 +1093,7 @@ def _combine_verdicts(
 def enrich_inventory_with_binary_oracle(
     inventory: dict,
     binaries,
+    no_suppression_paths=(),
 ) -> dict[str, int]:
     """Annotate each native-language inventory item with its binary-oracle
     classification, plus a top-level summary on the inventory itself.
@@ -1279,6 +1280,17 @@ def enrich_inventory_with_binary_oracle(
         any(w.tier == "symbol_only" for w in verdicts.values())
         for _, _, verdicts in per_binary
     )
+    # Env-built binaries whose build COMMAND was guessed (detector
+    # synthesis, not an operator /project set build-command) get the
+    # same conservative treatment: a guessed container configuration
+    # can compile out features the real build includes, so an
+    # ``absent`` there says nothing suppression-grade about the
+    # operator's tree. Enrichment verdicts still count (existence
+    # proofs are safe); only suppression authority downgrades.
+    _no_suppress = {str(x) for x in (no_suppression_paths or ())}
+    any_guessed_build = any(
+        str(bp) in _no_suppress for bp, _, _ in per_binary
+    )
     for fi, ii, name in targets:
         per_binary_entries: list[dict[str, object]] = []
         for bp, build_id, verdicts in per_binary:
@@ -1288,6 +1300,12 @@ def enrich_inventory_with_binary_oracle(
             per_binary_entries.append({
                 "path":           str(bp),
                 "build_id":       build_id,
+                # Per-item authority marker (adversarial review S5.4
+                # F1): the summary-level earns_suppression is not what
+                # the live gates read — the chokepoint, demoter, and
+                # audit verdict extraction all gate per item, so the
+                # guessed-build downgrade must live here too.
+                "suppression_grade": str(bp) not in _no_suppress,
                 "classification": w.classification,
                 "address":        w.address,
                 "tier":           w.tier,
@@ -1357,9 +1375,10 @@ def enrich_inventory_with_binary_oracle(
         # could license a false negative. Downgrade conservatively
         # when ANY contributing binary is symbol-only (E1 stripped-
         # binary fallback).
-        "earns_suppression": not any_symbol_only,
+        "earns_suppression": not any_symbol_only and not any_guessed_build,
         # Surfaced for operator-visible evidence-tier reporting.
         "any_symbol_only": any_symbol_only,
+        "any_env_built_guessed": any_guessed_build,
     }
     return counts
 
@@ -1372,8 +1391,11 @@ def extract_verdicts(inventory: dict) -> dict[str, str]:
     the shape ``OrchestratorConfig.binary_verdicts`` expects.
 
     ``absent`` verdicts are only emitted when at least one contributing
-    binary has ``tier == "full"`` (full-DWARF evidence).  Symbol-only
-    tier absent verdicts are not suppression-grade and are excluded.
+    binary has ``tier == "full"`` (full-DWARF evidence) AND no
+    contributing binary is marked ``suppression_grade: false`` (an
+    env-built binary whose build command was guessed — its absence
+    says nothing suppression-grade about the operator's tree).
+    Symbol-only tier absent verdicts are likewise excluded.
     """
     verdicts: dict[str, str] = {}
     for f in inventory.get("files") or []:
@@ -1382,11 +1404,15 @@ def extract_verdicts(inventory: dict) -> dict[str, str]:
             if bo and isinstance(bo, dict):
                 classification = bo["classification"]
                 if classification == "absent":
+                    per_binary = bo.get("binaries", [])
                     has_full = any(
-                        b.get("tier") == "full"
-                        for b in bo.get("binaries", [])
+                        b.get("tier") == "full" for b in per_binary
                     )
-                    if not has_full:
+                    any_no_grade = any(
+                        b.get("suppression_grade") is False
+                        for b in per_binary
+                    )
+                    if not has_full or any_no_grade:
                         continue
                 name = item.get("name")
                 if isinstance(name, str) and name:

@@ -23,7 +23,6 @@ plug into the same schema.
 from __future__ import annotations
 
 import argparse
-import json
 import random
 import re
 import sqlite3
@@ -34,8 +33,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.json.bounded import load_json_bounded
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+# Byte ceiling per advisory file. Real GHSA advisory JSON runs a few
+# KB (long affected-range lists reach the low hundreds of KB); the
+# tree is network-cloned, so one inflated file must not OOM the walk.
+_MAX_ADVISORY_BYTES = 8 * 1024 * 1024
 
 # Ecosystem -> CVEfixes ``repo_language`` value.  Restricted to languages
 # the walker explicitly supports (cvefix_walk._LANG_MAP).  npm packages
@@ -102,8 +108,13 @@ def _iter_advisories(
             continue
         for jp in ydir.rglob("*.json"):
             try:
-                adv = json.loads(jp.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                # Bounded: the advisory tree is network-cloned, so a
+                # single inflated file must not exhaust memory. Real
+                # advisories are a few KB; over-budget files are
+                # skipped like malformed ones (the loader logs the
+                # observed size).
+                adv = load_json_bounded(jp, max_bytes=_MAX_ADVISORY_BYTES)
+            except (OSError, ValueError):
                 continue
             adv_cwes = set(
                 (adv.get("database_specific") or {}).get("cwe_ids") or []

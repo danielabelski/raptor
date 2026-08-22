@@ -381,3 +381,26 @@ def test_resolve_parent_functional_local_repo(monkeypatch, tmp_path):
     assert gh._resolve_parent(str(src), fix, timeout=60) == parent
     # Root commit (zero parents) is deliberately declined.
     assert gh._resolve_parent(str(src), parent, timeout=60) is None
+
+
+def test_iter_advisories_skips_oversize_files(tmp_path: Path) -> None:
+    """An advisory file over the byte budget is skipped like a
+    malformed one — siblings still yield."""
+    import os
+
+    _write_advisory_tree(tmp_path, [
+        (_adv("CVE-2024-1", ["CWE-22"], "PyPI",
+              "https://github.com/x/y/commit/abc1234"), "2024"),
+        (_adv("CVE-2024-2", ["CWE-22"], "PyPI",
+              "https://github.com/x/y/commit/def5678"), "2024"),
+    ])
+    # Sparse-extend one advisory past the cap: the stat gate fires
+    # before any read, so no data is materialised.
+    big = next((tmp_path / "advisories").rglob("GHSA-test-CVE-2024-2.json"))
+    os.truncate(big, gh._MAX_ADVISORY_BYTES + 1)
+
+    out = list(gh._iter_advisories(
+        tmp_path, ["2024"], {"CWE-22"}, {"PyPI"},
+    ))
+    assert len(out) == 1
+    assert out[0][1]["aliases"] == ["CVE-2024-1"]

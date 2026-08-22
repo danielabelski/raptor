@@ -49,3 +49,37 @@ def extract_qualified_symbols(advisory: Any, dep_name: str) -> list[str]:
             if isinstance(v, list) and dep_name:
                 out.extend(f"{dep_name}.{s}" for s in v if isinstance(s, str))
     return out
+
+
+def extract_function_names(advisory: Any) -> list[str]:
+    """Pull bare (unqualified) function names out of an OSV advisory.
+
+    Tries every shape seen in real OSV PyPI / npm records — schema
+    variation is high: some GHSAs use
+    ``database_specific.affected_functions``, others
+    ``ecosystem_specific.imports[].symbols`` mirroring Go's
+    convention, others inline structured data. Both
+    ``ecosystem_specific`` and ``database_specific`` are consulted;
+    callers dedupe.
+    """
+    out: list[str] = []
+    es = getattr(advisory, "ecosystem_specific", None) or {}
+    ds = getattr(advisory, "database_specific", None) or {}
+    # ``imports[].symbols`` shape (mirrors Go convention).
+    for source in (es, ds):
+        if not isinstance(source, dict):
+            continue
+        for imp in source.get("imports") or []:
+            if not isinstance(imp, dict):
+                continue
+            syms = imp.get("symbols") or []
+            out.extend(s for s in syms if isinstance(s, str))
+    # Flat-list variants.
+    for key in ("affected_symbols", "affected_functions"):
+        for source in (es, ds):
+            if not isinstance(source, dict):
+                continue
+            v = source.get(key)
+            if isinstance(v, list):
+                out.extend(s for s in v if isinstance(s, str))
+    return out

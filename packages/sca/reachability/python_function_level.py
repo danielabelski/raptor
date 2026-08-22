@@ -71,6 +71,7 @@ from typing import Any
 from collections.abc import Iterable
 
 from ..models import Confidence, Dependency, Reachability
+from ._shared import extract_function_names as _extract_function_names
 
 logger = logging.getLogger(__name__)
 
@@ -99,35 +100,6 @@ def build_pypi_symbol_map(
             out.setdefault(dep_key, []).extend(funcs)
     # Dedup per-dep while preserving order.
     return {k: list(dict.fromkeys(v)) for k, v in out.items()}
-
-
-def _extract_function_names(advisory: Any) -> list[str]:
-    """Pull function names out of an Advisory object.
-
-    Tries every shape we've seen in real OSV PyPI records,
-    deduplicating across them.
-    """
-    out: list[str] = []
-    es = getattr(advisory, "ecosystem_specific", None) or {}
-    ds = getattr(advisory, "database_specific", None) or {}
-    # ``imports[].symbols`` shape (mirrors Go convention).
-    for source in (es, ds):
-        if not isinstance(source, dict):
-            continue
-        for imp in source.get("imports") or []:
-            if not isinstance(imp, dict):
-                continue
-            syms = imp.get("symbols") or []
-            out.extend(s for s in syms if isinstance(s, str))
-    # Flat-list variants.
-    for key in ("affected_symbols", "affected_functions"):
-        for source in (es, ds):
-            if not isinstance(source, dict):
-                continue
-            v = source.get(key)
-            if isinstance(v, list):
-                out.extend(s for s in v if isinstance(s, str))
-    return out
 
 
 def refine_pypi_verdicts(

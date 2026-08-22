@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from packages.sca.reachability._shared import extract_qualified_symbols
+from packages.sca.reachability._shared import (
+    extract_function_names,
+    extract_qualified_symbols,
+)
 
 
 def _adv(es=None, ds=None):
@@ -67,3 +70,46 @@ class TestExtractQualifiedSymbols:
     def test_non_string_path_skipped(self):
         adv = _adv(es={"imports": [{"path": 42, "symbols": ["s"]}]})
         assert extract_qualified_symbols(adv, "dep") == []
+
+
+class TestExtractFunctionNames:
+    def test_imports_symbols_unqualified(self):
+        adv = _adv(es={"imports": [{"path": "ignored", "symbols": ["f", "g"]}]})
+        assert extract_function_names(adv) == ["f", "g"]
+
+    def test_flat_lists_from_both_sources(self):
+        adv = _adv(
+            es={"affected_symbols": ["a"]},
+            ds={"affected_functions": ["b"]},
+        )
+        assert extract_function_names(adv) == ["a", "b"]
+
+    def test_flat_list_key_order_dominates_source_order(self):
+        # affected_symbols from BOTH sources come before any
+        # affected_functions (key-major iteration).
+        adv = _adv(
+            es={"affected_functions": ["f2"], "affected_symbols": ["s1"]},
+            ds={"affected_symbols": ["s2"]},
+        )
+        assert extract_function_names(adv) == ["s1", "s2", "f2"]
+
+    def test_non_string_entries_skipped(self):
+        adv = _adv(es={
+            "imports": [{"symbols": ["ok", 1, None]}],
+            "affected_symbols": ["fine", {}],
+        })
+        assert extract_function_names(adv) == ["ok", "fine"]
+
+    def test_missing_attrs_default_empty(self):
+        assert extract_function_names(object()) == []
+
+    def test_non_dict_sources_skipped(self):
+        adv = _adv(es="nope", ds=["nah"])
+        assert extract_function_names(adv) == []
+
+    def test_duplicates_preserved_for_caller_dedup(self):
+        adv = _adv(
+            es={"affected_symbols": ["x"]},
+            ds={"affected_symbols": ["x"]},
+        )
+        assert extract_function_names(adv) == ["x", "x"]

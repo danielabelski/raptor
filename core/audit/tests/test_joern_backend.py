@@ -71,7 +71,9 @@ class TestStalenessGate:
         imported = import_sibling_joern_flows(out_dir, target_path=target)
         assert imported == _FLOWS
 
-    def test_sibling_without_hash_still_imports(self, tmp_path):
+    def test_sibling_without_hash_skipped(self, tmp_path):
+        # A sibling with no content hash cannot prove freshness:
+        # unverifiable flows are stale/untrusted, never imported.
         target = tmp_path / "target"
         target.mkdir()
         project = tmp_path / "project"
@@ -80,12 +82,12 @@ class TestStalenessGate:
         _make_sibling(project, "run_legacy", target, None)
 
         imported = import_sibling_joern_flows(out_dir, target_path=target)
-        assert imported == _FLOWS
+        assert imported is None
 
-    def test_current_hash_unavailable_still_imports(self, tmp_path):
+    def test_current_hash_unavailable_skips(self, tmp_path):
         # Sibling carries a hash but the current run's hash is neither
         # recorded nor derivable (no manifest, no target_path): the
-        # legacy behaviour is preserved.
+        # gate cannot establish freshness, so nothing imports.
         project = tmp_path / "project"
         project.mkdir()
         out_dir = project / "run_current"
@@ -98,7 +100,7 @@ class TestStalenessGate:
         )
 
         imported = import_sibling_joern_flows(out_dir, target_path=None)
-        assert imported == _FLOWS
+        assert imported is None
 
     def test_mixed_siblings_merge_only_fresh(self, tmp_path):
         target = tmp_path / "target"

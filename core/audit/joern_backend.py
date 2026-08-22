@@ -707,6 +707,15 @@ def import_sibling_joern_flows(
         flows_path = sibling_dir / "joern-flows.json"
         if not flows_path.exists():
             continue
+        # Staleness gate: a sibling run at a different commit carries
+        # taint flows for code that no longer exists (line drift makes
+        # them actively misleading). The gate is only meaningful when
+        # BOTH hashes are known and equal — an absent/unreadable
+        # sibling hash (or an unknown current hash) means freshness
+        # cannot be established, and unverifiable flows must read as
+        # stale, not fresh (the old both-known-only rule let any
+        # sibling without a content_hash bypass the gate entirely).
+        sibling_hash = ""
         manifest_path = sibling_dir / ".raptor-run.json"
         if manifest_path.exists():
             try:
@@ -716,29 +725,24 @@ def import_sibling_joern_flows(
                     manifest.get("content_hash", "")
                     if isinstance(manifest, dict) else ""
                 )
-                if sibling_hash:
-                    # Staleness gate: a sibling run at a different
-                    # commit carries taint flows for code that no
-                    # longer exists (line drift makes them actively
-                    # misleading). Only enforced when both hashes are
-                    # known — legacy siblings without hashes import
-                    # as before.
-                    if not current_hash_resolved:
-                        current_hash = _current_content_hash(
-                            out_dir, target_path,
-                        )
-                        current_hash_resolved = True
-                    if current_hash and sibling_hash != current_hash:
-                        skipped_stale += 1
-                        logger.info(
-                            "sibling %s joern-flows stale "
-                            "(hash %s != %s) — skipped",
-                            sibling_dir.name,
-                            sibling_hash[:8], current_hash[:8],
-                        )
-                        continue
             except (json.JSONDecodeError, OSError):
-                pass
+                sibling_hash = ""
+        if not current_hash_resolved:
+            current_hash = _current_content_hash(
+                out_dir, target_path,
+            )
+            current_hash_resolved = True
+        if not sibling_hash or not current_hash \
+                or sibling_hash != current_hash:
+            skipped_stale += 1
+            logger.info(
+                "sibling %s joern-flows unverifiable or stale "
+                "(sibling hash %s, current %s) — skipped",
+                sibling_dir.name,
+                sibling_hash[:8] if sibling_hash else "absent",
+                current_hash[:8] if current_hash else "unknown",
+            )
+            continue
         try:
             with open(flows_path, encoding="utf-8") as f:
                 flows_data = json.load(f)

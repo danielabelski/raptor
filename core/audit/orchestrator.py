@@ -1276,6 +1276,33 @@ def run_orchestrator(
             _stop_joern_server(joern_server)
 
 
+# (target_path, library) → detected version or None. Manifest parsing
+# is cheap but runs per callee lookup; memoised for the process. Racy
+# double-computes are benign (same deterministic value).
+_target_lib_version_memo: dict[tuple[str, str], str | None] = {}
+
+
+def _target_library_version(target_path, library: str) -> str | None:
+    """Version of *library* the target verifiably depends on, or None.
+
+    Backed by ``summary_cache.detect_library_version`` (dependency
+    manifest parsing). None means the target's manifests do not name
+    the library — cached cross-library summaries must then not attach
+    as evidence for this target's callees.
+    """
+    key = (str(target_path), library)
+    if key not in _target_lib_version_memo:
+        try:
+            from .summary_cache import detect_library_version
+
+            _target_lib_version_memo[key] = detect_library_version(
+                Path(target_path), library,
+            )
+        except Exception:  # noqa: BLE001 — no detection, no attachment
+            _target_lib_version_memo[key] = None
+    return _target_lib_version_memo[key]
+
+
 def review_one_function(
     gap: dict,
     shared,
@@ -1723,6 +1750,17 @@ def review_one_function(
             elif summary_cache:
                 ce_name = ce.get("name", "")
                 for lib_info in summary_cache.available_libraries():
+                    # Dependency-context gate: a bare function-name
+                    # match in SOME cached library says nothing about
+                    # THIS target's callee unless the target verifiably
+                    # depends on that library at that version — the
+                    # first-match-wins scan attached whichever cached
+                    # library happened to share the name, and its
+                    # contracts then drove contract-violation evidence.
+                    if _target_library_version(
+                        config.target_path, lib_info["library"],
+                    ) != lib_info["version"]:
+                        continue
                     cached = summary_cache.lookup(
                         lib_info["library"],
                         lib_info["version"],

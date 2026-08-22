@@ -55,18 +55,20 @@ class TestSiblingStalenessGate:
         )
         assert import_sibling_joern_flows(out_dir) is None
 
-    def test_legacy_sibling_without_hash_imports(
+    def test_sibling_without_hash_skipped(
         self, tmp_path: Path,
     ) -> None:
+        """A sibling whose manifest carries no content hash cannot
+        prove freshness — unverifiable flows read as stale, not fresh
+        (the missing-hash bypass let arbitrary sibling flows in)."""
         project = tmp_path / "proj"
         out_dir = _mk_run(project, "current", content_hash="aaaa1111")
         _mk_run(project, "older", flows={"a.c:f": [{"sink": "system"}]})
-        imported = import_sibling_joern_flows(out_dir)
-        assert imported == {"a.c:f": [{"sink": "system"}]}
+        assert import_sibling_joern_flows(out_dir) is None
 
-    def test_unknown_current_hash_imports(self, tmp_path: Path) -> None:
-        """When the current run's hash is unavailable (no manifest hash,
-        no target tree) the gate cannot decide — import as before."""
+    def test_unknown_current_hash_skipped(self, tmp_path: Path) -> None:
+        """When the current run's hash is unavailable the gate cannot
+        establish freshness — skip rather than trust."""
         project = tmp_path / "proj"
         out_dir = _mk_run(project, "current")
         _mk_run(
@@ -74,8 +76,7 @@ class TestSiblingStalenessGate:
             flows={"a.c:f": [{"sink": "system"}]},
             content_hash="bbbb2222",
         )
-        imported = import_sibling_joern_flows(out_dir)
-        assert imported == {"a.c:f": [{"sink": "system"}]}
+        assert import_sibling_joern_flows(out_dir) is None
 
     def test_mixed_siblings_only_fresh_imported(
         self, tmp_path: Path,

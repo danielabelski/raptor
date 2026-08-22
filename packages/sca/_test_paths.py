@@ -84,7 +84,7 @@ _TEST_FILE_RE = re.compile(
 # detector layers must keep seeing fixture-tree manifests (findings
 # there are valid supply-chain results), so widening the shared
 # scan-side set would silently shrink scan coverage.
-FIXTURE_DIR_NAMES: Set[str] = {"testdata", "fixtures"}
+FIXTURE_DIR_NAMES: set[str] = {"testdata", "fixtures"}
 
 
 def is_test_path(path: Path, target: Path) -> bool:

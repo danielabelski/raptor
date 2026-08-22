@@ -686,6 +686,99 @@ def test_scanner_cli_wires_multi_wordlists(tmp_path: Path):
     assert config.mode == "pitchfork"
 
 
+def test_build_command_rejects_extra_keyword_in_url_hostname(tmp_path: Path):
+    """The origin probe must neutralize EVERY keyword: an extra wordlist
+    keyword left in the hostname would otherwise lowercase into the
+    target host and pass the compare."""
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    values = tmp_path / "values.txt"
+    values.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://api2.example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="outside configured target scope"):
+        runner.build_command(
+            FfufConfig(
+                wordlist=words,
+                path_template="https://API2.example.test/FUZZ",
+                extra_wordlists=((values, "API2"),),
+            ),
+            tmp_path / "out.json",
+        )
+
+
+def test_build_command_rejects_fuzzed_host_header_outside_vhost_mode(tmp_path: Path):
+    """-H 'Host: FUZZ.evil.com' without vhost mode would be wire-identical
+    to vhost mode while skipping the target-suffix scope check."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="requires vhost mode"):
+        runner.build_command(
+            FfufConfig(
+                wordlist=wordlist,
+                path_template="",
+                headers=("Host: FUZZ.evil.com",),
+            ),
+            tmp_path / "out.json",
+        )
+
+
+def test_build_command_rejects_vhost_keyword_hidden_in_suffix(tmp_path: Path):
+    """A keyword lurking inside the template 'suffix' is substituted by
+    ffuf at runtime, so the endswith check must run on the neutralized
+    template."""
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    values = tmp_path / "values.txt"
+    values.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://w2.example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="must stay under the target host"):
+        runner.build_command(
+            FfufConfig(
+                wordlist=words,
+                vhost=True,
+                vhost_host_template="FUZZ.W2.example.test",
+                extra_wordlists=((values, "W2"),),
+            ),
+            tmp_path / "out.json",
+        )
+
+
+def test_build_command_vhost_carries_explicit_port(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("http://target.example:8080", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, vhost=True),
+        tmp_path / "out.json",
+    )
+    headers = [cmd[idx + 1] for idx, value in enumerate(cmd) if value == "-H"]
+    assert "Host: FUZZ.target.example:8080" in headers
+
+    # An operator template carrying the base URL's own port is accepted.
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            vhost=True,
+            vhost_host_template="FUZZ.target.example:8080",
+        ),
+        tmp_path / "out.json",
+    )
+    headers = [cmd[idx + 1] for idx, value in enumerate(cmd) if value == "-H"]
+    assert "Host: FUZZ.target.example:8080" in headers
+
+
+def test_build_url_template_rejects_port_zero_as_origin_match(tmp_path: Path):
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="outside configured target scope"):
+        runner.build_url_template("https://example.test:0/FUZZ")
+
+
 def test_build_command_vhost_fuzzes_host_header_against_fixed_url(tmp_path: Path):
     wordlist = tmp_path / "subdomains.txt"
     wordlist.write_text("dev\nstaging\n", encoding="utf-8")

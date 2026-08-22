@@ -140,7 +140,8 @@ class FfufRunner:
         return (
             parsed.scheme.lower(),
             (parsed.hostname or "").lower(),
-            parsed.port or default_port,
+            # Explicit test: port 0 is falsy but is NOT the default port.
+            parsed.port if parsed.port is not None else default_port,
         )
 
     def _redact(self, value: object) -> str:
@@ -226,7 +227,11 @@ class FfufRunner:
             redacted.append(self._redact(part))
         return redacted
 
-    def build_url_template(self, path_template: str) -> str:
+    def build_url_template(
+        self,
+        path_template: str,
+        keywords: tuple[str, ...] = ("FUZZ",),
+    ) -> str:
         """Build and scope-check the ffuf URL template.
 
         Accepting a raw URL from the CLI without checking it would let a
@@ -245,7 +250,12 @@ class FfufRunner:
         host/origin rather than to a specific subpath.
         """
         url_template = urljoin(self.base_url + "/", path_template)
-        probe_url = url_template.replace("FUZZ", "raptor-scope-probe")
+        # Neutralize EVERY substitution keyword before the origin compare:
+        # an extra wordlist keyword left in the hostname would otherwise
+        # survive the probe and lowercase straight into the target host.
+        probe_url = url_template
+        for keyword in keywords:
+            probe_url = probe_url.replace(keyword, "raptor-scope-probe")
         if self._origin(probe_url) != self._origin(self.base_url):
             msg = (
                 "ffuf path template is outside configured target scope: "
@@ -270,8 +280,10 @@ class FfufRunner:
         """
         if not config.vhost:
             return None
-        target_host = (urlparse(self.base_url).hostname or "").lower()
-        template = config.vhost_host_template or f"FUZZ.{target_host}"
+        parsed = urlparse(self.base_url)
+        target_host = (parsed.hostname or "").lower()
+        port_suffix = f":{parsed.port}" if parsed.port is not None else ""
+        template = config.vhost_host_template or f"FUZZ.{target_host}{port_suffix}"
         if "\n" in template or "\r" in template:
             msg = "ffuf vhost host template must not contain newlines"
             raise ValueError(msg)
@@ -282,7 +294,17 @@ class FfufRunner:
                 f"(got {template!r})"
             )
             raise ValueError(msg)
-        if not template.lower().endswith("." + target_host):
+        # The suffix check runs on the keyword-NEUTRALIZED template: a
+        # keyword hiding inside the "suffix" would otherwise be
+        # substituted by ffuf and escape the target namespace. The base
+        # URL's own explicit port is allowed after the host.
+        probe = template
+        for keyword in keywords:
+            probe = probe.replace(keyword, "raptor-scope-probe")
+        probe = probe.lower()
+        if port_suffix and probe.endswith(port_suffix):
+            probe = probe[: -len(port_suffix)]
+        if not probe.endswith("." + target_host):
             msg = (
                 "ffuf vhost host template must stay under the target host "
                 f"(expected a template ending in .{target_host}, "
@@ -399,6 +421,22 @@ class FfufRunner:
                         f"{other!r}; keywords must not contain each other"
                     )
                     raise ValueError(msg)
+        if not config.vhost:
+            # A fuzzed Host header outside vhost mode would be wire-identical
+            # to vhost mode while skipping its target-suffix scope check —
+            # the one control the egress proxy cannot back up.
+            for header in config.headers:
+                if ":" not in header:
+                    continue
+                name, value = header.split(":", 1)
+                if name.strip().lower() == "host" and any(
+                    kw in value for kw in keywords
+                ):
+                    msg = (
+                        "fuzzing the Host header requires vhost mode, which "
+                        "scope-checks the host template; use --ffuf-vhost"
+                    )
+                    raise ValueError(msg)
         if config.recursion_depth < 1:
             msg = "ffuf recursion depth must be >= 1"
             raise ValueError(msg)
@@ -465,7 +503,9 @@ class FfufRunner:
         path_template = config.path_template
         if config.vhost and path_template == "FUZZ":
             path_template = ""
-        url_template = self.build_url_template(path_template)
+        url_template = self.build_url_template(
+            path_template, self._fuzz_keywords(config)
+        )
         vhost_header = self._build_vhost_header(config)
         if config.vhost and any(
             kw in url_template for kw in self._fuzz_keywords(config)

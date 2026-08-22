@@ -135,6 +135,11 @@ def _overlap_count(intervals: list[Interval], lo: int, hi: int) -> int:
 
 _BITMAP_THRESHOLD = 50
 
+# Byte budget for loading coverage.json. Even very large projects'
+# stores are tens of MiB; 256 MiB is generous headroom while keeping
+# a hostile store (e.g. from an imported project archive) unread.
+_MAX_STORE_BYTES = 256 * 1024 * 1024
+
 
 def _set_to_intervals(lines: set) -> list[Interval]:
     """Coalesce a line-number set into sorted inclusive intervals."""
@@ -236,8 +241,17 @@ class CoverageStore:
             # via backfill from per-run records). A successfully-parsed payload
             # is normalised tolerantly (see schema.py) so a single malformed
             # entry doesn't poison queries.
+            #
+            # Bounded load: the store can arrive via /project import,
+            # so the st_size gate (before any read) keeps an oversize
+            # coverage.json from being buffered — it degrades to the
+            # same warn-and-start-empty path as a corrupt one
+            # (load_json strict raises ValueError on oversize).
+            from core.json.utils import load_json
             try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
+                data = load_json(
+                    self.path, strict=True, max_bytes=_MAX_STORE_BYTES,
+                )
             except (ValueError, OSError) as exc:
                 _get_logger(__name__).warning(
                     "coverage store %s: unreadable (%s); starting empty",

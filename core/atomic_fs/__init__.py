@@ -219,7 +219,23 @@ def write_bytes_atomically(
                 # Windows + some mounts don't honour fchmod — the
                 # O_CREAT mode argument was already best-effort.
                 pass
-            os.write(fd, content)
+            # ``os.write`` may return a SHORT count (interrupted by a
+            # signal after partial progress, filesystem-specific
+            # limits on single-call sizes). Pre-fix the single call
+            # ignored the return value: a positive short write then
+            # fsync'd and ``os.replace``'d a TRUNCATED file as
+            # committed — the exact torn-write the primitive exists
+            # to prevent. Loop until every byte is written; a
+            # zero-progress write raises instead of spinning.
+            view = memoryview(content)
+            written = 0
+            while written < len(view):
+                n = os.write(fd, view[written:])
+                if n <= 0:
+                    raise OSError(
+                        f"short write to {tmp}: os.write returned {n}",
+                    )
+                written += n
             os.fsync(fd)
         finally:
             os.close(fd)

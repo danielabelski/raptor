@@ -346,3 +346,50 @@ class TestCrossConsumerConsistency:
             for _, p in seen
         )
 
+
+
+class TestShortWriteCompletion:
+    def test_short_os_write_still_commits_full_content(
+        self, tmp_path, monkeypatch,
+    ):
+        """A partial ``os.write`` must not commit a truncated file.
+
+        ``os.write`` is allowed to return a short count (signal after
+        partial progress, per-call filesystem limits). Simulate a
+        kernel that writes at most 4 bytes per call and assert the
+        committed file still carries every byte. Pre-fix the single
+        unchecked ``os.write`` call fsync'd and renamed the 4-byte
+        truncation into place as if committed.
+        """
+        import os as _os
+
+        from core.atomic_fs import write_bytes_atomically
+
+        target = tmp_path / "blob.bin"
+        content = b"0123456789abcdef" * 4
+        real_write = _os.write
+
+        def short_write(fd, data):
+            return real_write(fd, bytes(memoryview(data)[:4]))
+
+        monkeypatch.setattr(_os, "write", short_write)
+        write_bytes_atomically(target, content)
+        monkeypatch.undo()
+        assert target.read_bytes() == content
+
+    def test_zero_progress_write_raises_and_cleans_up(
+        self, tmp_path, monkeypatch,
+    ):
+        """A zero-return ``os.write`` must raise, not loop forever or
+        commit — and the tempfile must be cleaned up."""
+        import os as _os
+
+        from core.atomic_fs import write_bytes_atomically
+
+        target = tmp_path / "blob.bin"
+        monkeypatch.setattr(_os, "write", lambda fd, data: 0)
+        with pytest.raises(OSError):
+            write_bytes_atomically(target, b"payload")
+        monkeypatch.undo()
+        assert not target.exists()
+        assert list(tmp_path.iterdir()) == []

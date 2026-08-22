@@ -1972,9 +1972,20 @@ def run_sandboxed(
                                         + [b[1] for b in
                                            (extra_unix_bridges or [])])
                             if p]
+                # The run's network policy travels WITH the supervisor:
+                # Landlock CONNECT_TCP rules and the ABI-6 abstract
+                # scope are task-scoped, so a connect the supervisor
+                # executes never evaluates them — the supervisor must
+                # re-apply the declared TCP port policy itself, and may
+                # treat abstract names as netns-scoped only when this
+                # run actually unshared a netns for the child.
                 sup = UnixScopeSupervisor(
                     notify_fd, allowed_socket_paths=_allowed,
-                    label=f"spawn-{child_pid}")
+                    label=f"spawn-{child_pid}",
+                    allowed_tcp_ports=(list(allowed_tcp_ports)
+                                       if allowed_tcp_ports else None),
+                    netns_isolated=bool(block_network
+                                        and not inherit_netns))
                 _unix_scope_supervisor.append(sup)
                 sup.serve_forever()
             except Exception:  # noqa: BLE001 — supervisor thread must never propagate

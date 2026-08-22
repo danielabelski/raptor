@@ -26,10 +26,24 @@ connects, and for pathname targets the O_PATH fd pins the exact inode.
 
 Policy
 ------
-- Non-AF_UNIX connects: executed as read (the socket's own netns
-  governs routing, so semantics are unchanged) — never CONTINUE'd,
-  closing the family-swap TOCTOU.
-- AF_UNIX abstract / unnamed: executed as read (netns-scoped already).
+- Non-AF_UNIX connects: executed on the child's behalf — never
+  CONTINUE'd, closing the family-swap TOCTOU. The socket's own netns
+  governs routing, so netns isolation is preserved; but Landlock
+  network rules are TASK-scoped, not socket-scoped, so the supervisor
+  re-applies the run's declared TCP policy itself: when the run
+  declared ``allowed_tcp_ports``, AF_INET/AF_INET6 stream connects to
+  any other port get EACCES (the same errno the child's own Landlock
+  domain would have returned). Without this re-check the supervisor —
+  an unconfined parent task — would silently void the child's
+  Landlock CONNECT_TCP rules on every mount-ns run.
+- AF_UNIX abstract: executed only when this run gave the child its
+  OWN network namespace (abstract names are netns-scoped). On
+  shared-netns runs (``block_network=False`` without a coordinator
+  netns) the name resolves in the HOST's abstract namespace, so the
+  connect is refused (EPERM) — the child's Landlock abstract-socket
+  scope (ABI 6) cannot help here because it, too, is task-scoped and
+  never evaluates for a supervisor-executed connect.
+- AF_UNIX unnamed (zero-length): executed as read (kernel EINVAL).
 - AF_UNIX pathname: allowed only when the resolved target inode lives
   on one of the sandbox's PRIVATE tmpfs mounts (/tmp, /run, /dev/shm —
   per-sandbox by construction on this path) or is one of the
@@ -65,6 +79,7 @@ import socket
 import stat as stat_mod
 import struct
 import threading
+import time
 
 from . import state
 
@@ -112,6 +127,14 @@ _IOCTL_NOTIF_ID_VALID = _iow(2, 8)
 # one supervisor worker per attempt.
 _MAX_INFLIGHT = 32
 
+# Bound on how long one executed connect may keep a supervisor worker
+# (and its dup of the child's socket) alive. Comfortably above the
+# kernel's own TCP connect timeout ladder; a hostile child pointing a
+# blocking connect at a never-completing target cannot park workers
+# past this. The child sees ETIMEDOUT, which a blocking connect can
+# already produce.
+_CONNECT_DEADLINE_S = 120.0
+
 _libc = None
 
 
@@ -150,6 +173,15 @@ def _pidfd_getfd(pidfd: int, target_fd: int) -> int:
     if r < 0:
         raise OSError(e, os.strerror(e))
     return r
+
+
+def _getsockopt_int(fd: int, level: int, opt: int) -> int | None:
+    libc = _get_libc()
+    val = ctypes.c_int(0)
+    size = ctypes.c_uint(ctypes.sizeof(val))
+    rc = libc.getsockopt(fd, level, opt,
+                         ctypes.byref(val), ctypes.byref(size))
+    return int(val.value) if rc == 0 else None
 
 
 def _openat2(dirfd: int, path: bytes, flags: int, resolve: int) -> int:
@@ -284,11 +316,26 @@ class UnixScopeSupervisor:
 
     def __init__(self, notify_fd: int,
                  allowed_socket_paths: list[str] | None = None,
-                 label: str = "sandbox") -> None:
+                 label: str = "sandbox",
+                 allowed_tcp_ports: list[int] | None = None,
+                 netns_isolated: bool = False) -> None:
         self._fd = notify_fd
         self._label = label
         self._closed = threading.Event()
         self._inflight = threading.Semaphore(_MAX_INFLIGHT)
+        # The run's declared TCP policy. Landlock CONNECT_TCP rules are
+        # task-scoped and never evaluate for a connect WE execute, so
+        # the supervisor is the enforcement point on this path. None
+        # means "no TCP port policy declared" (matching landlock_fn
+        # construction in _spawn.py).
+        self._allowed_tcp_ports: frozenset[int] | None = (
+            frozenset(int(p) for p in allowed_tcp_ports)
+            if allowed_tcp_ports else None)
+        # True when the child got its own network namespace (fresh
+        # CLONE_NEWNET). Abstract AF_UNIX names are netns-scoped;
+        # without this, an abstract connect resolves in the HOST's
+        # abstract namespace and must be refused.
+        self._netns_isolated = bool(netns_isolated)
         # Pin the allowlisted sockets by (dev, ino) NOW, from the
         # parent's view — inode identity is immune to any path games
         # the child can play later.
@@ -445,13 +492,28 @@ class UnixScopeSupervisor:
 
         try:
             if family != socket.AF_UNIX:
-                return self._connect_raw(dupfd, addr)
+                return self._connect_inet_policied(dupfd, addr, family,
+                                                   pid)
             path = addr[2:addr_len]
             nul = path.find(b"\x00")
-            if nul == 0 or len(path) == 0:
-                # Abstract (or unnamed autobind) — netns-scoped on
-                # this path; execute as read.
+            if len(path) == 0:
+                # Unnamed — kernel returns EINVAL; execute as read.
                 return self._connect_raw(dupfd, addr)
+            if nul == 0:
+                # Abstract — netns-scoped, so only safe when THIS run
+                # gave the child its own netns. On shared-netns runs
+                # the name resolves in the HOST's abstract namespace
+                # (Landlock's ABI-6 abstract scope is task-scoped and
+                # never evaluates for a supervisor-executed connect).
+                if self._netns_isolated:
+                    return self._connect_raw(dupfd, addr)
+                logger.warning(
+                    "unix-scope[%s]: denied abstract AF_UNIX connect "
+                    "%r from pid %d — the child shares the host "
+                    "network namespace, so the name resolves in the "
+                    "HOST's abstract namespace", self._label,
+                    path[1:65], pid)
+                return -errno.EPERM, 0
             if nul > 0:
                 path = path[:nul]
             if not path.startswith(b"/"):
@@ -464,15 +526,103 @@ class UnixScopeSupervisor:
         finally:
             os.close(dupfd)
 
+    def _connect_inet_policied(self, dupfd: int, addr: bytes,
+                               family: int, pid: int) -> tuple[int, int]:
+        """Re-apply the run's declared TCP policy before executing.
+
+        Landlock CONNECT_TCP rules live in the CHILD's task domain;
+        a connect executed by this (unconfined) supervisor never
+        evaluates them. When the run declared ``allowed_tcp_ports``,
+        enforce the same policy here: stream connects to any other
+        port get EACCES — the errno Landlock itself uses.
+        """
+        if (self._allowed_tcp_ports is not None
+                and family in (socket.AF_INET, socket.AF_INET6)):
+            if len(addr) < 4:
+                return -errno.EINVAL, 0
+            # SO_TYPE lookup failure counts as stream (fail closed).
+            sotype = _getsockopt_int(dupfd, socket.SOL_SOCKET,
+                                     socket.SO_TYPE)
+            if sotype is None or sotype == socket.SOCK_STREAM:
+                port = struct.unpack_from("!H", addr, 2)[0]
+                if port not in self._allowed_tcp_ports:
+                    logger.warning(
+                        "unix-scope[%s]: denied TCP connect to port %d "
+                        "from pid %d — outside the run's "
+                        "allowed_tcp_ports %s", self._label, port, pid,
+                        sorted(self._allowed_tcp_ports))
+                    return -errno.EACCES, 0
+        return self._connect_raw(dupfd, addr)
+
     def _connect_raw(self, dupfd: int, addr: bytes) -> tuple[int, int]:
         """Execute connect(2) with the address bytes WE read — immune
-        to the child rewriting its buffer afterwards."""
+        to the child rewriting its buffer afterwards.
+
+        Executed nonblocking with a bounded completion wait so a
+        hostile child cannot park a supervisor worker (and its dup of
+        the child's socket) forever on a never-completing target. The
+        O_NONBLOCK bit is set/restored on the SHARED open file
+        description, so a child socket that was already nonblocking
+        keeps exact kernel semantics (EINPROGRESS/EAGAIN pass
+        through); a blocking child socket waits here — the child
+        itself stays blocked in the notified syscall — up to
+        ``_CONNECT_DEADLINE_S`` and then sees ETIMEDOUT.
+        """
         libc = _get_libc()
-        ctypes.set_errno(0)
-        rc = libc.connect(dupfd, addr, len(addr))
-        if rc < 0:
-            return -(ctypes.get_errno() or errno.EPERM), 0
-        return 0, 0
+        try:
+            fl = fcntl.fcntl(dupfd, fcntl.F_GETFL)
+        except OSError:
+            return -errno.EPERM, 0
+        child_nonblocking = bool(fl & os.O_NONBLOCK)
+        if not child_nonblocking:
+            try:
+                fcntl.fcntl(dupfd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            except OSError:
+                return -errno.EPERM, 0
+        try:
+            ctypes.set_errno(0)
+            rc = libc.connect(dupfd, addr, len(addr))
+            err = ctypes.get_errno() if rc < 0 else 0
+            if rc == 0:
+                return 0, 0
+            if child_nonblocking:
+                return -(err or errno.EPERM), 0
+            if err == errno.EAGAIN:
+                # AF_UNIX stream to a full backlog. Blocking semantics
+                # would wait on the listener's (i.e. the attacker's)
+                # schedule — exactly the worker-parking DoS. Refuse.
+                return -errno.EAGAIN, 0
+            if err != errno.EINPROGRESS:
+                return -(err or errno.EPERM), 0
+            # INET stream handshake in flight: wait, bounded.
+            import select
+            poller = select.poll()
+            try:
+                poller.register(dupfd, select.POLLOUT)
+            except OSError:
+                return -errno.EPERM, 0
+            deadline = time.monotonic() + _CONNECT_DEADLINE_S
+            while not self._closed.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return -errno.ETIMEDOUT, 0
+                try:
+                    events = poller.poll(min(500.0,
+                                             remaining * 1000.0))
+                except OSError:
+                    return -errno.EPERM, 0
+                if events:
+                    so_error = _getsockopt_int(
+                        dupfd, socket.SOL_SOCKET, socket.SO_ERROR)
+                    if so_error:
+                        return -so_error, 0
+                    return 0, 0
+            # Supervisor shut down mid-connect: fail the call.
+            return -errno.ECONNABORTED, 0
+        finally:
+            if not child_nonblocking:
+                with contextlib.suppress(OSError):
+                    fcntl.fcntl(dupfd, fcntl.F_SETFL, fl)
 
     def _connect_pathname(self, dupfd: int, pid: int,
                           path: bytes) -> tuple[int, int]:

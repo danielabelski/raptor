@@ -244,6 +244,138 @@ class TestLegitimateUsesKeepWorking(_Base):
         self.assertIn("OK sp", r.stdout)
 
 
+class TestSupervisorAppliesChildNetworkPolicy(_Base):
+    """The supervisor executes connects in the (unconfined) parent, so
+    the child's task-scoped Landlock network rules never evaluate for
+    them. The supervisor must re-apply the declared policy itself —
+    otherwise a networked mount-ns run (block_network=False) silently
+    voids allowed_tcp_ports and reaches host abstract sockets."""
+
+    def _tcp_listener(self):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        srv.settimeout(0.5)
+        self.addCleanup(srv.close)
+        return srv.getsockname()[1], srv
+
+    _TCP_CONNECT = textwrap.dedent("""
+        import socket
+        s = socket.socket()
+        s.settimeout(10)
+        try:
+            s.connect(("127.0.0.1", {port}))
+            print("CONNECTED")
+        except OSError as e:
+            print("DENIED", e.errno)
+    """)
+
+    def test_allowed_tcp_ports_enforced_on_shared_netns_run(self):
+        """Declared allowed_tcp_ports
+        must bind supervisor-executed connects too."""
+        import errno as _errno
+        port, srv = self._tcp_listener()
+        r = self._spawn(self._TCP_CONNECT.format(port=port),
+                        block_network=False,
+                        allowed_tcp_ports=[443])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"DENIED {_errno.EACCES}", r.stdout,
+                      f"child reached 127.0.0.1:{port} despite "
+                      f"allowed_tcp_ports=[443]: {r.stdout!r}")
+        self.assertFalse(self._accepted(srv),
+                         "host TCP listener accepted a connection the "
+                         "declared port policy forbids")
+
+    def test_allowed_tcp_ports_declared_port_still_connects(self):
+        port, srv = self._tcp_listener()
+        r = self._spawn(self._TCP_CONNECT.format(port=port),
+                        block_network=False,
+                        allowed_tcp_ports=[port])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("CONNECTED", r.stdout,
+                      f"declared-port connect must keep working: "
+                      f"{r.stdout!r} {r.stderr!r}")
+
+    def test_abstract_connect_denied_on_shared_netns_run(self):
+        """Abstract names resolve in the HOST's
+        abstract namespace when the child shares the host netns."""
+        import secrets as _secrets
+        name = "\0uscope-test-" + _secrets.token_hex(6)
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(name)
+        srv.listen(4)
+        srv.settimeout(0.5)
+        self.addCleanup(srv.close)
+        prog = textwrap.dedent(f"""
+            import socket
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(10)
+            try:
+                s.connect({name!r})
+                print("CONNECTED")
+            except OSError as e:
+                print("DENIED", e.errno)
+        """)
+        r = self._spawn(prog, block_network=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("DENIED", r.stdout,
+                      f"shared-netns child reached a HOST abstract "
+                      f"socket: {r.stdout!r}")
+        self.assertFalse(self._accepted(srv))
+
+    def test_abstract_self_ipc_works_with_fresh_netns(self):
+        """block_network=True unshares a netns — the child's own
+        abstract sockets must keep working there."""
+        prog = textwrap.dedent("""
+            import socket
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind("\\0uscope-self-ipc")
+            srv.listen(1)
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect("\\0uscope-self-ipc")
+            conn, _ = srv.accept()
+            c.sendall(b"abst")
+            print("OK", conn.recv(4).decode())
+        """)
+        r = self._spawn(prog, block_network=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("OK abst", r.stdout,
+                      f"netns-scoped abstract IPC must keep working: "
+                      f"{r.stdout!r} {r.stderr!r}")
+
+    def test_full_backlog_connect_does_not_park_worker(self):
+        """A blocking connect to a full-backlog
+        listener must not park a supervisor worker (and the run) on
+        the attacker's schedule — the child promptly sees EAGAIN."""
+        prog = textwrap.dedent("""
+            import errno, socket
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind("/tmp/backlog-full")
+            srv.listen(0)
+            # occupy the single backlog slot, never accept
+            c1 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c1.setblocking(False)
+            try:
+                c1.connect("/tmp/backlog-full")
+            except BlockingIOError:
+                pass
+            c2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            # BLOCKING connect — pre-fix this parked a supervisor
+            # worker until the run timeout
+            try:
+                c2.connect("/tmp/backlog-full")
+                print("CONNECTED")
+            except OSError as e:
+                print("DENIED", e.errno)
+        """)
+        r = self._spawn(prog, timeout=20)
+        self.assertEqual(r.returncode, 0,
+                         f"blocking full-backlog connect wedged the "
+                         f"run: rc={r.returncode} {r.stderr!r}")
+        self.assertTrue("DENIED" in r.stdout or "CONNECTED" in r.stdout,
+                        r.stdout)
+
+
 class TestFailClosedDowngrade(unittest.TestCase):
     def test_af_unix_blocked_when_supervisor_unavailable(self):
         if not _mount_ns_usable():

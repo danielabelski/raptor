@@ -192,6 +192,24 @@ def test_yaml_aliases_refused() -> None:
         )
 
 
+def test_python_object_tags_refused() -> None:
+    # Safety pin: the index loader is a SafeLoader subclass, so a
+    # hostile Helm index carrying a `!!python/object/apply` payload is
+    # refused at construction — never instantiated. Guards against a
+    # future edit downgrading the loader to yaml.Loader/UnsafeLoader.
+    evil = (
+        b"apiVersion: v1\n"
+        b"entries:\n"
+        b'  a: !!python/object/apply:os.system ["true"]\n'
+    )
+    http = _StubHttp({"https://charts.example.com/index.yaml": evil})
+    with pytest.raises(UpstreamLookupError, match="not parseable YAML"):
+        latest_chart_version(
+            "https://charts.example.com", "a",
+            http=http, cache=None,
+        )
+
+
 def test_fetch_passes_byte_cap() -> None:
     seen = {}
 

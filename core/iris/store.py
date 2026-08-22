@@ -90,6 +90,46 @@ def _store_path(out_dir: Path) -> Path:
     return _project_dir(out_dir) / _STORE_DIR / _STORE_FILE
 
 
+def _floor_unverified_tiers(
+    specs: list[TaintSpec], path: Path, reason: str,
+) -> list[TaintSpec]:
+    """Clamp every deserialised tier to heuristic (in place).
+
+    The tier is the suppression-direction authority
+    (``core.iris.api.SUPPRESSION_MIN_TIER``), so it is only honoured
+    from a store whose provenance token verifies. Floored specs keep
+    their prompt-direction value; the refine loop / operator
+    annotations re-corroborate legitimate ones."""
+    floored = 0
+    heuristic_rank = TIER_RANK.get(EvidenceTier.HEURISTIC, 0)
+    for spec in specs:
+        if TIER_RANK.get(spec.evidence_tier, 0) > heuristic_rank:
+            spec.evidence_tier = EvidenceTier.HEURISTIC
+            floored += 1
+    if floored:
+        logger.warning(
+            "iris.store: %s %s — floored %d stored evidence tier(s) "
+            "to heuristic (suppression-direction specs require a "
+            "verified store; the refine loop re-corroborates)",
+            path, reason, floored,
+        )
+    return specs
+
+
+def _envelope_trusted(data: dict, *, target_path: "Path | None") -> str:
+    """'' when the envelope's tiers may be honoured, else the reason
+    they must floor."""
+    from . import integrity as _integrity
+    if not _integrity.verify_envelope(data):
+        return "failed provenance verification"
+    if target_path is not None and not data.get("target_path"):
+        # A verified envelope with no target binding cannot prove it
+        # was built for THIS target — cross-target guard variant of
+        # the same trust decision.
+        return "carries no target_path binding"
+    return ""
+
+
 def load_specs(
     out_dir: Path, *, target_path: Path | None = None,
 ) -> list[TaintSpec]:
@@ -119,7 +159,11 @@ def load_specs(
                 stored_target, target_path,
             )
             return []
-    return _specs_from_list(data.get("specs", []))
+    specs = _specs_from_list(data.get("specs", []))
+    reason = _envelope_trusted(data, target_path=target_path)
+    if reason:
+        _floor_unverified_tiers(specs, path, reason)
+    return specs
 
 
 def load_assumptions(
@@ -194,6 +238,13 @@ def save_specs(
     }
     if target_path is not None:
         envelope["target_path"] = str(target_path.resolve())
+
+    # Provenance stamp over the whole envelope — readers floor every
+    # stored tier to heuristic when it does not verify (see
+    # core.iris.integrity). Unstampable environments persist
+    # unstamped, which reads the same way.
+    from . import integrity as _integrity
+    _integrity.stamp(envelope)
 
     fd, tmp = tempfile.mkstemp(
         dir=str(store_dir),
@@ -287,6 +338,11 @@ def persist_refined_specs(
         return None
 
     existing = _specs_from_list(meta.get("specs", []))
+    reason = _envelope_trusted(meta, target_path=None)
+    if reason:
+        # Never launder: an unverified store's tiers must not survive
+        # into the (freshly stamped) merged envelope.
+        _floor_unverified_tiers(existing, _store_path(out_dir), reason)
     merged = merge_specs(existing, refined)
 
     # Drop refuted specs at merge. The refine loop demotes refuted

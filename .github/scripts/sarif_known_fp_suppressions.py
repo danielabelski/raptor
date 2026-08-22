@@ -141,16 +141,18 @@ def _validate_tables() -> None:
     for entry in KNOWN_FP_RULES:
         for prefix in entry.sink_file_prefixes:
             if "/" not in prefix:
-                raise ValueError(
+                msg = (
                     f"KnownFP sink_file_prefix {prefix!r} is too broad — "
                     f"must contain at least one '/' (e.g. 'core/sandbox/context.py')"
                 )
+                raise ValueError(msg)
     for entry in SANITIZER_FP_RULES:
         if "/" not in entry.sanitizer_file:
-            raise ValueError(
+            msg = (
                 f"SanitizerFP sanitizer_file {entry.sanitizer_file!r} is too broad — "
                 f"must contain at least one '/' (e.g. 'core/security/redaction.py')"
             )
+            raise ValueError(msg)
 
 
 _validate_tables()

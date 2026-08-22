@@ -127,9 +127,8 @@ def ensure_same_provenance(items: Iterable[Any]) -> HypothesisHash:
         if ref:
             seen.add(ref)
     if len(seen) > 1:
-        raise ProvenanceMismatch(
-            f"evidence list spans multiple hypotheses: {sorted(seen)}"
-        )
+        msg = f"evidence list spans multiple hypotheses: {sorted(seen)}"
+        raise ProvenanceMismatch(msg)
     return next(iter(seen), "")
 
 

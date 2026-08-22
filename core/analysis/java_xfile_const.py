@@ -144,7 +144,8 @@ class XFileConst:
             for f in self._root.rglob(f"{simple}.java"):
                 candidates.append(f)
                 if len(candidates) > _MAX_DECLARING_CANDIDATES:
-                    raise _Refused("too many declaring-file candidates")
+                    msg = "too many declaring-file candidates"
+                    raise _Refused(msg)
             declaring = None
             declaring_root = None
             for f in candidates:
@@ -170,7 +171,8 @@ class XFileConst:
                     if pkg != cur_pkg:
                         continue
                 if declaring is not None:
-                    raise _Refused("ambiguous declaring file")
+                    msg = "ambiguous declaring file"
+                    raise _Refused(msg)
                 declaring, declaring_root = f, tree.root_node
             if declaring_root is not None:
                 result = (declaring_root, declaring)

@@ -31,11 +31,12 @@ def _gharchive_day(timestamp: str) -> str:
     """
     digits = "".join(ch for ch in timestamp if ch.isdigit())
     if len(digits) < 8:
-        raise ValueError(
+        msg = (
             f"timestamp {timestamp!r} does not contain a YYYYMMDD date "
             "(need at least 8 digits, e.g. '2024-01-15T10:30:00Z' or "
             "'20240115')"
         )
+        raise ValueError(msg)
     return digits[:8]
 
 
@@ -54,10 +55,12 @@ class GHArchiveCollector:
     ) -> list[AnyEvent]:
         """Collect events from GH Archive."""
         if len(timestamp) != 12 or not timestamp.isdigit():
-            raise ValueError(f"timestamp must be YYYYMMDDHHMM format (12 digits), got: {timestamp}")
+            msg = f"timestamp must be YYYYMMDDHHMM format (12 digits), got: {timestamp}"
+            raise ValueError(msg)
 
         if not repo and not actor:
-            raise ValueError("Must specify at least 'repo' or 'actor' to avoid expensive full-table scans")
+            msg = "Must specify at least 'repo' or 'actor' to avoid expensive full-table scans"
+            raise ValueError(msg)
 
         rows = self.client.query_events(
             repo=repo,
@@ -128,7 +131,8 @@ class GHArchiveCollector:
                         is_dangling=True,
                     )
 
-        raise ValueError(f"Commit {sha} not found in GH Archive for {repo} at {timestamp}")
+        msg = f"Commit {sha} not found in GH Archive for {repo} at {timestamp}"
+        raise ValueError(msg)
 
     def recover_force_push(self, repo: str, timestamp: str) -> CommitObservation:
         """Recover force-pushed commit from GH Archive."""
@@ -178,7 +182,8 @@ class GHArchiveCollector:
                     is_dangling=True,
                 )
 
-        raise ValueError(f"Force push not found in GH Archive for {repo} at {timestamp}")
+        msg = f"Force push not found in GH Archive for {repo} at {timestamp}"
+        raise ValueError(msg)
 
     def _recover_from_gharchive(
         self, item_type: str, repo: str, number: int, timestamp: str
@@ -227,4 +232,5 @@ class GHArchiveCollector:
                 )
 
         label = "PR" if item_type == "pr" else "Issue"
-        raise ValueError(f"{label} #{number} not found in GH Archive for {repo} at {timestamp}")
+        msg = f"{label} #{number} not found in GH Archive for {repo} at {timestamp}"
+        raise ValueError(msg)

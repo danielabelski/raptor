@@ -380,11 +380,12 @@ def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
                         written, len(data), attempt, _APPEND_MAX_ATTEMPTS,
                     )
                     if attempt == _APPEND_MAX_ATTEMPTS:
-                        raise OSError(
+                        msg = (
                             f"journal append failed after "
                             f"{_APPEND_MAX_ATTEMPTS} short-write attempts "
                             f"({written} of {len(data)} bytes)"
                         )
+                        raise OSError(msg)
             finally:
                 if _HAS_FCNTL:
                     fcntl.flock(fd, fcntl.LOCK_UN)
@@ -461,10 +462,11 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
     """
     version = raw.get("schema_version", 1)
     if version != SCHEMA_VERSION:
-        raise ValueError(
+        msg = (
             f"unknown journal entry schema_version={version}; "
             f"this reader supports {SCHEMA_VERSION} only"
         )
+        raise ValueError(msg)
     return ReviewJournalEntry(
         ts=raw["ts"],
         run_id=raw["run_id"],

@@ -104,13 +104,15 @@ class GitClient:
             )
             return result.stdout.strip()
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(
+            msg = (
                 f"Git command timed out after {_GIT_TIMEOUT_S}s: "
                 f"{' '.join(args)}"
-            ) from e
+            )
+            raise RuntimeError(msg) from e
         except subprocess.CalledProcessError as e:
             # Enhance error message with stderr
-            raise RuntimeError(f"Git command failed: {' '.join(args)}\nError: {e.stderr}") from e
+            msg = f"Git command failed: {' '.join(args)}\nError: {e.stderr}"
+            raise RuntimeError(msg) from e
 
     def get_commit(self, sha: str) -> dict[str, Any]:
         """Get commit info from local git."""

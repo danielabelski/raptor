@@ -155,15 +155,13 @@ def _read_ppid(pid: int) -> int:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise ProcessLookupError(
-            f"_read_ppid: /proc/{pid}/stat vanished — process exited"
-        ) from exc
+        msg = f"_read_ppid: /proc/{pid}/stat vanished — process exited"
+        raise ProcessLookupError(msg) from exc
     except PermissionError:
         raise
     except OSError as exc:
-        raise ProcessLookupError(
-            f"_read_ppid: /proc/{pid}/stat unreadable: {exc}"
-        ) from exc
+        msg = f"_read_ppid: /proc/{pid}/stat unreadable: {exc}"
+        raise ProcessLookupError(msg) from exc
     # Format: pid (comm) state ppid ...
     close_paren = stat.rfind(")")
     fields = stat[close_paren + 2:].split()
@@ -180,9 +178,8 @@ def _read_ppid_ps(pid: int) -> int:
         )
         return int(out.strip())
     except (subprocess.SubprocessError, OSError, ValueError) as exc:
-        raise ProcessLookupError(
-            f"_read_ppid_ps: ps failed for pid {pid}: {exc}"
-        ) from exc
+        msg = f"_read_ppid_ps: ps failed for pid {pid}: {exc}"
+        raise ProcessLookupError(msg) from exc
 
 
 def _get_session_pid() -> int | None:
@@ -467,11 +464,14 @@ def _project_run_gate(project_dir: Path, output_dir: Path, command: str,
                 yield
                 return
             if not wait:
-                raise ProjectRunContention(
+                msg = (
                     f"a run is already in progress on this project: "
                     f"{holder['operation']} (session pid {holder['pid']}, "
                     f"since {holder['since']}, run {holder['run_dir']}) — "
-                    f"let it finish or pass --wait to queue",
+                    f"let it finish or pass --wait to queue"
+                )
+                raise ProjectRunContention(
+                    msg,
                     holder,
                 )
         if not waiting_printed:
@@ -985,7 +985,7 @@ def ensure_run_command(output_dir: Path,
         return
     owner = metadata.get("command")
     if owner and owner != expected_command:
-        raise RunOwnershipError(
+        msg = (
             f"run {output_dir} is owned by command {owner!r} — refusing "
             f"the terminal transition claimed by {expected_command!r}. "
             f"Only the flow that started a run may finalise it; a "
@@ -993,6 +993,7 @@ def ensure_run_command(output_dir: Path,
             f"(e.g. /understand --map with --out pointed at an /audit "
             f"dir) must leave the owner's lifecycle alone."
         )
+        raise RunOwnershipError(msg)
 
 
 def complete_run(output_dir: Path, extra: dict[str, Any] | None = None,
@@ -1351,21 +1352,23 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     with _metadata_lock(path):
         metadata = load_json(path)
         if metadata is None:
-            raise FileNotFoundError(
-                f"No {RUN_METADATA_FILE} in {output_dir} — not a run directory"
-            )
+            msg = f"No {RUN_METADATA_FILE} in {output_dir} — not a run directory"
+            raise FileNotFoundError(msg)
         if not isinstance(metadata, dict):
             # ValueError (not TypeError): malformed on-disk data — the
             # same convention _update_status uses for this exact case.
-            raise ValueError(  # noqa: TRY004
+            msg = (
                 f"Malformed {RUN_METADATA_FILE} in {output_dir} — "
-                "expected JSON object")
+                "expected JSON object"
+            )
+            raise ValueError(msg)  # noqa: TRY004
         current = metadata.get("status")
         if current not in RESUMABLE_STATUSES:
-            raise ValueError(
+            msg = (
                 f"run status {current!r} is not resumable "
                 f"(resumable: {', '.join(sorted(RESUMABLE_STATUSES))})"
             )
+            raise ValueError(msg)
         extra = metadata.get("extra") or {}
         resumes = extra.get("resumes")
         if not isinstance(resumes, list):
@@ -1419,16 +1422,18 @@ def reopen_run(output_dir: Path, note: str | None = None) -> None:
     with _metadata_lock(path):
         metadata = load_json(path)
         if metadata is None:
-            raise FileNotFoundError(
-                f"No {RUN_METADATA_FILE} in {output_dir}")
+            msg = f"No {RUN_METADATA_FILE} in {output_dir}"
+            raise FileNotFoundError(msg)
         if not isinstance(metadata, dict):
-            raise ValueError(  # noqa: TRY004 — malformed on-disk data
+            msg = (
                 f"Malformed {RUN_METADATA_FILE} in {output_dir} — "
-                "expected JSON object")
+                "expected JSON object"
+            )
+            raise ValueError(msg)  # noqa: TRY004 — malformed on-disk data
         current = metadata.get("status")
         if current != STATUS_COMPLETED:
-            raise ValueError(
-                f"reopen_run: expected status 'completed', got {current!r}")
+            msg = f"reopen_run: expected status 'completed', got {current!r}"
+            raise ValueError(msg)
         extra = metadata.get("extra") or {}
         reopens = extra.get("reopens")
         if not isinstance(reopens, list):
@@ -1653,12 +1658,13 @@ def _update_status(output_dir: Path, status: str,
     with _metadata_lock(path):
         metadata = load_json(path)
         if metadata is None:
-            raise FileNotFoundError(f"No {RUN_METADATA_FILE} in {output_dir} — call start_run() first")
+            msg = f"No {RUN_METADATA_FILE} in {output_dir} — call start_run() first"
+            raise FileNotFoundError(msg)
         if not isinstance(metadata, dict):
             # ValueError (not TypeError): malformed on-disk data, and the
             # exception type callers already handle.
-            raise ValueError(  # noqa: TRY004
-                f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object")
+            msg = f"Malformed {RUN_METADATA_FILE} in {output_dir} — expected JSON object"
+            raise ValueError(msg)  # noqa: TRY004
         current = metadata.get("status")
         if current in _TERMINAL_STATUSES and current != status:
             logger.warning(

@@ -116,11 +116,12 @@ class ResilientLLMClient:
         temperature: float | None = None,
     ) -> LLMResponse:
         if self.cumulative_cost_usd >= self.max_cost_usd:
-            raise CostBudgetExceeded(
+            msg = (
                 f"cost budget ${self.max_cost_usd:.4f} reached "
                 f"(cumulative ${self.cumulative_cost_usd:.4f}); aborting "
                 "before next call"
             )
+            raise CostBudgetExceeded(msg)
 
         provider = self._get_provider(model_id)
         kwargs: dict[str, object] = {"max_tokens": max_tokens}
@@ -156,10 +157,11 @@ class ResilientLLMClient:
                     error=escape_nonprintable(str(exc))[:200],
                 )
                 if attempt >= self.max_retries or not _is_retryable_error(exc):
-                    raise LLMCallFailed(
+                    msg = (
                         f"LLM call ({model_id}) failed after "
                         f"{attempt + 1} attempt(s): {exc}"
-                    ) from exc
+                    )
+                    raise LLMCallFailed(msg) from exc
                 attempt += 1
                 time.sleep(self.backoff_factor ** attempt)
                 continue

@@ -459,11 +459,12 @@ def recent_failure_summary(
     :func:`datetime.now(timezone.utc)`.
     """
     if math.isnan(window_days):
-        raise ValueError(
+        msg = (
             "window_days must be a finite or +infinity value, not NaN. "
             "NaN comparisons return False which would silently include "
             "every record in the pool — defended at the entry."
         )
+        raise ValueError(msg)
     from core.cve.cwe import canonicalize_cwe
     now_dt = now or datetime.now(timezone.utc)
     cwe_norm = canonicalize_cwe(cwe) or cwe.strip().upper()

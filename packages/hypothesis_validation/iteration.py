@@ -108,14 +108,16 @@ def must_progress(prev: IterationStep, curr: IterationStep) -> None:
     this function is intentionally side-effect-free apart from raising.
     """
     if curr.hypothesis == prev.hypothesis:
-        raise IterationStalled("refinement produced an identical hypothesis")
+        msg = "refinement produced an identical hypothesis"
+        raise IterationStalled(msg)
     prev_f = resolved_fraction(prev)
     curr_f = resolved_fraction(curr)
     if curr_f <= prev_f:
-        raise IterationStalled(
+        msg = (
             f"uncertainty did not strictly decrease "
             f"(resolved fraction prev={prev_f:.2f}, curr={curr_f:.2f})"
         )
+        raise IterationStalled(msg)
 
 
 __all__ = [

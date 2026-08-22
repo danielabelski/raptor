@@ -86,15 +86,15 @@ def _safe_dest_path(dest_root: Path, member_name: str) -> Path | None:
 def _write_members(members: dict[str, bytes], dest: Path,
                    max_total: int, max_files: int) -> dict[str, int]:
     if len(members) > max_files:
-        raise DecompressionLimitExceeded(
-            f"archive has {len(members)} files — exceeds cap of {max_files}")
+        msg = f"archive has {len(members)} files — exceeds cap of {max_files}"
+        raise DecompressionLimitExceeded(msg)
     total = 0
     written = 0
     for name, data in members.items():
         total += len(data)
         if total > max_total:
-            raise DecompressionLimitExceeded(
-                f"archive exceeds {max_total} bytes extracted — refusing as bomb")
+            msg = f"archive exceeds {max_total} bytes extracted — refusing as bomb"
+            raise DecompressionLimitExceeded(msg)
         target = _safe_dest_path(dest, name)
         if target is None:
             logger.warning("core.archive: dropping out-of-tree member %r", name)
@@ -130,7 +130,8 @@ def extract_to_dir(path, dest, *,
 
     fmt = detect_format(src)
     if fmt is None:
-        raise UnsupportedArchive(f"{src} is not a recognised archive")
+        msg = f"{src} is not a recognised archive"
+        raise UnsupportedArchive(msg)
 
     # The primitives now enforce ``max_total_bytes`` as a RUNNING sum (and tar
     # an entry count), so peak memory is bounded to ~max_total instead of

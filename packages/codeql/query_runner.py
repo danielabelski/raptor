@@ -234,7 +234,8 @@ class QueryRunner:
         # fallback path.
         self.codeql_cli = os.path.realpath(_cli) if _cli else _cli
         if not self.codeql_cli:
-            raise RuntimeError("CodeQL CLI not found")
+            msg = "CodeQL CLI not found"
+            raise RuntimeError(msg)
 
         logger.info("Query runner initialized with CodeQL: %s", self.codeql_cli)
 

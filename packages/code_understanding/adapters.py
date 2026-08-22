@@ -121,10 +121,11 @@ class TraceAdapter(BaseVerdictAdapter):
         # original. Substrate's item_id contract requires non-empty str.
         tid = item.get("trace_id")
         if tid is None:
-            raise ValueError(
+            msg = (
                 f"trace verdict dict missing required 'trace_id' field: "
                 f"{sorted(item.keys())}"
             )
+            raise ValueError(msg)
         return tid.strip() if isinstance(tid, str) else str(tid)
 
     def normalize_verdict(self, item: dict[str, Any]) -> str:

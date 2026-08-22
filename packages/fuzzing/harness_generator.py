@@ -55,19 +55,17 @@ def _validate_target_symbol(name: str) -> str:
     """
     name = str(name or "")
     if not name.strip():
-        raise ValueError("target_function must be a non-empty symbol name")
+        msg = "target_function must be a non-empty symbol name"
+        raise ValueError(msg)
     if len(name) > _SYMBOL_MAX_LEN:
-        raise ValueError(
-            f"target_function exceeds {_SYMBOL_MAX_LEN} characters"
-        )
+        msg = f"target_function exceeds {_SYMBOL_MAX_LEN} characters"
+        raise ValueError(msg)
     if name.lstrip().startswith("-"):
-        raise ValueError(
-            f"target_function may not start with '-': {name!r}"
-        )
+        msg = f"target_function may not start with '-': {name!r}"
+        raise ValueError(msg)
     if not _SYMBOL_ALLOWED_RE.match(name):
-        raise ValueError(
-            f"target_function contains disallowed characters: {name!r}"
-        )
+        msg = f"target_function contains disallowed characters: {name!r}"
+        raise ValueError(msg)
     return name
 
 
@@ -110,7 +108,8 @@ class HarnessSpec:
         self.target_function = _validate_target_symbol(self.target_function)
         self.header_path = Path(self.header_path).resolve()
         if not self.header_path.exists():
-            raise FileNotFoundError(f"Header not found: {self.header_path}")
+            msg = f"Header not found: {self.header_path}"
+            raise FileNotFoundError(msg)
 
 
 @dataclass

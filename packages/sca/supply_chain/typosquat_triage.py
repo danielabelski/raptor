@@ -507,7 +507,8 @@ def triage_ecosystem(
     (built into the plain :func:`collect_evidence`)."""
     if evidence_fn is None:
         if get_metadata is None:
-            raise ValueError("triage_ecosystem needs evidence_fn or get_metadata")
+            msg = "triage_ecosystem needs evidence_fn or get_metadata"
+            raise ValueError(msg)
         gm = get_metadata
         evidence_fn = lambda c: collect_evidence(c, ecosystem, gm)  # noqa: E731
     outcomes = triage_pending(

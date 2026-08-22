@@ -266,5 +266,6 @@ def generate(data: dict[str, Any]) -> str:
 def generate_from_file(path: Path) -> str:
     data = load_json(path)
     if data is None:
-        raise ValueError(f"Failed to load {path}")
+        msg = f"Failed to load {path}"
+        raise ValueError(msg)
     return generate(data)

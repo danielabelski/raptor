@@ -394,17 +394,19 @@ def run_landlock_audit(
     return value.
     """
     if not audit_run_dir:
-        raise ValueError(
+        msg = (
             "run_landlock_audit requires audit_run_dir= so the "
             "tracer has a place to write the JSONL"
         )
+        raise ValueError(msg)
     if install_death_fd and env is None:
-        raise ValueError(
+        msg = (
             "run_landlock_audit(install_death_fd=True) requires env= "
             "— the death fd is advertised via _RAPTOR_DEATH_FD in the "
             "child env, and silently falling back to os.environ here "
             "would hand the child an unsanitised environment."
         )
+        raise ValueError(msg)
 
     # F11: create the evidence JSONL up-front in <run_dir>/.audit/
     # (O_EXCL, held fd, inode recorded — see core/sandbox/evidence.py).
@@ -734,11 +736,12 @@ def run_landlock_audit(
                     f" (tracer exit code "
                     f"{os.WEXITSTATUS(tracer_status)})"
                 )
-            raise RuntimeError(
+            msg = (
                 f"audit-mode tracer failed to attach to sandboxed "
                 f"child{rc_hint} — likely PTRACE_SEIZE rejected "
                 f"(Yama scope, container cap-drop, AppArmor)"
             )
+            raise RuntimeError(msg)
 
         # Tracer attached. Tell the target it can proceed.
         try:

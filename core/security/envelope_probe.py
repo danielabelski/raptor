@@ -231,10 +231,11 @@ def probe_envelope_compatibility(
         # raising outcome they were trying to opt out of. Honour the
         # contract uniformly here.
         if strict:
-            raise RuntimeError(
+            msg = (
                 f"Envelope probe dispatch failed for {model_name} "
                 f"(profile: {profile.name}): {e}"
-            ) from e
+            )
+            raise RuntimeError(msg) from e
         return ProbeResult(
             compatible=False,
             valid_json=False,
@@ -261,9 +262,10 @@ def probe_envelope_compatibility(
             model_name, profile.name, probe_result.error,
         )
         if strict:
-            raise RuntimeError(
+            msg = (
                 f"Envelope probe failed for {model_name} (profile: {profile.name}): "
                 f"{probe_result.error}"
             )
+            raise RuntimeError(msg)
 
     return probe_result

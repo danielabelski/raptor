@@ -1810,7 +1810,8 @@ class TreeSitterExtractor:
         self.class_types = self._CLASS_TYPES.get(language, ())
         parser = _ts_parser_for(language)
         if parser is None:
-            raise RuntimeError(f"tree-sitter grammar not available for {language}")
+            msg = f"tree-sitter grammar not available for {language}"
+            raise RuntimeError(msg)
         self.parser = parser
 
     def extract(self, filepath: str, content: str, _tree=None) -> list[FunctionInfo]:

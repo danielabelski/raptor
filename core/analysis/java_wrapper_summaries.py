@@ -193,52 +193,63 @@ def _straight_line_locals(body, params: tuple[str, ...],
     undeclared assignment target could be a field."""
     stmts = [c for c in body.children if c.is_named]
     if len(stmts) > _MAX_BODY_STATEMENTS:
-        raise _Refused("body exceeds statement cap")
+        msg = "body exceeds statement cap"
+        raise _Refused(msg)
     if not stmts or stmts[-1].type != _RETURN:
-        raise _Refused("body does not end in a single return")
+        msg = "body does not end in a single return"
+        raise _Refused(msg)
     if strict_state and _subtree_touches_state(body):
-        raise _Refused("instance state touched in a cross-class helper")
+        msg = "instance state touched in a cross-class helper"
+        raise _Refused(msg)
     locals_map: dict[str, Any] = {}
     assigned: set[str] = set()
     for stmt in stmts[:-1]:
         if stmt.type == _LOCAL_DECL:
             decls = [c for c in stmt.children if c.type == _DECLARATOR]
             if len(decls) != 1:
-                raise _Refused("multi-declarator local")
+                msg = "multi-declarator local"
+                raise _Refused(msg)
             name_node = decls[0].child_by_field_name("name")
             value = decls[0].child_by_field_name("value")
             if name_node is None or value is None:
-                raise _Refused("local without initializer")
+                msg = "local without initializer"
+                raise _Refused(msg)
             name = _text(name_node)
             if name in assigned or name in params:
-                raise _Refused("local reassignment / parameter shadowing")
+                msg = "local reassignment / parameter shadowing"
+                raise _Refused(msg)
             assigned.add(name)
             locals_map[name] = value
             continue
         if stmt.type == _EXPR_STMT:
             if strict_state:
-                raise _Refused(
-                    "bare assignment in a cross-class helper body")
+                msg = "bare assignment in a cross-class helper body"
+                raise _Refused(msg)
             inner = next((c for c in stmt.children if c.is_named), None)
             if inner is None or inner.type != _ASSIGNMENT:
-                raise _Refused("non-assignment statement in body")
+                msg = "non-assignment statement in body"
+                raise _Refused(msg)
             left = inner.child_by_field_name("left")
             right = inner.child_by_field_name("right")
             op = inner.child_by_field_name("operator")
             if (left is None or left.type != _IDENT or right is None
                     or _text(op) != "="):
-                raise _Refused("unsupported assignment shape in body")
+                msg = "unsupported assignment shape in body"
+                raise _Refused(msg)
             name = _text(left)
             if name in assigned or name in params:
-                raise _Refused("local reassignment / parameter shadowing")
+                msg = "local reassignment / parameter shadowing"
+                raise _Refused(msg)
             assigned.add(name)
             locals_map[name] = right
             continue
-        raise _Refused(f"unsupported body statement: {stmt.type}")
+        msg = f"unsupported body statement: {stmt.type}"
+        raise _Refused(msg)
     ret = stmts[-1]
     ret_expr = next((c for c in ret.children if c.is_named), None)
     if ret_expr is None:
-        raise _Refused("bare return")
+        msg = "bare return"
+        raise _Refused(msg)
     return locals_map, ret_expr
 
 
@@ -259,10 +270,12 @@ def _classify_return(
 
     def visit(n, inside: frozenset[str] | None, depth: int) -> None:
         if depth > _MAX_SUBST_DEPTH:
-            raise _Refused("substitution depth cap")
+            msg = "substitution depth cap"
+            raise _Refused(msg)
         n = _unwrap(n)
         if n is None:
-            raise _Refused("unparseable return fragment")
+            msg = "unparseable return fragment"
+            raise _Refused(msg)
         t = n.type
         if t in _STRING_LITERALS:
             return
@@ -270,14 +283,15 @@ def _classify_return(
             name = _text(n)
             if name in param_pos:
                 if inside is None:
-                    raise _Refused(
-                        "parameter reaches return outside a sanitizer")
+                    msg = "parameter reaches return outside a sanitizer"
+                    raise _Refused(msg)
                 sanitized.setdefault(param_pos[name], set()).update(inside)
                 return
             if name in locals_map:
                 visit(locals_map[name], inside, depth + 1)
                 return
-            raise _Refused("unknown name in return expression")
+            msg = "unknown name in return expression"
+            raise _Refused(msg)
         if t == _METHOD_INVOCATION:
             try:
                 resolved = resolver.callable_name(n)
@@ -304,19 +318,23 @@ def _classify_return(
                         # else: the inner summary proves position i
                         # never reaches its return — value discarded.
                     return
-            raise _Refused("non-catalog call in return expression")
+            msg = "non-catalog call in return expression"
+            raise _Refused(msg)
         if t == _BINARY:
             op = n.child_by_field_name("operator")
             if op is None or op.type != "+":
-                raise _Refused("non-concatenation operator in return")
+                msg = "non-concatenation operator in return"
+                raise _Refused(msg)
             visit(n.child_by_field_name("left"), inside, depth + 1)
             visit(n.child_by_field_name("right"), inside, depth + 1)
             return
-        raise _Refused(f"unsupported return construct: {t}")
+        msg = f"unsupported return construct: {t}"
+        raise _Refused(msg)
 
     visit(expr, None, 0)
     if not sanitized:
-        raise _Refused("no parameter flows through a sanitizer")
+        msg = "no parameter flows through a sanitizer"
+        raise _Refused(msg)
     positions = frozenset(sanitized)
     callables = frozenset(c for cs in sanitized.values() for c in cs)
     return positions, callables
@@ -801,11 +819,13 @@ def _classify_expr(expr, params: tuple[str, ...],
     val = fold_expr(expr, resolve)
     if val is not REFUSE:
         if val is None:
-            raise _Refused("null constant return")
+            msg = "null constant return"
+            raise _Refused(msg)
         return (CONDUIT_CONST, None, val)
     n = _unwrap(expr)
     if n is None:
-        raise _Refused("unparseable return fragment")
+        msg = "unparseable return fragment"
+        raise _Refused(msg)
     param_pos = {p: i for i, p in enumerate(params)}
     if n.type == _IDENT:
         name = _text(n)
@@ -813,7 +833,8 @@ def _classify_expr(expr, params: tuple[str, ...],
             return (CONDUIT_PARAM, param_pos[name], None)
         v = env.get(name)
         if v is None or v is _UNASSIGNED:
-            raise _Refused("unknown or unassigned name in expression")
+            msg = "unknown or unassigned name in expression"
+            raise _Refused(msg)
         return v
     if n.type == _TERNARY:
         cond_val = fold_expr(n.child_by_field_name("condition"), resolve)
@@ -826,7 +847,8 @@ def _classify_expr(expr, params: tuple[str, ...],
         b = _classify_expr(
             n.child_by_field_name("alternative"), params, env)
         return _merge_vals(a, b)
-    raise _Refused("parameter transformed or unsupported return construct")
+    msg = "parameter transformed or unsupported return construct"
+    raise _Refused(msg)
 
 
 def _merge_vals(a, b):
@@ -836,9 +858,11 @@ def _merge_vals(a, b):
         return a
     ka, kb = a[0], b[0]
     if ka == kb == CONDUIT_CONST:
-        raise _Refused("constant-set return (branch constants differ)")
+        msg = "constant-set return (branch constants differ)"
+        raise _Refused(msg)
     if ka == kb == CONDUIT_PARAM:
-        raise _Refused("join of two different parameters")
+        msg = "join of two different parameters"
+        raise _Refused(msg)
     if {ka, kb} == {CONDUIT_CONST, CONDUIT_PARAM}:
         c, p = (a, b) if ka == CONDUIT_CONST else (b, a)
         return (CONDUIT_JOIN, p[1], c[2])
@@ -853,7 +877,8 @@ def _merge_vals(a, b):
         return a
     if kb == CONDUIT_JOIN and ka == CONDUIT_PARAM and a[1] == b[1]:
         return b
-    raise _Refused("unmergeable branch values")
+    msg = "unmergeable branch values"
+    raise _Refused(msg)
 
 
 def _single_assignment_arm(arm) -> tuple[str, Any] | None:
@@ -900,32 +925,40 @@ def _walk_conduit_body(
     stmts = [c for c in body.children
              if c.is_named and c.type not in _COMMENTS]
     if len(stmts) > _MAX_BODY_STATEMENTS:
-        raise _Refused("body exceeds statement cap")
+        msg = "body exceeds statement cap"
+        raise _Refused(msg)
     if not stmts or stmts[-1].type != _RETURN:
-        raise _Refused("body does not end in a single return")
+        msg = "body does not end in a single return"
+        raise _Refused(msg)
     if strict_state and _subtree_touches_state(body):
-        raise _Refused("instance state touched in a cross-class helper")
+        msg = "instance state touched in a cross-class helper"
+        raise _Refused(msg)
     env: dict[str, Any] = {}
     declared: set[str] = set()
 
     def assign(name: str, rhs) -> None:
         if name in params:
-            raise _Refused("parameter reassigned in body")
+            msg = "parameter reassigned in body"
+            raise _Refused(msg)
         if strict_state and name not in declared:
-            raise _Refused("bare assignment in a cross-class helper body")
+            msg = "bare assignment in a cross-class helper body"
+            raise _Refused(msg)
         env[name] = _classify_expr(rhs, params, env)
 
     for stmt in stmts[:-1]:
         if stmt.type == _LOCAL_DECL:
             decls = [c for c in stmt.children if c.type == _DECLARATOR]
             if len(decls) != 1:
-                raise _Refused("multi-declarator local")
+                msg = "multi-declarator local"
+                raise _Refused(msg)
             name_node = decls[0].child_by_field_name("name")
             if name_node is None:
-                raise _Refused("declarator without a name")
+                msg = "declarator without a name"
+                raise _Refused(msg)
             name = _text(name_node)
             if name in params:
-                raise _Refused("parameter shadowed by a local")
+                msg = "parameter shadowed by a local"
+                raise _Refused(msg)
             declared.add(name)
             value = decls[0].child_by_field_name("value")
             if value is None:
@@ -936,14 +969,16 @@ def _walk_conduit_body(
         if stmt.type == _EXPR_STMT:
             arm = _single_assignment_arm(stmt)
             if arm is None:
-                raise _Refused("unsupported statement in body")
+                msg = "unsupported statement in body"
+                raise _Refused(msg)
             assign(*arm)
             continue
         if stmt.type == _IF_STMT:
             then_arm = _single_assignment_arm(
                 stmt.child_by_field_name("consequence"))
             if then_arm is None:
-                raise _Refused("unsupported if-arm in body")
+                msg = "unsupported if-arm in body"
+                raise _Refused(msg)
             alt = stmt.child_by_field_name("alternative")
             else_arm = None
             if alt is not None:
@@ -954,9 +989,11 @@ def _walk_conduit_body(
                 else_arm = _single_assignment_arm(
                     inner if alt.type == "else_clause" else alt)
                 if else_arm is None:
-                    raise _Refused("unsupported else-arm in body")
+                    msg = "unsupported else-arm in body"
+                    raise _Refused(msg)
                 if else_arm[0] != then_arm[0]:
-                    raise _Refused("if/else arms assign different names")
+                    msg = "if/else arms assign different names"
+                    raise _Refused(msg)
 
             def resolve(name: str, _depth: int) -> Any:
                 v = env.get(name)
@@ -980,20 +1017,24 @@ def _walk_conduit_body(
             else:
                 prior = env.get(name)
                 if not isinstance(prior, tuple):
-                    raise _Refused(
-                        "partially assigned local (unknown fall-through)")
+                    msg = "partially assigned local (unknown fall-through)"
+                    raise _Refused(msg)
                 merged = _merge_vals(then_val, prior)
             if strict_state and name not in declared:
-                raise _Refused("bare assignment in a cross-class helper body")
+                msg = "bare assignment in a cross-class helper body"
+                raise _Refused(msg)
             if name in params:
-                raise _Refused("parameter reassigned in body")
+                msg = "parameter reassigned in body"
+                raise _Refused(msg)
             env[name] = merged
             continue
-        raise _Refused(f"unsupported body statement: {stmt.type}")
+        msg = f"unsupported body statement: {stmt.type}"
+        raise _Refused(msg)
 
     ret_expr = next((c for c in stmts[-1].children if c.is_named), None)
     if ret_expr is None:
-        raise _Refused("bare return")
+        msg = "bare return"
+        raise _Refused(msg)
     return _classify_expr(ret_expr, params, env)
 
 

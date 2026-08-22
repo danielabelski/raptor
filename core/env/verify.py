@@ -1301,7 +1301,8 @@ def verify_plan(
     """
     if executors is None:
         if handle is None:
-            raise ValueError("verify_plan needs a handle or an executor table")
+            msg = "verify_plan needs a handle or an executor table"
+            raise ValueError(msg)
         executors = default_executors(handle, hooks)
     if not isinstance(plan, list):
         return {

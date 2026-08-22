@@ -180,7 +180,8 @@ def generate(
     try:
         sarif = json.loads(sarif_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"SARIF read/parse failed: {sarif_path}: {e}") from e
+        msg = f"SARIF read/parse failed: {sarif_path}: {e}"
+        raise RuntimeError(msg) from e
     runs = sarif.get("runs", [])
     if not runs:
         return []

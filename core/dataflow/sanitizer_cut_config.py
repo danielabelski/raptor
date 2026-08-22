@@ -127,10 +127,11 @@ def config_for_mode(
     """
     mode = (mode or "off").strip().lower()
     if mode not in VALID_MODES:
-        raise ValueError(
+        msg = (
             f"invalid sanitizer-cut mode {mode!r}; "
             f"expected one of {', '.join(VALID_MODES)}"
         )
+        raise ValueError(msg)
     value_bound = mode in ("on", "strict")
     lexical = mode != "strict"
     parity_path = _resolve_parity_log(

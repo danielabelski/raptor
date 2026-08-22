@@ -93,11 +93,13 @@ def load_sources(path: Path | None = None) -> dict[str, SourceEntry]:
     raw = json.loads(path.read_text())
     repos = raw.get("repos")
     if not isinstance(repos, dict):
-        raise ValueError(f"{path}: expected a top-level 'repos' mapping")
+        msg = f"{path}: expected a top-level 'repos' mapping"
+        raise ValueError(msg)
     entries: dict[str, SourceEntry] = {}
     for key, val in repos.items():
         if not isinstance(val, dict) or not val.get("url"):
-            raise ValueError(f"{path}: repo {key!r} needs a 'url'")
+            msg = f"{path}: repo {key!r} needs a 'url'"
+            raise ValueError(msg)
         entries[key] = SourceEntry(
             repo_key=key,
             url=val["url"],
@@ -178,10 +180,11 @@ def _apply_symlinks(entry: SourceEntry, dest: Path) -> None:
         if link_path.exists() or link_path.is_symlink():
             continue
         if ".." in Path(target).parts or Path(target).is_absolute():
-            raise ValueError(
+            msg = (
                 f"sources.json symlink target {target!r} for "
                 f"{entry.repo_key!r} must be repo-relative"
             )
+            raise ValueError(msg)
         link_path.symlink_to(target)
         logger.info(
             "source %s: linked %s -> %s", entry.repo_key, link, target,
@@ -221,9 +224,12 @@ def clone_source(
             "clone of %s from %s failed: %s", repo_key, url, last_err,
         )
 
-    raise SourceFetchError(
+    msg = (
         f"could not fetch {repo_key!r} at {ref!r} from any of "
-        f"{list(entry.urls)}: {last_err}",
+        f"{list(entry.urls)}: {last_err}"
+    )
+    raise SourceFetchError(
+        msg,
         connectivity=looks_like_connectivity_error(last_err),
     )
 
@@ -236,10 +242,11 @@ def _resolve_entry(repo_key: str, entry: SourceEntry | None) -> SourceEntry:
             # No registry at all — same failure mode as an unknown key.
             entry = None
     if entry is None:
-        raise SourceFetchError(
+        msg = (
             f"no sources.json entry for repo {repo_key!r} — "
             f"add one to {SOURCES_PATH}"
         )
+        raise SourceFetchError(msg)
     return entry
 
 
@@ -339,9 +346,12 @@ def fetch_files(
             "file fetch of %s from %s failed: %s", repo_key, url, last_err,
         )
 
-    raise SourceFetchError(
+    msg = (
         f"could not fetch files of {repo_key!r} at {ref!r} from any of "
-        f"{list(entry.urls)}: {last_err}",
+        f"{list(entry.urls)}: {last_err}"
+    )
+    raise SourceFetchError(
+        msg,
         connectivity=looks_like_connectivity_error(last_err),
     )
 

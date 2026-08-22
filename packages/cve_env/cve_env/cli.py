@@ -81,10 +81,11 @@ def _attempt_replay(cve: CveRecord, prefill_from: str | None):
 def _validate_cve_id(value: str) -> str:
     """argparse ``type=`` validator for the build subcommand cve_id arg."""
     if not _CVE_ID_RE.fullmatch(value):
-        raise argparse.ArgumentTypeError(
+        msg = (
             f"invalid CVE-ID format: {value!r} — expected CVE-YYYY-NNNN+ "
             f"(e.g. CVE-2018-7600)"
         )
+        raise argparse.ArgumentTypeError(msg)
     return value
 
 

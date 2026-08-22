@@ -454,9 +454,8 @@ class ModelScorecard:
         ``random.random``.
         """
         if not 0.0 <= shadow_rate <= 1.0:
-            raise ValueError(
-                f"shadow_rate must be in [0, 1], got {shadow_rate}"
-            )
+            msg = f"shadow_rate must be in [0, 1], got {shadow_rate}"
+            raise ValueError(msg)
         self.path = Path(path)
         self.retain_samples = retain_samples
         self.miss_rate_ceiling = miss_rate_ceiling
@@ -514,14 +513,14 @@ class ModelScorecard:
         cell on a most-recent-wins basis.
         """
         if event_type not in ALL_EVENT_TYPES:
-            raise ValueError(
+            msg = (
                 f"unknown event_type {event_type!r} — must be one of "
                 f"{sorted(ALL_EVENT_TYPES)}"
             )
+            raise ValueError(msg)
         if outcome not in ("correct", "incorrect"):
-            raise ValueError(
-                f"outcome must be 'correct' or 'incorrect', got {outcome!r}"
-            )
+            msg = f"outcome must be 'correct' or 'incorrect', got {outcome!r}"
+            raise ValueError(msg)
         with self._with_lock() as data:
             cell = self._ensure_cell(data, model, decision_class)
             now_iso = _now_iso()
@@ -777,11 +776,11 @@ class ModelScorecard:
         recorded — idempotent no-op).
         """
         if not finding_id:
-            raise ValueError("finding_id must be non-empty for idempotency")
+            msg = "finding_id must be non-empty for idempotency"
+            raise ValueError(msg)
         if outcome not in ("correct", "incorrect"):
-            raise ValueError(
-                f"outcome must be 'correct' or 'incorrect', got {outcome!r}"
-            )
+            msg = f"outcome must be 'correct' or 'incorrect', got {outcome!r}"
+            raise ValueError(msg)
         with self._with_lock() as data:
             cell = self._ensure_cell(data, model, decision_class)
             seen = cell.setdefault("tool_evidence_finding_ids", [])
@@ -821,10 +820,11 @@ class ModelScorecard:
         returns the cell to data-driven behaviour."""
         if policy_override not in ("auto", "force_short_circuit",
                                     "force_fall_through"):
-            raise ValueError(
+            msg = (
                 f"policy_override must be auto/force_short_circuit/"
                 f"force_fall_through, got {policy_override!r}"
             )
+            raise ValueError(msg)
         with self._with_lock() as data:
             cell = self._ensure_cell(data, model, decision_class)
             cell["policy_override"] = policy_override
@@ -878,10 +878,11 @@ class ModelScorecard:
         """
         if (decision_class is None and model is None
                 and older_than_days is None and not all_):
-            raise ValueError(
+            msg = (
                 "reset() requires a filter — pass decision_class, "
                 "model, older_than_days, or all_=True"
             )
+            raise ValueError(msg)
 
         deleted = 0
         with self._with_lock() as data:
@@ -954,26 +955,29 @@ class ModelScorecard:
             return False
         adopted = json.loads(content)
         if not isinstance(adopted, dict):
-            raise ValueError(
+            msg = (
                 f"cannot adopt {source}: expected a JSON object, got "
                 f"{type(adopted).__name__}"
             )
+            raise ValueError(msg)
         if not integrity.key_usable():
-            raise ValueError(
+            msg = (
                 "cannot adopt: no usable scorecard MAC key on this "
                 "install — fix the key file first (see the warning in "
                 "the log for the path and remedy)"
             )
+            raise ValueError(msg)
         adopted.pop(integrity.TOKEN_KEY, None)
         version = adopted.get("version")
         if version is None:
             _migrate(adopted, 1)
             adopted["version"] = SCHEMA_VERSION
         elif version != SCHEMA_VERSION and not _migrate(adopted, version):
-            raise ValueError(
+            msg = (
                 f"cannot adopt {source}: unknown schema version "
                 f"{version!r}"
             )
+            raise ValueError(msg)
         with self._with_lock() as data:
             data.clear()
             data.update(adopted)
@@ -1147,9 +1151,8 @@ class ModelScorecard:
                     import json
                     self.data = json.loads(content)
                     if not isinstance(self.data, dict):
-                        raise TypeError(
-                            f"expected dict, got {type(self.data).__name__}"
-                        )
+                        msg = f"expected dict, got {type(self.data).__name__}"
+                        raise TypeError(msg)
                 except (ValueError, TypeError) as e:
                     logger.warning(
                         "scorecard: corrupt JSON at %s — reading as empty (error: %s)", path, e
@@ -1181,12 +1184,13 @@ class ModelScorecard:
                 # Forward-migrate known older versions in memory; the migrated
                 # data is persisted on the next write under the lock we hold.
                 if not _migrate(self.data, existing_version):
-                    raise RuntimeError(
+                    msg = (
                         f"scorecard: schema version mismatch at {path}: "
                         f"file has version={existing_version}, code "
                         f"expects {SCHEMA_VERSION} and has no migration "
                         f"path. Migrate or delete the sidecar to continue."
                     )
+                    raise RuntimeError(msg)
             self.data.setdefault("models", {})
             return self.data
 

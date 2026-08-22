@@ -330,19 +330,28 @@ def _resolve_local_collection(method, name: str, resolver) -> list[str]:
         if nm is None or _text(nm) != name:
             continue
         if decl_elems is not None:
-            raise _Refused("collection declared more than once")
+            msg = "collection declared more than once"
+            raise _Refused(msg)
         value = n.child_by_field_name("value")
         if value is None:
-            raise _Refused("collection declared without initializer")
+            msg = "collection declared without initializer"
+            raise _Refused(msg)
         decl_elems = _const_ctor_elements(value, resolver)
         if decl_elems is None:
-            raise _Refused("collection initializer is not a constant "
-                           "literal constructor")
+            msg = (
+                "collection initializer is not a constant "
+                           "literal constructor"
+            )
+            raise _Refused(msg)
     if decl_elems is None:
-        raise _Refused("no local declaration for the collection")
+        msg = "no local declaration for the collection"
+        raise _Refused(msg)
     if not _occurrences_contains_only(method, name):
-        raise _Refused("collection name used beyond contains() — "
-                       "possible mutation or aliasing")
+        msg = (
+            "collection name used beyond contains() — "
+                       "possible mutation or aliasing"
+        )
+        raise _Refused(msg)
     return decl_elems
 
 
@@ -362,20 +371,27 @@ def _resolve_static_field(root, name: str, resolver) -> list[str]:
                 (c for c in n.children if c.type == "modifiers"), None)
             mod_texts = {_text(c) for c in mods.children} if mods else set()
             if "static" not in mod_texts or "final" not in mod_texts:
-                raise _Refused("field is not static final")
+                msg = "field is not static final"
+                raise _Refused(msg)
             if found is not None:
-                raise _Refused("field declared more than once")
+                msg = "field declared more than once"
+                raise _Refused(msg)
             value = d.child_by_field_name("value")
             elems = _const_ctor_elements(value, resolver) \
                 if value is not None else None
             if elems is None:
-                raise _Refused("field initializer is not a constant "
-                               "literal constructor")
+                msg = (
+                    "field initializer is not a constant "
+                               "literal constructor"
+                )
+                raise _Refused(msg)
             found = elems
     if found is None:
-        raise _Refused("no static final field of that name")
+        msg = "no static final field of that name"
+        raise _Refused(msg)
     if not _occurrences_contains_only(root, name):
-        raise _Refused("field name used beyond contains() in its file")
+        msg = "field name used beyond contains() in its file"
+        raise _Refused(msg)
     return found
 
 
@@ -400,7 +416,8 @@ def _resolve_cross_file(chain: str, field: str, source_root: Path,
     for f in source_root.rglob(f"{simple}.java"):
         n_seen += 1
         if n_seen > _MAX_DECLARING_CANDIDATES:
-            raise _Refused("too many declaring-file candidates")
+            msg = "too many declaring-file candidates"
+            raise _Refused(msg)
         candidates.append(f)
     declaring = None
     declaring_root = None
@@ -414,11 +431,15 @@ def _resolve_cross_file(chain: str, field: str, source_root: Path,
         if package and pkg != package:
             continue
         if declaring is not None:
-            raise _Refused("ambiguous declaring file for the collection "
-                           "class")
+            msg = (
+                "ambiguous declaring file for the collection "
+                           "class"
+            )
+            raise _Refused(msg)
         declaring, declaring_root = f, tree.root_node
     if declaring is None or declaring_root is None:
-        raise _Refused("declaring file for the collection class not found")
+        msg = "declaring file for the collection class not found"
+        raise _Refused(msg)
 
     from core.analysis.cfg_builder_java import _NameResolver, build_import_map
     types, statics = build_import_map(declaring_root)
@@ -433,22 +454,26 @@ def _resolve_cross_file(chain: str, field: str, source_root: Path,
     for f in source_root.rglob("*.java"):
         n_files += 1
         if n_files > _MAX_TREE_FILES:
-            raise _Refused("source tree too large to verify immutability")
+            msg = "source tree too large to verify immutability"
+            raise _Refused(msg)
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            raise _Refused("unreadable file during immutability scan")
+            msg = "unreadable file during immutability scan"
+            raise _Refused(msg)
         if field not in text:
             continue
         n_refs += 1
         if n_refs > _MAX_REFERENCING_FILES:
-            raise _Refused("too many files reference the collection")
+            msg = "too many files reference the collection"
+            raise _Refused(msg)
         if f == declaring:
             continue
         try:
             tree = parser.parse(text.encode("utf-8", errors="replace"))
         except ValueError:
-            raise _Refused("unparseable file during immutability scan")
+            msg = "unparseable file during immutability scan"
+            raise _Refused(msg)
         for n in _iter_named(tree.root_node):
             if n.type != "identifier" or _text(n) != field:
                 continue
@@ -469,8 +494,8 @@ def _resolve_cross_file(chain: str, field: str, source_root: Path,
                     and p.child_by_field_name("object") == n \
                     and _text(p.child_by_field_name("name")) == "contains":
                 continue
-            raise _Refused(
-                f"{f.name} uses the collection beyond contains()")
+            msg = f"{f.name} uses the collection beyond contains()"
+            raise _Refused(msg)
     return elems
 
 
@@ -620,15 +645,17 @@ def collection_guard_reason(
                 chain_text = _text(recv_u)
                 head, _, field = chain_text.rpartition(".")
                 if not head or not field:
-                    raise _Refused("unresolvable collection chain")
+                    msg = "unresolvable collection chain"
+                    raise _Refused(msg)
                 resolved_head = resolver._resolve_chain(head)
                 if source_root is None:
-                    raise _Refused(
-                        "cross-file collection needs a source root")
+                    msg = "cross-file collection needs a source root"
+                    raise _Refused(msg)
                 elems = _resolve_cross_file(
                     resolved_head, field, Path(source_root), parser)
             else:
-                raise _Refused("unsupported collection receiver shape")
+                msg = "unsupported collection receiver shape"
+                raise _Refused(msg)
         except _Refused as r:
             decisions.append(f"collection resolution refused: {r.reason}")
             continue

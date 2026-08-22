@@ -84,7 +84,8 @@ def _validate_ollama_url(url: str) -> str:
     """
     url = url.strip().rstrip('/')
     if not url:
-        raise ValueError("Ollama URL is empty (set OLLAMA_HOST)")
+        msg = "Ollama URL is empty (set OLLAMA_HOST)"
+        raise ValueError(msg)
     if not url.startswith(('http://', 'https://')):
         url = f"http://{url}"
     return url
@@ -280,11 +281,12 @@ def _check_litellm_installed() -> bool:
                     "  Ref: https://github.com/BerriAI/litellm/issues/24518\n"
                 )
                 print(msg)
-                raise SystemExit(
+                msg_0 = (
                     f"RAPTOR cannot run with litellm {installed} installed. "
                     f"Remove it using the instructions above, then try again. "
                     f"Ref: https://github.com/BerriAI/litellm/issues/24518"
                 )
+                raise SystemExit(msg_0)
 
             return True  # litellm found (migration attempt was best-effort)
         except PackageNotFoundError:

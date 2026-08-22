@@ -92,14 +92,14 @@ class TrajectoryRecord:
 
     def __post_init__(self) -> None:
         if not _VALID_RUN_ID.match(self.run_id):
-            raise ValueError(
+            msg = (
                 f"run_id must be alphanumeric/dash/underscore/dot, "
                 f"1-128 chars; got {self.run_id!r}"
             )
+            raise ValueError(msg)
         if ".." in self.run_id:
             # Even though `.` is allowed (version suffixes etc.),
             # `..` is the path-traversal vector. Block it here as
             # defense in depth; the disk layer rejects it too.
-            raise ValueError(
-                f"run_id must not contain '..'; got {self.run_id!r}"
-            )
+            msg = f"run_id must not contain '..'; got {self.run_id!r}"
+            raise ValueError(msg)

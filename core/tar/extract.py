@@ -181,8 +181,8 @@ def extract_files_from_tar(
         for member in tf:
             count += 1
             if max_entry_count is not None and count > max_entry_count:
-                raise TarEntryCountExceeded(
-                    f"tar exceeds {max_entry_count} entries (bomb-shape); refusing")
+                msg = f"tar exceeds {max_entry_count} entries (bomb-shape); refusing"
+                raise TarEntryCountExceeded(msg)
             if max_total_bytes is not None:
                 # Count the header-declared size of EVERY member —
                 # including ones the safety filter or selector will
@@ -195,9 +195,11 @@ def extract_files_from_tar(
                 # "skipped".
                 total_bytes += member.size
                 if total_bytes > max_total_bytes:
-                    raise TarTotalBytesExceeded(
+                    msg = (
                         f"tar decompression exceeds {max_total_bytes} bytes "
-                        f"(bomb-shape); refusing")
+                        f"(bomb-shape); refusing"
+                    )
+                    raise TarTotalBytesExceeded(msg)
             if not member.isfile():
                 continue
             reason = safe_member_reason(
@@ -228,9 +230,8 @@ def extract_files_from_tar(
                 # guarantees uniqueness (e.g. ``wanted_paths`` is
                 # a set of distinct logical paths).
                 f.close()
-                raise ValueError(
-                    f"duplicate tar key {key!r} (unique_keys=True)"
-                )
+                msg = f"duplicate tar key {key!r} (unique_keys=True)"
+                raise ValueError(msg)
             try:
                 data = f.read()
             finally:

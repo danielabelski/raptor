@@ -94,9 +94,11 @@ def _load_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
     context = load_json(run_dir / "context-map.json")
     investigation = load_json(run_dir / "binary-investigation.json")
     if not isinstance(manifest_data, dict):
-        raise FileNotFoundError(f"missing binary-manifest.json in {run_dir}")
+        msg = f"missing binary-manifest.json in {run_dir}"
+        raise FileNotFoundError(msg)
     if not isinstance(context, dict):
-        raise FileNotFoundError(f"missing context-map.json in {run_dir}")
+        msg = f"missing context-map.json in {run_dir}"
+        raise FileNotFoundError(msg)
     return manifest_data, context, investigation if isinstance(investigation, dict) else {}
 
 
@@ -112,7 +114,8 @@ def _select_ingress(
     if ingress_id:
         match = next((item for item in ingress if item.get("id") == ingress_id), None)
         if match is None:
-            raise ValueError(f"unknown ingress id: {ingress_id}")
+            msg = f"unknown ingress id: {ingress_id}"
+            raise ValueError(msg)
         return match
     ranked = [
         item for item in investigation.get("ranked_ingress", [])
@@ -148,7 +151,8 @@ def _select_ingress(
             ingress,
             key=lambda item: (-int(item.get("score") or 0), str(item.get("name") or "")),
         )[0]
-    raise ValueError("no external ingress candidates exist in this run")
+    msg = "no external ingress candidates exist in this run"
+    raise ValueError(msg)
 
 
 def _verification_contract() -> list[dict[str, str]]:
@@ -300,9 +304,11 @@ def _normalise_ioctl_code(value: str) -> str:
     try:
         number = int(str(value), 0)
     except ValueError as exc:
-        raise ValueError("ioctl code must be a numeric literal such as 0x222003") from exc
+        msg = "ioctl code must be a numeric literal such as 0x222003"
+        raise ValueError(msg) from exc
     if number < 0 or number > 0xFFFFFFFF:
-        raise ValueError("ioctl code must fit in an unsigned 32-bit value")
+        msg = "ioctl code must fit in an unsigned 32-bit value"
+        raise ValueError(msg)
     return hex(number)
 
 
@@ -365,7 +371,8 @@ def generate_binary_harness(
     ]
     selected_abi = str(abi or "")
     if selected_abi and selected_abi not in _ABI_CHOICES:
-        raise ValueError(f"unsupported ABI shape {selected_abi!r}; choose one of {sorted(_ABI_CHOICES)}")
+        msg = f"unsupported ABI shape {selected_abi!r}; choose one of {sorted(_ABI_CHOICES)}"
+        raise ValueError(msg)
 
     plan_key = f"{binary_sha256}:{ingress.get('id')}"
     plan_id = f"BHARNESS-{hashlib.sha256(plan_key.encode()).hexdigest()[:12]}"
@@ -452,9 +459,8 @@ def generate_binary_harness(
         top_boundary = linked_parser_boundaries[0]
         boundary_name = top_boundary.get('boundary_function_name')
         if not boundary_name:
-            raise ValueError(
-                "linked_parser_boundaries entry missing 'boundary_function_name'"
-            )
+            msg = "linked_parser_boundaries entry missing 'boundary_function_name'"
+            raise ValueError(msg)
         status = "parser_boundary_candidate"
         reason = (
             f"RAPTOR recovered {boundary_name} as a bounded "

@@ -149,9 +149,8 @@ def verdict_from_posterior(
     exists for callers that still want a single label.
     """
     if not 0.0 <= refute_threshold < confirm_threshold <= 1.0:
-        raise ValueError(
-            "thresholds must satisfy 0 ≤ refute_threshold < confirm_threshold ≤ 1"
-        )
+        msg = "thresholds must satisfy 0 ≤ refute_threshold < confirm_threshold ≤ 1"
+        raise ValueError(msg)
     m = p.mean
     if m > confirm_threshold:
         return "confirmed"

@@ -84,7 +84,8 @@ def parse_target(raw: str) -> TargetSpec:
     """
     raw = raw.strip()
     if not raw:
-        raise ValueError("empty target")
+        msg = "empty target"
+        raise ValueError(msg)
     if raw.isdigit():
         return TargetSpec(raw=raw, pid=int(raw))
     p = Path(raw)
@@ -134,15 +135,18 @@ def resolve_template(name: str) -> Path:
     comparison against the templates root.
     """
     if not name or not all(c.isalnum() or c in "-_" for c in name):
-        raise ValueError(f"invalid template name: {name!r}")
+        msg = f"invalid template name: {name!r}"
+        raise ValueError(msg)
     candidate = (TEMPLATES_DIR / f"{name}.js").resolve()
     root = TEMPLATES_DIR.resolve()
     try:
         candidate.relative_to(root)
     except ValueError:
-        raise ValueError(f"template path escaped templates dir: {name!r}") from None
+        msg = f"template path escaped templates dir: {name!r}"
+        raise ValueError(msg) from None
     if not candidate.is_file():
-        raise FileNotFoundError(f"template not found: {name}")
+        msg = f"template not found: {name}"
+        raise FileNotFoundError(msg)
     return candidate
 
 
@@ -178,7 +182,8 @@ def load_script_source(template: str | None,
                       script_path: str | None) -> tuple[str, str]:
     """Return (source, origin_label). Exactly one input must be set."""
     if bool(template) == bool(script_path):
-        raise ValueError("specify exactly one of --template or --script")
+        msg = "specify exactly one of --template or --script"
+        raise ValueError(msg)
     if template:
         path = resolve_template(template)
         source = _render_template_slots(path.read_text(encoding="utf-8"))
@@ -186,7 +191,8 @@ def load_script_source(template: str | None,
     assert script_path is not None
     p = Path(script_path).resolve()
     if not p.is_file():
-        raise FileNotFoundError(f"script not found: {script_path}")
+        msg = f"script not found: {script_path}"
+        raise FileNotFoundError(msg)
     return p.read_text(encoding="utf-8"), f"file:{p}"
 
 
@@ -201,10 +207,11 @@ def _import_frida():
         import frida  # type: ignore
         return frida
     except ImportError as e:
-        raise FridaUnavailable(
+        msg = (
             "frida-python not installed. Install via: "
             "pipx install frida-tools  (or pip install --user frida-tools)"
-        ) from e
+        )
+        raise FridaUnavailable(msg) from e
 
 
 def _resolve_device(frida_mod: Any, cfg: RunConfig):

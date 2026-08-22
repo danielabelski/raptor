@@ -93,9 +93,8 @@ class LifecyclePrecondition:
             "LifecyclePrecondition.write_site_guard", self.write_site_guard
         )
         if not isinstance(self.read_site_lacks_guard, bool):
-            raise ValueError(
-                "LifecyclePrecondition.read_site_lacks_guard must be bool"
-            )
+            msg = "LifecyclePrecondition.read_site_lacks_guard must be bool"
+            raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -126,12 +125,14 @@ _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: frozenset[str]) -> None:
     extras = set(data.keys()) - allowed
     if extras:
-        raise ValueError(f"unknown fields in {name} JSON: {sorted(extras)}")
+        msg = f"unknown fields in {name} JSON: {sorted(extras)}"
+        raise ValueError(msg)
 
 
 def _require_nonempty(label: str, value: str) -> None:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string")
+        msg = f"{label} must be a non-empty string"
+        raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -164,28 +165,27 @@ class GroundTruth:
         _require_nonempty("GroundTruth.rationale", self.rationale)
         _require_nonempty("GroundTruth.labeler", self.labeler)
         if not _ISO_DATE_RE.match(self.labeled_at or ""):
-            raise ValueError(
+            msg = (
                 f"GroundTruth.labeled_at must be ISO YYYY-MM-DD, "
                 f"got {self.labeled_at!r}"
             )
+            raise ValueError(msg)
         if self.verdict not in VALID_VERDICTS:
-            raise ValueError(
-                f"verdict {self.verdict!r} not in {sorted(VALID_VERDICTS)!r}"
-            )
+            msg = f"verdict {self.verdict!r} not in {sorted(VALID_VERDICTS)!r}"
+            raise ValueError(msg)
         if self.verdict == VERDICT_TRUE_POSITIVE and self.fp_category is not None:
-            raise ValueError(
-                "fp_category must be None for true_positive verdicts"
-            )
+            msg = "fp_category must be None for true_positive verdicts"
+            raise ValueError(msg)
         if self.verdict == VERDICT_FALSE_POSITIVE:
             if self.fp_category is None:
-                raise ValueError(
-                    "fp_category required for false_positive verdicts"
-                )
+                msg = "fp_category required for false_positive verdicts"
+                raise ValueError(msg)
             if self.fp_category not in VALID_FP_CATEGORIES:
-                raise ValueError(
+                msg = (
                     f"fp_category {self.fp_category!r} not in "
                     f"{sorted(VALID_FP_CATEGORIES)!r}"
                 )
+                raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -206,10 +206,11 @@ class GroundTruth:
         _check_extra_fields("GroundTruth", data, _GROUND_TRUTH_KEYS)
         version = data["schema_version"]
         if version != SCHEMA_VERSION:
-            raise ValueError(
+            msg = (
                 f"GroundTruth schema_version {version!r} != expected "
                 f"{SCHEMA_VERSION!r}; corpus upgrade required"
             )
+            raise ValueError(msg)
         lcp = data.get("lifecycle_precondition")
         return cls(
             finding_id=data["finding_id"],

@@ -162,7 +162,8 @@ class EnvironmentSpec:
     def from_dict(cls, data: dict[str, Any]) -> EnvironmentSpec:
         d = _known(cls, data)
         if "name" not in d or not d["name"]:
-            raise ValueError("EnvironmentSpec requires a name")
+            msg = "EnvironmentSpec requires a name"
+            raise ValueError(msg)
         if isinstance(d.get("source"), dict):
             d["source"] = SourceSpec.from_dict(d["source"])
         if isinstance(d.get("build"), dict):

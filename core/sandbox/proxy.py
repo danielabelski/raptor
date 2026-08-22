@@ -638,22 +638,25 @@ def _parse_proxy_url(url: str | None) -> tuple | None:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise ValueError(
+        msg = (
             f"egress proxy: unsupported upstream scheme in {url!r} — "
             f"only http:// and https:// are honoured"
         )
+        raise ValueError(msg)
     if not parsed.hostname:
-        raise ValueError(f"egress proxy: no host in upstream URL {url!r}")
+        msg = f"egress proxy: no host in upstream URL {url!r}"
+        raise ValueError(msg)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     # Userinfo (auth) not supported yet — most corporate proxies that
     # require auth use Kerberos/SPNEGO or NTLM which need more than an
     # env-var password anyway. If this becomes a real need, add a
     # Proxy-Authorization header here.
     if parsed.username or parsed.password:
-        raise ValueError(
+        msg = (
             "egress proxy: auth in upstream URL not supported; "
             "configure proxy-side auth or file a feature request"
         )
+        raise ValueError(msg)
     return (parsed.hostname, port)
 
 
@@ -1008,11 +1011,12 @@ class EgressProxy:
             # Use the actual timeout constant in the message so an
             # operator bumping ``_PROXY_CONNECT_TIMEOUT_S`` sees a
             # consistent error rather than the hardcoded "30s" lie.
-            raise RuntimeError(
+            msg = (
                 f"egress proxy did not become ready within "
                 f"{_PROXY_CONNECT_TIMEOUT_S:.0f}s "
                 f"(thread may have crashed before signalling)"
             )
+            raise RuntimeError(msg)
         if self._start_error is not None:
             # Same cleanup: if the thread came up far enough to set
             # ``_start_error`` but not ``_ready``, stop it before
@@ -1020,9 +1024,8 @@ class EgressProxy:
             # doesn't see an orphan thread holding the listening
             # socket.
             self._stop_thread_best_effort()
-            raise RuntimeError(
-                f"egress proxy failed to start: {self._start_error}"
-            ) from self._start_error
+            msg = f"egress proxy failed to start: {self._start_error}"
+            raise RuntimeError(msg) from self._start_error
 
     # ----- public API -----
 
@@ -1126,7 +1129,8 @@ class EgressProxy:
         loop and blocks until it is ready.
         """
         if self._loop is None or not self._loop.is_running():
-            raise RuntimeError("proxy event loop not running")
+            msg = "proxy event loop not running"
+            raise RuntimeError(msg)
 
         import os as _os
 
@@ -1169,7 +1173,8 @@ class EgressProxy:
         enforcement intact).
         """
         if self._loop is None or not self._loop.is_running():
-            raise RuntimeError("proxy event loop not running")
+            msg = "proxy event loop not running"
+            raise RuntimeError(msg)
 
         lane = _Lane(label=label,
                      allowed_hosts=_normalise_lane_hosts(allowed_hosts))
@@ -1815,7 +1820,8 @@ class EgressProxy:
             family, _socktype, _proto, _, sockaddr = entry
             ip = sockaddr[0]
             if _ip_is_blocked(ip):
-                raise OSError(f"IP {ip} blocked by gate 2")
+                msg = f"IP {ip} blocked by gate 2"
+                raise OSError(msg)
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host=ip, port=port,
                                          family=family),
@@ -2052,9 +2058,8 @@ class EgressProxy:
             # somehow bound to a non-loopback address.
             if bound_host != "127.0.0.1":
                 self._server.close()
-                raise RuntimeError(
-                    f"proxy bound to non-loopback {bound_host!r} — refusing to serve"
-                )
+                msg = f"proxy bound to non-loopback {bound_host!r} — refusing to serve"
+                raise RuntimeError(msg)
             self.port = bound_port
             logger.debug(
                 "egress proxy listening on 127.0.0.1:%s (allowlist: %s)", self.port, sorted(self._allowed_hosts)

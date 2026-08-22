@@ -588,13 +588,13 @@ class JsonCache:
         no key can traverse or alias its way to another key's file.
         """
         if self._root is None:
-            raise RuntimeError("cache root not initialised")
+            msg = "cache root not initialised"
+            raise RuntimeError(msg)
         clean_parts = []
         for part in key.split("/"):
             if not part or part in (".", ".."):
-                raise ValueError(
-                    f"cache key contains a degenerate path segment: {key!r}"
-                )
+                msg = f"cache key contains a degenerate path segment: {key!r}"
+                raise ValueError(msg)
             # Strip BOTH separators regardless of host. Pre-fix
             # `part.replace(os.sep, "_")` only stripped the host's
             # separator — on Linux (os.sep="/") an embedded
@@ -613,7 +613,8 @@ class JsonCache:
                 clean = clean.replace(os.sep, "_")
             clean_parts.append(clean)
         if not clean_parts:
-            raise ValueError(f"empty cache key after sanitisation: {key!r}")
+            msg = f"empty cache key after sanitisation: {key!r}"
+            raise ValueError(msg)
         # Append the suffix directly rather than ``Path.with_suffix``:
         # the last component is typically a version string like
         # ``4.17.4``, and ``with_suffix(".json")`` would replace the
@@ -640,19 +641,22 @@ class JsonCache:
         if not isinstance(data, dict):
             # ValueError (not TypeError): the corrupt-entry handlers in
             # try_get catch ValueError; this must land in that bucket.
-            raise ValueError("cache entry is not an object")  # noqa: TRY004
+            msg = "cache entry is not an object"
+            raise ValueError(msg)  # noqa: TRY004
         # `ttl_seconds` may still be a non-numeric string from a
         # truly malformed entry — keep the int-coerce guard for that.
         ttl_raw = data["ttl_seconds"]
         try:
             ttl = int(ttl_raw)
         except (OverflowError, ValueError, TypeError) as e:
-            raise ValueError(f"non-numeric ttl_seconds: {ttl_raw!r}") from e
+            msg = f"non-numeric ttl_seconds: {ttl_raw!r}"
+            raise ValueError(msg) from e
         written_raw = data["written_at"]
         try:
             written_at = float(written_raw)
         except (OverflowError, ValueError, TypeError) as e:
-            raise ValueError(f"non-numeric written_at: {written_raw!r}") from e
+            msg = f"non-numeric written_at: {written_raw!r}"
+            raise ValueError(msg) from e
         return CacheEnvelope(
             written_at=written_at,
             ttl_seconds=ttl,

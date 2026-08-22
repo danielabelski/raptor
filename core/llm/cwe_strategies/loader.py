@@ -82,12 +82,12 @@ def _check_keys(
 ) -> None:
     """Reject unknown keys with a clear message naming the file."""
     if not isinstance(data, dict):
-        raise StrategyLoadError(f"{where}: expected mapping, got {type(data).__name__}")
+        msg = f"{where}: expected mapping, got {type(data).__name__}"
+        raise StrategyLoadError(msg)
     extra = set(data) - allowed
     if extra:
-        raise StrategyLoadError(
-            f"{where}: unknown keys {sorted(extra)}; allowed: {sorted(allowed)}"
-        )
+        msg = f"{where}: unknown keys {sorted(extra)}; allowed: {sorted(allowed)}"
+        raise StrategyLoadError(msg)
 
 
 def _str_tuple(value: Any, where: str) -> tuple[str, ...]:
@@ -96,15 +96,13 @@ def _str_tuple(value: Any, where: str) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise StrategyLoadError(
-            f"{where}: expected list of strings, got {type(value).__name__}"
-        )
+        msg = f"{where}: expected list of strings, got {type(value).__name__}"
+        raise StrategyLoadError(msg)
     out = []
     for i, item in enumerate(value):
         if not isinstance(item, str):
-            raise StrategyLoadError(
-                f"{where}[{i}]: expected string, got {type(item).__name__}"
-            )
+            msg = f"{where}[{i}]: expected string, got {type(item).__name__}"
+            raise StrategyLoadError(msg)
         out.append(item)
     return tuple(out)
 
@@ -131,22 +129,19 @@ def _load_exemplars(data: Any, where: str) -> tuple[Exemplar, ...]:
     if data is None:
         return ()
     if not isinstance(data, list):
-        raise StrategyLoadError(
-            f"{where}: expected list of exemplars, got {type(data).__name__}"
-        )
+        msg = f"{where}: expected list of exemplars, got {type(data).__name__}"
+        raise StrategyLoadError(msg)
     out: list[Exemplar] = []
     for i, item in enumerate(data):
         sub = f"{where}[{i}]"
         _check_keys(sub, item, _EXEMPLAR_KEYS)
         for required in ("cve", "title", "pattern", "why_buggy"):
             if required not in item:
-                raise StrategyLoadError(
-                    f"{sub}: missing required field {required!r}"
-                )
+                msg = f"{sub}: missing required field {required!r}"
+                raise StrategyLoadError(msg)
             if not isinstance(item[required], str):
-                raise StrategyLoadError(
-                    f"{sub}.{required}: expected string"
-                )
+                msg = f"{sub}.{required}: expected string"
+                raise StrategyLoadError(msg)
         out.append(Exemplar(
             cve=item["cve"],
             title=item["title"],
@@ -163,25 +158,24 @@ def load_strategy(path: Path) -> Strategy:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
-        raise StrategyLoadError(f"{path}: {e}") from e
+        msg = f"{path}: {e}"
+        raise StrategyLoadError(msg) from e
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise StrategyLoadError(f"{path}: invalid YAML: {e}") from e
+        msg = f"{path}: invalid YAML: {e}"
+        raise StrategyLoadError(msg) from e
     if not isinstance(data, dict):
-        raise StrategyLoadError(
-            f"{path}: top-level must be a mapping"
-        )
+        msg = f"{path}: top-level must be a mapping"
+        raise StrategyLoadError(msg)
     _check_keys(str(path), data, _TOP_LEVEL_KEYS)
     for required in ("name", "description"):
         if required not in data:
-            raise StrategyLoadError(
-                f"{path}: missing required field {required!r}"
-            )
+            msg = f"{path}: missing required field {required!r}"
+            raise StrategyLoadError(msg)
         if not isinstance(data[required], str) or not data[required]:
-            raise StrategyLoadError(
-                f"{path}.{required}: expected non-empty string"
-            )
+            msg = f"{path}.{required}: expected non-empty string"
+            raise StrategyLoadError(msg)
     return Strategy(
         name=data["name"],
         description=data["description"],
@@ -211,9 +205,8 @@ def load_all(directory: Path | None = None) -> list[Strategy]:
     for path in sorted(directory.glob("*.yml")):
         s = load_strategy(path)
         if s.name in seen_names:
-            raise StrategyLoadError(
-                f"{path}: duplicate strategy name {s.name!r}"
-            )
+            msg = f"{path}: duplicate strategy name {s.name!r}"
+            raise StrategyLoadError(msg)
         seen_names.add(s.name)
         strategies.append(s)
     return strategies
@@ -241,20 +234,24 @@ def load_profile(path: Path) -> dict[str, Signals]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
-        raise StrategyLoadError(f"{path}: {e}") from e
+        msg = f"{path}: {e}"
+        raise StrategyLoadError(msg) from e
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise StrategyLoadError(f"{path}: invalid YAML: {e}") from e
+        msg = f"{path}: invalid YAML: {e}"
+        raise StrategyLoadError(msg) from e
     if not isinstance(data, dict):
-        raise StrategyLoadError(f"{path}: top-level must be a mapping")
+        msg = f"{path}: top-level must be a mapping"
+        raise StrategyLoadError(msg)
     _check_keys(str(path), data, _PROFILE_TOP_KEYS)
     strategies = data.get("strategies")
     if not isinstance(strategies, dict):
-        raise StrategyLoadError(
+        msg = (
             f"{path}: 'strategies' must be a mapping of strategy name "
             f"to signal supplements"
         )
+        raise StrategyLoadError(msg)
     out: dict[str, Signals] = {}
     for name, signals in strategies.items():
         out[name] = _load_signals(signals, f"{path}.strategies.{name}")

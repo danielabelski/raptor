@@ -169,15 +169,17 @@ class SanitizerCutResult:
         # candidate_only and no_suppress both leave suppress=False;
         # suppress=True only pairs with verdict=suppress.
         if self.suppress and self.verdict != VERDICT_SUPPRESS:
-            raise ValueError(
+            msg = (
                 f"suppress=True requires verdict={VERDICT_SUPPRESS!r}, "
                 f"got verdict={self.verdict!r}"
             )
+            raise ValueError(msg)
         if not self.suppress and self.verdict == VERDICT_SUPPRESS:
-            raise ValueError(
+            msg = (
                 f"verdict={VERDICT_SUPPRESS!r} requires suppress=True, "
                 "got suppress=False"
             )
+            raise ValueError(msg)
 
 
 def _bfs_reachable_excluding(

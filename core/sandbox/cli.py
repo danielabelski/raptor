@@ -25,10 +25,11 @@ def _set_cli_state(profile: str) -> None:
     set_cli_profile() can't desync the two globals.
     """
     if profile not in PROFILES:
-        raise ValueError(
+        msg = (
             f"Unknown sandbox profile {profile!r}. "
             f"Valid profiles: {sorted(PROFILES)}."
         )
+        raise ValueError(msg)
     state._cli_sandbox_profile = profile
     state._cli_sandbox_disabled = (profile == "none")
 

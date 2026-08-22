@@ -156,10 +156,11 @@ class SandboxProfile:
     def from_json(cls, raw: str) -> SandboxProfile:
         d = json.loads(raw)
         if not isinstance(d, dict):
-            raise TypeError(
+            msg = (
                 f"SandboxProfile JSON must be an object, "
                 f"got {type(d).__name__}"
             )
+            raise TypeError(msg)
         connects = [
             ConnectTarget(**t) for t in d.get("connect_targets", [])
         ]
@@ -402,9 +403,8 @@ def calibrate_binary(
     """
     bin_real = Path(bin_path).resolve()
     if not bin_real.exists():
-        raise FileNotFoundError(
-            f"calibrate_binary: {bin_path!r} does not exist"
-        )
+        msg = f"calibrate_binary: {bin_path!r} does not exist"
+        raise FileNotFoundError(msg)
 
     bin_sha = _sha256_file(bin_real)
     env_sig = _env_signature(env_keys)
@@ -430,13 +430,14 @@ def calibrate_binary(
         # observe-mode degraded silently. Don't cache an empty
         # profile — that would mask real reach behind a stale
         # placeholder. Raise so the caller can react.
-        raise RuntimeError(
+        msg = (
             f"calibrate_binary: probe of {bin_real} produced no "
             f"records. Either the binary's probe args don't "
             f"exercise its startup paths, or observe-mode failed "
             f"to engage on this host (libseccomp/ptrace check). "
             f"Probe rc={rc}."
         )
+        raise RuntimeError(msg)
 
     _save_to_cache(fp, profile)
     return profile
@@ -466,9 +467,8 @@ def load_or_calibrate(
     """
     bin_real = Path(bin_path).resolve()
     if not bin_real.exists():
-        raise FileNotFoundError(
-            f"load_or_calibrate: {bin_path!r} does not exist"
-        )
+        msg = f"load_or_calibrate: {bin_path!r} does not exist"
+        raise FileNotFoundError(msg)
 
     if not force:
         bin_sha = _sha256_file(bin_real)

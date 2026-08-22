@@ -74,7 +74,8 @@ def tree_sitter_modules(repo_root: Path = REPO_ROOT) -> tuple[str, ...]:
         if match:
             names.append(match.group(1).replace("-", "_"))
     if not names:
-        raise ValueError(f"no ==-pinned distributions found in {req}")
+        msg = f"no ==-pinned distributions found in {req}"
+        raise ValueError(msg)
     return tuple(names)
 
 
@@ -101,10 +102,11 @@ def write_stubs(dest: Path, names: list[str]) -> Path:
     ordered = sorted(set(names))
     bad = [n for n in ordered if not _NAME_RE.match(n)]
     if bad:
-        raise ValueError(
+        msg = (
             f"not importable top-level module names: {bad} "
             "(hide the top-level package, not a submodule/distribution)"
         )
+        raise ValueError(msg)
     dest.mkdir(parents=True, exist_ok=True)
     for name in ordered:
         body = _STUB_BODY.format(name=name)

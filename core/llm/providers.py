@@ -465,10 +465,11 @@ class LLMProvider(ABC):
         providers that can do tool-use override this method. Callers
         that need to gate behaviour use :meth:`supports_tool_use`.
         """
-        raise NotImplementedError(
+        msg = (
             f"{type(self).__name__} does not support tool-use; "
             f"check ``supports_tool_use()`` before calling ``turn()``"
         )
+        raise NotImplementedError(msg)
 
     def supports_streaming(self) -> bool:
         """``True`` when ``turn_stream()`` yields real-time chunks
@@ -791,10 +792,11 @@ class LLMProvider(ABC):
             # Gemini native structured truncation guard. The message
             # keeps the "truncated (output token limit" phrasing the
             # audit orchestrator's _classify_error keys on.
-            raise RuntimeError(
+            msg = (
                 "Response truncated (output token limit reached, "
                 f"finish_reason={response.finish_reason})"
             )
+            raise RuntimeError(msg)
         try:
             # Strip markdown fences via the shared hardened helper.
             # It prefers the LAST fenced JSON block, defeating
@@ -1248,11 +1250,11 @@ def _dict_schema_to_pydantic(schema: dict[str, Any] | type['BaseModel'], _model_
 
     # Validate it's a dict if not Pydantic
     if not isinstance(schema, dict):
-        raise ValueError(  # noqa: TRY004 — callers catch ValueError; changing type breaks them
-
+        msg = (
             f"Schema must be dict or Pydantic BaseModel class, "
             f"got {type(schema).__name__}"
         )
+        raise ValueError(msg)  # noqa: TRY004 — callers catch ValueError; changing type breaks them
 
     # Normalize simple format to JSON Schema
     schema = _normalize_schema(schema)
@@ -1407,9 +1409,8 @@ class OpenAICompatibleProvider(LLMProvider):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         if not OPENAI_SDK_AVAILABLE:
-            raise ImportError(
-                "OpenAI SDK not installed. Run: pip install openai"
-            )
+            msg = "OpenAI SDK not installed. Run: pip install openai"
+            raise ImportError(msg)
 
         # Dispatcher route only when (a) dispatcher session is set,
         # (b) provider is OpenAI proper (not Ollama / vLLM / LM Studio),
@@ -1496,7 +1497,8 @@ class OpenAICompatibleProvider(LLMProvider):
             duration = time.monotonic() - t_start
 
             if not response.choices:
-                raise RuntimeError("OpenAI returned empty choices")
+                msg = "OpenAI returned empty choices"
+                raise RuntimeError(msg)
             message = response.choices[0].message
             content = message.content or ""
             # Ollama thinking models (qwen3, etc.) put responses in reasoning_content
@@ -1507,15 +1509,15 @@ class OpenAICompatibleProvider(LLMProvider):
             # Detect content filter blocks and model refusals
             refusal = getattr(message, 'refusal', None)
             if refusal:
-                raise RuntimeError(
-                    f"Model refused request: {refusal}"
-                )
+                msg = f"Model refused request: {refusal}"
+                raise RuntimeError(msg)
             if finish_reason == "content_filter":
                 if not content:
-                    raise RuntimeError(
+                    msg = (
                         "Response blocked by content filter. "
                         "This typically happens with exploit code or attack scenario prompts."
                     )
+                    raise RuntimeError(msg)
                 logger.warning("Response truncated by content filter")
 
             input_tokens = 0
@@ -2389,9 +2391,8 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         if not ANTHROPIC_SDK_AVAILABLE:
-            raise ImportError(
-                "Anthropic SDK not installed. Run: pip install anthropic"
-            )
+            msg = "Anthropic SDK not installed. Run: pip install anthropic"
+            raise ImportError(msg)
 
         # Phase B: route through the credential-isolation dispatcher when
         # the worker has been spawned with one in place. Tie-breaker:
@@ -2498,22 +2499,25 @@ class AnthropicProvider(LLMProvider):
                     # 'blocked' and telemetry disposition reads
                     # "blocked" — a model boundary, not a transport
                     # failure; an identical retry cannot change it.
-                    raise RuntimeError(
+                    msg = (
                         "Anthropic model refused request "
                         "(stop_reason=refusal, empty content)"
                     )
+                    raise RuntimeError(msg)
                 if stop == "max_tokens":
-                    raise RuntimeError(
+                    msg = (
                         "Anthropic returned empty content with "
                         "stop_reason=max_tokens — output budget "
                         "exhausted before the first content block "
                         "(on reasoning-tier models thinking can "
                         "consume the entire budget)"
                     )
-                raise RuntimeError(
+                    raise RuntimeError(msg)
+                msg = (
                     f"Anthropic returned empty content "
                     f"(stop_reason={stop})"
                 )
+                raise RuntimeError(msg)
             text_block = next(
                 (b for b in response.content if hasattr(b, 'text')), None,
             )
@@ -2529,11 +2533,12 @@ class AnthropicProvider(LLMProvider):
                     str(getattr(b, 'type', '<unknown>'))
                     for b in response.content
                 )
-                raise RuntimeError(
+                msg = (
                     f"Anthropic returned no text content block "
                     f"(got: {block_types}; stop_reason="
                     f"{response.stop_reason or 'unknown'})"
                 )
+                raise RuntimeError(msg)
             content = text_block.text
             finish_reason = response.stop_reason or "complete"
 
@@ -2702,11 +2707,12 @@ class AnthropicProvider(LLMProvider):
                     # refused" so classify_error_text buckets it
                     # 'blocked' (same contract as generate()'s
                     # empty-content refusal path).
-                    raise RuntimeError(
+                    msg = (
                         "Anthropic model refused request "
                         f"(stop_reason={refusal}, instructor tool-use "
                         "leg — tool args empty)"
-                    ) from e
+                    )
+                    raise RuntimeError(msg) from e
                 route = self._instructor_exception_route(e)
                 if route != "fallback":
                     # Boundary failure (blocked/auth/quota): see the
@@ -2792,12 +2798,13 @@ class AnthropicProvider(LLMProvider):
             fast.
         """
         if anthropic_task_budget_beta and anthropic_task_budget_tokens is None:
-            raise ValueError(
+            msg = (
                 "anthropic_task_budget_beta=True requires "
                 "anthropic_task_budget_tokens=N (total token budget the "
                 "model self-regulates against). Without it the beta "
                 "endpoint accepts the request but no budget is enforced."
             )
+            raise ValueError(msg)
         if _unused:
             logger.debug(
                 "AnthropicProvider.turn: ignoring unrecognised kwargs: %s", sorted(_unused)
@@ -3385,9 +3392,8 @@ class GeminiProvider(LLMProvider):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
         if not GENAI_SDK_AVAILABLE:
-            raise RuntimeError(
-                "google-genai SDK not installed: pip install google-genai"
-            )
+            msg = "google-genai SDK not installed: pip install google-genai"
+            raise RuntimeError(msg)
 
         import threading
         self._clients_lock = threading.Lock()
@@ -3506,9 +3512,8 @@ class GeminiProvider(LLMProvider):
                     br = getattr(pf, 'block_reason', None)
                     if br:
                         pf_reason = f" (blocked: {br})"
-                raise RuntimeError(
-                    f"Gemini returned empty response{pf_reason}"
-                )
+                msg = f"Gemini returned empty response{pf_reason}"
+                raise RuntimeError(msg)
 
             content = response.text or ""
             finish_reason = "complete"
@@ -3519,10 +3524,11 @@ class GeminiProvider(LLMProvider):
             # Gemini safety filters block exploit/attack content — detect and raise
             # so the caller sees a clear error rather than empty content
             if not content and finish_reason in ('safety', 'recitation', 'blocked', 'other'):
-                raise RuntimeError(
+                msg = (
                     f"Gemini blocked response (finish_reason={finish_reason}). "
                     f"This typically happens with exploit code or attack scenario prompts."
                 )
+                raise RuntimeError(msg)
 
             input_tokens = 0
             output_tokens = 0
@@ -3632,11 +3638,12 @@ class GeminiProvider(LLMProvider):
                 finish_reason = getattr(fr, 'name', str(fr)).lower()
 
             if finish_reason in ("max_tokens", "length"):
-                raise RuntimeError(
+                msg = (
                     "Gemini native structured response truncated "
                     f"(finish_reason={finish_reason}, "
                     f"output_tokens={output_tokens})"
                 )
+                raise RuntimeError(msg)
 
             # Safety/prohibited-content block: empty text with a
             # blocking finish_reason previously fell through to
@@ -3652,18 +3659,20 @@ class GeminiProvider(LLMProvider):
             if not (response.text or "").strip() and (
                 finish_reason in _blocked_reasons
             ):
-                raise RuntimeError(
+                msg = (
                     f"Gemini blocked response (finish_reason="
                     f"{finish_reason}). This typically happens with "
                     f"exploit code or attack scenario prompts."
                 )
+                raise RuntimeError(msg)
 
             # Shared hardened fence-stripping (last-block preference
             # — see _structured_fallback for the injection rationale).
             content = strip_json_fences((response.text or "").strip()).strip()
             parsed = json.loads(content)
             if not parsed:
-                raise ValueError("Gemini returned empty object in structured mode")
+                msg = "Gemini returned empty object in structured mode"
+                raise ValueError(msg)
             parsed = _coerce_to_schema(parsed, normalized)
             validated = pydantic_model.model_validate(parsed)
             result_dict = validated.model_dump()
@@ -3952,7 +3961,8 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 cmd, prompt, env=_cc_env, timeout_s=call_timeout,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
+            msg = f"claude -p timed out after {call_timeout}s"
+            raise RuntimeError(msg) from e
         duration = _time.monotonic() - start
 
         # Book usage BEFORE the error check: a failed call (budget
@@ -4076,7 +4086,8 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 cmd, prompt, env=_cc_env, timeout_s=call_timeout,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude -p timed out after {call_timeout}s") from e
+            msg = f"claude -p timed out after {call_timeout}s"
+            raise RuntimeError(msg) from e
         duration = _time.monotonic() - start
 
         # Book usage BEFORE the error/parse checks: a failed call
@@ -4105,9 +4116,8 @@ class ClaudeCodeLLMProvider(LLMProvider):
         else:
             result = self._parse_stream_content(sr.content)
             if isinstance(result, dict) and "error" in result and result["error"]:
-                raise RuntimeError(
-                    f"claude -p structured parse failed: {result['error']}"
-                )
+                msg = f"claude -p structured parse failed: {result['error']}"
+                raise RuntimeError(msg)
 
         return StructuredResponse(
             result=result,
@@ -4674,7 +4684,7 @@ def _guard_transport_model_shape(
     if transport == "claudecode":
         if os.environ.get("CLAUDE_CODE_USE_BEDROCK"):
             return
-        raise ModelTransportMismatchError(
+        msg = (
             f"model id {config.model_name!r} is Bedrock-shaped but is "
             "routed to the claudecode transport on a NON-Bedrock "
             "claude CLI (CLAUDE_CODE_USE_BEDROCK is unset) -- "
@@ -4687,12 +4697,13 @@ def _guard_transport_model_shape(
             "Bedrock installs must export it), or pin a direct-API "
             "model name instead."
         )
+        raise ModelTransportMismatchError(msg)
     if transport == "anthropic":
         if config.api_base:
             # Operator-supplied gateway -- their endpoint, their
             # id vocabulary.
             return
-        raise ModelTransportMismatchError(
+        msg = (
             f"model id {config.model_name!r} is Bedrock-shaped but is "
             "configured on the direct Anthropic API path (provider "
             "\"anthropic\"), which serves bare claude-* ids only -- "
@@ -4701,6 +4712,7 @@ def _guard_transport_model_shape(
             "models.json entry so the RAPTOR dispatcher routes it "
             "(SigV4/bearer), or use the direct-API model name."
         )
+        raise ModelTransportMismatchError(msg)
 
 
 def create_provider(config: ModelConfig) -> LLMProvider:
@@ -4748,22 +4760,23 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         # dispatcher attaches AWS auth (bearer or SigV4) and rewrites
         # the request to match the chosen API's contract.
         if not ANTHROPIC_SDK_AVAILABLE:
-            raise RuntimeError(
-                "Bedrock provider requires: pip install anthropic"
-            )
+            msg = "Bedrock provider requires: pip install anthropic"
+            raise RuntimeError(msg)
         if not os.environ.get("RAPTOR_LLM_SOCKET"):
-            raise RuntimeError(
+            msg = (
                 "Bedrock provider requires the RAPTOR LLM dispatcher "
                 "(RAPTOR_LLM_SOCKET).  Workers do not hold AWS "
                 "credentials; the dispatcher attaches them at the "
                 "parent's trust boundary."
             )
+            raise RuntimeError(msg)
         api = getattr(config, "bedrock_api", "mantle") or "mantle"
         if api not in ("mantle", "runtime"):
-            raise RuntimeError(
+            msg = (
                 f"Bedrock provider: unknown bedrock_api={api!r}; "
                 "expected 'mantle' or 'runtime'"
             )
+            raise RuntimeError(msg)
         # AnthropicProvider already wires through the dispatcher when
         # RAPTOR_LLM_SOCKET is set; we just swap its client for the
         # Bedrock-routed one so the request goes to
@@ -4807,9 +4820,8 @@ def create_provider(config: ModelConfig) -> LLMProvider:
             compat_config = replace(config, api_base="https://api.anthropic.com/v1")
             return OpenAICompatibleProvider(compat_config)
         else:
-            raise RuntimeError(
-                "Anthropic provider requires: pip install anthropic (or) pip install openai"
-            )
+            msg = "Anthropic provider requires: pip install anthropic (or) pip install openai"
+            raise RuntimeError(msg)
     if provider == "gemini":
         if GENAI_SDK_AVAILABLE:
             return GeminiProvider(config)
@@ -4818,14 +4830,12 @@ def create_provider(config: ModelConfig) -> LLMProvider:
                         "For accurate thinking token tracking: pip install google-genai")
             return OpenAICompatibleProvider(config)
         else:
-            raise RuntimeError(
-                "Gemini provider requires: pip install google-genai (or) pip install openai"
-            )
+            msg = "Gemini provider requires: pip install google-genai (or) pip install openai"
+            raise RuntimeError(msg)
     if OPENAI_SDK_AVAILABLE:
         return OpenAICompatibleProvider(config)
-    raise RuntimeError(
-        f"Provider '{provider}' requires: pip install openai"
-    )
+    msg = f"Provider '{provider}' requires: pip install openai"
+    raise RuntimeError(msg)
 
 
 # Backward compatibility

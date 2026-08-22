@@ -111,23 +111,25 @@ class WitnessStore:
         """
         expected = compute_bytes_hash(data)
         if expected != witness.bytes_hash:
-            raise WitnessStoreError(
+            msg = (
                 f"witness.bytes_hash {witness.bytes_hash[:16]!r}... "
                 f"does not match sha256(data) {expected[:16]!r}...; "
                 "fix the producer to use compute_bytes_hash on the "
                 "actual bytes being stored"
             )
+            raise WitnessStoreError(msg)
 
         # Enforce bytes_len agreement when caller set it. Pre-fix
         # the store accepted (and persisted) a caller-supplied
         # bytes_len that disagreed with len(data) — silent corruption
         # of the manifest, which downstream consumers trust.
         if witness.bytes_len and witness.bytes_len != len(data):
-            raise WitnessStoreError(
+            msg = (
                 f"witness.bytes_len ({witness.bytes_len}) does not "
                 f"match len(data) ({len(data)}); pass bytes_len=0 to "
                 f"let the store stamp it, or fix the producer"
             )
+            raise WitnessStoreError(msg)
         if witness.bytes_len == 0 and data:
             witness.bytes_len = len(data)
 
@@ -141,13 +143,14 @@ class WitnessStore:
                 json.dumps(witness.to_dict(), indent=2) + "\n"
             )
         except (TypeError, ValueError) as exc:
-            raise WitnessStoreError(
+            msg = (
                 f"witness manifest is not JSON-serialisable "
                 f"({type(exc).__name__}: {exc}); convert any "
                 f"Path / datetime / bytes / custom-class values in "
                 f"outcome_detail to strings before constructing the "
                 f"Witness"
-            ) from exc
+            )
+            raise WitnessStoreError(msg) from exc
 
         self._ensure_dirs()
 
@@ -196,10 +199,11 @@ class WitnessStore:
         """
         blob_path = self._blobs_dir / f"{bytes_hash}.bin"
         if not blob_path.is_file():
-            raise WitnessStoreError(
+            msg = (
                 f"blob not found for hash {bytes_hash[:16]!r}... "
                 f"(expected at {blob_path})"
             )
+            raise WitnessStoreError(msg)
         return blob_path.read_bytes()
 
     def get_witness(self, bytes_hash: str) -> Witness:
@@ -210,21 +214,20 @@ class WitnessStore:
         """
         manifest_path = self._manifests_dir / f"{bytes_hash}.json"
         if not manifest_path.is_file():
-            raise WitnessStoreError(
+            msg = (
                 f"manifest not found for hash {bytes_hash[:16]!r}... "
                 f"(expected at {manifest_path})"
             )
+            raise WitnessStoreError(msg)
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             return Witness.from_dict(data)
         except json.JSONDecodeError as exc:
-            raise WitnessStoreError(
-                f"manifest at {manifest_path} is malformed JSON: {exc}"
-            ) from exc
+            msg = f"manifest at {manifest_path} is malformed JSON: {exc}"
+            raise WitnessStoreError(msg) from exc
         except (KeyError, ValueError) as exc:
-            raise WitnessStoreError(
-                f"manifest at {manifest_path} has invalid structure: {exc}"
-            ) from exc
+            msg = f"manifest at {manifest_path} has invalid structure: {exc}"
+            raise WitnessStoreError(msg) from exc
 
     def list_witnesses(self) -> Iterator[Witness]:
         """Iterate every Witness in the store.

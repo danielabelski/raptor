@@ -89,27 +89,29 @@ def parse_cyclonedx(path: Path) -> tuple[list[Dependency], list[str]]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        raise ValueError(f"failed to read SBOM file {path}: {e}") from e
+        msg = f"failed to read SBOM file {path}: {e}"
+        raise ValueError(msg) from e
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
-        raise ValueError(f"invalid JSON in SBOM {path}: {e}") from e
+        msg = f"invalid JSON in SBOM {path}: {e}"
+        raise ValueError(msg) from e
 
     if not isinstance(data, dict):
-        raise ValueError(
-            f"SBOM root must be a JSON object, got {type(data).__name__}"
-        )
+        msg = f"SBOM root must be a JSON object, got {type(data).__name__}"
+        raise ValueError(msg)
 
     # Sanity: bomFormat must be "CycloneDX". Operators who pass
     # an SPDX SBOM see a clear error rather than a silent miss.
     bom_format = data.get("bomFormat")
     if bom_format != "CycloneDX":
-        raise ValueError(
+        msg = (
             f"SBOM at {path} is not CycloneDX (bomFormat={bom_format!r}); "
             f"SPDX or other formats are not supported. Convert with "
             f"`cyclonedx-cli convert` first if needed."
         )
+        raise ValueError(msg)
 
     components = data.get("components")
     if not isinstance(components, list):

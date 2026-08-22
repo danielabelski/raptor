@@ -287,10 +287,11 @@ class Pipeline:
                     # for the agent's pick, so they surface as
                     # AcquisitionError with the original chained for
                     # diagnosis.
-                    raise AcquisitionError(
+                    msg = (
                         f"{cve_id}: {type(exc).__name__} while acquiring "
                         f"{ref.repository_url}@{ref.fix_commit[:12]}: {exc}"
-                    ) from exc
+                    )
+                    raise AcquisitionError(msg) from exc
                 self._emit("post_submit_retry", "start", {
                     "failed_class": type(exc).__name__,
                     "failed_slug": ref.repository_url,
@@ -316,7 +317,8 @@ class Pipeline:
                     self._record_discovery_outcome(cve_id, verified=True)
                     self._store_fix_pointer(cve_id, result)
                 return result
-        raise AssertionError("unreachable — loop must return or re-raise")
+        msg = "unreachable — loop must return or re-raise"
+        raise AssertionError(msg)
 
     def _acquire_to_render(
         self, cve_id: str, ref: RepoRef, agent_result: AgentResult,
@@ -690,22 +692,26 @@ class Pipeline:
     def _require_rescued(cve_id: str, result: AgentResult) -> PatchTuple:
         if isinstance(result, AgentSurrender):
             if result.reason == "unsupported_source":
-                raise UnsupportedSource(f"{cve_id}: {result.detail}")
-            raise DiscoveryError(f"{cve_id}: agent surrendered ({result.reason}): {result.detail}")
+                msg = f"{cve_id}: {result.detail}"
+                raise UnsupportedSource(msg)
+            msg = f"{cve_id}: agent surrendered ({result.reason}): {result.detail}"
+            raise DiscoveryError(msg)
         assert isinstance(result, AgentOutput)
         value = result.value
         if not isinstance(value, PatchTuple):
-            raise DiscoveryError(f"{cve_id}: agent returned non-PatchTuple value: {type(value).__name__}")
+            msg = f"{cve_id}: agent returned non-PatchTuple value: {type(value).__name__}"
+            raise DiscoveryError(msg)
         return value
 
     @staticmethod
     def _check_shape(cve_id: str, bundle: DiffBundle) -> None:
         reason = check_diff_shape(bundle.shape)
         if reason is not None:
-            raise AnalysisError(
+            msg = (
                 f"{cve_id}: diff shape {bundle.shape!r} rejected ({reason}) — "
                 f"likely downstream mirror not upstream fix"
             )
+            raise AnalysisError(msg)
 
     def _assert_disk(self, path: Path) -> None:
         # Pre-fix the fallback was `"/"` — checked filesystem

@@ -307,10 +307,12 @@ def build_inventory(
     target = Path(target_path)
 
     if not target.exists():
-        raise FileNotFoundError(f"Target path does not exist: {target_path}")
+        msg = f"Target path does not exist: {target_path}"
+        raise FileNotFoundError(msg)
 
     if target.is_file() and detect_language(str(target)) is None:
-        raise ValueError(f"Target file has no recognized source extension: {target_path}")
+        msg = f"Target file has no recognized source extension: {target_path}"
+        raise ValueError(msg)
 
     # Collect files in single pass
     file_list, pruned_dirs = _collect_source_files(target, extensions)

@@ -216,13 +216,16 @@ class AFLRunner:
     ):
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
-            raise FileNotFoundError(f"Binary not found: {binary_path}")
+            msg = f"Binary not found: {binary_path}"
+            raise FileNotFoundError(msg)
 
         if not self.binary.is_file():
-            raise ValueError(f"Path is not a file: {binary_path}")
+            msg = f"Path is not a file: {binary_path}"
+            raise ValueError(msg)
 
         if not self.binary.stat().st_mode & 0o111:  # Check if executable
-            raise PermissionError(f"Binary is not executable: {binary_path}")
+            msg = f"Binary is not executable: {binary_path}"
+            raise PermissionError(msg)
 
         # Anchor default output to RaptorConfig.get_out_dir() so
         # fuzz output lands under the operator-configured run
@@ -259,19 +262,22 @@ class AFLRunner:
         # AFL++ advanced features
         self.cmplog_binary = Path(cmplog_binary).resolve() if cmplog_binary else None
         if self.cmplog_binary and not self.cmplog_binary.exists():
-            raise FileNotFoundError(f"CmpLog binary not found: {cmplog_binary}")
+            msg = f"CmpLog binary not found: {cmplog_binary}"
+            raise FileNotFoundError(msg)
         if power_schedule not in self._VALID_POWER_SCHEDULES:
-            raise ValueError(
+            msg = (
                 f"Invalid power schedule '{power_schedule}'. "
                 f"Choose from: {sorted(self._VALID_POWER_SCHEDULES)}"
             )
+            raise ValueError(msg)
         self.power_schedule = power_schedule
         self.use_laf_intel = use_laf_intel
         self.deterministic = deterministic
         self.custom_mutator = Path(custom_mutator).resolve() if custom_mutator else None
         self.seed_profile = seed_profile
         if self.custom_mutator and not self.custom_mutator.exists():
-            raise FileNotFoundError(f"Custom mutator not found: {custom_mutator}")
+            msg = f"Custom mutator not found: {custom_mutator}"
+            raise FileNotFoundError(msg)
 
         # Telemetry: instantiated lazily by run() to avoid creating
         # the events file when callers only build commands for tests.
@@ -280,9 +286,8 @@ class AFLRunner:
         # Check AFL++ availability
         self.afl_fuzz = shutil.which("afl-fuzz")
         if not self.afl_fuzz:
-            raise RuntimeError(
-                "AFL++ not found. Install with: sudo apt install afl++ (Ubuntu) or brew install afl++ (macOS)"
-            )
+            msg = "AFL++ not found. Install with: sudo apt install afl++ (Ubuntu) or brew install afl++ (macOS)"
+            raise RuntimeError(msg)
 
         # Validate AFL command
         self._validate_afl_command()
@@ -310,7 +315,8 @@ class AFLRunner:
             logger.warning("AFL validation timed out - AFL may be slow to start")
         except Exception as e:
             logger.warning("AFL validation failed: %s", e)
-            raise RuntimeError(f"AFL++ validation failed: {e}") from e
+            msg = f"AFL++ validation failed: {e}"
+            raise RuntimeError(msg) from e
 
     def _create_default_corpus(self) -> Path:
         """Create minimal default corpus if none provided.
@@ -408,13 +414,15 @@ class AFLRunner:
                     logger.error("   1. afl-system-config (as root/sudo)")
                     logger.error("   2. Reboot your system")
                     logger.error("   Alternative: Use pre-compiled binaries without AFL instrumentation")
-                    raise RuntimeError("AFL shared memory not configured on macOS")
+                    msg = "AFL shared memory not configured on macOS"
+                    raise RuntimeError(msg)
                     
             except subprocess.TimeoutExpired:
                 logger.warning("AFL --help command timed out")
             except FileNotFoundError:
                 logger.error("afl-fuzz not found in PATH")
-                raise RuntimeError("AFL++ not installed") from None
+                msg = "AFL++ not installed"
+                raise RuntimeError(msg) from None
             except Exception as e:  # noqa: BLE001 — advisory pre-flight check only
                 logger.warning("AFL compatibility check failed: %s", e)
 

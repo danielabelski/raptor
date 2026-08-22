@@ -401,15 +401,18 @@ def write_extension_pack(
     ``pack_name`` outside CodeQL's ``scope/name`` grammar.
     """
     if language not in SUPPORTED_LANGUAGES:
-        raise ValueError(
+        msg = (
             f"language {language!r} unsupported; verified layouts exist "
             f"for {sorted(SUPPORTED_LANGUAGES)}"
         )
+        raise ValueError(msg)
     name = pack_name or f"{_DEFAULT_PACK_PREFIX}-{language}"
     if not re.match(r"^[a-z][\w-]*/[a-z][\w-]*$", name):
-        raise ValueError(f"pack_name {name!r} is not a valid scope/name")
+        msg = f"pack_name {name!r} is not a valid scope/name"
+        raise ValueError(msg)
     if not re.match(r"^\d+\.\d+\.\d+$", pack_version):
-        raise ValueError(f"pack_version {pack_version!r} is not semver")
+        msg = f"pack_version {pack_version!r} is not semver"
+        raise ValueError(msg)
 
     by_predicate: dict[str, set[tuple]] = {}
     rejected: list[RejectedRow] = []

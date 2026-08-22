@@ -68,11 +68,11 @@ def hunt(
     """
 
     if not isinstance(pattern, str) or not pattern.strip():
-        raise ValueError("pattern must be a non-empty string")
+        msg = "pattern must be a non-empty string"
+        raise ValueError(msg)
     if not callable(dispatch_fn):
-        raise TypeError(
-            f"dispatch_fn must be callable; got {type(dispatch_fn).__name__}"
-        )
+        msg = f"dispatch_fn must be callable; got {type(dispatch_fn).__name__}"
+        raise TypeError(msg)
     # Strip permanently so dispatch_fn doesn't have to handle leading/
     # trailing whitespace from copy-paste mistakes.
     pattern = pattern.strip()

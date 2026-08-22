@@ -1596,9 +1596,12 @@ def run_codeql(
         # The codeql agent subprocess reported the sandbox could not engage.
         # Propagate as a hard failure rather than silently returning [] — the
         # /scan __main__ handler turns this into a fail-loud exit-3 abort.
-        raise SandboxSetupError(
+        msg = (
             "the codeql agent subprocess reported the sandbox could not "
-            f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE})",
+            f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE})"
+        )
+        raise SandboxSetupError(
+            msg,
             "re-run with --sandbox network-only (or --sandbox none). "
             "RAPTOR will not silently downgrade.",
         )
@@ -2544,7 +2547,8 @@ def _pack_provenance_from_sarif(sarif_path: Path, out_dir: Path) -> dict:
         if p.stat().st_size > _SARIF_MAX_BYTES:
             # Treat oversize SARIF as unreadable — the enclosing
             # OSError branch handles the messaging.
-            raise OSError(f"SARIF exceeds {_SARIF_MAX_BYTES}-byte cap")
+            msg = f"SARIF exceeds {_SARIF_MAX_BYTES}-byte cap"
+            raise OSError(msg)
         raw = p.read_bytes()
         sarif_sha256 = sha256_bytes(raw)
         try:
@@ -2894,7 +2898,8 @@ def main():
         else:
             repo_path = Path(args.repo).resolve()
             if not repo_path.exists():
-                raise RuntimeError(f"repository path does not exist: {repo_path}")
+                msg = f"repository path does not exist: {repo_path}"
+                raise RuntimeError(msg)
 
         # Determine local rule directories
         groups = [g.strip() for g in args.policy_groups.split(",") if g.strip()]

@@ -100,7 +100,8 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
         shutil.rmtree(src)
     logger.info("leveldb: cloning %s → %s", LEVELDB_URL, src)
     if not clone_repository(LEVELDB_URL, src, depth=1):
-        raise RuntimeError(f"leveldb: clone failed for {LEVELDB_URL}")
+        msg = f"leveldb: clone failed for {LEVELDB_URL}"
+        raise RuntimeError(msg)
     # Shallow fetch the exact pinned SHA. GitHub honours fetching an
     # arbitrary reachable SHA. We never fall back to HEAD, so
     # reproducibility is preserved (Adversarial review E P2-1).
@@ -166,9 +167,11 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
 
     profraw = list(sha_dir.glob("leveldb_*.profraw"))
     if not profraw:
-        raise RuntimeError(
+        msg = (
             f"leveldb: no profraw produced (LLVM_PROFILE_FILE="
-            f"{profraw_pattern}); coverage instrumentation may be broken")
+            f"{profraw_pattern}); coverage instrumentation may be broken"
+        )
+        raise RuntimeError(msg)
 
     profdata_tool = _resolve(_LLVM_PROFDATA_CANDIDATES)
     run_tool(

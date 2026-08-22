@@ -103,7 +103,8 @@ def provision(
     omitted).
     """
     if runtime not in ("docker", "sandbox"):
-        raise ValueError(f"unknown runtime {runtime!r}")
+        msg = f"unknown runtime {runtime!r}"
+        raise ValueError(msg)
     provision_id = uuid.uuid4().hex[:12]
     labels = {OWNER_LABEL: provision_id}
     work = Path(workdir) if workdir else Path(

@@ -44,7 +44,8 @@ class GDBDebugger:
     def __init__(self, binary_path: Path):
         self.binary = Path(binary_path)
         if not self.binary.exists():
-            raise FileNotFoundError(f"Binary not found: {binary_path}")
+            msg = f"Binary not found: {binary_path}"
+            raise FileNotFoundError(msg)
 
     def run_commands(self, commands: list[str], input_file: Path | None = None, timeout: int = 30) -> str:
         """

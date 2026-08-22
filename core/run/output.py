@@ -52,7 +52,8 @@ def unique_run_suffix(separator: str = "_") -> str:
     user-visible name shape meaningfully (one extra suffix).
     """
     if separator not in ("_", "-"):
-        raise ValueError(f"separator must be '_' or '-', got {separator!r}")
+        msg = f"separator must be '_' or '-', got {separator!r}"
+        raise ValueError(msg)
     fmt = f"%Y%m%d{separator}%H%M%S"
     # Modulo by 10_000 gives a 4-digit tail — short enough to keep
     # directory names readable, wide enough that collisions on
@@ -296,10 +297,11 @@ def _check_target_mismatch(target_path: str, project_name: str,
     # Remediation: pre-fix the hint said create-then-'/project use
     # none', which leaves the just-created project inactive AND the
     # mismatching one active — following it verbatim changed nothing.
-    raise TargetMismatchError(
+    msg = (
         f"target {target_path} is outside project {project_name} ({project_target})\n"
         f"  A project tracks one target. To analyze a different codebase:\n"
         f"    /project create <name> --target {target_path}\n"
         f"    /project use <name>\n"
         f"  Or run without a project: /project use none"
     )
+    raise TargetMismatchError(msg)

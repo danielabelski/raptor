@@ -439,7 +439,8 @@ def context_window_for(model: str) -> int:
     if limits is None:
         limits = MODEL_LIMITS.get(_strip_dated_alias(_strip_bedrock_prefixes(model)))
     if limits is None:
-        raise KeyError(f"context_window_for: unknown model {model!r}")
+        msg = f"context_window_for: unknown model {model!r}"
+        raise KeyError(msg)
     return limits["max_context"]
 
 
@@ -458,7 +459,8 @@ def max_output_for(model: str) -> int:
     if limits is None:
         limits = MODEL_LIMITS.get(_strip_dated_alias(_strip_bedrock_prefixes(model)))
     if limits is None:
-        raise KeyError(f"max_output_for: unknown model {model!r}")
+        msg = f"max_output_for: unknown model {model!r}"
+        raise KeyError(msg)
     return limits["max_output"]
 
 

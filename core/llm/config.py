@@ -1313,10 +1313,11 @@ def _validate_model_roles(models: list['ModelConfig']) -> None:
     # Check for invalid role names
     for m in models:
         if m.role and m.role not in VALID_ROLES:
-            raise ConfigError(
+            msg = (
                 f"Invalid role '{m.role}' for model {m.model_name}. "
                 f"Valid roles: {', '.join(sorted(VALID_ROLES))}"
             )
+            raise ConfigError(msg)
 
     analysis_count = roles.count("analysis")
     code_count = roles.count("code")
@@ -1329,34 +1330,37 @@ def _validate_model_roles(models: list['ModelConfig']) -> None:
     has_aggregate = "aggregate" in roles
 
     if has_consensus and not has_analysis:
-        raise ConfigError("Consensus models configured without an analysis model")
+        msg = "Consensus models configured without an analysis model"
+        raise ConfigError(msg)
 
     if has_judge and not has_analysis:
-        raise ConfigError("Judge models configured without an analysis model")
+        msg = "Judge models configured without an analysis model"
+        raise ConfigError(msg)
 
     if has_aggregate and not has_analysis:
-        raise ConfigError("Aggregate model configured without an analysis model")
+        msg = "Aggregate model configured without an analysis model"
+        raise ConfigError(msg)
 
     if has_code and not has_analysis:
-        raise ConfigError("Code model configured without an analysis model")
+        msg = "Code model configured without an analysis model"
+        raise ConfigError(msg)
 
     if roles.count("aggregate") > 1:
-        raise ConfigError(
-            "Multiple models with role 'aggregate'. Only one aggregate model is supported"
-        )
+        msg = "Multiple models with role 'aggregate'. Only one aggregate model is supported"
+        raise ConfigError(msg)
 
     # Multiple analysis models is valid (multi-model mode)
 
     if code_count > 1:
-        raise ConfigError(
-            "Multiple models with role 'code'. Only one code model is supported"
-        )
+        msg = "Multiple models with role 'code'. Only one code model is supported"
+        raise ConfigError(msg)
 
     if only_fallback:
-        raise ConfigError(
+        msg = (
             "All models are configured as fallback with no analysis model. "
             "Set role to 'analysis' on at least one model."
         )
+        raise ConfigError(msg)
 
     # Check for same model with two *incompatible* roles.
     # analysis+consensus is the conflict (use consensus role instead).
@@ -1370,10 +1374,11 @@ def _validate_model_roles(models: list['ModelConfig']) -> None:
     for key, model_roles in seen.items():
         for pair in _CONFLICTING_PAIRS:
             if pair <= model_roles:
-                raise ConfigError(
+                msg = (
                     f"Model {key[1]} ({key[0]}) has conflicting roles: "
                     f"{sorted(pair)}"
                 )
+                raise ConfigError(msg)
 
 
 # ---------------------------------------------------------------------------

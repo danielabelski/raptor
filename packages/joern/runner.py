@@ -473,7 +473,8 @@ def build_cpg(
     """
     target = Path(target).resolve()
     if not target.is_dir():
-        raise ValueError(f"target must be a directory: {target}")
+        msg = f"target must be a directory: {target}"
+        raise ValueError(msg)
 
     if output_dir is None:
         # Reaper-visible scratch: register the prefix so a dir

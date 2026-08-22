@@ -299,9 +299,8 @@ def _build_metasploit(out_dir: Path, http: Any) -> BuildResult:
     )
     data = http.get_json(MSF_URL)
     if not isinstance(data, dict):
-        raise RuntimeError(
-            f"unexpected MSF index shape: {type(data).__name__}"
-        )
+        msg = f"unexpected MSF index shape: {type(data).__name__}"
+        raise RuntimeError(msg)
     cve_to_modules: dict[str, list[str]] = {}
     for module_path, meta in data.items():
         if not isinstance(meta, dict):
@@ -751,10 +750,11 @@ class _CappedReader:
         chunk = self._inner.read(size)
         self._seen += len(chunk)
         if self._seen > self._cap:
-            raise RuntimeError(
+            msg = (
                 "vulnrichment tarball decompressed beyond "
                 f"{self._cap} bytes — possible decompression bomb"
             )
+            raise RuntimeError(msg)
         return chunk
 
 

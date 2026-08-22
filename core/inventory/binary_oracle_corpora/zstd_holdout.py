@@ -78,7 +78,8 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
     shutil.rmtree(src, ignore_errors=True)
     logger.info("zstd_holdout: cloning %s → %s", ZSTD_URL, src)
     if not clone_repository(ZSTD_URL, src, depth=None):
-        raise RuntimeError(f"zstd_holdout: clone failed for {ZSTD_URL}")
+        msg = f"zstd_holdout: clone failed for {ZSTD_URL}"
+        raise RuntimeError(msg)
     subprocess.run(
         safe_git_command("-C", str(src), "checkout", ZSTD_TAG),
         env=get_safe_git_env(), check=True, timeout=60,

@@ -236,16 +236,20 @@ def assemble_barrier_query(
         return _assemble_java(proposed_guard, sink_class, query_id)
     if language == "go":
         return _assemble_go(proposed_guard, sink_class, query_id)
-    raise ValueError(
-        f"unknown language {language!r}; known: {sorted(_LANG_PACK)}")
+    msg = f"unknown language {language!r}; known: {sorted(_LANG_PACK)}"
+    raise ValueError(msg)
 
 
 def _assemble_python(proposed_guard: str, sink_class: str, query_id: str) -> str:
     if sink_class not in _CUSTOMIZATIONS:
-        raise ValueError(f"unknown sink_class {sink_class!r}; "
-                         f"known: {sorted(_CUSTOMIZATIONS)}")
+        msg = (
+            f"unknown sink_class {sink_class!r}; "
+                         f"known: {sorted(_CUSTOMIZATIONS)}"
+        )
+        raise ValueError(msg)
     if "proposedGuard" not in proposed_guard:
-        raise ValueError("proposer must define a `proposedGuard` predicate")
+        msg = "proposer must define a `proposedGuard` predicate"
+        raise ValueError(msg)
     module_import, module_name = _CUSTOMIZATIONS[sink_class]
     return f"""/**
  * @name Synthesized barrier ({sink_class})
@@ -279,11 +283,14 @@ select sink, "synthesized-barrier {sink_class}"
 
 def _assemble_javascript(proposed_guard: str, sink_class: str, query_id: str) -> str:
     if sink_class not in _JS_CUSTOMIZATIONS:
-        raise ValueError(f"unknown sink_class {sink_class!r}; "
-                         f"known: {sorted(_JS_CUSTOMIZATIONS)}")
+        msg = (
+            f"unknown sink_class {sink_class!r}; "
+                         f"known: {sorted(_JS_CUSTOMIZATIONS)}"
+        )
+        raise ValueError(msg)
     if "ProposedGuard" not in proposed_guard:
-        raise ValueError(
-            "proposer must define a `ProposedGuard` SanitizerGuardNode subclass")
+        msg = "proposer must define a `ProposedGuard` SanitizerGuardNode subclass"
+        raise ValueError(msg)
     module_import, module_name = _JS_CUSTOMIZATIONS[sink_class]
     return f"""/**
  * @name Synthesized barrier ({sink_class}) [js]
@@ -316,10 +323,14 @@ select sink, "synthesized-barrier {sink_class} [js]"
 
 def _assemble_ruby(proposed_guard: str, sink_class: str, query_id: str) -> str:
     if sink_class not in _RB_CUSTOMIZATIONS:
-        raise ValueError(f"unknown sink_class {sink_class!r}; "
-                         f"known: {sorted(_RB_CUSTOMIZATIONS)}")
+        msg = (
+            f"unknown sink_class {sink_class!r}; "
+                         f"known: {sorted(_RB_CUSTOMIZATIONS)}"
+        )
+        raise ValueError(msg)
     if "proposedGuard" not in proposed_guard:
-        raise ValueError("proposer must define a `proposedGuard` predicate")
+        msg = "proposer must define a `proposedGuard` predicate"
+        raise ValueError(msg)
     module_import, module_name = _RB_CUSTOMIZATIONS[sink_class]
     return f"""/**
  * @name Synthesized barrier ({sink_class}) [rb]
@@ -354,10 +365,14 @@ select sink, "synthesized-barrier {sink_class} [rb]"
 
 def _assemble_java(proposed_guard: str, sink_class: str, query_id: str) -> str:
     if sink_class not in _JAVA_SINKS:
-        raise ValueError(f"unknown sink_class {sink_class!r}; "
-                         f"known: {sorted(_JAVA_SINKS)}")
+        msg = (
+            f"unknown sink_class {sink_class!r}; "
+                         f"known: {sorted(_JAVA_SINKS)}"
+        )
+        raise ValueError(msg)
     if "proposedGuard" not in proposed_guard:
-        raise ValueError("proposer must define a `proposedGuard` predicate")
+        msg = "proposer must define a `proposedGuard` predicate"
+        raise ValueError(msg)
     sink_import, sink_expr = _JAVA_SINKS[sink_class]
     return f"""/**
  * @name Synthesized barrier ({sink_class}) [java]
@@ -402,10 +417,14 @@ def _assemble_go(proposed_guard: str, sink_class: str, query_id: str) -> str:
     ``Source`` / ``Sink`` / ``Sanitizer`` shape so the ConfigSig
     predicates are identical across sink classes."""
     if sink_class not in _GO_CUSTOMIZATIONS:
-        raise ValueError(f"unknown sink_class {sink_class!r}; "
-                         f"known: {sorted(_GO_CUSTOMIZATIONS)}")
+        msg = (
+            f"unknown sink_class {sink_class!r}; "
+                         f"known: {sorted(_GO_CUSTOMIZATIONS)}"
+        )
+        raise ValueError(msg)
     if "proposedGuard" not in proposed_guard:
-        raise ValueError("proposer must define a `proposedGuard` predicate")
+        msg = "proposer must define a `proposedGuard` predicate"
+        raise ValueError(msg)
     module_import, module_name = _GO_CUSTOMIZATIONS[sink_class]
     return f"""/**
  * @name Synthesized barrier ({sink_class}) [go]
@@ -546,7 +565,8 @@ def adjudicate(
     pack.mkdir(parents=True, exist_ok=True)
     dep = _LANG_PACK.get(language)
     if dep is None:
-        raise ValueError(f"unknown language {language!r}; known: {sorted(_LANG_PACK)}")
+        msg = f"unknown language {language!r}; known: {sorted(_LANG_PACK)}"
+        raise ValueError(msg)
     (pack / "qlpack.yml").write_text(
         'name: raptor/barrier-synth\nversion: 0.0.1\n'
         f'dependencies:\n  {dep}: "*"\n',

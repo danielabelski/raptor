@@ -62,11 +62,12 @@ class GHArchiveClient:  # nosemgrep: generic.secrets.security.detected-google-gc
         # operator-supplied env var doesn't OOM us.
         if creds_value.startswith("{"):
             if len(creds_value) > self._CREDS_INLINE_MAX:
-                raise ValueError(
+                msg = (
                     "GOOGLE_APPLICATION_CREDENTIALS inline JSON exceeds "
                     f"{self._CREDS_INLINE_MAX} bytes — service-account "
                     "keys are typically <4 KB; refuse pathological input"
                 )
+                raise ValueError(msg)
             info = json.loads(creds_value)
             credentials = service_account.Credentials.from_service_account_info(
                 info, scopes=scopes
@@ -101,10 +102,11 @@ class GHArchiveClient:  # nosemgrep: generic.secrets.security.detected-google-gc
         # Table names can't be parameterized, but the format is
         # validated to digits below before interpolation.
         if not from_date.isdigit() or len(from_date) not in (8, 12):
-            raise ValueError(
+            msg = (
                 f"Invalid date format: {from_date!r} — expected 12-digit "
                 "YYYYMMDDHHMM (exact minute) or 8-digit YYYYMMDD (whole day)"
             )
+            raise ValueError(msg)
         day = from_date[:8]
         table = f"`githubarchive.day.{day}`"
 

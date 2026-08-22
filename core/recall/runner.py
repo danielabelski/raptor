@@ -47,7 +47,7 @@ def verify_pinned_clone(manifest: RecallManifest,
     if not target.is_absolute():
         target = repo_root / target
     if not target.is_dir():
-        raise RunnerError(
+        msg = (
             f"target clone missing: {target}\n"
             f"Acquire it (offline hosts: from a connected machine):\n"
             f"  git clone {manifest.repo_url} {target}\n"
@@ -55,22 +55,26 @@ def verify_pinned_clone(manifest: RecallManifest,
             f"{manifest.pinned_sha}\n"
             f"  git -C {target} checkout {manifest.pinned_sha}"
         )
+        raise RunnerError(msg)
     try:
         proc = subprocess.run(
             ["git", "-C", str(target), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RunnerError(f"cannot sha-verify {target}: {exc}") from exc
+        msg = f"cannot sha-verify {target}: {exc}"
+        raise RunnerError(msg) from exc
     head = proc.stdout.strip().lower()
     if proc.returncode != 0 or not head:
-        raise RunnerError(
-            f"cannot sha-verify {target}: {proc.stderr.strip()}")
+        msg = f"cannot sha-verify {target}: {proc.stderr.strip()}"
+        raise RunnerError(msg)
     if not head.startswith(manifest.pinned_sha):
-        raise RunnerError(
+        msg = (
             f"{target} is at {head[:12]}, manifest pins "
             f"{manifest.pinned_sha[:12]} — labels are invalid against "
-            "this tree; re-checkout the pinned sha")
+            "this tree; re-checkout the pinned sha"
+        )
+        raise RunnerError(msg)
     return target
 
 
@@ -96,7 +100,8 @@ def build_pipeline_argv(manifest: RecallManifest, target: Path,
         argv = [sys.executable, str(raptor_py), "agentic",
                 "--repo", str(target)]
     else:  # pragma: no cover - manifest validation refuses others
-        raise RunnerError(f"unknown profile {manifest.profile!r}")
+        msg = f"unknown profile {manifest.profile!r}"
+        raise RunnerError(msg)
     if pipeline_out is not None:
         argv += ["--out", str(pipeline_out)]
     if manifest.build_command:
@@ -134,8 +139,8 @@ def run_pipeline(manifest: RecallManifest, target: Path, repo_root: Path,
             timeout=timeout_s, check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RunnerError(
-            f"pipeline timed out after {timeout_s}s") from exc
+        msg = f"pipeline timed out after {timeout_s}s"
+        raise RunnerError(msg) from exc
 
     log_path.write_text(
         (proc.stdout or "") + "\n--- stderr ---\n" + (proc.stderr or ""),
@@ -158,18 +163,20 @@ def run_pipeline(manifest: RecallManifest, target: Path, repo_root: Path,
     elif sentinel_dir is not None:
         out_dir = sentinel_dir
     else:
-        raise RunnerError(
+        msg = (
             f"pipeline produced no SARIFs in {pipeline_out} and "
             f"printed no OUTPUT_DIR sentinel "
-            f"(exit {proc.returncode}); full log: {log_path}")
+            f"(exit {proc.returncode}); full log: {log_path}"
+        )
+        raise RunnerError(msg)
     if proc.returncode != 0:
         # A partially-failed run may still hold SARIFs; the caller
         # decides, but the failure must be visible.
         logger.warning("pipeline exited %d — scoring whatever %s holds "
                        "(log: %s)", proc.returncode, out_dir, log_path)
     if not out_dir.is_dir():
-        raise RunnerError(
-            f"OUTPUT_DIR {out_dir} does not exist; log: {log_path}")
+        msg = f"OUTPUT_DIR {out_dir} does not exist; log: {log_path}"
+        raise RunnerError(msg)
     return out_dir
 
 

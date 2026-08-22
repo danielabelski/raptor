@@ -570,7 +570,8 @@ class LogStreamer:
 
         # Explicit guard rather than assert — survives `python -O`.
         if self._proc is None:
-            raise RuntimeError("seatbelt_audit: internal invariant — log-stream proc not started")
+            msg = "seatbelt_audit: internal invariant — log-stream proc not started"
+            raise RuntimeError(msg)
         if self._proc.stdout is None:
             try:
                 warm_up.wait(timeout=1.0)
@@ -669,7 +670,8 @@ class LogStreamer:
         try:
             # Explicit guard — survives `python -O`.
             if self._proc is None:
-                raise RuntimeError("seatbelt_audit._read_loop: proc not started")
+                msg = "seatbelt_audit._read_loop: proc not started"
+                raise RuntimeError(msg)
             for raw_line in self._proc.stdout or ():
                 if self._stopped.is_set():
                     break
@@ -788,10 +790,11 @@ class LogStreamer:
                 self._run_dir, self._filename,
             )
         if not self._evidence.write_record(record):
-            raise OSError(
+            msg = (
                 f"evidence append failed for {self._filename} "
                 f"under {self._run_dir}"
             )
+            raise OSError(msg)
 
     def stop(self, *, drain_timeout: float = 1.5) -> None:
         """Stop the streamer. Gives `log stream` a brief window to

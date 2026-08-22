@@ -248,18 +248,20 @@ class ThreatModel:
             try:
                 version = int(raw_version)
             except (TypeError, ValueError):
-                raise ValueError(
+                msg = (
                     f"threat-model version must be an integer, got "
                     f"{type(raw_version).__name__}"
-                ) from None
+                )
+                raise ValueError(msg) from None
             if not (
                 SCHEMA_VERSION_MIN <= version <= SCHEMA_VERSION_MAX
             ):
-                raise ValueError(
+                msg = (
                     f"threat-model schema version {version} outside "
                     f"supported range "
                     f"[{SCHEMA_VERSION_MIN}, {SCHEMA_VERSION_MAX}]"
                 )
+                raise ValueError(msg)
 
         now = datetime.now(timezone.utc).isoformat()
         return cls(
@@ -557,12 +559,13 @@ def save_model(
         except OSError:
             actual_mtime = None
         if actual_mtime != expected_mtime:
-            raise RuntimeError(
+            msg = (
                 f"threat model at {json_path} was modified by another "
                 f"writer (expected mtime {expected_mtime}, found "
                 f"{actual_mtime}); refusing to overwrite. Reload and "
                 f"retry."
             )
+            raise RuntimeError(msg)
     model.updated_at = datetime.now(timezone.utc).isoformat()
     json_path.parent.mkdir(parents=True, exist_ok=True)
     save_json(json_path, model.to_dict())

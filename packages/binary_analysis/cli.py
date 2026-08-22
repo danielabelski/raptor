@@ -79,7 +79,8 @@ def _normalise_argv(argv: Sequence[str]) -> list[str]:
 def _positive_int(value: str) -> int:
     number = int(value)
     if number <= 0:
-        raise argparse.ArgumentTypeError("must be > 0")
+        msg = "must be > 0"
+        raise argparse.ArgumentTypeError(msg)
     return number
 
 

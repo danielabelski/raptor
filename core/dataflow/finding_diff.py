@@ -105,20 +105,24 @@ def diff_sarif_files(
         try:
             sz = path.stat().st_size
         except OSError as e:
-            raise RuntimeError(f"{label} SARIF stat failed: {e}") from e
+            msg = f"{label} SARIF stat failed: {e}"
+            raise RuntimeError(msg) from e
         if sz > _SARIF_MAX_BYTES:
-            raise RuntimeError(
+            msg = (
                 f"{label} SARIF {path} exceeds {_SARIF_MAX_BYTES}-byte cap "
                 f"(got {sz})"
             )
+            raise RuntimeError(msg)
     try:
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"baseline SARIF read/parse failed: {e}") from e
+        msg = f"baseline SARIF read/parse failed: {e}"
+        raise RuntimeError(msg) from e
     try:
         augmented = json.loads(augmented_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"augmented SARIF read/parse failed: {e}") from e
+        msg = f"augmented SARIF read/parse failed: {e}"
+        raise RuntimeError(msg) from e
     return diff_sarif_data(baseline, augmented)
 
 

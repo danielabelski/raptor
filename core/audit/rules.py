@@ -58,9 +58,8 @@ def save_rule(
     """
     # Reject rule_ids that could escape the rules directory.
     if "/" in rule_id or "\\" in rule_id or ".." in rule_id:
-        raise ValueError(
-            f"invalid rule_id {rule_id!r}: must not contain '/', '\\', or '..'"
-        )
+        msg = f"invalid rule_id {rule_id!r}: must not contain '/', '\\', or '..'"
+        raise ValueError(msg)
 
     rules_dir = out_dir / RULES_DIR
     rules_dir.mkdir(parents=True, exist_ok=True)
@@ -68,9 +67,8 @@ def save_rule(
     ext = ".yaml" if tool == "semgrep" else ".cocci"
     rule_path = (rules_dir / f"{rule_id}{ext}").resolve()
     if not str(rule_path).startswith(str(rules_dir.resolve())):
-        raise ValueError(
-            f"invalid rule_id {rule_id!r}: resolved path escapes rules directory"
-        )
+        msg = f"invalid rule_id {rule_id!r}: resolved path escapes rules directory"
+        raise ValueError(msg)
     # Atomic like the manifest write below: rules are cross-run
     # artifacts consumed by future /scan runs — a torn write would
     # ship a half-rule to every later scan.

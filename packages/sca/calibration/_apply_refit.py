@@ -65,9 +65,8 @@ def apply_refit_to_risk_py(
     if not proposed_values:
         return 0
     if not risk_py_path.is_file():
-        raise RefitApplyError(
-            f"risk.py not found at {risk_py_path}",
-        )
+        msg = f"risk.py not found at {risk_py_path}"
+        raise RefitApplyError(msg)
     text = risk_py_path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
@@ -79,10 +78,11 @@ def apply_refit_to_risk_py(
 
     missing = set(proposed_values) - set(found)
     if missing:
-        raise RefitApplyError(
+        msg = (
             f"constants not found in {risk_py_path}: "
             f"{sorted(missing)}"
         )
+        raise RefitApplyError(msg)
 
     modified = 0
     for name, line_idx in found.items():

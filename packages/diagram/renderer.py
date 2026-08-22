@@ -175,7 +175,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
         try:
             data = _load_json(fpath)
             if data is None:
-                raise ValueError("failed to parse JSON")
+                msg = "failed to parse JSON"
+                raise ValueError(msg)
             diagram = context_map.generate(data)
             body = (f"_Source: `{fname}`_{_provenance_note(data)}"
                     f"\n\n```mermaid\n{_fence(diagram)}\n```")
@@ -238,7 +239,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
             try:
                 data = _load_json(tf)
                 if data is None:
-                    raise ValueError("failed to parse JSON")
+                    msg = "failed to parse JSON"
+                    raise ValueError(msg)
                 # `id` / `name` come raw from the flow-trace JSON; route them
                 # through the shared sanitizer so a crafted value can't break
                 # the heading out of its line or the markdown structure.
@@ -260,7 +262,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
         try:
             data = _load_json(tree_path)
             if data is None:
-                raise ValueError("failed to parse JSON")
+                msg = "failed to parse JSON"
+                raise ValueError(msg)
 
             # Load companion files for cross-referencing
             ap_data = _load_optional_list(out_dir / "attack-paths.json")
@@ -289,7 +292,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
         try:
             raw = _load_json(hyp_path)
             if raw is None:
-                raise ValueError("failed to parse JSON")
+                msg = "failed to parse JSON"
+                raise ValueError(msg)
             hyp_list = raw if isinstance(raw, list) else raw.get("hypotheses", [])
             if hyp_list:
                 diagram = hypotheses.generate(hyp_list)
@@ -305,7 +309,8 @@ def render_directory(out_dir: Path, target: str | None = None) -> str:
         try:
             data = _load_json(paths_path)
             if data is None:
-                raise ValueError("failed to parse JSON")
+                msg = "failed to parse JSON"
+                raise ValueError(msg)
             prov_note = _provenance_note(data)
             if isinstance(data, dict):
                 data = data.get("paths") or data.get("attack_paths") or next(iter(data.values()), [])

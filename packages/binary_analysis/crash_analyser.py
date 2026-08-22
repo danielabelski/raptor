@@ -124,7 +124,8 @@ class CrashAnalyser:
     def __init__(self, binary_path: Path):
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
-            raise FileNotFoundError(f"Binary not found: {binary_path}")
+            msg = f"Binary not found: {binary_path}"
+            raise FileNotFoundError(msg)
 
         logger.info("Crash analyser initialized for: %s", self.binary)
         
@@ -162,7 +163,8 @@ class CrashAnalyser:
             logger.info("Using GDB debugger")
             return "gdb"
 
-        raise RuntimeError("No suitable debugger found (gdb or lldb)")
+        msg = "No suitable debugger found (gdb or lldb)"
+        raise RuntimeError(msg)
 
     def _check_tool_availability(self) -> dict[str, bool]:
         """Check which reverse engineering tools are available on the system. There are many more but this is a start."""

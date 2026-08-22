@@ -161,9 +161,8 @@ def _list_tags_cached(
     try:
         tags = registry_client.list_tags(ref, per_page=per_page)
     except (RegistryError, HttpError) as exc:
-        raise UpstreamLookupError(
-            f"OCI tag list failed for {image_ref}: {exc}"
-        ) from exc
+        msg = f"OCI tag list failed for {image_ref}: {exc}"
+        raise UpstreamLookupError(msg) from exc
     if cache is not None and ttl_seconds > 0:
         cache.put(cache_key, tags, ttl_seconds=ttl_seconds)
     return tags

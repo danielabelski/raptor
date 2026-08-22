@@ -72,11 +72,11 @@ def trace(
         high-inconclusive / single_model).
     """
     if not traces:
-        raise ValueError("traces must be non-empty")
+        msg = "traces must be non-empty"
+        raise ValueError(msg)
     if not callable(dispatch_fn):
-        raise TypeError(
-            f"dispatch_fn must be callable; got {type(dispatch_fn).__name__}"
-        )
+        msg = f"dispatch_fn must be callable; got {type(dispatch_fn).__name__}"
+        raise TypeError(msg)
 
     def task(model: ModelHandle) -> list[dict[str, Any]]:
         return dispatch_fn(model, traces, repo_path)

@@ -177,9 +177,8 @@ def _parse_since(s: str) -> _dt.timedelta:
     """Parse strings like ``7d``, ``24h``, ``30m``, ``90d``."""
     m = re.fullmatch(r"(\d+)([smhd])", s)
     if not m:
-        raise argparse.ArgumentTypeError(
-            f"--since expects N[smhd] (e.g. 7d, 12h), got {s!r}"
-        )
+        msg = f"--since expects N[smhd] (e.g. 7d, 12h), got {s!r}"
+        raise argparse.ArgumentTypeError(msg)
     n, unit = int(m.group(1)), m.group(2)
     return {
         "s": _dt.timedelta(seconds=n),

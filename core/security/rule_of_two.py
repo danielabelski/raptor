@@ -134,12 +134,13 @@ def require_interactive_for_weakened_defenses() -> None:
     There is no override — this is a hard gate.
     """
     if not is_interactive():
-        raise NonInteractiveError(
+        msg = (
             "--accept-weakened-defenses is not allowed in non-interactive mode. "
             "CI/CD pipelines must use a model that passes the defense envelope "
             "probe. Configure a supported model (Claude, GPT, Gemini) or remove "
             "the flag."
         )
+        raise NonInteractiveError(msg)
 
 
 def _proc_tty_and_ppid(pid: int):
@@ -395,7 +396,7 @@ def require_human_for_agent_dispatch(agent_name: str) -> None:
         return
     if _session_has_human_terminal():
         return
-    raise NonInteractiveError(
+    msg = (
         f"Agent '{agent_name}' spans all three Rule-of-Two legs "
         f"(untrusted input + sensitive access + external state) and "
         f"requires a human-attended session — this run is non-interactive "
@@ -404,6 +405,7 @@ def require_human_for_agent_dispatch(agent_name: str) -> None:
         f"contained (Rule of Two: needs-HITL). Dispatch '{agent_name}' "
         f"from an interactive session."
     )
+    raise NonInteractiveError(msg)
 
 
 def require_human_or_sandbox_for_agentic_pass(pass_name: str) -> None:
@@ -436,7 +438,7 @@ def require_human_or_sandbox_for_agentic_pass(pass_name: str) -> None:
     """
     if _sandbox_will_contain() or _session_has_human_terminal():
         return
-    raise NonInteractiveError(
+    msg = (
         f"--{pass_name} dispatches an autonomous agent with Write and Bash "
         f"over untrusted target code, which requires either a human-attended "
         f"session or an effective sandbox — this run has neither: it is "
@@ -445,3 +447,4 @@ def require_human_or_sandbox_for_agentic_pass(pass_name: str) -> None:
         f"sandbox enabled, or from an interactive session, to use "
         f"--{pass_name}."
     )
+    raise NonInteractiveError(msg)

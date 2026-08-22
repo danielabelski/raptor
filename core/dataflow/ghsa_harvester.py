@@ -91,7 +91,8 @@ def _iter_advisories(
     noisier metadata)."""
     base = root / "advisories" / "github-reviewed"
     if not base.is_dir():
-        raise SystemExit(f"GHSA root does not contain advisories/github-reviewed: {root}")
+        msg = f"GHSA root does not contain advisories/github-reviewed: {root}"
+        raise SystemExit(msg)
     for y in years:
         ydir = base / y
         if not ydir.is_dir():

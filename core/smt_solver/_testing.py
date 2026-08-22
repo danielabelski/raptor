@@ -50,10 +50,11 @@ def eval_bv(expr: Any, width: int) -> int:
     s.add(probe == expr)
     result = s.check()
     if result != z3.sat:
-        raise RuntimeError(
+        msg = (
             f"eval_bv: probe equality returned {result!r}; "
             f"reason: {s.reason_unknown() if result == z3.unknown else 'unsat'}"
         )
+        raise RuntimeError(msg)
     return s.model()[probe].as_long()
 
 

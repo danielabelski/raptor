@@ -190,9 +190,11 @@ class LanguageDetector:
         self.max_files = max_files
 
         if not self.repo_path.exists():
-            raise ValueError(f"Repository path does not exist: {repo_path}")
+            msg = f"Repository path does not exist: {repo_path}"
+            raise ValueError(msg)
         if not self.repo_path.is_dir():
-            raise ValueError(f"Repository path is not a directory: {repo_path}")
+            msg = f"Repository path is not a directory: {repo_path}"
+            raise ValueError(msg)
 
     def detect_languages(self, min_files: int = 3) -> dict[str, LanguageInfo]:
         """

@@ -152,11 +152,12 @@ def _merge_disk(path: Path, increments: dict[str, dict[str, int]]) -> None:
                 data = {"version": SCHEMA_VERSION, "languages": {}}
             version = data.get("version")
             if version != SCHEMA_VERSION:
-                raise RuntimeError(
+                msg = (
                     f"reach_verdict_log: refusing to write — sidecar at "
                     f"{path} has version={version!r}, expected "
                     f"{SCHEMA_VERSION!r}. Delete the sidecar to reset."
                 )
+                raise RuntimeError(msg)
             languages: dict[str, Any] = data.setdefault("languages", {})
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for lang, verdicts in increments.items():

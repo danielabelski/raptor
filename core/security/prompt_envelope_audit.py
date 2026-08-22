@@ -902,14 +902,16 @@ def _update_allowlist_in_source(source_path: Path) -> int:
             start = i
             break
     if start is None:
-        raise RuntimeError("could not locate `_ALLOWLIST: tuple` in source")
+        msg = "could not locate `_ALLOWLIST: tuple` in source"
+        raise RuntimeError(msg)
     end = None
     for j in range(start + 1, len(lines)):
         if lines[j] == ")":
             end = j
             break
     if end is None:
-        raise RuntimeError("could not locate closing `)` of _ALLOWLIST")
+        msg = "could not locate closing `)` of _ALLOWLIST"
+        raise RuntimeError(msg)
 
     violations = audit_repo()
     new_block = render_allowlist(violations).splitlines()

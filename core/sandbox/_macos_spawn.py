@@ -324,10 +324,13 @@ def run_sandboxed(cmd: list[str], *,
     """
     if rootfs is not None:
         from .errors import SandboxSetupError
-        raise SandboxSetupError(
+        msg = (
             "sandbox(rootfs=...) requires the Linux mount-namespace "
             "backend; macOS sandbox-exec cannot pivot into an image "
-            "rootfs — refusing to run against the host filesystem.",
+            "rootfs — refusing to run against the host filesystem."
+        )
+        raise SandboxSetupError(
+            msg,
             "run image-rootfs sandboxes on a Linux host.",
         )
     # 0. Validate audit-mode + audit_run_dir invariant. Mirrors
@@ -337,12 +340,13 @@ def run_sandboxed(cmd: list[str], *,
     # operators would see no audit signal). Raise loudly so they
     # see the typo at spawn time.
     if audit_mode and not audit_run_dir:
-        raise ValueError(
+        msg = (
             "audit_mode=True requires audit_run_dir= so the macOS "
             "log-stream reader has a directory to write "
             ".sandbox-denials.jsonl into. Pass audit_run_dir=<dir> "
             "(typically the run's output dir)."
         )
+        raise ValueError(msg)
 
     # 0b. Evidence directory (F11): pre-create <run_dir>/.audit 0700
     # so the profile can deny the target all writes beneath it and the
@@ -540,11 +544,14 @@ def run_sandboxed(cmd: list[str], *,
                 # tier to fall back to. Marker above is kept — it
                 # documents the refused degradation.
                 from .errors import SandboxSetupError
-                raise SandboxSetupError(
+                msg = (
                     f"audit_required=True but the seatbelt log "
                     f"streamer failed to start "
                     f"({type(exc).__name__}: {exc}) — refusing to "
-                    f"run the target unaudited.",
+                    f"run the target unaudited."
+                )
+                raise SandboxSetupError(
+                    msg,
                     "check the macOS unified log subsystem (log show "
                     "/ log stream), or drop audit_required= to accept "
                     "marker-recorded degradation.",
@@ -625,8 +632,8 @@ def run_sandboxed(cmd: list[str], *,
 
     ready = b""
     if input is not None and stdin is not None:
-        raise ValueError(
-            "stdin and input arguments may not both be used.")
+        msg = "stdin and input arguments may not both be used."
+        raise ValueError(msg)
     _popen_stdin = subprocess.PIPE if input is not None else stdin
     try:
         with subprocess.Popen(

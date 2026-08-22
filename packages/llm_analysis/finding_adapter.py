@@ -28,10 +28,11 @@ class FindingAdapter(BaseVerdictAdapter):
     def item_id(self, item: dict[str, Any]) -> str:
         fid = item.get("finding_id")
         if not isinstance(fid, str) or not fid:
-            raise ValueError(
+            msg = (
                 f"finding missing required 'finding_id' field: "
                 f"{sorted(item.keys())}"
             )
+            raise ValueError(msg)
         return fid
 
     def normalize_verdict(self, item: dict[str, Any]) -> str:
@@ -82,7 +83,8 @@ class FindingAdapter(BaseVerdictAdapter):
         wrapper becomes redundant and can be removed.
         """
         if not model_results:
-            raise ValueError("select_primary_with_error_fallback called with empty list")
+            msg = "select_primary_with_error_fallback called with empty list"
+            raise ValueError(msg)
         non_error = [r for r in model_results if "error" not in r]
         if non_error:
             return self.select_primary(non_error)
@@ -130,7 +132,8 @@ class FindingAdapter(BaseVerdictAdapter):
           normalize_verdict).
         """
         if not model_results:
-            raise ValueError("select_primary called with empty list")
+            msg = "select_primary called with empty list"
+            raise ValueError(msg)
 
         def sort_key(r: dict[str, Any]):
             # _quality defaults to 1.0 (legacy quirk)

@@ -90,10 +90,11 @@ class TaintedString:
 
     def __post_init__(self) -> None:
         if self.trust not in _VALID_TRUST_VALUES:
-            raise ValueError(
+            msg = (
                 f"TaintedString.trust must be one of "
                 f"{sorted(_VALID_TRUST_VALUES)!r}; got {self.trust!r}"
             )
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -632,10 +633,11 @@ def _render_secalign(block: UntrustedBlock, nonce: str, profile: ModelDefensePro
 def _render_begin_end_marker(block: UntrustedBlock, nonce: str, profile: ModelDefenseProfile) -> str:
     marker = block.kind.upper()
     if not _MARKER_RE.fullmatch(marker):
-        raise ValueError(
+        msg = (
             f"begin-end-marker tag_style requires kind to match ^[A-Z_]+$ "
             f"after uppercasing; got {block.kind!r}"
         )
+        raise ValueError(msg)
     rendered = _content_for_envelope(block.content, profile)
     return f'BEGIN_{marker}\n{rendered}\nEND_{marker}'
 
@@ -806,7 +808,8 @@ def _priming_text_for(profile: ModelDefenseProfile) -> str:
             "Untrusted content is wrapped in BEGIN_<MARKER>...END_<MARKER> line markers."
         )
     else:
-        raise ValueError(f"unknown tag_style: {profile.tag_style}")
+        msg = f"unknown tag_style: {profile.tag_style}"
+        raise ValueError(msg)
 
     extras = []
     if profile.datamarking:

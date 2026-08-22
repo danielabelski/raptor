@@ -124,7 +124,8 @@ def main():
                 # `except OSError`, and keeps the standalone-
                 # script case working (uncaught exceptions
                 # produce the same operator-visible behaviour).
-                raise FileNotFoundError(f"Repository path does not exist: {repo_path}")
+                msg = f"Repository path does not exist: {repo_path}"
+                raise FileNotFoundError(msg)
 
         out_dir = get_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)

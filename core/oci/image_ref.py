@@ -88,17 +88,19 @@ def parse_image_ref(s: str) -> ImageRef:
     """
     s = s.strip()
     if not s:
-        raise ValueError("empty image reference")
+        msg = "empty image reference"
+        raise ValueError(msg)
 
     # Split off the digest first — it's the unambiguous suffix.
     digest: str | None = None
     if "@" in s:
         s, digest = s.rsplit("@", 1)
         if not _DIGEST_RE.match(digest):
-            raise ValueError(
+            msg = (
                 f"malformed digest {digest!r}; expected "
                 f"<algorithm>:<hex>"
             )
+            raise ValueError(msg)
 
     # The registry is the first ``/``-separated segment IF it looks
     # like a host (contains a ``.`` or ``:`` or is exactly
@@ -140,7 +142,8 @@ def parse_image_ref(s: str) -> ImageRef:
         tag = None
 
     if not repository:
-        raise ValueError(f"image reference missing repository: {s!r}")
+        msg = f"image reference missing repository: {s!r}"
+        raise ValueError(msg)
 
     # Docker Hub's "library" prefix for single-segment refs (the
     # ``python`` → ``library/python`` convention).

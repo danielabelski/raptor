@@ -273,9 +273,8 @@ class FuzzingOrchestrator:
         is consumed by adaptive corpus generation and harness selection.
         """
         if not plan.can_run:
-            raise RuntimeError(
-                f"Cannot run plan: {'; '.join(plan.blockers) or 'no blockers reported'}"
-            )
+            msg = f"Cannot run plan: {'; '.join(plan.blockers) or 'no blockers reported'}"
+            raise RuntimeError(msg)
 
         out_dir = Path(out_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -341,7 +340,8 @@ class FuzzingOrchestrator:
         elif plan.fuzzer == "libfuzzer":
             result = self._run_libfuzzer(plan, out_dir, duration_seconds, corpus_dir, dict_path)
         else:
-            raise RuntimeError(f"Fuzzer '{plan.fuzzer}' not yet wired into orchestrator.")
+            msg = f"Fuzzer '{plan.fuzzer}' not yet wired into orchestrator."
+            raise RuntimeError(msg)
         if generated_corpus_info:
             result["generated_corpus"] = generated_corpus_info
         if binary_understand and plan.target.kind in _BINARY_UNDERSTAND_KINDS:

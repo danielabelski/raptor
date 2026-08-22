@@ -65,7 +65,8 @@ def build_prompts(sample: EfficacySample) -> tuple[str, str, str]:
     general = by_name.get("general")
     lens = by_name.get(sample.strategy)
     if lens is None:
-        raise KeyError(f"unknown strategy {sample.strategy!r} for sample {sample.id}")
+        msg = f"unknown strategy {sample.strategy!r} for sample {sample.id}"
+        raise KeyError(msg)
 
     baseline = [general] if general is not None else []
     control_system = _REVIEW_INSTRUCTIONS + "\n\n" + render_strategies(baseline)

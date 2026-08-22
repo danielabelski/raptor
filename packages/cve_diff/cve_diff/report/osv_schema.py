@@ -100,22 +100,29 @@ def _assert_osv_shape(osv: dict[str, Any]) -> None:
     """
     for required in ("schema_version", "id", "modified", "references", "affected"):
         if required not in osv:
-            raise ValueError(f"OSV render missing required field: {required}")
+            msg = f"OSV render missing required field: {required}"
+            raise ValueError(msg)
     if not osv["references"]:
-        raise ValueError("OSV render has empty references list")
+        msg = "OSV render has empty references list"
+        raise ValueError(msg)
     for ref in osv["references"]:
         if not ref.get("url"):
-            raise ValueError("OSV render reference has empty url")
+            msg = "OSV render reference has empty url"
+            raise ValueError(msg)
     if not osv["affected"]:
-        raise ValueError("OSV render has empty affected list")
+        msg = "OSV render has empty affected list"
+        raise ValueError(msg)
     for aff in osv["affected"]:
         ranges = aff.get("ranges") or []
         if not ranges:
-            raise ValueError("OSV render affected entry has no ranges")
+            msg = "OSV render affected entry has no ranges"
+            raise ValueError(msg)
         for rng in ranges:
             if not rng.get("repo"):
-                raise ValueError("OSV render range has empty repo")
+                msg = "OSV render range has empty repo"
+                raise ValueError(msg)
             events = rng.get("events") or []
             has_fixed = any("fixed" in e and e["fixed"] for e in events)
             if not has_fixed:
-                raise ValueError("OSV render range has no non-empty fixed event")
+                msg = "OSV render range has no non-empty fixed event"
+                raise ValueError(msg)

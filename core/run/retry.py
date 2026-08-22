@@ -96,7 +96,8 @@ def retry_call(
       only positive delays sleep.
     """
     if policy.attempts < 1:
-        raise ValueError(f"policy.attempts must be >= 1, got {policy.attempts}")
+        msg = f"policy.attempts must be >= 1, got {policy.attempts}"
+        raise ValueError(msg)
     do_sleep = sleep if sleep is not None else time.sleep
 
     def _pause(retry_index: int, exc: Exception | None) -> None:

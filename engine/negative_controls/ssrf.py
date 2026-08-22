@@ -19,6 +19,7 @@ def fetch_status():
 
 def fetch_named(name):
     if name not in ALLOWED_ENDPOINTS:
-        raise ValueError("unknown endpoint")
+        msg = "unknown endpoint"
+        raise ValueError(msg)
     endpoint = ALLOWED_ENDPOINTS[name]
     return requests.get(endpoint, timeout=5)

@@ -91,7 +91,8 @@ class BaseVerdictAdapter(ABC):
         type elsewhere shouldn't crash the sort with a confusing error.
         """
         if not model_results:
-            raise ValueError("select_primary called with empty list")
+            msg = "select_primary called with empty list"
+            raise ValueError(msg)
 
         def sort_key(r: dict[str, Any]) -> tuple:
             verdict = self.normalize_verdict(r)

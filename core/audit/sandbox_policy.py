@@ -152,10 +152,11 @@ def require_sandbox_profile(tool: str) -> ToolPolicy:
     """Look up the sandbox policy, raising ValueError for unknown tools."""
     policy = get_sandbox_profile(tool)
     if policy is None:
-        raise ValueError(
+        msg = (
             f"no sandbox policy registered for tool '{tool}' — "
             f"register it in sandbox_policy.py before invocation"
         )
+        raise ValueError(msg)
     return policy
 
 

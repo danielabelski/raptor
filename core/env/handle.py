@@ -176,14 +176,16 @@ class SandboxHandle(RuntimeHandle):
         block_network: bool = True,
     ) -> None:
         if not sandbox_rootfs_supported():
-            raise RuntimeError(
+            msg = (
                 "SandboxHandle requires the sandbox image-rootfs mode "
                 "(core.sandbox.run(rootfs=...)), which this tree does "
                 "not expose yet"
             )
+            raise RuntimeError(msg)
         self.rootfs = Path(rootfs)
         if not self.rootfs.is_dir():
-            raise ValueError(f"rootfs is not a directory: {rootfs}")
+            msg = f"rootfs is not a directory: {rootfs}"
+            raise ValueError(msg)
         self.env = dict(env or {})
         self.workdir = workdir
         self.block_network = block_network

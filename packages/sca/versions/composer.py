@@ -76,7 +76,8 @@ def _split(version: str) -> tuple[list[int], int, int]:
     s = version.strip()
     m = _STAB_RE.match(s)
     if not m:
-        raise ValueError(f"unparseable Composer version: {version!r}")
+        msg = f"unparseable Composer version: {version!r}"
+        raise ValueError(msg)
     base = m.group("base").lstrip("v")
     nums: list[int] = []
     for piece in base.split("."):

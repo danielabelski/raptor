@@ -102,16 +102,19 @@ def _git(clone: Path, *args: str) -> str:
         ["git", "-C", str(clone), *args],
         capture_output=True, text=True, timeout=120, check=False)
     if proc.returncode != 0:
-        raise CvefixManifestError(
+        msg = (
             f"git {' '.join(args[:2])} failed in {clone}: "
-            f"{proc.stderr.strip()}")
+            f"{proc.stderr.strip()}"
+        )
+        raise CvefixManifestError(msg)
     return proc.stdout
 
 
 def _resolve(clone: Path, rev: str) -> str:
     sha = _git(clone, "rev-parse", rev).strip().lower()
     if not _SHA_RE.match(sha):
-        raise CvefixManifestError(f"cannot resolve {rev} in {clone}")
+        msg = f"cannot resolve {rev} in {clone}"
+        raise CvefixManifestError(msg)
     return sha
 
 
@@ -178,21 +181,25 @@ def generate_manifests(spec: CvefixSpec) -> tuple[dict, dict]:
     """Return (recall_manifest, fp_only_twin) dicts for the spec."""
     clone = spec.local_clone
     if not (clone / ".git").exists():
-        raise CvefixManifestError(
+        msg = (
             f"{clone} is not a git clone — acquire the repo first "
-            f"(git clone {spec.repo_url})")
+            f"(git clone {spec.repo_url})"
+        )
+        raise CvefixManifestError(msg)
     fix = _resolve(clone, spec.fix_commit)
     if fix != spec.fix_commit:
-        raise CvefixManifestError(
-            f"{spec.fix_commit} did not resolve to itself")
+        msg = f"{spec.fix_commit} did not resolve to itself"
+        raise CvefixManifestError(msg)
     prefix_sha = _resolve(clone, f"{fix}^")
     parents = _git(clone, "rev-list", "--parents", "-n", "1",
                    fix).split()
     if len(parents) != 2:
-        raise CvefixManifestError(
+        msg = (
             f"{fix} is not a single-parent commit "
             f"({len(parents) - 1} parents) — merge fixes need manual "
-            "hunk attribution; refuse rather than guess")
+            "hunk attribution; refuse rather than guess"
+        )
+        raise CvefixManifestError(msg)
 
     diff = _git(clone, "diff", f"{fix}^", fix)
     spans = parse_fix_hunks(diff, spec.file_suffixes)
@@ -200,9 +207,11 @@ def generate_manifests(spec: CvefixSpec) -> tuple[dict, dict]:
         spans = [h for h in spans
                  if not any(f in f"/{h.file}" for f in _TEST_FRAGMENTS)]
     if not spans:
-        raise CvefixManifestError(
+        msg = (
             "the fix commit touches no files matching "
-            f"{spec.file_suffixes} — nothing to label")
+            f"{spec.file_suffixes} — nothing to label"
+        )
+        raise CvefixManifestError(msg)
 
     slug = spec.cve_id.lower().replace("-", "_")
     expected, clean = [], []
@@ -215,9 +224,11 @@ def generate_manifests(spec: CvefixSpec) -> tuple[dict, dict]:
             clean.append(_entry(spec, f"{stem}__fixed", h.file, h.post,
                                 review=None))
     if not expected:
-        raise CvefixManifestError(
+        msg = (
             "the fix is pure addition — no pre-image span to label as "
-            "an expected finding; label this CVE manually or skip it")
+            "an expected finding; label this CVE manually or skip it"
+        )
+        raise CvefixManifestError(msg)
 
     caveat = (
         "CANDIDATE labels from the fix diff: a fix can touch refactor "

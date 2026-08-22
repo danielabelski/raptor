@@ -180,11 +180,12 @@ class EvidenceStore:
     def from_json(cls, json_str: str) -> EvidenceStore:
         """Create store from JSON string."""
         if len(json_str) > cls._FROM_JSON_MAX_BYTES:
-            raise ValueError(
+            msg = (
                 f"EvidenceStore.from_json: input exceeds "
                 f"{cls._FROM_JSON_MAX_BYTES} bytes — refusing to load "
                 f"(pathological input bounds enforced)"
             )
+            raise ValueError(msg)
         from . import load_evidence_from_json
         data = json.loads(json_str)
         return cls([load_evidence_from_json(item) for item in data])

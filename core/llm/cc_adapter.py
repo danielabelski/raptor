@@ -198,19 +198,21 @@ def cc_subprocess_env(
     from core.llm.egress import augment_child_no_proxy, operator_proxy_env
 
     if credential_mode not in ("env", "proxy"):
-        raise ValueError(
+        msg = (
             f"credential_mode must be 'env' or 'proxy', "
             f"got {credential_mode!r}"
         )
+        raise ValueError(msg)
     if credential_mode == "proxy":
         env = _cc_proxy_mode_env(proxy_base_url, proxy_auth_token)
         env[_NONINTERACTIVE_ENV] = "1"
         return env
     if proxy_base_url or proxy_auth_token:
-        raise ValueError(
+        msg = (
             "proxy_base_url/proxy_auth_token are only valid with "
             "credential_mode='proxy'"
         )
+        raise ValueError(msg)
 
     env = RaptorConfig.get_safe_env()
     # Bedrock installs signal via env (the launcher exports it).
@@ -301,11 +303,12 @@ def _cc_proxy_mode_env(
     from core.llm.egress import operator_proxy_env
 
     if not proxy_base_url or not proxy_auth_token:
-        raise ValueError(
+        msg = (
             "credential_mode='proxy' requires proxy_base_url and "
             "proxy_auth_token — spawn must fail fast when no "
             "dispatcher route exists"
         )
+        raise ValueError(msg)
 
     env = RaptorConfig.get_safe_env()
     bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
@@ -313,11 +316,12 @@ def _cc_proxy_mode_env(
         os.environ.get("CLAUDE_CODE_USE_VERTEX")
         or os.environ.get("CLAUDE_CODE_USE_FOUNDRY")
     ):
-        raise ValueError(
+        msg = (
             "credential_mode='proxy' supports Anthropic-API and "
             "Bedrock installs — the dispatcher has no Vertex/Foundry "
             "leg to front"
         )
+        raise ValueError(msg)
     for key, value in os.environ.items():
         if not key.startswith(_CC_BACKEND_ENV_PREFIXES):
             continue

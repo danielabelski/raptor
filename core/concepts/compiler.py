@@ -375,7 +375,8 @@ class _InvariantProposer:
         try:
             return self._llm(prompt, SYNTHESIS_SCHEMA, system)
         except Exception as exc:
-            raise ValueError(f"LLM error: {exc}") from exc
+            msg = f"LLM error: {exc}"
+            raise ValueError(msg) from exc
 
 
 class _DualControlOracle:

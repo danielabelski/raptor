@@ -110,14 +110,16 @@ def parse_vector(vector: str) -> dict:
     influence the numeric output.
     """
     if not validate_vector(vector):
-        raise ValueError(f"Invalid CVSS v3.1 vector: {vector}")
+        msg = f"Invalid CVSS v3.1 vector: {vector}"
+        raise ValueError(msg)
 
     parts = vector.split("/")[1:]  # Skip "CVSS:3.1" prefix
     metrics = {}
     for part in parts:
         kv = part.split(":", 1)
         if len(kv) != 2:
-            raise ValueError(f"Invalid CVSS metric component: {part!r}")
+            msg = f"Invalid CVSS metric component: {part!r}"
+            raise ValueError(msg)
         metrics[kv[0]] = kv[1]
     return metrics
 

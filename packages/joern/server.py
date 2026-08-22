@@ -300,10 +300,11 @@ class JoernServer:
                 "to start an unauthenticated server — callers fall back "
                 "to the subprocess-per-query runner", binary,
             )
-            raise RuntimeError(
+            msg = (
                 "joern launcher lacks --server-auth-* support; "
                 "unauthenticated server mode is disabled"
             )
+            raise RuntimeError(msg)
 
         # Fresh, empty working directory per boot. Joern treats
         # ``$CWD/workspace/`` as its project store and loads EVERY
@@ -378,9 +379,8 @@ class JoernServer:
                     "retrying with launcher defaults"
                 )
                 continue
-            raise RuntimeError(
-                f"Joern server failed to start within {self._boot_timeout_s}s"
-            )
+            msg = f"Joern server failed to start within {self._boot_timeout_s}s"
+            raise RuntimeError(msg)
 
         logger.info("Joern server ready on port %d (pid %d)",
                      self._port, self._proc.pid)

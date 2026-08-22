@@ -29,7 +29,8 @@ _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 def _slug(name: str) -> str:
     slug = _SLUG_RE.sub("-", name.strip().lower()).strip("-.")
     if not slug:
-        raise ValueError(f"spec name {name!r} yields an empty slug")
+        msg = f"spec name {name!r} yields an empty slug"
+        raise ValueError(msg)
     return slug
 
 

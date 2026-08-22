@@ -268,8 +268,9 @@ def _rewrite_ports_in_place(
     try:
         data = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
+        msg = f"cannot parse compose file {compose_file} for security rewrite: {exc}"
         raise ComposeError(
-            f"cannot parse compose file {compose_file} for security rewrite: {exc}",
+            msg,
             stderr=str(exc),
         ) from exc
     if not isinstance(data, dict):

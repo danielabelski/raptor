@@ -92,7 +92,8 @@ class AuditVerdictAdapter(BaseVerdictAdapter):
         file = item.get("file", "")
         function = item.get("function", "")
         if not file or not function:
-            raise ValueError(f"item missing file/function: {item}")
+            msg = f"item missing file/function: {item}"
+            raise ValueError(msg)
         return f"{file}:{function}"
 
     def normalize_verdict(self, item: dict[str, Any]) -> str:
@@ -339,7 +340,8 @@ def run_audit_multi_review(
         adversarial annotations.
     """
     if not models:
-        raise ValueError("models list must not be empty")
+        msg = "models list must not be empty"
+        raise ValueError(msg)
     handles = [AuditModelHandle(model_name=m) for m in models]
     adapter = AuditVerdictAdapter(
         scorecard=scorecard, priors_by_class=priors_by_class,
@@ -377,7 +379,8 @@ def run_self_consistency(
     chains and taking the majority verdict outperforms a single chain.
     """
     if n_samples < 2:
-        raise ValueError("n_samples must be >= 2 for self-consistency")
+        msg = "n_samples must be >= 2 for self-consistency"
+        raise ValueError(msg)
     handles = [
         AuditModelHandle(model_name=f"{model}#sc{i}", real_model=model)
         for i in range(n_samples)

@@ -116,10 +116,11 @@ def register(
     def _wrap(fn: RewriterFn) -> RewriterFn:
         for name in filenames or ():
             if name in _REGISTRY and _REGISTRY[name] is not fn:
-                raise RuntimeError(
+                msg = (
                     f"sca.rewriters: duplicate filename "
                     f"registration {name!r}"
                 )
+                raise RuntimeError(msg)
             _REGISTRY[name] = fn
         if predicate is not None:
             _PREDICATE_REGISTRY.append((predicate, fn))

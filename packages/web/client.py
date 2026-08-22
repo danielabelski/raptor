@@ -130,10 +130,11 @@ class WebClient:
         try:
             ip_obj = ipaddress.ip_address(hostname)
             if not ip_obj.is_global:
-                raise ValueError(
+                msg = (
                     f"Blocked request to non-global IP {hostname} — "
                     f"set block_private_ips=False to scan internal targets"
                 )
+                raise ValueError(msg)
             return None
         except ValueError as exc:
             if "non-global" in str(exc):
@@ -143,7 +144,8 @@ class WebClient:
         try:
             addrs = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
         except socket.gaierror as exc:
-            raise ValueError(f"DNS resolution failed for {hostname}: {exc}") from exc
+            msg = f"DNS resolution failed for {hostname}: {exc}"
+            raise ValueError(msg) from exc
         for _family, _type, _proto, _canonname, sockaddr in addrs:
             ip_str = sockaddr[0]
             try:
@@ -151,11 +153,12 @@ class WebClient:
             except ValueError:
                 continue
             if not ip_obj.is_global:
-                raise ValueError(
+                msg = (
                     f"DNS for {hostname} resolved to non-global IP {ip_str} — "
                     f"blocked to prevent SSRF (set block_private_ips=False "
                     f"to scan internal targets)"
                 )
+                raise ValueError(msg)
         return (hostname, port, addrs)
 
     @staticmethod
@@ -189,7 +192,8 @@ class WebClient:
         """Build a request URL and reject paths that leave the target origin."""
         url = urljoin(self.base_url + '/', path)
         if not self._is_in_scope(url):
-            raise ValueError(f"URL outside configured target scope: {url}")
+            msg = f"URL outside configured target scope: {url}"
+            raise ValueError(msg)
         return url
 
     def _resolve_redirect(self, current_url: str, response: requests.Response) -> str | None:
@@ -199,7 +203,8 @@ class WebClient:
             return None
         next_url = urljoin(current_url, location)
         if not self._is_in_scope(next_url):
-            raise ValueError(f"Blocked redirect outside configured target scope: {next_url}")
+            msg = f"Blocked redirect outside configured target scope: {next_url}"
+            raise ValueError(msg)
         return next_url
 
     def _rate_limit_wait(self) -> None:
@@ -303,9 +308,8 @@ class WebClient:
             # configured origin.
             request_kwargs.pop('params', None)
 
-        raise requests.exceptions.TooManyRedirects(
-            f"Exceeded {_MAX_REDIRECTS} redirects within configured target scope"
-        )
+        msg = f"Exceeded {_MAX_REDIRECTS} redirects within configured target scope"
+        raise requests.exceptions.TooManyRedirects(msg)
 
     def _enforce_response_cap(self, response: requests.Response) -> None:
         """Read the streamed body into ``response._content`` up to

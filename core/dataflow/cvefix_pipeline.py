@@ -63,11 +63,13 @@ def generate_corpus_for_pair(
     try:
         before_sarif = json.loads(Path(a_before.sarif_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"before-SARIF read/parse failed: {e}") from e
+        msg = f"before-SARIF read/parse failed: {e}"
+        raise RuntimeError(msg) from e
     try:
         after_sarif = json.loads(Path(a_after.sarif_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"after-SARIF read/parse failed: {e}") from e
+        msg = f"after-SARIF read/parse failed: {e}"
+        raise RuntimeError(msg) from e
 
     pairs = generate_from_sarif(
         before_sarif, after_sarif,

@@ -103,7 +103,8 @@ class SummaryCache:
         summaries: list[CachedSummary],
     ) -> Path:
         if not self._safe_component(library) or not self._safe_component(version):
-            raise ValueError(f"unsafe cache key: {library!r}/{version!r}")
+            msg = f"unsafe cache key: {library!r}/{version!r}"
+            raise ValueError(msg)
         lib_dir = self.cache_dir / library / version
         lib_dir.mkdir(parents=True, exist_ok=True)
 

@@ -67,7 +67,8 @@ def dispatcher_for_run(
     """
     run_dir = Path(run_dir)
     if not run_dir.exists():
-        raise FileNotFoundError(f"run_dir does not exist: {run_dir}")
+        msg = f"run_dir does not exist: {run_dir}"
+        raise FileNotFoundError(msg)
     audit_path = run_dir / _AUDIT_FILENAME
     run_id = run_dir.name
     # Use only the kwargs the caller actually set, so the dispatcher

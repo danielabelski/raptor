@@ -640,7 +640,8 @@ def __getattr__(name):
     """
     if hasattr(_state, name):
         return getattr(_state, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 # Note: `__getattr__` above handles READS of state names through the

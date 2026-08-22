@@ -822,7 +822,8 @@ def _json_default(obj: Any) -> Any:
         return obj.isoformat()
     if is_dataclass(obj):
         return asdict(obj)
-    raise TypeError(f"Cannot serialise {type(obj).__name__}: {obj!r}")
+    msg = f"Cannot serialise {type(obj).__name__}: {obj!r}"
+    raise TypeError(msg)
 
 
 # ---------------------------------------------------------------------------

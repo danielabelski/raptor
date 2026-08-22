@@ -81,7 +81,7 @@ def require_sandbox_or_optout(tool: str, exc: BaseException | None) -> None:
             tool=tool,
         )
         return
-    raise SandboxUnavailableError(
+    msg = (
         f"core.sandbox is unavailable ({exc!r}) — {tool} refuses to run "
         f"without sandbox isolation (it consumes untrusted input). "
         f"Remedy: run RAPTOR on a supported platform (Linux/macOS) from "
@@ -89,4 +89,5 @@ def require_sandbox_or_optout(tool: str, exc: BaseException | None) -> None:
         f"input on a dev host only — set {ALLOW_UNSANDBOXED_ENV}=1 to "
         f"explicitly accept unsandboxed execution (logged as a "
         f"security event)."
-    ) from exc
+    )
+    raise SandboxUnavailableError(msg) from exc

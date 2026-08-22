@@ -219,7 +219,8 @@ class DatabaseManager:
         # to the Landlock-only fallback.
         self.codeql_cli = os.path.realpath(_cli) if _cli else _cli
         if not self.codeql_cli:
-            raise RuntimeError("CodeQL CLI not found. Set CODEQL_CLI environment variable or install CodeQL.")
+            msg = "CodeQL CLI not found. Set CODEQL_CLI environment variable or install CodeQL."
+            raise RuntimeError(msg)
 
         logger.info("Database manager initialized: %s", self.db_root)
         logger.info("CodeQL CLI: %s", self.codeql_cli)

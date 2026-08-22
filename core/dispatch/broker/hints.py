@@ -43,12 +43,14 @@ class ModelHint:
 
     def __post_init__(self) -> None:
         if self.tier == "require" and not self.model:
-            raise ValueError("require tier needs a model name")
+            msg = "require tier needs a model name"
+            raise ValueError(msg)
         if self.tier == "defer" and self.model:
-            raise ValueError(
+            msg = (
                 "defer tier should not specify a model — "
                 "use prefer() if you have a preference"
             )
+            raise ValueError(msg)
 
 
 def require(

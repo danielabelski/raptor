@@ -55,7 +55,8 @@ class _PerCveTimeout(Exception):
 
 
 def _alarm_handler(_signum, _frame):
-    raise _PerCveTimeout(f"exceeded {_PER_CVE_TIMEOUT_S}s budget")
+    msg = f"exceeded {_PER_CVE_TIMEOUT_S}s budget"
+    raise _PerCveTimeout(msg)
 
 
 @dataclass

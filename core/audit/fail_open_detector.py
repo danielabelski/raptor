@@ -75,10 +75,11 @@ class FailOpenPattern:
 
     def __post_init__(self) -> None:
         if self.pattern_type not in PATTERN_TYPES:
-            raise ValueError(
+            msg = (
                 f"Unknown pattern_type {self.pattern_type!r}; "
                 f"expected one of {sorted(PATTERN_TYPES)}"
             )
+            raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {

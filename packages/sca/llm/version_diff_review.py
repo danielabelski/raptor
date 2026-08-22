@@ -428,9 +428,11 @@ def _extract_zip(data: bytes, out: dict[str, str]) -> None:
         for info in zf.infolist():
             members += 1
             if members > _MAX_ARCHIVE_MEMBERS:
-                raise ValueError(
+                msg = (
                     f"zip exceeds {_MAX_ARCHIVE_MEMBERS} members "
-                    f"(bomb-shape); refusing")
+                    f"(bomb-shape); refusing"
+                )
+                raise ValueError(msg)
             if info.is_dir() or info.file_size > _MAX_FILE_SIZE:
                 continue
             suffix = Path(info.filename).suffix.lower()
@@ -438,9 +440,11 @@ def _extract_zip(data: bytes, out: dict[str, str]) -> None:
                 continue
             declared_total += info.file_size
             if declared_total > _MAX_TOTAL_EXTRACT_BYTES:
-                raise ValueError(
+                msg = (
                     f"zip declares more than {_MAX_TOTAL_EXTRACT_BYTES} "
-                    f"cumulative bytes (bomb-shape); refusing")
+                    f"cumulative bytes (bomb-shape); refusing"
+                )
+                raise ValueError(msg)
             try:
                 blob = zf.read(info)
             except Exception:
@@ -451,9 +455,11 @@ def _extract_zip(data: bytes, out: dict[str, str]) -> None:
                 continue
             read_total += len(blob)
             if read_total > _MAX_TOTAL_EXTRACT_BYTES:
-                raise ValueError(
+                msg = (
                     f"zip extraction exceeds {_MAX_TOTAL_EXTRACT_BYTES} "
-                    f"cumulative bytes (bomb-shape); refusing")
+                    f"cumulative bytes (bomb-shape); refusing"
+                )
+                raise ValueError(msg)
             content = blob.decode("utf-8", errors="replace")
             parts = Path(info.filename).parts
             rel = "/".join(parts[1:]) if len(parts) > 1 else info.filename

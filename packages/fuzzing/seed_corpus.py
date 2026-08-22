@@ -236,14 +236,18 @@ def _is_git_repository_root(path: Path) -> bool:
 def _validate_output_directory(source_dir: Path, out_dir: Path) -> None:
     dangerous_paths = {Path(out_dir.anchor).resolve(), Path.home().resolve()}
     if out_dir in dangerous_paths:
-        raise ValueError("seed output directory is too broad or dangerous")
+        msg = "seed output directory is too broad or dangerous"
+        raise ValueError(msg)
     if _is_git_repository_root(out_dir):
-        raise ValueError("seed output directory must not be a repository root")
+        msg = "seed output directory must not be a repository root"
+        raise ValueError(msg)
 
     if out_dir == source_dir:
-        raise ValueError("seed output directory must not be the source directory")
+        msg = "seed output directory must not be the source directory"
+        raise ValueError(msg)
     if _is_relative_to(source_dir, out_dir):
-        raise ValueError("seed output directory must not be an ancestor of the source directory")
+        msg = "seed output directory must not be an ancestor of the source directory"
+        raise ValueError(msg)
 
 
 def _reset_generated_output(out_dir: Path) -> None:
@@ -277,9 +281,11 @@ def prepare_seed_corpus(options: SeedCorpusOptions) -> dict:
     source_dir = options.source_dir.resolve()
     out_dir = options.out_dir.resolve()
     if not source_dir.is_dir():
-        raise FileNotFoundError(f"source directory not found: {options.source_dir}")
+        msg = f"source directory not found: {options.source_dir}"
+        raise FileNotFoundError(msg)
     if options.max_file_size <= 0:
-        raise ValueError("max_file_size must be positive")
+        msg = "max_file_size must be positive"
+        raise ValueError(msg)
 
     _validate_output_directory(source_dir, out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -374,15 +380,18 @@ def prepare_builtin_seed_corpus(out_dir: Path, profile: str = "default") -> dict
     _validate_builtin_output_directory(out_dir)
     manifest_path = BUILTIN_SEED_CORPUS_DIR / "manifest.json"
     if not manifest_path.is_file():
-        raise FileNotFoundError(f"built-in seed corpus manifest missing: {manifest_path}")
+        msg = f"built-in seed corpus manifest missing: {manifest_path}"
+        raise FileNotFoundError(msg)
 
     try:
         source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise ValueError(f"malformed seed corpus manifest: {exc}") from exc
+        msg = f"malformed seed corpus manifest: {exc}"
+        raise ValueError(msg) from exc
     seeds_config = source_manifest.get("seeds") or []
     if not isinstance(seeds_config, list):
-        raise ValueError("built-in seed corpus manifest has invalid seeds list")
+        msg = "built-in seed corpus manifest has invalid seeds list"
+        raise ValueError(msg)
 
     selected: list[tuple[dict, str, Path]] = []
     for item in seeds_config:
@@ -393,21 +402,26 @@ def prepare_builtin_seed_corpus(out_dir: Path, profile: str = "default") -> dict
         name = str(item.get("name") or "").strip()
         path_str = str(item.get("path") or "").strip()
         if not name or "/" in name or "\\" in name or name in {".", ".."}:
-            raise ValueError(f"invalid built-in seed name: {name!r}")
+            msg = f"invalid built-in seed name: {name!r}"
+            raise ValueError(msg)
         if not path_str:
-            raise ValueError(f"empty path for built-in seed: {name!r}")
+            msg = f"empty path for built-in seed: {name!r}"
+            raise ValueError(msg)
         source_rel = Path(path_str)
         if source_rel.is_absolute() or ".." in source_rel.parts:
-            raise ValueError(f"invalid built-in seed path: {source_rel}")
+            msg = f"invalid built-in seed path: {source_rel}"
+            raise ValueError(msg)
 
         source = BUILTIN_SEED_CORPUS_DIR / source_rel
         if not source.is_file() or source.is_symlink():
-            raise FileNotFoundError(f"built-in seed missing: {source_rel}")
+            msg = f"built-in seed missing: {source_rel}"
+            raise FileNotFoundError(msg)
 
         selected.append((item, name, source_rel))
 
     if not selected:
-        raise ValueError(f"built-in seed corpus profile produced no seeds: {profile}")
+        msg = f"built-in seed corpus profile produced no seeds: {profile}"
+        raise ValueError(msg)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     _reset_builtin_output(out_dir, {name for _, name, _ in selected})
@@ -447,9 +461,11 @@ def prepare_builtin_seed_corpus(out_dir: Path, profile: str = "default") -> dict
 def _validate_builtin_output_directory(out_dir: Path) -> None:
     dangerous_paths = {Path(out_dir.anchor).resolve(), Path.home().resolve()}
     if out_dir in dangerous_paths:
-        raise ValueError("built-in seed output directory is too broad or dangerous")
+        msg = "built-in seed output directory is too broad or dangerous"
+        raise ValueError(msg)
     if _is_git_repository_root(out_dir):
-        raise ValueError("built-in seed output directory must not be a repository root")
+        msg = "built-in seed output directory must not be a repository root"
+        raise ValueError(msg)
 
 
 def _reset_builtin_output(out_dir: Path, seed_names: set[str]) -> None:

@@ -114,9 +114,8 @@ def parse_image_manifest(parsed: dict) -> ImageManifest:
     config = parsed.get("config") or {}
     config_digest = config.get("digest") or ""
     if not config_digest:
-        raise ValueError(
-            "manifest missing config.digest — cannot identify image",
-        )
+        msg = "manifest missing config.digest — cannot identify image"
+        raise ValueError(msg)
     layers_raw = parsed.get("layers") or []
     layers: list[LayerDescriptor] = []
     for layer in layers_raw:

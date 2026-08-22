@@ -242,11 +242,12 @@ def apply_toolchain_env(env: dict[str, str],
     """
     for name in var_names:
         if name not in DETECTORS:
-            raise ValueError(
+            msg = (
                 f"core/build/toolchain.py: no detector for env_detect "
                 f"entry {name!r}. Add a detect_{name}() helper or "
                 f"remove the name from BUILD_SYSTEMS.env_detect."
             )
+            raise ValueError(msg)
         # Treat detector failures as "not found" rather than
         # propagating — a detector crash on an exotic distro (odd
         # filesystem, broken shutil.which, subprocess timeout)

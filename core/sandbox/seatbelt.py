@@ -130,12 +130,13 @@ def _quote_sbpl(s: str) -> str:
     """
     if any(ord(c) < 0x20 for c in s):
         bad = next(c for c in s if ord(c) < 0x20)
-        raise ValueError(
+        msg = (
             f"SBPL string contains control character "
             f"(ord {ord(bad)}); refusing to quote — would let an "
             f"attacker-controlled path inject SBPL clauses. Got: "
             f"{s!r}"
         )
+        raise ValueError(msg)
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 

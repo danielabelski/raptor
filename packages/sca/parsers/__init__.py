@@ -188,15 +188,13 @@ def register(
     ) -> Callable[[Path], list[Dependency]]:
         for name in filenames or ():
             if name in _REGISTRY and _REGISTRY[name] is not fn:
-                raise RuntimeError(
-                    f"sca.parsers: duplicate registration for filename {name!r}"
-                )
+                msg = f"sca.parsers: duplicate registration for filename {name!r}"
+                raise RuntimeError(msg)
             _REGISTRY[name] = fn
         for sfx in suffixes or ():
             if sfx in _SUFFIX_REGISTRY and _SUFFIX_REGISTRY[sfx] is not fn:
-                raise RuntimeError(
-                    f"sca.parsers: duplicate registration for suffix {sfx!r}"
-                )
+                msg = f"sca.parsers: duplicate registration for suffix {sfx!r}"
+                raise RuntimeError(msg)
             _SUFFIX_REGISTRY[sfx] = fn
         if predicate is not None:
             _PREDICATE_REGISTRY.append((predicate, fn))

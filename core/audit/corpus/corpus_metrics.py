@@ -538,10 +538,11 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
         return raw["results"]
     if isinstance(raw, list):
         return raw
-    raise ValueError(
+    msg = (
         f"{path}: expected a result list or a "
         f"{{'meta', 'results'}} wrapper, got {type(raw).__name__}"
     )
+    raise ValueError(msg)
 
 
 def _enrich_from_labels(rows: list[dict[str, Any]]) -> int:

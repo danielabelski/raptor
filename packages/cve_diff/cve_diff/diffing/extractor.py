@@ -81,10 +81,11 @@ def extract_diff(
         env=get_safe_git_env(),
     )
     if completed.returncode != 0:
-        raise RuntimeError(
+        msg = (
             f"git diff {commit_before}..{commit_after} failed: "
             f"{completed.stderr.decode('utf-8', errors='replace').strip()}"
         )
+        raise RuntimeError(msg)
     diff_text = completed.stdout.decode("utf-8", errors="replace")
 
     file_names = _list_files(repo_path, commit_before, commit_after, timeout_s)
@@ -94,11 +95,12 @@ def extract_diff(
     # empty. Fail fast with AnalysisError so the pipeline's error
     # path surfaces this cleanly (CLI exit 9).
     if not file_names and len(diff_text) == 0:
-        raise AnalysisError(
+        msg = (
             f"{cve_id}: empty diff ({commit_before[:7]}..{commit_after[:7]}) — "
             "before/after resolve to identical trees; the agent's pick may be "
             "a tag rather than a fix commit"
         )
+        raise AnalysisError(msg)
     shape = shape_dynamic.classify(
         file_names,
         slug=_slug_of(ref.repository_url),

@@ -214,7 +214,8 @@ def mint(fields: Mapping[str, object]) -> str | None:
     dir). Writers treat None as "persist unstamped" — the legacy
     shape triage already handles."""
     if "kind" not in fields:
-        raise ValueError("telemetry_mac.mint: fields must carry 'kind'")
+        msg = "telemetry_mac.mint: fields must carry 'kind'"
+        raise ValueError(msg)
     try:
         key = _load_or_create_key()
     except OSError:

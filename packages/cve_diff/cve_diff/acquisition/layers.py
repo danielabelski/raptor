@@ -92,7 +92,8 @@ def _clean_dest(dest: Path) -> None:
     a programming error, not a transient failure.
     """
     if not dest.is_absolute() or len(dest.parts) < 3:
-        raise ValueError(f"_clean_dest refusing dangerous path: {dest!r}")
+        msg = f"_clean_dest refusing dangerous path: {dest!r}"
+        raise ValueError(msg)
     # Single lstat() instead of three separate stat-class calls.
     # Pre-fix `is_symlink()` + `exists()` + `is_dir()` was three
     # syscalls with TOCTOU windows between each: a writer could
@@ -106,11 +107,13 @@ def _clean_dest(dest: Path) -> None:
     except FileNotFoundError:
         return  # No-op when dest doesn't exist
     if _stat.S_ISLNK(st.st_mode):
-        raise ValueError(f"_clean_dest refusing symlink: {dest!r}")
+        msg = f"_clean_dest refusing symlink: {dest!r}"
+        raise ValueError(msg)
     if not _stat.S_ISDIR(st.st_mode):
         # `iterdir()` raises NotADirectoryError on regular files.
         # Refuse explicitly so the error is structured.
-        raise ValueError(f"_clean_dest refusing non-directory: {dest!r}")
+        msg = f"_clean_dest refusing non-directory: {dest!r}"
+        raise ValueError(msg)
     if any(dest.iterdir()):
         # ``shutil.rmtree`` rather than spawning ``rm -rf`` via
         # subprocess. Pre-fix this path was a guarded subprocess

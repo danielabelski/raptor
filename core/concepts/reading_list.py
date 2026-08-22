@@ -165,7 +165,8 @@ class ReadingList:
     def save(self, path: Path | None = None) -> None:
         p = path or self._path
         if p is None:
-            raise ValueError("no path specified")
+            msg = "no path specified"
+            raise ValueError(msg)
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
             dir=str(p.parent), suffix=".tmp", prefix=".reading-list-",

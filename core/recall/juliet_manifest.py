@@ -74,9 +74,11 @@ class JulietManifestError(RuntimeError):
 
 def _verify_clone(clone_dir: Path) -> None:
     if not (clone_dir / _TESTCASES).is_dir():
-        raise JulietManifestError(
+        msg = (
             f"Juliet clone not found or incomplete at {clone_dir} — "
-            f"acquire with: {_ACQUIRE_HINT}")
+            f"acquire with: {_ACQUIRE_HINT}"
+        )
+        raise JulietManifestError(msg)
     try:
         proc = subprocess.run(
             ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
@@ -84,15 +86,17 @@ def _verify_clone(clone_dir: Path) -> None:
         )
         head = proc.stdout.strip().lower()
     except (OSError, subprocess.SubprocessError) as exc:
-        raise JulietManifestError(
-            f"cannot sha-verify {clone_dir}: {exc}") from exc
+        msg = f"cannot sha-verify {clone_dir}: {exc}"
+        raise JulietManifestError(msg) from exc
     if proc.returncode != 0 or not head:
-        raise JulietManifestError(
-            f"cannot sha-verify {clone_dir}: {proc.stderr.strip()}")
+        msg = f"cannot sha-verify {clone_dir}: {proc.stderr.strip()}"
+        raise JulietManifestError(msg)
     if head != JULIET_PINNED_SHA:
-        raise JulietManifestError(
+        msg = (
             f"{clone_dir} is at {head[:12]}, labels are pinned to "
-            f"{JULIET_PINNED_SHA[:12]} — {_ACQUIRE_HINT}")
+            f"{JULIET_PINNED_SHA[:12]} — {_ACQUIRE_HINT}"
+        )
+        raise JulietManifestError(msg)
 
 
 def split_bad_good_spans(
@@ -177,8 +181,8 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
                 _entry(f"{case_id}__good", rel, cwe, good_span))
 
     if not expected:
-        raise JulietManifestError(
-            "no expected entries survived the filters")
+        msg = "no expected entries survived the filters"
+        raise JulietManifestError(msg)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -428,8 +432,8 @@ def generate_manifest_b(clone_dir: Path, *, cwes: list[int] | None = None,
             per_cwe_count[cwe] = per_cwe_count.get(cwe, 0) + 1
 
     if not expected:
-        raise JulietManifestError(
-            "no Juliet-B expected entries survived the filters")
+        msg = "no Juliet-B expected entries survived the filters"
+        raise JulietManifestError(msg)
 
     return {
         "schema_version": SCHEMA_VERSION,

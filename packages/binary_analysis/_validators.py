@@ -40,15 +40,17 @@ def validate_hex_address(address, *, param_name: str = "address") -> None:
     Non-str inputs are rejected up front so callers see one exception type.
     """
     if not isinstance(address, str):
-        raise ValueError(
+        msg = (
             f"Invalid {param_name} {address!r}: expected str, "
             f"got {type(address).__name__}."
         )
+        raise ValueError(msg)
     if not _HEX_ADDRESS_RE.match(address):
-        raise ValueError(
+        msg = (
             f"Invalid {param_name} {address!r}: expected 0x<1-16 hex digits>. "
             "Arbitrary strings are rejected to prevent GDB script injection."
         )
+        raise ValueError(msg)
 
 
 def validate_byte_count(num_bytes, *, param_name: str = "num_bytes") -> None:
@@ -59,12 +61,14 @@ def validate_byte_count(num_bytes, *, param_name: str = "num_bytes") -> None:
     bool is an int subclass in Python, so reject it explicitly.
     """
     if isinstance(num_bytes, bool) or not isinstance(num_bytes, int):
-        raise ValueError(
+        msg = (
             f"Invalid {param_name} {num_bytes!r}: expected int, "
             f"got {type(num_bytes).__name__}."
         )
+        raise ValueError(msg)
     if num_bytes < 1 or num_bytes > _MAX_EXAMINE_BYTES:
-        raise ValueError(
+        msg = (
             f"Invalid {param_name} {num_bytes}: must be between 1 "
             f"and {_MAX_EXAMINE_BYTES}."
         )
+        raise ValueError(msg)

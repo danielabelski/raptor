@@ -398,10 +398,11 @@ def function_called(
     against an empty import-chain prefix.
     """
     if not qualified_name or "." not in qualified_name:
-        raise ValueError(
+        msg = (
             "qualified_name must be dotted (module.function); got "
-            f"{qualified_name!r}",
+            f"{qualified_name!r}"
         )
+        raise ValueError(msg)
 
     target_parts = qualified_name.split(".")
     target_func = target_parts[-1]

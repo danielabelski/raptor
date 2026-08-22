@@ -71,11 +71,11 @@ _CPP_IDENT_RE = re.compile(
 
 def _validate_identifier(name: str, label: str) -> None:
     if not name:
-        raise ValueError(f"{label} must be non-empty")
+        msg = f"{label} must be non-empty"
+        raise ValueError(msg)
     if not is_valid_identifier(name) and not _CPP_IDENT_RE.match(name):
-        raise ValueError(
-            f"{label} must be a valid identifier (got {name!r})"
-        )
+        msg = f"{label} must be a valid identifier (got {name!r})"
+        raise ValueError(msg)
 
 
 def generate_taint_query(claim: DataflowClaim, *, language: str = "cpp") -> str:
@@ -90,7 +90,8 @@ def generate_taint_query(claim: DataflowClaim, *, language: str = "cpp") -> str:
     _validate_identifier(claim.sink_function, "sink_function")
 
     if language != "cpp":
-        raise ValueError(f"unsupported language for CodeQL validation: {language}")
+        msg = f"unsupported language for CodeQL validation: {language}"
+        raise ValueError(msg)
 
     source_fn = claim.source_function
     sink_fn = claim.sink_function

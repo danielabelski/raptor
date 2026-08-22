@@ -217,37 +217,41 @@ def validate_query(sql: str) -> str:
         be trailing
     """
     if not isinstance(sql, str):
-        raise QueryValidationError("query must be a string")
+        msg = "query must be a string"
+        raise QueryValidationError(msg)
     sql = sql.lstrip("﻿")
     if len(sql.encode("utf-8", errors="replace")) > MAX_QUERY_BYTES:
-        raise QueryValidationError(
+        msg = (
             f"query exceeds {MAX_QUERY_BYTES} bytes — BigQuery's own "
             "query-length ceiling is 1024k characters"
         )
+        raise QueryValidationError(msg)
     stripped = strip_sql_noise(sql)
     if not stripped.strip():
-        raise QueryValidationError("query is empty (after comment stripping)")
+        msg = "query is empty (after comment stripping)"
+        raise QueryValidationError(msg)
 
     match = re.match(r"\s*([A-Za-z_]+)", stripped)
     if not match:
-        raise QueryValidationError(
-            "query does not start with an SQL keyword"
-        )
+        msg = "query does not start with an SQL keyword"
+        raise QueryValidationError(msg)
     keyword = match.group(1).upper()
     if keyword not in ALLOWED_LEADING_KEYWORDS:
         allowed = "/".join(sorted(ALLOWED_LEADING_KEYWORDS))
-        raise QueryValidationError(
+        msg = (
             f"leading keyword {keyword!r} is not allowed — this wrapper "
             f"only runs read-only queries ({allowed}). DML/DDL and "
             "scripting statements are rejected by design."
         )
+        raise QueryValidationError(msg)
 
     _head, sep, tail = stripped.partition(";")
     if sep and tail.strip():
-        raise QueryValidationError(
+        msg = (
             "multiple SQL statements detected — the wrapper runs exactly "
             "one statement per invocation"
         )
+        raise QueryValidationError(msg)
     return sql
 
 
@@ -375,11 +379,12 @@ def _resolve_credentials() -> tuple[Any, str | None]:
 
     if creds_value.lstrip().startswith("{"):
         if len(creds_value) > _CREDS_INLINE_MAX:
-            raise CredentialsError(
+            msg = (
                 "GOOGLE_APPLICATION_CREDENTIALS inline JSON exceeds "
                 f"{_CREDS_INLINE_MAX} bytes — service-account keys are "
                 "typically <4 KB; refusing pathological input"
             )
+            raise CredentialsError(msg)
         from google.oauth2 import service_account
         try:
             info = json.loads(creds_value)
@@ -387,9 +392,8 @@ def _resolve_credentials() -> tuple[Any, str | None]:
                 info, scopes=scopes
             )
         except (ValueError, KeyError) as exc:
-            raise CredentialsError(
-                f"could not parse inline service-account JSON: {exc}"
-            ) from exc
+            msg = f"could not parse inline service-account JSON: {exc}"
+            raise CredentialsError(msg) from exc
         return credentials, info.get("project_id")
 
     import google.auth
@@ -397,11 +401,12 @@ def _resolve_credentials() -> tuple[Any, str | None]:
     try:
         return google.auth.default(scopes=scopes)
     except auth_exceptions.GoogleAuthError as exc:
-        raise CredentialsError(
+        msg = (
             f"could not resolve BigQuery credentials: {exc} — set "
             "GOOGLE_APPLICATION_CREDENTIALS to a service-account key "
             "file (read-only BigQuery User role)"
-        ) from exc
+        )
+        raise CredentialsError(msg) from exc
 
 
 def execute(sql: str, *, project: str | None = None,
@@ -418,10 +423,11 @@ def execute(sql: str, *, project: str | None = None,
     try:
         from google.cloud import bigquery
     except ImportError as exc:
-        raise DependencyError(
+        msg = (
             "google-cloud-bigquery is not installed — "
             "pip install google-cloud-bigquery google-auth"
-        ) from exc
+        )
+        raise DependencyError(msg) from exc
 
     credentials, default_project = _resolve_credentials()
     try:
@@ -453,9 +459,8 @@ def execute(sql: str, *, project: str | None = None,
         rows_iter = job.result(timeout=timeout_s)
         rows = [dict(row) for row in rows_iter]
     except (concurrent.futures.TimeoutError, TimeoutError) as exc:
-        raise QueryTimeoutError(
-            f"query did not complete within {timeout_s}s"
-        ) from exc
+        msg = f"query did not complete within {timeout_s}s"
+        raise QueryTimeoutError(msg) from exc
     except BQQueryError:
         raise
     except Exception as exc:  # classified below
@@ -492,7 +497,8 @@ def _child_main() -> int:
     try:
         request = json.loads(raw)
         if not isinstance(request, dict):
-            raise TypeError("request must be a JSON object")
+            msg = "request must be a JSON object"
+            raise TypeError(msg)
         sql = request["sql"]
     except (TypeError, ValueError, KeyError) as exc:
         return write_error_json(

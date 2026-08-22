@@ -80,13 +80,11 @@ def _validate_mode(mode: int | None) -> None:
     if mode is None:
         return
     if not isinstance(mode, int):
-        raise ValueError(
-            f"mode must be int (0o000..0o777), got {type(mode).__name__}",
-        )
+        msg = f"mode must be int (0o000..0o777), got {type(mode).__name__}"
+        raise ValueError(msg)
     if not (0 <= mode <= _MODE_MASK):
-        raise ValueError(
-            f"mode must be in 0o000..0o777, got 0o{mode:o}",
-        )
+        msg = f"mode must be in 0o000..0o777, got 0o{mode:o}"
+        raise ValueError(msg)
 
 
 def _resolve_effective_mode(

@@ -509,8 +509,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     if unix_scope_export_sock is not None and audit_mode:
         # The tracer owns connect observability under audit; a NOTIFY
         # rule would fight the TRACE rule for the same syscall.
-        raise ValueError(
-            "unix_scope_export_sock is incompatible with audit_mode")
+        msg = "unix_scope_export_sock is incompatible with audit_mode"
+        raise ValueError(msg)
 
     blocked_syscalls = list(_SECCOMP_BLOCK_ALWAYS)
     if profile not in ("debug", "frida"):

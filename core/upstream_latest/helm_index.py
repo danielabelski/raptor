@@ -81,15 +81,15 @@ def latest_chart_version(
     )
     entries = index.get("entries") if isinstance(index, dict) else None
     if not isinstance(entries, dict):
-        raise UpstreamLookupError(
-            f"Helm index at {repository} missing entries map"
-        )
+        msg = f"Helm index at {repository} missing entries map"
+        raise UpstreamLookupError(msg)
     versions = entries.get(chart_name)
     if not isinstance(versions, list):
-        raise UpstreamLookupError(
+        msg = (
             f"Helm index at {repository} has no entry for "
             f"chart {chart_name!r}"
         )
+        raise UpstreamLookupError(msg)
     raw_versions: list[str] = []
     for entry in versions:
         if not isinstance(entry, dict):
@@ -98,16 +98,18 @@ def latest_chart_version(
         if isinstance(v, str) and v.strip():
             raw_versions.append(v.strip())
     if not raw_versions:
-        raise UpstreamLookupError(
+        msg = (
             f"Helm index entry {chart_name!r} at {repository} "
             f"has no version field"
         )
+        raise UpstreamLookupError(msg)
     winner = highest_stable(raw_versions)
     if winner is None:
-        raise NoStableVersionsFound(
+        msg = (
             f"no stable-semver versions of {chart_name} in "
             f"{repository}"
         )
+        raise NoStableVersionsFound(msg)
     return winner
 
 
@@ -140,21 +142,18 @@ def _fetch_index_cached(
         # faith. Real index.yaml files are well under this.
         raw = http.get_bytes(url, max_bytes=_MAX_INDEX_BYTES)
     except HttpError as exc:
-        raise UpstreamLookupError(
-            f"Helm index fetch failed for {url}: {exc}"
-        ) from exc
+        msg = f"Helm index fetch failed for {url}: {exc}"
+        raise UpstreamLookupError(msg) from exc
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise UpstreamLookupError(
-            f"Helm index at {url} not UTF-8: {exc}"
-        ) from exc
+        msg = f"Helm index at {url} not UTF-8: {exc}"
+        raise UpstreamLookupError(msg) from exc
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError as exc:
-        raise UpstreamLookupError(
-            "PyYAML not installed; cannot parse Helm index"
-        ) from exc
+        msg = "PyYAML not installed; cannot parse Helm index"
+        raise UpstreamLookupError(msg) from exc
     try:
         # Pure-Python SafeLoader subclass that refuses aliases: helm's
         # own ``repo index`` never emits anchors, and alias expansion
@@ -166,17 +165,17 @@ def _fetch_index_cached(
         class _NoAliasLoader(yaml.SafeLoader):
             def compose_node(self, parent, index):
                 if self.check_event(yaml.events.AliasEvent):
-                    raise yaml.YAMLError(
+                    msg = (
                         "YAML aliases are not accepted in Helm "
                         "index files"
                     )
+                    raise yaml.YAMLError(msg)
                 return super().compose_node(parent, index)
 
         data = yaml.load(text, Loader=_NoAliasLoader)
     except (yaml.YAMLError, RecursionError, MemoryError) as exc:
-        raise UpstreamLookupError(
-            f"Helm index at {url} not parseable YAML: {exc}"
-        ) from exc
+        msg = f"Helm index at {url} not parseable YAML: {exc}"
+        raise UpstreamLookupError(msg) from exc
     if cache is not None and ttl_seconds > 0:
         cache.put(cache_key, data, ttl_seconds=ttl_seconds)
     return data
@@ -207,19 +206,20 @@ def _normalize_index_url(repository: str) -> str:
         # schemes"; the code used to accept plain http anyway. Chart
         # repositories are public HTTPS services — an http URL either
         # a typo or a downgrade, both worth failing fast on.
-        raise UpstreamLookupError(
+        msg = (
             f"Helm index URL refused: non-https scheme "
             f"{parsed.scheme!r} in {repository!r}"
         )
+        raise UpstreamLookupError(msg)
     if parsed.username is not None or parsed.password is not None:
-        raise UpstreamLookupError(
+        msg = (
             f"Helm index URL refused: embedded userinfo in "
             f"{repository!r} (SSRF / credential leak)"
         )
+        raise UpstreamLookupError(msg)
     if not parsed.hostname:
-        raise UpstreamLookupError(
-            f"Helm index URL refused: no hostname in {repository!r}"
-        )
+        msg = f"Helm index URL refused: no hostname in {repository!r}"
+        raise UpstreamLookupError(msg)
     if repository.endswith((".yaml", ".yml")):
         return repository
     return f"{repository}/index.yaml"

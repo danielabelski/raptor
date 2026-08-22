@@ -180,10 +180,11 @@ def _write_atomic(path: Path, payload: str, *, max_retries: int = 5) -> Path:
             new_suffix = secrets.token_hex(3)
             path = path.with_name(f"{base}-{new_suffix}.json")
             continue
-    raise OSError(
+    msg = (
         f"could not create unique filename after {max_retries} retries "
         f"(this should never happen — bug?)"
     )
+    raise OSError(msg)
 
 
 def write(

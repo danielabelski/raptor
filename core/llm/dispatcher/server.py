@@ -747,10 +747,12 @@ class LLMDispatcher:
         effective limits.
         """
         if not isinstance(budget_usd, (int, float)) or budget_usd <= 0:
-            raise ValueError(f"budget_usd must be > 0, got {budget_usd!r}")
+            msg = f"budget_usd must be > 0, got {budget_usd!r}"
+            raise ValueError(msg)
         ttl = int(ttl_s) if ttl_s else _CHILD_DEFAULT_TTL_S
         if ttl <= 0:
-            raise ValueError(f"ttl_s must be > 0, got {ttl_s!r}")
+            msg = f"ttl_s must be > 0, got {ttl_s!r}"
+            raise ValueError(msg)
         allowlist: frozenset | None = None
         if models:
             forms: set = set()

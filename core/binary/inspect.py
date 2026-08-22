@@ -78,9 +78,8 @@ def inspect_binary(
     blocked. Never raises.
     """
     if tool not in _ALLOWED_TOOLS:
-        raise ValueError(
-            f"tool {tool!r} is not an allowlisted inspection tool"
-        )
+        msg = f"tool {tool!r} is not an allowlisted inspection tool"
+        raise ValueError(msg)
     # Lazy import — keep this module independently importable in unit
     # tests that stub the sandbox (same convention as binary_oracle).
     from core.sandbox import run as _sandbox_run

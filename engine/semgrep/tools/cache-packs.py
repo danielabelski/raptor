@@ -68,9 +68,8 @@ def fetch_pack(pack_id: str) -> bytes:
         resp = urlopen(req, timeout=FETCH_TIMEOUT)
         data = resp.read()
     except URLError as exc:
-        raise SystemExit(
-            f"  FAILED: {pack_id} — {exc}"
-        ) from exc
+        msg = f"  FAILED: {pack_id} — {exc}"
+        raise SystemExit(msg) from exc
 
     # Registry may return YAML; normalise to JSON.
     try:
@@ -80,14 +79,14 @@ def fetch_pack(pack_id: str) -> bytes:
             import yaml
             parsed = yaml.safe_load(data)
         except ImportError:
-            raise SystemExit(
+            msg = (
                 f"  FAILED: {pack_id} — response is YAML but PyYAML "
                 f"is not installed on this machine"
-            ) from None
+            )
+            raise SystemExit(msg) from None
         except Exception as exc:
-            raise SystemExit(
-                f"  FAILED: {pack_id} — could not parse response: {exc}"
-            ) from exc
+            msg = f"  FAILED: {pack_id} — could not parse response: {exc}"
+            raise SystemExit(msg) from exc
 
     return json.dumps(parsed, separators=(",", ":")).encode()
 
@@ -191,7 +190,8 @@ def cmd_import(args: argparse.Namespace) -> None:
     """Import a cache bundle into RAPTOR's registry-cache directory."""
     zip_path = Path(args.zipfile)
     if not zip_path.exists():
-        raise SystemExit(f"File not found: {zip_path}")
+        msg = f"File not found: {zip_path}"
+        raise SystemExit(msg)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 

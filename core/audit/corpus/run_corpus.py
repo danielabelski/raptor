@@ -2196,7 +2196,8 @@ def _splice_results(
     the full results, recompute metrics over the whole corpus.
     """
     if not splice_path.is_file():
-        raise FileNotFoundError(f"--splice file not found: {splice_path}")
+        msg = f"--splice file not found: {splice_path}"
+        raise FileNotFoundError(msg)
     raw = json.loads(splice_path.read_text())
     base = raw["results"] if isinstance(raw, dict) and "results" in raw else raw
     partial_ids = {r["function_id"] for r in results}

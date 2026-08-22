@@ -114,11 +114,12 @@ _BACKOFF_SECONDS = (1, 2, 5, 15, 60, 300)
 # or a schedule slot never reached. Lift to an explicit RuntimeError
 # so the gate fires regardless of `-O`.
 if len(_BACKOFF_SECONDS) != DEFAULT_RETRIES + 1:
-    raise RuntimeError(
+    msg = (
         f"_BACKOFF_SECONDS length ({len(_BACKOFF_SECONDS)}) must equal "
         f"DEFAULT_RETRIES + 1 ({DEFAULT_RETRIES + 1}) — one slot for the "
         f"initial attempt + one per retry; update both together"
     )
+    raise RuntimeError(msg)
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -530,10 +531,11 @@ class UrllibClient:
         # encoded bytes (ASCII + percent-encoded) since wire-length
         # is the operationally-meaningful unit.
         if len(url.encode("utf-8", errors="ignore")) > self._MAX_URL_BYTES:
-            raise HttpError(
+            msg = (
                 f"Refused URL exceeding {self._MAX_URL_BYTES}-byte cap "
                 f"(input was {len(url)} chars)"
             )
+            raise HttpError(msg)
         # Pre-fix `_urlparse.urlsplit(url)` raised ValueError
         # directly for malformed inputs:
         #
@@ -550,22 +552,24 @@ class UrllibClient:
         try:
             parsed = _urlparse.urlsplit(url)
         except ValueError as exc:
-            raise HttpError(
-                f"Refused malformed URL: {exc}"
-            ) from exc
+            msg = f"Refused malformed URL: {exc}"
+            raise HttpError(msg) from exc
         if parsed.scheme not in self._ALLOWED_SCHEMES:
             permitted = "/".join(self._ALLOWED_SCHEMES)
-            raise HttpError(
+            msg = (
                 f"Refused URL with scheme {parsed.scheme!r}: "
                 f"only {permitted} permitted"
             )
+            raise HttpError(msg)
         if not parsed.hostname:
-            raise HttpError(f"Refused URL with no host: {url!r}")
+            msg = f"Refused URL with no host: {url!r}"
+            raise HttpError(msg)
         if parsed.username is not None or parsed.password is not None:
-            raise HttpError(
+            msg = (
                 "Refused URL with embedded credentials; pass credentials via "
                 "an Authorization header, not in the URL authority"
             )
+            raise HttpError(msg)
         return parsed
 
     # -- public API -----------------------------------------------------
@@ -758,12 +762,13 @@ class UrllibClient:
         except handler.
         """
         if retries != 0:
-            raise ValueError(
+            msg = (
                 "stream_bytes does not support retries (mid-stream "
                 "failures aren't transparently resumable). "
                 "Pass retries=0 or wrap the iterator in your own "
                 "retry loop."
             )
+            raise ValueError(msg)
         self._validate_url(url)
         merged = {"User-Agent": self._ua}
         if headers:
@@ -813,14 +818,14 @@ class UrllibClient:
                 try:
                     self._validate_url(final_url)
                 except HttpError as exc:
-                    raise HttpError(
+                    msg = (
                         f"refused redirect from {_safe_url_for_log(url)} "
                         f"to {_safe_url_for_log(final_url)}: {exc}"
-                    ) from exc
+                    )
+                    raise HttpError(msg) from exc
             if resp.status == 304:
-                raise NotModified(
-                    f"304 Not Modified for {_safe_url_for_log(url)}",
-                )
+                msg = f"304 Not Modified for {_safe_url_for_log(url)}"
+                raise NotModified(msg)
             if resp.status >= 400:
                 # Bounded read for the error message, secrets
                 # redacted — same defang as `_fetch_once`'s 4xx
@@ -857,17 +862,19 @@ class UrllibClient:
             for chunk in resp.stream(64 * 1024, decode_content=True):
                 total += len(chunk)
                 if total > max_bytes:
-                    raise SizeLimitExceeded(
+                    msg = (
                         f"Stream from {_safe_url_for_log(url)} "
-                        f"exceeded {max_bytes} bytes",
+                        f"exceeded {max_bytes} bytes"
                     )
+                    raise SizeLimitExceeded(msg)
                 if (wallclock_cap is not None
                         and _time.monotonic() - _start > wallclock_cap):
-                    raise TimeoutError(
+                    msg = (
                         f"Stream from {_safe_url_for_log(url)} exceeded "
                         f"wallclock cap of {wallclock_cap}s "
                         f"(slowloris defence)"
                     )
+                    raise TimeoutError(msg)
                 yield chunk
         finally:
             # Same drain-then-release pattern as `_fetch_once`: a
@@ -928,11 +935,14 @@ class UrllibClient:
             cb_host, cb_port,
         )
         if is_open:
-            raise HttpError(
+            msg = (
                 f"Circuit open for {cb_host}:{cb_port} "
                 f"(cooldown {seconds_left:.0f}s remaining); "
                 f"recent 429/5xx history. Skipping request to avoid "
-                f"retry-storm: {_safe_url_for_log(url)}",
+                f"retry-storm: {_safe_url_for_log(url)}"
+            )
+            raise HttpError(
+                msg,
                 circuit_break=True,
             )
 
@@ -949,10 +959,11 @@ class UrllibClient:
             # all". Skip the gate on attempt==0 so the first try
             # always runs; check on subsequent iterations only.
             if attempt > 0 and time.monotonic() >= deadline:
-                raise HttpError(
+                msg = (
                     f"Total timeout ({total_timeout}s) exceeded for "
-                    f"{_safe_url_for_log(url)}",
-                ) from last_exc
+                    f"{_safe_url_for_log(url)}"
+                )
+                raise HttpError(msg) from last_exc
             # Each schedule slot represents one attempt and the sleep
             # AFTER it (before the next attempt). On the final slot
             # there is no next attempt, so we skip the post-failure
@@ -993,10 +1004,13 @@ class UrllibClient:
                             cb_host, cb_port,
                         )
                     if self._circuit_breaker.is_open(cb_host, cb_port)[0]:
-                        raise HttpError(
+                        msg = (
                             f"Circuit open for {cb_host}:{cb_port}; "
                             f"aborting retry: "
-                            f"{_safe_url_for_log(url)}",
+                            f"{_safe_url_for_log(url)}"
+                        )
+                        raise HttpError(
+                            msg,
                             circuit_break=True,
                         ) from e
                 if not is_transient:
@@ -1014,10 +1028,11 @@ class UrllibClient:
                 # doesn't blow past total_timeout.
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise HttpError(
+                    msg = (
                         f"Total timeout ({total_timeout}s) exceeded for "
-                        f"{_safe_url_for_log(url)}",
-                    ) from last_exc
+                        f"{_safe_url_for_log(url)}"
+                    )
+                    raise HttpError(msg) from last_exc
                 time.sleep(min(sleep_for, remaining))
                 continue
             except _U3ProxyError as e:
@@ -1058,15 +1073,16 @@ class UrllibClient:
                 )
                 if _has_403_status or _has_forbidden_status:
                     host = _urlparse.urlsplit(url).hostname or "?"
-                    raise HttpError(
+                    msg_0 = (
                         f"Egress proxy refused {host!r}: host not on the "
                         f"allowlist. If you're using EgressClient, add "
                         f"this host to allowed_hosts at construction — "
                         f"the chokepoint allowlist supersedes any "
                         f"no_proxy env var by design (closing it would "
                         f"reintroduce the bypass urllib3 was chosen to "
-                        f"prevent). Underlying: {e}",
-                    ) from e
+                        f"prevent). Underlying: {e}"
+                    )
+                    raise HttpError(msg_0) from e
                 # CONNECT-level 5xx from the (upstream) proxy is the
                 # other hard-refusal shape: the proxy itself answered
                 # and said no (host blocked by upstream policy, or the
@@ -1081,11 +1097,12 @@ class UrllibClient:
                 )
                 if _has_tunnel_5xx:
                     host = _urlparse.urlsplit(url).hostname or "?"
-                    raise HttpError(
+                    msg_0 = (
                         f"Upstream proxy could not tunnel to {host!r} "
                         f"(CONNECT-level 5xx — upstream policy or "
-                        f"reachability, not transient). Underlying: {e}",
-                    ) from e
+                        f"reachability, not transient). Underlying: {e}"
+                    )
+                    raise HttpError(msg_0) from e
                 last_exc = e
                 if is_last_attempt:
                     continue
@@ -1095,10 +1112,11 @@ class UrllibClient:
                 )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise HttpError(
+                    msg_0 = (
                         f"Total timeout ({total_timeout}s) exceeded for "
-                        f"{_safe_url_for_log(url)}",
-                    ) from last_exc
+                        f"{_safe_url_for_log(url)}"
+                    )
+                    raise HttpError(msg_0) from last_exc
                 time.sleep(min(delay, remaining))
                 continue
             except _U3_PERMANENT_HTTPERROR as e:
@@ -1106,10 +1124,11 @@ class UrllibClient:
                 # Don't retry; fail fast so the caller sees the
                 # immediate cause instead of an "exhausted retries"
                 # wrapper.
-                raise HttpError(
+                msg_0 = (
                     f"core.http: permanent error fetching "
-                    f"{_safe_url_for_log(url)}: {e}",
-                ) from e
+                    f"{_safe_url_for_log(url)}: {e}"
+                )
+                raise HttpError(msg_0) from e
             except (MaxRetryError, ReadTimeoutError, SSLError, _U3HTTPError,
                     TimeoutError, ConnectionError) as e:
                 last_exc = e
@@ -1121,16 +1140,16 @@ class UrllibClient:
                 )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise HttpError(
+                    msg_0 = (
                         f"Total timeout ({total_timeout}s) exceeded for "
-                        f"{_safe_url_for_log(url)}",
-                    ) from last_exc
+                        f"{_safe_url_for_log(url)}"
+                    )
+                    raise HttpError(msg_0) from last_exc
                 time.sleep(min(delay, remaining))
                 continue
         # Exhausted retries
-        raise HttpError(
-            f"Exhausted retries fetching {_safe_url_for_log(url)}: {last_exc}",
-        ) from last_exc
+        msg_0 = f"Exhausted retries fetching {_safe_url_for_log(url)}: {last_exc}"
+        raise HttpError(msg_0) from last_exc
 
     def _fetch_once(
         self,
@@ -1176,12 +1195,12 @@ class UrllibClient:
             # Important: 304 is NOT >= 400, so this needs to come first
             # before the generic error threshold below.
             if resp.status == 304:
-                raise NotModified(
-                    f"304 Not Modified for {_safe_url_for_log(url)}",
-                )
+                msg = f"304 Not Modified for {_safe_url_for_log(url)}"
+                raise NotModified(msg)
             if resp.status in (429, 503):
+                msg = f"HTTP {resp.status} from {_safe_url_for_log(url)}"
                 raise HttpError(
-                    f"HTTP {resp.status} from {_safe_url_for_log(url)}",
+                    msg,
                     status=resp.status,
                     retry_after=self._parse_retry_after(
                         resp.headers.get("Retry-After"),
@@ -1194,8 +1213,9 @@ class UrllibClient:
             # the body read by max_bytes — a 4xx response can carry
             # an arbitrary body.
             if resp.status >= 500 and not raise_on_status:
+                msg = f"HTTP {resp.status} from {_safe_url_for_log(url)}"
                 raise HttpError(
-                    f"HTTP {resp.status} from {_safe_url_for_log(url)}",
+                    msg,
                     status=resp.status,
                 )
             if resp.status >= 400 and raise_on_status:
@@ -1235,10 +1255,11 @@ class UrllibClient:
                 for chunk in resp.stream(64 * 1024, decode_content=True):
                     buf.extend(chunk)
                     if len(buf) > max_bytes:
-                        raise SizeLimitExceeded(
+                        msg = (
                             f"Response from {_safe_url_for_log(url)} "
-                            f"exceeded {max_bytes} bytes",
+                            f"exceeded {max_bytes} bytes"
                         )
+                        raise SizeLimitExceeded(msg)
                 raw = bytes(buf)
 
             # Defence in depth: some servers send Content-Encoding: gzip
@@ -1338,10 +1359,11 @@ class UrllibClient:
                 try:
                     self._validate_url(final_url)
                 except HttpError as exc:
-                    raise HttpError(
+                    msg = (
                         f"refused redirect from {_safe_url_for_log(url)} "
                         f"to {_safe_url_for_log(final_url)}: {exc}"
-                    ) from exc
+                    )
+                    raise HttpError(msg) from exc
             # Pre-fix `{k.lower(): v for k, v in resp.headers.items()}`
             # silently dropped duplicate-name headers (last value
             # wins). The operationally-significant case is

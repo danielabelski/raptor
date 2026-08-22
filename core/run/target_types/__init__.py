@@ -127,9 +127,8 @@ class CatalogEntry:
         """Build a CatalogEntry from parsed YAML. Tolerant of
         missing optional sections — only ``name`` is required."""
         if "name" not in data:
-            raise ValueError(
-                "CatalogEntry.from_dict: missing required 'name' field"
-            )
+            msg = "CatalogEntry.from_dict: missing required 'name' field"
+            raise ValueError(msg)
         detection = data.get("detection") or {}
         packs = data.get("semgrep_packs") or {}
         surface = data.get("attack_surface") or {}

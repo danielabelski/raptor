@@ -38,7 +38,8 @@ def _split(version: str) -> tuple[int, str, str]:
     if ":" in v:
         head, _, rest = v.partition(":")
         if not (head.isascii() and head.isdigit()):
-            raise ValueError(f"invalid Debian epoch in {version!r}")
+            msg = f"invalid Debian epoch in {version!r}"
+            raise ValueError(msg)
         epoch = int(head)
         v = rest
     if "-" in v:

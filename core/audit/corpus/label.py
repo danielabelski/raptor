@@ -90,11 +90,12 @@ class SourcePin:
             len(self.span_sha) != SPAN_SHA_LEN
             or not set(self.span_sha) <= _HEX_DIGITS
         ):
-            raise ValueError(
+            msg = (
                 f"Invalid span_sha {self.span_sha!r}: must be "
                 f"{SPAN_SHA_LEN} lowercase hex chars "
                 f"(core.staleness span-hash convention)"
             )
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -125,45 +126,52 @@ class FunctionLabel:
 
     def __post_init__(self) -> None:
         if self.bug_class not in VALID_BUG_CLASSES:
-            raise ValueError(
+            msg = (
                 f"Invalid bug_class {self.bug_class!r}; "
                 f"must be one of {sorted(VALID_BUG_CLASSES)}"
             )
+            raise ValueError(msg)
         if self.expected_status not in VALID_EXPECTED_STATUSES:
-            raise ValueError(
+            msg = (
                 f"Invalid expected_status {self.expected_status!r}; "
                 f"must be one of {sorted(VALID_EXPECTED_STATUSES)}"
             )
+            raise ValueError(msg)
         if self.excerpt_scope not in VALID_EXCERPT_SCOPES:
-            raise ValueError(
+            msg = (
                 f"Invalid excerpt_scope {self.excerpt_scope!r}; "
                 f"must be one of {sorted(VALID_EXCERPT_SCOPES)}"
             )
+            raise ValueError(msg)
         for mode, status in self.expected_mode_results.items():
             if mode not in VALID_REVIEW_MODES:
-                raise ValueError(
+                msg = (
                     f"Invalid expected_mode_results mode {mode!r}; "
                     f"must be one of {sorted(VALID_REVIEW_MODES)}"
                 )
+                raise ValueError(msg)
             if status not in VALID_EXPECTED_STATUSES:
-                raise ValueError(
+                msg = (
                     f"Invalid expected_mode_results status {status!r} "
                     f"for mode {mode!r}; "
                     f"must be one of {sorted(VALID_EXPECTED_STATUSES)}"
                 )
+                raise ValueError(msg)
         for engine, rule_ids in self.expected_rule_hits.items():
             if not isinstance(engine, str) or not engine:
-                raise ValueError(
+                msg = (
                     f"Invalid expected_rule_hits engine {engine!r}; "
                     f"must be a non-empty string"
                 )
+                raise ValueError(msg)
             if not isinstance(rule_ids, list) or not all(
                 isinstance(r, str) and r for r in rule_ids
             ):
-                raise ValueError(
+                msg = (
                     f"Invalid expected_rule_hits for engine {engine!r}; "
                     f"must be a list of non-empty rule-id strings"
                 )
+                raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

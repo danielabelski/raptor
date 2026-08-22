@@ -224,9 +224,8 @@ def _build_egress_client(url: str) -> Any:
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError(
-            f"DT URL must be http(s) with a hostname; got {url!r}"
-        )
+        msg = f"DT URL must be http(s) with a hostname; got {url!r}"
+        raise ValueError(msg)
     from core.http.egress_backend import EgressClient
     from packages.sca import SCA_USER_AGENT
     return EgressClient(

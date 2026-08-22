@@ -227,10 +227,11 @@ def resolve_model_shorthand(
     # ``None`` is kept as a "missing input" sentinel per the docstring —
     # the falsy short-circuit below returns None for that case.
     if model_id is not None and not isinstance(model_id, str):
-        raise TypeError(
+        msg = (
             f"resolve_model_shorthand: model_id must be str or None, got "
             f"{type(model_id).__name__}"
         )
+        raise TypeError(msg)
     if not model_id or "/" in model_id or "." in model_id:
         return None
     if len(model_id) < 3 or model_id.isdigit():
@@ -257,10 +258,11 @@ def resolve_model_shorthand(
         return unique[0]
     if len(unique) > 1:
         listed = ", ".join(sorted(unique))
-        raise ValueError(
+        msg = (
             f"ambiguous model shorthand {model_id!r}: matches "
             f"{listed}. Pass the full model name to disambiguate."
         )
+        raise ValueError(msg)
     return None
 
 

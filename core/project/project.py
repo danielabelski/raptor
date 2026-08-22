@@ -122,9 +122,8 @@ def split_setting_key(key: str):
     base, sep, lang = key.partition(".")
     if base == "build-command" and sep:
         if not _LANG_SLOT_RE.match(lang):
-            raise ValueError(
-                f"Invalid language slot {lang!r} in setting key {key!r}"
-            )
+            msg = f"Invalid language slot {lang!r} in setting key {key!r}"
+            raise ValueError(msg)
         return base, lang
     if key in SETTINGS_REGISTRY:
         return key, None
@@ -379,10 +378,11 @@ class Project:
         (listing the valid ones) or invalid values."""
         base, lang = split_setting_key(key)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"Setting {key!r} needs a non-empty value")
+            msg = f"Setting {key!r} needs a non-empty value"
+            raise ValueError(msg)
         if len(value) > _MAX_SETTING_LEN:
-            raise ValueError(
-                f"Setting {key!r} value exceeds {_MAX_SETTING_LEN} chars")
+            msg = f"Setting {key!r} value exceeds {_MAX_SETTING_LEN} chars"
+            raise ValueError(msg)
         value = value.strip()
         if base == "description":
             self.description = value
@@ -391,9 +391,11 @@ class Project:
         elif base == "threat-model":
             path = Path(value).expanduser().resolve()
             if not path.is_file():
-                raise ValueError(
+                msg = (
                     f"threat-model path does not exist or is not a "
-                    f"file: {value} (resolved to {path})")
+                    f"file: {value} (resolved to {path})"
+                )
+                raise ValueError(msg)
             self.threat_model_path = str(path)
             self.threat_model_updated = datetime.now(timezone.utc).isoformat()
         elif base == "target-kind":
@@ -410,7 +412,8 @@ class Project:
             commands[slot] = value
             self.settings["build-command"] = commands
         else:  # pragma: no cover — split_setting_key guards this
-            raise ValueError(f"Unknown setting {key!r}")
+            msg = f"Unknown setting {key!r}"
+            raise ValueError(msg)
 
     def unset_setting(self, key: str) -> bool:
         """Remove a setting. Returns True if it was set. Raises
@@ -639,16 +642,20 @@ class ProjectManager:
     def _validate_name(cls, name: str) -> None:
         """Validate project name is safe for use as a filename."""
         if not name or not name.strip():
-            raise ValueError("Project name cannot be empty")
+            msg = "Project name cannot be empty"
+            raise ValueError(msg)
         if name.lower() in cls.RESERVED_NAMES:
-            raise ValueError(f"Project name '{name}' is reserved")
+            msg = f"Project name '{name}' is reserved"
+            raise ValueError(msg)
         if len(name) > 100:
-            raise ValueError(f"Project name too long (max 100 chars): {name}")
+            msg = f"Project name too long (max 100 chars): {name}"
+            raise ValueError(msg)
         if not cls._NAME_PATTERN.match(name):
-            raise ValueError(
+            msg = (
                 f"Project name '{name}' contains invalid characters. "
                 f"Use only letters, numbers, hyphens, dots, and underscores (cannot start with . or _)"
             )
+            raise ValueError(msg)
 
     def create(self, name: str, target: str, description: str = "",
                output_dir: str | None = None, resolve_target: bool = True,
@@ -667,7 +674,8 @@ class ProjectManager:
         self._validate_name(name)
         project_file = self.projects_dir / f"{name}.json"
         if project_file.exists():
-            raise ValueError(f"Project '{name}' already exists")
+            msg = f"Project '{name}' already exists"
+            raise ValueError(msg)
 
         if not output_dir:
             output_dir = str((DEFAULT_OUTPUT_BASE / name).resolve())
@@ -717,7 +725,8 @@ class ProjectManager:
         """Delete a project. With purge=True, also delete the output directory."""
         project = self.load(name)
         if not project:
-            raise ValueError(f"Project '{name}' not found")
+            msg = f"Project '{name}' not found"
+            raise ValueError(msg)
 
         if purge and project.output_path.exists():
             # Safety: refuse to delete paths that could cause serious damage.
@@ -740,16 +749,18 @@ class ProjectManager:
             if (output == home or output == Path("/")
                     or len(output.parts) < 3
                     or home.is_relative_to(output)):
-                raise ValueError(f"Refusing to delete suspicious path: {output}")
+                msg = f"Refusing to delete suspicious path: {output}"
+                raise ValueError(msg)
             expected_base = DEFAULT_OUTPUT_BASE.resolve()
             try:
                 output.relative_to(expected_base)
             except ValueError:
-                raise ValueError(
+                msg = (
                     f"Refusing to delete output path {output} outside the "
                     f"expected base {expected_base}. Use --no-purge or "
                     f"clean the directory by hand."
-                ) from None
+                )
+                raise ValueError(msg) from None
             try:
                 shutil.rmtree(project.output_path)
             except FileNotFoundError:
@@ -771,11 +782,13 @@ class ProjectManager:
         self._validate_name(new_name)
         project = self.load(old_name)
         if not project:
-            raise ValueError(f"Project '{old_name}' not found")
+            msg = f"Project '{old_name}' not found"
+            raise ValueError(msg)
 
         new_file = self.projects_dir / f"{new_name}.json"
         if new_file.exists():
-            raise ValueError(f"Project '{new_name}' already exists")
+            msg = f"Project '{new_name}' already exists"
+            raise ValueError(msg)
 
         # Update project
         project.name = new_name
@@ -826,7 +839,8 @@ class ProjectManager:
     def _load_or_raise(self, name: str) -> Project:
         project = self.load(name)
         if not project:
-            raise ValueError(f"Project '{name}' not found")
+            msg = f"Project '{name}' not found"
+            raise ValueError(msg)
         return project
 
     def _mutation_lock(self, name: str):
@@ -877,7 +891,8 @@ class ProjectManager:
         """Update project notes."""
         project = self.load(name)
         if not project:
-            raise ValueError(f"Project '{name}' not found")
+            msg = f"Project '{name}' not found"
+            raise ValueError(msg)
 
         project.notes = notes
         save_json(self.projects_dir / f"{name}.json", project.to_dict())
@@ -893,12 +908,14 @@ class ProjectManager:
         project = self.load(name)
         if not project:
             if not target:
-                raise ValueError(f"Project '{name}' not found. Use --target to create it.")
+                msg = f"Project '{name}' not found. Use --target to create it."
+                raise ValueError(msg)
             project = self.create(name, target, output_dir=output_dir)
 
         src = Path(directory).resolve()
         if not src.exists():
-            raise ValueError(f"Directory not found: {directory}")
+            msg = f"Directory not found: {directory}"
+            raise ValueError(msg)
 
         from core.run import generate_run_metadata, is_run_directory
 
@@ -954,14 +971,17 @@ class ProjectManager:
         """
         project = self.load(name)
         if not project:
-            raise ValueError(f"Project '{name}' not found")
+            msg = f"Project '{name}' not found"
+            raise ValueError(msg)
 
         if not to_path:
-            raise ValueError("--to is required: specify where to move the run")
+            msg = "--to is required: specify where to move the run"
+            raise ValueError(msg)
 
         run_dir = project.output_path / run_name
         if not run_dir.exists():
-            raise ValueError(f"Run '{run_name}' not found in project '{name}'")
+            msg = f"Run '{run_name}' not found in project '{name}'"
+            raise ValueError(msg)
 
         dest = Path(to_path)
         dest.mkdir(parents=True, exist_ok=True)

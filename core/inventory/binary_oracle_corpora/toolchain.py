@@ -111,9 +111,11 @@ def check_compatible(
     Warns or raises (``fail=True``) when below. Returns True on pass."""
     if not version_text:
         if fail:
-            raise RuntimeError(
+            msg = (
                 f"{label}: tool not found; precision corpus requires "
-                f">= {minimum[0]}.{minimum[1]}")
+                f">= {minimum[0]}.{minimum[1]}"
+            )
+            raise RuntimeError(msg)
         logger.warning(
             "%s: tool not found; precision report will lack a"
             " calibrated baseline", label)

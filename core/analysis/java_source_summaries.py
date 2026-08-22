@@ -226,12 +226,14 @@ def _classify_source_return(
     node = expr
     while True:
         if id(node) in seen:
-            raise _Refused("cyclic local chain")
+            msg = "cyclic local chain"
+            raise _Refused(msg)
         seen.add(id(node))
         if node.type == "parenthesized_expression":
             inner = next((c for c in node.children if c.is_named), None)
             if inner is None:
-                raise _Refused("empty parenthesized return")
+                msg = "empty parenthesized return"
+                raise _Refused(msg)
             node = inner
             continue
         if node.type == _IDENT:
@@ -239,7 +241,8 @@ def _classify_source_return(
             if name in locals_map:
                 node = locals_map[name]
                 continue
-            raise _Refused("return of non-derivable identifier")
+            msg = "return of non-derivable identifier"
+            raise _Refused(msg)
         if node.type == _INVOCATION:
             mname = _text(node.child_by_field_name("name"))
             obj = node.child_by_field_name("object")
@@ -253,11 +256,14 @@ def _classify_source_return(
                 if obj.type == _FIELD_ACCESS and _text(obj).startswith("this."):
                     if _text(obj)[len("this."):] in frozen_fields:
                         return "field"
-                raise _Refused("source call on unproven receiver")
+                msg = "source call on unproven receiver"
+                raise _Refused(msg)
             if obj is None and (mname, argc) in composable:
                 return "compose"
-            raise _Refused("wrapped_call")
-        raise _Refused(f"unsupported return shape: {node.type}")
+            msg = "wrapped_call"
+            raise _Refused(msg)
+        msg = f"unsupported return shape: {node.type}"
+        raise _Refused(msg)
 
 
 def derive_source_summaries(java_source: str) -> DeriveResult:

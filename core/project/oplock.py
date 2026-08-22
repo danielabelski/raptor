@@ -171,10 +171,13 @@ def project_op_lock(project_dir: Path, operation: str,
                     time.sleep(_POLL_INTERVAL_S)
         if not acquired:
             holder = read_holder(lock_path)
-            raise OpLockContention(
+            msg = (
                 f"project is locked by another operation "
                 f"({describe_holder(holder)}) — retry shortly or pass "
-                f"--wait",
+                f"--wait"
+            )
+            raise OpLockContention(
+                msg,
                 holder,
             )
         _stamp_holder(fd, operation)

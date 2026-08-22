@@ -151,7 +151,8 @@ def annotate_all(
 def _parse(path: Path) -> ContextMap:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise json.JSONDecodeError("expected dict at top level", "", 0)
+        msg = "expected dict at top level"
+        raise json.JSONDecodeError(msg, "", 0)
     entry_point_files = _extract_files(raw.get("entry_points", []))
     sink_files = _extract_files(raw.get("sink_details", []))
     boundary_files = _extract_files(raw.get("boundary_details", []))

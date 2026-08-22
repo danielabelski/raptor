@@ -37,14 +37,12 @@ def bv_to_int(raw: int, width: int, signed: bool) -> int:
       a hand-constructed test). Same: silent truncation hides the bug.
     """
     if width <= 0:
-        raise ValueError(
-            f"bv_to_int: width={width} must be positive (degenerate decl?)"
-        )
+        msg = f"bv_to_int: width={width} must be positive (degenerate decl?)"
+        raise ValueError(msg)
     upper = 1 << width
     if not 0 <= raw < upper:
-        raise ValueError(
-            f"bv_to_int: raw={raw} out of range [0, {upper}) for width={width}"
-        )
+        msg = f"bv_to_int: raw={raw} out of range [0, {upper}) for width={width}"
+        raise ValueError(msg)
     if signed and raw >= (1 << (width - 1)):
         return raw - upper
     return raw

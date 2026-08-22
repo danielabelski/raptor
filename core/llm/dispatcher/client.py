@@ -223,16 +223,16 @@ def read_token(fd: int | None = None) -> str:
     if fd is None:
         env = os.environ.get("RAPTOR_LLM_TOKEN_FD")
         if env is None:
-            raise RuntimeError(
+            msg = (
                 "RAPTOR_LLM_TOKEN_FD not set — worker must be spawned via "
                 "core.llm.dispatcher.spawn_worker"
             )
+            raise RuntimeError(msg)
         try:
             fd = int(env)
         except (ValueError, TypeError):
-            raise RuntimeError(
-                f"RAPTOR_LLM_TOKEN_FD is not a valid fd number: {env!r}"
-            ) from None
+            msg = f"RAPTOR_LLM_TOKEN_FD is not a valid fd number: {env!r}"
+            raise RuntimeError(msg) from None
     try:
         # 64 bytes is plenty for a 32-byte url-safe token.
         raw = os.read(fd, 64)
@@ -244,10 +244,11 @@ def read_token(fd: int | None = None) -> str:
             # which IS the token. Re-raise with a generic message
             # so a traceback in operator logs never leaks the
             # credential. Reason ("encoding" / "position") is safe.
-            raise RuntimeError(
+            msg = (
                 f"RAPTOR_LLM_TOKEN_FD payload was not ASCII "
                 f"({e.reason} at position {e.start})"
-            ) from None
+            )
+            raise RuntimeError(msg) from None
         finally:
             # Drop the buffer reference before propagating any error
             # so a `pdb` post-mortem doesn't surface the raw bytes
@@ -257,7 +258,8 @@ def read_token(fd: int | None = None) -> str:
     finally:
         os.close(fd)
     if not token:
-        raise RuntimeError("RAPTOR_LLM_TOKEN_FD pipe was empty")
+        msg = "RAPTOR_LLM_TOKEN_FD pipe was empty"
+        raise RuntimeError(msg)
     return token
 
 
@@ -327,10 +329,11 @@ def _resolve_socket_and_token(
     if socket_path is None:
         env = os.environ.get("RAPTOR_LLM_SOCKET")
         if env is None:
-            raise RuntimeError(
+            msg = (
                 "RAPTOR_LLM_SOCKET not set — worker must be spawned via "
                 "core.llm.dispatcher.spawn_worker"
             )
+            raise RuntimeError(msg)
         socket_path = env
     if token is None:
         token = _get_or_read_token()
@@ -410,10 +413,11 @@ def make_bedrock_client(
     import anthropic
 
     if api not in ("mantle", "runtime"):
-        raise ValueError(
+        msg = (
             f"make_bedrock_client: api must be 'mantle' or 'runtime', "
             f"got {api!r}"
         )
+        raise ValueError(msg)
     socket_path, token = _resolve_socket_and_token(socket_path, token)
     http = _make_httpx_client(socket_path, token, timeout=timeout)
     return anthropic.Anthropic(
@@ -510,10 +514,11 @@ def _child_admin_request(
     try:
         resp = http.post(f"http://_/_child/{op}", json=payload)
     except httpx.HTTPError as exc:
-        raise RuntimeError(
+        msg = (
             f"LLM dispatcher unreachable for child-token {op} "
             f"({type(exc).__name__}) — is the dispatcher running?"
-        ) from exc
+        )
+        raise RuntimeError(msg) from exc
     finally:
         http.close()
     try:
@@ -521,12 +526,14 @@ def _child_admin_request(
     except ValueError:
         data = {}
     if resp.status_code != 200:
-        raise RuntimeError(
+        msg = (
             f"child-token {op} refused ({resp.status_code}): "
             f"{data.get('error', 'unknown error')}"
         )
+        raise RuntimeError(msg)
     if not isinstance(data, dict):
-        raise RuntimeError(f"child-token {op}: malformed response")
+        msg = f"child-token {op}: malformed response"
+        raise RuntimeError(msg)
     return data
 
 

@@ -57,13 +57,15 @@ def load_rows(rows_file: str):
         rows = data.get("rows")
         if isinstance(rows, list):
             return rows
-        raise ValueError(
+        msg = (
             "JSON object has no 'rows' list — expected raptor-bq-query "
             "envelope or a bare list of rows"
         )
+        raise ValueError(msg)
     if isinstance(data, list):
         return data
-    raise ValueError("rows input must be a JSON object or list")
+    msg = "rows input must be a JSON object or list"
+    raise ValueError(msg)
 
 
 def main() -> int:

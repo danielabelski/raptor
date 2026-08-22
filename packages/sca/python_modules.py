@@ -247,7 +247,8 @@ class _RangedHTTPFile:
         elif whence == io.SEEK_END:
             self._pos = self._size + offset
         else:
-            raise ValueError(f"invalid whence: {whence}")
+            msg = f"invalid whence: {whence}"
+            raise ValueError(msg)
         # Clamp into [0, size]; zipfile probes EOF with negative seeks.
         self._pos = max(self._pos, 0)
         self._pos = min(self._pos, self._size)
@@ -270,10 +271,11 @@ class _RangedHTTPFile:
         # wheel in memory and the caller's offset assumptions are
         # wrong; abort.
         if resp.status == 200:
-            raise _RangeNotSupported(
+            msg = (
                 f"server returned 200 to Range request for {self._url} "
                 f"— partial-fetch parse not possible"
             )
+            raise _RangeNotSupported(msg)
         body = resp.body
         self._pos += len(body)
         return body

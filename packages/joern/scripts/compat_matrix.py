@@ -196,10 +196,11 @@ def _verify_pin(
     if expected is None:
         return False
     if expected.lower() != digest.lower():
-        raise RuntimeError(
+        msg = (
             f"sha256 mismatch for {tag}/{asset_name}: pinned "
             f"{expected}, downloaded {digest} — refusing to extract"
         )
+        raise RuntimeError(msg)
     return True
 
 
@@ -230,11 +231,11 @@ def _download(tag: str, dest: Path) -> tuple[str, str]:
             continue
         size = dest.stat().st_size
         if size < _MIN_ARCHIVE_BYTES:
-            raise RuntimeError(
-                f"download too small ({size} bytes) — bad asset?"
-            )
+            msg = f"download too small ({size} bytes) — bad asset?"
+            raise RuntimeError(msg)
         return asset_name, digest.hexdigest()
-    raise RuntimeError(f"no downloadable asset for {tag}: {last_err}")
+    msg = f"no downloadable asset for {tag}: {last_err}"
+    raise RuntimeError(msg)
 
 
 def _extract(archive: Path, dest: Path) -> Path:
@@ -248,7 +249,8 @@ def _extract(archive: Path, dest: Path) -> Path:
     for launcher in dest.rglob("joern"):
         if launcher.is_file():
             return launcher.parent
-    raise RuntimeError("no joern launcher in extracted archive")
+    msg = "no joern launcher in extracted archive"
+    raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -436,10 +438,11 @@ def main() -> int:
             if args.require_pinned and not pinned:
                 # The tag had SOME pin (pre-download gate passed) but
                 # the asset actually served isn't the pinned one.
-                raise RuntimeError(
+                msg = (
                     f"asset {asset_name} for {tag} has no pin "
                     f"(--require-pinned); sha256={digest}"
                 )
+                raise RuntimeError(msg)
             if not pinned:
                 if args.update_pins:
                     pins[_pin_key(tag, asset_name)] = digest

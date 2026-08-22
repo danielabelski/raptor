@@ -46,16 +46,14 @@ _REPO_SLUG_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 def _validated_slug(repo: str) -> str:
     if not _REPO_SLUG_RE.fullmatch(repo or ""):
-        raise UpstreamLookupError(
-            f"GitHub repo slug refused: {repo!r} is not owner/name"
-        )
+        msg = f"GitHub repo slug refused: {repo!r} is not owner/name"
+        raise UpstreamLookupError(msg)
     # The character class admits dots, so all-dot components ("." /
     # "..") would pass the shape check while still traversing the URL
     # path — refuse them explicitly.
     if any(set(part) == {"."} for part in repo.split("/")):
-        raise UpstreamLookupError(
-            f"GitHub repo slug refused: {repo!r} is not owner/name"
-        )
+        msg = f"GitHub repo slug refused: {repo!r} is not owner/name"
+        raise UpstreamLookupError(msg)
     return repo
 
 logger = logging.getLogger(__name__)
@@ -105,14 +103,12 @@ def latest_release(
         github_token=github_token,
     )
     if not isinstance(data, dict):
-        raise UpstreamLookupError(
-            f"GitHub /releases/latest for {repo} returned non-object"
-        )
+        msg = f"GitHub /releases/latest for {repo} returned non-object"
+        raise UpstreamLookupError(msg)
     tag = data.get("tag_name")
     if not isinstance(tag, str) or not tag.strip():
-        raise UpstreamLookupError(
-            f"GitHub /releases/latest for {repo} missing tag_name"
-        )
+        msg = f"GitHub /releases/latest for {repo} missing tag_name"
+        raise UpstreamLookupError(msg)
     return tag.strip()
 
 
@@ -149,16 +145,14 @@ def resolve_tag_to_sha(
         github_token=github_token,
     )
     if not isinstance(data, dict):
-        raise UpstreamLookupError(
-            f"GitHub /git/refs/tags/{tag} for {repo} returned non-object"
-        )
+        msg = f"GitHub /git/refs/tags/{tag} for {repo} returned non-object"
+        raise UpstreamLookupError(msg)
     obj = data.get("object") or {}
     sha = obj.get("sha")
     obj_type = obj.get("type")
     if not isinstance(sha, str) or len(sha) != 40:
-        raise UpstreamLookupError(
-            f"GitHub /git/refs/tags/{tag} for {repo} missing sha"
-        )
+        msg = f"GitHub /git/refs/tags/{tag} for {repo} missing sha"
+        raise UpstreamLookupError(msg)
     if obj_type == "tag":
         # Annotated tag — chase the tag object to get the
         # underlying commit SHA.
@@ -169,15 +163,13 @@ def resolve_tag_to_sha(
             github_token=github_token,
         )
         if not isinstance(tag_data, dict):
-            raise UpstreamLookupError(
-                f"GitHub /git/tags/{sha} for {repo} returned non-object"
-            )
+            msg = f"GitHub /git/tags/{sha} for {repo} returned non-object"
+            raise UpstreamLookupError(msg)
         inner_obj = tag_data.get("object") or {}
         inner_sha = inner_obj.get("sha")
         if not isinstance(inner_sha, str) or len(inner_sha) != 40:
-            raise UpstreamLookupError(
-                f"GitHub /git/tags/{sha} for {repo} missing inner sha"
-            )
+            msg = f"GitHub /git/tags/{sha} for {repo} missing inner sha"
+            raise UpstreamLookupError(msg)
         return inner_sha
     return sha
 
@@ -210,18 +202,16 @@ def latest_tag(
         github_token=github_token,
     )
     if not isinstance(data, list):
-        raise UpstreamLookupError(
-            f"GitHub /tags for {repo} returned non-list"
-        )
+        msg = f"GitHub /tags for {repo} returned non-list"
+        raise UpstreamLookupError(msg)
     names = [
         entry["name"] for entry in data
         if isinstance(entry, dict) and isinstance(entry.get("name"), str)
     ]
     winner = highest_stable(names)
     if winner is None:
-        raise NoStableVersionsFound(
-            f"no stable-semver tags found for {repo}"
-        )
+        msg = f"no stable-semver tags found for {repo}"
+        raise NoStableVersionsFound(msg)
     return winner
 
 
@@ -277,9 +267,8 @@ def _fetch_cached_json(
         # Surface the original error with a more actionable wrapper
         # (the caller cares "did this work" / "did it 404 / 403 /
         # 5xx" — same fail-soft fallthrough either way).
-        raise UpstreamLookupError(
-            f"GitHub fetch failed for {url}: {exc}"
-        ) from exc
+        msg = f"GitHub fetch failed for {url}: {exc}"
+        raise UpstreamLookupError(msg) from exc
     if cache is not None and ttl_seconds > 0:
         cache.put(cache_key, data, ttl_seconds=ttl_seconds)
     return data

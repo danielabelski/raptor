@@ -140,17 +140,19 @@ def run_multi_model(
 
     merged = adapter.merge(per_model_filtered)
     if not isinstance(merged, list):
-        raise TypeError(
+        msg = (
             f"adapter.merge() must return a list; got "
             f"{type(merged).__name__}. Adapter is buggy."
         )
+        raise TypeError(msg)
     _check_unique_ids(merged, adapter)
     correlation = adapter.correlate(merged, per_model_filtered)
     if not isinstance(correlation, dict):
-        raise TypeError(
+        msg = (
             f"adapter.correlate() must return a dict; got "
             f"{type(correlation).__name__}. Adapter is buggy."
         )
+        raise TypeError(msg)
 
     # Local gate state — never mutate the external cost_gate.
     # Transient exceptions from budget_ratio() suspend gating for
@@ -305,47 +307,56 @@ def _validate_inputs(
     cost_gate: CostGate | None,
 ) -> None:
     if not callable(task):
-        raise TypeError(f"task must be callable; got {type(task).__name__}")
+        msg = f"task must be callable; got {type(task).__name__}"
+        raise TypeError(msg)
     if not isinstance(adapter, ItemAdapter):
-        raise TypeError(
+        msg = (
             f"adapter must implement ItemAdapter (item_id, merge, correlate); "
             f"got {type(adapter).__name__}"
         )
+        raise TypeError(msg)
     if not models:
-        raise ValueError("models must be non-empty")
+        msg = "models must be non-empty"
+        raise ValueError(msg)
     for i, m in enumerate(models):
         if not hasattr(m, "model_name") or not isinstance(m.model_name, str):
-            raise TypeError(
+            msg = (
                 f"models[{i}] does not implement ModelHandle "
                 f"(needs str-typed model_name); got {type(m).__name__}"
             )
+            raise TypeError(msg)
         if not m.model_name:
-            raise ValueError(f"models[{i}].model_name must be non-empty")
+            msg = f"models[{i}].model_name must be non-empty"
+            raise ValueError(msg)
     names = [m.model_name for m in models]
     counts = Counter(names)
     dupes = sorted(name for name, c in counts.items() if c > 1)
     if dupes:
-        raise ValueError(f"duplicate model_name(s): {dupes}")
+        msg = f"duplicate model_name(s): {dupes}"
+        raise ValueError(msg)
     _warn_same_weights(names)
     for i, r in enumerate(reviewers):
         if not isinstance(r, Reviewer):
-            raise TypeError(
+            msg = (
                 f"reviewers[{i}] does not implement Reviewer "
                 f"(needs name, cutoff_ratio, review); got {type(r).__name__}"
             )
+            raise TypeError(msg)
         _check_cutoff_ratio(r.cutoff_ratio, f"reviewers[{i}].cutoff_ratio")
     if aggregator is not None:
         if not isinstance(aggregator, Aggregator):
-            raise TypeError(
+            msg = (
                 f"aggregator does not implement Aggregator "
                 f"(needs cutoff_ratio, aggregate); got {type(aggregator).__name__}"
             )
+            raise TypeError(msg)
         _check_cutoff_ratio(aggregator.cutoff_ratio, "aggregator.cutoff_ratio")
     if cost_gate is not None and not isinstance(cost_gate, CostGate):
-        raise TypeError(
+        msg = (
             f"cost_gate does not implement CostGate "
             f"(needs budget_ratio); got {type(cost_gate).__name__}"
         )
+        raise TypeError(msg)
 
 
 def _check_cutoff_ratio(value: Any, label: str) -> None:
@@ -354,9 +365,8 @@ def _check_cutoff_ratio(value: Any, label: str) -> None:
     type — so do an explicit numeric check at the boundary."""
     # bool is a subclass of int; exclude it explicitly.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(
-            f"{label} must be int/float; got {type(value).__name__}"
-        )
+        msg = f"{label} must be int/float; got {type(value).__name__}"
+        raise TypeError(msg)
 
 
 def _check_unique_ids(
@@ -373,18 +383,20 @@ def _check_unique_ids(
     for idx, item in enumerate(merged):
         item_id = adapter.item_id(item)
         if not isinstance(item_id, str) or not item_id:
-            raise TypeError(
+            msg = (
                 f"adapter.item_id() returned {type(item_id).__name__!r} "
                 f"({item_id!r}) for merged[{idx}]; expected non-empty str"
             )
+            raise TypeError(msg)
         ids.append(item_id)
     counts = Counter(ids)
     dupes = sorted(i for i, c in counts.items() if c > 1)
     if dupes:
-        raise ValueError(
+        msg = (
             f"adapter.merge() returned duplicate item_id(s): {dupes}. "
             f"Adapter is buggy."
         )
+        raise ValueError(msg)
 
 
 def _dispatch_parallel(

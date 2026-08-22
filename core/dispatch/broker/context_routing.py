@@ -51,16 +51,18 @@ def select_by_context(
         try:
             limit = _effective_limit(hint.model, headroom)
         except KeyError:
-            raise ContextRoutingError(
+            msg = (
                 f"{hint.model} is not in MODEL_LIMITS — "
                 f"cannot verify context window fit"
-            ) from None
+            )
+            raise ContextRoutingError(msg) from None
         if prompt_tokens > limit:
-            raise ContextRoutingError(
+            msg = (
                 f"{hint.model} context window ({limit:,} usable of "
                 f"{context_window_for(hint.model):,}) cannot fit "
                 f"{prompt_tokens:,} prompt tokens"
             )
+            raise ContextRoutingError(msg)
         return hint.model
 
     if hint and hint.tier == "prefer":
@@ -85,10 +87,11 @@ def select_by_context(
             eligible.append(model)
 
     if not eligible:
-        raise ContextRoutingError(
+        msg = (
             f"no candidate model fits {prompt_tokens:,} prompt tokens "
             f"(candidates: {candidates}, headroom={headroom})"
         )
+        raise ContextRoutingError(msg)
 
     eligible.sort(key=_cost_sort_key)
     return eligible[0]

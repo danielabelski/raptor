@@ -84,8 +84,8 @@ class _RegexRustDriver:
                       and os.access(c, os.X_OK)
                       and "." not in c.name[6:]]  # skip regex-XXX.d / .rmeta
         if not candidates:
-            raise RuntimeError(
-                f"regex-rust: no test binary at {target_dir}/release/deps/")
+            msg = f"regex-rust: no test binary at {target_dir}/release/deps/"
+            raise RuntimeError(msg)
         test_bin = candidates[-1]
 
         live, candidates_set = _liveness_from_llvm_cov(test_bin, profdata)
@@ -110,7 +110,8 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
     logger.info("regex-rust: cloning %s (tag %s) → %s",
                 REGEX_URL, REGEX_TAG, src)
     if not clone_repository(REGEX_URL, src, depth=1):
-        raise RuntimeError(f"regex-rust: clone failed for {REGEX_URL}")
+        msg = f"regex-rust: clone failed for {REGEX_URL}"
+        raise RuntimeError(msg)
     subprocess.run(
         safe_git_command("-C", str(src), "fetch", "--depth", "1",
                          "origin", REGEX_TAG),
@@ -159,8 +160,8 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
          and "." not in c.name[6:]), None,
     )
     if test_bin is None:
-        raise RuntimeError(
-            f"regex-rust: no test binary built at {target_dir}/release/deps/")
+        msg = f"regex-rust: no test binary built at {target_dir}/release/deps/"
+        raise RuntimeError(msg)
 
     profraw_pattern = str(tag_dir / "cov-%p-%m.profraw")
     # The built test binary is untrusted-origin code — run it inside
@@ -174,9 +175,11 @@ def _build_and_run(tag_dir: Path, target_dir: Path, profdata: Path) -> None:
 
     profraw = list(tag_dir.glob("cov-*.profraw"))
     if not profraw:
-        raise RuntimeError(
+        msg = (
             f"regex-rust: no profraw at {profraw_pattern}; coverage "
-            f"instrumentation may be broken")
+            f"instrumentation may be broken"
+        )
+        raise RuntimeError(msg)
 
     profdata_tool = _resolve(_LLVM_PROFDATA_CANDIDATES)
     run_tool(

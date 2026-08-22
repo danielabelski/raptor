@@ -51,9 +51,8 @@ def __getattr__(name: str) -> Any:
     """
     spec = _LAZY_EXPORTS.get(name)
     if spec is None:
-        raise AttributeError(
-            f"module 'core.json' has no attribute {name!r}"
-        )
+        msg = f"module 'core.json' has no attribute {name!r}"
+        raise AttributeError(msg)
     submod_name, attr_name = spec
     import importlib
     # ``submod_name`` is from the module-level ``_LAZY_EXPORTS``

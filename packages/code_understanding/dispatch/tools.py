@@ -79,10 +79,12 @@ class SandboxedTools:
     def for_repo(cls, repo_path: str | Path) -> SandboxedTools:
         # Symmetric with _resolve_inside: NUL byte → clean error.
         if isinstance(repo_path, str) and "\x00" in repo_path:
-            raise ValueError("repo_path contains NUL byte")
+            msg = "repo_path contains NUL byte"
+            raise ValueError(msg)
         root = Path(repo_path).expanduser().resolve(strict=True)
         if not root.is_dir():
-            raise ValueError(f"repo_path is not a directory: {root}")
+            msg = f"repo_path is not a directory: {root}"
+            raise ValueError(msg)
         return cls(repo_root=root)
 
     # ----- handlers -----
@@ -312,18 +314,21 @@ class SandboxedTools:
         Raises _SandboxError if path traversal or symlink escape detected.
         """
         if not isinstance(path, str) or not path:
-            raise _SandboxError("path must be a non-empty string")
+            msg = "path must be a non-empty string"
+            raise _SandboxError(msg)
 
         # NUL byte in path crashes Path.resolve on some systems with a
         # bare ValueError. Catch upfront for a clean error.
         if "\x00" in path:
-            raise _SandboxError("path contains NUL byte")
+            msg = "path contains NUL byte"
+            raise _SandboxError(msg)
 
         # Reject absolute paths outright — model should always be working
         # in repo-relative terms.
         p = Path(path)
         if p.is_absolute():
-            raise _SandboxError(f"absolute paths not allowed: {path}")
+            msg = f"absolute paths not allowed: {path}"
+            raise _SandboxError(msg)
 
         candidate = (self.repo_root / p)
         try:
@@ -333,15 +338,17 @@ class SandboxedTools:
             # then surface as not-found so the model can react.
             resolved = candidate.resolve()
             if not _is_inside(resolved, self.repo_root):
-                raise _SandboxError(
-                    f"path escapes repo_root: {path}"
-                ) from None
-            raise _SandboxError(f"path not found: {path}") from None
+                msg = f"path escapes repo_root: {path}"
+                raise _SandboxError(msg) from None
+            msg = f"path not found: {path}"
+            raise _SandboxError(msg) from None
         except OSError as e:
-            raise _SandboxError(f"resolve failed: {e}") from None
+            msg = f"resolve failed: {e}"
+            raise _SandboxError(msg) from None
 
         if not _is_inside(resolved, self.repo_root):
-            raise _SandboxError(f"path escapes repo_root: {path}")
+            msg = f"path escapes repo_root: {path}"
+            raise _SandboxError(msg)
         return resolved
 
     def _walk_files(self, root: Path):

@@ -157,10 +157,11 @@ class BoostEvidence:
             "inject_context", "annotate",
         }
         if self.action not in valid_actions:
-            raise ContractViolation(
+            msg = (
                 f"BoostEvidence action must be one of {valid_actions}, "
                 f"got {self.action!r}"
             )
+            raise ContractViolation(msg)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -199,12 +200,13 @@ class SuppressEvidence:
 
     def __post_init__(self) -> None:
         if self.source not in _TOOL_MAY_SUPPRESS:
-            raise ContractViolation(
+            msg = (
                 f"SuppressEvidence source {self.source!r} is not in the "
                 f"SUPPRESS_SOURCES allowlist: {sorted(_TOOL_MAY_SUPPRESS)}. "
                 f"Mechanical tools that are not on the allowlist must "
                 f"return BoostEvidence only."
             )
+            raise ContractViolation(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -226,11 +228,12 @@ def assert_boost_only(source: str) -> None:
     both on the allowlist and calling assert_boost_only).
     """
     if source in _TOOL_MAY_SUPPRESS:
-        raise ContractViolation(
+        msg = (
             f"assert_boost_only called for {source!r}, but it IS in "
             f"the suppress allowlist. Remove the assert or the "
             f"allowlist entry."
         )
+        raise ContractViolation(msg)
 
 
 def record_boost(

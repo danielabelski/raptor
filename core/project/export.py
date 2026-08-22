@@ -98,11 +98,12 @@ def _enforce_zip_entry_cap(zip_path: Path) -> None:
     """
     count = peek_total_entries(zip_path)
     if count is not None and count > _MAX_ENTRIES:
-        raise _ZipBombShapeError(
+        msg = (
             f"zip declares {count} entries in EOCD — refusing as "
             f"zip-bomb shape (legitimate RAPTOR project exports have "
             f"<< 1000 entries)"
         )
+        raise _ZipBombShapeError(msg)
 
 
 def _collect_bounded_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
@@ -127,11 +128,12 @@ def _collect_bounded_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     entries: list[zipfile.ZipInfo] = []
     for i, info in enumerate(zf.infolist()):
         if i >= _MAX_ENTRIES:
-            raise _ZipBombShapeError(
+            msg = (
                 f"zip has more than {_MAX_ENTRIES} entries — "
                 f"refusing as zip-bomb shape (legitimate "
                 f"RAPTOR project exports have << 1000 entries)"
             )
+            raise _ZipBombShapeError(msg)
         entries.append(info)
     return entries
 
@@ -221,14 +223,16 @@ def export_project(project_output_dir: Path, dest_path: Path,
     dest_path = Path(dest_path)
 
     if not project_output_dir.is_dir():
-        raise FileNotFoundError(f"Directory not found: {project_output_dir}")
+        msg = f"Directory not found: {project_output_dir}"
+        raise FileNotFoundError(msg)
 
     # Ensure dest has .zip extension
     if dest_path.suffix != ".zip":
         dest_path = dest_path.with_suffix(".zip")
 
     if dest_path.exists() and not force:
-        raise FileExistsError(f"File already exists: {dest_path} (use --force to overwrite)")
+        msg = f"File already exists: {dest_path} (use --force to overwrite)"
+        raise FileExistsError(msg)
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -274,10 +278,11 @@ def _guard_import_output_dir(output_base: Path, project_name: str) -> Path:
     base_resolved = Path(output_base).resolve(strict=False)
     dir_resolved = output_dir.resolve(strict=False)
     if dir_resolved == base_resolved or base_resolved not in dir_resolved.parents:
-        raise ValueError(
+        msg = (
             f"Refusing import: output dir {output_dir} is not a "
             f"strict child of the output base {output_base}"
         )
+        raise ValueError(msg)
     return output_dir
 
 
@@ -371,14 +376,16 @@ def import_project(zip_path: Path, projects_dir: Path,
         output_base = Path("out/projects")
 
     if not zip_path.exists():
-        raise FileNotFoundError(f"Zip file not found: {zip_path}")
+        msg = f"Zip file not found: {zip_path}"
+        raise FileNotFoundError(msg)
 
     # EOCD pre-flight: reject over-cap archives BEFORE the ZipFile
     # constructor reads the entire central directory into memory.
     try:
         _enforce_zip_entry_cap(zip_path)
     except _ZipBombShapeError as e:
-        raise ValueError(f"Unsafe zip file rejected: {e}") from e
+        msg = f"Unsafe zip file rejected: {e}"
+        raise ValueError(msg) from e
 
     # Single zip open: validate, inspect, and extract
     has_common_root = False
@@ -396,17 +403,18 @@ def import_project(zip_path: Path, projects_dir: Path,
             try:
                 bounded_entries = _collect_bounded_infolist(zf)
             except _ZipBombShapeError as e:
-                raise ValueError(f"Unsafe zip file rejected: {e}") from e
+                msg = f"Unsafe zip file rejected: {e}"
+                raise ValueError(msg) from e
             warnings = _check_zip_entries(bounded_entries)
             if warnings:
-                raise ValueError(
-                    f"Unsafe zip file rejected: {'; '.join(warnings)}"
-                )
+                msg = f"Unsafe zip file rejected: {'; '.join(warnings)}"
+                raise ValueError(msg)
 
             # --- Determine structure and check for project metadata ---
             names = zf.namelist()
             if not names:
-                raise ValueError("Empty zip file")
+                msg = "Empty zip file"
+                raise ValueError(msg)
 
             first_part = names[0].split("/")[0]
             has_subdirs = "/" in names[0]
@@ -416,10 +424,11 @@ def import_project(zip_path: Path, projects_dir: Path,
             # Require .project.json — reject non-RAPTOR archives early
             meta_path = f"{first_part}/.project.json" if has_common_root else ".project.json"
             if meta_path not in names:
-                raise ValueError(
+                msg = (
                     "Not a RAPTOR project archive (missing .project.json). "
                     "Use `raptor project export` to create importable archives."
                 )
+                raise ValueError(msg)
 
             # --- Fast-reject on declared size ---
             # Reuse the already-bounded infolist from the cap check
@@ -427,10 +436,11 @@ def import_project(zip_path: Path, projects_dir: Path,
             declared_size = sum(info.file_size for info in bounded_entries)
             max_size = 10 * 1024 * 1024 * 1024  # 10GB
             if declared_size > max_size:
-                raise ValueError(
+                msg = (
                     f"Zip declared size ({declared_size / 1024 / 1024:.0f}MB) exceeds "
                     f"limit ({max_size / 1024 / 1024:.0f}MB)"
                 )
+                raise ValueError(msg)
 
             # --- Read project metadata ---
             if has_common_root:
@@ -438,11 +448,13 @@ def import_project(zip_path: Path, projects_dir: Path,
             try:
                 embedded_meta = json.loads(zf.read(meta_path))
                 if not isinstance(embedded_meta, dict):
-                    raise ValueError("Corrupt .project.json in archive")
+                    msg = "Corrupt .project.json in archive"
+                    raise ValueError(msg)
                 if embedded_meta.get("name"):
                     project_name = embedded_meta["name"]
             except (json.JSONDecodeError, KeyError):
-                raise ValueError("Corrupt .project.json in archive") from None
+                msg = "Corrupt .project.json in archive"
+                raise ValueError(msg) from None
 
             # --- Validate name before any filesystem work ---
             from .project import ProjectManager
@@ -450,13 +462,13 @@ def import_project(zip_path: Path, projects_dir: Path,
             try:
                 mgr._validate_name(project_name)
             except ValueError as e:
-                raise ValueError(f"Cannot import: {e}") from e
+                msg = f"Cannot import: {e}"
+                raise ValueError(msg) from e
 
             existing = mgr.load(project_name)
             if existing and not force:
-                raise ValueError(
-                    f"Project '{project_name}' already exists. Use --force to overwrite."
-                )
+                msg = f"Project '{project_name}' already exists. Use --force to overwrite."
+                raise ValueError(msg)
 
             # --- Prepare output directory ---
             # Anchor extraction at output_base/<VALIDATED project
@@ -533,10 +545,11 @@ def import_project(zip_path: Path, projects_dir: Path,
                     # would exceed remaining budget — saves opening
                     # a stream we'd immediately cancel.
                     if bytes_extracted + info.file_size > max_size:
-                        raise ValueError(
+                        msg = (
                             f"Entry {info.filename!r} ({info.file_size / 1024 / 1024:.0f}MB) "
                             f"would exceed limit ({max_size / 1024 / 1024:.0f}MB)"
                         )
+                        raise ValueError(msg)
                     extract_dest = output_dir
                     target_path = extract_dest / arcrel
                     # Resolve and re-check containment.
@@ -559,11 +572,12 @@ def import_project(zip_path: Path, projects_dir: Path,
                     try:
                         target_resolved.relative_to(extract_dest_resolved)
                     except ValueError:
-                        raise ValueError(
+                        msg = (
                             f"Refusing to extract {info.filename!r}: "
                             f"resolved target {target_resolved} escapes "
                             f"destination {extract_dest_resolved}"
-                        ) from None
+                        )
+                        raise ValueError(msg) from None
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     actual_size = 0
                     with zf.open(info, "r") as src, open(target_path, "wb") as dst:
@@ -574,25 +588,28 @@ def import_project(zip_path: Path, projects_dir: Path,
                             actual_size += len(buf)
                             bytes_extracted += len(buf)
                             if bytes_extracted > max_size:
-                                raise ValueError(
+                                msg = (
                                     f"Extracted size ({bytes_extracted / 1024 / 1024:.0f}MB) "
                                     f"exceeds limit ({max_size / 1024 / 1024:.0f}MB) "
                                     f"during {info.filename!r}"
                                 )
+                                raise ValueError(msg)
                             dst.write(buf)
                     if actual_size != info.file_size:
-                        raise ValueError(
+                        msg = (
                             f"Size mismatch for {info.filename}: "
                             f"header says {info.file_size}, got {actual_size} "
                             f"(corrupted or malicious zip)"
                         )
+                        raise ValueError(msg)
             except Exception:
                 # Clean up partial extraction
                 shutil.rmtree(output_dir, ignore_errors=True)
                 raise
 
     except zipfile.BadZipFile:
-        raise ValueError("Invalid zip file") from None
+        msg = "Invalid zip file"
+        raise ValueError(msg) from None
 
     # Demote restored stamp-less annotations to hint tier BEFORE the
     # project registers (readers must never see un-stamped imports).
@@ -603,9 +620,8 @@ def import_project(zip_path: Path, projects_dir: Path,
         _demote_stampless_imported_annotations(output_dir)
     except Exception as e:
         shutil.rmtree(output_dir, ignore_errors=True)
-        raise ValueError(
-            f"Import failed while stamping restored annotations: {e}"
-        ) from e
+        msg = f"Import failed while stamping restored annotations: {e}"
+        raise ValueError(msg) from e
 
     # Register the project
     target = embedded_meta.get("target", "(imported)") if embedded_meta else "(imported)"

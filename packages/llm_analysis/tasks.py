@@ -34,7 +34,8 @@ def _user_message_from_bundle(bundle) -> str:
     for m in bundle.messages:
         if m.role == "user":
             return m.content
-    raise AssertionError("bundle has no user message")
+    msg = "bundle has no user message"
+    raise AssertionError(msg)
 
 
 def _analysis_system_text(profile: ModelDefenseProfile = CONSERVATIVE) -> str:

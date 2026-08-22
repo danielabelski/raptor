@@ -1310,10 +1310,11 @@ def review_one_function(
     # fail, so paying that prep cost is pure waste — bail out first.
     _budget_client = getattr(config, "llm_budget_client", None)
     if _budget_client is not None and _budget_client.is_budget_exhausted():
-        raise LLMBudgetExceededError(
+        msg = (
             f"LLM budget exceeded before reviewing "
             f"{gap['file']}:{gap['name']} — skipping prep and stopping"
         )
+        raise LLMBudgetExceededError(msg)
 
     # ── Read-only aliases ──────────────────────────────────────────────
     checklist = shared.checklist

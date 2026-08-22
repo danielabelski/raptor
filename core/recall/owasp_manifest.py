@@ -49,14 +49,18 @@ class OwaspManifestError(RuntimeError):
 
 def _verify_clone(clone_dir: Path) -> None:
     if not clone_dir.is_dir():
-        raise OwaspManifestError(
+        msg = (
             f"OWASP Benchmark clone not found at {clone_dir} — "
-            f"{_ACQUIRE_HINT}")
+            f"{_ACQUIRE_HINT}"
+        )
+        raise OwaspManifestError(msg)
     csv_path = clone_dir / _EXPECTED_CSV
     if not csv_path.is_file():
-        raise OwaspManifestError(
+        msg = (
             f"{csv_path} missing — the clone is incomplete; "
-            f"{_ACQUIRE_HINT}")
+            f"{_ACQUIRE_HINT}"
+        )
+        raise OwaspManifestError(msg)
     try:
         proc = subprocess.run(
             ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
@@ -64,16 +68,18 @@ def _verify_clone(clone_dir: Path) -> None:
         )
         head = proc.stdout.strip().lower()
     except (OSError, subprocess.SubprocessError) as exc:
-        raise OwaspManifestError(
-            f"cannot sha-verify {clone_dir}: {exc}") from exc
+        msg = f"cannot sha-verify {clone_dir}: {exc}"
+        raise OwaspManifestError(msg) from exc
     if proc.returncode != 0 or not head:
-        raise OwaspManifestError(
-            f"cannot sha-verify {clone_dir}: {proc.stderr.strip()}")
+        msg = f"cannot sha-verify {clone_dir}: {proc.stderr.strip()}"
+        raise OwaspManifestError(msg)
     if head != OWASP_PINNED_SHA:
-        raise OwaspManifestError(
+        msg = (
             f"{clone_dir} is at {head[:12]}, labels are pinned to "
             f"{OWASP_PINNED_SHA[:12]} — re-checkout the pin "
-            f"({_ACQUIRE_HINT})")
+            f"({_ACQUIRE_HINT})"
+        )
+        raise OwaspManifestError(msg)
 
 
 def _entry(test_name: str, cwe: int) -> dict:
@@ -102,9 +108,11 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
     _verify_clone(clone_dir)
     labels = parse_expected_results(clone_dir / _EXPECTED_CSV)
     if not labels:
-        raise OwaspManifestError(
+        msg = (
             f"no labelled test cases parsed from "
-            f"{clone_dir / _EXPECTED_CSV}")
+            f"{clone_dir / _EXPECTED_CSV}"
+        )
+        raise OwaspManifestError(msg)
 
     wanted = set(cwes) if cwes else None
     expected: list[dict] = []
@@ -125,8 +133,8 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
             clean.append(_entry(test_name, cwe))
 
     if not expected:
-        raise OwaspManifestError(
-            "no expected entries survived the CWE filter")
+        msg = "no expected entries survived the CWE filter"
+        raise OwaspManifestError(msg)
 
     return {
         "schema_version": SCHEMA_VERSION,

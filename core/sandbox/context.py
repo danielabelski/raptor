@@ -685,7 +685,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     if rootfs is not None:
         rootfs = os.path.abspath(rootfs)
         if not os.path.isdir(rootfs):
-            raise ValueError(f"sandbox(rootfs=...): not a directory: {rootfs}")
+            msg = f"sandbox(rootfs=...): not a directory: {rootfs}"
+            raise ValueError(msg)
 
     # Initialize seccomp from the default profile. When the caller passes
     # a specific `profile=`, the value below is overridden; otherwise we
@@ -820,10 +821,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     fake_home_env: dict = {}
     if fake_home:
         if not output:
-            raise ValueError(
+            msg = (
                 "fake_home=True requires output= so the fake home "
                 "directory is in a Landlock-writable location."
             )
+            raise ValueError(msg)
         fake_home_path = os.path.join(output, ".home")
         # Symlink-TOCTOU defence. A sandboxed child has write access
         # to `output`; in a callsite that reuses `output` across
@@ -858,7 +860,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # dir outside `output`), a FIFO (→ parent's chmod/stat
             # hangs), a socket, or a device node. Refuse to proceed.
             if not stat.S_ISDIR(_st.st_mode) or stat.S_ISLNK(_st.st_mode):
-                raise ValueError(
+                msg = (
                     f"fake_home refuses to materialise: {_p!r} exists "
                     f"but is not a regular directory "
                     f"(mode=0o{_st.st_mode:o}). A prior sandboxed "
@@ -866,6 +868,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     f"parent-side file operations or cause a hang. "
                     f"Clean the output dir or use a fresh one."
                 )
+                raise ValueError(msg)
         os.makedirs(fake_home_path, mode=0o700, exist_ok=True)
         # Override HOME and the XDG base dirs so that tools which
         # resolve ~ or $XDG_CONFIG_HOME etc. land inside the fake
@@ -900,16 +903,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     _proxy_lane_dir: str | None = None
     _proxy_forwarder_port: int | None = None
     if loopback_unix_bridges and not use_egress_proxy:
-        raise ValueError(
+        msg = (
             "loopback_unix_bridges requires use_egress_proxy=True — "
             "the bridge relay rides the netns egress tier."
         )
+        raise ValueError(msg)
     if use_egress_proxy:
         if not proxy_hosts:
-            raise ValueError(
+            msg = (
                 "use_egress_proxy=True requires proxy_hosts=[...] "
                 "— an empty allowlist would block every connection."
             )
+            raise ValueError(msg)
 
         from . import proxy as _proxy_mod
         proxy_instance = _proxy_mod.get_proxy(proxy_hosts)
@@ -1051,7 +1056,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             and not _degraded_ok
         ):
             from .errors import SandboxSetupError
-            raise SandboxSetupError(
+            msg = (
                 'use_egress_proxy with require_proxy_netns=True needs the '
                 'netns egress tier, but it is unavailable on this host '
                 '(mount-ns / user-ns capability missing). The port-scoped '
@@ -1061,6 +1066,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 'restore the netns tier, or set '
                 'RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to accept the weaker tier.'
             )
+            raise SandboxSetupError(msg)
 
         if _use_proxy_netns:
             # Netns enforcement: the child gets CLONE_NEWNET; the
@@ -1160,13 +1166,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # caller decides whether to fall back.
         if loopback_unix_bridges and not _use_proxy_netns:
             from .errors import SandboxSetupError
-            raise SandboxSetupError(
+            msg = (
                 "loopback_unix_bridges requires the netns egress tier "
                 "(netns capability or the mount-ns spawn backend is "
                 "unavailable on this host, or the proxy unix lane "
                 "failed to bind) — refusing to run the child without "
                 "its bridged loopback service."
             )
+            raise SandboxSetupError(msg)
         # Bridged children must reach their loopback service DIRECT —
         # routing 127.0.0.1 through the CONNECT proxy would be denied
         # (gate 2 rejects loopback targets by design). Everything
@@ -1239,10 +1246,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             profile = "none"
     if profile is not None:
         if profile not in PROFILES:
-            raise ValueError(
+            msg = (
                 f"Unknown sandbox profile {profile!r}. "
                 f"Valid profiles: {sorted(PROFILES)}."
             )
+            raise ValueError(msg)
         p = PROFILES[profile]
         if block_network is _UNSET:
             block_network = p["block_network"]
@@ -1277,10 +1285,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # --sandbox flag chose this profile must be reconciled by
             # the operator, not silently overridden in either direction.
             from .errors import SandboxSetupError
-            raise SandboxSetupError(
+            msg = (
                 f"sandbox(rootfs=...) is incompatible with profile "
                 f"{profile!r} (no mount namespace under this profile) "
-                f"— refusing to run against the host filesystem.",
+                f"— refusing to run against the host filesystem."
+            )
+            raise SandboxSetupError(
+                msg,
                 "use profile 'full'/'strict'/'debug' (or drop the "
                 "--sandbox override) for image-rootfs runs.",
             )
@@ -1325,11 +1336,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # missing userns/mount capability.
     if rootfs is not None and not use_mount:
         from .errors import SandboxSetupError
-        raise SandboxSetupError(
+        msg = (
             "sandbox(rootfs=...) requires the Linux mount-namespace "
             "backend, which cannot engage here (platform, profile "
             "'none'/disabled, or missing unprivileged-userns/mount "
-            "capability) — refusing to run against the host filesystem.",
+            "capability) — refusing to run against the host filesystem."
+        )
+        raise SandboxSetupError(
+            msg,
             "check `sysctl kernel.unprivileged_userns_clone` / AppArmor "
             "userns restrictions, and do not combine rootfs= with "
             "disabled=True or profile='none'.",
@@ -1386,19 +1400,25 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         if not use_sandbox:
             from .errors import SandboxSetupError
             if sys.platform == "darwin":
-                raise SandboxSetupError(
+                msg = (
                     "sandbox profile 'strict' requires the seatbelt "
                     "backend, but sandbox-exec is unavailable or failed "
-                    "its smoke test on this host",
+                    "its smoke test on this host"
+                )
+                raise SandboxSetupError(
+                    msg,
                     "verify /usr/bin/sandbox-exec exists and can run a "
                     "minimal profile; or explicitly choose a profile "
                     "that degrades gracefully (e.g. `--sandbox full`). "
                     "RAPTOR will not silently downgrade for you.",
                 )
             from .probes import ENGAGE_FAIL_INSTRUCTIONS
-            raise SandboxSetupError(
+            msg = (
                 "sandbox profile 'strict' requires namespace isolation, "
-                "but user namespaces are unavailable on this host",
+                "but user namespaces are unavailable on this host"
+            )
+            raise SandboxSetupError(
+                msg,
                 ENGAGE_FAIL_INSTRUCTIONS + " For profile 'strict' "
                 "specifically, `--sandbox full` is the explicit "
                 "step-down: it degrades to Landlock + seccomp with "
@@ -1408,9 +1428,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             from .errors import SandboxSetupError
             from .probes import mount_unavailable_reason
             condition, fix = mount_unavailable_reason()
-            raise SandboxSetupError(
+            msg = (
                 "sandbox profile 'strict' requires mount-namespace "
-                f"isolation for target/output, but {condition}",
+                f"isolation for target/output, but {condition}"
+            )
+            raise SandboxSetupError(
+                msg,
                 fix + " Or explicitly choose a profile that degrades "
                 "gracefully (e.g. `--sandbox full`). RAPTOR will not "
                 "silently downgrade for you.",
@@ -1573,10 +1596,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             and (target or output or allowed_tcp_ports)):
         if not check_landlock_available():
             from .errors import SandboxSetupError
-            raise SandboxSetupError(
+            msg = (
                 "Sandbox: target/output/allowed_tcp_ports were set but "
                 "Landlock is unavailable on this kernel — filesystem writes "
-                "and TCP ports would NOT be restricted.",
+                "and TCP ports would NOT be restricted."
+            )
+            raise SandboxSetupError(
+                msg,
                 "Upgrade to kernel 5.13+ for Landlock, pass "
                 "--sandbox network-only to keep namespace/network isolation "
                 "without filesystem restriction, or --sandbox none to "
@@ -1844,11 +1870,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # callers would wrongly assume per-call overrides took effect.
         misused = _SANDBOX_KWARGS & kwargs.keys()
         if misused:
-            raise TypeError(
+            msg_0 = (
                 f"sandbox().run() does not accept sandbox kwargs "
                 f"{sorted(misused)} — isolation is fixed by the enclosing "
                 f"sandbox() context. Open a new sandbox(...) block to change it."
             )
+            raise TypeError(msg_0)
 
         # Audit-mode + missing output= handling. Two distinct cases:
         #
@@ -1875,7 +1902,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         _has_audit_target = bool(output) or bool(audit_run_dir)
         if audit_mode and not _has_audit_target:
             if audit:  # case 1 — explicit per-call kwarg
-                raise ValueError(
+                msg_0 = (
                     "audit mode requires output= or audit_run_dir= so "
                     "the tracer has a directory to write "
                     "sandbox-summary.json into. Pass output=<dir> "
@@ -1884,6 +1911,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     "audit_run_dir=<dir> (audit-only, no Landlock "
                     "impact). run_untrusted() enforces output=."
                 )
+                raise ValueError(msg_0)
             # case 2 — CLI flag + internal helper without output.
             # Silently demote audit for this call only. The state
             # flag stays True for other sandbox calls in the process.
@@ -1927,7 +1955,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         if _audit_dir_problem:
             _src = ("audit_run_dir" if audit_run_dir
                     else "output (audit target fallback)")
-            raise ValueError(
+            msg_0 = (
                 f"audit mode is engaged but the audit target directory "
                 f"from {_src}= {_audit_dir_problem}. The sandbox creates "
                 f"only the .audit/ evidence subdirectory inside it, "
@@ -1937,6 +1965,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 f"previously disabled BOTH the mount-ns containment "
                 f"tier and the requested audit evidence."
             )
+            raise ValueError(msg_0)
 
         # Always use safe env unless caller provided their own.
         # env=None is treated as "no env kwarg" — the subprocess
@@ -2175,12 +2204,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # content, file handles for output) can use `pass_fds=[...]` which
         # is the documented subprocess.run escape hatch.
         if kwargs.get("close_fds") is False:
-            raise TypeError(
+            msg_0 = (
                 "sandbox().run() does not accept close_fds=False — "
                 "inheriting open FDs into the sandboxed child defeats the "
                 "isolation. Use `pass_fds=[fd, ...]` to pass specific FDs "
                 "through while still closing the rest."
             )
+            raise TypeError(msg_0)
         kwargs["close_fds"] = True
 
         # Reject shell=True. subprocess with shell=True reinterprets argv:
@@ -2192,12 +2222,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # if any part is attacker-influenced. Force callers to pass a
         # list of args.
         if kwargs.get("shell"):
-            raise TypeError(
+            msg_0 = (
                 "sandbox().run() does not accept shell=True — pass the "
                 "command as a list of args (e.g. [\"sh\", \"-c\", script]) "
                 "so argv construction stays deterministic and no implicit "
                 "shell expansion happens on attacker-influenced strings."
             )
+            raise TypeError(msg_0)
 
         # pass_fds audit + socket guard. Inherited sockets bypass the
         # seccomp socket() / socketpair() filter entirely — a caller
@@ -2275,15 +2306,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 try:
                     mode = os.fstat(fd).st_mode
                 except OSError as e:
-                    raise TypeError(
+                    msg_0 = (
                         f"sandbox().run(): pass_fds entry fd={fd} is not "
                         f"a valid open file descriptor ({e.__class__.__name__}: {e})"
-                    ) from e
+                    )
+                    raise TypeError(msg_0) from e
                 if _stat.S_ISSOCK(mode):
                     # Sockets stay refused even under pass_fds_declared:
                     # they bypass the seccomp socket-family filter
                     # outright and there is no in-policy socket shape.
-                    raise TypeError(
+                    msg_0 = (
                         f"sandbox().run(): pass_fds entry fd={fd} is a "
                         f"socket. Inherited sockets bypass the seccomp "
                         f"socket() family filter — a compromised child "
@@ -2292,6 +2324,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         f"to pass a pipe for stdin content, use a pipe "
                         f"fd (S_ISFIFO) or pass stdin= directly."
                     )
+                    raise TypeError(msg_0)
                 _problem = _fd_policy_problem(fd)
                 if _problem:
                     if _pass_fds_declared:
@@ -2302,7 +2335,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             "pass_fds_declared=True.", fd, _problem,
                         )
                     else:
-                        raise TypeError(
+                        msg_0 = (
                             f"sandbox().run(): pass_fds entry fd={fd} "
                             f"grants an out-of-policy capability: "
                             f"{_problem}. Inherited fds bypass Landlock "
@@ -2312,6 +2345,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             f"capability grant explicitly, or open the "
                             f"file inside the sandbox's allowed paths."
                         )
+                        raise TypeError(msg_0)
             logger.info(
                 "Sandbox: caller passed pass_fds=%s for %r — these FDs are inherited by the sandboxed child.", kwargs['pass_fds'], ' '.join(cmd[:_CMD_DISPLAY_MAX_ARGS]) or cmd
             )
@@ -2385,9 +2419,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _engages, _engage_reason = check_unshare_engages(_engage_flags)
             if _engages is False:
                 # Definitive kernel refusal (rootless podman / nested userns).
-                raise SandboxSetupError(
+                msg_0 = (
                     f"sandbox namespace setup failed "
-                    f"(unshare {' '.join(_engage_flags)}): {_engage_reason}",
+                    f"(unshare {' '.join(_engage_flags)}): {_engage_reason}"
+                )
+                raise SandboxSetupError(
+                    msg_0,
                     ENGAGE_FAIL_INSTRUCTIONS,
                 )
             if _engages is None:  # noqa: SIM102
@@ -2603,11 +2640,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # against the HOST filesystem. Refuse instead.
         if rootfs is not None and not spawn_eligible:
             from .errors import SandboxSetupError
-            raise SandboxSetupError(
+            msg_0 = (
                 "sandbox(rootfs=...).run() cannot engage the mount-ns "
                 "spawn backend for this call (pass_fds= / input= are "
                 "not plumbed through the fork-based spawn path) — "
-                "refusing to run against the host filesystem.",
+                "refusing to run against the host filesystem."
+            )
+            raise SandboxSetupError(
+                msg_0,
                 "drop pass_fds=/input= (write stdin via stdin=<fd> "
                 "instead) or run without rootfs=.",
             )
@@ -2868,8 +2908,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 if _mac_status is not None and _mac_status[0] == "E":
                     from .errors import SandboxSetupError
                     from .probes import SEATBELT_FAIL_INSTRUCTIONS
+                    msg_0 = f"sandbox seatbelt setup failed: {_mac_status[1]}"
                     raise SandboxSetupError(
-                        f"sandbox seatbelt setup failed: {_mac_status[1]}",
+                        msg_0,
                         SEATBELT_FAIL_INSTRUCTIONS,
                     )
             elif spawn_eligible:
@@ -2881,10 +2922,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         # disagrees — the Landlock-only fallback below
                         # would run against the host filesystem.
                         from .errors import SandboxSetupError
-                        raise SandboxSetupError(
+                        msg_0 = (
                             "sandbox(rootfs=...): mount-ns spawn backend "
                             "unavailable — refusing to run against the "
-                            "host filesystem.",
+                            "host filesystem."
+                        )
+                        raise SandboxSetupError(
+                            msg_0,
                             "check unprivileged-userns support "
                             "(kernel.unprivileged_userns_clone, AppArmor "
                             "userns restrictions) and uidmap tooling.",
@@ -3043,9 +3087,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             _instr = (ENGAGE_FAIL_INSTRUCTIONS
                                       if _setup_status[0] == "U"
                                       else LAYER_FAIL_INSTRUCTIONS)
-                            raise SandboxSetupError(
+                            msg_0 = (
                                 f"sandbox {_layer} setup failed in the spawn "
-                                f"child: {_setup_status[1]}",
+                                f"child: {_setup_status[1]}"
+                            )
+                            raise SandboxSetupError(
+                                msg_0,
                                 _instr,
                             )
                         # Degrade-to-Landlock-only on a mount-ns ('M') or
@@ -3072,12 +3119,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             # interpreter/loader is missing there.
                             if rootfs is not None:
                                 from .errors import SandboxSetupError
-                                raise SandboxSetupError(
+                                msg_0 = (
                                     f"sandbox(rootfs=...): mount-ns "
                                     f"setup or exec inside the image "
                                     f"rootfs failed: {_setup_status[1]} "
                                     f"— refusing the Landlock-only "
-                                    f"host-filesystem fallback.",
+                                    f"host-filesystem fallback."
+                                )
+                                raise SandboxSetupError(
+                                    msg_0,
                                     "verify the rootfs is a complete "
                                     "unpacked image (loader + libs "
                                     "present) and cmd[0] names a path "
@@ -3219,11 +3269,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     # degrade to running the command on the host fs.
                     if rootfs is not None:
                         from .errors import SandboxSetupError
-                        raise SandboxSetupError(
+                        msg_0 = (
                             f"sandbox(rootfs=...): mount-ns spawn setup "
                             f"failed ({_spawn_err.__class__.__name__}: "
                             f"{_spawn_err}) — refusing the Landlock-only "
-                            f"host-filesystem fallback.",
+                            f"host-filesystem fallback."
+                        )
+                        raise SandboxSetupError(
+                            msg_0,
                             "fix the host (uidmap package, userns "
                             "sysctl, /etc/subuid+/etc/subgid allotment) "
                             "to restore the mount-ns tier.",
@@ -3231,14 +3284,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     _vanished = _audit_target_dir_problem()
                     if _vanished:
                         from .errors import SandboxSetupError
-                        raise SandboxSetupError(
+                        msg_0 = (
                             f"sandbox mount-ns spawn failed "
                             f"({_spawn_err}) and the audit target "
                             f"directory {_vanished} — refusing the "
                             f"Landlock-only fallback: the caller asked "
                             f"for audit evidence and the target dir is "
                             f"gone (caller-input error, not an "
-                            f"environmental degradation).",
+                            f"environmental degradation)."
+                        )
+                        raise SandboxSetupError(
+                            msg_0,
                             "recreate the audit_run_dir/output "
                             "directory (production callers pass "
                             "lifecycle-created run dirs) and retry.",
@@ -3413,13 +3469,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 _vanished = _audit_target_dir_problem()
                                 if _vanished:
                                     from .errors import SandboxSetupError
-                                    raise SandboxSetupError(
+                                    msg_0 = (
                                         f"sandbox Landlock-only audit "
                                         f"tracer failed ({_la_err}) and "
                                         f"the audit target directory "
                                         f"{_vanished} — refusing the "
                                         f"non-audit fallback for a "
-                                        f"caller-input error.",
+                                        f"caller-input error."
+                                    )
+                                    raise SandboxSetupError(
+                                        msg_0,
                                         "recreate the audit_run_dir/"
                                         "output directory and retry.",
                                     ) from _la_err
@@ -3502,12 +3561,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             )
                         if audit_required:
                             from .errors import SandboxSetupError
-                            raise SandboxSetupError(
+                            msg_0 = (
                                 f"audit was requested with "
                                 f"audit_required=True but no audit "
                                 f"tier could engage: {_reason}. "
                                 f"Refusing to run the command without "
-                                f"the requested audit evidence.",
+                                f"the requested audit evidence."
+                            )
+                            raise SandboxSetupError(
+                                msg_0,
                                 _audit_no_engage_instr
                                 or "fix the host's audit "
                                    "prerequisites (userns/libseccomp/"
@@ -3548,13 +3610,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             # Fail loudly instead.
                             _denv_base = _dk.get("env")
                             if _denv_base is None:
-                                raise RuntimeError(
+                                msg_0 = (
                                     "sandbox run(): env staging "
                                     "invariant violated — kwargs['env'] "
                                     "unset at the death-pipe spawn "
                                     "path; refusing to fall back to "
                                     "os.environ for a sandboxed child."
                                 )
+                                raise RuntimeError(msg_0)
                             _denv = dict(_denv_base)
                             _denv["_RAPTOR_DEATH_FD"] = str(_death_r)
                             _dk["env"] = _denv
@@ -4123,11 +4186,12 @@ def run_trusted(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """
     misused = _SANDBOX_KWARGS & kwargs.keys()
     if misused:
-        raise TypeError(
+        msg = (
             f"run_trusted() does not accept sandbox kwargs {sorted(misused)} — "
             f"it always runs with profile='none'. Use run_untrusted(), run() "
             f"or sandbox() for isolated execution."
         )
+        raise TypeError(msg)
     return run(cmd, profile="none", **kwargs)
 
 
@@ -4187,7 +4251,7 @@ def _require_userns_or_optin(entry: str, restrict_reads=True) -> bool:
         )
         return True
     from .errors import SandboxSetupError
-    raise SandboxSetupError(
+    msg = (
         f"{entry}: this host cannot create unprivileged user "
         f"namespaces, so the untrusted-execution contract (PID-ns "
         f"hides host /proc; credential exfil blocked) cannot be met. "
@@ -4197,6 +4261,7 @@ def _require_userns_or_optin(entry: str, restrict_reads=True) -> bool:
         f"RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to explicitly accept "
         f"Landlock/seccomp-only containment."
     )
+    raise SandboxSetupError(msg)
 
 
 def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | None = None,
@@ -4269,11 +4334,12 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     # otherwise the caller thinks they engaged Landlock but got no
     # isolation whatsoever (every downstream check is truthy-based).
     if not (target or output):
-        raise ValueError(
+        msg = (
             "run_untrusted() requires at least one non-empty of target= or "
             "output= so Landlock actually engages. Pass a read-only target "
             "dir and/or a writable output dir."
         )
+        raise ValueError(msg)
     # Fail closed on namespace-less hosts; under the explicit operator
     # override the helper warns on EVERY call (attacker-derived code
     # under a reduced contract) and returns True so the /proc read
@@ -4294,12 +4360,13 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     })
     rejected = set(kwargs.keys()) - _UNTRUSTED_ALLOWED_KWARGS
     if rejected:
-        raise TypeError(
+        msg = (
             f"run_untrusted() does not accept {sorted(rejected)} — "
             f"isolation policy (network, writable_paths, namespace "
             f"controls) is fixed. Use sandbox() directly for varied "
             f"policy."
         )
+        raise TypeError(msg)
     # profile= is a ratchet, not a free choice: only the default
     # ('full') or the stronger fail-closed 'strict' may pass through.
     # Anything weaker (none, network-only, debug, target_run, frida)
@@ -4308,12 +4375,13 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     # as everywhere.
     _profile = kwargs.get("profile")
     if _profile is not None and _profile not in ("full", "strict"):
-        raise TypeError(
+        msg = (
             f"run_untrusted() accepts only profile='strict' or 'full' "
             f"(got {_profile!r}) — weaker profiles would relax the "
             f"untrusted-execution contract. Use sandbox() directly "
             f"for varied policy."
         )
+        raise TypeError(msg)
     # Default stdin to DEVNULL for untrusted code. If the parent's stdin
     # is the operator's TTY (common for interactive RAPTOR use) and the
     # sandboxed target reads stdin, the target gets a live channel to
@@ -4431,16 +4499,18 @@ def run_untrusted_networked(
     hostname-allowlisted egress consumers; see THREAT_MODEL.md.
     """
     if not (target or output):
-        raise ValueError(
+        msg = (
             "run_untrusted_networked() requires at least one non-empty of "
             "target= or output= so Landlock actually engages."
         )
+        raise ValueError(msg)
     if not proxy_hosts:
-        raise ValueError(
+        msg = (
             "run_untrusted_networked() requires proxy_hosts=[...] — "
             "the egress allowlist is mandatory; callers wanting unrestricted "
             "network should use sandbox() directly."
         )
+        raise ValueError(msg)
     # Same degraded-host handling as run_untrusted: fail closed, and
     # under the operator override warn per call + withdraw the /proc
     # read grant.
@@ -4458,11 +4528,12 @@ def run_untrusted_networked(
     })
     rejected = set(kwargs.keys()) - _NETWORKED_ALLOWED_KWARGS
     if rejected:
-        raise TypeError(
+        msg = (
             f"run_untrusted_networked() does not accept {sorted(rejected)} — "
             f"network and isolation policy is fixed to egress-proxy-only. "
             f"Use sandbox() directly for varied policy."
         )
+        raise TypeError(msg)
     if "stdin" not in kwargs and "input" not in kwargs:
         kwargs["stdin"] = subprocess.DEVNULL
     if "start_new_session" not in kwargs:

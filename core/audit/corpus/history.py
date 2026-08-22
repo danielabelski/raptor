@@ -408,10 +408,10 @@ def resolve_run(
         known = ", ".join(
             sorted({r.get("run_id", "") for r in runs}),
         ) or "none recorded"
-        raise ValueError(f"no run matches {token!r} (runs: {known})")
-    raise ValueError(
-        f"run token {token!r} is ambiguous: {', '.join(ids)}"
-    )
+        msg = f"no run matches {token!r} (runs: {known})"
+        raise ValueError(msg)
+    msg = f"run token {token!r} is ambiguous: {', '.join(ids)}"
+    raise ValueError(msg)
 
 
 def _latest_labels(
@@ -894,12 +894,14 @@ def import_results(results_path: Path, store: Path) -> str:
         meta = {}
         rows = raw
     else:
-        raise ValueError(
+        msg = (
             f"{results_path}: not a corpus results file "
             f"(expected a list or a {{meta, results}} wrapper)"
         )
+        raise ValueError(msg)
     if not isinstance(rows, list):
-        raise ValueError(f"{results_path}: results is not a list")
+        msg = f"{results_path}: results is not a list"
+        raise ValueError(msg)
 
     modes = sorted({r.get("mode", "") for r in rows if r.get("mode")})
     config = {

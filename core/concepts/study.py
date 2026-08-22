@@ -2464,14 +2464,16 @@ def _run_one_batch(
             "Phase 2 batch %d/%d wall-timeout (%ds)",
             idx + 1, total, _BATCH_WALL_TIMEOUT,
         )
-        raise _BatchLLMError(f"batch {idx + 1}/{total} wall-timeout")
+        msg = f"batch {idx + 1}/{total} wall-timeout"
+        raise _BatchLLMError(msg)
     except Exception as exc:
         ex.shutdown(wait=False)
         logger.warning(
             "Phase 2 batch %d/%d failed", idx + 1, total,
             exc_info=True,
         )
-        raise _BatchLLMError(f"batch {idx + 1}/{total}: {exc}") from exc
+        msg = f"batch {idx + 1}/{total}: {exc}"
+        raise _BatchLLMError(msg) from exc
     else:
         ex.shutdown(wait=False)
 

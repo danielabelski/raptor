@@ -60,10 +60,11 @@ def _require_clean_hash(witness_hash: str) -> None:
     the intended output tree.
     """
     if not isinstance(witness_hash, str) or not _SHA256_HEX.match(witness_hash):
-        raise ZKPoXBundleError(
+        msg = (
             f"witness_hash {witness_hash!r} is not a sha256 hex "
             f"digest; refusing to use it as a path component"
         )
+        raise ZKPoXBundleError(msg)
 
 
 @dataclass
@@ -135,18 +136,20 @@ def assemble_bundle(
 
     verdict = is_zkpox_eligible(witness)
     if not verdict.eligible:
-        raise ZKPoXBundleError(
+        msg = (
             f"witness {witness.bytes_hash[:16]} ineligible: "
             f"{verdict.reason}"
         )
+        raise ZKPoXBundleError(msg)
 
     # Confirm the bytes are retrievable — a bundle for bytes we
     # can't produce is useless to a prover.
     if store.blob_path(witness.bytes_hash) is None:
-        raise ZKPoXBundleError(
+        msg = (
             f"witness {witness.bytes_hash[:16]} bytes blob missing "
             f"from store; cannot assemble bundle"
         )
+        raise ZKPoXBundleError(msg)
 
     return ZKPoXBundle(
         witness_hash=witness.bytes_hash,

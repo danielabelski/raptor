@@ -59,23 +59,24 @@ def set_failure_mode(
         record). The on-disk file is NOT modified in this case.
     """
     if not record_path.is_file():
-        raise FileNotFoundError(
-            f"set_failure_mode: not a file: {record_path}"
-        )
+        msg = f"set_failure_mode: not a file: {record_path}"
+        raise FileNotFoundError(msg)
     try:
         blob = json.loads(record_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        raise ValueError(
+        msg = (
             f"set_failure_mode: {record_path} is not valid JSON: "
             f"{e.msg} at line {e.lineno} col {e.colno}. "
             f"The record may be corrupt or the path may be a stale "
             f"symlink — investigate before retrying."
-        ) from None
+        )
+        raise ValueError(msg) from None
     if not isinstance(blob, dict):
-        raise ValueError(
+        msg = (
             f"set_failure_mode: {record_path} contains "
             f"{type(blob).__name__}, expected a JSON object"
         )
+        raise ValueError(msg)
     blob["failure_mode"] = mode.value if mode is not None else None
     # Construct first to validate; reject before any write.
     updated = LabeledAttempt.from_dict(blob)

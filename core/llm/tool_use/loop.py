@@ -224,23 +224,26 @@ class ToolUseLoop:
         loaded corpora so a typo can't silently disable
         enforcement."""
         if not provider.supports_tool_use():
-            raise ValueError(
+            msg = (
                 "ToolUseLoop requires a provider with tool-use support; "
                 "the bound model rejects it"
             )
+            raise ValueError(msg)
         self._provider = provider
         self._tools = list(tools)
         self._tools_by_name: dict[str, ToolDef] = {t.name: t for t in tools}
         if len(self._tools_by_name) != len(self._tools):
-            raise ValueError(
+            msg = (
                 "ToolUseLoop tools must have unique names; "
                 "duplicate handler binding would dispatch ambiguously"
             )
+            raise ValueError(msg)
         if terminal_tool is not None and terminal_tool not in self._tools_by_name:
-            raise ValueError(
+            msg = (
                 f"ToolUseLoop terminal_tool {terminal_tool!r} is not in the "
                 "registered tools; loop would never terminate via that path"
             )
+            raise ValueError(msg)
         if not isinstance(max_iterations, int) or max_iterations < 1:
             # Reject 0 (loop terminates before any work is done — looks
             # like a "max iterations hit" outcome but actually no LLM
@@ -249,10 +252,11 @@ class ToolUseLoop:
             # is always False for non-negative iters when max_iter is
             # negative, producing an infinite loop bounded only by the
             # cost / token / wall-clock caps if those happen to be set).
-            raise ValueError(
+            msg = (
                 f"ToolUseLoop max_iterations must be a positive int; "
                 f"got {max_iterations!r}"
             )
+            raise ValueError(msg)
 
         # Validate refuse-on-indicators against loaded corpora so a
         # typo in the consumer's allowlist surfaces at construction
@@ -263,10 +267,11 @@ class ToolUseLoop:
             known = set(loaded_corpora())
             unknown = [c for c in refuse_on_indicators if c not in known]
             if unknown:
-                raise ValueError(
+                msg = (
                     f"ToolUseLoop refuse_on_indicators contains unknown "
                     f"corpora {unknown!r}. Loaded corpora: {sorted(known)!r}"
                 )
+                raise ValueError(msg)
 
         self._system = system
         self._terminal_tool = terminal_tool
@@ -422,10 +427,13 @@ class ToolUseLoop:
                     iterations=iteration,
                     total_cost_usd=total_cost_usd,
                 ))
-                raise CostBudgetExceeded(
+                msg_0 = (
                     f"cost budget ${self._max_cost_usd:.4f} reached "
                     f"(cumulative ${total_cost_usd:.4f}); aborting "
-                    "before next turn",
+                    "before next turn"
+                )
+                raise CostBudgetExceeded(
+                    msg_0,
                     messages=messages,
                     tool_calls_made=tool_calls_made,
                 )
@@ -498,11 +506,14 @@ class ToolUseLoop:
                         iterations=iteration,
                         total_cost_usd=total_cost_usd,
                     ))
-                    raise ContextOverflow(
+                    msg_0 = (
                         f"request estimate ~{request_estimate} tokens "
                         f"would exceed model context window {window}; "
                         "set context_policy=TRUNCATE_OLDEST or shorten "
-                        "input",
+                        "input"
+                    )
+                    raise ContextOverflow(
+                        msg_0,
                         messages=messages,
                         tool_calls_made=tool_calls_made,
                     )
@@ -1120,9 +1131,8 @@ class ToolUseLoop:
                 self._stranded_tool_threads = (
                     self._stranded_tool_threads[-_MAX_STRANDED_TOOL_THREADS:]
                 )
-            raise ToolHandlerTimeout(
-                f"tool {call.name!r} exceeded {self._tool_timeout_s}s timeout"
-            )
+            msg = f"tool {call.name!r} exceeded {self._tool_timeout_s}s timeout"
+            raise ToolHandlerTimeout(msg)
         if "exc" in exc_holder:
             captured = exc_holder["exc"]
             if isinstance(captured, Exception):
@@ -1143,10 +1153,11 @@ class ToolUseLoop:
             # the per-tool error path sees it like any other
             # handler failure; the operator can re-Ctrl-C if they
             # really want to abort.
-            raise RuntimeError(
+            msg = (
                 f"tool {call.name!r} handler raised "
                 f"{type(captured).__name__} (non-Exception BaseException)"
-            ) from captured
+            )
+            raise RuntimeError(msg) from captured
         return ToolResult(tool_use_id=call.id, content=result_holder["text"])
 
     def _estimate_static_tokens(self) -> int:
@@ -1260,11 +1271,14 @@ class ToolUseLoop:
                 total -= per_msg.pop(0)
 
         if total >= window:
-            raise ContextOverflow(
+            msg = (
                 f"request estimate ~{total} tokens still exceeds window "
                 f"{window} after truncating to {len(messages)} message(s); "
                 "the trailing message itself is too large — shorten the "
-                "prompt or use a model with a bigger context",
+                "prompt or use a model with a bigger context"
+            )
+            raise ContextOverflow(
+                msg,
                 messages=messages,
                 tool_calls_made=tool_calls_made,
             )

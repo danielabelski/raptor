@@ -78,9 +78,8 @@ def _resolve_daemon_script() -> Path:
     """Locate the sandbox host daemon script (co-located sibling)."""
     if _DAEMON_SCRIPT.is_file():
         return _DAEMON_SCRIPT
-    raise RuntimeError(
-        f"sandbox daemon not found at {_DAEMON_SCRIPT}"
-    )
+    msg = f"sandbox daemon not found at {_DAEMON_SCRIPT}"
+    raise RuntimeError(msg)
 
 
 class HostRPCError(RuntimeError):
@@ -206,16 +205,18 @@ class SandboxHost:
         try:
             pong = host._rpc({"cmd": "ping"}, timeout=startup_timeout)
             if not pong.get("ok"):
-                raise HostRPCError(f"daemon ping failed: {pong}")
+                msg = f"daemon ping failed: {pong}"
+                raise HostRPCError(msg)
         except Exception as e:
             host.close()
             if not thread.is_alive():
-                raise HostRPCError(
+                msg = (
                     f"daemon died during startup: "
                     f"rc={result_holder.get('returncode')} "
                     f"err={result_holder.get('error')} "
                     f"stderr={result_holder.get('stderr', '')[-800:]!r}"
-                ) from e
+                )
+                raise HostRPCError(msg) from e
             raise
         log.info("sandbox_host started (daemon pid=%s)", pong.get("pid"))
         # The daemon answered, so the spawn happened and the daemon owns
@@ -341,21 +342,25 @@ class SandboxHost:
         try:
             os.write(self._write_fd, hdr + body)
         except OSError as e:
-            raise HostRPCError(f"write to daemon failed: {e}") from e
+            msg = f"write to daemon failed: {e}"
+            raise HostRPCError(msg) from e
 
     def _read_frame(self, *, timeout: float) -> dict:
         deadline = time.monotonic() + timeout
         try:
             hdr = self._read_exact(4, deadline)
         except (OSError, HostRPCError) as e:
-            raise HostRPCError(f"header read failed: {e}") from e
+            msg = f"header read failed: {e}"
+            raise HostRPCError(msg) from e
         (length,) = struct.unpack("!I", hdr)
         if length > 64 * 1024 * 1024:
-            raise HostRPCError(f"daemon frame too large: {length}")
+            msg = f"daemon frame too large: {length}"
+            raise HostRPCError(msg)
         try:
             body = self._read_exact(length, deadline)
         except (OSError, HostRPCError) as e:
-            raise HostRPCError(f"body read failed: {e}") from e
+            msg = f"body read failed: {e}"
+            raise HostRPCError(msg) from e
         return json.loads(body.decode("utf-8"))
 
     def _read_exact(self, n: int, deadline: float) -> bytes:
@@ -363,13 +368,16 @@ class SandboxHost:
         while len(buf) < n:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise HostRPCError(f"read timeout at {len(buf)}/{n}")
+                msg = f"read timeout at {len(buf)}/{n}"
+                raise HostRPCError(msg)
             r, _, _ = select.select([self._read_fd], [], [], remaining)
             if not r:
-                raise HostRPCError(f"read select timeout at {len(buf)}/{n}")
+                msg = f"read select timeout at {len(buf)}/{n}"
+                raise HostRPCError(msg)
             chunk = os.read(self._read_fd, n - len(buf))
             if not chunk:
-                raise HostRPCError("daemon EOF")
+                msg = "daemon EOF"
+                raise HostRPCError(msg)
             buf += chunk
         return buf
 
@@ -430,29 +438,30 @@ def one_shot_call(
             timeout=timeout,
         )
     except Exception as e:
-        raise HostRPCError(
-            f"one-shot daemon spawn failed: {type(e).__name__}: {e}"
-        ) from e
+        msg = f"one-shot daemon spawn failed: {type(e).__name__}: {e}"
+        raise HostRPCError(msg) from e
 
     if not r.stdout:
         stderr_tail = (r.stderr or b"").decode(
             "utf-8", errors="replace",
         )[-800:]
-        raise HostRPCError(
+        msg = (
             f"one-shot daemon produced no stdout (rc={r.returncode}, "
             f"stderr={stderr_tail!r})"
         )
+        raise HostRPCError(msg)
     if len(r.stdout) < 4:
-        raise HostRPCError(
-            f"one-shot response too short: {len(r.stdout)} bytes"
-        )
+        msg = f"one-shot response too short: {len(r.stdout)} bytes"
+        raise HostRPCError(msg)
     (length,) = struct.unpack("!I", r.stdout[:4])
     if length > len(r.stdout) - 4:
-        raise HostRPCError(
+        msg = (
             f"one-shot response truncated: header={length} "
             f"body_bytes={len(r.stdout) - 4}"
         )
+        raise HostRPCError(msg)
     try:
         return json.loads(r.stdout[4:4 + length].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise HostRPCError(f"one-shot response parse failed: {e}") from e
+        msg = f"one-shot response parse failed: {e}"
+        raise HostRPCError(msg) from e

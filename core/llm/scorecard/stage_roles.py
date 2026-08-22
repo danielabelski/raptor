@@ -78,29 +78,29 @@ def stage_role_decision_class(role: str, sub_topic: str = "") -> str:
     greppability and CLI table rendering that splits on newlines.
     """
     if role not in KNOWN_STAGE_ROLES:
-        raise ValueError(
+        msg = (
             f"unknown stage_role {role!r}; add to KNOWN_STAGE_ROLES if "
             f"introducing a new substrate. Known: "
-            f"{sorted(KNOWN_STAGE_ROLES)}",
+            f"{sorted(KNOWN_STAGE_ROLES)}"
         )
+        raise ValueError(msg)
     role_norm = role.strip().lower()
     if not role_norm:
-        raise ValueError("empty role after normalisation")
+        msg = "empty role after normalisation"
+        raise ValueError(msg)
     if sub_topic:
         sub_norm = sub_topic.strip().lower()
         if any(c.isspace() for c in sub_norm):
             # ``isspace`` catches ``" "``, ``"\t"``, ``"\n"``, ``"\r"``,
             # form-feed, vertical-tab, and Unicode whitespace runes.
-            raise ValueError(
-                f"whitespace not allowed in sub_topic {sub_topic!r}",
-            )
+            msg = f"whitespace not allowed in sub_topic {sub_topic!r}"
+            raise ValueError(msg)
         if not sub_norm.isprintable():
             # Non-printable control chars would render as gibberish in
             # logs and break greppability. ``isprintable`` returns
             # False for control chars, DEL, and category-Cc runes.
-            raise ValueError(
-                f"non-printable character in sub_topic {sub_topic!r}",
-            )
+            msg = f"non-printable character in sub_topic {sub_topic!r}"
+            raise ValueError(msg)
         if not sub_norm:
             return role_norm
         return f"{role_norm}:{sub_norm}"

@@ -83,9 +83,11 @@ class LibFuzzerRunner:
     ) -> None:
         self.harness = Path(harness_path).resolve()
         if not self.harness.exists():
-            raise FileNotFoundError(f"Harness binary not found: {harness_path}")
+            msg = f"Harness binary not found: {harness_path}"
+            raise FileNotFoundError(msg)
         if not self.harness.stat().st_mode & 0o111:
-            raise PermissionError(f"Harness is not executable: {harness_path}")
+            msg = f"Harness is not executable: {harness_path}"
+            raise PermissionError(msg)
 
         # Anchor the default output dir to RaptorConfig.get_out_dir()
         # (active project run dir, or the configured output base) —
@@ -107,12 +109,14 @@ class LibFuzzerRunner:
         self.corpus_dir.mkdir(parents=True, exist_ok=True)
         if self.source_corpus_dir:
             if not self.source_corpus_dir.exists():
-                raise FileNotFoundError(f"Corpus directory not found: {corpus_dir}")
+                msg = f"Corpus directory not found: {corpus_dir}"
+                raise FileNotFoundError(msg)
             self._seed_working_corpus(self.source_corpus_dir, self.corpus_dir)
 
         self.dict_path = Path(dict_path).resolve() if dict_path else None
         if self.dict_path and not self.dict_path.exists():
-            raise FileNotFoundError(f"Dictionary not found: {dict_path}")
+            msg = f"Dictionary not found: {dict_path}"
+            raise FileNotFoundError(msg)
 
         self.max_total_time = max_total_time
         self.max_len = max_len

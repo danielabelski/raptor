@@ -68,7 +68,8 @@ class FakeLLMProvider:
     def generate(self, prompt, system_prompt=None, task_type=None, **kw):
         self.calls.append({"prompt_len": len(prompt)})
         if not self._responses:
-            raise RuntimeError("FakeLLMProvider exhausted")
+            msg = "FakeLLMProvider exhausted"
+            raise RuntimeError(msg)
         return self._responses.pop(0)
 
 
@@ -228,7 +229,8 @@ def scenario_6_llm_raises() -> None:
 
     class _Bomb:
         def generate(self, *a, **kw):
-            raise RuntimeError("simulated LLM API timeout")
+            msg = "simulated LLM API timeout"
+            raise RuntimeError(msg)
 
     v = intent_match(
         exploit_code=EXPLOIT_AMBIGUOUS,

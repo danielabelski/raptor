@@ -340,16 +340,18 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
         # "ports" — instead of failing. Must be a list/tuple of ints.
         if allowed_tcp_ports is not None:
             if not isinstance(allowed_tcp_ports, (list, tuple)):
-                raise TypeError(
+                msg = (
                     f"spec['allowed_tcp_ports'] must be list or tuple of "
-                    f"ints, got {type(allowed_tcp_ports).__name__}",
+                    f"ints, got {type(allowed_tcp_ports).__name__}"
                 )
+                raise TypeError(msg)
             for port in allowed_tcp_ports:
                 if not isinstance(port, int) or isinstance(port, bool):
-                    raise TypeError(
+                    msg = (
                         f"spec['allowed_tcp_ports'] entries must be ints, "
-                        f"got {type(port).__name__}",
+                        f"got {type(port).__name__}"
                     )
+                    raise TypeError(msg)
         restrict_reads = bool(spec.get("restrict_reads", False))
         stdin_b64 = spec.get("stdin_b64")
         stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
@@ -373,28 +375,24 @@ def _run_child(role: str, spec: dict[str, Any], result: _ChildResult) -> None:
         output_path = spec.get("output")
         writable_paths = spec.get("writable_paths")
         if writable_paths is not None and not isinstance(writable_paths, list):
-            raise TypeError(
-                f"spec['writable_paths'] must be list, got {type(writable_paths).__name__}",
-            )
+            msg = f"spec['writable_paths'] must be list, got {type(writable_paths).__name__}"
+            raise TypeError(msg)
         readable_paths = spec.get("readable_paths")
         if readable_paths is not None and not isinstance(readable_paths, list):
-            raise TypeError(
-                f"spec['readable_paths'] must be list, got {type(readable_paths).__name__}",
-            )
+            msg = f"spec['readable_paths'] must be list, got {type(readable_paths).__name__}"
+            raise TypeError(msg)
         exclude_tmp_baseline = spec.get("exclude_tmp_baseline")
         etc_overlay = spec.get("etc_overlay")
         if etc_overlay is not None and not isinstance(etc_overlay, dict):
-            raise TypeError(
-                f"spec['etc_overlay'] must be dict, got {type(etc_overlay).__name__}",
-            )
+            msg = f"spec['etc_overlay'] must be dict, got {type(etc_overlay).__name__}"
+            raise TypeError(msg)
         strict_env = spec.get("strict_env")
         env_caller_filtered = spec.get("env_caller_filtered")
         observe = spec.get("observe")
         rootfs = spec.get("rootfs")
         if rootfs is not None and not isinstance(rootfs, str):
-            raise TypeError(
-                f"spec['rootfs'] must be str, got {type(rootfs).__name__}",
-            )
+            msg = f"spec['rootfs'] must be str, got {type(rootfs).__name__}"
+            raise TypeError(msg)
 
         kwargs = {
             "profile": profile,

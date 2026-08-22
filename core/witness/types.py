@@ -151,17 +151,17 @@ class Witness:
         # so a downstream consumer relying on the hash for lookup
         # doesn't fail with a confusing "not found" later.
         if len(self.bytes_hash) != 64:
-            raise ValueError(
+            msg = (
                 f"bytes_hash must be a 64-char SHA-256 hex digest, "
                 f"got {len(self.bytes_hash)} chars: {self.bytes_hash[:16]!r}..."
             )
+            raise ValueError(msg)
         # Verify the hash is actually hex.
         try:
             int(self.bytes_hash, 16)
         except ValueError as exc:
-            raise ValueError(
-                f"bytes_hash must be hex, got {self.bytes_hash[:16]!r}..."
-            ) from exc
+            msg = f"bytes_hash must be hex, got {self.bytes_hash[:16]!r}..."
+            raise ValueError(msg) from exc
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe serialisation. Datetime → ISO string, enums

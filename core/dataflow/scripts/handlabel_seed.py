@@ -330,10 +330,11 @@ def _step(
 ) -> Step:
     lines = _load_lines(repo_root, fixture_path)
     if not (1 <= line <= len(lines)):
-        raise ValueError(
+        msg = (
             f"line {line} out of range for {fixture_path} "
             f"(file has {len(lines)} lines)"
         )
+        raise ValueError(msg)
     snippet = lines[line - 1].strip() or f"line {line}"
     return Step(
         file_path=fixture_path,

@@ -49,18 +49,19 @@ def decompress_single(path, fmt: str,
     """
     opener = _OPENERS.get(fmt)
     if opener is None:
-        raise UnsupportedArchive(f"no single-file decompressor for {fmt!r}")
+        msg = f"no single-file decompressor for {fmt!r}"
+        raise UnsupportedArchive(msg)
     try:
         with opener(Path(path), "rb") as fh:
             data = fh.read(max_bytes + 1)
     except DecompressionLimitExceeded:
         raise
     except Exception as e:  # malformed/truncated stream, decompress error
-        raise ArchiveError(f"{fmt} decompression failed: {e}") from e
+        msg = f"{fmt} decompression failed: {e}"
+        raise ArchiveError(msg) from e
     if len(data) > max_bytes:
-        raise DecompressionLimitExceeded(
-            f"{fmt} stream exceeds {max_bytes} bytes decompressed — refusing as bomb"
-        )
+        msg = f"{fmt} stream exceeds {max_bytes} bytes decompressed — refusing as bomb"
+        raise DecompressionLimitExceeded(msg)
     return data
 
 

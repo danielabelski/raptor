@@ -83,11 +83,12 @@ MEMORY_CORRUPTION_TYPES = frozenset({
 _VULN_TYPES_SET = frozenset(VULN_TYPES)
 _drift = MEMORY_CORRUPTION_TYPES - _VULN_TYPES_SET
 if _drift:
-    raise AssertionError(
+    msg = (
         f"MEMORY_CORRUPTION_TYPES drifted from VULN_TYPES: "
         f"{sorted(_drift)} not in VULN_TYPES. "
         f"Add to VULN_TYPES list or remove from MEMORY_CORRUPTION_TYPES."
     )
+    raise AssertionError(msg)
 
 def needs_feasibility_analysis(vuln_type: str) -> bool:
     """Check if a vuln_type requires Stage E binary feasibility analysis."""

@@ -184,7 +184,8 @@ def _apply_reachability_filters(
             if item.strip()
         }
         if not allowed:
-            raise ValueError("--reachability needs at least one verdict")
+            msg = "--reachability needs at least one verdict"
+            raise ValueError(msg)
 
     if allowed is None and denied is None:
         return rows

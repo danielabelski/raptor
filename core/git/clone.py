@@ -360,11 +360,12 @@ def _validate_writable_path(p: Path, *, role: str) -> None:
         ``/sys/``, ``/run/``) — see the denylist commentary below.
     """
     if not p.is_absolute():
-        raise ValueError(
+        msg = (
             f"{role} must be an absolute path; got {str(p)!r}. Relative "
             f"paths are unsafe here — the sandbox writable scope "
             f"({role}.parent) would be cwd-dependent."
         )
+        raise ValueError(msg)
     # Pre-fix the validator only refused root and direct-children-of-
     # root. It silently accepted paths under sensitive system mounts:
     #
@@ -391,12 +392,13 @@ def _validate_writable_path(p: Path, *, role: str) -> None:
     _DENY_PREFIXES = ("/dev/", "/proc/", "/sys/", "/run/")
     for prefix in _DENY_PREFIXES:
         if _str.startswith(prefix) or _str == prefix.rstrip("/"):
-            raise ValueError(
+            msg = (
                 f"{role}={str(p)!r} is under a system pseudo-fs prefix "
                 f"({prefix}); refusing to grant the sandbox write "
                 f"access. Use /tmp, /var/tmp, $HOME, or a dedicated "
                 f"workspace path instead."
             )
+            raise ValueError(msg)
     # Two checks against root, both required:
     #
     # 1. The RESOLVED form catches `/tmp/work -> /` symlink attacks
@@ -417,17 +419,19 @@ def _validate_writable_path(p: Path, *, role: str) -> None:
     resolved = p.resolve()
     for label, candidate in (("resolved", resolved), ("literal", p)):
         if candidate.parent == candidate:
-            raise ValueError(
+            msg = (
                 f"{role}={str(p)!r} {label}-form is the filesystem "
                 f"root; refusing to grant the sandbox write access "
                 f"to the entire filesystem"
             )
+            raise ValueError(msg)
         if candidate.parent == Path(candidate.anchor):
-            raise ValueError(
+            msg = (
                 f"{role}={str(p)!r} {label}-form has filesystem root "
                 f"as its parent. Sandbox writable scope "
                 f"({role}.parent) would be the entire root filesystem."
             )
+            raise ValueError(msg)
 
 
 def clone_repository(
@@ -461,7 +465,8 @@ def clone_repository(
             f"{redact_url_secrets_only(url)}",
             operation="clone_repository",
         )
-        raise ValueError(f"Invalid or untrusted repository URL: {url}")
+        msg = f"Invalid or untrusted repository URL: {url}"
+        raise ValueError(msg)
     _validate_writable_path(target, role="target")
 
     # Per-invocation config pins (see _SAFE_GIT_OVERRIDES): the clone
@@ -481,10 +486,11 @@ def clone_repository(
     try:
         from core.sandbox import run_untrusted_networked
     except ImportError:
-        raise RuntimeError(
+        msg = (
             "core.sandbox unavailable - git clone refuses to run "
             "without sandbox isolation"
-        ) from None
+        )
+        raise RuntimeError(msg) from None
 
     target.parent.mkdir(parents=True, exist_ok=True)
     proc = run_untrusted_networked(
@@ -501,9 +507,8 @@ def clone_repository(
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
-        raise RuntimeError(
-            f"git clone failed: {stderr or stdout or 'unknown error'}"
-        )
+        msg = f"git clone failed: {stderr or stdout or 'unknown error'}"
+        raise RuntimeError(msg)
     # Host-side materialisation check. git's exit status reports what
     # happened INSIDE the sandbox — under the mount-ns backend the
     # child gets a private tmpfs /tmp, so if the destination isn't
@@ -514,7 +519,7 @@ def clone_repository(
     # clone that only fails at their next (host-side) access, far from
     # the cause. Verify on the HOST that the tree actually landed.
     if not target.is_dir():
-        raise RuntimeError(
+        msg = (
             f"git clone reported success but {target} does not exist "
             f"on the host filesystem — the clone likely landed in the "
             f"sandbox's private /tmp tmpfs because the destination's "
@@ -522,6 +527,7 @@ def clone_repository(
             f"Use a destination at least one level below /tmp (so its "
             f"parent is bind-mountable) or another writable workspace."
         )
+        raise RuntimeError(msg)
     return True
 
 
@@ -571,22 +577,23 @@ def fetch_commit(
             f"{redact_url_secrets_only(url)}",
             operation="fetch_commit",
         )
-        raise ValueError(f"Invalid or untrusted repository URL: {url}")
+        msg = f"Invalid or untrusted repository URL: {url}"
+        raise ValueError(msg)
     _validate_writable_path(repo_dir, role="repo_dir")
     if not _SHA_RE.fullmatch(sha):
         # Defend against ``sha = "--upload-pack=cmd"`` style flag
         # injection at the ``git fetch <repo> <refspec>`` position.
-        raise ValueError(
-            f"Invalid commit SHA shape (expected 4-40 hex chars): {sha!r}"
-        )
+        msg = f"Invalid commit SHA shape (expected 4-40 hex chars): {sha!r}"
+        raise ValueError(msg)
 
     try:
         from core.sandbox import run_untrusted, run_untrusted_networked
     except ImportError:
-        raise RuntimeError(
+        msg = (
             "core.sandbox unavailable - git fetch refuses to run "
             "without sandbox isolation"
-        ) from None
+        )
+        raise RuntimeError(msg) from None
 
     repo_dir.mkdir(parents=True, exist_ok=True)
     env = get_safe_git_env()
@@ -625,10 +632,11 @@ def fetch_commit(
             network=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
+            msg = (
                 f"git init failed: "
                 f"{(proc.stderr or proc.stdout or 'unknown error').strip()}"
             )
+            raise RuntimeError(msg)
 
     # ``remote add`` is idempotent-ish — if origin already exists we
     # rewrite the URL via ``set-url`` so the caller can reuse a
@@ -652,11 +660,12 @@ def fetch_commit(
         if set_proc.returncode != 0:
             add_msg = (add_proc.stderr or add_proc.stdout or "").strip()
             set_msg = (set_proc.stderr or set_proc.stdout or "").strip()
-            raise RuntimeError(
+            msg = (
                 f"git remote add/set-url failed: "
                 f"add={add_msg or 'unknown error'}; "
                 f"set-url={set_msg or 'unknown error'}"
             )
+            raise RuntimeError(msg)
 
     logger.info(
         "git fetch (depth=%d): %s @ %s",
@@ -673,10 +682,11 @@ def fetch_commit(
         network=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
+        msg = (
             f"git fetch failed: "
             f"{(proc.stderr or proc.stdout or 'unknown error').strip()}"
         )
+        raise RuntimeError(msg)
     return True
 
 
@@ -759,15 +769,17 @@ def ls_remote(
     """
     proxy_host_list = list(proxy_hosts)
     if not proxy_host_list:
-        raise ValueError("ls_remote requires non-empty proxy_hosts")
+        msg = "ls_remote requires non-empty proxy_hosts"
+        raise ValueError(msg)
 
     pattern_list = list(patterns) if patterns is not None else []
     for pat in pattern_list:
         if not pat or pat.startswith("-"):
-            raise ValueError(
+            msg = (
                 f"ls_remote: invalid ref pattern {pat!r} (empty or "
                 f"leading dash — could be parsed as a git option)"
             )
+            raise ValueError(msg)
 
     # ``urlparse`` is more honest than a regex for the "is this a
     # safe URL shape" check — handles userinfo, fragments, ports
@@ -777,22 +789,22 @@ def ls_remote(
     try:
         parsed = urlparse(url)
     except ValueError as e:
-        raise ValueError(f"ls_remote: malformed URL: {e}") from None
+        msg = f"ls_remote: malformed URL: {e}"
+        raise ValueError(msg) from None
 
     # ``https`` only — the in-process egress proxy is HTTPS-CONNECT
     # exclusively, so plain ``http://`` would pass this check but
     # fail at the proxy with a confusing transport error. Refuse
     # upfront for a clearer contract.
     if parsed.scheme != "https":
-        raise ValueError(
-            f"ls_remote requires https URL; got scheme={parsed.scheme!r}"
-        )
+        msg = f"ls_remote requires https URL; got scheme={parsed.scheme!r}"
+        raise ValueError(msg)
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError(
-            "ls_remote refuses URLs with userinfo (credentials in URL)"
-        )
+        msg = "ls_remote refuses URLs with userinfo (credentials in URL)"
+        raise ValueError(msg)
     if not parsed.hostname:
-        raise ValueError(f"ls_remote: URL has no hostname: {url!r}")
+        msg = f"ls_remote: URL has no hostname: {url!r}"
+        raise ValueError(msg)
 
     # IDNA round-trip on the hostname for canonicalisation. Pre-fix
     # `parsed.hostname.lower()` worked for ASCII hosts but missed
@@ -819,17 +831,17 @@ def ls_remote(
     # before the subprocess fires.
     allowed_lower = {h.lower() for h in proxy_host_list}
     if host not in allowed_lower:
-        raise ValueError(
-            f"ls_remote: URL host {host!r} not in proxy_hosts allowlist"
-        )
+        msg = f"ls_remote: URL host {host!r} not in proxy_hosts allowlist"
+        raise ValueError(msg)
 
     try:
         from core.sandbox import run_untrusted_networked
     except ImportError:
-        raise RuntimeError(
+        msg = (
             "core.sandbox unavailable - git ls-remote refuses to run "
             "without sandbox isolation"
-        ) from None
+        )
+        raise RuntimeError(msg) from None
 
     # ``ls-remote`` doesn't write to the host filesystem, but
     # ``run_untrusted_networked`` requires a non-empty ``output`` so
@@ -898,9 +910,8 @@ def ls_remote(
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
-        raise RuntimeError(
-            f"git ls-remote failed: {stderr or stdout or 'unknown error'}"
-        )
+        msg = f"git ls-remote failed: {stderr or stdout or 'unknown error'}"
+        raise RuntimeError(msg)
 
     refs: list[tuple[str, str]] = []
     for line in (proc.stdout or "").splitlines():

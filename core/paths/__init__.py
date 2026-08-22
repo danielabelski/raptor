@@ -93,9 +93,8 @@ def to_repo_relative(
     root spelling.
     """
     if outside_root not in ("none", "relative"):
-        raise ValueError(
-            f"outside_root must be 'none' or 'relative', got {outside_root!r}"
-        )
+        msg = f"outside_root must be 'none' or 'relative', got {outside_root!r}"
+        raise ValueError(msg)
     strict = outside_root == "none"
     if strict and not path:
         return None

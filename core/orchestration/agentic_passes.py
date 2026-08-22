@@ -158,7 +158,8 @@ def _run_understand_prepass_unsafe(
         # isn't present (e.g. when build_inventory failed earlier).
         if not _provision_understand_checklist(target, agentic_out_dir,
                                                 understand_dir):
-            raise StageError("checklist build failed")
+            msg = "checklist build failed"
+            raise StageError(msg)
 
     def _check_outputs(understand_dir: Path) -> str | None:
         context_map = understand_dir / "context-map.json"

@@ -47,10 +47,11 @@ class PatternGap:
 
     def __post_init__(self) -> None:
         if self.gap_type not in GAP_TYPES:
-            raise ValueError(
+            msg = (
                 f"gap_type must be one of {sorted(GAP_TYPES)}, "
                 f"got {self.gap_type!r}"
             )
+            raise ValueError(msg)
 
     def to_dict(self) -> dict:
         return {

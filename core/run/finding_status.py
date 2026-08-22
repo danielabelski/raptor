@@ -127,10 +127,11 @@ def set_status(finding: dict, status: str,
     Raises ``ValueError`` on unknown status (deliberate — the
     audit trail's value depends on the enum being closed)."""
     if status not in ALL_STATUSES:
-        raise ValueError(
+        msg = (
             f"finding_status.set_status: unknown status "
             f"{status!r} (valid: {sorted(ALL_STATUSES)})"
         )
+        raise ValueError(msg)
     finding["status"] = status
     if skip_reason is not None:
         finding["skip_reason"] = skip_reason

@@ -237,7 +237,8 @@ class CodeQLAgent:
         self.start_time = time.time()
 
         if not self.repo_path.exists():
-            raise ValueError(f"Repository path does not exist: {repo_path}")
+            msg = f"Repository path does not exist: {repo_path}"
+            raise ValueError(msg)
 
         # Generate output directory
         if out_dir:

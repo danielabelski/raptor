@@ -414,7 +414,8 @@ class SourceBuilder:
         from cve_env.utils.run import run_with_timeout
 
         if not args or args[0] != "git":
-            raise ValueError(f"_run_git expects plain git argv, got {args!r}")
+            msg = f"_run_git expects plain git argv, got {args!r}"
+            raise ValueError(msg)
         argv = (
             safe_git_command(*args[1:])
             if network
@@ -818,7 +819,8 @@ def _core_get(url: str, *, headers: dict[str, str], timeout: int,
 
 def _http_get_json(url: str, *, timeout: int) -> Any:
     if not url.startswith("https://"):
-        raise ValueError(f"_http_get_json requires https:// URL, got: {url!r}")
+        msg = f"_http_get_json requires https:// URL, got: {url!r}"
+        raise ValueError(msg)
     headers = {"Accept": "application/vnd.github+json"}
     headers.update(_github_auth_headers())
     resp = _core_get(url, headers=headers, timeout=timeout,
@@ -839,9 +841,8 @@ def _http_get_json_paginated(url: str, *, timeout: int) -> tuple[Any, str | None
     from the ``Link`` response header (or ``None`` when there is no next page).
     """
     if not url.startswith("https://"):
-        raise ValueError(
-            f"_http_get_json_paginated requires https:// URL, got: {url!r}"
-        )
+        msg = f"_http_get_json_paginated requires https:// URL, got: {url!r}"
+        raise ValueError(msg)
     headers = {"Accept": "application/vnd.github+json"}
     headers.update(_github_auth_headers())
     resp = _core_get(url, headers=headers, timeout=timeout,
@@ -861,7 +862,8 @@ def _http_get_json_paginated(url: str, *, timeout: int) -> tuple[Any, str | None
 
 def _http_get_bytes(url: str, *, timeout: int) -> bytes | None:
     if not url.startswith("https://"):
-        raise ValueError(f"_http_get_bytes requires https:// URL, got: {url!r}")
+        msg = f"_http_get_bytes requires https:// URL, got: {url!r}"
+        raise ValueError(msg)
     resp = _core_get(url, headers=_github_auth_headers(), timeout=timeout,
                      max_bytes=_MAX_TARBALL_BYTES)
     if resp is None or resp.status != 200:

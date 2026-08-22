@@ -62,10 +62,11 @@ def lookup_function(checklist: dict[str, Any], file_path: str, line: int,
 
     after_scheme = strip_file_uri(file_path)
     if os.path.isabs(after_scheme) and not repo_root:
-        raise ValueError(
+        msg = (
             f"lookup_function: absolute file_path={file_path!r} "
             f"requires non-empty repo_root for normalisation"
         )
+        raise ValueError(msg)
 
     norm_path = normalise_path(file_path, repo_root)
 

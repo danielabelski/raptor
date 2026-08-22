@@ -35,7 +35,8 @@ class CrashCollector:
     def __init__(self, crashes_dir: Path):
         self.crashes_dir = Path(crashes_dir)
         if not self.crashes_dir.exists():
-            raise FileNotFoundError(f"Crashes directory not found: {crashes_dir}")
+            msg = f"Crashes directory not found: {crashes_dir}"
+            raise FileNotFoundError(msg)
 
     def collect_crashes(
         self,

@@ -123,27 +123,29 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
     output_dir = Path(output_dir)
     osv_files = sorted(output_dir.glob("*.osv.json"))
     if not osv_files:
-        raise ProvenanceError(
-            f"no *.osv.json in {output_dir} — run /cve-diff first"
-        )
+        msg = f"no *.osv.json in {output_dir} — run /cve-diff first"
+        raise ProvenanceError(msg)
     if len(osv_files) > 1:
-        raise ProvenanceError(
+        msg = (
             f"multiple OSV records in {output_dir} "
             f"({', '.join(p.name for p in osv_files)}); "
             "pass a directory holding exactly one CVE"
         )
+        raise ProvenanceError(msg)
     osv_path = osv_files[0]
     try:
         osv = json.loads(osv_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ProvenanceError(f"unreadable OSV record {osv_path}: {exc}") from exc
+        msg = f"unreadable OSV record {osv_path}: {exc}"
+        raise ProvenanceError(msg) from exc
 
     cve_id = str(osv.get("id", ""))
     if not _CVE_RE.match(cve_id):
-        raise ProvenanceError(
+        msg = (
             f"OSV id {cve_id!r} is not a CVE identifier — "
             "public provenance required for library rules"
         )
+        raise ProvenanceError(msg)
 
     fix_commit = ""
     repository_url = ""
@@ -154,10 +156,11 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
                 if "fixed" in event:
                     fix_commit = str(event["fixed"])
     if not _SHA_RE.match(fix_commit):
-        raise ProvenanceError(
+        msg = (
             f"OSV record for {cve_id} carries no well-formed fix-commit "
             f"SHA (got {fix_commit!r}) — public provenance required"
         )
+        raise ProvenanceError(msg)
 
     db = osv.get("database_specific", {}) or {}
     files: list[CveFixFile] = []

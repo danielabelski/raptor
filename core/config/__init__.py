@@ -53,11 +53,12 @@ class RaptorConfig:
     """
 
     def __init__(self) -> None:
-        raise TypeError(
+        msg = (
             "RaptorConfig is a class-level configuration namespace; "
             "do NOT instantiate. Access members as RaptorConfig.X (or "
             "patch via patch.object(RaptorConfig, ...) in tests)."
         )
+        raise TypeError(msg)
 
     # Version
     #
@@ -883,12 +884,13 @@ class RaptorConfig:
             for prefix in forbidden:
                 # Component-boundary match: equals or starts with `prefix/`.
                 if path_str == prefix or path_str.startswith(prefix + "/"):
-                    raise ValueError(
+                    msg = (
                         f"RAPTOR_OUT_DIR={base!r} resolves under system "
                         f"path {prefix!r}. Refusing to create output there. "
                         f"Set RAPTOR_OUT_DIR to a path under your home or a "
                         f"dedicated work directory."
                     )
+                    raise ValueError(msg)
         # Validate the parent exists. `mkdir(parents=True)` would
         # silently create a deep directory tree under what may be a
         # typo (`RAPTOR_OUT_DIR=/home/raptr/out` — note the missing
@@ -899,12 +901,13 @@ class RaptorConfig:
         # pathed output tree that shows up as "where did my run go?"
         # an hour later.
         if not resolved.exists() and not resolved.parent.exists():
-            raise ValueError(
+            msg = (
                 f"RAPTOR_OUT_DIR={resolved!r} parent directory "
                 f"{str(resolved.parent)!r} does not exist. Refusing to "
                 f"create a deep tree under what may be a typo. Create "
                 f"the parent first or fix the path."
             )
+            raise ValueError(msg)
         return resolved
 
     @staticmethod

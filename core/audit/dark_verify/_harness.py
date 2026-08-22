@@ -42,7 +42,8 @@ _TOKEN_RE = re.compile(r"^[a-f0-9]*$")
 def _checked_token(witness_token: str) -> str:
     token = str(witness_token or "")
     if not _TOKEN_RE.match(token):
-        raise ValueError(f"invalid witness token: {token[:40]!r}")
+        msg = f"invalid witness token: {token[:40]!r}"
+        raise ValueError(msg)
     return token
 
 

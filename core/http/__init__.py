@@ -106,7 +106,8 @@ class Response:
         try:
             return json.loads(self.body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise HttpError(f"Response is not valid JSON: {e}") from e
+            msg = f"Response is not valid JSON: {e}"
+            raise HttpError(msg) from e
 
     # ------------------------------------------------------------------
     # ``requests``-compat shim

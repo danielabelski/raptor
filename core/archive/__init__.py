@@ -44,4 +44,5 @@ def __getattr__(name):
         globals()["DEFAULT_MAX_TOTAL_BYTES"] = DEFAULT_MAX_TOTAL_BYTES
         globals()["extract_to_dir"] = extract_to_dir
         return globals()[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

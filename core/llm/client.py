@@ -1238,12 +1238,13 @@ class LLMClient:
         ``None`` instead).
         """
         if self.config.primary_model is None:
-            raise RuntimeError(
+            msg = (
                 "LLMClient has no primary_model configured; cannot "
                 "expose primary_provider. Use packages.llm_analysis."
                 "get_client() which returns None when no provider is "
                 "available, instead of constructing LLMClient directly."
             )
+            raise RuntimeError(msg)
         return self._get_provider(self.config.primary_model)
 
     @property
@@ -2137,10 +2138,11 @@ class LLMClient:
         """
         # Check budget
         if not self._check_budget():
-            raise LLMBudgetExceededError(
+            msg = (
                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > ${self.config.max_cost_per_scan:.4f} limit. "
                 f"Increase budget with: LLMConfig(max_cost_per_scan={self.config.max_cost_per_scan * 2:.1f})"
             )
+            raise LLMBudgetExceededError(msg)
 
         # Get appropriate model for task (priority: explicit model_config > task_type > primary)
         model_config = kwargs.pop('model_config', None)
@@ -2184,7 +2186,7 @@ class LLMClient:
         # missing model except by configuring one, and an
         # AttributeError mid-stack is no help.
         if model_config is None:
-            raise RuntimeError(
+            msg = (
                 "LLMClient.generate: no model resolved "
                 f"(task_type={task_type!r}, primary_model="
                 f"{self.config.primary_model!r}). Construct via "
@@ -2192,6 +2194,7 @@ class LLMClient:
                 "when no provider is available) or supply an explicit "
                 "model_config= kwarg."
             )
+            raise RuntimeError(msg)
 
         # Warn if prompt likely exceeds context window (~4 chars per token)
         estimated_tokens = (len(prompt) + len(system_prompt or "")) // 4
@@ -2320,13 +2323,14 @@ class LLMClient:
                         # released on exception.
                         reservation = self._estimate_call_cost(call_class)
                         if not self._acquire_budget(reservation):
-                            raise LLMBudgetExceededError(
+                            msg = (
                                 f"LLM budget exceeded: ${self.total_cost:.4f} spent "
                                 f"+ ${reservation:.4f} estimated > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="
                                 f"{self.config.max_cost_per_scan * 2:.1f})"
                             )
+                            raise LLMBudgetExceededError(msg)
                         # monotonic() — wall clock can jump under NTP/DST,
                         # producing negative durations or fake-fast calls.
                         t_start = time.monotonic()
@@ -2645,10 +2649,11 @@ class LLMClient:
         """
         # Check budget
         if not self._check_budget():
-            raise LLMBudgetExceededError(
+            msg = (
                 f"LLM budget exceeded: ${self.total_cost:.4f} spent > ${self.config.max_cost_per_scan:.4f} limit. "
                 f"Increase budget with: LLMConfig(max_cost_per_scan={self.config.max_cost_per_scan * 2:.1f})"
             )
+            raise LLMBudgetExceededError(msg)
 
         # Get appropriate model (priority: explicit model_config > task_type > primary)
         model_config = kwargs.pop('model_config', None)
@@ -2672,7 +2677,7 @@ class LLMClient:
         # full rationale. Without this, the next line crashes with
         # AttributeError on `None.max_context`.
         if model_config is None:
-            raise RuntimeError(
+            msg = (
                 "LLMClient.generate_structured: no model resolved "
                 f"(task_type={task_type!r}, primary_model="
                 f"{self.config.primary_model!r}). Construct via "
@@ -2680,6 +2685,7 @@ class LLMClient:
                 "when no provider is available) or supply an explicit "
                 "model_config= kwarg."
             )
+            raise RuntimeError(msg)
 
         # Provider impls of generate_structured now accept **kwargs
         # (batch 331 — temperature plumbing). The previous warning
@@ -2815,13 +2821,14 @@ class LLMClient:
                         # by one call's estimate error.
                         reservation = self._estimate_call_cost(call_class)
                         if not self._acquire_budget(reservation):
-                            raise LLMBudgetExceededError(
+                            msg = (
                                 f"LLM budget exceeded: ${self.total_cost:.4f} spent "
                                 f"+ ${reservation:.4f} estimated > "
                                 f"${self.config.max_cost_per_scan:.4f} limit. Increase budget "
                                 f"with: LLMConfig(max_cost_per_scan="
                                 f"{self.config.max_cost_per_scan * 2:.1f})"
                             )
+                            raise LLMBudgetExceededError(msg)
 
                         # Capture cost before call
                         cost_before = provider.total_cost
@@ -2950,10 +2957,11 @@ class LLMClient:
                         # core.llm.response_validation).
                         unknown = unknown_response_fields(result_dict, schema)
                         if unknown:
-                            raise SchemaUnknownFieldError(
+                            msg = (
                                 f"structured response carried fields "
                                 f"outside the requested schema: {unknown}"
                             )
+                            raise SchemaUnknownFieldError(msg)
                         # Lift the resolved snapshot the provider attached
                         # (StructuredResponse carries it; a bare-tuple return
                         # yields None — alias-only, never guessed).

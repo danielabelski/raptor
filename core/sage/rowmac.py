@@ -257,9 +257,8 @@ def mint(fields: Mapping[str, object]) -> str:
     """
     key = _load_or_create_key()
     if key is None:
-        raise RuntimeError(
-            "row-MAC key unusable (see rowmac warning) — refusing to mint",
-        )
+        msg = "row-MAC key unusable (see rowmac warning) — refusing to mint"
+        raise RuntimeError(msg)
     return hmac.new(key, _canonical(fields), hashlib.sha256).hexdigest()
 
 

@@ -212,49 +212,53 @@ class SandboxEvidence:
             from core.witness.types import WitnessOutcome
             _valid = {wo.value for wo in WitnessOutcome}
             if self.observed_outcome not in _valid:
-                raise ValueError(
+                msg = (
                     f"observed_outcome must be empty (sentinel for "
                     f"'not classified') or one of {sorted(_valid)}; "
                     f"got {self.observed_outcome!r}"
                 )
+                raise ValueError(msg)
         if self.bytes_len < 0:
-            raise ValueError(
-                f"bytes_len must be >= 0; got {self.bytes_len}"
-            )
+            msg = f"bytes_len must be >= 0; got {self.bytes_len}"
+            raise ValueError(msg)
         if self.bytes_len > _MAX_BYTES_LEN:
-            raise ValueError(
+            msg = (
                 f"bytes_len {self.bytes_len} exceeds soft cap "
                 f"{_MAX_BYTES_LEN}; producer is almost certainly buggy "
                 f"(re-emitting a memory dump?)"
             )
+            raise ValueError(msg)
         # bytes_hash must look like a SHA-256 hex digest. Empty string
         # is reserved for "no bytes recorded" — rare but allowed.
         if self.bytes_hash and (
             len(self.bytes_hash) != _SHA256_HEX_LEN
             or not all(c in "0123456789abcdefABCDEF" for c in self.bytes_hash)
         ):
-            raise ValueError(
+            msg = (
                 f"bytes_hash must be 64-char hex (SHA-256); got "
                 f"{self.bytes_hash!r}"
             )
+            raise ValueError(msg)
         if (
             self.exploit_code is not None
             and len(self.exploit_code) > _MAX_EXPLOIT_CODE_LEN
         ):
-            raise ValueError(
+            msg = (
                 f"exploit_code length {len(self.exploit_code)} exceeds "
                 f"soft cap {_MAX_EXPLOIT_CODE_LEN}"
             )
+            raise ValueError(msg)
         # outcome_detail must round-trip through JSON — if it can't,
         # we'd fail on write() later with a confusing trace. Catch it
         # here where the producer can fix the offending value.
         try:
             json.dumps(self.outcome_detail)
         except (TypeError, ValueError) as e:
-            raise ValueError(
+            msg = (
                 f"outcome_detail must be JSON-serialisable; got "
                 f"{type(self.outcome_detail).__name__}: {e}"
-            ) from None
+            )
+            raise ValueError(msg) from None
 
 
 @dataclass(frozen=True)
@@ -367,19 +371,23 @@ class LabeledAttempt:
             ) if e is not None
         )
         if oracle_count != 1:
-            raise ValueError(
+            msg = (
                 f"LabeledAttempt must have exactly one oracle evidence, "
                 f"got {oracle_count}: "
                 f"sandbox={self.sandbox_evidence is not None}, "
                 f"codeql={self.codeql_evidence is not None}, "
                 f"web={self.web_evidence is not None}"
             )
+            raise ValueError(msg)
         if self.outcome not in ("success", "reasoned_failure", "uncertain"):
-            raise ValueError(f"unknown outcome: {self.outcome!r}")
+            msg = f"unknown outcome: {self.outcome!r}"
+            raise ValueError(msg)
         if not self.finding_id:
-            raise ValueError("finding_id is required")
+            msg = "finding_id is required"
+            raise ValueError(msg)
         if not self.finding_signature:
-            raise ValueError("finding_signature is required")
+            msg = "finding_signature is required"
+            raise ValueError(msg)
         # The signature is used as a directory name on disk. Reject
         # anything that isn't hex — this blocks path traversal
         # (`../../etc/escape`) and filesystem-name-limit attacks
@@ -387,22 +395,25 @@ class LabeledAttempt:
         # compute_finding_signature() (32 hex chars) or the wider
         # SHA-256 hex digest form (64 chars).
         if not _VALID_SIGNATURE.match(self.finding_signature):
-            raise ValueError(
+            msg = (
                 f"finding_signature must be 8-64 hex chars; got "
                 f"{self.finding_signature!r}"
             )
+            raise ValueError(msg)
         if not self.cwe:
-            raise ValueError("cwe is required")
+            msg = "cwe is required"
+            raise ValueError(msg)
         # Consistency: a success record cannot have a failure_mode.
         # The reverse direction (failure outcomes without a
         # failure_mode) is permitted — old records and producers that
         # don't classify still need to load.
         if self.outcome == "success" and self.failure_mode is not None:
-            raise ValueError(
+            msg = (
                 f"outcome='success' is incompatible with "
                 f"failure_mode={self.failure_mode!r}. A successful "
                 f"attempt has no failure to classify."
             )
+            raise ValueError(msg)
         # Reproducibility invariant: web evidence is a live-HTTP
         # point-in-time confirmation — never replayable. Derived (not
         # rejected) so records persisted by producers that left the
@@ -421,10 +432,11 @@ class LabeledAttempt:
             try:
                 datetime.fromisoformat(self.timestamp)
             except ValueError as e:
-                raise ValueError(
+                msg = (
                     f"timestamp must be ISO-8601 parseable; got "
                     f"{self.timestamp!r}: {e}"
-                ) from None
+                )
+                raise ValueError(msg) from None
 
     # -- Serialisation ----------------------------------------------------
 
@@ -477,10 +489,11 @@ class LabeledAttempt:
             try:
                 return evidence_cls(**filtered)
             except (TypeError, ValueError) as e:
-                raise ValueError(
+                msg = (
                     f"failed to build {evidence_cls.__name__} from "
                     f"{name!r}: {e}"
-                ) from None
+                )
+                raise ValueError(msg) from None
 
         sandbox = _build(
             "sandbox_evidence", SandboxEvidence, data.get("sandbox_evidence"),
@@ -523,10 +536,11 @@ class LabeledAttempt:
             )
         except (TypeError, ValueError) as e:
             finding_id = data.get("finding_id", "<unknown>")
-            raise ValueError(
+            msg = (
                 f"failed to build LabeledAttempt for finding_id="
                 f"{finding_id!r}: {e}"
-            ) from None
+            )
+            raise ValueError(msg) from None
 
     # -- Convenience accessors -------------------------------------------
 

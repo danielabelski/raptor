@@ -76,10 +76,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 if sys.platform == "linux" and not hasattr(os, "unshare"):
-    raise RuntimeError(
+    msg = (
         f"RAPTOR sandbox requires Python 3.12+ (os.unshare); "
         f"running {sys.version.split()[0]}"
     )
+    raise RuntimeError(msg)
 
 # CLONE flags from <linux/sched.h>. Python 3.12 exposes os.CLONE_* with the
 # same values — we prefer the stdlib names when available so any future
@@ -274,10 +275,11 @@ def _run_newuidmap(child_pid: int, binary: str, mapping_lines: Sequence[str]) ->
         env=RaptorConfig.get_safe_env(),
     )
     if r.returncode != 0:
-        raise RuntimeError(
+        msg = (
             f"{binary} for child {child_pid} failed "
             f"(rc={r.returncode}, stderr={r.stderr.strip()!r})"
         )
+        raise RuntimeError(msg)
 
 
 def _set_rlimits(limits: dict) -> None:
@@ -703,13 +705,15 @@ def run_sandboxed(
         # no image filesystem to run against — the command would execute
         # on the HOST fs while the caller believes it's containerised.
         if skip_mount_ns:
-            raise ValueError(
+            msg = (
                 "rootfs= requires the mount namespace; skip_mount_ns=True "
                 "would run the command against the host filesystem"
             )
+            raise ValueError(msg)
         rootfs = os.path.abspath(rootfs)
         if not os.path.isdir(rootfs):
-            raise ValueError(f"rootfs is not a directory: {rootfs}")
+            msg = f"rootfs is not a directory: {rootfs}"
+            raise ValueError(msg)
 
     # Sandbox root directory. Created by the parent via tempfile.mkdtemp
     # so the path is random-suffixed (mode 0700) — a same-UID attacker
@@ -744,9 +748,8 @@ def run_sandboxed(
             # every misuse of the API. The fork try/except below only
             # covers cleanup AFTER the audit-mode setup completes.
             _cleanup_stub(_root_dir)
-            raise ValueError(
-                "audit_mode=True requires audit_run_dir="
-            )
+            msg = "audit_mode=True requires audit_run_dir="
+            raise ValueError(msg)
         # Audit mode requires seccomp to be active AND libseccomp to
         # be available — without a seccomp filter there's nothing to
         # install SCMP_ACT_TRACE on, and no tracer events would fire.
@@ -788,10 +791,13 @@ def run_sandboxed(
                 # the refused degradation for run-dir readers.
                 _cleanup_stub(_root_dir)
                 from .errors import SandboxSetupError
-                raise SandboxSetupError(
+                msg = (
                     "audit_required=True but no seccomp filter is "
                     "active — b2/b3 audit cannot engage; refusing to "
-                    "run the target unaudited.",
+                    "run the target unaudited."
+                )
+                raise SandboxSetupError(
+                    msg,
                     "pass seccomp_profile= (e.g. \"full\") or drop "
                     "audit_required= to accept marker-recorded "
                     "degradation.",
@@ -820,11 +826,14 @@ def run_sandboxed(
             if audit_required:
                 _cleanup_stub(_root_dir)
                 from .errors import SandboxSetupError
-                raise SandboxSetupError(
+                msg = (
                     "audit_required=True but libseccomp is "
                     "unavailable on this host — the tracer would "
                     "receive no events; refusing to run the target "
-                    "unaudited.",
+                    "unaudited."
+                )
+                raise SandboxSetupError(
+                    msg,
                     "install libseccomp (Debian/Ubuntu: apt install "
                     "libseccomp2), or drop audit_required= to accept "
                     "marker-recorded degradation.",
@@ -1012,10 +1021,13 @@ def run_sandboxed(
             if audit_required:
                 _cleanup_stub(_root_dir)
                 from .errors import SandboxSetupError
-                raise SandboxSetupError(
+                msg = (
                     "audit_required=True but ptrace is blocked on "
                     "this host — the tracer cannot attach; refusing "
-                    "to run the target unaudited.",
+                    "to run the target unaudited."
+                )
+                raise SandboxSetupError(
+                    msg,
                     "lower Yama scope (sysctl kernel.yama."
                     "ptrace_scope=1) or grant CAP_SYS_PTRACE, or "
                     "drop audit_required= to accept marker-recorded "
@@ -1067,11 +1079,12 @@ def run_sandboxed(
         if os.get_inheritable(status_w):
             os.close(status_r)
             os.close(status_w)
-            raise RuntimeError(
+            msg = (
                 "sandbox exec-status pipe write-end is inheritable — the "
                 "target could forge/suppress setup status; refusing to use "
                 "the mount-ns spawn path (see core/sandbox/_spawn.py)."
             )
+            raise RuntimeError(msg)
         # Parent reads status_r NON-BLOCKING (see _drain_status_pipe): under
         # concurrency a sibling fork can transiently hold our status_w open,
         # so a blocking read could hang a worker until the sibling's target
@@ -2019,7 +2032,8 @@ def run_sandboxed(
         try:
             if os.read(p_ready_r, 1) != b"R":
                 _kill_and_reap(child_pid)
-                raise RuntimeError("sandbox child did not signal ready")
+                msg = "sandbox child did not signal ready"
+                raise RuntimeError(msg)
         finally:
             os.close(p_ready_r)
             _parent_fds.discard(p_ready_r)
@@ -2035,10 +2049,11 @@ def run_sandboxed(
         newgidmap = gidmap_allow or shutil.which("newgidmap")
         if not newuidmap or not newgidmap:
             _kill_and_reap(child_pid)
-            raise FileNotFoundError(
+            msg = (
                 "newuidmap/newgidmap required for mount-ns sandbox — install "
                 "the uidmap package"
             )
+            raise FileNotFoundError(msg)
         uid_lines = ["0", str(host_uid), "1"]
         gid_lines = ["0", str(host_gid), "1"]
         gidmap_binary = newgidmap
@@ -2329,10 +2344,11 @@ def run_sandboxed(
                                  "signal before it could attach — "
                                  "OOM-killer? operator's session "
                                  "terminated?")
-                raise RuntimeError(
+                msg = (
                     f"audit-mode tracer failed to attach to sandboxed "
                     f"child{rc_hint} — {cause}"
                 )
+                raise RuntimeError(msg)
 
         # Step 8: tell child to proceed.
         try:

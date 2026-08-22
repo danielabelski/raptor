@@ -27,10 +27,12 @@ def validate_constraint_file(
 ) -> tuple[dict[str, Any] | None, list[BinaryEvidenceRecord]]:
     payload = load_json(Path(path))
     if not isinstance(payload, dict):
-        raise ValueError(f"constraint file is not a JSON object: {path}")
+        msg = f"constraint file is not a JSON object: {path}"
+        raise ValueError(msg)
     conditions = payload.get("conditions")
     if not isinstance(conditions, list) or not conditions:
-        raise ValueError(f"constraint file has no conditions list: {path}")
+        msg = f"constraint file has no conditions list: {path}"
+        raise ValueError(msg)
     try:
         from packages.exploit_feasibility.smt_path import validate_path
     except ImportError:

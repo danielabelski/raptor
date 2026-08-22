@@ -205,7 +205,8 @@ def parse_manifest(data: Any) -> RecallManifest:
     """
     errors: list[str] = []
     if not isinstance(data, dict):
-        raise ManifestError("manifest root must be an object")
+        msg = "manifest root must be an object"
+        raise ManifestError(msg)
     if data.get("schema_version") != SCHEMA_VERSION:
         errors.append(
             f"schema_version must be {SCHEMA_VERSION} "
@@ -291,5 +292,6 @@ def load_manifest(path: Path) -> RecallManifest:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ManifestError(f"cannot read manifest {path}: {exc}") from exc
+        msg = f"cannot read manifest {path}: {exc}"
+        raise ManifestError(msg) from exc
     return parse_manifest(data)

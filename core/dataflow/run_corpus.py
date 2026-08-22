@@ -102,9 +102,8 @@ def load_validator(spec: str) -> Validator:
     """Load a validator from a ``module.path:ClassName`` import spec."""
     module_path, _, class_name = spec.partition(":")
     if not module_path or not class_name:
-        raise ValueError(
-            f"validator spec must be `module.path:ClassName`, got {spec!r}"
-        )
+        msg = f"validator spec must be `module.path:ClassName`, got {spec!r}"
+        raise ValueError(msg)
     # ``module_path`` is from the operator's ``--validator`` CLI
     # flag. The operator invoking RAPTOR can already execute any
     # Python; importing the validator they explicitly named adds
@@ -114,10 +113,11 @@ def load_validator(spec: str) -> Validator:
     cls = getattr(module, class_name)
     instance = cls()
     if not isinstance(instance, Validator):
-        raise TypeError(
+        msg = (
             f"{spec!r} loaded but does not implement Validator protocol "
             f"(missing .validate(finding))"
         )
+        raise TypeError(msg)
     return instance
 
 

@@ -64,13 +64,14 @@ def _resolve_sandbox_binary(name: str) -> str:
                 # Previous lookup failed — re-raise with the same
                 # message so callers see a stable error rather than a
                 # different one on the second call.
-                raise FileNotFoundError(
+                msg = (
                     f"Sandbox: {name!r} not found in {_SAFE_BIN_DIRS}. "
                     f"Install util-linux (provides unshare, prlimit, "
                     f"mount, mkdir) into a standard location. Refusing "
                     f"to fall back to $PATH — a poisoned PATH could "
                     f"hijack the sandbox bootstrap."
                 )
+                raise FileNotFoundError(msg)
             return cached
         for d in _SAFE_BIN_DIRS:
             candidate = os.path.join(d, name)
@@ -80,13 +81,14 @@ def _resolve_sandbox_binary(name: str) -> str:
         # Cache the failure so subsequent calls don't repeat the
         # filesystem probe.
         setattr(state, cache_attr, False)
-        raise FileNotFoundError(
+        msg = (
             f"Sandbox: {name!r} not found in {_SAFE_BIN_DIRS}. "
             f"Install util-linux (provides unshare, prlimit, mount, "
             f"mkdir) into a standard location. Refusing to fall back "
             f"to $PATH — a poisoned PATH could hijack the sandbox "
             f"bootstrap."
         )
+        raise FileNotFoundError(msg)
 
 
 # Actionable instruction appended to engagement-failure reasons. Surfaced

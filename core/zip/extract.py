@@ -225,9 +225,11 @@ def extract_files_from_zip(
             if max_total_bytes is not None:
                 total_bytes += len(data)
                 if total_bytes > max_total_bytes:
-                    raise ZipTotalBytesExceeded(
+                    msg_0 = (
                         f"zip extraction exceeds {max_total_bytes} bytes "
-                        f"(bomb-shape); refusing")
+                        f"(bomb-shape); refusing"
+                    )
+                    raise ZipTotalBytesExceeded(msg_0)
             found[key] = data
             if expected_count is not None and len(found) >= expected_count:
                 break

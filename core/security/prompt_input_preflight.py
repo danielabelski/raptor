@@ -167,20 +167,22 @@ def preflight(
     is designed to surface.
     """
     if strict and not _PATTERNS:
-        raise RuntimeError(
+        msg = (
             f"preflight: strict=True but no corpora loaded from "
             f"{_PATTERNS_DIR!r}; a missing or empty corpus directory "
             f"would silently return confidence_haircut=1.0 (fail-open). "
             f"Fix the corpus path or pass strict=False to allow fail-open."
         )
+        raise RuntimeError(msg)
     if corpora is not None:
         loaded = set(_PATTERNS)
         unknown = [c for c in corpora if c not in loaded]
         if unknown:
-            raise ValueError(
+            msg = (
                 f"preflight: unknown corpora {unknown!r}. "
                 f"Loaded corpora: {sorted(loaded)!r}"
             )
+            raise ValueError(msg)
     indicators: list[str] = []
     for name, patterns in _PATTERNS.items():
         if corpora is not None and name not in corpora:

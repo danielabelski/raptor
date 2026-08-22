@@ -290,13 +290,11 @@ def record_denial(cmd_display: str, returncode: int,
         with _lock:
             handle = _get_evidence_handle_locked(run_dir)
             if handle is None:
-                raise OSError(
-                    f"evidence file unavailable under {run_dir}"
-                )
+                msg = f"evidence file unavailable under {run_dir}"
+                raise OSError(msg)
             if not handle.write_line(line):
-                raise OSError(
-                    f"evidence append failed under {run_dir}"
-                )
+                msg = f"evidence append failed under {run_dir}"
+                raise OSError(msg)
     except Exception:
         # WARNING (F071 W21 promote): operators rarely run with DEBUG
         # enabled, so pre-fix this swallow meant every dropped sandbox-

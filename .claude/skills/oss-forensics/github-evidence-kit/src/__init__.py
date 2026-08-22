@@ -99,15 +99,18 @@ def load_evidence_from_json(data: dict) -> AnyEvidence:
         try:
             return _event_adapter.validate_python(data)
         except Exception as e:
-            raise ValueError(f"Unknown event_type: {data.get('event_type')}") from e
+            msg = f"Unknown event_type: {data.get('event_type')}"
+            raise ValueError(msg) from e
 
     if "observation_type" in data:
         try:
             return _observation_adapter.validate_python(data)
         except Exception as e:
-            raise ValueError(f"Unknown observation_type: {data.get('observation_type')}") from e
+            msg = f"Unknown observation_type: {data.get('observation_type')}"
+            raise ValueError(msg) from e
 
-    raise ValueError("Data must contain 'event_type' or 'observation_type' field")
+    msg = "Data must contain 'event_type' or 'observation_type' field"
+    raise ValueError(msg)
 
 
 # Public API - minimal surface area

@@ -124,9 +124,8 @@ def load_sources(path: Path) -> list[HarvestSource]:
             p for p in item.get("api_patterns", []) if isinstance(p, str)
         )
         if not (isinstance(library, str) and library and patterns):
-            raise ValueError(
-                f"source entry needs 'library' + 'api_patterns': {item!r}"
-            )
+            msg = f"source entry needs 'library' + 'api_patterns': {item!r}"
+            raise ValueError(msg)
         sources.append(HarvestSource(
             library=library,
             api_patterns=patterns,

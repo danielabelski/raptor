@@ -153,12 +153,15 @@ def write_fix_pointer_artifact(pointer: FixPointer,
     forensic reader can tell it from a discovery run's output.
     """
     if not _CVE_RE.fullmatch(pointer.cve_id or ""):
-        raise ValueError(f"not a CVE id: {pointer.cve_id!r}")
+        msg = f"not a CVE id: {pointer.cve_id!r}"
+        raise ValueError(msg)
     if not (pointer.repository_url and pointer.fix_commit
             and pointer.commit_before):
-        raise ValueError(
+        msg = (
             "write_fix_pointer_artifact needs repository_url, "
-            "fix_commit, and commit_before")
+            "fix_commit, and commit_before"
+        )
+        raise ValueError(msg)
     base = pointer.repository_url.removesuffix(".git").rstrip("/")
     dbs: dict = {
         "files_changed": pointer.files_changed,

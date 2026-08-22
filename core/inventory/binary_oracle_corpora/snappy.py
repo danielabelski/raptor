@@ -75,7 +75,8 @@ def _resolve(candidates: tuple[str, ...]) -> str:
     for c in candidates:
         if shutil.which(c):
             return c
-    raise RuntimeError(f"snappy: none of {candidates} found on PATH")
+    msg = f"snappy: none of {candidates} found on PATH"
+    raise RuntimeError(msg)
 
 
 # Filter out llvm-cov hits on stdlib / google-test / inlined-everywhere
@@ -140,7 +141,8 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
         shutil.rmtree(src)
     logger.info("snappy: cloning %s → %s", SNAPPY_URL, src)
     if not clone_repository(SNAPPY_URL, src, depth=1):
-        raise RuntimeError(f"snappy: clone failed for {SNAPPY_URL}")
+        msg = f"snappy: clone failed for {SNAPPY_URL}"
+        raise RuntimeError(msg)
     subprocess.run(
         safe_git_command("-C", str(src), "fetch", "--depth", "1",
                          "origin", SNAPPY_SHA),
@@ -204,9 +206,11 @@ def _build_and_run(sha_dir: Path, build_dir: Path, profdata: Path) -> None:
 
     profraw = list(sha_dir.glob("snappy_*.profraw"))
     if not profraw:
-        raise RuntimeError(
+        msg = (
             f"snappy: no profraw produced (LLVM_PROFILE_FILE="
-            f"{profraw_pattern}); coverage instrumentation may be broken")
+            f"{profraw_pattern}); coverage instrumentation may be broken"
+        )
+        raise RuntimeError(msg)
 
     profdata_tool = _resolve(_LLVM_PROFDATA_CANDIDATES)
     run_tool(

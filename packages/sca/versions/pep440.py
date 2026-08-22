@@ -44,7 +44,8 @@ def compare(a: str, b: str) -> int:
             va = Version(a)
             vb = Version(b)
         except InvalidVersion as e:
-            raise VersionError(f"invalid PEP 440 version: {e}") from e
+            msg = f"invalid PEP 440 version: {e}"
+            raise VersionError(msg) from e
         if va == vb:
             return 0
         return -1 if va < vb else 1
@@ -150,7 +151,8 @@ def _fallback_parse(v: str) -> tuple[tuple[int, ...],
     """Best-effort parse for the X.Y.Z[aN|bN|rcN][.postN][.devN] subset."""
     m = _FALLBACK_RE.match(v.strip())
     if not m:
-        raise ValueError(f"unparseable PEP 440 (fallback): {v!r}")
+        msg = f"unparseable PEP 440 (fallback): {v!r}"
+        raise ValueError(msg)
     release = tuple(int(x) for x in m.group("release").split("."))
     pre = None
     if m.group("pre_l") is not None:

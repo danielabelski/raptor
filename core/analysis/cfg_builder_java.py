@@ -852,7 +852,8 @@ class _JavaCFGBuilder:
     def _cond_node(self, stmt, prefix: str) -> JavaCFGNode:
         cond = stmt.child_by_field_name("condition")
         if _subtree_has_refused(cond):
-            raise _RefusedConstruct("condition")
+            msg = "condition"
+            raise _RefusedConstruct(msg)
         calls, defs, uses, css = _payload_from_subtree(cond, self.resolver)
         return self._make_node(
             lineno=stmt.start_point[0] + 1,
@@ -963,7 +964,8 @@ class _JavaCFGBuilder:
         name_node = stmt.child_by_field_name("name")
         value = stmt.child_by_field_name("value")
         if _subtree_has_refused(value):
-            raise _RefusedConstruct("enhanced_for value")
+            msg = "enhanced_for value"
+            raise _RefusedConstruct(msg)
         var = _node_text(name_node) if name_node is not None else None
         calls, _d, uses, css = _payload_from_subtree(value, self.resolver)
         header = self._make_node(
@@ -1056,7 +1058,8 @@ class _JavaCFGBuilder:
 
     def _build_break(self, stmt, incoming):
         if any(c.type == _IDENT for c in stmt.children):
-            raise _RefusedConstruct("labeled break")
+            msg = "labeled break"
+            raise _RefusedConstruct(msg)
         node = self._straight_node(stmt)
         self._link_many(incoming, node)
         if not self._break_targets:
@@ -1071,7 +1074,8 @@ class _JavaCFGBuilder:
 
     def _build_continue(self, stmt, incoming):
         if any(c.type == _IDENT for c in stmt.children):
-            raise _RefusedConstruct("labeled continue")
+            msg = "labeled continue"
+            raise _RefusedConstruct(msg)
         node = self._straight_node(stmt)
         self._link_many(incoming, node)
         if not self._loop_stack:
@@ -1091,23 +1095,27 @@ class _JavaCFGBuilder:
         disc = stmt.child_by_field_name("condition")
         body = stmt.child_by_field_name("body")
         if disc is None or body is None:
-            raise _RefusedConstruct("switch shape")
+            msg = "switch shape"
+            raise _RefusedConstruct(msg)
         if _subtree_has_refused(disc):
-            raise _RefusedConstruct("switch condition")
+            msg = "switch condition"
+            raise _RefusedConstruct(msg)
         # A yield anywhere makes this a value-producing switch body —
         # its result flow is not modelled.
         scan = [body]
         while scan:
             cur = scan.pop()
             if cur.type == _YIELD:
-                raise _RefusedConstruct("switch yield")
+                msg = "switch yield"
+                raise _RefusedConstruct(msg)
             for c in cur.children:
                 if c.is_named:
                     scan.append(c)
         groups = [c for c in body.children if c.type == _SWITCH_GROUP]
         rules = [c for c in body.children if c.type == _SWITCH_RULE]
         if groups and rules:
-            raise _RefusedConstruct("mixed switch block")
+            msg = "mixed switch block"
+            raise _RefusedConstruct(msg)
         units = groups or rules
 
         # Parse labels up front so a pattern label refuses before any
@@ -1116,14 +1124,16 @@ class _JavaCFGBuilder:
         for u in units:
             labels = [c for c in u.children if c.type == _SWITCH_LABEL]
             if not labels:
-                raise _RefusedConstruct("switch label shape")
+                msg = "switch label shape"
+                raise _RefusedConstruct(msg)
             exprs: list = []
             is_default = False
             for lab in labels:
                 named = [c for c in lab.children if c.is_named]
                 if any(c.type in ("pattern", "guard", "type_pattern",
                                   "record_pattern") for c in named):
-                    raise _RefusedConstruct("switch pattern label")
+                    msg = "switch pattern label"
+                    raise _RefusedConstruct(msg)
                 if not named:
                     is_default = True
                 else:

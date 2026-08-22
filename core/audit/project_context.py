@@ -214,9 +214,8 @@ def add_learning(
 ) -> Learning | None:
     """Add a learning to the project context. Returns the Learning if added."""
     if category not in VALID_CATEGORIES:
-        raise ValueError(
-            f"invalid category {category!r}; valid: {sorted(VALID_CATEGORIES)}"
-        )
+        msg = f"invalid category {category!r}; valid: {sorted(VALID_CATEGORIES)}"
+        raise ValueError(msg)
     ctx = load_project_context(out_dir)
     learning = Learning(
         text=text,

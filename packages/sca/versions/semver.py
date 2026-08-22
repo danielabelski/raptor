@@ -44,7 +44,8 @@ def parse(version: str) -> tuple[int, int, int, list[str] | None]:
     """
     m = _SEMVER_RE.match(version.strip())
     if not m:
-        raise ValueError(f"not a semver version: {version!r}")
+        msg = f"not a semver version: {version!r}"
+        raise ValueError(msg)
     pre = m.group("pre")
     return (
         int(m.group("major")),

@@ -89,11 +89,12 @@ class _RowContext:
 
         # Raise error if we still couldn't extract valid repo name
         if not repo_name:
-            raise ValueError(
+            msg = (
                 f"Cannot extract repository name from GH Archive row. "
                 f"Row ID: {row.get('id', 'unknown')}, Event Type: {row.get('type', 'unknown')}. "
                 f"Available keys: {list(row.keys())}"
             )
+            raise ValueError(msg)
 
         self.repository = make_repo_from_full_name(repo_name)
 
@@ -467,5 +468,6 @@ def parse_gharchive_event(row: dict[str, Any], table: str | None = None) -> Any:
     parser = _PARSERS.get(event_type)
     if parser is None:
         supported = ", ".join(_PARSERS.keys())
-        raise ValueError(f"Unsupported GH Archive event type: {event_type}. Supported: {supported}")
+        msg = f"Unsupported GH Archive event type: {event_type}. Supported: {supported}"
+        raise ValueError(msg)
     return parser(row, table)

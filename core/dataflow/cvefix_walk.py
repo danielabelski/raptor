@@ -290,15 +290,17 @@ def _run_autobuild_sandboxed(cmd, *, work_root: Path, codeql_bin: str,
     try:
         from core.sandbox import check_landlock_available, run_untrusted_networked
     except ImportError as exc:
-        raise RuntimeError(
-            "core.sandbox unavailable — refusing to autobuild an untrusted repo") from exc
+        msg = "core.sandbox unavailable — refusing to autobuild an untrusted repo"
+        raise RuntimeError(msg) from exc
     if not check_landlock_available():
-        raise RuntimeError(
-            "Landlock unavailable — refusing to autobuild an untrusted repo unsandboxed")
+        msg = "Landlock unavailable — refusing to autobuild an untrusted repo unsandboxed"
+        raise RuntimeError(msg)
     if lang not in _AUTOBUILD_PROFILES:
-        raise RuntimeError(
+        msg = (
             f"no autobuild profile for lang={lang!r}; known: "
-            f"{sorted(_AUTOBUILD_PROFILES)}")
+            f"{sorted(_AUTOBUILD_PROFILES)}"
+        )
+        raise RuntimeError(msg)
     proxy_hosts, env_extender = _AUTOBUILD_PROFILES[lang]
     env = RaptorConfig.get_safe_env(preserve_proxy=True)
     env.update(env_extender(work_root))

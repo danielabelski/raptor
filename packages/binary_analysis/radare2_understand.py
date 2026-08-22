@@ -350,18 +350,21 @@ class BinaryUnderstand:
     def __init__(self, binary_path: Path, llm=None, slice_arch: str | None = None) -> None:
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
-            raise FileNotFoundError(f"Binary not found: {binary_path}")
+            msg = f"Binary not found: {binary_path}"
+            raise FileNotFoundError(msg)
         if not self.binary.is_file():
-            raise ValueError(f"Path is not a file: {binary_path}")
+            msg = f"Path is not a file: {binary_path}"
+            raise ValueError(msg)
         self.llm = llm
         self.slice_arch = slice_arch
         self.cap = probe_capability()
         if not self.cap["available"]:
-            raise RuntimeError(
+            msg = (
                 "radare2 not available. Install with: "
                 "'brew install radare2' (macOS) or 'apt install radare2' (Linux). "
                 "Then: 'pip install r2pipe'."
             )
+            raise RuntimeError(msg)
 
     def _r2_open_flags(self) -> list[str]:
         flags = ["-2"]
@@ -428,10 +431,11 @@ class BinaryUnderstand:
             # an extra-stubborn r2 won't keep the Python interpreter
             # alive past process exit.
             t.join(2)
-            raise TimeoutError(
+            msg = (
                 f"r2 command {command!r} exceeded {timeout_s}s — likely "
                 f"a malicious binary or r2 parser bug; analysis aborted."
             )
+            raise TimeoutError(msg)
         if exc_holder[0] is not None:
             raise exc_holder[0]
         return result_holder[0]
@@ -507,10 +511,11 @@ class BinaryUnderstand:
             / "libexec" / "raptor-r2-sandboxed"
         )
         if not _wrapper.is_file():
-            raise RuntimeError(
+            msg = (
                 f"r2 sandbox wrapper missing: {_wrapper}. "
                 f"Reinstall RAPTOR or check libexec/ is intact."
             )
+            raise RuntimeError(msg)
         # mkdtemp now happens inside the try below — pre-fix it ran
         # outside, so KeyboardInterrupt / MemoryError between the
         # mkdtemp call and entering the try block left the scratch

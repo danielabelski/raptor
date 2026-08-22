@@ -2808,9 +2808,12 @@ Examples:
                     codeql_proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
-            raise SandboxSetupError(
+            msg = (
                 "the semgrep scan subprocess reported the sandbox could not "
-                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above",
+                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above"
+            )
+            raise SandboxSetupError(
+                msg,
                 "re-run with --sandbox network-only (or --sandbox none). "
                 "RAPTOR will not silently downgrade.",
             )
@@ -2874,9 +2877,12 @@ Examples:
         if rc == SANDBOX_ENGAGE_EXIT_CODE:
             # CodeQL subprocess reported the sandbox could not engage —
             # abort loud rather than continuing with partial findings.
-            raise SandboxSetupError(
+            msg = (
                 "the codeql scan subprocess reported the sandbox could not "
-                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above",
+                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above"
+            )
+            raise SandboxSetupError(
+                msg,
                 "re-run with --sandbox network-only (or --sandbox none). "
                 "RAPTOR will not silently downgrade.",
             )
@@ -3343,9 +3349,12 @@ Examples:
             # The analysis subprocess reported the sandbox could not engage.
             # Abort loud rather than degrading the analysis phase to an
             # empty `analysis = {}` (a silent "produced no output").
-            raise SandboxSetupError(
+            msg = (
                 "the analysis subprocess reported the sandbox could not "
-                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above",
+                f"engage (exit {SANDBOX_ENGAGE_EXIT_CODE}); see its output above"
+            )
+            raise SandboxSetupError(
+                msg,
                 "re-run with --sandbox network-only (or --sandbox none). "
                 "RAPTOR will not silently downgrade.",
             )

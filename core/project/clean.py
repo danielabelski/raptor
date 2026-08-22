@@ -66,7 +66,8 @@ def plan_clean(project, keep=1) -> dict[str, Any]:
     Does not modify the filesystem.
     """
     if keep < 0:
-        raise ValueError(f"keep must be >= 0, got {keep}")
+        msg = f"keep must be >= 0, got {keep}"
+        raise ValueError(msg)
     groups = project.get_run_dirs_by_type()
     stats: dict[str, Any] = {
         "delete_dirs": [], "deleted": [], "kept": [], "freed_bytes": 0,
@@ -205,10 +206,11 @@ def execute_clean(plan: dict[str, Any],
                 real.relative_to(common)
             except ValueError:
                 # Resolved path escapes the containment root. Refuse.
-                raise RuntimeError(
+                msg = (
                     f"execute_clean refusing to rmtree {d!r}: resolved "
                     f"path {real!r} escapes containment root {common!r}"
-                ) from None
+                )
+                raise RuntimeError(msg) from None
         try:
             shutil.rmtree(d)
         except FileNotFoundError:

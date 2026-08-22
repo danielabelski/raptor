@@ -75,9 +75,8 @@ def graph_connection(path: Path) -> Iterator[sqlite3.Connection]:
 def _migrate(conn: sqlite3.Connection) -> None:
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if current > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"binary graph schema version {current} is newer than this RAPTOR ({SCHEMA_VERSION})"
-        )
+        msg = f"binary graph schema version {current} is newer than this RAPTOR ({SCHEMA_VERSION})"
+        raise RuntimeError(msg)
     if current == 0:
         conn.executescript(
             """

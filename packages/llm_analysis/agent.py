@@ -2224,7 +2224,8 @@ class AutonomousSecurityAgentV2:
         """
         data = load_json(findings_path, strict=True)
         if data is None:
-            raise FileNotFoundError(f"Findings file not found: {findings_path}")
+            msg = f"Findings file not found: {findings_path}"
+            raise FileNotFoundError(msg)
 
         converted = convert_validated_to_agent_format(data)
 

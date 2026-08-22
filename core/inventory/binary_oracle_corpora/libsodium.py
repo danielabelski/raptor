@@ -90,7 +90,8 @@ def _build_fresh(tag_dir: Path, build_o0: Path, build_o2: Path) -> None:
     logger.info("libsodium: cloning %s (tag %s) → %s",
                 LIBSODIUM_URL, LIBSODIUM_TAG, src)
     if not clone_repository(LIBSODIUM_URL, src, depth=1):
-        raise RuntimeError(f"libsodium: clone failed for {LIBSODIUM_URL}")
+        msg = f"libsodium: clone failed for {LIBSODIUM_URL}"
+        raise RuntimeError(msg)
     subprocess.run(
         safe_git_command("-C", str(src), "fetch", "--depth", "1",
                          "origin", LIBSODIUM_TAG),

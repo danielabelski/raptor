@@ -45,7 +45,8 @@ def compare(ecosystem: str, a: str, b: str) -> int:
     """
     cmp = _comparators.get(_canonical_ecosystem(ecosystem))
     if cmp is None:
-        raise VersionError(f"no version comparator for ecosystem: {ecosystem}")
+        msg = f"no version comparator for ecosystem: {ecosystem}"
+        raise VersionError(msg)
     try:
         return cmp(a, b)
     except VersionError:

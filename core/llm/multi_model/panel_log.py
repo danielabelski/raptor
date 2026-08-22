@@ -122,9 +122,8 @@ def load_from_orchestrated_report(
         with path.open("r", encoding="utf-8") as fh:
             payload = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            f"panel_log: cannot parse {path}: {exc}"
-        ) from exc
+        msg = f"panel_log: cannot parse {path}: {exc}"
+        raise ValueError(msg) from exc
     if not isinstance(payload, dict):
         return []
     results = payload.get("results")

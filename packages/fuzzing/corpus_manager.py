@@ -55,10 +55,11 @@ class CorpusManager:
             or name in {".", ".."}
             or name.startswith("..")
         ):
-            raise ValueError(
+            msg = (
                 f"corpus seed name must be a single bare filename "
                 f"(got {name!r})"
             )
+            raise ValueError(msg)
         seed_file = self.corpus_dir / name
         seed_file.write_bytes(data)
         logger.debug("Added seed: %s (%d bytes)", name, len(data))
@@ -82,7 +83,8 @@ class CorpusManager:
         import os
         source = Path(source_dir)
         if not source.exists():
-            raise FileNotFoundError(f"Source directory not found: {source_dir}")
+            msg = f"Source directory not found: {source_dir}"
+            raise FileNotFoundError(msg)
 
         # `os.walk(followlinks=False)` instead of `Path.rglob` —
         # `rglob` follows symlinks under Python <3.13. Two failure

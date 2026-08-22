@@ -88,7 +88,8 @@ def _read_frame(fd: int) -> dict | None:
         hdr += chunk
     (length,) = struct.unpack("!I", hdr)
     if length > 64 * 1024 * 1024:
-        raise ValueError(f"frame too large: {length}")
+        msg = f"frame too large: {length}"
+        raise ValueError(msg)
     body = b""
     while len(body) < length:
         chunk = os.read(fd, length - len(body))
@@ -132,11 +133,13 @@ def _safe_eval(expr: str, bindings: dict) -> Any:
     for node in ast.walk(tree):
         cls_name = type(node).__name__
         if cls_name not in _SAFE_EVAL_NODES:
-            raise ValueError(f"disallowed node: {cls_name} in {expr!r}")
+            msg = f"disallowed node: {cls_name} in {expr!r}"
+            raise ValueError(msg)
         if isinstance(node, ast.Call):
             fname = getattr(node.func, "id", None)
             if fname not in _SAFE_EVAL_CALLABLES:
-                raise ValueError(f"disallowed call: {fname!r} in {expr!r}")
+                msg = f"disallowed call: {fname!r} in {expr!r}"
+                raise ValueError(msg)
 
     def _p(n: int, sz: int) -> bytes:
         return int(n).to_bytes(sz, "little", signed=False)
@@ -190,10 +193,12 @@ def _build_fmtstr_write(spec: dict, bindings: dict) -> bytes:
     numbwritten = int(numbwritten)
     write_size = spec.get("write_size", "short")
     if write_size not in ("byte", "short", "int"):
-        raise ValueError(f"write_size invalid: {write_size!r}")
+        msg = f"write_size invalid: {write_size!r}"
+        raise ValueError(msg)
     raw_writes = spec.get("writes") or {}
     if not raw_writes:
-        raise ValueError("writes dict required")
+        msg = "writes dict required"
+        raise ValueError(msg)
     resolved: dict[int, int] = {}
     for addr_expr, value_expr in raw_writes.items():
         resolved[int(_safe_eval(str(addr_expr), bindings))] = int(
@@ -233,21 +238,22 @@ def _render_compose(chunks, recvs):
         elif kind == "recv_le64":
             idx = chunk["recv_index"]
             if idx >= len(recvs):
-                raise IndexError(
+                msg = (
                     f"recv_le64 references recv_index={idx} but only "
                     f"{len(recvs)} recv(s) available"
                 )
+                raise IndexError(msg)
             raw = recvs[idx].decode("utf-8", errors="replace").strip()
             tok = raw.split()[0] if raw.split() else ""
             tok = tok.removeprefix("0x")
             if not tok:
-                raise ValueError(
-                    f"recv_le64: recvs[{idx}] is empty after tokenization"
-                )
+                msg = f"recv_le64: recvs[{idx}] is empty after tokenization"
+                raise ValueError(msg)
             value = int(tok, 16)
             out += _struct.pack("<Q", value & 0xFFFFFFFFFFFFFFFF)
         else:
-            raise ValueError(f"unknown compose chunk kind: {kind!r}")
+            msg = f"unknown compose chunk kind: {kind!r}"
+            raise ValueError(msg)
     return bytes(out)
 
 
@@ -685,14 +691,14 @@ _MAX_STDIN_BYTES = 8 * 1024 * 1024   # 8 MiB per spawn stdin
 def _cap(name: str, value, ceiling, fn=float):
     v = fn(value)
     if v <= 0:
-        raise ValueError(
-            f"{name}={v} must be positive"
-        )
+        msg = f"{name}={v} must be positive"
+        raise ValueError(msg)
     if v > ceiling:
-        raise ValueError(
+        msg = (
             f"{name}={v} exceeds cap {ceiling} — reject to bound "
             f"daemon resource use"
         )
+        raise ValueError(msg)
     return v
 
 

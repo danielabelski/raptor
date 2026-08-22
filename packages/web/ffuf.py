@@ -130,42 +130,54 @@ class FfufRunner:
         host/origin rather than to a specific subpath.
         """
         if "FUZZ" not in path_template:
-            raise ValueError("ffuf path template must include FUZZ")
+            msg = "ffuf path template must include FUZZ"
+            raise ValueError(msg)
 
         url_template = urljoin(self.base_url + "/", path_template)
         probe_url = url_template.replace("FUZZ", "raptor-scope-probe")
         if self._origin(probe_url) != self._origin(self.base_url):
-            raise ValueError(
+            msg = (
                 "ffuf path template is outside configured target scope: "
                 f"{self._redact(probe_url)}"
             )
+            raise ValueError(msg)
         return url_template
 
     def build_command(self, config: FfufConfig, output_file: Path) -> list[str]:
         """Return argv for a safe, non-shell ffuf invocation."""
         if not config.wordlist.is_file():
-            raise FileNotFoundError(f"ffuf wordlist not found: {config.wordlist}")
+            msg = f"ffuf wordlist not found: {config.wordlist}"
+            raise FileNotFoundError(msg)
         if config.threads < 1:
-            raise ValueError("ffuf threads must be >= 1")
+            msg = "ffuf threads must be >= 1"
+            raise ValueError(msg)
         if config.rate is not None and config.rate < 1:
-            raise ValueError("ffuf rate must be >= 1 when set")
+            msg = "ffuf rate must be >= 1 when set"
+            raise ValueError(msg)
         if config.timeout < 1:
-            raise ValueError("ffuf timeout must be >= 1")
+            msg = "ffuf timeout must be >= 1"
+            raise ValueError(msg)
         if config.max_runtime < 1:
-            raise ValueError("ffuf max runtime must be >= 1")
+            msg = "ffuf max runtime must be >= 1"
+            raise ValueError(msg)
         if config.report_limit < 0:
-            raise ValueError("ffuf report limit must be >= 0")
+            msg = "ffuf report limit must be >= 0"
+            raise ValueError(msg)
         if config.filter_size is not None and config.filter_size < 0:
-            raise ValueError("ffuf filter size must be >= 0 when set")
+            msg = "ffuf filter size must be >= 0 when set"
+            raise ValueError(msg)
         if any("\n" in header or "\r" in header for header in config.headers):
-            raise ValueError("ffuf headers must not contain newlines")
+            msg = "ffuf headers must not contain newlines"
+            raise ValueError(msg)
         if any("\n" in cookie or "\r" in cookie for cookie in config.cookies):
-            raise ValueError("ffuf cookies must not contain newlines")
+            msg = "ffuf cookies must not contain newlines"
+            raise ValueError(msg)
         if any(
             ":" not in header or not header.split(":", 1)[0].strip()
             for header in config.headers
         ):
-            raise ValueError("ffuf headers must be in 'Name: value' form")
+            msg = "ffuf headers must be in 'Name: value' form"
+            raise ValueError(msg)
 
         url_template = self.build_url_template(config.path_template)
         cmd = [
@@ -210,10 +222,11 @@ class FfufRunner:
         """
         binary_path = shutil.which(config.binary)
         if binary_path is None:
-            raise FileNotFoundError(
+            msg = (
                 f"ffuf binary not found on PATH: {config.binary}. "
                 "Install ffuf or pass --ffuf-bin."
             )
+            raise FileNotFoundError(msg)
         # Exec via the REAL path: go-install / package-manager setups
         # put a symlink on PATH; the mount-ns visibility check
         # realpaths cmd[0] and the tool_paths bind must carry the
@@ -223,7 +236,8 @@ class FfufRunner:
 
         target_host = (urlparse(self.base_url).hostname or "").lower()
         if not target_host:
-            raise ValueError("ffuf base URL must include a hostname")
+            msg = "ffuf base URL must include a hostname"
+            raise ValueError(msg)
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
         output_file = self.out_dir / "ffuf_results.json"

@@ -152,7 +152,8 @@ def _tokenize(text: str) -> list[str]:
             continue
         m = _TOKEN_RE.match(text, pos)
         if not m:
-            raise _ParseError(f"unparseable at {text[pos:pos + 12]!r}")
+            msg = f"unparseable at {text[pos:pos + 12]!r}"
+            raise _ParseError(msg)
         tokens.append(m.group(1).strip())
         pos = m.end()
     return tokens
@@ -176,19 +177,22 @@ class _ExprParser:
     def _next(self) -> str:
         tok = self._peek()
         if tok is None:
-            raise _ParseError("unexpected end of expression")
+            msg = "unexpected end of expression"
+            raise _ParseError(msg)
         self._pos += 1
         return tok
 
     def _expect(self, tok: str) -> None:
         got = self._next()
         if got != tok:
-            raise _ParseError(f"expected {tok!r}, got {got!r}")
+            msg = f"expected {tok!r}, got {got!r}"
+            raise _ParseError(msg)
 
     def parse(self) -> tuple:
         node = self._expr()
         if self._peek() is not None:
-            raise _ParseError(f"trailing tokens: {self._toks[self._pos:]}")
+            msg = f"trailing tokens: {self._toks[self._pos:]}"
+            raise _ParseError(msg)
         return node
 
     def _expr(self) -> tuple:
@@ -221,7 +225,8 @@ class _ExprParser:
             return ("int", int(tok))
         if re.fullmatch(_IDENT, tok):
             return ("var", tok)
-        raise _ParseError(f"unexpected token {tok!r}")
+        msg = f"unexpected token {tok!r}"
+        raise _ParseError(msg)
 
 
 def _parse_expr(text: str) -> tuple:
@@ -282,7 +287,8 @@ def _parse_invariant(invariant: str) -> tuple[tuple, str, tuple]:
     text = invariant.strip()
     m = _OP_RE.search(text)
     if not m:
-        raise _ParseError(f"not a comparison: {invariant!r}")
+        msg = f"not a comparison: {invariant!r}"
+        raise _ParseError(msg)
     return (
         _parse_expr(text[:m.start()]),
         m.group(1),
@@ -424,7 +430,8 @@ def _to_z3(node: tuple, env: dict, z3mod: Any):
         b = _to_z3(node[2], env, z3mod)
         cond = a <= b if kind == "min" else a >= b
         return z3mod.If(cond, a, b)
-    raise _ParseError(f"unsupported node {kind}")
+    msg = f"unsupported node {kind}"
+    raise _ParseError(msg)
 
 
 def _cmp_z3(lhs, op: str, rhs, z3mod: Any):

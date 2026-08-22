@@ -718,10 +718,11 @@ def _workflow_signing_to_finding(
             confidence=ws.confidence,
         )
     # Both fields None — should not happen but bail safely.
-    raise ValueError(
+    msg = (
         "workflow_signing finding has neither unsigned_commit "
         "nor stats populated"
     )
+    raise ValueError(msg)
 
 
 def _branch_protection_to_finding(

@@ -123,23 +123,25 @@ def _validate_source_path(source_file: str) -> None:
     an absolute path. Refuse before any filesystem access.
     """
     if not source_file:
-        raise ValueError("source_file must be non-empty")
+        msg = "source_file must be non-empty"
+        raise ValueError(msg)
     # Reject newlines / nulls / other control chars — would let an
     # attacker forge file headings or break path semantics.
     if any(c in source_file for c in "\n\r\x00"):
-        raise ValueError(
+        msg = (
             f"source_file may not contain newline / null characters: "
             f"{source_file!r}"
         )
+        raise ValueError(msg)
     # Reject absolute paths and ``..`` segments in any component.
     p = Path(source_file)
     if p.is_absolute():
-        raise ValueError(f"source_file must be relative: {source_file!r}")
+        msg = f"source_file must be relative: {source_file!r}"
+        raise ValueError(msg)
     parts = p.parts
     if any(part == ".." for part in parts):
-        raise ValueError(
-            f"source_file may not contain '..' segments: {source_file!r}"
-        )
+        msg = f"source_file may not contain '..' segments: {source_file!r}"
+        raise ValueError(msg)
 
 
 def _validate_function_name(function: str) -> None:
@@ -149,12 +151,14 @@ def _validate_function_name(function: str) -> None:
     section headings on subsequent lines (the parser then reads them
     as separate functions). Reject before any rendering."""
     if not function:
-        raise ValueError("function name must be non-empty")
+        msg = "function name must be non-empty"
+        raise ValueError(msg)
     if any(c in function for c in "\n\r\x00"):
-        raise ValueError(
+        msg = (
             f"function name may not contain newline / null characters: "
             f"{function!r}"
         )
+        raise ValueError(msg)
 
 
 # Sequences that would corrupt the metadata HTML comment if present
@@ -184,51 +188,58 @@ def _validate_metadata(metadata) -> None:
         return
     for k, v in dict(metadata).items():
         if not isinstance(k, str) or not k:
-            raise ValueError(f"metadata key must be a non-empty string: {k!r}")
+            msg = f"metadata key must be a non-empty string: {k!r}"
+            raise ValueError(msg)
         if len(k) > _MAX_META_KEY_LEN:
-            raise ValueError(
-                f"metadata key exceeds {_MAX_META_KEY_LEN} chars: {len(k)}"
-            )
+            msg = f"metadata key exceeds {_MAX_META_KEY_LEN} chars: {len(k)}"
+            raise ValueError(msg)
         if not re.fullmatch(r'\w[-\w]*', k):
-            raise ValueError(
+            msg = (
                 f"metadata key may not contain newline / quote / equals / "
                 f"space characters: {k!r}"
             )
+            raise ValueError(msg)
         v_str = str(v)
         if len(v_str) > _MAX_META_VALUE_LEN:
-            raise ValueError(
+            msg = (
                 f"metadata value for {k!r} exceeds {_MAX_META_VALUE_LEN} "
                 f"chars: {len(v_str)}"
             )
+            raise ValueError(msg)
         if any(c in v_str for c in "\n\r\x00\t"):
-            raise ValueError(
+            msg = (
                 f"metadata value for {k!r} may not contain newline / null "
                 f"characters: {v_str!r}"
             )
+            raise ValueError(msg)
         for forbidden in _FORBIDDEN_META_VALUE_SUBSTRINGS:
             if forbidden in v_str:
-                raise ValueError(
+                msg = (
                     f"metadata value for {k!r} may not contain {forbidden!r} "
                     f"(would corrupt the on-disk HTML-comment format): "
                     f"{v_str!r}"
                 )
+                raise ValueError(msg)
         if k == "source" and v_str not in _VALID_ANNOTATION_SOURCES:
-            raise ValueError(
+            msg = (
                 f"invalid annotation source {v_str!r}; expected one of "
                 f"{sorted(_VALID_ANNOTATION_SOURCES)}"
             )
+            raise ValueError(msg)
         if k == PROVENANCE_KEY and v_str not in (
             INTERACTIVE_TTY, NON_TTY, IMPORTED,
         ):
-            raise ValueError(
+            msg = (
                 f"invalid provenance tag {v_str!r}; expected "
                 f"{INTERACTIVE_TTY!r}, {NON_TTY!r} or {IMPORTED!r}"
             )
+            raise ValueError(msg)
         if k == TTY_KEY and not valid_tty_value(v_str):
-            raise ValueError(
+            msg = (
                 f"invalid tty stamp {v_str!r}; expected 'none' or a "
                 f"comma-joined subset of stdin,stdout,stderr"
             )
+            raise ValueError(msg)
 
 
 # Reserved on-disk grammar inside a section body. A body line matching
@@ -261,17 +272,19 @@ def _validate_body(body) -> None:
         return
     body_str = str(body)
     if _BODY_FORGED_HEADING_RE.search(body_str):
-        raise ValueError(
+        msg = (
             "annotation body may not contain a line starting with '## ' — "
             "it would be re-parsed as a new section heading on disk "
             "(use '###' or indent the line)"
         )
+        raise ValueError(msg)
     if _BODY_FORGED_META_RE.search(body_str):
-        raise ValueError(
+        msg = (
             "annotation body may not contain a '<!-- meta:' or "
             "'<!-- annotations-version' comment line — it would forge "
             "on-disk metadata"
         )
+        raise ValueError(msg)
 
 
 def annotation_path(base_dir: Path, source_file: str) -> Path:
@@ -291,11 +304,12 @@ def annotation_path(base_dir: Path, source_file: str) -> Path:
         parent_resolved == base_resolved
         or base_resolved in parent_resolved.parents
     ):
-        raise ValueError(
+        msg = (
             f"annotation path escapes base dir: {source_file!r} "
             f"(resolved parent {parent_resolved} is not under "
             f"{base_resolved})"
         )
+        raise ValueError(msg)
     return path
 
 
@@ -521,10 +535,11 @@ def write_annotation(
     pre-write or post-write content, never a partial rewrite.
     """
     if overwrite not in _OVERWRITE_MODES:
-        raise ValueError(
+        msg = (
             f"invalid overwrite mode {overwrite!r}; "
             f"expected one of {_OVERWRITE_MODES}"
         )
+        raise ValueError(msg)
     _validate_function_name(ann.function)
     _validate_metadata(ann.metadata)
     _validate_body(ann.body)

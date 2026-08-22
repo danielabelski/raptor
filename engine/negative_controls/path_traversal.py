@@ -11,6 +11,7 @@ def read_within(base, name):
     path = os.path.realpath(os.path.join(base, name))
     base_real = os.path.realpath(base)
     if not path.startswith(base_real + os.sep):
-        raise ValueError("path escapes base directory")
+        msg = "path escapes base directory"
+        raise ValueError(msg)
     with open(path) as f:
         return f.read()

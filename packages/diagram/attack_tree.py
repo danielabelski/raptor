@@ -329,7 +329,8 @@ def generate_from_file(
 ) -> str:
     data = load_json(path)
     if data is None:
-        raise ValueError(f"Failed to load {path}")
+        msg = f"Failed to load {path}"
+        raise ValueError(msg)
     attack_paths = load_json(attack_paths_path) if attack_paths_path else None
     disproven_raw = load_json(disproven_path) if disproven_path else None
     disproven = disproven_raw.get("disproven", []) if isinstance(disproven_raw, dict) else disproven_raw

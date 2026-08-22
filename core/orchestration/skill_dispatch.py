@@ -99,31 +99,33 @@ def _setup_cc_proxy_credentials(
     """
     socket_path = os.environ.get("RAPTOR_LLM_SOCKET")
     if not socket_path:
-        raise RuntimeError(
+        msg = (
             f"{_CC_CREDENTIAL_MODE_ENV}=proxy requires the LLM "
             "dispatcher route (RAPTOR_LLM_SOCKET) — run through the "
             "RAPTOR launcher, or unset the mode for env-credential "
             "dispatch"
         )
+        raise RuntimeError(msg)
     from core.sandbox import check_mount_available, check_net_available
     if not check_net_available():
-        raise RuntimeError(
+        msg = (
             f"{_CC_CREDENTIAL_MODE_ENV}=proxy requires the netns "
             "sandbox tier (unshare --user --net unavailable on this "
             "host) — the dispatcher bridge cannot engage"
         )
+        raise RuntimeError(msg)
     if not check_mount_available():
-        raise RuntimeError(
+        msg = (
             f"{_CC_CREDENTIAL_MODE_ENV}=proxy requires the fork spawn "
             "backend (mount-ns unavailable on this host) — only that "
             "backend runs the dispatcher bridge inside the child netns"
         )
+        raise RuntimeError(msg)
     try:
         budget = float(budget_usd)
     except (TypeError, ValueError):
-        raise RuntimeError(
-            f"invalid pass budget {budget_usd!r} for proxy-mode mint"
-        ) from None
+        msg = f"invalid pass budget {budget_usd!r} for proxy-mode mint"
+        raise RuntimeError(msg) from None
     # The bridge terminates INSIDE the sandbox as the host UID, so it
     # must target the dispatcher's child-plane socket (scoped child
     # tokens only — no worker tokens, no /_child/* management, no

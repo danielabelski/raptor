@@ -107,11 +107,12 @@ def _pivot_root_nr() -> int:
     try:
         return _PIVOT_ROOT_SYSCALL_NR[arch]
     except KeyError:
-        raise NotImplementedError(
+        msg = (
             f"mount-ns sandbox: pivot_root syscall number unknown for "
             f"architecture {arch!r} — add to _PIVOT_ROOT_SYSCALL_NR in "
             f"core/sandbox/mount_ns.py (see asm-generic/unistd.h)."
-        ) from None
+        )
+        raise NotImplementedError(msg) from None
 
 # System directories bind-mounted read-only into the new root. Present-if-
 # present: if the host lacks /lib64 the loop silently skips it.
@@ -377,12 +378,13 @@ def setup_mount_ns(target: str | None, output: str | None,
     # ``tempfile.mkdtemp`` (random suffix) — refuse the fallback so
     # the predictable PID path can never be reached.
     if not root_path:
-        raise RuntimeError(
+        msg = (
             "mount_ns: root_path is required (use tempfile.mkdtemp "
             "for a random-suffix path; the prior predictable "
             "/tmp/.raptor-sbx-<pid> fallback was a same-UID "
             "symlink-pre-plant target)"
         )
+        raise RuntimeError(msg)
     root = root_path
 
     if rootfs:

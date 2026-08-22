@@ -271,9 +271,8 @@ def build_persona(tmpdir: Path, cpu_count: int) -> Persona:
     if cpu_count == HOST_CPU_COUNT:
         cpu_count = _host_cpu_count()
     if cpu_count < 1:
-        raise ValueError(
-            f"cpu_count must be >= 1 or HOST_CPU_COUNT, got {cpu_count}"
-        )
+        msg = f"cpu_count must be >= 1 or HOST_CPU_COUNT, got {cpu_count}"
+        raise ValueError(msg)
     tmpdir = Path(tmpdir)
     tmpdir.mkdir(parents=True, exist_ok=True)
 
@@ -527,9 +526,11 @@ def set_cpu_affinity(cpu_count: int) -> int:
     reasons (kernel error, EPERM in some namespace setups).
     """
     if cpu_count < 1:
-        raise ValueError(f"cpu_count must be >= 1, got {cpu_count}")
+        msg = f"cpu_count must be >= 1, got {cpu_count}"
+        raise ValueError(msg)
     if not hasattr(os, "sched_getaffinity"):
-        raise NotImplementedError("set_cpu_affinity requires Linux (sched_setaffinity syscall)")
+        msg = "set_cpu_affinity requires Linux (sched_setaffinity syscall)"
+        raise NotImplementedError(msg)
     available = os.sched_getaffinity(0)
     effective = min(cpu_count, len(available))
     if effective < cpu_count:

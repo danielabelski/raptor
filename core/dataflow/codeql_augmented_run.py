@@ -78,8 +78,8 @@ def _require_data_only_pack(pack_dir: Path) -> None:
     trusting the emission step.
     """
     if not pack_dir.is_dir():
-        raise ValueError(
-            f"extension pack is not a directory: {pack_dir}")
+        msg = f"extension pack is not a directory: {pack_dir}"
+        raise ValueError(msg)
     offenders = [
         p for p in pack_dir.rglob("*")
         if p.suffix in (".ql", ".qll")
@@ -116,10 +116,10 @@ def _pack_name(pack_dir: Path) -> str:
             if line.startswith("name:"):
                 return line.split(":", 1)[1].strip()
     except OSError as e:
-        raise CodeQLRunError(
-            f"extension pack manifest unreadable: {manifest}") from e
-    raise CodeQLRunError(
-        f"extension pack has no parseable name: {manifest}")
+        msg = f"extension pack manifest unreadable: {manifest}"
+        raise CodeQLRunError(msg) from e
+    msg = f"extension pack has no parseable name: {manifest}"
+    raise CodeQLRunError(msg)
 
 
 def analyze(
@@ -162,7 +162,8 @@ def analyze(
         :class:`CodeQLRunError`: on non-zero exit or timeout.
     """
     if not queries:
-        raise ValueError("analyze: at least one query spec required")
+        msg = "analyze: at least one query spec required"
+        raise ValueError(msg)
 
     if extension_pack is not None:
         _require_data_only_pack(Path(extension_pack))
@@ -207,10 +208,11 @@ def analyze(
             env=RaptorConfig.get_safe_env(),
         )
     except subprocess.TimeoutExpired as e:
-        raise CodeQLRunError(
+        msg = (
             f"codeql analyze timed out after {timeout_seconds}s "
             f"(db={db_path})"
-        ) from e
+        )
+        raise CodeQLRunError(msg) from e
 
     elapsed = time.monotonic() - start
 
@@ -219,11 +221,12 @@ def analyze(
         stderr = getattr(completed, "stderr", "") or ""
         # Trim very long stderr to keep error message readable.
         stderr_tail = stderr[-2000:] if len(stderr) > 2000 else stderr
-        raise CodeQLRunError(
+        msg = (
             f"codeql analyze exited {returncode}\n"
             f"cmd: {' '.join(cmd)}\n"
             f"stderr (last 2000 chars):\n{stderr_tail}"
         )
+        raise CodeQLRunError(msg)
 
     return AnalysisResult(
         sarif_path=output_path,

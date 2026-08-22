@@ -75,23 +75,24 @@ class CommitResolver:
         before_l = before.lower()
         after_l = after.lower()
         if before_l == after_l:
-            raise IdenticalCommitsError(
-                f"commit_before ({before}) equals commit_after ({after}) — cannot diff."
-            )
+            msg = f"commit_before ({before}) equals commit_after ({after}) — cannot diff."
+            raise IdenticalCommitsError(msg)
         # Mixed short/long SHA prefix-match check.
         if (self.is_valid_sha_format(before) and self.is_valid_sha_format(after)):
             short, long_ = (before_l, after_l) if len(before_l) <= len(after_l) else (after_l, before_l)
             if len(short) >= 7 and long_.startswith(short):
-                raise IdenticalCommitsError(
+                msg = (
                     f"commit_before ({before}) is a prefix of commit_after ({after}) "
                     f"— same commit, cannot diff."
                 )
+                raise IdenticalCommitsError(msg)
 
     def expand(self, repo_path: Path, commit: str) -> CommitSha:
         """Resolve abbreviated SHAs via `git rev-parse` in a local clone."""
         clean = self.strip_parent_notation(commit)
         if not self.is_valid_sha_format(clean):
-            raise ValueError(f"Not a SHA: {commit!r}")
+            msg = f"Not a SHA: {commit!r}"
+            raise ValueError(msg)
         try:
             completed = subprocess.run(
                 safe_git_command("-C", str(repo_path), "rev-parse", clean),
@@ -102,11 +103,11 @@ class CommitResolver:
                 env=get_safe_git_env(),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ValueError(f"git rev-parse {clean!r} timed out") from exc
+            msg = f"git rev-parse {clean!r} timed out"
+            raise ValueError(msg) from exc
         if completed.returncode != 0:
-            raise ValueError(
-                f"git rev-parse {clean!r} failed: {completed.stderr.strip()}"
-            )
+            msg = f"git rev-parse {clean!r} failed: {completed.stderr.strip()}"
+            raise ValueError(msg)
         return CommitSha(completed.stdout.strip())
 
     def parent_of(self, repo_path: Path, commit: str) -> CommitSha:
@@ -117,7 +118,8 @@ class CommitResolver:
         """
         clean = self.strip_parent_notation(commit)
         if not self.is_valid_sha_format(clean):
-            raise ValueError(f"Not a SHA: {commit!r}")
+            msg = f"Not a SHA: {commit!r}"
+            raise ValueError(msg)
         try:
             completed = subprocess.run(
                 safe_git_command("-C", str(repo_path), "rev-parse", f"{clean}^"),
@@ -128,15 +130,13 @@ class CommitResolver:
                 env=get_safe_git_env(),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ValueError(
-                f"git rev-parse {clean}^ timed out"
-            ) from exc
+            msg = f"git rev-parse {clean}^ timed out"
+            raise ValueError(msg) from exc
         if completed.returncode != 0:
             if self._is_root_commit(repo_path, clean):
                 return CommitSha(_GIT_EMPTY_TREE_SHA)
-            raise ValueError(
-                f"git rev-parse {clean}^ failed: {completed.stderr.strip()}"
-            )
+            msg = f"git rev-parse {clean}^ failed: {completed.stderr.strip()}"
+            raise ValueError(msg)
         return CommitSha(completed.stdout.strip())
 
     @staticmethod

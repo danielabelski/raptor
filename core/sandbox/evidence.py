@@ -115,10 +115,11 @@ def ensure_audit_dir(run_dir) -> Path:
     except FileExistsError:
         st = os.lstat(d)
         if not _stat.S_ISDIR(st.st_mode):
-            raise OSError(
+            msg = (
                 f"evidence dir {d} exists and is not a directory "
                 f"(symlink or file planted?) — refusing to use it"
-            ) from None
+            )
+            raise OSError(msg) from None
     return d
 
 
@@ -168,11 +169,12 @@ class EvidenceFile:
             )
             if not ok:
                 os.close(fd)
-                raise OSError(
+                msg = (
                     f"existing evidence file {path} failed validation "
                     f"(mode={oct(st.st_mode)}, uid={st.st_uid}, "
                     f"nlink={st.st_nlink}) — refusing to append"
-                ) from None
+                )
+                raise OSError(msg) from None
             return cls(fd, path, st)
         return cls(fd, path, os.fstat(fd))
 
@@ -280,10 +282,11 @@ def anonymous_fd(data: bytes, *, name: str = "raptor-audit-cfg") -> int:
         while written < len(data):
             n = os.write(fd, data[written:])
             if n <= 0:
-                raise OSError(
+                msg = (
                     "anonymous-fd write returned 0 bytes — "
                     "filesystem full or read-only"
                 )
+                raise OSError(msg)
             written += n
         os.lseek(fd, 0, os.SEEK_SET)
     except BaseException:

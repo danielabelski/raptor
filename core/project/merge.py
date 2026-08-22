@@ -120,9 +120,8 @@ def _uniquify(parent: Path, stem: str, date_tag: str, suffix: str) -> Path:
             # Pathological: 1000 collisions on the same stem+date
             # almost certainly indicates a bug in caller. Fail loud
             # rather than spinning.
-            raise RuntimeError(
-                f"_uniquify: 1000 collisions on {base!r} — refusing to spin"
-            )
+            msg = f"_uniquify: 1000 collisions on {base!r} — refusing to spin"
+            raise RuntimeError(msg)
 
 
 def _resolves_inside(item: Path, run_root: Path) -> bool:
@@ -294,10 +293,12 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
 
     # Safety: don't merge into an existing run directory
     if output_dir.exists() and any((output_dir / f).exists() for f in ("findings.json", ".raptor-run.json")):
-        raise ValueError(f"Output directory {output_dir} already contains data. Use an empty directory.")
+        msg = f"Output directory {output_dir} already contains data. Use an empty directory."
+        raise ValueError(msg)
 
     if output_dir.resolve() in {d.resolve() for d in run_dirs}:
-        raise ValueError("output_dir cannot be one of the source run directories")
+        msg = "output_dir cannot be one of the source run directories"
+        raise ValueError(msg)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

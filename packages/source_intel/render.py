@@ -167,7 +167,8 @@ def derive_evidence_strings(
     or omit the block entirely.
     """
     if style not in _STYLES:
-        raise ValueError(f"unknown style: {style!r} (expected one of {_STYLES})")
+        msg = f"unknown style: {style!r} (expected one of {_STYLES})"
+        raise ValueError(msg)
 
     lines: list[str] = []
 

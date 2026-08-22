@@ -160,10 +160,11 @@ class BetaPrior:
 
     def __post_init__(self) -> None:
         if not (self.alpha > 0.0 and self.beta > 0.0):
-            raise ValueError(
+            msg = (
                 f"BetaPrior requires alpha > 0 and beta > 0; "
                 f"got alpha={self.alpha}, beta={self.beta}"
             )
+            raise ValueError(msg)
 
     @property
     def mean(self) -> float:
@@ -207,7 +208,8 @@ class BetaPrior:
         [0.025, 0.975] — sanity-checkable closed-form.
         """
         if not 0.0 < level < 1.0:
-            raise ValueError(f"level must be in (0, 1); got {level}")
+            msg = f"level must be in (0, 1); got {level}"
+            raise ValueError(msg)
         tail = (1.0 - level) / 2.0
         lo = _inverse_betai(self.alpha, self.beta, tail)
         hi = _inverse_betai(self.alpha, self.beta, 1.0 - tail)
@@ -229,10 +231,11 @@ def posterior_update(prior: BetaPrior, successes: int,
     means — that's the caller's contract).
     """
     if successes < 0 or failures < 0:
-        raise ValueError(
+        msg = (
             f"successes / failures must be non-negative; "
             f"got successes={successes}, failures={failures}"
         )
+        raise ValueError(msg)
     return BetaPrior(prior.alpha + successes, prior.beta + failures)
 
 
@@ -263,9 +266,11 @@ def weak_informative_prior(mean: float, strength: float) -> BetaPrior:
     yet justifying a tight prior.
     """
     if not 0.0 < mean < 1.0:
-        raise ValueError(f"mean must be in (0, 1); got {mean}")
+        msg = f"mean must be in (0, 1); got {mean}"
+        raise ValueError(msg)
     if not strength > 0.0:
-        raise ValueError(f"strength must be > 0; got {strength}")
+        msg = f"strength must be > 0; got {strength}"
+        raise ValueError(msg)
     alpha = mean * strength
     beta = (1.0 - mean) * strength
     return BetaPrior(alpha, beta)

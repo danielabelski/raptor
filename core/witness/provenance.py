@@ -225,7 +225,8 @@ def mint(fields: Mapping[str, object]) -> str | None:
     usable key is available. Writers treat None as "persist unstamped"
     — consumers then demote the record and re-derive."""
     if "kind" not in fields:
-        raise ValueError("witness provenance mint: fields must carry 'kind'")
+        msg = "witness provenance mint: fields must carry 'kind'"
+        raise ValueError(msg)
     try:
         key = _load_or_create_key()
     except OSError:

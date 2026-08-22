@@ -50,9 +50,8 @@ def bucket_key(when: str | datetime) -> str:
             s = str(when)
             if len(s) >= 7 and s[4] == "-" and s[:4].isdigit() and s[5:7].isdigit():
                 return s[:7]
-            raise ValueError(
-                f"unparseable timestamp for bucket_key: {when!r}",
-            ) from None
+            msg = f"unparseable timestamp for bucket_key: {when!r}"
+            raise ValueError(msg) from None
     return f"{dt.year:04d}-{dt.month:02d}"
 
 

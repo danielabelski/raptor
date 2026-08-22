@@ -41,7 +41,8 @@ def __getattr__(name):
     if name == "GDBDebugger":
         from .debugger import GDBDebugger
         return GDBDebugger
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 __all__ = [

@@ -230,10 +230,11 @@ def write_trajectory(
         )
         or out_real.startswith(base_real + os.sep)
     ):
-        raise ValueError(
+        msg = (
             f"refusing to write trajectory outside base: "
             f"base={base_real!r} out={out_real!r}"
         )
+        raise ValueError(msg)
 
     payload = _record_to_json(record)
     return _write_atomic(out, payload)

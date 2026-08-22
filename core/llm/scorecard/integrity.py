@@ -290,10 +290,11 @@ def stamp_file(path: Path) -> bool:
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError(
+        msg = (
             f"cannot stamp {path}: expected a JSON object, got "
             f"{type(data).__name__}"
         )
+        raise ValueError(msg)
     token = mint(data)
     if token is None:
         return False

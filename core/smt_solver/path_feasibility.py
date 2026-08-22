@@ -449,7 +449,8 @@ def _parse_expr(
             return _ashr(lhs, rhs) if profile.signed else _lshr(lhs, rhs)
         # _PRECEDENCE keys are exhaustive; reaching here is a bug, not user
         # input.  Raise so the invariant survives under ``python -O``.
-        raise RuntimeError(f"unhandled operator {op!r}")
+        msg = f"unhandled operator {op!r}"
+        raise RuntimeError(msg)
 
     # Recursion depth bound for `_climb`. Pre-fix the recursive
     # precedence-climber unwound through Python's call stack one
@@ -1449,9 +1450,8 @@ def make_val(literal: str, *, profile: BVProfile) -> Any:
     from core.smt_solver import parse_literal_value
     v = parse_literal_value(literal, profile)
     if isinstance(v, Rejection):
-        raise ValueError(
-            f"literal {literal!r} rejected: {v.kind.value} ({v.detail})"
-        )
+        msg = f"literal {literal!r} rejected: {v.kind.value} ({v.detail})"
+        raise ValueError(msg)
     return _mk_val(v, profile.width)
 
 

@@ -52,7 +52,8 @@ def _reject_non_finite(token: str) -> Any:
     as a clean ``json.JSONDecodeError`` (the existing handler) rather
     than as an arbitrary downstream crash.
     """
-    raise ValueError(f"non-finite JSON constant rejected: {token}")
+    msg = f"non-finite JSON constant rejected: {token}"
+    raise ValueError(msg)
 
 
 def load_json(
@@ -223,10 +224,11 @@ def _reject_non_finite_floats(data: Any) -> None:
         # bool is an int, never a float — no special-casing needed.
         if isinstance(obj, float):
             if not math.isfinite(obj):
-                raise ValueError(
+                msg = (
                     "Out of range float values are not JSON compliant: "
                     f"{obj!r}"
                 )
+                raise ValueError(msg)
         elif isinstance(obj, dict):
             stack.extend(obj.keys())
             stack.extend(obj.values())

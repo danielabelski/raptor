@@ -150,23 +150,28 @@ class _NoopHttpClient:
 
     def request(self, method, url, **kw):
         from core.http import HttpError
-        raise HttpError(f"{self._OFFLINE_MSG}: {method} {url}")
+        msg = f"{self._OFFLINE_MSG}: {method} {url}"
+        raise HttpError(msg)
 
     def post_json(self, url, body, *a, **kw):
         from core.http import HttpError
-        raise HttpError(f"{self._OFFLINE_MSG}: POST {url}")
+        msg = f"{self._OFFLINE_MSG}: POST {url}"
+        raise HttpError(msg)
 
     def get_json(self, url, *a, **kw):
         from core.http import HttpError
-        raise HttpError(f"{self._OFFLINE_MSG}: GET {url}")
+        msg = f"{self._OFFLINE_MSG}: GET {url}"
+        raise HttpError(msg)
 
     def get_bytes(self, url, *a, **kw):
         from core.http import HttpError
-        raise HttpError(f"{self._OFFLINE_MSG}: GET {url}")
+        msg = f"{self._OFFLINE_MSG}: GET {url}"
+        raise HttpError(msg)
 
     def stream_bytes(self, url, **kw):
         from core.http import HttpError
-        raise HttpError(f"{self._OFFLINE_MSG}: STREAM {url}")
+        msg = f"{self._OFFLINE_MSG}: STREAM {url}"
+        raise HttpError(msg)
 
 
 # RFC 1123 hostname: dot-separated alphanumeric labels, hyphens

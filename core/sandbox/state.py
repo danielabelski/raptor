@@ -177,13 +177,14 @@ def _require_warn_flag(mod, flag_name: str) -> None:
     from inside state.py. Surface a clearer error that names the
     offending flag so the caller can find their typo immediately."""
     if not hasattr(mod, flag_name):
-        raise AttributeError(
+        msg = (
             f"warn_once: unknown flag {flag_name!r}. Add to "
             f"core/sandbox/state.py module-level globals before "
             f"using. (Likely a typo — flag names embed 'warned', "
             f"most as `_<feature>_<reason>_warned`, some as "
             f"`_<feature>_warned_<reason>`.)"
         )
+        raise AttributeError(msg)
 
 
 def warn_once(flag_name: str) -> bool:

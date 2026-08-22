@@ -422,7 +422,8 @@ def _call_llm(client: Any, system: str, user: str) -> str:
         return client.complete(f"{system}\n\n{user}")
     if callable(client):
         return client(system, user)
-    raise TypeError(f"unsupported LLM client type: {type(client)}")
+    msg = f"unsupported LLM client type: {type(client)}"
+    raise TypeError(msg)
 
 
 _SANITISER_KW = (

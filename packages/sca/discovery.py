@@ -279,9 +279,11 @@ def find_manifests(
     """
     repo = repo.resolve(strict=False)
     if not repo.exists():
-        raise FileNotFoundError(f"target does not exist: {repo}")
+        msg = f"target does not exist: {repo}"
+        raise FileNotFoundError(msg)
     if not repo.is_dir():
-        raise NotADirectoryError(f"target is not a directory: {repo}")
+        msg = f"target is not a directory: {repo}"
+        raise NotADirectoryError(msg)
 
     # Scan-boundary cache reset: parsers with per-process caches
     # (CPM, Gradle catalog) clear here so a stale parse from a

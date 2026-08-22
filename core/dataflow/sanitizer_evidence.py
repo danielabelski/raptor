@@ -123,12 +123,14 @@ _EVIDENCE_KEYS: frozenset[str] = frozenset(
 def _check_extra_fields(name: str, data: Mapping[str, Any], allowed: frozenset[str]) -> None:
     extras = set(data.keys()) - allowed
     if extras:
-        raise ValueError(f"unknown fields in {name} JSON: {sorted(extras)}")
+        msg = f"unknown fields in {name} JSON: {sorted(extras)}"
+        raise ValueError(msg)
 
 
 def _require_nonempty(label: str, value: str) -> None:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string")
+        msg = f"{label} must be a non-empty string"
+        raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -158,23 +160,23 @@ class CandidateValidator:
         _require_nonempty("CandidateValidator.semantics_text", self.semantics_text)
         _require_nonempty("CandidateValidator.source_file", self.source_file)
         if self.semantics_tag not in VALID_SEMANTICS_TAGS:
-            raise ValueError(
+            msg = (
                 f"semantics_tag {self.semantics_tag!r} not in "
                 f"{sorted(VALID_SEMANTICS_TAGS)!r}"
             )
+            raise ValueError(msg)
         if self.extraction_provenance not in VALID_EXTRACTION_PROVENANCE:
-            raise ValueError(
+            msg = (
                 f"extraction_provenance {self.extraction_provenance!r} not in "
                 f"{sorted(VALID_EXTRACTION_PROVENANCE)!r}"
             )
+            raise ValueError(msg)
         if not (0.0 <= self.confidence <= 1.0):
-            raise ValueError(
-                f"confidence must be in [0, 1], got {self.confidence!r}"
-            )
+            msg = f"confidence must be in [0, 1], got {self.confidence!r}"
+            raise ValueError(msg)
         if self.source_line < 1:
-            raise ValueError(
-                f"source_line must be >= 1, got {self.source_line!r}"
-            )
+            msg = f"source_line must be >= 1, got {self.source_line!r}"
+            raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -223,9 +225,8 @@ class StepAnnotation:
 
     def __post_init__(self) -> None:
         if self.step_index < 0:
-            raise ValueError(
-                f"step_index must be >= 0, got {self.step_index!r}"
-            )
+            msg = f"step_index must be >= 0, got {self.step_index!r}"
+            raise ValueError(msg)
         for label, value in (
             ("on_path_validators", self.on_path_validators),
             ("variables_referenced", self.variables_referenced),
@@ -235,9 +236,8 @@ class StepAnnotation:
                 object.__setattr__(self, label, tuple(value))
             for item in getattr(self, label):
                 if not isinstance(item, str) or not item.strip():
-                    raise ValueError(
-                        f"StepAnnotation.{label} entries must be non-empty strings"
-                    )
+                    msg = f"StepAnnotation.{label} entries must be non-empty strings"
+                    raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -289,16 +289,14 @@ class SanitizerEvidence:
                 object.__setattr__(self, label, tuple(value))
             for item in getattr(self, label):
                 if not isinstance(item, ty):
-                    raise TypeError(
-                        f"SanitizerEvidence.{label} must contain {ty.__name__} instances"
-                    )
+                    msg = f"SanitizerEvidence.{label} must contain {ty.__name__} instances"
+                    raise TypeError(msg)
         if not isinstance(self.extraction_failures, tuple):
             object.__setattr__(self, "extraction_failures", tuple(self.extraction_failures))
         for f in self.extraction_failures:
             if not isinstance(f, str) or not f.strip():
-                raise ValueError(
-                    "SanitizerEvidence.extraction_failures entries must be non-empty strings"
-                )
+                msg = "SanitizerEvidence.extraction_failures entries must be non-empty strings"
+                raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -314,10 +312,11 @@ class SanitizerEvidence:
         _check_extra_fields("SanitizerEvidence", data, _EVIDENCE_KEYS)
         version = data["schema_version"]
         if version != SCHEMA_VERSION:
-            raise ValueError(
+            msg = (
                 f"SanitizerEvidence schema_version {version!r} != expected "
                 f"{SCHEMA_VERSION!r}; consumer upgrade required"
             )
+            raise ValueError(msg)
         return cls(
             candidate_pool=tuple(
                 CandidateValidator.from_dict(c)

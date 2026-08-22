@@ -1799,19 +1799,24 @@ def _verify_entries_fold(
         key = f"{entry.file}:{entry.function}"
         # Row provenance (core.coverage.journal_mac): the journal is
         # target-writable during runs and import-restorable, so a
-        # row's authority is tiered on its MAC. Tampered rows
-        # (token present but invalid) are dropped entirely; unstamped
-        # rows (pre-MAC legacy or forged-unstamped) keep fold-credit
-        # only behind the exact source-hash gate below and are never
-        # imported as $0 reused verdicts.
+        # row's authority is tiered on its MAC. Verified rows keep
+        # full behaviour (including $0 verdict reuse); everything
+        # else — unstamped rows AND token-present-but-unverifiable
+        # rows (edited content, another install's key, or a
+        # newer-schema row this reader's round-trip loses fields
+        # from) — gets fold-credit only behind the exact source-hash
+        # gate below and is never imported as a reused verdict.
+        # Unverifiable-token rows are not dropped BELOW the unstamped
+        # tier: the token is strippable, so that would punish only
+        # honest newer-schema rows, not attackers.
         provenance = journal_mac.entry_provenance(entry)
         if provenance == journal_mac.ROW_TAMPERED:
             tampered += 1
             logger.debug(
-                "journal-fold: %s row failed provenance verification "
-                "— dropped (resurfaces as gap)", key,
+                "journal-fold: %s row has a provenance token that "
+                "does not verify — demoted to the unstamped tier "
+                "(hash-gated credit only, no verdict reuse)", key,
             )
-            continue
         verified_row = provenance == journal_mac.ROW_VERIFIED
         # Candidate spans, tried in order — a match on ANY verifies:
         # * the entry's OWN recorded span: same-named items (macro
@@ -1845,8 +1850,10 @@ def _verify_entries_fold(
 
     if tampered:
         logger.warning(
-            "journal-fold: dropped %d row(s) whose provenance token "
-            "failed verification — resurfacing as gaps",
+            "journal-fold: %d row(s) carried a provenance token that "
+            "does not verify (edited content, another install's key, "
+            "or a newer row schema) — demoted to the unstamped tier: "
+            "exact-hash fold credit only, no verdict reuse",
             tampered,
         )
     if unstamped_unverifiable:

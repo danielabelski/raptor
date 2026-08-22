@@ -90,18 +90,34 @@ def test_correct_hash_prefix_shorter_than_full_does_not_credit(
     assert _fold([_entry(source_hash=real[:6])], target) == set()
 
 
-def test_tampered_stamped_row_is_dropped_entirely(
+def test_unverifiable_token_row_demotes_to_unstamped_tier(
     tmp_path: Path, target: Path,
 ) -> None:
-    """A stamped row whose content was edited after stamping fails
-    verification and must not credit even with a perfect hash."""
+    """A row whose token does not verify (edited content — or,
+    equivalently, a newer-schema row this reader's round-trip loses
+    fields from) gets UNSTAMPED-tier authority: exact-hash-gated
+    fold credit, never verdict reuse. Not dropped below unstamped —
+    the token is strippable, so a lower tier would punish only
+    honest newer-schema rows."""
     out = tmp_path / "run"
     real = _real_hash(target)
     entry = _entry(source_hash=real, verdict="finding")
     append_entry(out, entry)
     loaded = load_entries(out)[0]
-    loaded.verdict = "clean"  # the forgery
+    loaded.verdict = "clean"  # content no longer matches the token
     assert journal_mac.entry_provenance(loaded) == journal_mac.ROW_TAMPERED
+
+    # Exact-hash gate holds → fold credit, but NEVER the $0 reuse an
+    # authenticated row earns.
+    reuse_sink: dict = {}
+    covered = _fold([loaded], target, reuse_sink=reuse_sink)
+    assert covered == {"a.c:f"}
+    assert reuse_sink == {}
+
+    # Without a matching hash it carries nothing at all.
+    loaded.source_hash = "ffffffffffff"
+    assert _fold([loaded], target) == set()
+    loaded.source_hash = ""
     assert _fold([loaded], target) == set()
 
 

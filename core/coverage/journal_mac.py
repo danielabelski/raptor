@@ -34,6 +34,15 @@ project index aggregates them and cross-run verdict reuse is the
 feature. A replayed validly-stamped row is genuine history for the
 exact source hash it names; staleness is bounded by the fold's hash
 compare, not the MAC.
+
+Forward compatibility: verification round-trips the row through this
+reader's dataclass, so a row written by a NEWER schema (additive
+fields this reader doesn't know) — or stamped by another install's
+key — reads as token-present-but-unverifiable. That is NOT treated
+as a distinct security tier: whoever can edit a row can simply strip
+its token and land in the unstamped tier anyway, so consumers demote
+unverifiable rows to the same unstamped tier (exact-hash-gated fold
+credit, never verdict reuse) instead of dropping them below it.
 """
 
 from __future__ import annotations
@@ -251,8 +260,12 @@ def entry_provenance(entry) -> str:
     """Tri-state provenance of a loaded ``ReviewJournalEntry``.
 
     * ``verified`` — token present and valid for the row's content.
-    * ``tampered`` — token present but invalid (content edited, or a
-      row minted by another install): the fold skips it entirely.
+    * ``tampered`` — token present but invalid: content edited, a row
+      minted by another install, or a row written by a newer schema
+      whose extra fields this reader's dataclass round-trip loses.
+      Consumers give these the same authority as ``unstamped`` (the
+      token is strippable, so "tampered" is attribution, not a
+      security boundary) but log them distinctly.
     * ``unstamped`` — no token (pre-MAC legacy or forged-unstamped):
       fold-credit only behind the exact source-hash gate, never
       verdict reuse.

@@ -121,14 +121,27 @@ def _module_dep_warnings() -> list[str]:
     then crashes the first /audit or /codeql run that imports it.
     Import in a THROWAWAY subprocess: a segfaulting extension module
     must not take doctor down with it. Never raises.
+
+    Probe isolation: ``python -c`` puts the CURRENT DIRECTORY at
+    ``sys.path[0]``, so a planted ``z3.py`` / ``z3/`` in whatever
+    directory doctor happened to be invoked from would execute
+    attacker code in this (unsandboxed) process's child. The probe
+    therefore runs with ``-I`` (isolated mode: no cwd/script dir on
+    sys.path, PYTHON* env ignored, no user site), from a fresh empty
+    temp directory, with the sanitised env.
     """
     import subprocess
+    import tempfile
 
     out: list[str] = []
     try:
         import importlib.util
 
         from core.config import RaptorConfig
+    except Exception:  # noqa: BLE001
+        return out
+    try:
+        safe_env = RaptorConfig.get_safe_env()
     except Exception:  # noqa: BLE001
         return out
     for name in sorted(RaptorConfig.TOOL_DEPS):
@@ -145,11 +158,15 @@ def _module_dep_warnings() -> list[str]:
             )
             continue
         try:
-            proc = subprocess.run(
-                [sys.executable, "-c",
-                 f"import importlib; importlib.import_module({module!r})"],
-                capture_output=True, text=True, check=False, timeout=60,
-            )
+            with tempfile.TemporaryDirectory(
+                prefix="raptor-doctor-probe-",
+            ) as neutral_cwd:
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-c",
+                     f"import importlib; importlib.import_module({module!r})"],
+                    capture_output=True, text=True, check=False, timeout=60,
+                    cwd=neutral_cwd, env=safe_env,
+                )
         except (OSError, subprocess.SubprocessError):
             continue  # probe failure ≠ broken module; stay quiet
         if proc.returncode != 0:

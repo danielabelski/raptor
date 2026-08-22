@@ -313,6 +313,48 @@ class TestModuleDepVerification:
 
 
 # ---------------------------------------------------------------------------
+# Module-dep probe isolation
+# ---------------------------------------------------------------------------
+
+
+class TestModuleProbeIsolation:
+    """``python -c`` puts the invocation cwd at ``sys.path[0]`` — a
+    planted module in whatever directory doctor runs from must never
+    execute in the probe subprocess."""
+
+    def test_planted_module_in_cwd_not_executed(
+        self, monkeypatch, tmp_path,
+    ):
+        from unittest import mock
+
+        from core.config import RaptorConfig
+
+        attack = tmp_path / "attack"
+        attack.mkdir()
+        canary = tmp_path / "canary"
+        (attack / "raptor_probe_target_mod.py").write_text(
+            "import pathlib\n"
+            f"pathlib.Path({str(canary)!r}).touch()\n",
+        )
+        deps = {
+            "probe-target": {
+                "module": "raptor_probe_target_mod",
+                "pip": "probe-target", "affects": "/nothing",
+            },
+        }
+        monkeypatch.chdir(attack)
+        with mock.patch.object(RaptorConfig, "TOOL_DEPS", deps), \
+             mock.patch(
+                 "importlib.util.find_spec", return_value=object(),
+             ):
+            doctor._module_dep_warnings()
+        assert not canary.exists(), (
+            "module-dep probe imported a module planted in the "
+            "invocation cwd"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Internal-error safety
 # ---------------------------------------------------------------------------
 

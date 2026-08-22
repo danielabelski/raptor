@@ -8,10 +8,48 @@ from __future__ import annotations
 
 import logging
 import os
+import stat as stat_mod
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Byte budgets for the taint-summary walk over the (target-controlled)
+# source tree. Per-file: real source files this large are generated
+# code, not worth summarising; the multi-language pass historically
+# skipped >500k-char files AFTER reading them fully — now the lstat
+# size gate fires before any read. Aggregate: caps the total bytes the
+# walk will ever read/parse so a tree of many cap-sized files cannot
+# grind the pre-sweep.
+_TAINT_PER_FILE_CAP = 500_000
+_TAINT_AGGREGATE_CAP = 128 * 1024 * 1024
+
+
+def _admit_taint_file(path: Path, budget: dict[str, int]) -> bool:
+    """lstat-based admission for one candidate file.
+
+    Refuses symlinks and non-regular files (lstat, never follows),
+    over-cap files, and files that would exceed the remaining
+    aggregate budget. Mutates ``budget["remaining"]`` on admission.
+    """
+    try:
+        st = path.lstat()
+    except OSError:
+        return False
+    if not stat_mod.S_ISREG(st.st_mode):
+        return False
+    if st.st_size > _TAINT_PER_FILE_CAP:
+        return False
+    if st.st_size > budget["remaining"]:
+        if not budget["warned"]:
+            budget["warned"] = True
+            logger.warning(
+                "taint_summary: aggregate byte budget (%d) exhausted; "
+                "remaining files skipped", _TAINT_AGGREGATE_CAP,
+            )
+        return False
+    budget["remaining"] -= st.st_size
+    return True
 
 
 def codeql_pre_sweep(
@@ -196,14 +234,17 @@ def build_taint_summary(
     def _in_scope(p):
         return _path_in_scope_dirs(p, scope_dirs)
 
+    # Shared across both language passes: total bytes admitted.
+    budget = {"remaining": _TAINT_AGGREGATE_CAP, "warned": False}
+
     try:
         from core.analysis.python_module_callgraph import build_python_module_callgraph
         from core.analysis.taint_summaries import build_taint_summaries
 
         for path in target_path.rglob("*.py"):
-            if not path.is_file():
-                continue
             if not _in_scope(path):
+                continue
+            if not _admit_taint_file(path, budget):
                 continue
             try:
                 cg = build_python_module_callgraph(path)
@@ -228,17 +269,18 @@ def build_taint_summary(
         )
         multi_lang_count = 0
         for path in target_path.rglob("*"):
-            if not path.is_file():
+            # Cheap name-based filters first, then the lstat-based
+            # admission (symlink refusal + per-file cap + aggregate
+            # budget) — nothing is read before every gate passes.
+            if path.suffix.lower() not in _LANG_EXTENSIONS:
                 continue
             if not _in_scope(path):
                 continue
-            if path.suffix.lower() not in _LANG_EXTENSIONS:
+            if not _admit_taint_file(path, budget):
                 continue
             try:
                 content = path.read_text(errors="replace")
             except OSError:
-                continue
-            if len(content) > 500_000:
                 continue
             rel = str(path.relative_to(target_path))
             try:

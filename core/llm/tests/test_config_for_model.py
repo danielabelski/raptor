@@ -188,3 +188,39 @@ def test_shorthand_substring_does_not_match_token():
     # ``pus`` is NOT a token — falls through to loud error.
     with pytest.raises(ValueError):
         cfg.config_for_model("pus")
+
+
+class TestBedrockRouteOverrides:
+    """bedrock/-route-prefixed overrides — the mode resolver's form.
+
+    Pre-fix chain of failures: provider_of("") -> ValueError -> silent
+    fallback to the default model; after the peel fix, the synthesized
+    config carried a fully-bared model name (vendor segment stripped),
+    which Bedrock 403s. The override must resolve to the CONFIGURED
+    entry (wire-form name + credentials)."""
+
+    def _bedrock_cfg(self):
+        return LLMConfig(
+            primary_model=None,
+            fallback_models=[
+                ModelConfig(provider="bedrock",
+                            model_name="anthropic.claude-mythos-5",
+                            api_key="K_BR"),
+            ],
+            specialized_models={},
+        )
+
+    def test_route_prefixed_override_resolves_configured_entry(self):
+        cfg = self._bedrock_cfg()
+        mc = cfg.config_for_model("bedrock/anthropic.claude-mythos-5")
+        assert mc.model_name == "anthropic.claude-mythos-5"
+        assert mc.api_key == "K_BR"
+
+    def test_unconfigured_bedrock_id_keeps_wire_form(self):
+        # No configured entry at all: the synthesized config must keep
+        # the vendor-dotted wire form, never the fully-bared name.
+        cfg = LLMConfig(primary_model=None, fallback_models=[],
+                        specialized_models={})
+        mc = cfg.config_for_model("bedrock/anthropic.claude-mythos-5")
+        assert mc.provider == "bedrock"
+        assert mc.model_name == "anthropic.claude-mythos-5"

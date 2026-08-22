@@ -1616,6 +1616,7 @@ class LLMConfig:
             bare_model_id,
             provider_of,
             resolve_model_shorthand,
+            routing_model_id,
             unknown_model_message,
         )
 
@@ -1625,6 +1626,12 @@ class LLMConfig:
             if mc.model_name == model_id or mc.model_name == bare:
                 return mc
             if _strip_dated_alias(mc.model_name) == bare:
+                return mc
+            # Bare-to-bare: a ``bedrock/anthropic.claude-x`` override
+            # must resolve to the configured ``anthropic.claude-x``
+            # entry (its wire-form name and credentials), not fall
+            # through to a synthesized config.
+            if bare_model_id(mc.model_name) == bare:
                 return mc
 
         # Shorthand expansion: when the operator passes a bare tier token
@@ -1675,13 +1682,15 @@ class LLMConfig:
             )
             return ModelConfig(
                 provider=provider,
-                model_name=bare_model_id(model_id),
+                # Wire-form name: Bedrock ids need the vendor-dotted
+                # segment; a fully-bared name is not a valid model id.
+                model_name=routing_model_id(model_id),
                 api_key=best.api_key,
                 api_base=best.api_base,
                 max_tokens=limits.get("max_output", best.max_tokens),
                 max_context=limits.get("max_context", best.max_context),
             )
-        return ModelConfig(provider=provider, model_name=bare_model_id(model_id))
+        return ModelConfig(provider=provider, model_name=routing_model_id(model_id))
 
     def to_file(self, config_path: Path) -> None:
         """Save a MINIMAL snapshot of this configuration to JSON.

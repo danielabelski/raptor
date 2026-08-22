@@ -74,6 +74,14 @@ _AGGREGATOR_PREFIXES: tuple[str, ...] = (
     "deepinfra/",
     "perplexity/",
     "replicate/",
+    # Route-prefixed Bedrock ids (``bedrock/anthropic.claude-…``) — the
+    # form the mode resolver and operator ``--model`` overrides use.
+    # Peeling it leaves the dotted Bedrock id, which the existing
+    # Bedrock-shape handling resolves (provider ``bedrock``, bare name
+    # stripped of the vendor segment). Without this peel, provider_of
+    # returned "" and every route-prefixed override raised — the audit
+    # fell back to the default model with only a warning.
+    "bedrock/",
 )
 
 
@@ -269,6 +277,28 @@ def unknown_model_message(model_id: str) -> str:
     )
 
 
+def routing_model_id(model_id: str) -> str:
+    """Return the identifier to put on the wire: aggregator/route
+    prefixes peeled, provider segments KEPT.
+
+    Distinct from :func:`bare_model_id`: Bedrock model ids require the
+    vendor-dotted form (``anthropic.claude-…``) — handing the SDK a
+    fully-bared name 403s. Use bare_model_id for MATCHING against
+    configured entries, routing_model_id for the outgoing model name.
+    """
+    needle = model_id
+    for _ in range(4):
+        peeled = False
+        for prefix in _AGGREGATOR_PREFIXES:
+            if needle.lower().startswith(prefix):
+                needle = needle[len(prefix):]
+                peeled = True
+                break
+        if not peeled:
+            break
+    return needle
+
+
 def bare_model_id(model_id: str) -> str:
     """Return the model identifier with any aggregator + provider
     prefix peeled off.
@@ -313,6 +343,12 @@ def bare_model_id(model_id: str) -> str:
                 break
         if not peeled:
             break
+        # An aggregator can front a Bedrock-shaped id
+        # (``bedrock/anthropic.claude-…``) — the regional/provider
+        # dot-peels above ran before this loop, so re-run them on the
+        # peeled remainder. Recursion mirrors family_of's peel-and-
+        # recurse and is bounded by the shrinking needle.
+        return bare_model_id(needle)
     if "/" in needle:
         head, rest = needle.split("/", 1)
         if head.lower() in {v for v in _FAMILY_TO_PROVIDER.values()}:

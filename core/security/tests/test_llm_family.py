@@ -542,3 +542,35 @@ def test_shorthand_ignores_empty_candidates():
     assert resolve_model_shorthand(
         "haiku", ["", "claude-haiku-4-5"],
     ) == "claude-haiku-4-5"
+
+
+class TestBedrockRouteForm:
+    """``bedrock/anthropic.claude-…`` — the mode resolver's and
+    operator ``--model`` overrides' form. Pre-fix provider_of returned
+    "" (ValueError in config_for_model → override silently fell back
+    to the default model) and bare_model_id returned the input
+    unchanged."""
+
+    def test_provider_and_family(self):
+        from core.security.llm_family import family_of, provider_of
+        assert provider_of("bedrock/anthropic.claude-mythos-5") == "bedrock"
+        assert family_of("bedrock/anthropic.claude-mythos-5") == "anthropic"
+
+    def test_bare_model_id_fully_peels(self):
+        from core.security.llm_family import bare_model_id
+        assert bare_model_id(
+            "bedrock/anthropic.claude-mythos-5") == "claude-mythos-5"
+        assert bare_model_id(
+            "bedrock/us.anthropic.claude-opus-4-7") == "claude-opus-4-7"
+
+    def test_routing_model_id_keeps_wire_form(self):
+        # Bedrock model ids REQUIRE the vendor-dotted segment; the
+        # wire-form helper peels only the route prefix. (A fully-bared
+        # name sent to the SDK 403s — observed live when a resolved
+        # bedrock/ override synthesized model_name=claude-mythos-5.)
+        from core.security.llm_family import routing_model_id
+        assert routing_model_id(
+            "bedrock/anthropic.claude-mythos-5") == "anthropic.claude-mythos-5"
+        assert routing_model_id(
+            "anthropic.claude-mythos-5") == "anthropic.claude-mythos-5"
+        assert routing_model_id("claude-haiku-4-5") == "claude-haiku-4-5"

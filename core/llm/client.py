@@ -1060,6 +1060,12 @@ class LLMClient:
         self.total_cost = 0.0
         self.request_count = 0
         self.cache_hits = 0
+        # Entries whose provenance token was PRESENT but invalid — a
+        # genuine tamper signal (only editing a stamped entry produces
+        # it; legacy/unstamped entries miss silently). Surfaced in
+        # get_stats so a cache-corruption campaign (forcing full-price
+        # re-generation) is operator-visible, not just DEBUG noise.
+        self.cache_tamper_events = 0
         self.task_type_costs: dict[str, float] = {}  # task_type → cumulative cost
         # Distinct models actually invoked during this client's lifetime,
         # keyed by (provider, alias, resolved, role) → call count. Feeds the
@@ -1683,6 +1689,49 @@ class LLMClient:
             return False
         return (time.time() - ts) > ttl
 
+    def _reject_cache_entry(self, cache_file, data, cache_key: str) -> None:
+        """Handle a cache entry that failed the provenance gate.
+
+        Two distinct classes, split for attribution:
+
+        * unstamped (no token) — pre-MAC legacy or a naive plant;
+          benign shape, DEBUG, plain miss (the refill overwrites it).
+        * token present but INVALID — only produced by editing a
+          stamped entry (or replaying another slot's): a genuine
+          tamper signal. WARNING + ``cache_tamper_events`` counter
+          (surfaced in get_stats), and the entry is QUARANTINED aside
+          (``<name>.json.unverified``, scorecard precedent) so the
+          honest refill does not destroy the evidence.
+        """
+        from core.llm import cache_integrity
+        if cache_integrity.extract_token(data) is None:
+            logger.debug(
+                "Cache entry unstamped — miss: %s", cache_key)
+            return
+        with self._stats_lock:
+            self.cache_tamper_events += 1
+        import os
+        quarantine = cache_file.with_name(cache_file.name + ".unverified")
+        try:
+            # Evidence budget: keep at most a handful of quarantined
+            # entries — a corruption CAMPAIGN must not turn the
+            # evidence trail into a disk-filler (the counter carries
+            # the magnitude; the samples carry the forensics).
+            existing = list(cache_file.parent.glob("*.unverified"))
+            if len(existing) >= 8:
+                os.unlink(cache_file)
+                where = "evidence budget reached; entry removed"
+            else:
+                os.replace(cache_file, quarantine)
+                where = str(quarantine)
+        except OSError:
+            where = "quarantine failed; entry left in place"
+        logger.warning(
+            "Cache entry failed provenance verification (stamped but "
+            "invalid — tampered or foreign): %s. Entry quarantined "
+            "(%s); response will be re-fetched.", cache_key, where,
+        )
+
     def _get_cached_response(self, cache_key: str) -> str | None:
         """Retrieve cached response if available."""
         if not self.config.enable_caching:
@@ -1700,8 +1749,7 @@ class LLMClient:
         # result overwrites), never replayed. See core.llm.cache_integrity.
         from core.llm import cache_integrity
         if not cache_integrity.verify_entry(cache_file.stem, data):
-            logger.debug("Cache entry failed provenance check "
-                         "(unstamped or tampered) — miss: %s", cache_key)
+            self._reject_cache_entry(cache_file, data, cache_key)
             return None
         if self._is_entry_stale(data):
             logger.debug("Cache stale (TTL): %s", cache_key)
@@ -1842,8 +1890,7 @@ class LLMClient:
         # Provenance gate — see _get_cached_response for the rationale.
         from core.llm import cache_integrity
         if not cache_integrity.verify_entry(cache_file.stem, data):
-            logger.debug("Structured cache entry failed provenance check "
-                         "(unstamped or tampered) — miss: %s", cache_key)
+            self._reject_cache_entry(cache_file, data, cache_key)
             return None
         # Both fields are required for a usable replay; treat partial
         # entries (e.g. truncated by an interrupted writer) as a miss.
@@ -3249,5 +3296,7 @@ class LLMClient:
             }
             if self.cache_hits:
                 stats["cache_hits"] = self.cache_hits
+            if self.cache_tamper_events:
+                stats["cache_tamper_events"] = self.cache_tamper_events
             return stats
 

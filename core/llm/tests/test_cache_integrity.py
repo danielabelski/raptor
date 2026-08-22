@@ -166,3 +166,53 @@ def test_unusable_key_reads_as_miss_never_error(
     assert cache_integrity.extract_token(entry) is None
     assert cache_integrity.verify_entry("slot", entry) is False
     assert cache_integrity.key_usable() is False
+
+
+# ---------------------------------------------------------------------------
+# Tamper attribution: quarantine + telemetry
+# ---------------------------------------------------------------------------
+
+
+def test_tampered_entry_is_quarantined_and_counted(tmp_path: Path) -> None:
+    """A stamped-but-invalid entry (only produced by editing a stamped
+    entry) is quarantined aside — not overwritten by the refill — and
+    surfaces in get_stats as cache_tamper_events."""
+    client = make_test_client(tmp_path)
+    key = "k" * 16
+    entry = cache_integrity.stamp(key, {"content": "genuine",
+                                        "timestamp": 1.0})
+    entry["content"] = "forged verdict"
+    path = _plant(client.config.cache_dir, key, entry)
+
+    assert client._get_cached_response(key) is None
+    assert not path.exists(), "tampered entry must be moved aside"
+    quarantine = path.with_name(path.name + ".unverified")
+    assert quarantine.exists()
+    assert json.loads(quarantine.read_text())["content"] == "forged verdict"
+    assert client.get_stats().get("cache_tamper_events") == 1
+
+
+def test_unstamped_entry_is_not_counted_as_tamper(tmp_path: Path) -> None:
+    """Legacy/unstamped entries are a benign miss: no counter, no
+    quarantine (the refill overwrites them)."""
+    client = make_test_client(tmp_path)
+    key = "u" * 16
+    path = _plant(client.config.cache_dir, key, {"content": "old"})
+
+    assert client._get_cached_response(key) is None
+    assert path.exists()
+    assert "cache_tamper_events" not in client.get_stats()
+
+
+def test_quarantine_evidence_budget_is_bounded(tmp_path: Path) -> None:
+    client = make_test_client(tmp_path)
+    for i in range(12):
+        key = f"slot-{i:02d}" + "x" * 8
+        entry = cache_integrity.stamp(key, {"content": "g",
+                                            "timestamp": 1.0})
+        entry["content"] = "forged"
+        _plant(client.config.cache_dir, key, entry)
+        client._get_cached_response(key)
+    quarantined = list(client.config.cache_dir.glob("*.unverified"))
+    assert len(quarantined) <= 8
+    assert client.get_stats()["cache_tamper_events"] == 12

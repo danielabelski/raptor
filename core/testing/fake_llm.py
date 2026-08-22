@@ -118,6 +118,7 @@ def make_test_client(
     client.total_cost = 0.0
     client.request_count = 0
     client.cache_hits = 0
+    client.cache_tamper_events = 0
     client.task_type_costs = {}
     client._daily_quota_exhausted = set()
     client._stats_lock = threading.RLock()

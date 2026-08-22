@@ -29,6 +29,7 @@ from urllib.parse import quote
 from cve_diff.discovery.nvd import NvdDiscoverer
 from cve_diff.infra import github_client
 
+from core.config.hosts_override import load_hosts_override
 from core.http import HttpError
 from core.http.egress_backend import EgressClient
 from core.http.urllib_backend import UrllibClient
@@ -124,26 +125,7 @@ def _load_forge_override() -> list[str] | None:
     unexpected schema all degrade silently to None — production
     failure mode is loud at the proxy (forge fetch fails with "host
     not in allowlist"), not silent at startup."""
-    if not _OVERRIDE_CONFIG_PATH.exists():
-        return None
-    try:
-        data = json.loads(
-            _OVERRIDE_CONFIG_PATH.read_text(encoding="utf-8"),
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    hosts = data.get("hosts")
-    if not isinstance(hosts, list):
-        return None
-    seen: set = set()
-    result: list = []
-    for h in hosts:
-        if isinstance(h, str) and h and h not in seen:
-            seen.add(h)
-            result.append(h)
-    return result or None
+    return load_hosts_override(_OVERRIDE_CONFIG_PATH)
 
 
 def forge_hosts() -> frozenset[str]:

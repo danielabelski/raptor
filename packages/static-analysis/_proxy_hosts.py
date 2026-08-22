@@ -33,11 +33,12 @@ what this module returns.
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import subprocess
 from pathlib import Path
+
+from core.config.hosts_override import load_hosts_override
 
 logger = logging.getLogger(__name__)
 
@@ -83,26 +84,7 @@ def _load_override() -> list[str] | None:
     unexpected schema all degrade to None — production failure mode
     is loud at the proxy (scanner subprocess fails with "host not
     in allowlist"), not silent at startup."""
-    if not _OVERRIDE_CONFIG_PATH.exists():
-        return None
-    try:
-        data = json.loads(
-            _OVERRIDE_CONFIG_PATH.read_text(encoding="utf-8"),
-        )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    hosts = data.get("hosts")
-    if not isinstance(hosts, list):
-        return None
-    seen: set = set()
-    result: list = []
-    for h in hosts:
-        if isinstance(h, str) and h and h not in seen:
-            seen.add(h)
-            result.append(h)
-    return result or None
+    return load_hosts_override(_OVERRIDE_CONFIG_PATH)
 
 
 def _resolve_semgrep_bin() -> str | None:

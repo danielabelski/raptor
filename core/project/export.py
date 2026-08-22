@@ -378,17 +378,18 @@ _IMPORTED_REF_REWRITE_PATHS = ("findings.json", "sca/findings.json")
 # locally-verified work in reports/correlation.
 _IMPORTED_REF_PREFIX = "imported:"
 
-# Skip provenance-ref rewriting (and log) on absurdly large findings
-# files rather than parse them wholesale at import time. Consumers'
-# loaders refuse files over the same bound (see
-# core/project/findings_utils.py), so an unrewritten oversized file
-# never feeds a merge fold either.
-_MAX_REWRITE_JSON_BYTES = 64 * 1024 * 1024
-
-
 def _namespace_imported_provenance_refs(run_dir: Path) -> None:
     """Prefix every provenance ref's ``run_id`` in *run_dir*'s
-    findings files with ``imported:`` (idempotent)."""
+    findings files with ``imported:`` (idempotent).
+
+    Oversized files are skipped (with a warning) rather than parsed
+    wholesale at import time — consumers' loaders refuse files over
+    the same bound (:data:`core.project.findings_utils.
+    MAX_FINDINGS_JSON_BYTES`), so an unrewritten oversized file never
+    feeds a merge fold either.
+    """
+    from core.project.findings_utils import MAX_FINDINGS_JSON_BYTES
+
     for rel in _IMPORTED_REF_REWRITE_PATHS:
         path = run_dir / rel
         if not path.is_file() or path.is_symlink():
@@ -397,7 +398,7 @@ def _namespace_imported_provenance_refs(run_dir: Path) -> None:
             size = path.stat().st_size
         except OSError:
             continue
-        if size > _MAX_REWRITE_JSON_BYTES:
+        if size > MAX_FINDINGS_JSON_BYTES:
             logger.warning(
                 "import: %s is %d bytes — too large to rewrite "
                 "provenance refs; loaders refuse it at the same bound",

@@ -124,9 +124,47 @@ def count_vulns(findings: list[dict[str, Any]]) -> int:
     return len(group_findings(findings))
 
 
+# Byte gate applied BEFORE parsing any per-run findings file. Import
+# admits archives up to a 10 GiB aggregate extraction budget, so a
+# single restored findings.json can be enormous — and report/merge
+# generation load_json()s each run's findings wholesale into memory.
+# 64 MiB holds hundreds of thousands of findings rows; above it the
+# hostile-artifact hypothesis dominates and the file is skipped with
+# a warning rather than parsed. The import-side provenance-ref
+# rewriter (core/project/export.py) skips oversized files at the same
+# bound, so the two ends of the pipeline agree.
+MAX_FINDINGS_JSON_BYTES = 64 * 1024 * 1024
+
+
+def _load_size_gated_json(path: Path) -> Any | None:
+    """``load_json`` with a pre-parse ``st_size`` gate.
+
+    Returns ``None`` for missing files (matching ``load_json``) and
+    for files over :data:`MAX_FINDINGS_JSON_BYTES` — the skip is
+    logged at warning so an operator investigating a missing run in
+    a report sees why.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size > MAX_FINDINGS_JSON_BYTES:
+        logger.warning(
+            "skipping %s: %d bytes exceeds the %d-byte findings-file "
+            "gate — not parsing (oversized/hostile artifact?)",
+            path, size, MAX_FINDINGS_JSON_BYTES,
+        )
+        return None
+    return load_json(path)
+
+
 def load_findings_from_dir(run_dir: Path) -> list[dict[str, Any]]:
-    """Load findings list from a run directory's findings.json."""
-    data = load_json(run_dir / "findings.json")
+    """Load findings list from a run directory's findings.json.
+
+    Oversized files (see :data:`MAX_FINDINGS_JSON_BYTES`) are skipped
+    with a warning rather than parsed wholesale into memory.
+    """
+    data = _load_size_gated_json(run_dir / "findings.json")
     if data is None:
         logger.debug("No findings.json in %s", run_dir)
         return []
@@ -150,9 +188,10 @@ def load_sca_findings_from_dir(run_dir: Path) -> list[dict[str, Any]]:
     render through the same machinery — they're only *discovered*
     separately. Kept distinct from :func:`load_findings_from_dir` so
     correlate / merge_runs / run-summary keep their code-finding scope;
-    the findings view opts in explicitly.
+    the findings view opts in explicitly. Oversized files are skipped
+    with a warning (same gate as :func:`load_findings_from_dir`).
     """
-    data = load_json(run_dir / "sca" / "findings.json")
+    data = _load_size_gated_json(run_dir / "sca" / "findings.json")
     if isinstance(data, list):
         return data
     if isinstance(data, dict):

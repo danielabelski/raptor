@@ -25,7 +25,7 @@ import re
 
 from core.atomic_fs import write_text_atomically as _atomic_write
 
-from . import RewriteEdit, RewriteResult, register
+from . import RewriteEdit, RewriteResult, apply_version_edit, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -118,36 +118,11 @@ def rewrite_directory_build_targets(
 
 
 def _apply_one(text: str, edit: RewriteEdit) -> tuple[str, RewriteResult]:
-    for pattern_builder in (
+    return apply_version_edit(text, edit, (
         _build_inline_version_pattern,
         _build_version_override_pattern,
         _build_child_version_pattern,
-    ):
-        pat = pattern_builder(edit.locator)
-        match = pat.search(text)
-        if match is None:
-            continue
-        current = match.group("version")
-        if current != edit.old_value:
-            return text, RewriteResult(
-                edit=edit, applied=False,
-                reason=(
-                    f"value_mismatch: file has version={current!r}, "
-                    f"edit expected {edit.old_value!r}"
-                ),
-            )
-        new_text = (
-            text[:match.start("version")]
-            + edit.new_value
-            + text[match.end("version"):]
-        )
-        return new_text, RewriteResult(
-            edit=edit, applied=True, reason="",
-        )
-    return text, RewriteResult(
-        edit=edit, applied=False, reason="not_found",
-    )
-
+    ))
 
 
 __all__ = ["rewrite_directory_build_targets"]

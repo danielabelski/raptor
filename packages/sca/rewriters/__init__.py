@@ -218,6 +218,47 @@ def _resolve(path: Path) -> RewriterFn | None:
     return None
 
 
+def apply_version_edit(
+    text: str,
+    edit: RewriteEdit,
+    pattern_builders: tuple[Callable[[str], re.Pattern], ...],
+) -> tuple[str, RewriteResult]:
+    """Apply one version edit using the first pattern that matches.
+
+    Shared driver for rewriters whose per-edit logic is "try each
+    locator-derived pattern in preference order; the first pattern
+    with a match decides the outcome". Each pattern must expose a
+    ``version`` named group; the current value must equal
+    ``edit.old_value`` (else ``value_mismatch``), and no pattern
+    matching at all yields ``not_found``.
+    """
+    for pattern_builder in pattern_builders:
+        pat = pattern_builder(edit.locator)
+        match = pat.search(text)
+        if match is None:
+            continue
+        current = match.group("version")
+        if current != edit.old_value:
+            return text, RewriteResult(
+                edit=edit, applied=False,
+                reason=(
+                    f"value_mismatch: file has version={current!r}, "
+                    f"edit expected {edit.old_value!r}"
+                ),
+            )
+        new_text = (
+            text[:match.start("version")]
+            + edit.new_value
+            + text[match.end("version"):]
+        )
+        return new_text, RewriteResult(
+            edit=edit, applied=True, reason="",
+        )
+    return text, RewriteResult(
+        edit=edit, applied=False, reason="not_found",
+    )
+
+
 # Side-effect imports: each module calls register() at import time.
 # ``dockerfile_from`` is the registered dispatch entry point for
 # all Dockerfile edits; it delegates ARG-shaped edits to

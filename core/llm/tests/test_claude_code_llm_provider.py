@@ -20,6 +20,7 @@ binary is invoked.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from typing import Any
 
@@ -203,10 +204,19 @@ def test_generate_invokes_claude_p_with_prompt(monkeypatch) -> None:
         return _stream_freeform(text="hello world")
 
     monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
+    # Pin the CLI resolution so the assertion is hermetic: the
+    # provider resolves the claude binary ONCE at construction to an
+    # absolute path (bare "claude" re-resolved per spawn was the PATH
+    # substitution surface).
+    import shutil as _shutil
+    monkeypatch.setattr(
+        _shutil, "which",
+        lambda name: "/opt/fake/claude" if name == "claude" else None,
+    )
     p = ClaudeCodeLLMProvider(_config())
     out = p.generate("say hi")
 
-    assert captured["cmd"][0] == "claude"
+    assert captured["cmd"][0] == os.path.realpath("/opt/fake/claude")
     assert captured["cmd"][1] == "-p"
     assert "--output-format" in captured["cmd"]
     assert captured["prompt"] == "say hi"

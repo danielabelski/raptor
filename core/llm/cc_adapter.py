@@ -1110,6 +1110,18 @@ def run_cc_streaming(
     import subprocess
     import time as _time
 
+    # Spawn-time pin: refuse PATH-dependent (bare-name) and
+    # cwd-relative argv[0]. Every spawn from here carries backend
+    # credentials in its env, so re-resolving the binary against the
+    # ambient PATH at exec time is a substitution surface — callers
+    # must pin an absolute path first (see resolve_claude_cli).
+    if not cmd or not os.path.isabs(cmd[0]):
+        raise FileNotFoundError(
+            f"refusing PATH-dependent exec of {cmd[0] if cmd else None!r}: "
+            "the claude CLI must be resolved to an absolute path before "
+            "spawn (resolve_claude_cli)"
+        )
+
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,

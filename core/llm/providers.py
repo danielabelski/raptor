@@ -3831,6 +3831,16 @@ class ClaudeCodeLLMProvider(LLMProvider):
         resumable: bool = False,
     ) -> None:
         super().__init__(config)
+        if claude_bin is None:
+            # Resolve ONCE at construction via the realpath-pinning
+            # helper. The old bare-"claude" default was re-resolved
+            # against PATH by every Popen — each spawn carrying
+            # backend credentials in its env — so an attacker-writable
+            # PATH entry ahead of the real CLI substituted the binary.
+            # Pinning here locks the spawn target in; run_cc_streaming
+            # additionally refuses non-absolute argv[0] at spawn time.
+            from .cc_adapter import resolve_claude_cli
+            claude_bin = resolve_claude_cli()
         self._claude_bin = claude_bin or "claude"
         if budget_usd is None:
             budget_usd = os.environ.get("RAPTOR_CC_BUDGET_USD", "5.00")

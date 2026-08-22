@@ -475,9 +475,6 @@
   "dead:dead_function:core/audit/_util.py:extract_sink_sets": {
    "note": "kept: feature seed \u2014 sink catalog (splitter for the pending discovered-sinks.json reader flow; the /understand map import consumes the artifact without this helper; wire both or drop both; roadmap decision 2026-08-17)"
   },
-  "dead:dead_function:core/audit/_util.py:safe_joern_name": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_function:core/audit/callsite_consistency.py:_find_deviations": {
    "note": "superseded by the consistency channel's census adjudicator (consistency_verify); deletion deferred to the next dead-code sweep"
   },

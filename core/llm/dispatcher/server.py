@@ -191,6 +191,67 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return value
 
 
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    """Float twin of :func:`_env_int` — same silent-fallback contract."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        _logger.debug("llm-dispatcher: ignoring non-float %s=%r", name, raw)
+        return default
+    if value < minimum:
+        _logger.debug(
+            "llm-dispatcher: ignoring %s=%s below minimum %s",
+            name, value, minimum,
+        )
+        return default
+    return value
+
+
+# Request-body ceilings. Content-Length is peer-typed input even on the
+# token-authenticated planes — the tokens authenticate WHO is calling
+# (including prompt-injected sandboxed children, the exact boundary the
+# dispatcher exists to contain), not that their arithmetic is honest. A
+# huge declared length would otherwise allocate/block per handler
+# thread (ThreadingMixIn spawns one per connection, unbounded), and a
+# negative one turns ``rfile.read`` into read-until-EOF. 32 MiB
+# comfortably clears the largest legitimate Messages payloads
+# (multi-image requests); the child-admin plane carries tiny JSON
+# control payloads and gets a much smaller cap.
+_PROVIDER_MAX_BODY_BYTES_DEFAULT = 32 * 1024 * 1024
+_CHILD_ADMIN_MAX_BODY_BYTES = 1024 * 1024
+
+
+def _provider_max_body_bytes() -> int:
+    return _env_int(
+        "RAPTOR_LLM_DISPATCHER_MAX_BODY_BYTES",
+        _PROVIDER_MAX_BODY_BYTES_DEFAULT,
+    )
+
+
+# Per-request budget reservation for scoped child tokens. The budget
+# check and the post-response booking are separated by the whole
+# upstream round-trip; without a reservation N concurrent requests all
+# observe the pre-spend balance and the cap is overshot by concurrency
+# × max-single-response cost. Authorization therefore RESERVES a
+# conservative per-request estimate under the token lock (check and
+# book are one atomic step) and the handler releases it when the
+# request settles. One request is always admitted when nothing is in
+# flight, so a budget smaller than the reserve serialises instead of
+# deadlocking.
+_CHILD_RESERVE_USD_DEFAULT = 0.25
+
+
+def _child_request_reserve_usd() -> float:
+    return _env_float(
+        "RAPTOR_LLM_DISPATCHER_CHILD_RESERVE_USD",
+        _CHILD_RESERVE_USD_DEFAULT,
+        minimum=0.01,
+    )
+
+
 # The conventional proxy-route family (same set core.llm.egress
 # snapshots as _PROXY_VAR_NAMES) — the forwarding-leg client is keyed
 # on these because httpx resolves proxy mounts at client construction.
@@ -235,6 +296,7 @@ class _TokenRecord:
     token_id: str = ""                     # public correlation id (child)
     budget_usd: float | None = None        # spend cap; None = uncapped
     spent_usd: float = 0.0                 # booked from upstream usage
+    reserved_usd: float = 0.0              # in-flight request reservations
     model_allowlist: frozenset | None = None   # normalized ids; None = any
     unpriced_requests: int = 0             # usage seen but model unpriced
     last_model: str | None = None
@@ -888,6 +950,13 @@ class LLMDispatcher:
         Order: provider scope → method shape → model allowlist →
         budget. The budget check runs BEFORE the forward so an
         exhausted token never reaches the provider.
+
+        On allow, a per-request estimate has been RESERVED against the
+        token's budget under the lock (check-and-book is atomic — N
+        concurrent requests no longer all observe the pre-spend
+        balance). The caller MUST call
+        :meth:`_release_child_reservation` once the request settles,
+        on every path.
         """
         if provider_name not in _CHILD_ALLOWED_PROVIDERS:
             return 403, (
@@ -912,13 +981,43 @@ class LLMDispatcher:
             )
         with self._tokens_lock:
             rec.last_model = model
-            if rec.budget_usd is not None and rec.spent_usd >= rec.budget_usd:
-                rec.status = "exhausted"
-                return 402, (
-                    f"scoped token budget exhausted: spent "
-                    f"${rec.spent_usd:.4f} of ${rec.budget_usd:.4f}"
-                )
+            if rec.budget_usd is not None:
+                if rec.spent_usd >= rec.budget_usd:
+                    rec.status = "exhausted"
+                    return 402, (
+                        f"scoped token budget exhausted: spent "
+                        f"${rec.spent_usd:.4f} of ${rec.budget_usd:.4f}"
+                    )
+                # Settled spend is under budget — admit only while the
+                # in-flight reservations also fit. ``exhausted`` is NOT
+                # set here: reservations are estimates and the state
+                # is transient (in-flight requests settling below their
+                # reserve re-open the budget). The `reserved_usd > 0`
+                # guard keeps one request admissible when nothing is in
+                # flight, so a budget below the reserve serialises
+                # rather than deadlocks.
+                reserve = _child_request_reserve_usd()
+                if (
+                    rec.reserved_usd > 0
+                    and rec.spent_usd + rec.reserved_usd + reserve
+                        > rec.budget_usd
+                ):
+                    return 429, (
+                        "scoped token budget fully reserved by "
+                        "in-flight requests"
+                    )
+                rec.reserved_usd += reserve
         return None
+
+    def _release_child_reservation(self, rec: _TokenRecord) -> None:
+        """Release the per-request estimate reserved by a successful
+        :meth:`_authorize_child_request`. Runs exactly once per
+        admitted request (the handler's ``finally``); actual cost has
+        by then been settled onto ``spent_usd`` by
+        :meth:`_book_child_usage` where a response was seen."""
+        reserve = _child_request_reserve_usd()
+        with self._tokens_lock:
+            rec.reserved_usd = max(0.0, rec.reserved_usd - reserve)
 
     def _book_child_usage(
         self, rec: _TokenRecord, scanner: _UsageScanner,
@@ -1398,6 +1497,34 @@ def _make_request_handler(
                 return auth[len("Bearer "):].strip() or None
             return self.headers.get("x-api-key") or None
 
+        def _read_body(self, max_bytes: int) -> bytes | None:
+            """Validated request-body read.
+
+            Returns the body bytes, or ``None`` after having sent the
+            error response: 400 for a malformed or negative
+            Content-Length (negative would turn ``rfile.read`` into
+            read-until-EOF), 413 for a declared length over
+            *max_bytes* (rejected BEFORE any read, so a lying header
+            can't allocate or block the handler thread).
+            """
+            try:
+                content_length = int(
+                    self.headers.get("Content-Length", "0"),
+                )
+            except (ValueError, TypeError):
+                self._send_simple(400, "invalid Content-Length")
+                return None
+            if content_length < 0:
+                self._send_simple(400, "invalid Content-Length")
+                return None
+            if content_length > max_bytes:
+                self._send_simple(
+                    413,
+                    f"request body exceeds {max_bytes}-byte limit",
+                )
+                return None
+            return self.rfile.read(content_length) if content_length else b""
+
         def _dispatch(self) -> None:
             # ---- L3+L4 — token check (pre-body: nothing is read
             # from the wire beyond headers until the token clears) ----
@@ -1537,16 +1664,14 @@ def _make_request_handler(
                 return
 
             # ---- request body ----
-            try:
-                content_length = int(self.headers.get("Content-Length", "0"))
-            except (ValueError, TypeError):
-                self._send_simple(400, "invalid Content-Length")
+            body = self._read_body(_provider_max_body_bytes())
+            if body is None:
                 return
-            body = self.rfile.read(content_length) if content_length else b""
 
             method = self.command
 
             # ---- scoped-token enforcement (kind="child") ----
+            reservation_held = False
             if rec.kind == "child":
                 deny = dispatcher._authorize_child_request(
                     rec, provider_name, method, body,
@@ -1563,7 +1688,34 @@ def _make_request_handler(
                     ))
                     self._send_simple(status, why)
                     return
+                # Authorization reserved a per-request budget estimate;
+                # _forward_upstream's caller-side finally releases it
+                # on EVERY path out of the forward leg.
+                reservation_held = True
 
+            try:
+                self._forward_upstream(
+                    rec, rule, provider_name, method, upstream_path,
+                    body,
+                )
+            finally:
+                if reservation_held:
+                    dispatcher._release_child_reservation(rec)
+
+        def _forward_upstream(
+            self,
+            rec: _TokenRecord,
+            rule: ProviderRule,
+            provider_name: str,
+            method: str,
+            upstream_path: str,
+            body: bytes,
+        ) -> None:
+            """Sign/rewrite one authorized request, forward it to the
+            provider, and stream the response back. Extracted from
+            :meth:`_dispatch` so the child-token budget reservation can
+            be released in a single ``finally`` around the whole leg.
+            """
             if rule.prepare_request is not None:
                 # Provider with a non-static auth scheme (Bedrock SigV4):
                 # the rule rewrites + signs the request and we forward
@@ -1714,15 +1866,10 @@ def _make_request_handler(
             WORKER token on the UDS plane (gated by the caller)."""
             op = self.path[len(_CHILD_ADMIN_PREFIX):].split("?", 1)[0]
             payload: dict = {}
-            try:
-                content_length = int(
-                    self.headers.get("Content-Length", "0"),
-                )
-            except (ValueError, TypeError):
-                self._send_simple(400, "invalid Content-Length")
+            raw = self._read_body(_CHILD_ADMIN_MAX_BODY_BYTES)
+            if raw is None:
                 return
-            if content_length:
-                raw = self.rfile.read(content_length)
+            if raw:
                 try:
                     parsed = json.loads(raw)
                 except (json.JSONDecodeError, UnicodeDecodeError):

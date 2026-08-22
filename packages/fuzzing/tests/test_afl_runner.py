@@ -246,6 +246,8 @@ class TestSandboxedCampaign:
         runner.seed_profile = "default"
         runner.telemetry = None
         runner.afl_fuzz = "/usr/bin/afl-fuzz"
+        runner.sandbox_rootfs = None
+        runner.binary_in_rootfs = None
         return runner
 
     @staticmethod
@@ -323,3 +325,227 @@ class TestSandboxedCampaign:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRootfsMode:
+    """S5.5 env-built campaigns: afl-fuzz and the target come from the
+    exported AFL++ image rootfs; the sandbox call gains rootfs=."""
+
+    @staticmethod
+    def _rootfs(tmp_path: Path) -> Path:
+        rootfs = tmp_path / "afl-rootfs"
+        (rootfs / "usr/local/bin").mkdir(parents=True)
+        (rootfs / "usr/local/bin/afl-fuzz").write_bytes(b"\x7fELF")
+        (rootfs / "src").mkdir(parents=True)
+        binary = rootfs / "src/app"
+        binary.write_bytes(b"\x7fELF" + b"\x00" * 12)
+        binary.chmod(0o755)
+        return rootfs
+
+    def _make(self, tmp_path: Path, monkeypatch) -> AFLRunner:
+        from packages.fuzzing import afl_runner as mod
+        rootfs = self._rootfs(tmp_path)
+        # Prove the host toolchain is NOT consulted in rootfs mode.
+        monkeypatch.setattr(mod.shutil, "which",
+                            lambda *_a, **_k: None)
+        return AFLRunner(
+            binary_path=rootfs / "src/app",
+            corpus_dir=tmp_path / "corpus",
+            output_dir=tmp_path / "out",
+            sandbox_rootfs=rootfs,
+            binary_in_rootfs="/src/app",
+            afl_fuzz_path="/usr/local/bin/afl-fuzz",
+        )
+
+    def test_constructor_skips_host_afl(self, tmp_path, monkeypatch):
+        (tmp_path / "corpus").mkdir()
+        runner = self._make(tmp_path, monkeypatch)
+        assert runner.afl_fuzz == "/usr/local/bin/afl-fuzz"
+        assert runner.sandbox_rootfs == tmp_path / "afl-rootfs"
+
+    def test_command_targets_in_rootfs_binary(self, tmp_path, monkeypatch):
+        (tmp_path / "corpus").mkdir()
+        runner = self._make(tmp_path, monkeypatch)
+        cmd = runner._build_afl_command(
+            instance_name="main", is_main=True, timeout_ms=1000)
+        assert cmd[-1] == "/src/app"
+        assert not any(str(tmp_path) in c for c in cmd[cmd.index("--"):])
+
+    def test_missing_rootfs_dir_refuses(self, tmp_path):
+        rootfs = self._rootfs(tmp_path)
+        import pytest as _pytest
+        with _pytest.raises(FileNotFoundError, match="rootfs"):
+            AFLRunner(
+                binary_path=rootfs / "src/app",
+                corpus_dir=tmp_path,
+                output_dir=tmp_path / "out",
+                sandbox_rootfs=tmp_path / "nope",
+                binary_in_rootfs="/src/app",
+            )
+
+    def test_instance_passes_rootfs_to_sandbox(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_run)
+        inst = mod._SandboxedAFLInstance(
+            name="main", cmd=["afl-fuzz"], env={},
+            stdout_path=tmp_path / "o.log", stderr_path=tmp_path / "e.log",
+            output_dir=tmp_path, readable_paths=[], timeout_s=5,
+            rootfs=tmp_path / "afl-rootfs",
+        )
+        inst._run()
+        assert seen["rootfs"] == str(tmp_path / "afl-rootfs")
+        assert seen["block_network"] is True
+
+    def test_host_mode_instance_omits_rootfs(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        from packages.fuzzing import afl_runner as mod
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return sp.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(mod, "_sandbox_run", fake_run)
+        inst = mod._SandboxedAFLInstance(
+            name="main", cmd=["afl-fuzz"], env={},
+            stdout_path=tmp_path / "o.log", stderr_path=tmp_path / "e.log",
+            output_dir=tmp_path, readable_paths=[], timeout_s=5,
+        )
+        inst._run()
+        assert "rootfs" not in seen
+
+
+class TestRootfsCorpusStaging:
+    """Rootfs-mode campaigns can only see the output bind — corpus and
+    dictionary at arbitrary host paths must be staged under output_dir
+    (regression: afl-fuzz died with 'Unable to open <corpus>')."""
+
+    def _runner(self, tmp_path, monkeypatch, **kw):
+        from packages.fuzzing import afl_runner as mod
+        rootfs = TestRootfsMode._rootfs(tmp_path)
+        monkeypatch.setattr(mod.shutil, "which", lambda *_a, **_k: None)
+        return AFLRunner(
+            binary_path=rootfs / "src/app",
+            output_dir=tmp_path / "out",
+            sandbox_rootfs=rootfs,
+            binary_in_rootfs="/src/app",
+            **kw,
+        )
+
+    def test_external_corpus_is_staged(self, tmp_path, monkeypatch):
+        ext = tmp_path / "elsewhere" / "corpus"
+        ext.mkdir(parents=True)
+        (ext / "seed0").write_bytes(b"A")
+        runner = self._runner(tmp_path, monkeypatch, corpus_dir=ext)
+        assert runner.corpus_dir == tmp_path / "out" / "corpus-staged"
+        assert (runner.corpus_dir / "seed0").read_bytes() == b"A"
+
+    def test_corpus_already_under_output_not_copied(self, tmp_path,
+                                                    monkeypatch):
+        inside = tmp_path / "out" / "seeds"
+        inside.mkdir(parents=True)
+        (inside / "seed0").write_bytes(b"A")
+        runner = self._runner(tmp_path, monkeypatch, corpus_dir=inside)
+        assert runner.corpus_dir == inside
+
+    def test_external_dict_is_staged(self, tmp_path, monkeypatch):
+        ext = tmp_path / "elsewhere" / "corpus"
+        ext.mkdir(parents=True)
+        (ext / "seed0").write_bytes(b"A")
+        d = tmp_path / "elsewhere" / "fuzz.dict"
+        d.write_text('kw="RAP"\n')
+        runner = self._runner(tmp_path, monkeypatch,
+                              corpus_dir=ext, dict_path=d)
+        assert runner.dict_path == (
+            tmp_path / "out" / "dict-staged" / "fuzz.dict")
+        assert runner.dict_path.read_text() == 'kw="RAP"\n'
+
+    def test_host_mode_never_stages(self, tmp_path, monkeypatch):
+        from packages.fuzzing import afl_runner as mod
+        binary = tmp_path / "target"
+        binary.write_bytes(b"\x7fELF")
+        binary.chmod(0o755)
+        ext = tmp_path / "elsewhere" / "corpus"
+        ext.mkdir(parents=True)
+        monkeypatch.setattr(mod.shutil, "which",
+                            lambda *_a, **_k: "/usr/bin/afl-fuzz")
+        monkeypatch.setattr(AFLRunner, "_validate_afl_command",
+                            lambda self: None)
+        runner = AFLRunner(binary_path=binary, corpus_dir=ext,
+                           output_dir=tmp_path / "out")
+        assert runner.corpus_dir == ext
+
+
+class TestRootfsStagingHardening:
+    """Adversarial-review fixes: hostile symlink seeds, stale staging
+    dirs, and unsupported host-path params in rootfs mode."""
+
+    def test_symlink_seeds_are_skipped_not_dereferenced(self, tmp_path,
+                                                        monkeypatch):
+        secret = tmp_path / "host-secret"
+        secret.write_text("HOSTSECRET")
+        ext = tmp_path / "corpus"
+        ext.mkdir()
+        (ext / "seed0").write_bytes(b"A")
+        (ext / "evil").symlink_to(secret)
+        runner = TestRootfsCorpusStaging()._runner(
+            tmp_path, monkeypatch, corpus_dir=ext)
+        staged = sorted(p.name for p in runner.corpus_dir.iterdir())
+        assert staged == ["seed0"]
+
+    def test_subdirectories_are_skipped(self, tmp_path, monkeypatch):
+        ext = tmp_path / "corpus"
+        (ext / "sub").mkdir(parents=True)
+        (ext / "sub" / "nested").write_bytes(b"B")
+        (ext / "seed0").write_bytes(b"A")
+        runner = TestRootfsCorpusStaging()._runner(
+            tmp_path, monkeypatch, corpus_dir=ext)
+        assert [p.name for p in runner.corpus_dir.iterdir()] == ["seed0"]
+
+    def test_stale_staged_seeds_cleared_between_runs(self, tmp_path,
+                                                     monkeypatch):
+        stale = tmp_path / "out" / "corpus-staged"
+        stale.mkdir(parents=True)
+        (stale / "old-seed").write_bytes(b"STALE")
+        ext = tmp_path / "corpus"
+        ext.mkdir()
+        (ext / "seed0").write_bytes(b"A")
+        runner = TestRootfsCorpusStaging()._runner(
+            tmp_path, monkeypatch, corpus_dir=ext)
+        assert [p.name for p in runner.corpus_dir.iterdir()] == ["seed0"]
+
+    def test_ancestor_corpus_does_not_recurse(self, tmp_path, monkeypatch):
+        # corpus dir is an ancestor of output_dir: the flat copy takes
+        # only its top-level regular files, no self-recursion.
+        ext = tmp_path  # output_dir tmp_path/out is inside it
+        (ext / "seed0").write_bytes(b"A")
+        runner = TestRootfsCorpusStaging()._runner(
+            tmp_path, monkeypatch, corpus_dir=ext)
+        names = [p.name for p in runner.corpus_dir.iterdir()]
+        assert "seed0" in names
+        assert "corpus-staged" not in names
+
+    def test_cmplog_refused_in_rootfs_mode(self, tmp_path, monkeypatch):
+        from packages.fuzzing import afl_runner as mod
+        rootfs = TestRootfsMode._rootfs(tmp_path)
+        cmplog = tmp_path / "cmplog-bin"
+        cmplog.write_bytes(b"\x7fELF")
+        monkeypatch.setattr(mod.shutil, "which", lambda *_a, **_k: None)
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="cmplog"):
+            AFLRunner(
+                binary_path=rootfs / "src/app",
+                output_dir=tmp_path / "out",
+                sandbox_rootfs=rootfs,
+                binary_in_rootfs="/src/app",
+                cmplog_binary=cmplog,
+            )

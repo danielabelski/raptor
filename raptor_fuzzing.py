@@ -177,6 +177,24 @@ Examples:
         ),
     )
     ap.add_argument("--input-mode", choices=["stdin", "file"], default="stdin", help="Input mode: stdin (default) or file (uses @@)")
+    ap.add_argument(
+        "--env-build", action="store_true", default=None,
+        help="Authorise building a source-tree target AFL-instrumented "
+             "in the pinned AFL++ image for this run (default: defer "
+             "to the project 'build' trust marker)")
+    ap.add_argument(
+        "--no-env-build", action="store_true",
+        help="Disable env build-on-demand for this run even when the "
+             "project 'build' trust marker is set (negative flag wins, "
+             "matching --no-traced-build / --no-binary-oracle)")
+    ap.add_argument(
+        "--env-target",
+        help="With env build-on-demand: repo-relative name of the "
+             "built binary to fuzz when the build produces several")
+    ap.add_argument(
+        "--keep-env-rootfs", action="store_true",
+        help="Keep the exported AFL++ image rootfs (several GB) in the "
+             "run dir after the campaign instead of deleting it")
     ap.add_argument("--check-sanitizers", action="store_true", help="Check if binary is compiled with sanitizers (ASAN, etc.)")
     ap.add_argument("--recompile-guide", action="store_true", help="Show guide for recompiling binary with AFL instrumentation and sanitizers")
     ap.add_argument("--use-showmap", action="store_true", help="Run afl-showmap after fuzzing for coverage analysis")
@@ -409,6 +427,19 @@ Examples:
     # ORCHESTRATOR PATH (new): capability detection + libFuzzer/AFL++ + telemetry
     # ========================================================================
     use_orchestrator = args.orchestrator
+    if binary_path.is_dir() and not args.orchestrator:
+        # Directory targets (source trees, crates, packages) only the
+        # orchestrator can plan — the legacy path requires a binary
+        # file and previously died on a ValueError. --legacy on a
+        # directory now fails fast with the reason.
+        if args.legacy:
+            logger.error(
+                "--legacy fuzzes a single binary; %s is a directory. "
+                "Drop --legacy to let the orchestrator plan it.",
+                binary_path,
+            )
+            sys.exit(1)
+        use_orchestrator = True
     if not args.legacy and not args.orchestrator:
         # Auto-route: if AFL++ isn't usable (e.g. macOS shmem issue) but
         # libFuzzer or radare2 are available, prefer the orchestrator.
@@ -443,7 +474,11 @@ Examples:
             )
 
         orch = FuzzingOrchestrator(llm=llm)
-        plan = orch.plan(binary_path)
+        env_build_consent = False if args.no_env_build else args.env_build
+        if args.no_env_build and args.env_build:
+            logger.warning("--no-env-build wins over --env-build "
+                           "(negative flag precedence)")
+        plan = orch.plan(binary_path, env_build=env_build_consent)
         print(plan.summary())
 
         if args.plan_only:
@@ -461,8 +496,13 @@ Examples:
                 duration_seconds=args.duration,
                 corpus_dir=corpus_dir,
                 dict_path=_resolve_dict_path(args, out_dir),
-                source_context_dir=binary_path.parent,
+                # A directory target IS the source context; a binary's
+                # context is its parent.
+                source_context_dir=(binary_path if binary_path.is_dir()
+                                    else binary_path.parent),
                 seed_profile=args.seed_profile,
+                env_target=args.env_target,
+                keep_env_rootfs=args.keep_env_rootfs,
             )
         except KeyboardInterrupt:
             print("\nCampaign interrupted by user.")

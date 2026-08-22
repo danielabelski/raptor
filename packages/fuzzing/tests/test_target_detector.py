@@ -361,3 +361,25 @@ class TestRecommendedFuzzerPopulation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSourceTreeWithoutHeaders:
+    """S5.5: a C/C++ repo whose sources are all .c/.cc (no headers at
+    the top of the tree) must classify as source-c, not unknown —
+    env build-on-demand plans from that kind."""
+
+    def test_c_only_dir_is_source_c(self, tmp_path):
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        info = detect(tmp_path)
+        assert info.kind == "source-c"
+
+    def test_cpp_only_dir_is_source_c(self, tmp_path):
+        (tmp_path / "main.cpp").write_text("int main(){return 0;}\n")
+        info = detect(tmp_path)
+        assert info.kind == "source-c"
+
+    def test_marker_files_still_win(self, tmp_path):
+        (tmp_path / "Cargo.toml").write_text("[package]\nname='x'\n")
+        (tmp_path / "main.c").write_text("int main(void){return 0;}\n")
+        info = detect(tmp_path)
+        assert info.kind == "rust-crate"

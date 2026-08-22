@@ -41,6 +41,13 @@ class CampaignPlan:
     can_run: bool = False
     blockers: list[str] = field(default_factory=list)
     hints: list[str] = field(default_factory=list)
+    #: source tree to be built AFL-instrumented in the pinned AFL++
+    #: image and fuzzed from its exported rootfs (trust-gated;
+    #: candidacy verified at plan time, the build runs in execute()).
+    env_build: bool = False
+    #: the caller's explicit consent flag (None = project marker),
+    #: re-used by execute() so plan and build see the same decision.
+    env_build_consent: bool | None = None
 
     def summary(self) -> str:
         lines = [
@@ -72,6 +79,10 @@ class CampaignPlan:
         ]
         if self.fuzzer:
             lines.append(f"Selected fuzzer: {self.fuzzer}")
+        if self.env_build:
+            lines.append(
+                "Env build: AFL-instrumented build in the pinned AFL++ "
+                "image; campaign runs from its rootfs under the sandbox")
         if self.needs_harness:
             lines.append("Action required: generate libFuzzer harness")
         if self.blockers:
@@ -95,14 +106,28 @@ class FuzzingOrchestrator:
         self.llm = llm
         self.capabilities = probe_capabilities()
 
-    def plan(self, target_path: Path) -> CampaignPlan:
+    def plan(
+        self,
+        target_path: Path,
+        *,
+        env_build: bool | None = None,
+    ) -> CampaignPlan:
         """Inspect the target, pick a fuzzer, return a campaign plan.
 
         Does not run anything. The caller can present this to the user
         for confirmation, or call .execute(plan) to run it.
+
+        ``env_build``: explicit consent for building a source tree in
+        the AFL++ image (None = defer to the project ``build`` trust
+        marker). The build itself runs in execute().
         """
         target = detect_target(Path(target_path))
-        plan = CampaignPlan(target=target, capabilities=self.capabilities)
+        plan = CampaignPlan(target=target, capabilities=self.capabilities,
+                            env_build_consent=env_build)
+        if env_build and not target.path.is_dir():
+            plan.hints.append(
+                "--env-build applies to source-tree targets; ignored "
+                f"for this {target.kind} file")
 
         # Carry blockers forward
         plan.blockers.extend(target.blockers)
@@ -133,19 +158,42 @@ class FuzzingOrchestrator:
                 "(kAFL or Snapchange) which RAPTOR does not orchestrate yet."
             )
         elif kind in ("source-c", "source-cpp"):
-            plan.needs_harness = True
-            plan.fuzzer = "libfuzzer" if caps.has_clang_fuzzer() else None
-            if not plan.fuzzer:
-                plan.blockers.append(
-                    "Source-level fuzzing needs clang with libFuzzer support. "
-                    "Install clang and verify with 'clang -fsanitize=fuzzer test.c'."
-                )
+            # Env build-on-demand first: a source TREE whose build the
+            # operator authorised (project 'build' marker or explicit
+            # flag) gets an AFL-instrumented build in the pinned AFL++
+            # image and fuzzes from its rootfs — no harness needed for
+            # repo-native executables. Candidacy is cheap (consent +
+            # command resolution, no docker run); the harness route
+            # below is untouched when it declines.
+            from packages.fuzzing.env_build import env_build_candidate
+            candidate, why = (
+                env_build_candidate(target.path, build=env_build)
+                if target.path.is_dir() else (False, "")
+            )
+            if candidate:
+                plan.fuzzer = "afl"
+                plan.env_build = True
+                # The detector's harness-generation hints describe the
+                # route NOT taken — showing them beside "Env build:"
+                # reads as a contradiction.
+                plan.hints = [h for h in plan.hints
+                              if "harness" not in h.lower()]
             else:
-                plan.blockers.append(
-                    "Source targets need a compiled libFuzzer harness before "
-                    "RAPTOR can run them. Generate/build a harness first, then "
-                    "pass the resulting executable to /fuzz."
-                )
+                if why:
+                    plan.hints.append(why)
+                plan.needs_harness = True
+                plan.fuzzer = "libfuzzer" if caps.has_clang_fuzzer() else None
+                if not plan.fuzzer:
+                    plan.blockers.append(
+                        "Source-level fuzzing needs clang with libFuzzer support. "
+                        "Install clang and verify with 'clang -fsanitize=fuzzer test.c'."
+                    )
+                else:
+                    plan.blockers.append(
+                        "Source targets need a compiled libFuzzer harness before "
+                        "RAPTOR can run them. Generate/build a harness first, then "
+                        "pass the resulting executable to /fuzz."
+                    )
         elif kind == "rust-crate":
             plan.fuzzer = "cargo-fuzz" if not target.blockers else None
             if plan.fuzzer:
@@ -262,6 +310,8 @@ class FuzzingOrchestrator:
         binary_understand: bool = True,
         source_context_dir: Path | None = None,
         seed_profile: str = "default",
+        env_target: str | None = None,
+        keep_env_rootfs: bool = False,
     ) -> dict[str, Any]:
         """Execute a planned campaign. Raises if plan.can_run is False.
 
@@ -297,13 +347,57 @@ class FuzzingOrchestrator:
 
         logger.info(plan.summary())
 
-        corpus_dir, generated_corpus_info = self._prepare_corpus(
-            plan,
-            out_dir=out_dir,
-            corpus_dir=corpus_dir,
-            source_context_dir=source_context_dir,
-            seed_profile=seed_profile,
-        )
+        env_build = None
+        if plan.env_build:
+            from packages.fuzzing.env_build import env_build_for_fuzzing
+            env_build = env_build_for_fuzzing(
+                plan.target.path, out_dir, build=plan.env_build_consent)
+            if not env_build.ok:
+                raise RuntimeError(
+                    f"env build failed ({env_build.reason}): "
+                    f"{env_build.detail or 'see build log'}"
+                )
+            logger.info(
+                "Env-built %d AFL-instrumented binar%s in %s%s: %s",
+                len(env_build.binaries),
+                "y" if len(env_build.binaries) == 1 else "ies",
+                env_build.base_image,
+                " (GUESSED build command)" if env_build.guessed else "",
+                ", ".join(env_build.binaries),
+            )
+
+        def _discard_env_rootfs() -> None:
+            """Idempotent rootfs cleanup — every exit from the section
+            between a successful env build and campaign end runs
+            through here (corpus generation scans the hostile source
+            tree, a real interrupt window on large repos; a leaked
+            rootfs is several GB in the run dir)."""
+            if (env_build is None or not env_build.rootfs
+                    or keep_env_rootfs):
+                return
+            if not env_build.rootfs.exists():
+                return
+            import shutil as _shutil
+            _shutil.rmtree(env_build.rootfs, ignore_errors=True)
+            logger.info(
+                "env rootfs removed (%s); the campaign outputs and the "
+                "read-only extracted binaries remain — re-run the build "
+                "to reproduce crashes in-image, or pass "
+                "--keep-env-rootfs to retain it",
+                env_build.rootfs,
+            )
+
+        try:
+            corpus_dir, generated_corpus_info = self._prepare_corpus(
+                plan,
+                out_dir=out_dir,
+                corpus_dir=corpus_dir,
+                source_context_dir=source_context_dir,
+                seed_profile=seed_profile,
+            )
+        except BaseException:
+            _discard_env_rootfs()
+            raise
 
         # Optional pre-fuzz: binary-level adversarial analysis via radare2.
         # Mirrors what /understand --map does for source-level targets.
@@ -334,7 +428,20 @@ class FuzzingOrchestrator:
                     logger.warning("Binary understand failed (non-fatal): %s", e)
 
         if plan.fuzzer == "afl":
-            result = self._run_afl(plan, out_dir, duration_seconds, corpus_dir, dict_path)
+            try:
+                result = self._run_afl(
+                    plan, out_dir, duration_seconds, corpus_dir, dict_path,
+                    env_build=env_build, env_target=env_target)
+            finally:
+                _discard_env_rootfs()
+            if env_build is not None:
+                result["env_build"] = {
+                    "base_image": env_build.base_image,
+                    "build_command": env_build.command,
+                    "build_command_source": env_build.command_source,
+                    "guessed_build_command": env_build.guessed,
+                    "binaries": env_build.binaries,
+                }
         elif plan.fuzzer == "libfuzzer":
             result = self._run_libfuzzer(plan, out_dir, duration_seconds, corpus_dir, dict_path)
         else:
@@ -463,23 +570,41 @@ class FuzzingOrchestrator:
         duration_seconds: int,
         corpus_dir: Path | None,
         dict_path: Path | None,
+        env_build=None,
+        env_target: str | None = None,
     ) -> dict[str, Any]:
         from packages.fuzzing.afl_runner import AFLRunner
         from packages.fuzzing.telemetry import FuzzingTelemetry
 
         afl_out = out_dir / "afl"
-        runner = AFLRunner(
-            binary_path=plan.target.path,
-            corpus_dir=corpus_dir,
-            output_dir=afl_out,
-            dict_path=dict_path,
-            check_sanitizers=True,
-            use_showmap=True,
-        )
+        if env_build is not None:
+            rel = self._pick_env_binary(env_build, env_target)
+            runner = AFLRunner(
+                binary_path=env_build.rootfs / "src" / rel,
+                corpus_dir=corpus_dir,
+                output_dir=afl_out,
+                dict_path=dict_path,
+                check_sanitizers=True,
+                use_showmap=True,
+                sandbox_rootfs=env_build.rootfs,
+                binary_in_rootfs=env_build.binaries[rel],
+                afl_fuzz_path=env_build.afl_fuzz,
+            )
+            telemetry_target = f"{plan.target.path} :: {rel} (env-built)"
+        else:
+            runner = AFLRunner(
+                binary_path=plan.target.path,
+                corpus_dir=corpus_dir,
+                output_dir=afl_out,
+                dict_path=dict_path,
+                check_sanitizers=True,
+                use_showmap=True,
+            )
+            telemetry_target = str(plan.target.path)
         runner.telemetry = FuzzingTelemetry(
             out_dir=out_dir,
             fuzzer="afl++",
-            target=str(plan.target.path),
+            target=telemetry_target,
         )
         runner.telemetry.start()
         try:
@@ -499,6 +624,30 @@ class FuzzingOrchestrator:
             "telemetry": str(out_dir / "fuzz-summary.json"),
             "events": str(out_dir / "fuzz-events.jsonl"),
         }
+
+    @staticmethod
+    def _pick_env_binary(env_build, env_target: str | None) -> str:
+        """Choose which env-built binary to fuzz.
+
+        Explicit ``env_target`` (repo-relative) wins; otherwise the
+        single artifact; otherwise the sorted-first with the full list
+        logged so the operator can re-run with an explicit choice.
+        """
+        rels = sorted(env_build.binaries)
+        if env_target:
+            if env_target not in env_build.binaries:
+                raise RuntimeError(
+                    f"--env-target {env_target!r} is not among the "
+                    f"built binaries: {', '.join(rels)}"
+                )
+            return env_target
+        if len(rels) > 1:
+            logger.warning(
+                "build produced %d binaries; fuzzing %s — pass "
+                "--env-target <name> to pick another (%s)",
+                len(rels), rels[0], ", ".join(rels),
+            )
+        return rels[0]
 
     def _run_libfuzzer(
         self,

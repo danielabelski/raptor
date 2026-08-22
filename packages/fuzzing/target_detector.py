@@ -237,10 +237,13 @@ def _detect_directory(path: Path) -> TargetInfo:
         return _detect_rust_crate(path)
     if (path / "pyproject.toml").exists() or (path / "setup.py").exists():
         return _detect_python_pkg(path)
-    if any(path.glob("*.h")) or any(path.glob("**/*.h")):
+    if any(
+        any(path.glob(pat)) or any(path.glob(f"**/{pat}"))
+        for pat in ("*.h", "*.c", "*.cc", "*.cpp", "*.hpp")
+    ):
         return TargetInfo(
             path=path, kind="source-c",
-            description="Directory containing C/C++ headers",
+            description="Directory containing C/C++ sources",
             can_fuzz_here=False,
             hints=[
                 "Use harness generation to create libFuzzer harnesses for "

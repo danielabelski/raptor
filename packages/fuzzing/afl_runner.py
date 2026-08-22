@@ -78,6 +78,7 @@ class _SandboxedAFLInstance:
         output_dir: Path,
         readable_paths: list[str],
         timeout_s: int,
+        rootfs: Path | None = None,
     ) -> None:
         self.name = name
         self.cmd = list(cmd)
@@ -87,6 +88,14 @@ class _SandboxedAFLInstance:
         self.output_dir = output_dir
         self.readable_paths = list(readable_paths)
         self.timeout_s = timeout_s
+        # Env-built campaigns: run afl-fuzz from the exported AFL++
+        # image rootfs (sandbox image-rootfs mode). The target/output
+        # host dirs are bound at their original paths inside the new
+        # root, so the -o wiring and the monitor loop's host-side
+        # reads are unchanged; everything else the campaign needs must
+        # live under those binds (the public sandbox API forwards
+        # readable_paths only under restrict_reads).
+        self.rootfs = rootfs
         self.result: subprocess.CompletedProcess | None = None
         self.error: BaseException | None = None
         self._thread = threading.Thread(
@@ -100,6 +109,9 @@ class _SandboxedAFLInstance:
         try:
             with open(self.stdout_path, "wb") as stdout_fp, \
                     open(self.stderr_path, "wb") as stderr_fp:
+                extra = {}
+                if self.rootfs is not None:
+                    extra["rootfs"] = str(self.rootfs)
                 self.result = _sandbox_run(
                     self.cmd,
                     block_network=True,
@@ -112,6 +124,7 @@ class _SandboxedAFLInstance:
                     stderr=stderr_fp,
                     timeout=self.timeout_s,
                     caller_label=f"afl-fuzz-{self.name}",
+                    **extra,
                 )
         except BaseException as exc:  # noqa: BLE001 — surfaced by the monitor loop
             self.error = exc
@@ -213,6 +226,9 @@ class AFLRunner:
         custom_mutator: Path | None = None,
         seed_profile: str = "default",
         extra_afl_flags: list[str] | None = None,
+        sandbox_rootfs: Path | str | None = None,
+        binary_in_rootfs: str | None = None,
+        afl_fuzz_path: str | None = None,
     ) -> None:
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
@@ -283,14 +299,53 @@ class AFLRunner:
         # the events file when callers only build commands for tests.
         self.telemetry = None
 
-        # Check AFL++ availability
-        self.afl_fuzz = shutil.which("afl-fuzz")
-        if not self.afl_fuzz:
-            msg = "AFL++ not found. Install with: sudo apt install afl++ (Ubuntu) or brew install afl++ (macOS)"
-            raise RuntimeError(msg)
+        # Env-built campaigns (sandbox image-rootfs mode): afl-fuzz
+        # and the target binary come from the exported AFL++ image
+        # rootfs, not the host. ``binary_path`` stays the HOST view of
+        # the binary (``<rootfs>/src/<rel>``) so the instrumentation /
+        # sanitizer strings-checks keep working; the afl-fuzz command
+        # line uses the in-rootfs path.
+        self.sandbox_rootfs = Path(sandbox_rootfs) if sandbox_rootfs else None
+        self.binary_in_rootfs = binary_in_rootfs
+        if self.sandbox_rootfs is not None:
+            if not self.sandbox_rootfs.is_dir():
+                raise FileNotFoundError(
+                    f"sandbox rootfs not found: {sandbox_rootfs}")
+            self.afl_fuzz = afl_fuzz_path or "/usr/local/bin/afl-fuzz"
+            # Inside the pivoted image only the target/output binds are
+            # visible — the public sandbox API forwards readable_paths
+            # solely under restrict_reads, so a corpus or dictionary at
+            # an arbitrary host path does not exist post-pivot
+            # (empirical: afl-fuzz dies with "Unable to open <corpus>"
+            # while the host-mode run reads it fine). Stage both under
+            # output_dir, which IS bound at its original path.
+            self.corpus_dir = self._stage_into_output(
+                self.corpus_dir, "corpus-staged")
+            if self.dict_path is not None:
+                self.dict_path = self._stage_into_output(
+                    self.dict_path, "dict-staged")
+            # cmplog binaries and custom mutators are host paths with
+            # no post-pivot presence; silently losing them would run a
+            # weaker campaign than the caller configured. Refuse until
+            # in-image support exists.
+            if self.cmplog_binary or self.custom_mutator:
+                raise ValueError(
+                    "cmplog_binary / custom_mutator are not supported "
+                    "with sandbox_rootfs campaigns (host paths are not "
+                    "visible inside the image rootfs)")
+            # No host which()/--help validation: the binary lives
+            # inside the image and only executes post-pivot. Setup
+            # failures surface loudly through SandboxSetupError /
+            # the instance stderr logs.
+        else:
+            # Check AFL++ availability
+            self.afl_fuzz = shutil.which("afl-fuzz")
+            if not self.afl_fuzz:
+                msg = "AFL++ not found. Install with: sudo apt install afl++ (Ubuntu) or brew install afl++ (macOS)"
+                raise RuntimeError(msg)
 
-        # Validate AFL command
-        self._validate_afl_command()
+            # Validate AFL command
+            self._validate_afl_command()
 
         logger.info("AFL++ found: %s", self.afl_fuzz)
         logger.info("Binary: %s", self.binary)
@@ -350,6 +405,53 @@ class AFLRunner:
                 (corpus / f"seed{idx}").write_bytes(seed)
             logger.info("Created emergency default corpus with %d seeds", len(seeds))
         return corpus
+
+    def _stage_into_output(self, source: Path, dirname: str) -> Path:
+        """Copy *source* under ``output_dir`` unless it already lives
+        there. Rootfs-mode campaigns can only see the output bind.
+
+        Deliberately NOT ``shutil.copytree``: a hostile in-repo corpus
+        can plant symlinks (``seed -> ~/.ssh/id_rsa`` would copy host
+        secrets into the run dir as fuzz seeds; ``seed -> /dev/zero``
+        wedges the copy), and a source dir that is an ancestor of
+        ``output_dir`` would recurse into its own destination. AFL
+        reads only top-level regular files from an input directory, so
+        a flat, symlink-rejecting copy loses nothing. The staging dir
+        is derived data: cleared first so a reused --out dir cannot
+        bleed a previous run's seeds into this campaign.
+        """
+        source = Path(source)
+        try:
+            source.relative_to(self.output_dir)
+            return source
+        except ValueError:
+            pass
+        staged = self.output_dir / dirname
+        if staged.exists():
+            shutil.rmtree(staged)
+        staged.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            copied = skipped = 0
+            for entry in sorted(source.iterdir()):
+                if entry.is_symlink() or not entry.is_file():
+                    skipped += 1
+                    continue
+                shutil.copy2(entry, staged / entry.name)
+                copied += 1
+            if skipped:
+                logger.warning(
+                    "staging %s: skipped %d non-regular-file entries "
+                    "(symlinks / subdirectories)", source, skipped)
+            logger.info("staged %d seeds from %s into %s",
+                        copied, source, staged)
+        else:
+            if source.is_symlink():
+                source = source.resolve(strict=True)
+            shutil.copy2(source, staged / source.name)
+            staged = staged / source.name
+            logger.info("staged %s into the campaign output dir: %s",
+                        source, staged)
+        return staged
 
     def check_binary_instrumentation(self) -> bool:
         """Check if binary is instrumented for AFL."""
@@ -572,8 +674,15 @@ class AFLRunner:
         log_dir = self.output_dir / "raptor-logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        readable_paths = [str(self.binary.parent), str(self.corpus_dir)]
-        readable_paths.extend(str(Path(extra).parent) for extra in (self.dict_path, self.cmplog_binary, self.custom_mutator) if extra)
+        # In rootfs mode everything the campaign reads lives inside
+        # the image tree (binary at /src) or under the output bind
+        # (staged corpus/dict) — readable_paths would be dropped by
+        # the sandbox API anyway (restrict_reads=False).
+        if self.sandbox_rootfs is not None:
+            readable_paths = []
+        else:
+            readable_paths = [str(self.binary.parent), str(self.corpus_dir)]
+            readable_paths.extend(str(Path(extra).parent) for extra in (self.dict_path, self.cmplog_binary, self.custom_mutator) if extra)
 
         try:
             for job_id in range(parallel_jobs):
@@ -623,6 +732,11 @@ class AFLRunner:
                 afl_env.setdefault("AFL_SKIP_CPUFREQ", "1")
                 afl_env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
                 afl_env.setdefault("AFL_FORKSRV_INIT_TMOUT", "10000")
+                if self.sandbox_rootfs is not None:
+                    # Host PATH/HOME point at directories that do not
+                    # exist inside the image rootfs.
+                    afl_env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+                    afl_env["HOME"] = "/tmp"
 
                 stdout_path = log_dir / f"{instance_name}.stdout.log"
                 stderr_path = log_dir / f"{instance_name}.stderr.log"
@@ -639,6 +753,7 @@ class AFLRunner:
                     # afl-fuzz self-terminates via -V; the sandbox
                     # timeout is a wedge net well above that.
                     timeout_s=duration + 300,
+                    rootfs=self.sandbox_rootfs,
                 )
                 instance.start()
                 instances.append(instance)
@@ -1059,9 +1174,13 @@ class AFLRunner:
         if self.extra_afl_flags:
             cmd.extend(self.extra_afl_flags)
 
-        # Target binary
+        # Target binary (in-rootfs path for env-built campaigns; the
+        # binary only executes post-pivot where the image is "/")
         cmd.append("--")
-        cmd.append(str(self.binary))
+        if self.sandbox_rootfs is not None and self.binary_in_rootfs:
+            cmd.append(self.binary_in_rootfs)
+        else:
+            cmd.append(str(self.binary))
 
         # Input mode
         if self.input_mode == "file":
@@ -1086,7 +1205,13 @@ class AFLRunner:
 
     def run_showmap(self) -> dict:
         """Run afl-showmap to analyze coverage."""
-        showmap_cmd = ["afl-showmap", "-o", "/dev/null", "--", str(self.binary)]
+        if self.sandbox_rootfs is not None:
+            showmap = str(Path(self.afl_fuzz).parent / "afl-showmap")
+            target_bin = self.binary_in_rootfs or str(self.binary)
+        else:
+            showmap = "afl-showmap"
+            target_bin = str(self.binary)
+        showmap_cmd = [showmap, "-o", "/dev/null", "--", target_bin]
 
         stdin_input = None
         test_input = None
@@ -1138,9 +1263,16 @@ class AFLRunner:
             # Add binary parent + input parent to readable_paths
             # so afl-showmap can open both. Output stays
             # restricted to output_dir.
-            readable_paths = [str(Path(self.binary).parent)]
-            if test_input:
-                readable_paths.append(str(Path(test_input).parent))
+            if self.sandbox_rootfs is not None:
+                # binary in-image, test_input under the staged corpus
+                # (inside the output bind) — nothing external to bind.
+                readable_paths = []
+                env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+                env["HOME"] = "/tmp"
+            else:
+                readable_paths = [str(Path(self.binary).parent)]
+                if test_input:
+                    readable_paths.append(str(Path(test_input).parent))
 
             # Bound afl-showmap wallclock. Pre-fix the call had no
             # `timeout=` — afl-showmap runs the (attacker-controlled)
@@ -1155,6 +1287,9 @@ class AFLRunner:
             # masks the timeout). 5 minutes is generous: typical
             # showmap runs are sub-second; even instrumentation-
             # heavy binaries finish in well under a minute.
+            extra = {}
+            if self.sandbox_rootfs is not None:
+                extra["rootfs"] = str(self.sandbox_rootfs)
             result = _sandbox_run(
                 showmap_cmd,
                 block_network=True,
@@ -1168,6 +1303,7 @@ class AFLRunner:
                 env=env,
                 timeout=300,
                 sanitise_host_fingerprint=True,
+                **extra,
             )
 
             # Parse output for coverage info

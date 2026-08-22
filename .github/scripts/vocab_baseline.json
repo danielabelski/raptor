@@ -2254,5 +2254,15 @@
     "count": 10,
     "kind": "literal",
     "note": "journal field-key names for the edge-obligation gap record (edge_callee*, edge_verdicts, ...) \u2014 a serialization schema, not an API vocabulary; readers and the fold consume these exact keys"
+  },
+  "core/audit/condition_smt.py::_SIGNED_TYPES": {
+    "count": 19,
+    "kind": "literal",
+    "note": "C/C++ signed integer type spellings (int, __s32, ptrdiff_t, ...) used to thread operand signedness into the overflow-disproof SMT encoding \u2014 fixed language/kernel-typedef grammar, not a learned API vocabulary"
+  },
+  "core/inventory/js_lexer.py::_REGEX_PRECEDER_KEYWORDS": {
+    "count": 14,
+    "kind": "literal",
+    "note": "ECMA-262 keywords after which a '/' token lexes as a regex literal (return, case, typeof, ...) \u2014 fixed language grammar for the JS dead-scope lexer, not an API vocabulary"
   }
 }

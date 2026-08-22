@@ -60,8 +60,22 @@ def _attempt_replay(cve: CveRecord, prefill_from: str | None):
         return None
     env = result.environment
     if result.ok and env is not None and env.verified():
-        print("replay: verify passed — agent build skipped ($0)",
-              file=sys.stderr)
+        # Replay needs the VERDICT, not the instance: tear the
+        # environment down before returning. Leaving it up would leak
+        # a running container that carries only the provision label
+        # (raptor-env.id) — invisible to the cve-id cleanup and with
+        # no token printed. `cve-env up <id>` is the designed way to
+        # get (and keep) a running endpoint.
+        try:
+            env.teardown()
+        except Exception:  # noqa: BLE001 — the verdict already stands
+            print("replay: teardown failed — remove leftovers with "
+                  f"`docker ps --filter label=raptor-env.id="
+                  f"{getattr(env, 'provision_id', '?')}`",
+                  file=sys.stderr)
+        print("replay: verify passed — agent build skipped ($0); "
+              "instance torn down (use `cve-env up` for a running "
+              "endpoint)", file=sys.stderr)
         return Outcome(
             cve_id=cve.cve_id,
             status="success",
@@ -76,6 +90,88 @@ def _attempt_replay(cve: CveRecord, prefill_from: str | None):
         file=sys.stderr,
     )
     return None
+
+
+def _cmd_up(args: argparse.Namespace) -> int:
+    """Re-provision a recorded environment spec and LEAVE IT RUNNING,
+    printing the loopback endpoint as the test target for exploit /
+    PoC work. The environment comes from the spec a successful build
+    recorded (CVE or operator-described DESC- id) — the verify plan
+    re-adjudicates before the endpoint is handed out, so "up" never
+    yields an unverified lookalike unless --no-verify says so.
+    """
+    from cve_env.infra.spec_record import find_replayable_spec
+
+    spec = find_replayable_spec(args.env_id, out_dir=args.from_dir)
+    if spec is None:
+        print(f"no recorded environment spec found for {args.env_id!r} — "
+              f"run `cve-env build` for it first (or pass --from <run "
+              f"dir> if the spec lives in a specific run)",
+              file=sys.stderr)
+        return 1
+    source_run = (spec.markers.get("origin") or {}).get(
+        "source_run", "(unknown run)")
+    if not args.no_verify and not getattr(spec, "verify_plan", None):
+        # provision() skips verification when the plan is empty — an
+        # endpoint handed out that way would silently bypass the
+        # documented refusal gate. A tampered/degenerate local spec is
+        # the only way here (recording always captures a plan).
+        print("up: recorded spec has no verify plan — refusing to hand "
+              "out an unverified endpoint (pass --no-verify to insist)",
+              file=sys.stderr)
+        return 1
+    print(f"up: provisioning recorded spec from {source_run}",
+          file=sys.stderr)
+    from core.env.provision import provision
+
+    result = provision(spec, verify=not args.no_verify,
+                       fail_on_verify=True)
+    env = result.environment
+    if not result.ok or env is None:
+        print(f"up: {result.reason or 'provision failed'}"
+              f"{': ' + result.detail if result.detail else ''}",
+              file=sys.stderr)
+        return 1
+    endpoint = env.handle.endpoint()
+    payload = {
+        "env_id": args.env_id,
+        "endpoint": ({"host": endpoint[0], "port": endpoint[1]}
+                     if endpoint else None),
+        "image_ref": env.image_ref,
+        "tier": env.tier,
+        "verify_passed": env.verified() if not args.no_verify else None,
+        "source_run": source_run,
+        # teardown token: `cve-env down <token>` removes everything
+        # this provision created (label-scoped).
+        "down_token": env.provision_id,
+    }
+    print(json.dumps(payload, indent=2))
+    if endpoint:
+        print(f"up: environment running at {endpoint[0]}:{endpoint[1]} — "
+              f"tear down with: cve-env down {env.provision_id}",
+              file=sys.stderr)
+    else:
+        print(f"up: environment running (no published endpoint on the "
+              f"{env.tier} tier) — tear down with: cve-env down "
+              f"{env.provision_id}", file=sys.stderr)
+    return 0
+
+
+def _cmd_down(args: argparse.Namespace) -> int:
+    """Tear down a `cve-env up` provision by its down_token
+    (label-scoped: removes exactly that provision's containers and
+    images, nothing else). Idempotent."""
+    from core.container.lifecycle import (
+        remove_labeled_containers,
+        remove_labeled_images,
+    )
+    from core.env.provision import OWNER_LABEL
+
+    removed = remove_labeled_containers(OWNER_LABEL, args.token)
+    remove_labeled_images(OWNER_LABEL, args.token)
+    print(json.dumps({"token": args.token,
+                      "removed_containers": removed}))
+    return 0
 
 
 def _validate_cve_id(value: str) -> str:
@@ -1084,6 +1180,32 @@ def _build_argparser() -> argparse.ArgumentParser:
         "is running. Default off; also enabled via env CVE_ENV_AUTO_STOP_COLIMA=1.",
     )
     b.set_defaults(func=_cmd_build)
+
+    u = sub.add_parser(
+        "up",
+        help="Re-provision a recorded environment spec (CVE or DESC- id) "
+             "and leave it running; prints the loopback endpoint as the "
+             "test target for exploit/PoC work",
+    )
+    u.add_argument("env_id",
+                   help="CVE-YYYY-NNNN or DESC-<hash> of a previously "
+                        "successful build")
+    u.add_argument("--from", dest="from_dir", default=None, metavar="DIR",
+                   help="read the recorded spec from this run directory "
+                        "(default: active project runs, then global out/)")
+    u.add_argument("--no-verify", action="store_true",
+                   help="skip re-running the verify plan before handing "
+                        "out the endpoint (default: verify, and refuse "
+                        "the endpoint on failure)")
+    u.set_defaults(func=_cmd_up)
+
+    dn = sub.add_parser(
+        "down",
+        help="Tear down a `cve-env up` provision by its down_token "
+             "(label-scoped, idempotent)",
+    )
+    dn.add_argument("token", help="down_token printed by `cve-env up`")
+    dn.set_defaults(func=_cmd_down)
 
     d = sub.add_parser(
         "doctor",

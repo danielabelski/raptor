@@ -37,6 +37,31 @@ logger = logging.getLogger(__name__)
 _LOCAL_TAG_PREFIXES = ("cve-env-local", "raptor-env-local")
 
 
+def _portable_plan(plan: list[dict]) -> list[dict]:
+    """Strip per-run ephemeral endpoint coordinates from recorded
+    verify steps.
+
+    The agent's tcp_probe_check steps carry the ORIGINAL run's
+    published host port (an ephemeral docker mapping); a replayed
+    environment publishes a fresh one, so a recorded port can never
+    match again — the probe fails "connection refused" on every
+    replay/up. With the coordinates stripped, the verify engine
+    resolves the probe against the CURRENT handle's endpoint (the
+    executor's documented fallback). The http checks already resolve
+    that way (the executor drops their host fields); tcp is the one
+    type with a legitimate per-step override, which this recorder's
+    universe never needs — docker_run publishes exactly one port.
+    """
+    out = []
+    for step in plan:
+        if step.get("type") == "tcp_probe_check":
+            step = {k: v for k, v in step.items()
+                    if k not in ("host_port", "host_ip", "host", "port",
+                                 "port_target")}
+        out.append(step)
+    return out
+
+
 def derive_replay_spec(
     cve_id: str,
     version: str,
@@ -58,6 +83,7 @@ def derive_replay_spec(
     plan = verify_input.get("plan")
     plan = [c for c in plan if isinstance(c, dict)] if isinstance(
         plan, list) else []
+    plan = _portable_plan(plan)
 
     run_input = None
     for use in reversed(tool_uses):

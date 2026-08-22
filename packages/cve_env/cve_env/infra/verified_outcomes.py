@@ -64,6 +64,11 @@ def write_build_outcome(
             evidence={
                 "tier": tier,
                 "method": outcome.get("method"),
+                # --describe runs: the environment was operator-
+                # asserted, not CVE-pinned — a weaker oracle consumers
+                # must be able to see, not just infer from a DESC- id.
+                "operator_described": bool(
+                    outcome.get("operator_described")),
                 "verify_passed": bool(outcome.get("verify_passed")),
                 "num_turns": outcome.get("num_turns"),
                 "total_cost_usd": outcome.get("total_cost_usd"),

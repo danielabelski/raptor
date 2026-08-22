@@ -1400,9 +1400,12 @@ def render_user_prompt(cve: CveRecord, host: HostInfo, run_id: str = "",
         # record. The verify DAG remains the only success oracle.
         # Sanitized like the CVE hint (exploit-disclosure language
         # trips the AUP filter on the very first turn) but with a cap
-        # sized for a full description rather than a one-line hint.
+        # sized for a full description, and layout preserved — operator
+        # descriptions legitimately carry config sketches whose
+        # indentation is meaning.
         _desc = sanitize_exploit_text(
-            cve.description, max_chars=4000) or "(empty after sanitizing)"
+            cve.description, max_chars=4000,
+            preserve_layout=True) or "(empty after sanitizing)"
         return f"""\
 # Operator-described target (no CVE)
 - id: {cve.cve_id}

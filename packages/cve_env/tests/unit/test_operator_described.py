@@ -135,7 +135,8 @@ class TestDescribedPrompt:
             sanitize_exploit_text,
         )
         assert rec.description not in out
-        assert sanitize_exploit_text(rec.description, max_chars=4000) in out
+        assert sanitize_exploit_text(
+            rec.description, max_chars=4000, preserve_layout=True) in out
 
     def test_cve_prompt_unchanged_for_normal_records(self):
         rec = CveRecord(cve_id="CVE-2014-0160", product="OpenSSL",
@@ -183,3 +184,63 @@ class TestFileModeVisibility:
         a = _describe_record(_args(describe="x\ny", product=None))
         b = _describe_record(_args(describe="x", product="y"))
         assert a.cve_id != b.cve_id
+
+
+class TestLayoutPreservation:
+    """Operator descriptions legitimately carry config sketches whose
+    indentation is meaning — the sanitizer's phrase rewriting applies,
+    but the whitespace collapse (cosmetic) does not."""
+
+    def test_described_prompt_keeps_structure(self):
+        sketch = ("nginx 1.18.0 with:\n"
+                  "    location /upload {\n"
+                  "        dav_methods PUT;\n"
+                  "    }\n")
+        rec = CveRecord(cve_id="DESC-aaaabbbbcccc", product="nginx",
+                        version="1.18.0", description=sketch,
+                        operator_described=True)
+        out = render_user_prompt(rec, _host())
+        assert "    location /upload {" in out
+        assert "        dav_methods PUT;" in out
+
+    def test_phrase_rewriting_still_applies_with_layout(self):
+        from cve_env.utils.exploit_text_sanitizer import (
+            sanitize_exploit_text,
+        )
+        text = ("line one\n    indented\n"
+                "The exploit has been disclosed to the public.")
+        out = sanitize_exploit_text(text, preserve_layout=True)
+        assert "\n    indented" in out
+        assert "exploit has been disclosed" not in out
+
+    def test_cve_hint_path_unchanged(self):
+        from cve_env.utils.exploit_text_sanitizer import (
+            sanitize_exploit_text,
+        )
+        assert sanitize_exploit_text("a  \n  b") == "a b"
+
+
+class TestVerifiedOutcomeLabel:
+    def test_operator_described_reaches_evidence(self, tmp_path):
+        from cve_env.infra.verified_outcomes import write_build_outcome
+        ok = write_build_outcome(tmp_path, {
+            "cve_id": "DESC-aaaabbbbcccc", "status": "success",
+            "verify_passed": True, "operator_described": True,
+        })
+        assert ok
+        import json
+        rec = json.loads(
+            next(tmp_path.glob("*.jsonl")).read_text().splitlines()[0])
+        assert rec["evidence"]["operator_described"] is True
+
+    def test_cve_run_labelled_false(self, tmp_path):
+        from cve_env.infra.verified_outcomes import write_build_outcome
+        ok = write_build_outcome(tmp_path, {
+            "cve_id": "CVE-2018-7600", "status": "success",
+            "verify_passed": True,
+        })
+        assert ok
+        import json
+        rec = json.loads(
+            next(tmp_path.glob("*.jsonl")).read_text().splitlines()[0])
+        assert rec["evidence"]["operator_described"] is False

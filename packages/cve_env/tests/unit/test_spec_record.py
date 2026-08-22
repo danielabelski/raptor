@@ -191,7 +191,8 @@ class TestCliReplay:
 
     def test_verified_replay_skips_agent(self, tmp_path, capsys):
         env = SimpleNamespace(
-            verified=lambda: True, verify_result={"passed": True})
+            verified=lambda: True, verify_result={"passed": True},
+            provision_id="tok123", teardown=lambda: None)
         prov_ret = SimpleNamespace(ok=True, environment=env, reason="")
         rc, core, prov, captured = self._run(
             tmp_path, capsys, self._args(tmp_path),

@@ -2510,8 +2510,7 @@ def _format_markdown(report: PrecisionReport) -> str:
         lines.append(
             f"## GATE FAILED — {len(report.false_suppressions)} "
             "false suppression(s)")
-        for name in report.false_suppressions:
-            lines.append(f"- {name}")
+        lines.extend(f"- {name}" for name in report.false_suppressions)
     else:
         lines.append("## Gate clean — zero false suppressions")
         if report.rule_of_three_95_ub is not None:
@@ -2528,8 +2527,7 @@ def _format_markdown(report: PrecisionReport) -> str:
         lines.append(
             f"## Missed suppressions (utility, not a gate failure): "
             f"{len(report.missed_suppressions)}")
-        for name in report.missed_suppressions:
-            lines.append(f"- {name}")
+        lines.extend(f"- {name}" for name in report.missed_suppressions)
         lines.append("")
     lines.append("## Per-class cross-tab (label × verdict)")
     for cls in sorted(report.cross_tab):

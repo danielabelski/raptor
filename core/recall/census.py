@@ -203,8 +203,7 @@ def render_census_markdown(census: dict[str, Any], *,
         "| idiom | FPs |",
         "|-------|-----|",
     ]
-    for row in census["by_idiom"]:
-        lines.append(f"| {row['idiom']} | {row['count']} |")
+    lines.extend(f"| {row['idiom']} | {row['count']} |" for row in census["by_idiom"])
     lines += ["", f"## By rule (top {top})", "",
               "| rule | FPs |", "|------|-----|"]
     for row in census["by_rule"][:top]:

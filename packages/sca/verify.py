@@ -371,8 +371,7 @@ def _render_markdown(
         lines.append("")
         lines.append("| Severity | Finding | KEV | EPSS |")
         lines.append("|---|---|---|---|")
-        for r in delta.new:
-            lines.append(_row_line(r))
+        lines.extend(_row_line(r) for r in delta.new)
         lines.append("")
 
     if delta.resolved:
@@ -380,8 +379,7 @@ def _render_markdown(
         lines.append("")
         lines.append("| Severity | Finding | KEV | EPSS |")
         lines.append("|---|---|---|---|")
-        for r in delta.resolved:
-            lines.append(_row_line(r))
+        lines.extend(_row_line(r) for r in delta.resolved)
         lines.append("")
     return "\n".join(lines) + "\n"
 

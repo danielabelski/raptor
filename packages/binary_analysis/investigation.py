@@ -704,8 +704,7 @@ def render_investigation_report(investigation: dict[str, Any]) -> str:
     )
     lines.extend(["", "## Structural Inferences (Not Findings)", ""])
     if investigation["structural_inferences"]:
-        for item in investigation["structural_inferences"]:
-            lines.append(f"- {item['statement']} {item['not_a_claim']}")
+        lines.extend(f"- {item['statement']} {item['not_a_claim']}" for item in investigation["structural_inferences"])
     else:
         lines.append("- No structural inferences were strong enough to surface.")
 
@@ -740,8 +739,7 @@ def render_investigation_report(investigation: dict[str, Any]) -> str:
             )
 
     lines.extend(["", "## Automatic Graph Queries", ""])
-    for item in investigation["automatic_graph_queries"]:
-        lines.append(f"- `{item['kind']}`: {item['edge_count']} edge(s). {item['description']}")
+    lines.extend(f"- `{item['kind']}`: {item['edge_count']} edge(s). {item['description']}" for item in investigation["automatic_graph_queries"])
 
     lines.extend(["", "## Hypotheses Requiring Evidence", ""])
     if investigation["hypotheses"]:
@@ -780,11 +778,8 @@ def render_investigation_report(investigation: dict[str, Any]) -> str:
                 "| Candidate ingress | Kind | Why |",
                 "|---|---|---|",
             ])
-            for item in candidates[:5]:
-                lines.append(
-                    f"| `{_md_escape(item.get('name'))}` | `{_md_escape(item.get('kind'))}` | "
-                    f"{_md_escape(item.get('why'))} |"
-                )
+            lines.extend(f"| `{_md_escape(item.get('name'))}` | `{_md_escape(item.get('kind'))}` | "
+                    f"{_md_escape(item.get('why'))} |" for item in candidates[:5])
 
     lines.extend(["", "## Priority Queue", ""])
     if investigation["priority_queue"]:
@@ -792,11 +787,8 @@ def render_investigation_report(investigation: dict[str, Any]) -> str:
             "| Priority | Action | Command | Why |",
             "|---:|---|---|---|",
         ])
-        for item in investigation["priority_queue"]:
-            lines.append(
-                f"| {item['priority']} | `{item['kind']}` | `{_md_escape(item['command'])}` | "
-                f"{_md_escape(item['why'])} |"
-            )
+        lines.extend(f"| {item['priority']} | `{item['kind']}` | `{_md_escape(item['command'])}` | "
+                f"{_md_escape(item['why'])} |" for item in investigation["priority_queue"])
     else:
         lines.append("- No follow-on actions queued.")
 

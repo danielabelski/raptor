@@ -101,13 +101,11 @@ def generate_single(path_data: dict[str, Any], path_index: int) -> str:
     if runtime_nodes:
         lines.append("")
         lines.append("    %% Runtime-confirmed (frida)")
-        for nid in runtime_nodes:
-            lines.append(f"    style {nid} fill:#dbeafe,stroke:#2563eb,stroke-width:2px")
+        lines.extend(f"    style {nid} fill:#dbeafe,stroke:#2563eb,stroke-width:2px" for nid in runtime_nodes)
 
     # Chain edges
     lines.append("")
-    for i in range(len(node_ids) - 1):
-        lines.append(f"    {node_ids[i]} --> {node_ids[i+1]}")
+    lines.extend(f"    {node_ids[i]} --> {node_ids[i+1]}" for i in range(len(node_ids) - 1))
 
     # Blocker nodes
     if blockers:

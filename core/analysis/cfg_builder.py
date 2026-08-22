@@ -762,15 +762,11 @@ def _function_params(
     parameter so body uses resolve to the entry node.
     """
     args = func.args
-    names: list[str] = []
-    for arg in args.posonlyargs:
-        names.append(arg.arg)
-    for arg in args.args:
-        names.append(arg.arg)
+    names: list[str] = [arg.arg for arg in args.posonlyargs]
+    names.extend(arg.arg for arg in args.args)
     if args.vararg is not None:
         names.append(args.vararg.arg)
-    for arg in args.kwonlyargs:
-        names.append(arg.arg)
+    names.extend(arg.arg for arg in args.kwonlyargs)
     if args.kwarg is not None:
         names.append(args.kwarg.arg)
     return tuple(names)

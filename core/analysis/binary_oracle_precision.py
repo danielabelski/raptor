@@ -363,10 +363,8 @@ def _format_markdown(reports: Sequence[CorpusReport]) -> str:
                 lines.append(f"- exact_match: {r.exact_match:.1%}")
             if r.mismatches:
                 lines.append(f"- mismatches ({len(r.mismatches)}):")
-                for m in r.mismatches:
-                    lines.append(
-                        f"  - `{m['function']}`: expected={m['expected']}"
-                        f" got={m['got']}")
+                lines.extend(f"  - `{m['function']}`: expected={m['expected']}"
+                        f" got={m['got']}" for m in r.mismatches)
         else:
             if r.absent_precision is not None:
                 lines.append(

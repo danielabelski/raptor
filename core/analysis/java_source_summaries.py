@@ -395,9 +395,7 @@ def scan_tree(
 def rows_from_source_summaries(summaries: Sequence[SourceSummary]):
     """Convert summaries to models-as-data source rows."""
     from core.dataflow.extension_pack import ModelRow, ROLE_SOURCE
-    rows = []
-    for s in summaries:
-        rows.append(ModelRow(
+    rows = [ModelRow(
             role=ROLE_SOURCE,
             provenance="mechanical",
             namespace=s.package,
@@ -407,5 +405,5 @@ def rows_from_source_summaries(summaries: Sequence[SourceSummary]):
             access_output="ReturnValue",
             model_kind="remote",
             subtypes=False,
-        ))
+        ) for s in summaries]
     return rows

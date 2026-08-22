@@ -115,12 +115,11 @@ def results_to_sarif(
         # spatch errors → SARIF tool-execution notifications. Distinct
         # from results — operators see the rule had a problem without
         # mistaking it for a finding.
-        for err in r.errors or []:
-            notifications.append({
+        notifications.extend({
                 "level": "error",
                 "message": {"text": err[:500]},
                 "associatedRule": {"id": rule_id},
-            })
+            } for err in r.errors or [])
 
     run: dict[str, Any] = {
         "tool": {

@@ -1011,9 +1011,7 @@ def _cve_aliases(advisory) -> list[str]:
     osv_id = getattr(advisory, "osv_id", None)
     if isinstance(osv_id, str) and osv_id.upper().startswith("CVE-"):
         out.append(osv_id)
-    for a in getattr(advisory, "aliases", None) or []:
-        if isinstance(a, str) and a.upper().startswith("CVE-"):
-            out.append(a)
+    out.extend(a for a in getattr(advisory, "aliases", None) or [] if isinstance(a, str) and a.upper().startswith("CVE-"))
     return out
 
 
@@ -1059,9 +1057,7 @@ def _rank_candidates_by_safety(
         ``(any_in_kev, max_severity, max_epss, count, original_index)``.
     """
     from .models import Confidence
-    pseudo_deps = []
-    for v in candidates:
-        pseudo_deps.append(Dependency(
+    pseudo_deps = [Dependency(
             ecosystem=ecosystem, name=name, version=v,
             declared_in=Path("<harden>"),
             scope="main", is_lockfile=False,
@@ -1070,7 +1066,7 @@ def _rank_candidates_by_safety(
                 else f"pkg:{ecosystem}/{name}@{v}",
             parser_confidence=Confidence("high",
                                           reason="harden synthetic"),
-        ))
+        ) for v in candidates]
     results = osv.query_batch(pseudo_deps)
     by_key: dict[str, list] = {r.dep_key: r.advisories for r in results}
 
@@ -1672,7 +1668,7 @@ def _write_report(
     lines.append("")
     lines.append("| Status | Count |")
     lines.append("|---|---|")
-    for status in (
+    lines.extend(f"| {status} | {len(by_status[status])} |" for status in (
         "promoted", "degraded_safety", "downgraded_safety",
         "review_required", "up_to_date",
         "skipped_loose_pin", "unsupported_manifest",
@@ -1680,9 +1676,7 @@ def _write_report(
         "pinning_deferred",
         "no_versions", "registry_unsupported",
         "needs_network", "error",
-    ):
-        if status in by_status:
-            lines.append(f"| {status} | {len(by_status[status])} |")
+    ) if status in by_status)
     lines.append("")
     if excluded_surfaces:
         n = len(excluded_surfaces)
@@ -1709,12 +1703,9 @@ def _write_report(
     if "review_required" in by_status:
         lines.append("## Review required (major bump — LLM impact analysis pending)")
         lines.append("")
-        for c in by_status["review_required"]:
-            lines.append(
-                f"- **{c.ecosystem}:{c.name}** "
+        lines.extend(f"- **{c.ecosystem}:{c.name}** "
                 f"`{c.from_version or '*'}` → `{c.to_version}` "
-                f"in `{c.manifest}` — {c.detail}"
-            )
+                f"in `{c.manifest}` — {c.detail}" for c in by_status["review_required"])
         lines.append("")
 
     if "library_floor_raise_unsupported" in by_status:
@@ -1762,12 +1753,9 @@ def _write_report(
                      "version within the recorded floor corridor. Apply with "
                      "`--allow-degraded` if the version regression is acceptable.")
         lines.append("")
-        for c in by_status["downgraded_safety"]:
-            lines.append(
-                f"- **{c.ecosystem}:{c.name}** "
+        lines.extend(f"- **{c.ecosystem}:{c.name}** "
                 f"`{c.from_version or '*'}` → `{c.to_version}` "
-                f"in `{c.manifest}` — {c.detail}"
-            )
+                f"in `{c.manifest}` — {c.detail}" for c in by_status["downgraded_safety"])
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")

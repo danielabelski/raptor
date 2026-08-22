@@ -605,10 +605,7 @@ def build_profile(*,
                 f"(allow network-outbound "
                 f"(remote tcp6 \"localhost:{int(proxy_port)}\"))"
             )
-        for port in (allowed_tcp_ports or ()):
-            parts.append(
-                f"(allow network-outbound (remote tcp \"*:{int(port)}\"))"
-            )
+        parts.extend(f"(allow network-outbound (remote tcp \"*:{int(port)}\"))" for port in allowed_tcp_ports or ())
     elif allowed_tcp_ports:
         # Standalone port allowlist (no block_network, no proxy): the
         # old `block_network or use_egress_proxy` gate emitted NO
@@ -619,9 +616,6 @@ def build_profile(*,
         # covers TCP connect only, leaving UDP/DNS and bind/listen
         # untouched (listening is unrestricted by design).
         parts.append("(deny network-outbound (remote tcp \"*:*\"))")
-        for port in allowed_tcp_ports:
-            parts.append(
-                f"(allow network-outbound (remote tcp \"*:{int(port)}\"))"
-            )
+        parts.extend(f"(allow network-outbound (remote tcp \"*:{int(port)}\"))" for port in allowed_tcp_ports)
 
     return "\n".join(parts) + "\n"

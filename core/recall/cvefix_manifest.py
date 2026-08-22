@@ -79,9 +79,7 @@ class CvefixSpec:
         if not _SHA_RE.match(sha):
             errors.append("fix_commit must be a full 40-hex sha "
                           "(public provenance is a hard gate)")
-        for key in ("repo_url", "local_clone", "language", "cwe"):
-            if not raw.get(key):
-                errors.append(f"spec needs {key}")
+        errors.extend(f"spec needs {key}" for key in ("repo_url", "local_clone", "language", "cwe") if not raw.get(key))
         cwe = str(raw.get("cwe", ""))
         if cwe and not re.match(r"^CWE-\d+$", cwe):
             errors.append(f"cwe {cwe!r} must look like CWE-NNN")

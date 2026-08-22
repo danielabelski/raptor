@@ -145,9 +145,7 @@ def _build_audit_config(
 
     from . import state as _state
 
-    _writable: list = []
-    for p in (writable_paths or ()):
-        _writable.append(_osp.abspath(p))
+    _writable: list = [_osp.abspath(p) for p in writable_paths or ()]
     if output:
         _writable.append(_osp.abspath(output))
 
@@ -156,8 +154,7 @@ def _build_audit_config(
         "/etc", "/proc", "/sys",
     )
     _read_allow = list(_writable)
-    for p in (readable_paths or ()):
-        _read_allow.append(_osp.abspath(p))
+    _read_allow.extend(_osp.abspath(p) for p in readable_paths or ())
     _read_allow.extend(_system_ro)
     if target:
         _read_allow.append(_osp.abspath(target))

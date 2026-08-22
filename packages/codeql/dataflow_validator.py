@@ -542,10 +542,7 @@ class DataflowValidator:
         intermediate = steps[1:-1] if len(steps) > 2 else []
 
         # Look for sanitizers mentioned in the flow
-        sanitizers = []
-        for step in intermediate:
-            if re.search(r'\bsanitiz|\bvalidat', step.label, re.IGNORECASE):
-                sanitizers.append(step.label)
+        sanitizers = [step.label for step in intermediate if re.search(r'\bsanitiz|\bvalidat', step.label, re.IGNORECASE)]
 
         return DataflowPath(
             source=source,

@@ -111,16 +111,14 @@ def _extract_runtime_evidence(
     findings = findings_data.get("findings", [])
     evidence = []
     for f in findings:
-        for ev in f.get("evidence_chain", []):
-            if ev.get("tier") in ("OBSERVED_RUNTIME", "REPLAYED_CRASH"):
-                evidence.append({
+        evidence.extend({
                     "finding_id": f.get("id", ""),
                     "function": f.get("function", ""),
                     "file": f.get("file", ""),
                     "source": ev.get("source", ""),
                     "tier": ev.get("tier", ""),
                     "detail": ev.get("detail", ""),
-                })
+                } for ev in f.get("evidence_chain", []) if ev.get("tier") in ("OBSERVED_RUNTIME", "REPLAYED_CRASH"))
     return evidence
 
 
@@ -399,10 +397,7 @@ def format_validate_history(
         if reason:
             header += f': "{reason}"'
         lines.append(header)
-        for cb in rec.get("chain_breaks", [])[:3]:
-            lines.append(
-                f"  - mechanical chain break: {_clean_history_text(cb)}"
-            )
+        lines.extend(f"  - mechanical chain break: {_clean_history_text(cb)}" for cb in rec.get("chain_breaks", [])[:3])
 
     if not lines:
         return ""
@@ -586,16 +581,12 @@ def import_audit_evidence(
 
     # 2. Project siblings
     if project_dir and project_dir.is_dir():
-        for sibling in sorted(project_dir.iterdir(), reverse=True):
-            if sibling.is_dir() and sibling.name.startswith("audit_"):
-                search_dirs.append(sibling)
+        search_dirs.extend(sibling for sibling in sorted(project_dir.iterdir(), reverse=True) if sibling.is_dir() and sibling.name.startswith("audit_"))
 
     # 3. Global out/ — RAPTOR_DIR-anchored, see import_validate_evidence
     out_dir = Path(os.environ["RAPTOR_DIR"]) / "out"
     if out_dir.is_dir():
-        for candidate in sorted(out_dir.iterdir(), reverse=True):
-            if candidate.is_dir() and candidate.name.startswith("audit_"):
-                search_dirs.append(candidate)
+        search_dirs.extend(candidate for candidate in sorted(out_dir.iterdir(), reverse=True) if candidate.is_dir() and candidate.name.startswith("audit_"))
 
     for candidate in search_dirs:
         if not _check_target_match(candidate, target_path):

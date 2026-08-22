@@ -99,7 +99,6 @@ def extract_conditions_from_hypothesis(
     - "assuming X is non-null" → X != NULL
     - "provided that Y > 0"
     """
-    conditions = []
 
     if_patterns = re.findall(
         r'(?:if|when|where|provided that|assuming)\s*\(?\s*'
@@ -107,33 +106,30 @@ def extract_conditions_from_hypothesis(
         hypothesis,
         re.IGNORECASE,
     )
-    for match in if_patterns:
-        conditions.append(PathCondition(
+    conditions = [PathCondition(
             text=match.strip(),
             source="hypothesis",
-        ))
+        ) for match in if_patterns]
 
     null_patterns = re.findall(
         r'(\w+)\s+is\s+(?:non-null|not null|not NULL)',
         hypothesis,
         re.IGNORECASE,
     )
-    for var in null_patterns:
-        conditions.append(PathCondition(
+    conditions.extend(PathCondition(
             text=f"{var} != NULL",
             source="hypothesis",
-        ))
+        ) for var in null_patterns)
 
     nonneg_patterns = re.findall(
         r'(\w+)\s+(?:is|must be)\s+(?:non-negative|positive|greater than zero)',
         hypothesis,
         re.IGNORECASE,
     )
-    for var in nonneg_patterns:
-        conditions.append(PathCondition(
+    conditions.extend(PathCondition(
             text=f"{var} > 0",
             source="hypothesis",
-        ))
+        ) for var in nonneg_patterns)
 
     return conditions
 

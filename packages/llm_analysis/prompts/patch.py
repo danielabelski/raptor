@@ -65,11 +65,8 @@ def _format_attack_path(attack_path: dict[str, Any]) -> str:
     if not path:
         return ""
     parts: list[str] = ["Attack path (consider patching at earliest step):"]
-    for step in path:
-        parts.append(
-            f"  Step {step.get('step', '?')}: "
-            f"{step.get('action', '')} -> {step.get('result', '')}"
-        )
+    parts.extend(f"  Step {step.get('step', '?')}: "
+            f"{step.get('action', '')} -> {step.get('result', '')}" for step in path)
     return "\n".join(parts)
 
 

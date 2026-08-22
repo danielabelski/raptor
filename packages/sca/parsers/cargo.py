@@ -88,7 +88,7 @@ def parse_manifest(path: Path) -> list[Dependency]:
     # ``[target.'cfg(...)'.dependencies]`` etc.
     targets = data.get("target") or {}
     if isinstance(targets, dict):
-        for _cfg, target_block in targets.items():
+        for target_block in targets.values():
             if not isinstance(target_block, dict):
                 continue
             for scope_key, scope in _SCOPE_MAP.items():

@@ -239,10 +239,7 @@ class FuzzingMemory:
         Returns:
             List of matching knowledge entries
         """
-        results = []
-        for k in self.knowledge.values():
-            if k.knowledge_type == knowledge_type and k.confidence >= min_confidence:
-                results.append(k)
+        results = [k for k in self.knowledge.values() if k.knowledge_type == knowledge_type and k.confidence >= min_confidence]
 
         # Sort by confidence (highest first)
         results.sort(key=lambda x: x.confidence, reverse=True)

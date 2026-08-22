@@ -242,12 +242,8 @@ def _run_semgrep(
             f"semgrep exited with returncode {result.returncode}"
         )
     # A fixture the engine could not examine proves nothing about it.
-    for ff in (result.files_failed or [])[:5]:
-        if isinstance(ff, dict):
-            errors.append(
-                "semgrep failed to scan "
-                f"{ff.get('path', '?')}: {ff.get('reason', 'error')}"
-            )
+    errors.extend("semgrep failed to scan "
+                f"{ff.get('path', '?')}: {ff.get('reason', 'error')}" for ff in (result.files_failed or [])[:5] if isinstance(ff, dict))
     return matches, errors
 
 

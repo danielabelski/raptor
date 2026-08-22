@@ -101,8 +101,7 @@ def _render_metadata(evidence: SanitizerEvidence) -> str:
     lines = [f"Pool completeness: {evidence.pool_completeness}"]
     if evidence.extraction_failures:
         lines.append("Extraction failures:")
-        for f in evidence.extraction_failures:
-            lines.append(f"  - {f}")
+        lines.extend(f"  - {f}" for f in evidence.extraction_failures)
     else:
         lines.append("Extraction failures: (none)")
     return "\n".join(lines)

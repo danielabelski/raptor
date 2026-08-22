@@ -53,8 +53,7 @@ def discover_py_files(
         root_path = repo / root
         if not root_path.is_dir():
             continue
-        for p in root_path.rglob("*.py"):
-            files.append(p.relative_to(repo))
+        files.extend(p.relative_to(repo) for p in root_path.rglob("*.py"))
     for name in EXTRA_ROOTS:
         p = repo / name
         if p.is_file():
@@ -218,8 +217,7 @@ def extract_imports(path: Path, repo: Path) -> list[str] | None:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                modules.append(alias.name)
+            modules.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             if node.module is None:
                 base = own_package
@@ -238,9 +236,7 @@ def extract_imports(path: Path, repo: Path) -> list[str] | None:
                 modules.append(base)
                 # ``from X import Y`` — Y might be a submodule.
                 if node.names:
-                    for alias in node.names:
-                        if alias.name != "*":
-                            modules.append(f"{base}.{alias.name}")
+                    modules.extend(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
 
     # Dynamic imports: importlib.import_module("x") / __import__("x").
     modules.extend(_extract_dynamic_imports(tree))
@@ -379,15 +375,13 @@ def write_scoped_config(
         # Deduplicate to parent directories instead.
         dirs = sorted(set(str(Path(p).parent) or "." for p in scoped_paths))
         lines.append("paths:")
-        for d in dirs:
-            lines.append(f"  - {_yaml_val(d)}")
+        lines.extend(f"  - {_yaml_val(d)}" for d in dirs)
         lines.append("")
 
     pi = base_config.get("paths-ignore", [])
     if pi:
         lines.append("paths-ignore:")
-        for p in pi:
-            lines.append(f"  - {_yaml_val(p)}")
+        lines.extend(f"  - {_yaml_val(p)}" for p in pi)
         lines.append("")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")

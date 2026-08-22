@@ -153,16 +153,10 @@ def main() -> int:
 
         missing_in_md = excluded_in_index - excluded_via_frontmatter
         missing_in_index = excluded_via_frontmatter - excluded_in_index
-        for n in sorted(missing_in_md):
-            errs.append(
-                f"/{n}: listed as excluded in commands.md but missing "
-                f"``exclude_from_listing: true`` frontmatter"
-            )
-        for n in sorted(missing_in_index):
-            errs.append(
-                f"/{n}: has ``exclude_from_listing: true`` frontmatter but "
-                f"not listed in commands.md's exclude sentence"
-            )
+        errs.extend(f"/{n}: listed as excluded in commands.md but missing "
+                f"``exclude_from_listing: true`` frontmatter" for n in sorted(missing_in_md))
+        errs.extend(f"/{n}: has ``exclude_from_listing: true`` frontmatter but "
+                f"not listed in commands.md's exclude sentence" for n in sorted(missing_in_index))
 
     if errs:
         print("Command-metadata lint failed:", file=sys.stderr)

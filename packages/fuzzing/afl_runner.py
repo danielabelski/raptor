@@ -573,9 +573,7 @@ class AFLRunner:
         log_dir.mkdir(parents=True, exist_ok=True)
 
         readable_paths = [str(self.binary.parent), str(self.corpus_dir)]
-        for extra in (self.dict_path, self.cmplog_binary, self.custom_mutator):
-            if extra:
-                readable_paths.append(str(Path(extra).parent))
+        readable_paths.extend(str(Path(extra).parent) for extra in (self.dict_path, self.cmplog_binary, self.custom_mutator) if extra)
 
         try:
             for job_id in range(parallel_jobs):

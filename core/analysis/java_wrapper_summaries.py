@@ -173,9 +173,7 @@ def _iter_named(root):
     while stack:
         cur = stack.pop()
         yield cur
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
 
 
 def _subtree_touches_state(n) -> bool:

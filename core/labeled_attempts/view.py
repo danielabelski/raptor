@@ -700,9 +700,7 @@ def _render_one(scored: ScoredOutcome) -> str:
     obs = o.evidence.get("observed_outcome")
     if obs:
         evidence_bits.append(_safe_prompt(obs))
-    for k in ("signal", "sanitizer"):
-        if o.evidence.get(k):
-            evidence_bits.append(f"{k}={_safe_prompt(o.evidence[k])}")
+    evidence_bits.extend(f"{k}={_safe_prompt(o.evidence[k])}" for k in ("signal", "sanitizer") if o.evidence.get(k))
     evidence = ", ".join(evidence_bits) or "no detail"
     repro = (
         "reproducible" if o.reproducible
@@ -735,9 +733,7 @@ def render_verified_exemplars(
         return ""
 
     header = [_HEADER, "", _INTRO, ""]
-    entries: list[str] = []
-    for s in ranked:
-        entries.append(_render_one(s))
+    entries: list[str] = [_render_one(s) for s in ranked]
 
     while True:
         block = "\n\n".join(

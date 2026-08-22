@@ -197,8 +197,7 @@ def render_fn_census_markdown(census: dict[str, Any], *,
         "| construct | FNs |",
         "|-----------|-----|",
     ]
-    for row in census["by_idiom"]:
-        lines.append(f"| {row['idiom']} | {row['count']} |")
+    lines.extend(f"| {row['idiom']} | {row['count']} |" for row in census["by_idiom"])
     lines += ["", "## By CWE", "", "| CWE | FNs |", "|-----|-----|"]
     for row in census["by_cwe"]:
         lines.append(f"| {row['cwe']} | {row['count']} |")

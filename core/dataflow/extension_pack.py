@@ -444,10 +444,9 @@ def write_extension_pack(
         lines.append(f"      pack: {stdlib_pack}")
         lines.append(f"      extensible: {predicate}")
         lines.append("    data:")
-        for cells in sorted(by_predicate[predicate]):
-            # json.dumps output is a valid YAML flow sequence; learned
-            # strings cannot escape their cell.
-            lines.append(f"      - {json.dumps(list(cells))}")
+        # json.dumps output is a valid YAML flow sequence; learned
+        # strings cannot escape their cell.
+        lines.extend(f"      - {json.dumps(list(cells))}" for cells in sorted(by_predicate[predicate]))
     model_file = models_dir / f"{language}.model.yml"
     model_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

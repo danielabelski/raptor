@@ -826,8 +826,7 @@ def main() -> int:
         k for k in baseline
         if k not in known or is_documented(k) or classes.get(k) != "operator"
     )
-    for k in stale_baseline:
-        warns.append(f"stale baseline entry: {k}")
+    warns.extend(f"stale baseline entry: {k}" for k in stale_baseline)
 
     for w in warns:
         print(f"[env-docs] WARN {w}")

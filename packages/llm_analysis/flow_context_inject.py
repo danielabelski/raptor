@@ -155,12 +155,11 @@ def context_blocks_for_finding(
         matched = [
             t for t in traces if _trace_matches(t, file_path, function)
         ][:MAX_TRACES_PER_FINDING]
-        for trace in matched:
-            blocks.append(UntrustedBlock(
+        blocks.extend(UntrustedBlock(
                 content=_render_trace(trace, file_path, function),
                 kind="flow-trace-context",
                 origin="understand-flow-trace",
-            ))
+            ) for trace in matched)
     except Exception:
         logger.debug("flow-trace block build failed", exc_info=True)
 
@@ -308,8 +307,7 @@ def _build_caller_block(
         lines.append(f"- {_clip(caller.get('name', ''), 80)} at {where}")
         call_site = caller.get("call_site")
         if call_site:
-            for snippet_line in str(call_site).splitlines()[:3]:
-                lines.append(f"    {snippet_line}")
+            lines.extend(f"    {snippet_line}" for snippet_line in str(call_site).splitlines()[:3])
     return UntrustedBlock(
         content="\n".join(lines),
         kind="caller-call-sites",

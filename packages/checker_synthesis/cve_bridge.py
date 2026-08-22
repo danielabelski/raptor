@@ -163,14 +163,12 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
         raise ProvenanceError(msg)
 
     db = osv.get("database_specific", {}) or {}
-    files: list[CveFixFile] = []
-    for f in db.get("files", []) or []:
-        files.append(CveFixFile(
+    files: list[CveFixFile] = [CveFixFile(
             path=str(f.get("path", "")),
             before_source=str(f.get("before_source") or ""),
             after_source=str(f.get("after_source") or ""),
             is_test=bool(f.get("is_test", False)),
-        ))
+        ) for f in db.get("files", []) or []]
 
     parent_commit = str(db.get("diff_against", "") or "")
     if not _SHA_RE.match(parent_commit):

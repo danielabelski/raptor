@@ -549,8 +549,7 @@ class ConsensusTask(DispatchTask):
 
                 primary_exploitable = primary.get("is_exploitable", False)
                 verdicts = [primary_exploitable]
-                for ca in consensus_analyses:
-                    verdicts.append(ca.get("is_exploitable", False))
+                verdicts.extend(ca.get("is_exploitable", False) for ca in consensus_analyses)
 
                 disputed = not all(v == verdicts[0] for v in verdicts)
 
@@ -714,8 +713,7 @@ class JudgeTask(DispatchTask):
 
                 primary_exploitable = primary.get("is_exploitable", False)
                 verdicts = [primary_exploitable]
-                for ja in judge_analyses:
-                    verdicts.append(ja.get("is_exploitable", False))
+                verdicts.extend(ja.get("is_exploitable", False) for ja in judge_analyses)
 
                 disputed = not all(v == verdicts[0] for v in verdicts)
 

@@ -321,11 +321,8 @@ def format_specs_for_joern(spec_set: TaintSpecSet) -> str:
     sources = spec_set.sources()
     if sources:
         lines.append("// Project-specific sources")
-        for s in sources:
-            lines.append(
-                f'def source = cpg.method.fullNameExact("{s.function}")'
-                f'.parameter  // {s.taint_class or "user_controlled"}'
-            )
+        lines.extend(f'def source = cpg.method.fullNameExact("{s.function}")'
+                f'.parameter  // {s.taint_class or "user_controlled"}' for s in sources)
 
     sinks = spec_set.sinks()
     if sinks:

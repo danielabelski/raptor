@@ -204,15 +204,11 @@ def _function_params(
     :func:`core.analysis.cfg_builder._function_params`: posonly,
     positional, ``*args``, kwonly, ``**kwargs``."""
     args = fn.args
-    names: list[str] = []
-    for a in args.posonlyargs:
-        names.append(a.arg)
-    for a in args.args:
-        names.append(a.arg)
+    names: list[str] = [a.arg for a in args.posonlyargs]
+    names.extend(a.arg for a in args.args)
     if args.vararg is not None:
         names.append(args.vararg.arg)
-    for a in args.kwonlyargs:
-        names.append(a.arg)
+    names.extend(a.arg for a in args.kwonlyargs)
     if args.kwarg is not None:
         names.append(args.kwarg.arg)
     return tuple(names)

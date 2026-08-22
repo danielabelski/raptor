@@ -322,8 +322,7 @@ def run_all() -> list[HealthResult]:
 def render_table(results: list[HealthResult]) -> str:
     """Format results as a fixed-width table for terminal display."""
     lines = ["", "Service health probes:", ""]
-    for r in results:
-        lines.append(r.as_row())
+    lines.extend(r.as_row() for r in results)
     lines.append("")
     failing_critical = [r.name for r in results if not r.ok and r.name in CRITICAL_NAMES]
     if failing_critical:

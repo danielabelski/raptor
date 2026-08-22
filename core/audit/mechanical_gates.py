@@ -110,17 +110,11 @@ def format_provenance_for_context(
 
     lines = ["INPUT PROVENANCE (mechanical):"]
     if untrusted:
-        for p in untrusted[:5]:
-            lines.append(
-                f"- UNTRUSTED: reachable from {p['ep_id']} "
-                f"{p['ep_name']} ({p['ep_type']})"
-            )
+        lines.extend(f"- UNTRUSTED: reachable from {p['ep_id']} "
+                f"{p['ep_name']} ({p['ep_type']})" for p in untrusted[:5])
     if trusted:
-        for p in trusted[:3]:
-            lines.append(
-                f"- trusted: also reachable from {p['ep_id']} "
-                f"{p['ep_name']} ({p['ep_type']})"
-            )
+        lines.extend(f"- trusted: also reachable from {p['ep_id']} "
+                f"{p['ep_name']} ({p['ep_type']})" for p in trusted[:3])
     return "\n".join(lines)
 
 
@@ -358,11 +352,8 @@ def detect_constant_dangerous_calls(
             continue
         all_args = list(node.args) + [kw.value for kw in node.keywords]
         if all(_is_constant(arg, module_constants) for arg in all_args):
-            arg_strs = []
-            for arg in node.args:
-                arg_strs.append(_const_repr(arg, module_constants))
-            for kw in node.keywords:
-                arg_strs.append(_const_repr(kw.value, module_constants))
+            arg_strs = [_const_repr(arg, module_constants) for arg in node.args]
+            arg_strs.extend(_const_repr(kw.value, module_constants) for kw in node.keywords)
             results.append({
                 "call": call_name,
                 "line": getattr(node, "lineno", 0),
@@ -483,7 +474,7 @@ def dedup_callers(
         groups.setdefault(key, []).append(c)
 
     result: list[dict[str, Any]] = []
-    for _key, group in groups.items():
+    for group in groups.values():
         rep = dict(group[0])
         if len(group) > 1:
             rep["same_pattern_count"] = len(group)
@@ -573,12 +564,9 @@ def format_universal_preconditions(
     if not preconditions:
         return ""
     lines = ["UNIVERSAL CALLER CONSTRAINT (mechanical):"]
-    for p in preconditions:
-        lines.append(
-            f"- ALL {p['n_callers']} callers validate param `{p['param']}` "
+    lines.extend(f"- ALL {p['n_callers']} callers validate param `{p['param']}` "
             f"with: {p['conditions']}. This parameter CANNOT reach this "
-            f"function unvalidated."
-        )
+            f"function unvalidated." for p in preconditions)
     return "\n".join(lines)
 
 
@@ -626,11 +614,8 @@ def format_type_constraints(constraints: list[dict[str, str]]) -> str:
     if not constraints:
         return ""
     lines = ["TYPE CONSTRAINTS (mechanical):"]
-    for tc in constraints:
-        lines.append(
-            f"- param `{tc['param']}` is `{tc['type']}` — "
-            f"{tc['constraint_note']}"
-        )
+    lines.extend(f"- param `{tc['param']}` is `{tc['type']}` — "
+            f"{tc['constraint_note']}" for tc in constraints)
     return "\n".join(lines)
 
 

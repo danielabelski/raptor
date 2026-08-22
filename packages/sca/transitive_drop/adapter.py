@@ -22,9 +22,7 @@ def to_supply_chain_findings(
     CRITICAL vuln on the transitive yields an HIGH finding (this
     IS a real remediation path), while LOW/INFO yields INFO.
     """
-    out: list[SupplyChainFinding] = []
-    for d in drops:
-        out.append(_make_finding(d))
+    out: list[SupplyChainFinding] = [_make_finding(d) for d in drops]
     return out
 
 

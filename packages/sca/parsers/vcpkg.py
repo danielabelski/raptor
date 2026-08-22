@@ -79,7 +79,7 @@ def parse(path: Path) -> list[Dependency]:
     # main-scope (over-report rather than under-report).
     features = data.get("features")
     if isinstance(features, dict):
-        for _, feat in features.items():
+        for feat in features.values():
             if isinstance(feat, dict):
                 deps.extend(_extract_block(
                     feat.get("dependencies"), scope="main", path=path,

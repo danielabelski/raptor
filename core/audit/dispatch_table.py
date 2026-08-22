@@ -282,6 +282,5 @@ def format_displacement_context(
         return None
 
     parts = ["[Capability displacement analysis]"]
-    for d in displacements:
-        parts.append(f"  - {d.description}")
+    parts.extend(f"  - {d.description}" for d in displacements)
     return "\n".join(parts)

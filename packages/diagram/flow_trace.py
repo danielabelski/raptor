@@ -165,8 +165,7 @@ def generate(data: dict[str, Any]) -> str:
 
     # Main chain edges
     lines.append("")
-    for i in range(len(node_ids) - 1):
-        lines.append(f"    {node_ids[i]} --> {node_ids[i+1]}")
+    lines.extend(f"    {node_ids[i]} --> {node_ids[i+1]}" for i in range(len(node_ids) - 1))
 
     # Branch annotations as separate note nodes
     if branches:

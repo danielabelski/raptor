@@ -295,9 +295,7 @@ def _signal_reachable_set(
         if func in visited:
             continue
         visited.add(func)
-        for callee in adjacency.get(func, set()):
-            if callee not in visited:
-                queue.append(callee)
+        queue.extend(callee for callee in adjacency.get(func, set()) if callee not in visited)
 
     # Convert to file:function keys
     result: set[str] = set()

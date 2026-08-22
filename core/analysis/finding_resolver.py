@@ -835,9 +835,7 @@ def _java_statement_start_line(
             span = end - start
             if best is None or span < best[0]:
                 best = (span, start)
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return best[1] if best is not None else None
 
 
@@ -1125,9 +1123,7 @@ def _find_enclosing_function_cpp(
                     span = end - start
                     if best is None or span < best[0]:
                         best = (span, name, start)
-        for child in cur.children:
-            if child.is_named:
-                stack.append(child)
+        stack.extend(child for child in cur.children if child.is_named)
     if best is None:
         return None, 0
     return best[1], best[2]

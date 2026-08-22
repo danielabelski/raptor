@@ -398,12 +398,10 @@ def _from_npm(raw: dict) -> _Meta:
     raw_maint = raw.get("maintainers") or []
     maintainers: list[dict[str, Any]] = []
     if isinstance(raw_maint, list):
-        for m in raw_maint:
-            if isinstance(m, dict):
-                maintainers.append({
+        maintainers.extend({
                     "name": m.get("name", ""),
                     "email": m.get("email", ""),
-                })
+                } for m in raw_maint if isinstance(m, dict))
 
     # Per-version maintainer comparison: extract maintainer list from
     # the second-most-recent version to detect maintainer additions.
@@ -414,12 +412,10 @@ def _from_npm(raw: dict) -> _Meta:
         if isinstance(prev_ver_data, dict):
             prev_maint_raw = prev_ver_data.get("maintainers") or []
             if isinstance(prev_maint_raw, list):
-                for m in prev_maint_raw:
-                    if isinstance(m, dict):
-                        previous_maintainers.append({
+                previous_maintainers.extend({
                             "name": m.get("name", ""),
                             "email": m.get("email", ""),
-                        })
+                        } for m in prev_maint_raw if isinstance(m, dict))
 
     # Per-version unpacked tarball sizes. Populated only when the
     # registry document carries ``dist.unpackedSize`` (set by npm

@@ -236,9 +236,7 @@ def _extract_cve_ids(advisory: dict[str, Any]) -> list[str]:
         return out
     aliases = advisory.get("aliases") or []
     if isinstance(aliases, list):
-        for a in aliases:
-            if isinstance(a, str) and a.startswith("CVE-"):
-                out.append(a)
+        out.extend(a for a in aliases if isinstance(a, str) and a.startswith("CVE-"))
     osv_id = advisory.get("osv_id") or ""
     if isinstance(osv_id, str) and osv_id.startswith("CVE-"):
         out.append(osv_id)

@@ -60,10 +60,7 @@ def write_outcome_patches(
             pairs.extend(extras)
         # De-dupe by method name (last write wins) so the back-compat
         # shorthand and ``extras`` don't both emit the same file.
-        seen: dict[str, str] = {}
-        for method, text in pairs:
-            if text:
-                seen[method] = text
+        seen: dict[str, str] = {method: text for method, text in pairs if text}
         # Sanitize `method` before interpolating into a filename.
         # `method` comes from per-extractor metadata — for the
         # canonical extractors it's always a clean identifier

@@ -119,8 +119,7 @@ def seeds_from_journal(
     entries: list[tuple[str, Any]] = []
     if out_dir is not None:
         try:
-            for e in load_entries(Path(out_dir)):
-                entries.append(("journal:current", e))
+            entries.extend(("journal:current", e) for e in load_entries(Path(out_dir)))
         except Exception:
             logger.debug("journal load failed", exc_info=True)
     if project_dir is not None:

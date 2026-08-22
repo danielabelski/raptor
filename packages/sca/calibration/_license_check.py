@@ -101,11 +101,8 @@ def check(corpus_dir: Path, attribution_md: Path) -> list[str]:
                     )
         # Rule 2: forbidden fields (anywhere in the document).
         bad = _walk_for_forbidden(data, path=())
-        for trail in bad:
-            violations.append(
-                f"{rel}: forbidden field at {'.'.join(trail)} "
-                f"(license-restricted content)"
-            )
+        violations.extend(f"{rel}: forbidden field at {'.'.join(trail)} "
+                f"(license-restricted content)" for trail in bad)
         # Rule 3: ATTRIBUTION.md mentions the file.
         if attribution_text and not re.search(
             r'(?<![a-zA-Z0-9._\-])' + re.escape(rel.name) + r'(?![a-zA-Z0-9._\-])',

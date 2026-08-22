@@ -176,7 +176,5 @@ def render_eligibility_summary(
     lines = [
         f"ZKPoX-eligible witnesses: {s['eligible']} / {s['total']}",
     ]
-    for key in ("provable", "outcome_not_provable", "no_target"):
-        if key in s["by_reason"]:
-            lines.append(f"{indent}{key}: {s['by_reason'][key]}")
+    lines.extend(f"{indent}{key}: {s['by_reason'][key]}" for key in ("provable", "outcome_not_provable", "no_target") if key in s["by_reason"])
     return "\n".join(lines)

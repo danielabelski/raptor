@@ -632,11 +632,8 @@ def render_harness_report(spec: dict[str, Any]) -> str:
     parser_boundaries = (spec.get("linked_evidence") or {}).get("parser_boundaries") or []
     if parser_boundaries:
         lines.extend(["", "## Recovered Parser Boundary", ""])
-        for item in parser_boundaries[:5]:
-            lines.append(
-                f"- `{item['boundary_function_name']}` -> `{item['parser_surface_name']}` "
-                f"(depth {item['path']['depth']}, tier `{item['evidence_tier']}`)"
-            )
+        lines.extend(f"- `{item['boundary_function_name']}` -> `{item['parser_surface_name']}` "
+                f"(depth {item['path']['depth']}, tier `{item['evidence_tier']}`)" for item in parser_boundaries[:5])
     if spec.get("generated"):
         lines.extend([
             "",

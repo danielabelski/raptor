@@ -179,9 +179,7 @@ def resolve_rust_macros(
 
         if depth < max_depth:
             child_calls = set(_RUST_MACRO_CALL_RE.findall(body)) - _SKIP_IDENTS_RUST
-            for child in child_calls:
-                if child not in visited and child in table:
-                    worklist.append((child, depth + 1))
+            worklist.extend((child, depth + 1) for child in child_calls if child not in visited and child in table)
 
     if not resolved:
         return []
@@ -289,9 +287,7 @@ def resolve_macros(
 
         if depth < max_depth:
             body_idents = set(_MACRO_IDENT_RE.findall(body)) - _SKIP_IDENTS_C
-            for child in body_idents:
-                if child not in visited and child in table:
-                    worklist.append((child, depth + 1))
+            worklist.extend((child, depth + 1) for child in body_idents if child not in visited and child in table)
 
     if not resolved:
         return []

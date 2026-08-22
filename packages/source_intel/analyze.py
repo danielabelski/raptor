@@ -2498,8 +2498,7 @@ def _scan_project_alias_observations(
     # Build a flat list of (kind, alias_name) tuples for the scan.
     alias_pairs: list[tuple[str, str]] = []
     for family, names in discovered_alias_tuple:
-        for name in names:
-            alias_pairs.append((family, name))
+        alias_pairs.extend((family, name) for name in names)
     if not alias_pairs:
         return observations
 

@@ -435,9 +435,7 @@ def _walk_uses(n, resolver, *, exclude: set | None = None) -> frozenset[str]:
                     stack.append(obj_u)
             args = cur.child_by_field_name("arguments")
             if args is not None:
-                for c in args.children:
-                    if c.is_named:
-                        stack.append(c)
+                stack.extend(c for c in args.children if c.is_named)
             continue
         if t == _IDENT:
             key = (cur.start_byte, cur.end_byte)
@@ -449,9 +447,7 @@ def _walk_uses(n, resolver, *, exclude: set | None = None) -> frozenset[str]:
             if base is not None and base not in resolver.types:
                 out.add(base)
             continue
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return frozenset(out)
 
 
@@ -518,9 +514,7 @@ def _subtree_may_escape(n, resolver) -> bool:
             name = resolver.callable_name(cur)
             if name in _BULK_COPY_CALLS:
                 return True
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return False
 
 
@@ -532,9 +526,7 @@ def _subtree_has_refused(n) -> bool:
         cur = stack.pop()
         if cur.type in _REFUSED_NODE_TYPES:
             return True
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return False
 
 
@@ -658,9 +650,7 @@ def find_enclosing_method(
                     span = end - start
                     if best is None or span < best[0]:
                         best = (span, name, start)
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     if best is None:
         return None, 0
     return best[1], best[2]
@@ -1108,9 +1098,7 @@ class _JavaCFGBuilder:
             if cur.type == _YIELD:
                 msg = "switch yield"
                 raise _RefusedConstruct(msg)
-            for c in cur.children:
-                if c.is_named:
-                    scan.append(c)
+            scan.extend(c for c in cur.children if c.is_named)
         groups = [c for c in body.children if c.type == _SWITCH_GROUP]
         rules = [c for c in body.children if c.type == _SWITCH_RULE]
         if groups and rules:
@@ -1228,9 +1216,7 @@ def build_java_intraproc_cfg(
         if cur.type in (_METHOD_DECL, _CTOR_DECL) \
                 and _method_name(cur) == function_name:
             candidates.append(cur)
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     if not candidates:
         return None
     decl = None

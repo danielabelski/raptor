@@ -690,15 +690,13 @@ def check_calls(idx: RepoIndex):
             # unknown kwarg
             if not has_dstar and target.kwarg is None:
                 known = target.all_kw_names(bound)
-                for kw in kw_names:
-                    if kw not in known:
-                        findings.append({
+                findings.extend({
                             "kind": "unknown_kwarg",
                             "file": str(mod.path), "line": node.lineno,
                             "sym": f"{target.module.modnames[0]}:{target.qualname}:{kw}",
                             "detail": f"{label}(... {kw}=...) — callee "
                                    f"{target.module.modnames[0]}:{target.qualname} "
-                                   f"accepts {sorted(known)}"})
+                                   f"accepts {sorted(known)}"} for kw in kw_names if kw not in known)
             elif has_dstar or target.kwarg is not None:
                 sup["kwargs_open"] += 1
 
@@ -1152,9 +1150,7 @@ def find_swallowed(idx: RepoIndex, kwarg_findings):
                             if span[0] <= ln <= span[1])
                         calls = []
                         for b in node.body:
-                            for n in ast.walk(b):
-                                if isinstance(n, ast.Call):
-                                    calls.append(dec_name(n.func) or "<complex>")
+                            calls.extend(dec_name(n.func) or "<complex>" for n in ast.walk(b) if isinstance(n, ast.Call))
                         findings.append({
                             "kind": "swallowed_exception",
                             "file": str(mod.path), "line": node.lineno,

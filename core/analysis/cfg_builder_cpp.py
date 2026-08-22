@@ -405,9 +405,7 @@ def _walk_subtree_for_uses(n, *, exclude: set | None = None) -> frozenset[str]:
             # descend into arguments only.
             args = cur.child_by_field_name("arguments")
             if args is not None:
-                for c in args.children:
-                    if c.is_named:
-                        stack.append(c)
+                stack.extend(c for c in args.children if c.is_named)
             continue
         if t == _IDENT:
             key = (cur.start_byte, cur.end_byte)
@@ -420,9 +418,7 @@ def _walk_subtree_for_uses(n, *, exclude: set | None = None) -> frozenset[str]:
             if arg is not None:
                 stack.append(arg)
             continue
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return frozenset(out)
 
 
@@ -497,9 +493,7 @@ def _walk_subtree_for_calls(n) -> frozenset[str]:
             name = _resolve_callable_name(callee)
             if name is not None:
                 out.add(name)
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return frozenset(out)
 
 
@@ -535,9 +529,7 @@ def _subtree_has_indirection(n) -> bool:
             name = _resolve_callable_name(callee)
             if name is not None and name in _BULK_COPY_FUNCS:
                 return True
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
     return False
 
 
@@ -655,9 +647,7 @@ def _find_function_definition(root, function_name: str):
             name = _function_name(cur)
             if name == function_name:
                 return cur
-        for child in cur.children:
-            if child.is_named:
-                stack.append(child)
+        stack.extend(child for child in cur.children if child.is_named)
     return None
 
 

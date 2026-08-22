@@ -56,8 +56,7 @@ def load_context_map(
               if p.is_dir() and p.name.startswith("understand_")),
             reverse=True,
         )
-        for ur in understand_runs:
-            candidates.append(ur / "context-map.json")
+        candidates.extend(ur / "context-map.json" for ur in understand_runs)
     for c in candidates:
         if c.is_file():
             try:

@@ -330,8 +330,7 @@ def _render(
     if failures:
         out.append("")
         out.append("FAILURES:")
-        for f in failures:
-            out.append(f"  ✗ {escape_nonprintable(f)}")
+        out.extend(f"  ✗ {escape_nonprintable(f)}" for f in failures)
 
     if warnings:
         out.append("")
@@ -351,8 +350,7 @@ def _render(
     if verbose and passes:
         out.append("")
         out.append("PASSED:")
-        for p in passes:
-            out.append(f"  ✓ {escape_nonprintable(p)}")
+        out.extend(f"  ✓ {escape_nonprintable(p)}" for p in passes)
     elif passes and not failures and not warnings:
         # Compact "all good" when there's nothing to act on.
         out.append("")

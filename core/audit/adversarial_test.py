@@ -394,11 +394,8 @@ def format_matrix_report(matrix: AdversarialMatrix) -> str:
     if blind:
         lines.append("")
         lines.append(f"## Blind Spots ({len(blind)})")
-        for cell in blind:
-            lines.append(
-                f"- {cell.depth} x {cell.failure_mode}: "
-                f"{len(cell.planted_bugs)} bugs planted, 0 detected"
-            )
+        lines.extend(f"- {cell.depth} x {cell.failure_mode}: "
+                f"{len(cell.planted_bugs)} bugs planted, 0 detected" for cell in blind)
 
     return "\n".join(lines)
 

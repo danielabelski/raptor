@@ -586,9 +586,7 @@ def run_flow_cocci_sweep(
             rule_id=f"cocci-flow:{template}",
         )
 
-    matches: list = []
-    for m in result.matches:
-        matches.append(m.to_dict() if hasattr(m, "to_dict") else {"raw": str(m)})
+    matches: list = [m.to_dict() if hasattr(m, "to_dict") else {"raw": str(m)} for m in result.matches]
 
     if line_start is not None and line_end is not None:
         matches = [

@@ -121,7 +121,7 @@ def prune_pool(
 
     removed: list[Path] = []
     kept = 0
-    for bucket, entries in buckets.items():
+    for entries in buckets.values():
         # Most recent first; keep the head of the list, remove the tail.
         entries.sort(key=lambda triple: triple[2], reverse=True)
         kept += min(len(entries), n_per_bucket)

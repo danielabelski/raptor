@@ -532,13 +532,9 @@ def _extract_rust_preconditions(
     assert_re = re.compile(r"(?:debug_)?assert!\s*\(\s*([^,)]+)")
     for match in assert_re.finditer(body):
         expr = match.group(1)
-        for param in params:
-            if re.search(rf"\b{re.escape(param)}\b", expr):
-                preconditions.append((param, f"asserted: {expr.strip()[:60]}"))
+        preconditions.extend((param, f"asserted: {expr.strip()[:60]}") for param in params if re.search(rf"\b{re.escape(param)}\b", expr))
     # Option/Result checks
-    for param in params:
-        if re.search(rf"\b{re.escape(param)}\b\s*\.\s*(?:is_some|is_none|is_ok|is_err)\s*\(", body):
-            preconditions.append((param, "option/result checked"))
+    preconditions.extend((param, "option/result checked") for param in params if re.search(rf"\b{re.escape(param)}\b\s*\.\s*(?:is_some|is_none|is_ok|is_err)\s*\(", body))
     return preconditions
 
 

@@ -1270,11 +1270,8 @@ def _run_maintainer_review(client, supply_chain_findings, canonical, http, optio
         return
 
     # When --review-maintainers, review all direct deps.
-    deps_to_review = []
-    for dep in canonical:
-        if dep.direct and (options.review_maintainers
-                            or dep.key() in flagged_keys):
-            deps_to_review.append(dep)
+    deps_to_review = [dep for dep in canonical if dep.direct and (options.review_maintainers
+                            or dep.key() in flagged_keys)]
 
     if not deps_to_review:
         return
@@ -1631,13 +1628,9 @@ def _run_triage(
         _supply_chain_finding_to_row,
         _vuln_finding_to_row,
     )
-    rows = []
-    for f in vuln_findings:
-        rows.append(_vuln_finding_to_row(f))
-    for f in hygiene_findings:
-        rows.append(_hygiene_finding_to_row(f))
-    for f in supply_chain_findings:
-        rows.append(_supply_chain_finding_to_row(f))
+    rows = [_vuln_finding_to_row(f) for f in vuln_findings]
+    rows.extend(_hygiene_finding_to_row(f) for f in hygiene_findings)
+    rows.extend(_supply_chain_finding_to_row(f) for f in supply_chain_findings)
 
     rows = [r for r in rows if isinstance(r, dict)]
     sca_rows = [r for r in rows if r.get("vuln_type", "").startswith("sca:")]

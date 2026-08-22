@@ -519,11 +519,8 @@ def enrich_from_context_map(model: ThreatModel, context_map: dict[str, Any]) -> 
 
 def derive_focus_areas(entry_points: Iterable[str], sinks: Iterable[str]) -> list[str]:
     """Return stable focus areas from mapped entries/sinks."""
-    out: list[str] = []
-    for value in list(entry_points)[:8]:
-        out.append(f"Entry point: {value}")
-    for value in list(sinks)[:8]:
-        out.append(f"Sensitive sink: {value}")
+    out: list[str] = [f"Entry point: {value}" for value in list(entry_points)[:8]]
+    out.extend(f"Sensitive sink: {value}" for value in list(sinks)[:8])
     return _dedup(out)
 
 
@@ -668,40 +665,31 @@ def render_report(
         "",
     ])
     if top_threats:
-        for threat in top_threats:
-            lines.append(
-                "- {id} [{status}] risk={risk} severity={severity}: {title}".format(
+        lines.extend("- {id} [{status}] risk={risk} severity={severity}: {title}".format(
                     id=_safe_for_render(threat.get("id", "?")),
                     status=_safe_for_render(threat.get("status", "needs_evidence")),
                     risk=_safe_for_render(threat.get("risk_score", 0)),
                     severity=_safe_for_render(threat.get("severity", "unknown")),
                     title=_safe_for_render(threat.get("title", "Untitled threat")),
-                )
-            )
+                ) for threat in top_threats)
     else:
         lines.append("- No threats recorded yet.")
     lines.extend(["", "## Evidence Loop", ""])
     if model.evidence:
-        for ev in model.evidence[:20]:
-            lines.append(
-                "- {id} [{oracle}/{status}] {summary}".format(
+        lines.extend("- {id} [{oracle}/{status}] {summary}".format(
                     id=_safe_for_render(ev.get("id", "?")),
                     oracle=_safe_for_render(ev.get("oracle", "?")),
                     status=_safe_for_render(ev.get("status", "?")),
                     summary=_safe_for_render(ev.get("summary", "no summary")),
-                )
-            )
+                ) for ev in model.evidence[:20])
     else:
         lines.append("- No oracle evidence linked yet.")
     lines.extend(["", "## Quality Gates", ""])
     if lint:
-        for issue in lint:
-            lines.append(
-                "- {severity}: {message}".format(
+        lines.extend("- {severity}: {message}".format(
                     severity=_safe_for_render(str(issue.get("severity", "info")).title()),
                     message=_safe_for_render(issue.get("message", "")),
-                )
-            )
+                ) for issue in lint)
     else:
         lines.append("- No quality issues found.")
     if drift:
@@ -710,8 +698,7 @@ def render_report(
                     "missing_trust_boundaries", "new_unchecked_flows"):
             values = drift.get(key) or []
             lines.append(f"- {key}: {len(values)}")
-            for value in values[:8]:
-                lines.append(f"  - {_safe_for_render(value)}")
+            lines.extend(f"  - {_safe_for_render(value)}" for value in values[:8])
     lines.extend(["", "## Mermaid", "", "```mermaid", "flowchart LR"])
     for flow in model.data_flows[:25]:
         src = _mermaid_id(str(flow.get("source") or flow.get("id") or "source"))
@@ -753,16 +740,12 @@ def prompt_context(model: ThreatModel, *, max_items: int = 8) -> str:
                 return 0
 
         by_risk = sorted(model.threats, key=_risk_key, reverse=True)
-        rendered = []
-        for threat in by_risk[:max_items]:
-            rendered.append(
-                "{id} {status} risk={risk}: {title}".format(
+        rendered = ["{id} {status} risk={risk}: {title}".format(
                     id=threat.get("id", "?"),
                     status=threat.get("status", "needs_evidence"),
                     risk=threat.get("risk_score", 0),
                     title=threat.get("title", "Untitled threat"),
-                )
-            )
+                ) for threat in by_risk[:max_items]]
         lines.append(f"- Threat ledger: {escape_nonprintable('; '.join(rendered))}")
     if model.controls:
         rendered = [

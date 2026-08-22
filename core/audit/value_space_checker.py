@@ -186,10 +186,7 @@ class _LiteralExtractor(ast.NodeVisitor):
                 fmt = ""
                 if (value.format_spec
                         and isinstance(value.format_spec, ast.JoinedStr)):
-                    fmt_parts = []
-                    for fv in value.format_spec.values:
-                        if isinstance(fv, ast.Constant):
-                            fmt_parts.append(str(fv.value))
+                    fmt_parts = [str(fv.value) for fv in value.format_spec.values if isinstance(fv, ast.Constant)]
                     fmt = "".join(fmt_parts)
                 parts.append(f"{{{fmt}}}" if fmt else "{}")
         template = "".join(parts)
@@ -370,9 +367,7 @@ def _link_by_call_graph(
                         links.append((callee_fl, caller_fl, "high"))
                     continue
                 # Cross-file: find by function name alone (medium confidence)
-                for candidate in by_func_name.get(callee_name, []):
-                    if candidate.produced and candidate is not caller_fl:
-                        links.append((candidate, caller_fl, "medium"))
+                links.extend((candidate, caller_fl, "medium") for candidate in by_func_name.get(callee_name, []) if candidate.produced and candidate is not caller_fl)
     return links
 
 
@@ -395,7 +390,7 @@ def _link_by_field_heuristic(
         pkg = parts[0] if len(parts) > 1 else ""
         by_package.setdefault(pkg, []).extend(funcs)
 
-    for _pkg, funcs in by_package.items():
+    for funcs in by_package.values():
         producers: dict[str, list[_FunctionLiterals]] = {}
         consumers: dict[str, list[_FunctionLiterals]] = {}
 
@@ -426,7 +421,7 @@ def _link_intra_module(
     """
     links: list[tuple[_FunctionLiterals, _FunctionLiterals, str]] = []
 
-    for _file_path, funcs in all_funcs.items():
+    for funcs in all_funcs.values():
         producers = [fl for fl in funcs if fl.produced and not fl.consumed]
         consumers = [fl for fl in funcs if fl.consumed and not fl.produced]
 

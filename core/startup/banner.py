@@ -111,8 +111,7 @@ def format_banner(
     )
     if ordered:
         lines.append(f"  warn: {ordered[0]}")
-        for w in ordered[1:]:
-            lines.append(f"        {w}")
+        lines.extend(f"        {w}" for w in ordered[1:])
         lines.append("")
 
     # Active project

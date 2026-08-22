@@ -486,17 +486,11 @@ def write_findings_json(
     evaluate specific finding classes only — but they are stable,
     machine-readable markers a pipeline can gate on explicitly.
     """
-    rows: list[dict[str, Any]] = []
-    for f in vuln_findings:
-        rows.append(_vuln_finding_to_row(f))
-    for f in hygiene_findings:
-        rows.append(_hygiene_finding_to_row(f))
-    for f in supply_chain_findings:
-        rows.append(_supply_chain_finding_to_row(f))
-    for f in license_findings:
-        rows.append(_license_finding_to_row(f))
-    for h in scan_health:
-        rows.append(_scan_health_to_row(h))
+    rows: list[dict[str, Any]] = [_vuln_finding_to_row(f) for f in vuln_findings]
+    rows.extend(_hygiene_finding_to_row(f) for f in hygiene_findings)
+    rows.extend(_supply_chain_finding_to_row(f) for f in supply_chain_findings)
+    rows.extend(_license_finding_to_row(f) for f in license_findings)
+    rows.extend(_scan_health_to_row(h) for h in scan_health)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")

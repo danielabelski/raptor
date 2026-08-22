@@ -295,10 +295,8 @@ class Project:
         at write time via ``set_trust``)."""
         trust: dict[str, str] = {}
         if isinstance(raw, dict):
-            for marker, ts in raw.items():
-                if (marker in VALID_TRUST_MARKERS
-                        and isinstance(ts, str) and ts.strip()):
-                    trust[marker] = ts
+            trust.update({marker: ts for marker, ts in raw.items() if marker in VALID_TRUST_MARKERS
+                        and isinstance(ts, str) and ts.strip()})
         return trust
 
     @staticmethod

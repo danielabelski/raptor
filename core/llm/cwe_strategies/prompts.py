@@ -71,8 +71,7 @@ def render_strategy(
     if include_questions and strategy.key_questions:
         parts.append("")
         parts.append("### Key questions")
-        for q in strategy.key_questions:
-            parts.append(f"- {q}")
+        parts.extend(f"- {q}" for q in strategy.key_questions)
 
     if strategy.prompt_addendum:
         parts.append("")

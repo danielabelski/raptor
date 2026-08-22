@@ -119,10 +119,7 @@ class OsvClient:
             if not isinstance(slot, dict):
                 out.append([])
                 continue
-            ids: list[str] = []
-            for v in (slot.get("vulns") or []):
-                if isinstance(v, dict) and isinstance(v.get("id"), str):
-                    ids.append(v["id"])
+            ids: list[str] = [v["id"] for v in slot.get("vulns") or [] if isinstance(v, dict) and isinstance(v.get("id"), str)]
             out.append(ids)
         return out
 

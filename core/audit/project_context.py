@@ -140,9 +140,7 @@ def load_project_context(out_dir: Path) -> ProjectContext:
             try:
                 with open(candidate, encoding="utf-8") as f:
                     data = json.load(f)
-                learnings = []
-                for item in data.get("learnings", []):
-                    learnings.append(Learning(
+                learnings = [Learning(
                         text=item.get("text", ""),
                         category=item.get("category", "note"),
                         source=item.get("source", "human"),
@@ -151,7 +149,7 @@ def load_project_context(out_dir: Path) -> ProjectContext:
                         file=item.get("file", ""),
                         function=item.get("function", ""),
                         strategy=item.get("strategy", ""),
-                    ))
+                    ) for item in data.get("learnings", [])]
                 return ProjectContext(
                     version=data.get("version", _SCHEMA_VERSION),
                     learnings=learnings,

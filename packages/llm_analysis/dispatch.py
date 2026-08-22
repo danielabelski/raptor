@@ -268,8 +268,7 @@ def dispatch_task(
     # Build work items: (model, item) pairs
     work = []
     for model in models:
-        for item in selected:
-            work.append((model, item))
+        work.extend((model, item) for item in selected)
 
     print(f"\n  {task.name}: {len(selected)} items"
           + (f" x {len(models)} models" if len(models) > 1 else "")

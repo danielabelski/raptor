@@ -157,8 +157,7 @@ def render_scan_coverage(out_dir: Path) -> str | None:
     first, *rest = rendered_lines
     indent = " " * len("Coverage: ")
     out_lines = [f"Coverage: {first}"]
-    for line in rest:
-        out_lines.append(f"{indent}{line}")
+    out_lines.extend(f"{indent}{line}" for line in rest)
     return "\n".join(out_lines)
 
 

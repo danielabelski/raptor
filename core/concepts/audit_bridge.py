@@ -596,8 +596,7 @@ def primers_from_domain_model(
             lines.append(concept["description"])
         lines.append("")
         lines.append("Check each invariant — a violation is a bug:")
-        for inv in inv_list:
-            lines.append(f"- {inv}")
+        lines.extend(f"- {inv}" for inv in inv_list)
         candidates.append((score, "\n".join(lines)))
 
     # --- Paired operations → check for unbalanced acquire/release ---

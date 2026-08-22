@@ -674,9 +674,7 @@ def _check_sequence_against_catalog(
 
         # Violation: a must_follow step appears BEFORE a must_precede step
         for fi in follow_positions:
-            for pi in precede_positions:
-                if fi < pi:
-                    violations.append(TransformOrderViolation(
+            violations.extend(TransformOrderViolation(
                         file=seq.file,
                         function=seq.function,
                         line=seq.steps[fi].line,
@@ -691,7 +689,7 @@ def _check_sequence_against_catalog(
                         ),
                         confidence="high",
                         catalog_rule=rule.name,
-                    ))
+                    ) for pi in precede_positions if fi < pi)
 
     return violations
 

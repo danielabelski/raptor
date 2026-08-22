@@ -151,12 +151,9 @@ def _check_copy_line(stripped: str) -> list[str]:
     # Flag ADD from remote URLs — prefer COPY + explicit download for
     # auditability and layer-cache control.
     if stripped.startswith("ADD "):
-        for src in parts[1:-1]:  # all but directive and last (dst)
-            if src.startswith(("http://", "https://", "ftp://")):
-                issues.append(
-                    f"ADD fetches a remote URL ({src}); prefer COPY + "
-                    "explicit download (curl/wget) for auditability"
-                )
+        # all but directive and last (dst)
+        issues.extend(f"ADD fetches a remote URL ({src}); prefer COPY + "
+                    "explicit download (curl/wget) for auditability" for src in parts[1:-1] if src.startswith(("http://", "https://", "ftp://")))
     return issues
 
 

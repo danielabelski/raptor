@@ -217,15 +217,10 @@ def _summary_section(
                 continue
             severity_counts[f.severity] += 1
 
-    rows = []
     # ``none`` last — it ranks below info (see _FILTER_SCRIPT ranks).
-    for sev in ("critical", "high", "medium", "low", "info", "none"):
-        if severity_counts.get(sev):
-            rows.append(
-                f"<tr><td><span class=\"sev sev-{sev}\">"
+    rows = [f"<tr><td><span class=\"sev sev-{sev}\">"
                 f"{escape(_SEV_LABEL[sev])}</span></td>"
-                f"<td>{severity_counts[sev]}</td></tr>"
-            )
+                f"<td>{severity_counts[sev]}</td></tr>" for sev in ("critical", "high", "medium", "low", "info", "none") if severity_counts.get(sev)]
     if not rows:
         rows.append("<tr><td>(none)</td><td>0</td></tr>")
 
@@ -279,8 +274,7 @@ def _parse_failures_section(failures: Sequence) -> str:
 
 def _vuln_section(findings: Sequence[VulnFinding]) -> str:
     parts = ["<section><h2>Vulnerable dependencies</h2>"]
-    for f in findings:
-        parts.append(_vuln_card(f))
+    parts.extend(_vuln_card(f) for f in findings)
     parts.append("</section>")
     return "".join(parts)
 

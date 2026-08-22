@@ -459,8 +459,7 @@ class OsvClient:
         for key, dep in unique_keys.items():
             if dep_to_ids.get(key):
                 continue
-            for candidate in _oss_fuzz_candidates(dep):
-                work.append((dep, candidate))
+            work.extend((dep, candidate) for candidate in _oss_fuzz_candidates(dep))
 
         if not work:
             return
@@ -665,21 +664,18 @@ def _cwe_ids_from_record(rec: OsvRecord) -> list[str]:
 def _affected_from_record(rec: OsvRecord) -> list[AffectedRange]:
     out: list[AffectedRange] = []
     for blk in rec.affected:
-        for r in blk.ranges:
-            out.append(AffectedRange(
+        out.extend(AffectedRange(
                 type=r.type,        # type: ignore[arg-type]
                 events=[dict(ev) for ev in r.events],
                 repo=r.repo,
-            ))
+            ) for r in blk.ranges)
     return out
 
 
 def _collect_fixed_versions(affected: list[AffectedRange]) -> list[str]:
     fixed: list[str] = []
     for r in affected:
-        for ev in r.events:
-            if "fixed" in ev:
-                fixed.append(ev["fixed"])
+        fixed.extend(ev["fixed"] for ev in r.events if "fixed" in ev)
     # De-duplicate while preserving order.
     seen: set[str] = set()
     deduped: list[str] = []

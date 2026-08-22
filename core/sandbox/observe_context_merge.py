@@ -154,9 +154,7 @@ def _format_external_reach(profile: ObserveProfile) -> list:
     shows new endpoints clearly. Order preserved from the profile
     (first-seen order from the tracer log).
     """
-    out = []
-    for t in profile.connect_targets:
-        out.append(f"{t.ip}:{t.port} ({t.family})")
+    out = [f"{t.ip}:{t.port} ({t.family})" for t in profile.connect_targets]
     return out
 
 

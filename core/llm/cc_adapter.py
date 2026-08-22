@@ -959,10 +959,7 @@ def parse_stream_json_lines(lines: list[str]) -> StreamJsonResult:
             # override for token totals where present.
             message = obj.get("message", {})
             content_blocks = message.get("content", [])
-            texts = []
-            for block in content_blocks:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    texts.append(block.get("text", ""))
+            texts = [block.get("text", "") for block in content_blocks if isinstance(block, dict) and block.get("type") == "text"]
             text = "\n".join(texts)
             if text:
                 result.content = (

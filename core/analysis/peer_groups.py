@@ -920,9 +920,7 @@ def _largest_compatible_subset(
 
     anchor = candidates[0]
     result = [anchor]
-    for c in candidates[1:]:
-        if _shared_decorator(anchor, c) or _signatures_compatible(anchor, c):
-            result.append(c)
+    result.extend(c for c in candidates[1:] if _shared_decorator(anchor, c) or _signatures_compatible(anchor, c))
 
     return result
 

@@ -63,10 +63,7 @@ def derive_constraints(results: list[HealthResult]) -> list[ServiceConstraint]:
 
     Returns empty list when no constraints apply (clean preflight).
     """
-    constraints: list[ServiceConstraint] = []
-    for r in results:
-        if r.name == "Docker Hub" and r.rate_limit == "rate-limited":
-            constraints.append(_DH_RATE_LIMITED)
+    constraints: list[ServiceConstraint] = [_DH_RATE_LIMITED for r in results if r.name == "Docker Hub" and r.rate_limit == "rate-limited"]
     return constraints
 
 

@@ -256,14 +256,11 @@ def _merge_framework_apis(
         elif isinstance(fw, dict):
             existing_fw.add((fw.get("name") or "").lower())
 
-    fresh_mechanical = []
-    for api in result.framework_apis[:MAX_FRAMEWORK_APIS]:
-        if api.name.lower() not in existing_fw:
-            fresh_mechanical.append({
+    fresh_mechanical = [{
                 "name": api.name,
                 "caller_count": api.caller_count,
                 "source": "mechanical",
-            })
+            } for api in result.framework_apis[:MAX_FRAMEWORK_APIS] if api.name.lower() not in existing_fw]
 
     # Replace ALL prior mechanical entries with the fresh set.
     # Keeps non-mechanical entries intact. Idempotent: running

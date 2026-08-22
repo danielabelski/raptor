@@ -325,10 +325,8 @@ def merge_runs(run_dirs: list[Path], output_dir: Path) -> dict[str, Any]:
     # or merged.sarif would silently omit dependency findings.
     sarif_paths: list[str] = []
     for run_dir in run_dirs:
-        for sarif_file in run_dir.glob("*.sarif"):
-            sarif_paths.append(str(sarif_file))
-        for sarif_file in (run_dir / "sca").glob("*.sarif"):
-            sarif_paths.append(str(sarif_file))
+        sarif_paths.extend(str(sarif_file) for sarif_file in run_dir.glob("*.sarif"))
+        sarif_paths.extend(str(sarif_file) for sarif_file in (run_dir / "sca").glob("*.sarif"))
 
     sarif_files_merged = len(sarif_paths)
     if sarif_paths:

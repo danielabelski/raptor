@@ -93,13 +93,8 @@ def _compile_matchers() -> list[tuple[str, str, re.Pattern]]:
                 continue
             if not isinstance(spec, dict):
                 continue
-            alts: list[str] = []
-            for prefix in spec.get("prefixes", []):
-                if isinstance(prefix, str) and _IDENT_RE.match(prefix):
-                    alts.append(re.escape(prefix) + r"\w*")
-            for name in spec.get("names", []):
-                if isinstance(name, str) and _IDENT_RE.match(name):
-                    alts.append(re.escape(name))
+            alts: list[str] = [re.escape(prefix) + r"\w*" for prefix in spec.get("prefixes", []) if isinstance(prefix, str) and _IDENT_RE.match(prefix)]
+            alts.extend(re.escape(name) for name in spec.get("names", []) if isinstance(name, str) and _IDENT_RE.match(name))
             if not alts:
                 continue
             matchers.append((api, kind, re.compile(
@@ -196,15 +191,14 @@ def enrich_with_crypto_inventory(
         spans = spans_by_file.get(fp)
         for lineno, line in enumerate(text.splitlines(), start=1):
             for api, kind, pattern in matchers:
-                for m in pattern.finditer(line):
-                    sites.append({
+                sites.extend({
                         "kind": kind,
                         "file": fp,
                         "line": lineno,
                         "function": _enclosing(spans, lineno),
                         "api": api,
                         "fn": m.group(1),
-                    })
+                    } for m in pattern.finditer(line))
 
     if sites:
         context_map["crypto_inventory"] = sites

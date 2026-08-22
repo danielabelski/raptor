@@ -78,12 +78,10 @@ class TargetInfo:
             out.append(f"Recommended fuzzer: {self.recommended_fuzzer}")
         if self.blockers:
             out.append("Blockers:")
-            for b in self.blockers:
-                out.append(f"  - {b}")
+            out.extend(f"  - {b}" for b in self.blockers)
         if self.hints:
             out.append("Hints:")
-            for h in self.hints:
-                out.append(f"  - {h}")
+            out.extend(f"  - {h}" for h in self.hints)
         return "\n".join(out)
 
 

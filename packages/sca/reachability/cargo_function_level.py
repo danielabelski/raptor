@@ -71,15 +71,11 @@ def _extract_qualified(advisory: Any, dep_name: str) -> list[str]:
                 continue
             path = imp.get("path") or dep_name
             symbols = imp.get("symbols") or []
-            for s in symbols:
-                if isinstance(s, str) and s and isinstance(path, str):
-                    out.append(f"{path}.{s}")
+            out.extend(f"{path}.{s}" for s in symbols if isinstance(s, str) and s and isinstance(path, str))
         for key in ("affected_symbols", "affected_functions"):
             v = source.get(key)
             if isinstance(v, list) and dep_name:
-                for s in v:
-                    if isinstance(s, str):
-                        out.append(f"{dep_name}.{s}")
+                out.extend(f"{dep_name}.{s}" for s in v if isinstance(s, str))
     return out
 
 

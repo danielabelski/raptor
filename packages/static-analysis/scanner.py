@@ -1911,10 +1911,7 @@ def run_expanded_semgrep_stage(
                     (pack_name, RaptorConfig.get_semgrep_config(pack_id)),
                 )
                 added_packs.add(pack_id)
-        for extra in (extra_configs or []):
-            configs.append(
-                (f"extra_{_sanitize_pack_name(Path(extra).name)}", extra),
-            )
+        configs.extend((f"extra_{_sanitize_pack_name(Path(extra).name)}", extra) for extra in extra_configs or [])
         configs = _drop_unreachable_registry_packs(configs)
 
         all_findings: list[dict] = []
@@ -2135,8 +2132,7 @@ def run_graduated_rules_stage(
             )
             failed += 1
             continue
-        for f in res.findings:
-            all_findings.append((rule_id, f.to_dict()))
+        all_findings.extend((rule_id, f.to_dict()) for f in res.findings)
 
     sarif_path = Path(out_dir) / "graduated.sarif"
     save_json(sarif_path, _graduated_findings_to_sarif(all_findings))

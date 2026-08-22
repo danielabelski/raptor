@@ -295,6 +295,5 @@ def format_intra_function_context(
         return None
 
     parts = ["[Intra-function sibling analysis]"]
-    for a in asymmetries:
-        parts.append(f"  - [{a.kind}] {a.description}")
+    parts.extend(f"  - [{a.kind}] {a.description}" for a in asymmetries)
     return "\n".join(parts)

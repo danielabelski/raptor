@@ -102,17 +102,13 @@ def parse(path: Path) -> list[Dependency]:
     # source_extra so operators see "from top-level image" vs
     # "from job test:image".
 
-    for ref in _extract_image(data, label="top-level"):
-        refs.append(ref)
-    for ref in _extract_services(data, label="top-level services"):
-        refs.append(ref)
+    refs.extend(_extract_image(data, label="top-level"))
+    refs.extend(_extract_services(data, label="top-level services"))
 
     default_block = data.get("default")
     if isinstance(default_block, dict):
-        for ref in _extract_image(default_block, label="default"):
-            refs.append(ref)
-        for ref in _extract_services(default_block, label="default services"):
-            refs.append(ref)
+        refs.extend(_extract_image(default_block, label="default"))
+        refs.extend(_extract_services(default_block, label="default services"))
 
     # Per-job sweep: skip reserved keys. A "job" is any other
     # top-level mapping whose value is itself a dict.
@@ -129,12 +125,10 @@ def parse(path: Path) -> list[Dependency]:
             pass
         if not isinstance(job, dict):
             continue
-        for ref in _extract_image(job, label=f"job {job_name}"):
-            refs.append(ref)
-        for ref in _extract_services(
+        refs.extend(_extract_image(job, label=f"job {job_name}"))
+        refs.extend(_extract_services(
             job, label=f"job {job_name} services",
-        ):
-            refs.append(ref)
+        ))
 
     # Dedup by (image_ref, source_context) so the same ref used in
     # multiple places emits one row per usage location — preserves

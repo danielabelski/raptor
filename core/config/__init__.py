@@ -958,10 +958,7 @@ class RaptorConfig:
         """
         allowlist = RaptorConfig.SAFE_ENV_ALLOWLIST
         prefixes = RaptorConfig.SAFE_ENV_PREFIXES
-        env = {}
-        for name, value in os.environ.items():
-            if name in allowlist or name.startswith(prefixes):
-                env[name] = value
+        env = {name: value for name, value in os.environ.items() if name in allowlist or name.startswith(prefixes)}
         # Belt + braces: strip anything dangerous that somehow made it
         # through (either allowlisted explicitly or matching a prefix).
         env = strip_env_vars(env, RaptorConfig.DANGEROUS_ENV_VARS)
@@ -1142,9 +1139,7 @@ class RaptorConfig:
             val = os.environ.get(var)
             if val:
                 env[var] = val
-        for name, val in os.environ.items():
-            if name.startswith(RaptorConfig.LLM_ROUTING_ENV_PREFIXES) and val:
-                env[name] = val
+        env.update({name: val for name, val in os.environ.items() if name.startswith(RaptorConfig.LLM_ROUTING_ENV_PREFIXES) and val})
         return env
 
     @staticmethod

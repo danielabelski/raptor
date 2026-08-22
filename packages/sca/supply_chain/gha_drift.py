@@ -90,8 +90,7 @@ def scan_target(
                 path, e,
             )
             continue
-        for finding in _scan_text(text, path, target, manifests_list):
-            out.append(finding)
+        out.extend(_scan_text(text, path, target, manifests_list))
     return out
 
 

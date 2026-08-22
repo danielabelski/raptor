@@ -626,8 +626,7 @@ def render_diffs(diffs: Sequence[StressDiff]) -> str:
             lines.append(prefix)
             continue
         lines.append(prefix + ":")
-        for issue in d.issues:
-            lines.append(f"             {issue}")
+        lines.extend(f"             {issue}" for issue in d.issues)
     return "\n".join(lines)
 
 

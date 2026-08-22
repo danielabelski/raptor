@@ -2047,8 +2047,7 @@ Examples:
             else:
                 logger.warning("--reanalyze: SARIF file missing: %s", candidate)
         if not prev_sarif:
-            for f in sorted(reanalyze_dir.glob("*.sarif")):
-                prev_sarif.append(str(f))
+            prev_sarif.extend(str(f) for f in sorted(reanalyze_dir.glob("*.sarif")))
         if not prev_sarif:
             parser.error(f"--reanalyze: no SARIF files found in {reanalyze_dir}")
         args.sarif = (args.sarif or []) + prev_sarif
@@ -2932,8 +2931,7 @@ Examples:
                 print(f"  - Findings: {total_findings}")
                 print(f"  - SARIF files: {len(sarif_files)}")
 
-                for sarif in sarif_files:
-                    all_sarif_files.append(Path(sarif))
+                all_sarif_files.extend(Path(sarif) for sarif in sarif_files)
 
     # Check if we have any findings from source-code scanners.
     # SCA may still contribute findings even when Semgrep/CodeQL found nothing,
@@ -4581,14 +4579,12 @@ def _build_aggregation_report_section(aggregation):
     actions = aggregation.get("recommended_next_actions") or []
     if isinstance(actions, list) and actions:
         lines.append("\n**Recommended Next Actions:**")
-        for action in actions[:10]:
-            lines.append(f"- {_text(action, max_chars=300)}")
+        lines.extend(f"- {_text(action, max_chars=300)}" for action in actions[:10])
 
     risk_notes = aggregation.get("risk_notes") or []
     if isinstance(risk_notes, list) and risk_notes:
         lines.append("\n**Risk Notes:**")
-        for note in risk_notes[:10]:
-            lines.append(f"- {_text(note, max_chars=300)}")
+        lines.extend(f"- {_text(note, max_chars=300)}" for note in risk_notes[:10])
 
     return ReportSection(
         title="Aggregate Synthesis",

@@ -446,12 +446,11 @@ def validate_structurally(
         guards: list[str] = []
         if lang and content:
             guards = _extract_branch_guards_from_content(content, line, lang)
-            for g in guards:
-                all_conditions.append({
+            all_conditions.extend({
                     "text": g,
                     "step_index": i,
                     "negated": False,
-                })
+                } for g in guards)
 
         call_link: bool | None = None
         has_indirection = False

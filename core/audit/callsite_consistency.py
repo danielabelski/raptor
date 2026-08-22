@@ -523,10 +523,7 @@ def _lhs_identifiers(lhs_node, src: bytes) -> list[str]:
         return []
     if lhs_node.type in ("identifier", "name", "field_identifier"):
         return [_node_text(lhs_node, src)]
-    names: list[str] = []
-    for n in _walk_descendants(lhs_node):
-        if n.type in ("identifier", "name", "field_identifier"):
-            names.append(_node_text(n, src))
+    names: list[str] = [_node_text(n, src) for n in _walk_descendants(lhs_node) if n.type in ("identifier", "name", "field_identifier")]
     return names
 
 
@@ -1103,8 +1100,7 @@ def _deviations_from_census(
         else:
             continue
 
-        for site in flagged:
-            deviations.append(CallSiteDeviation(
+        deviations.extend(CallSiteDeviation(
                 callee=callee,
                 file=site.file,
                 line=site.line,
@@ -1113,7 +1109,7 @@ def _deviations_from_census(
                 captured_count=len(captured),
                 discarded_count=len(deviant),
                 usage=site.usage,
-            ))
+            ) for site in flagged)
 
     return deviations
 

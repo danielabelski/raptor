@@ -415,8 +415,7 @@ def findings_summary(findings: list[dict[str, Any]]) -> str:
     lines = []
     lines.append("| " + " | ".join(FINDINGS_COLUMNS) + " |")
     lines.append("|" + "|".join("---" for _ in FINDINGS_COLUMNS) + "|")
-    for row in rows:
-        lines.append("| " + " | ".join(str(c) for c in row) + " |")
+    lines.extend("| " + " | ".join(str(c) for c in row) + " |" for row in rows)
     lines.append("")
     lines.append(findings_summary_line(counts, vuln_count))
 

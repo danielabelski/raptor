@@ -166,9 +166,7 @@ def _call_arg_names(
             continue
         if _chain_str(node.func) != callee_chain:
             continue
-        out: list[str | None] = []
-        for arg in node.args:
-            out.append(arg.id if isinstance(arg, ast.Name) else None)
+        out: list[str | None] = [arg.id if isinstance(arg, ast.Name) else None for arg in node.args]
         kw_out: list[tuple[str | None, str | None]] = []
         for kw in node.keywords:
             val = kw.value

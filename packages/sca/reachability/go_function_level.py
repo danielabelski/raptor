@@ -139,9 +139,7 @@ def _extract_qualified(advisory: Any, dep_name: str) -> list[str]:
                 continue
             v = source.get(key)
             if isinstance(v, list):
-                for s in v:
-                    if isinstance(s, str) and dep_name:
-                        out.append(f"{dep_name}.{s}")
+                out.extend(f"{dep_name}.{s}" for s in v if isinstance(s, str) and dep_name)
     return out
 
 

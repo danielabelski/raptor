@@ -118,9 +118,7 @@ def _extract_function_names(advisory: Any) -> list[str]:
             if not isinstance(imp, dict):
                 continue
             syms = imp.get("symbols") or []
-            for s in syms:
-                if isinstance(s, str):
-                    out.append(s)
+            out.extend(s for s in syms if isinstance(s, str))
     # Flat-list variants.
     for key in ("affected_symbols", "affected_functions"):
         for source in (es, ds):
@@ -128,9 +126,7 @@ def _extract_function_names(advisory: Any) -> list[str]:
                 continue
             v = source.get(key)
             if isinstance(v, list):
-                for s in v:
-                    if isinstance(s, str):
-                        out.append(s)
+                out.extend(s for s in v if isinstance(s, str))
     return out
 
 

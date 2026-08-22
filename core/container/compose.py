@@ -136,9 +136,7 @@ def _extract_container_ports(spec: Any) -> list[int]:
                     lo, hi = int(parts[0]), int(parts[1])
                 except ValueError:
                     lo = hi = -1
-                for port in range(lo, hi + 1):
-                    if 0 < port < 65536:
-                        out.append(port)
+                out.extend(port for port in range(lo, hi + 1) if 0 < port < 65536)
                 continue
             try:
                 target = int(tail)

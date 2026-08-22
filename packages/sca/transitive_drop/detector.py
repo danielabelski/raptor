@@ -574,14 +574,11 @@ def _dep_state_rubygems(
     if not isinstance(deps, dict):
         return None
     transitive_canon = transitive_name.lower()
-    extras: list[str] = []
     unconditional = False
     for d in deps.get("runtime") or []:
         if isinstance(d, dict) and (d.get("name") or "").lower() == transitive_canon:
             unconditional = True
-    for d in deps.get("development") or []:
-        if isinstance(d, dict) and (d.get("name") or "").lower() == transitive_canon:
-            extras.append("development")
+    extras: list[str] = ["development" for d in deps.get("development") or [] if isinstance(d, dict) and (d.get("name") or "").lower() == transitive_canon]
     return {"required": unconditional, "extras": extras}
 
 

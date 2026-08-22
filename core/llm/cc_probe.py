@@ -78,8 +78,7 @@ def _backend_signature(claude_bin: str) -> str:
         parts.append(f"{st.st_mtime_ns}:{st.st_size}")
     except OSError:
         parts.append("unstat-able")
-    for var in _SIGNATURE_ENV:
-        parts.append(f"{var}={os.environ.get(var, '')}")
+    parts.extend(f"{var}={os.environ.get(var, '')}" for var in _SIGNATURE_ENV)
     settings = Path.home() / ".claude" / "settings.json"
     try:
         parts.append(f"settings:{settings.stat().st_mtime_ns}")

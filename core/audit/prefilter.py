@@ -411,10 +411,7 @@ class PrefilterResult:
             "concrete scenario where the flagged pattern leads to a defect, "
             "classify as clean."
         )
-        for hit in self.hits:
-            lines.append(
-                f"- **{hit.rule_id}** (line {hit.line}): {hit.message}"
-            )
+        lines.extend(f"- **{hit.rule_id}** (line {hit.line}): {hit.message}" for hit in self.hits)
         return "\n".join(lines)
 
 

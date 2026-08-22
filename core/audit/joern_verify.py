@@ -479,9 +479,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def _sentinel_lines(raw: str) -> list[str]:
     """De-ANSI and strip REPL echo noise, keeping sentinel payloads."""
-    lines = []
-    for raw_line in (raw or "").splitlines():
-        lines.append(_ANSI_RE.sub("", raw_line).strip())
+    lines = [_ANSI_RE.sub("", raw_line).strip() for raw_line in (raw or "").splitlines()]
     return lines
 
 

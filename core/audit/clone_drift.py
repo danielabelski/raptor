@@ -276,18 +276,13 @@ def _bound_style(text: str) -> tuple[int, int]:
 def _divergences(a: _FnBody, b: _FnBody) -> list[tuple[str, str, _FnBody]]:
     """(kind, token, deviant body) triples — the deviant is the clone
     *lacking* the security-relevant token its twin carries."""
-    out: list[tuple[str, str, _FnBody]] = []
     guards_a, guards_b = _guard_calls(a.text), _guard_calls(b.text)
-    for token in sorted(guards_a - guards_b):
-        out.append(("guard", token, b))
-    for token in sorted(guards_b - guards_a):
-        out.append(("guard", token, a))
+    out: list[tuple[str, str, _FnBody]] = [("guard", token, b) for token in sorted(guards_a - guards_b)]
+    out.extend(("guard", token, a) for token in sorted(guards_b - guards_a))
     sec_a = _security_calls(a.text) - guards_a
     sec_b = _security_calls(b.text) - guards_b
-    for token in sorted(sec_a - sec_b):
-        out.append(("call", token, b))
-    for token in sorted(sec_b - sec_a):
-        out.append(("call", token, a))
+    out.extend(("call", token, b) for token in sorted(sec_a - sec_b))
+    out.extend(("call", token, a) for token in sorted(sec_b - sec_a))
     strict_a, incl_a = _bound_style(a.text)
     strict_b, incl_b = _bound_style(b.text)
     if strict_a + incl_a and strict_b + incl_b \

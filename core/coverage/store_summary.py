@@ -371,8 +371,7 @@ def format_file_level_view(view: dict[str, Any], max_files: int = 20) -> str:
         ver = ", ".join(info["versions"]) or "?"
         rules = f"  (rules: {', '.join(info['rules'])})" if info["rules"] else ""
         lines.append(f"  {tool} {ver}: {len(info['files'])} file(s) examined{rules}")
-        for f in info["files"][:max_files]:
-            lines.append(f"    {f}")
+        lines.extend(f"    {f}" for f in info["files"][:max_files])
         if len(info["files"]) > max_files:
             lines.append(f"    … (+{len(info['files']) - max_files} more)")
     return "\n".join(lines)
@@ -515,14 +514,12 @@ def format_store_view(view: dict[str, Any], max_gap: int = 15) -> str:
         shown = ftl[:max_gap]
         lines.append(f"  Found-then-lost — detail discarded, re-examine "
                      f"(first {len(shown)} of {len(ftl)}):")
-        for g in shown:
-            lines.append(f"    {g['file']}:{g['function']} @ {g['line']}")
+        lines.extend(f"    {g['file']}:{g['function']} @ {g['line']}" for g in shown)
 
     gap = view["llm_gap_functions"]
     if gap:
         shown = gap[:max_gap]
         lines.append(f"  LLM-review gap (first {len(shown)} of {len(gap)}):")
-        for g in shown:
-            lines.append(f"    {g['file']}:{g['function']} @ {g['line']}")
+        lines.extend(f"    {g['file']}:{g['function']} @ {g['line']}" for g in shown)
 
     return "\n".join(lines)

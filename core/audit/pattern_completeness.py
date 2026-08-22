@@ -205,8 +205,7 @@ def _detect_extension_synonym_gaps(
                 and f'"{s}"' not in source_lower
                 and f"'{s}'" not in source_lower
             ]
-            for miss in missing:
-                gaps.append(PatternGap(
+            gaps.extend(PatternGap(
                     file=filename,
                     function=_find_enclosing_function(lines, line_idx),
                     line=line_no,
@@ -214,7 +213,7 @@ def _detect_extension_synonym_gaps(
                     gap_type="missing_synonym",
                     suggestion=f"also match *{miss}",
                     confidence="high",
-                ))
+                ) for miss in missing)
 
         # Check endswith patterns.
         for m in _ENDSWITH_RE.finditer(line):
@@ -227,8 +226,7 @@ def _detect_extension_synonym_gaps(
                 if f'"{s}"' not in source_lower
                 and f"'{s}'" not in source_lower
             ]
-            for miss in missing:
-                gaps.append(PatternGap(
+            gaps.extend(PatternGap(
                     file=filename,
                     function=_find_enclosing_function(lines, line_idx),
                     line=line_no,
@@ -236,7 +234,7 @@ def _detect_extension_synonym_gaps(
                     gap_type="missing_synonym",
                     suggestion=f'also check endswith("{miss}")',
                     confidence="high",
-                ))
+                ) for miss in missing)
 
     return gaps
 
@@ -252,8 +250,7 @@ def _detect_sibling_prefix_gaps(
     # Collect all startswith options in this file.
     prefix_locations: list[tuple[str, int, str]] = []  # (option, line_no, match_text)
     for line_idx, line in enumerate(lines):
-        for m in _STARTSWITH_RE.finditer(line):
-            prefix_locations.append((m.group(1), line_idx + 1, m.group(0)))
+        prefix_locations.extend((m.group(1), line_idx + 1, m.group(0)) for m in _STARTSWITH_RE.finditer(line))
 
     all_prefixes = {opt for opt, _, _ in prefix_locations}
 

@@ -84,10 +84,7 @@ def _load_flow_trace_pairs(out_dir: Path) -> set[tuple[str, str]]:
         try:
             ft = json.loads(ft_path.read_text(encoding="utf-8"))
             hops = ft.get("hops", [])[:50]
-            keys = []
-            for hop in hops:
-                if isinstance(hop, dict) and hop.get("file") and hop.get("function"):
-                    keys.append(f"{hop['file']}:{hop['function']}")
+            keys = [f"{hop['file']}:{hop['function']}" for hop in hops if isinstance(hop, dict) and hop.get("file") and hop.get("function")]
             for i, a in enumerate(keys):
                 for b in keys[i + 1:]:
                     pair = tuple(sorted([a, b]))

@@ -790,11 +790,8 @@ def render_violations(violations: Iterable[Violation]) -> str:
     lines: list[str] = []
     for file in sorted(by_file):
         lines.append(f"\n  {file}:")
-        for v in sorted(by_file[file], key=lambda v: v.line):
-            lines.append(
-                f"    L{v.line:<5} attr={v.attr!r:<20} "
-                f"in {v.func_name}(): {v.expr_text}"
-            )
+        lines.extend(f"    L{v.line:<5} attr={v.attr!r:<20} "
+                f"in {v.func_name}(): {v.expr_text}" for v in sorted(by_file[file], key=lambda v: v.line))
     return "\n".join(lines)
 
 

@@ -443,12 +443,9 @@ def _render_pr_comment(changes: list[UpgradeChange]) -> str:
         out.append("<details>")
         out.append("<summary>Skipped (with reason)</summary>")
         out.append("")
-        for c in skipped:
-            out.append(
-                f"- `{c.ecosystem}:{c.name}` "
+        out.extend(f"- `{c.ecosystem}:{c.name}` "
                 f"({c.old_version} → {c.new_version}): "
-                f"{c.skipped_reason}"
-            )
+                f"{c.skipped_reason}" for c in skipped)
         out.append("</details>")
     return "\n".join(out) + "\n"
 
@@ -786,8 +783,7 @@ def _materialise_changes(
         try:
             original = manifest.read_text(encoding="utf-8")
         except OSError as e:
-            for plan in plan_list:
-                out.append(_skip(plan, f"cannot read manifest: {e}"))
+            out.extend(_skip(plan, f"cannot read manifest: {e}") for plan in plan_list)
             continue
 
         text = original
@@ -2140,18 +2136,14 @@ def _render_changes_markdown(
                     f"**{c.ecosystem}:{c.name}** "
                     f"({c.old_version} → {c.new_version})"
                 )
-                for r in rep.risks:
-                    parts.append(f"- _{r.severity}_ — {r.detail}")
+                parts.extend(f"- _{r.severity}_ — {r.detail}" for r in rep.risks)
                 parts.append("")
     if skipped:
         parts.append("## Skipped")
         parts.append("")
-        for c in skipped:
-            parts.append(
-                f"- **{c.ecosystem}:{c.name}** "
+        parts.extend(f"- **{c.ecosystem}:{c.name}** "
                 f"({c.old_version} → {c.new_version}, `{c.manifest}`): "
-                f"{c.skipped_reason}"
-            )
+                f"{c.skipped_reason}" for c in skipped)
         parts.append("")
     return "\n".join(parts)
 

@@ -225,15 +225,14 @@ def analyze_version_diff_sinks(
                         guard_categories=categories,
                     ))
             elif old_count > 0 and new_count == 0:
-                for sg in old_by_api[api]:
-                    removed.append(SinkChange(
+                removed.extend(SinkChange(
                         file_path=fp,
                         sink_api=api,
                         line=sg.sink_line,
                         change_type="removed",
                         guard_count_old=sg.guard_count,
                         was_unconditional=sg.unconditional,
-                    ))
+                    ) for sg in old_by_api[api])
             elif old_count > 0 and new_count > 0:
                 _detect_guard_changes(
                     fp, api,

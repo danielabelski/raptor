@@ -560,14 +560,13 @@ def _materialise_pin_changes(
         try:
             original = read_from.read_text(encoding="utf-8")
         except OSError as e:
-            for plan in plan_list:
-                out.append(UpgradeChange(
+            out.extend(UpgradeChange(
                     ecosystem=plan.ecosystem, name=plan.name,
                     old_version=plan.installed, new_version=plan.target,
                     manifest=plan.manifest,
                     advisory_ids=tuple(plan.advisory_ids),
                     skipped_reason=f"cannot read manifest: {e}",
-                ))
+                ) for plan in plan_list)
             continue
 
         text = original
@@ -893,11 +892,8 @@ def _render_optimise_markdown(changes: list[UpgradeChange]) -> str:
         parts.append("")
         parts.append("| Ecosystem | Name | Old | New | Advisories |")
         parts.append("|---|---|---|---|---|")
-        for c in vuln_applied:
-            parts.append(
-                f"| {c.ecosystem} | {c.name} | {c.old_version} | "
-                f"{c.new_version} | {', '.join(c.advisory_ids)} |"
-            )
+        parts.extend(f"| {c.ecosystem} | {c.name} | {c.old_version} | "
+                f"{c.new_version} | {', '.join(c.advisory_ids)} |" for c in vuln_applied)
         parts.append("")
 
     if pin_applied:
@@ -905,22 +901,16 @@ def _render_optimise_markdown(changes: list[UpgradeChange]) -> str:
         parts.append("")
         parts.append("| Ecosystem | Name | Pinned To | Manifest |")
         parts.append("|---|---|---|---|")
-        for c in pin_applied:
-            parts.append(
-                f"| {c.ecosystem} | {c.name} | {c.new_version} | "
-                f"`{c.manifest}` |"
-            )
+        parts.extend(f"| {c.ecosystem} | {c.name} | {c.new_version} | "
+                f"`{c.manifest}` |" for c in pin_applied)
         parts.append("")
 
     if skipped:
         parts.append("## Skipped")
         parts.append("")
-        for c in skipped:
-            parts.append(
-                f"- **{c.ecosystem}:{c.name}** "
+        parts.extend(f"- **{c.ecosystem}:{c.name}** "
                 f"({c.old_version} → {c.new_version}, `{c.manifest}`): "
-                f"{c.skipped_reason}"
-            )
+                f"{c.skipped_reason}" for c in skipped)
         parts.append("")
 
     return "\n".join(parts)

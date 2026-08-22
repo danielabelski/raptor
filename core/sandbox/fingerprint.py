@@ -359,12 +359,9 @@ def build_persona(tmpdir: Path, cpu_count: int) -> Persona:
         f"cpu  {user_jiffies} 0 {system_jiffies} {idle_jiffies} "
         f"0 0 0 0 0 0\n"
     ]
-    for i in range(cpu_count):
-        stat_lines.append(
-            f"cpu{i} {user_jiffies // cpu_count} 0 "
+    stat_lines.extend(f"cpu{i} {user_jiffies // cpu_count} 0 "
             f"{system_jiffies // cpu_count} "
-            f"{idle_jiffies // cpu_count} 0 0 0 0 0 0\n"
-        )
+            f"{idle_jiffies // cpu_count} 0 0 0 0 0 0\n" for i in range(cpu_count))
     stat_lines.append(
         f"intr 0\nctxt 0\nbtime {btime}\n"
         f"processes {fake_processes}\nprocs_running 1\n"

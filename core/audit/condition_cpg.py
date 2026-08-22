@@ -570,9 +570,7 @@ def assess_exposure_context(
                 reaching_eps.append(ep)
     else:
         # Heuristic: same file = likely reachable
-        for ep in entry_points:
-            if ep.get("file") == sink_guard.sink_file:
-                reaching_eps.append(ep)
+        reaching_eps.extend(ep for ep in entry_points if ep.get("file") == sink_guard.sink_file)
 
     if not reaching_eps:
         return None
@@ -774,14 +772,13 @@ def _fallback_interprocedural(
                 )
                 if guards and guards[0].guards:
                     guarded += 1
-                    for g in guards[0].guards:
-                        caller_guards.append(CallerGuard(
+                    caller_guards.extend(CallerGuard(
                             caller_file=fp,
                             caller_function="<detected>",
                             caller_line=i,
                             guard_text=g.text,
                             guard_category=g.category,
-                        ))
+                        ) for g in guards[0].guards)
                 else:
                     unguarded += 1
 

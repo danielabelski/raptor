@@ -107,9 +107,7 @@ def run_stage(
     fails or the response doesn't validate after re-prompt.
     """
     # 1. Preflight — aggregate across all untrusted blocks.
-    pf_results: list[PreflightResult] = []
-    for block in untrusted_blocks:
-        pf_results.append(preflight(block.content))
+    pf_results: list[PreflightResult] = [preflight(block.content) for block in untrusted_blocks]
     any_hit = any(pf.has_injection_indicators for pf in pf_results)
     haircut = 0.5 if any_hit else 1.0
 

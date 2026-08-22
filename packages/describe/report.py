@@ -362,8 +362,7 @@ def format_text(report: DescribeReport) -> str:
         lines.append("")
         lines.append("Recommended next (based on signals):")
         cmd_w = max(len(r.command) for r in recs)
-        for r in recs:
-            lines.append(f"  {r.command:<{cmd_w}}  — {r.reason}")
+        lines.extend(f"  {r.command:<{cmd_w}}  — {r.reason}" for r in recs)
 
     # Tool applicability — target-level signals only. Host-level
     # checks (binary presence, LLM keys, env) live in /doctor.

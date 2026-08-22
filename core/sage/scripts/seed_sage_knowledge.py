@@ -83,9 +83,7 @@ def extract_primitives() -> list[dict]:
         })
 
     # Also extract mitigation IDs
-    mitigations = []
-    for mid in MitigationID:
-        mitigations.append(f"{mid.name}: {mid.value}")
+    mitigations = [f"{mid.name}: {mid.value}" for mid in MitigationID]
     mitigation_content = (
         "RAPTOR mitigation identifiers for exploit feasibility analysis: "
         + "; ".join(mitigations)

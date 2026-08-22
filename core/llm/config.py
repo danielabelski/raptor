@@ -1193,15 +1193,14 @@ def _get_default_fallback_models() -> list['ModelConfig']:
     ollama_models = _get_available_ollama_models()
     if ollama_models:
         ollama_base = _validate_ollama_url(RaptorConfig.OLLAMA_HOST)
-        for model in ollama_models[:3]:
-            fallbacks.append(ModelConfig(
+        fallbacks.extend(ModelConfig(
                 provider="ollama",
                 model_name=model,
                 api_base=f"{ollama_base}/v1",
                 max_tokens=4096,
                 temperature=0.7,
                 cost_per_1k_tokens=0.0,
-            ))
+            ) for model in ollama_models[:3])
 
     return fallbacks
 

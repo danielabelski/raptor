@@ -77,13 +77,11 @@ class CampaignPlan:
         if self.blockers:
             lines.append("")
             lines.append("Blockers:")
-            for b in self.blockers:
-                lines.append(f"  - {b}")
+            lines.extend(f"  - {b}" for b in self.blockers)
         if self.hints:
             lines.append("")
             lines.append("Hints:")
-            for h in self.hints:
-                lines.append(f"  - {h}")
+            lines.extend(f"  - {h}" for h in self.hints)
         lines.append("")
         lines.append(f"Can run: {'Yes' if self.can_run else 'No'}")
         lines.append("=" * 70)

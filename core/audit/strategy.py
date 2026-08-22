@@ -790,8 +790,5 @@ STRATEGY_PRIMERS: dict[str, str] = {
 
 def primers_for_strategies(strategies: frozenset[str]) -> list[str]:
     """Return primer texts for the given strategy set."""
-    result: list[str] = []
-    for strategy in sorted(strategies):
-        if strategy in STRATEGY_PRIMERS:
-            result.append(STRATEGY_PRIMERS[strategy])
+    result: list[str] = [STRATEGY_PRIMERS[strategy] for strategy in sorted(strategies) if strategy in STRATEGY_PRIMERS]
     return result

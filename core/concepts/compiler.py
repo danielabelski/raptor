@@ -246,12 +246,11 @@ def build_invariant_prompt(
             kind="invariant-evidence",
             origin=inv.id,
         ))
-    for snip in (source_snippets or [])[:3]:
-        blocks.append(UntrustedBlock(
+    blocks.extend(UntrustedBlock(
             content=snip[:4096].rstrip(),
             kind="violation-source",
             origin=inv.id,
-        ))
+        ) for snip in (source_snippets or [])[:3])
     if retry_feedback:
         blocks.append(UntrustedBlock(
             content=retry_feedback,

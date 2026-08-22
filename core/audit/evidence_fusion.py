@@ -202,8 +202,7 @@ def format_fused_evidence(fused: list[FusedEvidence]) -> str:
         return ""
 
     lines = ["### Pre-review evidence (fused)"]
-    for item in fused:
-        lines.append(item.to_prompt_section())
+    lines.extend(item.to_prompt_section() for item in fused)
     return "\n".join(lines)
 
 

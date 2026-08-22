@@ -661,8 +661,7 @@ def fetch_image_sbom(
         layers_scanned += 1
         # Later layers override earlier — direct overwrite mirrors
         # overlay-fs "later wins" semantics.
-        for path, content in files.items():
-            layer_files[path] = content
+        layer_files.update({path: content for path, content in files.items()})
 
     packages = tuple(packages_from_layer_files(layer_files))
     sbom = ImageSbom(
@@ -1056,13 +1055,12 @@ def find_all_image_refs(target: Path) -> list[ImageRefSource]:
         text = _read_source_bounded(dockerfile)
         if text is None:
             continue
-        for entry in extract_from_lines(text):
-            out.append(ImageRefSource(
+        out.extend(ImageRefSource(
                 image=entry.image,
                 declared_in=dockerfile,
                 source_kind="dockerfile_from",
                 stage_name=entry.stage_name,
-            ))
+            ) for entry in extract_from_lines(text))
     out.extend(find_compose_image_refs(target))
     out.extend(find_gitlab_ci_image_refs(target))
     out.extend(find_kubernetes_image_refs(target))
@@ -1141,8 +1139,7 @@ def scan_image_sources(
             max_workers=max_workers,
             thread_name_prefix="sca-oci-sbom",
         ) as pool:
-            for image, sbom in pool.map(_fetch_one, unique_images):
-                seen_images[image] = sbom
+            seen_images.update({image: sbom for image, sbom in pool.map(_fetch_one, unique_images)})
 
     for ref in refs:
         sbom = seen_images.get(ref.image)

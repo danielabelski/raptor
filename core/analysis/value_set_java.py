@@ -125,8 +125,7 @@ class ArrayTableIndex:
                             n, parent, grandparent,
                             declarator_name_spans):
                         self._refused.add(name)
-            for c in n.children:
-                stack2.append((c, n, parent))
+            stack2.extend((c, n, parent) for c in n.children)
         self.ok = True
 
     @staticmethod

@@ -66,12 +66,10 @@ class ToolCapability:
             lines.append(f"Languages: {', '.join(self.languages)}")
         if self.good_for:
             lines.append("Good for:")
-            for item in self.good_for:
-                lines.append(f"  - {item}")
+            lines.extend(f"  - {item}" for item in self.good_for)
         if self.bad_for:
             lines.append("Not for:")
-            for item in self.bad_for:
-                lines.append(f"  - {item}")
+            lines.extend(f"  - {item}" for item in self.bad_for)
         if self.syntax_example:
             lines.append("Example:")
             lines.append("```")

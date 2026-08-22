@@ -893,9 +893,7 @@ class _JsCallGraph:
                         if hc.type in base_node_types:
                             bases.append(hc.text.decode())
                         elif hc.type in ("extends_clause", "implements_clause"):
-                            for gc in hc.children:
-                                if gc.type in base_node_types:
-                                    bases.append(gc.text.decode())
+                            bases.extend(gc.text.decode() for gc in hc.children if gc.type in base_node_types)
                 cdef = ClassDef(
                     name=name_node.text.decode(),
                     line=node.start_point[0] + 1,
@@ -1081,9 +1079,7 @@ class _JsCallGraph:
         body = None
         for c in cls_node.children:
             if c.type == self._CLASS_HERITAGE:
-                for hc in c.children:
-                    if hc.type == self._IDENT_NODE:
-                        bases.append(hc.text.decode())
+                bases.extend(hc.text.decode() for hc in c.children if hc.type == self._IDENT_NODE)
             elif c.type == self._CLASS_BODY:
                 body = c
         methods: list[tuple[str, int]] = []
@@ -2637,9 +2633,7 @@ class _RustCallGraph:
                     "trait_bounds",
                 ))
                 if bounds is not None:
-                    for sub in bounds.children:
-                        if sub.type == self._TYPE_IDENT:
-                            bases.append(sub.text.decode())
+                    bases.extend(sub.text.decode() for sub in bounds.children if sub.type == self._TYPE_IDENT)
             if name_node is not None:
                 cdef = ClassDef(
                     name=name_node.text.decode(),
@@ -4167,10 +4161,7 @@ class _PhpCallGraph:
         if node.type == self._NAME:
             return [node.text.decode()]
         if node.type == self._MEMBER_ACCESS:
-            parts: list[str] = []
-            for c in node.children:
-                if c.is_named:
-                    parts.append(self._object_chain(c) or [])
+            parts: list[str] = [self._object_chain(c) or [] for c in node.children if c.is_named]
             flat: list[str] = []
             for p in parts:
                 flat.extend(p)
@@ -4789,11 +4780,7 @@ class _CppCallGraph(_CCallGraph):
                 parts.append(c.text.decode("utf-8", errors="replace"))
             elif c.type == "nested_namespace_specifier":
                 # ``a::b`` — multiple namespace_identifier children.
-                for sub in c.children:
-                    if sub.type == "namespace_identifier":
-                        parts.append(
-                            sub.text.decode("utf-8", errors="replace"),
-                        )
+                parts.extend(sub.text.decode("utf-8", errors="replace") for sub in c.children if sub.type == "namespace_identifier")
         self._ns_stack.extend(parts)
         if self._ns_stack:
             self.graph.package_name = ".".join(self._ns_stack)

@@ -603,8 +603,7 @@ def function_called(
                 )
             )
             if file_mentions_tail:
-                for flag in sorted(non_wildcard_flags):
-                    uncertain_reasons.append((path, flag))
+                uncertain_reasons.extend((path, flag) for flag in sorted(non_wildcard_flags))
 
         if INDIRECTION_WILDCARD_IMPORT in flags and (
             _wildcard_could_provide(imports, target_module, target_func)

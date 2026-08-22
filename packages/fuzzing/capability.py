@@ -130,13 +130,11 @@ class CapabilityReport:
         if self.issues:
             lines.append("")
             lines.append("Issues:")
-            for issue in self.issues:
-                lines.append(f"  - {issue}")
+            lines.extend(f"  - {issue}" for issue in self.issues)
         if self.recommendations:
             lines.append("")
             lines.append("Recommendations:")
-            for rec in self.recommendations:
-                lines.append(f"  - {rec}")
+            lines.extend(f"  - {rec}" for rec in self.recommendations)
         return "\n".join(lines)
 
 

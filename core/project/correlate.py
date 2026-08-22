@@ -402,8 +402,7 @@ def _build_tool_gaps(
             f"{'s' if len(validated_not_scanned) != 1 else ''}"
             f" with LLM findings but no static analysis"
         )
-    for cmd in missing:
-        suggested.append(f"raptor {cmd}  # no {cmd} runs found")
+    suggested.extend(f"raptor {cmd}  # no {cmd} runs found" for cmd in missing)
 
     return {
         "scanned_not_validated": scanned_not_validated,
@@ -448,8 +447,7 @@ def _build_action_list(
             "detail": d,
         })
 
-    for nf in new_resolved.get("new_findings", []):
-        actions.append({
+    actions.extend({
             "priority": 2 if nf["verdict"] == "positive" else 6,
             "category": "new_finding",
             "summary": (
@@ -457,10 +455,9 @@ def _build_action_list(
                 f"new in {nf['first_seen_run']}"
             ),
             "detail": nf,
-        })
+        } for nf in new_resolved.get("new_findings", []))
 
-    for gap in tool_gaps.get("scanned_not_validated", []):
-        actions.append({
+    actions.extend({
             "priority": 3,
             "category": "tool_gap",
             "summary": (
@@ -469,10 +466,9 @@ def _build_action_list(
                 f" never LLM-validated"
             ),
             "detail": gap,
-        })
+        } for gap in tool_gaps.get("scanned_not_validated", []))
 
-    for r in new_resolved.get("potentially_resolved", []):
-        actions.append({
+    actions.extend({
             "priority": 5,
             "category": "resolved",
             "summary": (
@@ -480,16 +476,15 @@ def _build_action_list(
                 f"absent from latest {r['command_type']} run"
             ),
             "detail": r,
-        })
+        } for r in new_resolved.get("potentially_resolved", []))
 
-    for cmd in tool_gaps.get("missing_command_types", []):
-        actions.append({
+    actions.extend({
             "priority": 7,
             "category": "tool_gap",
             "summary": f"No {cmd} runs found",
             "command": f"raptor {cmd}",
             "detail": {"missing": cmd},
-        })
+        } for cmd in tool_gaps.get("missing_command_types", []))
 
     actions.sort(key=lambda a: a["priority"])
     return actions

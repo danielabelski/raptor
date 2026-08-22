@@ -407,9 +407,7 @@ def build_local_array_index(
                     else:
                         idx._violated.add(nm)
                 continue
-            for c in cur.children:
-                if c.is_named:
-                    stack.append(c)
+            stack.extend(c for c in cur.children if c.is_named)
     return idx
 
 

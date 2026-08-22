@@ -178,8 +178,7 @@ def render_flow(cve_id: str, jsonl_lines: list[str], *,
     else:
         out.append(f"_Agent's strategy ({n_calls} tool call{'s' if n_calls != 1 else ''}):_")
         out.append("")
-        for step in steps:
-            out.append(_render_intent_step(step))
+        out.extend(_render_intent_step(step) for step in steps)
     disc = (stage_signals or {}).get("discover") or {}
     if disc.get("rationale"):
         out.append("")

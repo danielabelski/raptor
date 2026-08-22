@@ -183,35 +183,28 @@ def format_spec_for_context(spec: InferredSpec) -> str:
 
     if spec.preconditions:
         lines.append("**Preconditions:**")
-        for p in spec.preconditions[:6]:
-            lines.append(f"- {p}")
+        lines.extend(f"- {p}" for p in spec.preconditions[:6])
 
     if spec.postconditions:
         lines.append("**Postconditions:**")
-        for p in spec.postconditions[:6]:
-            lines.append(f"- {p}")
+        lines.extend(f"- {p}" for p in spec.postconditions[:6])
 
     if spec.invariants:
         lines.append("**Invariants:**")
-        for inv in spec.invariants[:4]:
-            lines.append(f"- {inv}")
+        lines.extend(f"- {inv}" for inv in spec.invariants[:4])
 
     if spec.negative_specs:
         lines.append("**Must NOT:**")
-        for ns in spec.negative_specs[:4]:
-            lines.append(f"- {ns}")
+        lines.extend(f"- {ns}" for ns in spec.negative_specs[:4])
 
     if spec.llm_hints:
         lines.append(
             "**Unverified LLM hints** (no source anchor — NOT part of "
             "the spec; treat as leads only):"
         )
-        for hint in spec.llm_hints[:4]:
-            lines.append(f"- {hint}")
+        lines.extend(f"- {hint}" for hint in spec.llm_hints[:4])
 
-    source_strs = []
-    for s in spec.sources[:5]:
-        source_strs.append(f"{s.signal} [{s.confidence}]")
+    source_strs = [f"{s.signal} [{s.confidence}]" for s in spec.sources[:5]]
     if source_strs:
         lines.append(f"*(Sources: {', '.join(source_strs)})*")
 

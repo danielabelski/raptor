@@ -255,11 +255,10 @@ def build_from_cocci(spatch_results: list[Any],
         # spatch errors → failures with the rule name as ``path``
         # (no per-file binding from spatch errors; the rule itself
         # is what failed).
-        for err in getattr(r, "errors", []) or []:
-            failures.append({
+        failures.extend({
                 "path": rule_name,
                 "reason": str(err)[:500],
-            })
+            } for err in getattr(r, "errors", []) or [])
 
     if not files and not rules_applied:
         # Skipped run with no signal at all — don't write a record.

@@ -151,10 +151,8 @@ def _extract_cwes(
     Checks (in order): explicit CWE field, mechanism keywords,
     hypothesis keywords.
     """
-    cwes: list[str] = []
 
-    for m in _CWE_PATTERN.finditer(cwe_field or ""):
-        cwes.append(f"CWE-{m.group(1)}")
+    cwes: list[str] = [f"CWE-{m.group(1)}" for m in _CWE_PATTERN.finditer(cwe_field or "")]
 
     combined = f"{mechanism} {hypothesis}".lower()
     for keyword, mapped_cwes in _MECHANISM_CWE_MAP.items():

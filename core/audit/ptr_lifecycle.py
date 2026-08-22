@@ -466,9 +466,7 @@ def _alias_edges_for_owner(
     edges: list[_AliasEdge] = []
     prefix = f"{RHS_FROM_FIELD}:{owner}."
     for rec in census.fields.values():
-        for w in rec.writes:
-            if w.rhs_class.startswith(prefix):
-                edges.append(_AliasEdge(
+        edges.extend(_AliasEdge(
                     kind="field",
                     name=rec.field,
                     owner=owner,
@@ -477,11 +475,8 @@ def _alias_edges_for_owner(
                     line=w.line,
                     code=w.code,
                     holder=w.owner,
-                ))
-        for r in rec.reads:
-            if r.owner == owner and \
-                    r.context.startswith("alias_assign:"):
-                edges.append(_AliasEdge(
+                ) for w in rec.writes if w.rhs_class.startswith(prefix))
+        edges.extend(_AliasEdge(
                     kind="local",
                     name=r.context.split(":", 1)[1],
                     owner=owner,
@@ -489,7 +484,8 @@ def _alias_edges_for_owner(
                     file=r.file,
                     line=r.line,
                     code=r.code,
-                ))
+                ) for r in rec.reads if r.owner == owner and \
+                    r.context.startswith("alias_assign:"))
     return edges
 
 
@@ -584,16 +580,13 @@ def _post_event_reads(
     rec = census.fields.get(edge.name)
     if rec is None:
         return []
-    out: list[dict[str, Any]] = []
-    for r in rec.reads:
-        if r.function != event_function or r.line > event_line:
-            out.append({
+    out: list[dict[str, Any]] = [{
                 "file": r.file,
                 "line": r.line,
                 "function": r.function,
                 "context": r.context,
                 "code": r.code,
-            })
+            } for r in rec.reads if r.function != event_function or r.line > event_line]
     return out[:3]
 
 

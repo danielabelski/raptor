@@ -337,9 +337,7 @@ def _derive_include_dirs(target_path: Path, file_dir: Path) -> list[str]:
                 d for d in subdirs
                 if not d.startswith(".") and d not in _WALK_SKIP_DIRS
             ]
-            for d in subdirs:
-                if d.lower() in _INCLUDE_DIR_NAMES:
-                    found.append(os.path.join(root, d))
+            found.extend(os.path.join(root, d) for d in subdirs if d.lower() in _INCLUDE_DIR_NAMES)
             if len(found) >= _MAX_INCLUDE_DIRS:
                 break
     except OSError:

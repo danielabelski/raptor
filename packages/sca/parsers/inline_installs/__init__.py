@@ -403,10 +403,8 @@ def _extract_apt_via_core_dockerfile(
         return []
     from ._base_image_suite import stage_image_map
     stage_img = stage_image_map(instructions)
-    out: list[Dependency] = []
-    for ap in extract_apt_packages(instructions):
-        out.append(_apt_package_to_dep(ap, path,
-                                       base_image=stage_img.get(ap.stage)))
+    out: list[Dependency] = [_apt_package_to_dep(ap, path,
+                                       base_image=stage_img.get(ap.stage)) for ap in extract_apt_packages(instructions)]
     return out
 
 
@@ -635,12 +633,9 @@ def _extract_dockerfile_run_blocks(text: str) -> list[tuple[int, str, bool]]:
     """
     from core.dockerfile import parse_dockerfile as _parse_dockerfile_core
 
-    out: list[tuple[int, str, bool]] = []
 
     # Live RUN instructions — delegated.
-    for inst in _parse_dockerfile_core(text):
-        if inst.directive == "RUN" and inst.args:
-            out.append((inst.line, inst.args, False))
+    out: list[tuple[int, str, bool]] = [(inst.line, inst.args, False) for inst in _parse_dockerfile_core(text) if inst.directive == "RUN" and inst.args]
 
     # Commented RUN blocks — small inline pass. Rare but cheap to
     # preserve behaviour. Honours backslash continuation across

@@ -263,27 +263,24 @@ def match_sanitizers_in_cfg(
     for node in graph.nodes():
         call_sites = getattr(node, "call_sites", ()) or ()
         if call_sites:
-            for cs in call_sites:
-                if cs.name in sanitizer_names:
-                    bindings.append(SanitizerBinding(
+            bindings.extend(SanitizerBinding(
                         node=node,
                         callable=cs.name,
                         input_symbols=cs.arg_names,
                         output_symbols=cs.assigned_names,
                         lineno=cs.lineno,
-                    ))
+                    ) for cs in call_sites if cs.name in sanitizer_names)
             continue
         # Legacy / call-graph fallback: matched names with empty
         # symbol layer. Phase 4 downgrades these to candidate_only.
         node_calls = set(_node_calls(node))
-        for matched_name in node_calls & sanitizer_names:
-            bindings.append(SanitizerBinding(
+        bindings.extend(SanitizerBinding(
                 node=node,
                 callable=matched_name,
                 input_symbols=frozenset(),
                 output_symbols=frozenset(),
                 lineno=getattr(node, "lineno", 0),
-            ))
+            ) for matched_name in node_calls & sanitizer_names)
     return frozenset(bindings)
 
 

@@ -328,8 +328,7 @@ class CorpusGenerator:
             "NULL": [b"NAAAAAA\n", b"NULLME\n"],
         }
         for command in sorted(self.detected_commands):
-            for payload in payloads.get(command, [b"hello\n", b"A" * 128 + b"\n"]):
-                seeds.append(f"{command}:".encode() + payload)
+            seeds.extend(f"{command}:".encode() + payload for payload in payloads.get(command, [b"hello\n", b"A" * 128 + b"\n"]))
         return seeds
 
     def _generate_basic_seeds(self) -> list[bytes]:

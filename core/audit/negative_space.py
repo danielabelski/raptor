@@ -583,8 +583,7 @@ def check_sibling_negative_space(
             )
             convention_str = conv_match.pattern if conv_match else concern
 
-            for sib_label in asym.minority_siblings:
-                findings.append(NegativeSpaceFinding(
+            findings.extend(NegativeSpaceFinding(
                     check_type=f"sibling_missing_{concern}",
                     expected=(
                         f"{asym.majority_count}/{asym.majority_count + asym.minority_count} "
@@ -598,7 +597,7 @@ def check_sibling_negative_space(
                     confidence="high" if asym.is_high_confidence else "medium",
                     convention=convention_str,
                     strategy="sibling_asymmetry",
-                ))
+                ) for sib_label in asym.minority_siblings)
 
     return findings
 

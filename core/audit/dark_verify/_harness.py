@@ -228,8 +228,7 @@ def generate_c_harness(
     parts.append(f'extern {return_type} {spec.function}({params_str});\n')
 
     parts.append('int main(void) {\n')
-    for line in setup_lines:
-        parts.append(f'    {line}\n')
+    parts.extend(f'    {line}\n' for line in setup_lines)
 
     if token:
         # Pre-call sentinel: a crash only attributes to the target
@@ -625,8 +624,7 @@ def generate_rust_harness(
     if use_path:
         parts.append(f'use {use_path};\n')
     parts.append('\nfn main() {\n')
-    for line in setup_lines:
-        parts.append(f'    {line}\n')
+    parts.extend(f'    {line}\n' for line in setup_lines)
 
     if token:
         # Pre-call sentinel: a crash only attributes to the target

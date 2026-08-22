@@ -70,10 +70,8 @@ class GHArchiveCollector:
             to_date=timestamp,
         )
 
-        events = []
-        for row in rows:
-            # Raise error on malformed rows instead of silently skipping
-            events.append(parse_gharchive_event(row))
+        # Raise error on malformed rows instead of silently skipping
+        events = [parse_gharchive_event(row) for row in rows]
 
         return events
 

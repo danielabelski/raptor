@@ -117,9 +117,7 @@ def _extract_qualified(advisory: Any) -> list[str]:
             if not isinstance(path, str) or not path:
                 continue
             symbols = imp.get("symbols") or []
-            for s in symbols:
-                if isinstance(s, str) and s:
-                    out.append(f"{path}.{s}")
+            out.extend(f"{path}.{s}" for s in symbols if isinstance(s, str) and s)
     return out
 
 

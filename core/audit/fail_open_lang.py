@@ -257,11 +257,9 @@ def _python_terminal_kind(handler: ast.ExceptHandler) -> tuple[str, str]:
             # raises in the nested handlers / orelse / finally still
             # propagate out of this handler.
             body_ids = {id(c) for c in node.body}
-            for child in ast.iter_child_nodes(node):
-                stack.append((child, swallowable or id(child) in body_ids))
+            stack.extend((child, swallowable or id(child) in body_ids) for child in ast.iter_child_nodes(node))
             continue
-        for child in ast.iter_child_nodes(node):
-            stack.append((child, swallowable))
+        stack.extend((child, swallowable) for child in ast.iter_child_nodes(node))
     return "", ""
 
 
@@ -1041,9 +1039,8 @@ def _java_throws_at_handler_level(block) -> bool:
             ch.type in ("catch_clause",) for ch in cur.children
         ):
             body = cur.child_by_field_name("body")
-            for ch in cur.children:
-                stack.append((ch, swallowable or (
-                    body is not None and ch == body)))
+            stack.extend((ch, swallowable or (
+                    body is not None and ch == body)) for ch in cur.children)
             continue
         stack.extend((ch, swallowable) for ch in cur.children)
     return False
@@ -1245,11 +1242,7 @@ def java_function_throws(source: str, function_name: str) -> list[str]:
         for child in node.children:
             if child.type != "throws":
                 continue
-            for t in child.children:
-                if t.is_named:
-                    thrown.append(
-                        _ts_node_text(t, src).rsplit(".", 1)[-1],
-                    )
+            thrown.extend(_ts_node_text(t, src).rsplit(".", 1)[-1] for t in child.children if t.is_named)
         inner = [node]
         while inner:
             cur = inner.pop()
@@ -1859,9 +1852,8 @@ def _js_throws_at_handler_level(body) -> bool:
             ch.type == "catch_clause" for ch in cur.children
         ):
             try_body = cur.child_by_field_name("body")
-            for ch in cur.children:
-                stack.append((ch, swallowable or (
-                    try_body is not None and ch == try_body)))
+            stack.extend((ch, swallowable or (
+                    try_body is not None and ch == try_body)) for ch in cur.children)
             continue
         stack.extend((ch, swallowable) for ch in cur.children)
     return False

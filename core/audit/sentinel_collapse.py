@@ -131,9 +131,7 @@ def _detect_except_same_as_success(
 ) -> list[SentinelCollapse]:
     from .fail_open_detector import _detect_error_conflated_with_empty
 
-    results: list[SentinelCollapse] = []
-    for fop in _detect_error_conflated_with_empty(path, source):
-        results.append(SentinelCollapse(
+    results: list[SentinelCollapse] = [SentinelCollapse(
             file=fop.file,
             function=fop.function,
             line=fop.line,
@@ -141,7 +139,7 @@ def _detect_except_same_as_success(
             read_coercion="success also returns same literal",
             semantic_loss="error vs legitimate-empty both return same value",
             confidence="high",
-        ))
+        ) for fop in _detect_error_conflated_with_empty(path, source)]
     return results
 
 
@@ -242,9 +240,7 @@ def _detect_go_sentinel(
         ts_returns = None
 
     if ts_returns is not None:
-        for fr in ts_returns:
-            if fr.sentinel_ambiguous:
-                results.append(SentinelCollapse(
+        results.extend(SentinelCollapse(
                     file=path,
                     function=fr.function,
                     line=fr.returns[0].line if fr.returns else 1,
@@ -253,7 +249,7 @@ def _detect_go_sentinel(
                     semantic_loss="error-nil vs not-found-nil are indistinguishable "
                                   "to callers",
                     confidence="high",
-                ))
+                ) for fr in ts_returns if fr.sentinel_ambiguous)
 
     # --- regex path for map-without-comma-ok (no tree-sitter equivalent) ---
     lines = source.splitlines()

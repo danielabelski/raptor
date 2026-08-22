@@ -290,7 +290,7 @@ def _build_forward_reach(
     """
     forward: dict[str, set[str]] = defaultdict(set)
 
-    for _filepath, graph in call_graphs.items():
+    for graph in call_graphs.values():
         calls = getattr(graph, "calls", None)
         if calls is None and isinstance(graph, dict):
             calls = graph.get("calls", [])

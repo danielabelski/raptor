@@ -131,13 +131,11 @@ class FunctionSummary:
 
         if self.error_paths:
             lines.append("**Error returns:**")
-            for ep in self.error_paths[:3]:
-                lines.append(f"- `{ep[:80]}`")
+            lines.extend(f"- `{ep[:80]}`" for ep in self.error_paths[:3])
 
         if self.state_transitions:
             lines.append("**State transitions:**")
-            for st in self.state_transitions[:5]:
-                lines.append(f"- {st[:80]}")
+            lines.extend(f"- {st[:80]}" for st in self.state_transitions[:5])
 
         return "\n".join(lines)
 

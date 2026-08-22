@@ -146,8 +146,7 @@ def parse_sarif(text: str) -> list[SemgrepFinding]:
         if not isinstance(run, dict):
             continue
         results = run.get("results") or []
-        for result in results:
-            findings.append(SemgrepFinding.from_sarif_result(result))
+        findings.extend(SemgrepFinding.from_sarif_result(result) for result in results)
     return findings
 
 

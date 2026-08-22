@@ -1662,9 +1662,7 @@ def _find_gha_workflows(target: Path) -> list[Path]:
         wf_dir = gh_dir / "workflows"
         if not wf_dir.is_dir():
             continue
-        for path in wf_dir.iterdir():
-            if path.is_file() and path.suffix in (".yml", ".yaml"):
-                out.append(path)
+        out.extend(path for path in wf_dir.iterdir() if path.is_file() and path.suffix in (".yml", ".yaml"))
     return sorted(out)
 
 
@@ -1675,10 +1673,7 @@ def _find_dockerfiles(target: Path) -> list[Path]:
     file that the rest of SCA does."""
     if target.is_file():
         return [target] if _is_dockerfile(target) else []
-    out: list[Path] = []
-    for path in target.rglob("*"):
-        if path.is_file() and _is_dockerfile(path):
-            out.append(path)
+    out: list[Path] = [path for path in target.rglob("*") if path.is_file() and _is_dockerfile(path)]
     return sorted(out)
 
 
@@ -1789,8 +1784,7 @@ def render_report(report: BumpReport) -> str:
             # Surface the supply-chain findings inline so operators
             # know WHY a verdict isn't Clean. (One copy per group;
             # identical proposals would emit identical findings.)
-            for sf in head.bump_supply_chain_findings:
-                lines.append(f"      [{sf.severity}] {sf.kind}: {sf.detail}")
+            lines.extend(f"      [{sf.severity}] {sf.kind}: {sf.detail}" for sf in head.bump_supply_chain_findings)
             # Surface newly-introduced CVEs (OSV vuln-delta) —
             # the strongest "do not auto-bump" signal we have.
             for vf in head.bump_vuln_findings:

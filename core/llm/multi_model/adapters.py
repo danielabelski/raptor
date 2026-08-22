@@ -215,14 +215,12 @@ class BaseVerdictAdapter(ABC):
                 neg_models = {a["model"] for a in analyses
                               if a.get("verdict") == "negative"}
                 minority = pos_models if len(pos_models) < len(neg_models) else neg_models
-                for analysis in analyses:
-                    if analysis.get("model") in minority and analysis.get("reasoning"):
-                        unique_insights.append({
+                unique_insights.extend({
                             "item_id": rid,
                             "model": analysis["model"],
                             "verdict": analysis.get("verdict"),
                             "reasoning": analysis["reasoning"],
-                        })
+                        } for analysis in analyses if analysis.get("model") in minority and analysis.get("reasoning"))
             elif uniq == {"positive"}:
                 confidence[rid] = "high"
             elif uniq == {"negative"}:

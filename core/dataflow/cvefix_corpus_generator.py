@@ -129,12 +129,10 @@ def generate_from_sarif(
             "generate_from_sarif(%s): no fix_touched_files — labels are "
             "position-only and may mislabel CVE-unrelated findings.", cve_id,
         )
-    pairs: list[tuple[Finding, GroundTruth]] = []
 
     # Post-fix findings the producer still emits = FP candidates (the
     # added sanitizer isn't modelled). This is the trust sound-tier target.
-    for f in _findings_from_sarif(after_sarif, id_prefix=f"{cve}__post", touched=touched):
-        pairs.append((
+    pairs: list[tuple[Finding, GroundTruth]] = [(
             f,
             GroundTruth(
                 finding_id=f.finding_id,
@@ -148,12 +146,11 @@ def generate_from_sarif(
                 labeler=labeler,
                 labeled_at=labeled_at,
             ),
-        ))
+        ) for f in _findings_from_sarif(after_sarif, id_prefix=f"{cve}__post", touched=touched)]
 
     # Pre-fix findings = the real vulnerability = true positives (FN-gate:
     # a sound trust witness must NEVER suppress these).
-    for f in _findings_from_sarif(before_sarif, id_prefix=f"{cve}__pre", touched=touched):
-        pairs.append((
+    pairs.extend((
             f,
             GroundTruth(
                 finding_id=f.finding_id,
@@ -162,6 +159,6 @@ def generate_from_sarif(
                 labeler=labeler,
                 labeled_at=labeled_at,
             ),
-        ))
+        ) for f in _findings_from_sarif(before_sarif, id_prefix=f"{cve}__pre", touched=touched))
 
     return pairs

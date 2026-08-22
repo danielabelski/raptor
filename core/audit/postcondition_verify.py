@@ -645,10 +645,7 @@ def format_postcondition_context(
     if postconditions:
         lines.append("")
         lines.append(f"**{len(postconditions)} security-critical functions with postconditions:**")
-        for pc in postconditions[:10]:
-            lines.append(
-                f"- `{pc.function}()` ({pc.role}): {pc.claimed_guarantee[:120]}"
-            )
+        lines.extend(f"- `{pc.function}()` ({pc.role}): {pc.claimed_guarantee[:120]}" for pc in postconditions[:10])
         if len(postconditions) > 10:
             lines.append(f"  ...and {len(postconditions) - 10} more")
 

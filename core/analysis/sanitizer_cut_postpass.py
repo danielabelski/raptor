@@ -451,10 +451,7 @@ def _compile_extra_source_patterns(names: Iterable[str]) -> tuple:
     escaped: the caller passes mechanically-derived method names, so
     anything non-identifier is a contract violation worth losing.
     """
-    out = []
-    for name in names or ():
-        if isinstance(name, str) and _IDENT_RE.match(name):
-            out.append(r"\." + re.escape(name) + r"\s*\(")
+    out = [r"\." + re.escape(name) + r"\s*\(" for name in names or () if isinstance(name, str) and _IDENT_RE.match(name)]
     return tuple(out)
 
 

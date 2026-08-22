@@ -179,23 +179,20 @@ def scan_target(
                     path, e,
                 )
                 return []
-            recs = []
-            for f in _scan_module(tree, path, target, manifests_list):
-                recs.append({
+            recs = [{
                     "detail": f.detail,
                     "line": f.line,
                     "severity": f.severity,
                     "confidence_level": f.confidence.level,
                     "confidence_reason": f.confidence.reason,
-                })
+                } for f in _scan_module(tree, path, target, manifests_list)]
             return recs
 
         recs = cached_per_file(
             cache, "supply_chain:py-imports", text, _compute,
         )
         host_dep = _project_host_dep(manifests_list, path, target)
-        for r in recs:
-            out.append(ImportTimeFinding(
+        out.extend(ImportTimeFinding(
                 dependency=host_dep,
                 detail=r["detail"],
                 path=path,
@@ -204,7 +201,7 @@ def scan_target(
                 confidence=Confidence(
                     r["confidence_level"], reason=r["confidence_reason"],
                 ),
-            ))
+            ) for r in recs)
     return out
 
 

@@ -729,8 +729,7 @@ def _run_audit(
             )
             src_dir = source_dirs.get(repo_key)
             if src_dir is None or not src_dir.is_dir():
-                for label in repo_labels:
-                    results.append({
+                results.extend({
                         "function_id": label.function_id,
                         "bug_class": label.bug_class,
                         "expected": label.expected_status,
@@ -750,7 +749,7 @@ def _run_audit(
                         "error_reason": (
                             f"not_reviewed:source_dir_missing:{repo_key}"
                         ),
-                    })
+                    } for label in repo_labels)
                 continue
 
             full_src = (
@@ -2086,8 +2085,7 @@ def _format_summary(
     gates = check_gate(aggregate, per_class, results)
     if gates:
         lines.append("")
-        for g in gates:
-            lines.append(f"GATE FAIL: {g}")
+        lines.extend(f"GATE FAIL: {g}" for g in gates)
     else:
         lines.append("")
         lines.append("All gates passed.")

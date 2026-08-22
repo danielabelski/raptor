@@ -215,8 +215,7 @@ def format_evaluation(result: EvaluationResult) -> str:
 
     if result.true_positives:
         lines.append("### Found")
-        for entry in result.true_positives:
-            lines.append(f"- {entry.id}: {entry.file}:{entry.function} ({entry.vuln_type})")
+        lines.extend(f"- {entry.id}: {entry.file}:{entry.function} ({entry.vuln_type})" for entry in result.true_positives)
 
     if result.false_negatives:
         lines.append("")
@@ -232,11 +231,8 @@ def format_evaluation(result: EvaluationResult) -> str:
     if result.false_positives:
         lines.append("")
         lines.append(f"### False positives ({len(result.false_positives)})")
-        for fp in result.false_positives[:10]:
-            lines.append(
-                f"- {fp.get('file', '?')}:{fp.get('function', '?')} "
-                f"({fp.get('hypothesis', '?')[:60]})"
-            )
+        lines.extend(f"- {fp.get('file', '?')}:{fp.get('function', '?')} "
+                f"({fp.get('hypothesis', '?')[:60]})" for fp in result.false_positives[:10])
         if len(result.false_positives) > 10:
             lines.append(f"  ... and {len(result.false_positives) - 10} more")
 

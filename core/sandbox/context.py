@@ -2275,9 +2275,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                              for w in (writable_paths or [])]
                 _readable = [os.path.abspath(rp)
                              for rp in (effective_read_paths or [])]
-                for base in (target, output):
-                    if base:
-                        _readable.append(os.path.abspath(base))
+                _readable.extend(os.path.abspath(base) for base in (target, output) if base)
 
                 def _under(path: str, bases: list) -> bool:
                     return any(

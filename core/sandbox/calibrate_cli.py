@@ -126,8 +126,7 @@ def _format_human(profile, *, cached: bool) -> str:
         if not items:
             lines.append("  (empty)")
             return
-        for x in items[:sample]:
-            lines.append(f"  {x}")
+        lines.extend(f"  {x}" for x in items[:sample])
         if len(items) > sample:
             lines.append(f"  ... (+{len(items) - sample} more)")
 
@@ -137,8 +136,7 @@ def _format_human(profile, *, cached: bool) -> str:
     _section("proxy hosts", profile.proxy_hosts)
     if profile.connect_targets:
         lines.append(f"\nconnect targets ({len(profile.connect_targets)}):")
-        for t in profile.connect_targets[:SAMPLE]:
-            lines.append(f"  {t.ip}:{t.port} ({t.family})")
+        lines.extend(f"  {t.ip}:{t.port} ({t.family})" for t in profile.connect_targets[:SAMPLE])
         if len(profile.connect_targets) > SAMPLE:
             lines.append(
                 f"  ... (+{len(profile.connect_targets) - SAMPLE} more)"

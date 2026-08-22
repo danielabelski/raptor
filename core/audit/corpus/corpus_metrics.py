@@ -254,11 +254,8 @@ def format_attribution_report(summary: AttributionSummary) -> str:
             f"  MISATTRIBUTED {r['function_id']}: "
             f"expected={r['expected_mechanism']} observed=[{obs}]"
         )
-    for r in summary.unattributed:
-        lines.append(
-            f"  unattributed {r['function_id']}: "
-            f"expected={r['expected_mechanism']}, no receipt recorded"
-        )
+    lines.extend(f"  unattributed {r['function_id']}: "
+            f"expected={r['expected_mechanism']}, no receipt recorded" for r in summary.unattributed)
     return "\n".join(lines)
 
 
@@ -312,11 +309,8 @@ def format_mode_report(
         f"Mode expectations: {checked} checked, "
         f"{len(mismatches)} mismatch(es)"
     ]
-    for m in mismatches:
-        lines.append(
-            f"  {m['function_id']} [{m['mode']}]: "
-            f"expected={m['expected']} got={m['actual']}"
-        )
+    lines.extend(f"  {m['function_id']} [{m['mode']}]: "
+            f"expected={m['expected']} got={m['actual']}" for m in mismatches)
     return "\n".join(lines)
 
 

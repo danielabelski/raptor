@@ -83,7 +83,7 @@ def parse(path: Path) -> list[Dependency]:
                 deps.append(d)
         opt = project.get("optional-dependencies") or {}
         if isinstance(opt, dict):
-            for _group, items in opt.items():
+            for items in opt.values():
                 for spec in items or []:
                     d = _from_pep508(spec, path, scope="optional")
                     if d is not None:
@@ -107,7 +107,7 @@ def parse(path: Path) -> list[Dependency]:
                     deps.append(d)
         groups = poetry.get("group") or {}
         if isinstance(groups, dict):
-            for _gname, gbody in groups.items():
+            for gbody in groups.values():
                 if not isinstance(gbody, dict):
                     continue
                 _gbody_deps = gbody.get("dependencies") or {}
@@ -123,7 +123,7 @@ def parse(path: Path) -> list[Dependency]:
     if isinstance(pdm, dict):
         pdm_dev = pdm.get("dev-dependencies") or {}
         if isinstance(pdm_dev, dict):
-            for _group, items in pdm_dev.items():
+            for items in pdm_dev.values():
                 for spec in items or []:
                     d = _from_pep508(spec, path, scope="dev")
                     if d is not None:

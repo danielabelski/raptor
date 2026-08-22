@@ -279,8 +279,7 @@ def render_grouped_findings_markdown(
             evidence = sca.get("evidence") or {}
             reasons = evidence.get("escalation_reasons") or []
             if isinstance(reasons, list):
-                for reason in reasons:
-                    lines.append(f"  - escalated: {_md_heading(reason)}")
+                lines.extend(f"  - escalated: {_md_heading(reason)}" for reason in reasons)
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -411,16 +410,14 @@ def gather_project_annotations(project) -> list[dict[str, Any]]:
         for ann in iter_all_annotations(root):
             by_pair[(ann.file, ann.function)] = ann
 
-    out = []
-    for ann in by_pair.values():
-        out.append({
+    out = [{
             "file": ann.file,
             "function": ann.function,
             "status": ann.metadata.get("status"),
             "source": ann.metadata.get("source"),
             "body": ann.body,
             "metadata": dict(ann.metadata),
-        })
+        } for ann in by_pair.values()]
     out.sort(key=lambda r: (r["file"], r["function"]))
     return out
 

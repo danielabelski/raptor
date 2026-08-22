@@ -18,8 +18,7 @@ def to_coverage_record(results: list[SpatchResult]) -> dict | None:
         files.update(r.files_examined)
         if r.rule:
             rules.append(r.rule)
-        for err in r.errors:
-            failures.append({"rule": r.rule, "reason": err})
+        failures.extend({"rule": r.rule, "reason": err} for err in r.errors)
 
     if not files:
         return None

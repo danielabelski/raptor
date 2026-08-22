@@ -906,10 +906,8 @@ def render_gate_block(result: GateResult) -> str:
     ):
         if value:
             lines.append(f"- {label}: {sanitise_string(value, max_chars=200)}")
-    for hunk in result.out_of_scope_hunks[:10]:
-        lines.append(f"  - out-of-scope: {sanitise_string(hunk, max_chars=200)}")
+    lines.extend(f"  - out-of-scope: {sanitise_string(hunk, max_chars=200)}" for hunk in result.out_of_scope_hunks[:10])
     if not result.reliable:
         lines.append("- reliability: UNRELIABLE — see notes")
-    for note in result.notes[:10]:
-        lines.append(f"- note: {sanitise_string(note, max_chars=300)}")
+    lines.extend(f"- note: {sanitise_string(note, max_chars=300)}" for note in result.notes[:10])
     return "\n".join(lines) + "\n"

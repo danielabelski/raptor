@@ -236,10 +236,8 @@ def render_markdown(results: dict[str, list[Candidate]]) -> str:
         lines.append("")
         lines.append("| candidate | rank | near-twin | twin rank | dist |")
         lines.append("|---|--:|---|--:|--:|")
-        for c in cands:
-            lines.append(
-                f"| `{c.name}` | {c.rank} | `{c.near_twin}` "
-                f"| {c.twin_rank} | {c.distance} |")
+        lines.extend(f"| `{c.name}` | {c.rank} | `{c.near_twin}` "
+                f"| {c.twin_rank} | {c.distance} |" for c in cands)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -250,10 +248,8 @@ def render_text(results: dict[str, list[Candidate]]) -> str:
         return "No pending typosquat candidates.\n"
     lines = [f"{total} pending typosquat candidate(s):"]
     for eco in sorted(results):
-        for c in results[eco]:
-            lines.append(
-                f"  [{eco}] {c.name} (#{c.rank}) ~ {c.near_twin} "
-                f"(#{c.twin_rank}, dist {c.distance})")
+        lines.extend(f"  [{eco}] {c.name} (#{c.rank}) ~ {c.near_twin} "
+                f"(#{c.twin_rank}, dist {c.distance})" for c in results[eco])
     return "\n".join(lines) + "\n"
 
 

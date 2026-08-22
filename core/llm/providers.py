@@ -74,8 +74,7 @@ def _instructor_refusal_stop(exc: Exception) -> str | None:
     exceptions fall through untouched.
     """
     completions = [getattr(exc, "last_completion", None)]
-    for attempt in getattr(exc, "failed_attempts", None) or ():
-        completions.append(getattr(attempt, "completion", None))
+    completions.extend(getattr(attempt, "completion", None) for attempt in getattr(exc, "failed_attempts", None) or ())
     for completion in completions:
         if getattr(completion, "stop_reason", None) == "refusal":
             return "refusal"

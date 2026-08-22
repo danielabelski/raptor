@@ -324,9 +324,7 @@ def _render_summary(
         "| Severity | Count |",
         "|---|---|",
     ]
-    for sev in ("critical", "high", "medium", "low", "info"):
-        if severity_counts.get(sev):
-            rows.append(f"| {_SEV_LABEL[sev]} | {severity_counts[sev]} |")
+    rows.extend(f"| {_SEV_LABEL[sev]} | {severity_counts[sev]} |" for sev in ("critical", "high", "medium", "low", "info") if severity_counts.get(sev))
     if not any(severity_counts.values()):
         rows.append("| (none) | 0 |")
 
@@ -393,14 +391,9 @@ def _render_reachability_breakdown(
         "| Verdict | Count |",
         "|---|---:|",
     ]
-    for verdict in REACHABILITY_ORDER:
-        if counts.get(verdict):
-            rows.append(
-                f"| {REACHABILITY_LABELS.get(verdict, verdict)} "
-                f"| {counts[verdict]} |"
-            )
-    for verdict in sorted(set(counts) - set(REACHABILITY_ORDER)):
-        rows.append(f"| {verdict} | {counts[verdict]} |")
+    rows.extend(f"| {REACHABILITY_LABELS.get(verdict, verdict)} "
+                f"| {counts[verdict]} |" for verdict in REACHABILITY_ORDER if counts.get(verdict))
+    rows.extend(f"| {verdict} | {counts[verdict]} |" for verdict in sorted(set(counts) - set(REACHABILITY_ORDER)))
     rows.append("")
     return "\n".join(rows)
 
@@ -572,8 +565,7 @@ def _render_one_vuln_group(
     if omit_dep_shared or len(paths) <= 1:
         return body
     src_lines = [f"- Sources ({len(paths)}):"]
-    for p in paths:
-        src_lines.append(f"  - `{escape_nonprintable(p)}`")
+    src_lines.extend(f"  - `{escape_nonprintable(p)}`" for p in paths)
     # Insert sources bullet right after the head line so it's near
     # the top of the section rather than buried at the bottom.
     head, _, rest = body.partition("\n")
@@ -792,15 +784,13 @@ def _render_supply_chain_section(
     same version flagged for the same kind across multiple manifests
     collapses to one section with a Sources list."""
     lines: list[str] = ["## Supply-chain findings\n"]
-    for group in _group_kinded(findings):
-        lines.append(_render_one_kinded_group(group))
+    lines.extend(_render_one_kinded_group(group) for group in _group_kinded(findings))
     return "\n".join(lines)
 
 
 def _render_hygiene_section(findings: Sequence[HygieneFinding]) -> str:
     lines: list[str] = ["## Hygiene findings\n"]
-    for group in _group_kinded(findings):
-        lines.append(_render_one_kinded_group(group))
+    lines.extend(_render_one_kinded_group(group) for group in _group_kinded(findings))
     return "\n".join(lines)
 
 
@@ -883,8 +873,7 @@ def _render_one_kinded_group(group: Sequence) -> str:
         bullets.append(f"- Escalated: {escape_nonprintable(escalation_reasons[0])}")
     elif escalation_reasons:
         bullets.append("- Escalated:")
-        for r in escalation_reasons:
-            bullets.append(f"  - {escape_nonprintable(r)}")
+        bullets.extend(f"  - {escape_nonprintable(r)}" for r in escalation_reasons)
 
     # Switch to a list when there are MULTIPLE distinct source
     # paths. A group of N findings that all share one declared_in
@@ -896,8 +885,7 @@ def _render_one_kinded_group(group: Sequence) -> str:
         bullets.append(f"- Source: `{paths[0]}`")
     else:
         bullets.append(f"- Sources ({len(paths)}):")
-        for p in paths:
-            bullets.append(f"  - `{escape_nonprintable(p)}`")
+        bullets.extend(f"  - `{escape_nonprintable(p)}`" for p in paths)
 
     if best_conf.reason:
         bullets.append(

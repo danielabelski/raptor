@@ -267,7 +267,7 @@ class OsvOfflineDB:
         # validation so a corrupt download doesn't destroy the cache.
         self._conn.execute(
             "DELETE FROM advisories WHERE ecosystem = ?", (ecosystem,))
-        for filename, raw in files.items():
+        for raw in files.values():
             try:
                 record = json.loads(raw)
             except json.JSONDecodeError:

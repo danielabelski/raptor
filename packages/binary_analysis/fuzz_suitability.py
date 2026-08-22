@@ -79,16 +79,14 @@ def assess_fuzz_suitability(
         reason = "Parser surfaces and input channels exist, but RAPTOR still needs the host/fuzzer plan before claiming a direct campaign is sensible."
         next_step = "Run the fuzzer plan and only launch a campaign if the binary accepts a known input mode."
 
-    harness_candidates: list[dict[str, Any]] = []
-    for item in high_value_ingress[:8]:
-        harness_candidates.append({
+    harness_candidates: list[dict[str, Any]] = [{
             "ingress_id": item.get("id"),
             "kind": item.get("kind"),
             "name": item.get("name"),
             "bound_function_id": item.get("bound_function_id"),
             "why": _harness_reason(str(item.get("kind") or "")),
             "evidence_tier": item.get("evidence_tier"),
-        })
+        } for item in high_value_ingress[:8]]
 
     return {
         "strategy": strategy,

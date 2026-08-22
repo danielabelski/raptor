@@ -195,9 +195,7 @@ def _check_codeql(shape: TargetShape) -> ToolCheck | None:
     if shape.primary_language and shape.primary_language in shape.build_systems:
         bs = shape.build_systems[shape.primary_language]
         required = _BUILD_SYSTEM_DEPS.get(bs, [])
-        for dep in required:
-            if not shutil.which(dep):
-                missing_deps.append(dep)
+        missing_deps.extend(dep for dep in required if not shutil.which(dep))
         if missing_deps:
             hint = _format_build_deps_hint(missing_deps)
             return ToolCheck(

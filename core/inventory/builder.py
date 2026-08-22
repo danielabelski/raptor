@@ -98,9 +98,7 @@ def _extract_python_dunder_all(content: str) -> list[str] | None:
         targets = []
         value = None
         if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "__all__":
-                    targets.append(t)
+            targets.extend(t for t in node.targets if isinstance(t, ast.Name) and t.id == "__all__")
             value = node.value
         elif isinstance(node, ast.AnnAssign):
             if isinstance(node.target, ast.Name) and node.target.id == "__all__":
@@ -110,9 +108,7 @@ def _extract_python_dunder_all(content: str) -> list[str] | None:
             continue
         saw_declaration = True
         if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-            for el in value.elts:
-                if isinstance(el, ast.Constant) and isinstance(el.value, str):
-                    names.append(el.value)
+            names.extend(el.value for el in value.elts if isinstance(el, ast.Constant) and isinstance(el.value, str))
     if not saw_declaration:
         return None
     return names

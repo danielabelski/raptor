@@ -247,9 +247,7 @@ def _count_paths_to_dangerous(
         if nid in sink_nodes and live_taint:
             count += 1
 
-        for succ in cfg.successors(node):
-            if id(succ) not in visited:
-                stack.append((succ, live_taint, visited))
+        stack.extend((succ, live_taint, visited) for succ in cfg.successors(node) if id(succ) not in visited)
 
     return count
 
@@ -406,9 +404,7 @@ def _bfs_traversal(cfg, nodes: list) -> list:
             if id(succ) not in visited:
                 stack.append(succ)
 
-    for node in nodes:
-        if id(node) not in visited:
-            order.append(node)
+    order.extend(node for node in nodes if id(node) not in visited)
 
     return order
 

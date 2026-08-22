@@ -1573,16 +1573,13 @@ def _parse_state_machines(
         if not sm_id.startswith("state_machine."):
             sm_id = f"state_machine.{sm_id}"
 
-        evidence = []
-        for e in sm.get("evidence") or []:
-            if isinstance(e, dict):
-                evidence.append(Evidence(
+        evidence = [Evidence(
                     type=e.get("type") or "code_path",
                     file=e.get("file") or "",
                     observation=e.get("observation") or "",
                     line=e.get("line"),
                     item=e.get("item"),
-                ))
+                ) for e in sm.get("evidence") or [] if isinstance(e, dict)]
 
         if source_root is not None:
             _stamp_evidence_hashes(evidence, source_root)
@@ -1681,15 +1678,12 @@ def _parse_value_constraints(
         if not vc_id.startswith("value_constraint."):
             vc_id = f"value_constraint.{vc_id}"
 
-        evidence = []
-        for e in vc.get("evidence") or []:
-            if isinstance(e, dict):
-                evidence.append(Evidence(
+        evidence = [Evidence(
                     type=e.get("type", "code_path"),
                     file=e.get("file", ""),
                     observation=e.get("observation", ""),
                     line=e.get("line"),
-                ))
+                ) for e in vc.get("evidence") or [] if isinstance(e, dict)]
 
         if source_root is not None:
             _stamp_evidence_hashes(evidence, source_root)
@@ -1788,9 +1782,7 @@ def _parse_batch_response(
     concepts.extend(vc_concepts)
     invariants.extend(vc_invariants)
 
-    contracts = []
-    for ct in raw.get("contracts") or []:
-        contracts.append(Contract(
+    contracts = [Contract(
             function=ct.get("function") or "",
             file=ct.get("file") or "",
             when=ct.get("when") or "",
@@ -1799,18 +1791,16 @@ def _parse_batch_response(
             ownership_transfer=ct.get("ownership_transfer") or "",
             implication=ct.get("implication") or "",
             security_note=ct.get("security_note") or "",
-        ))
+        ) for ct in raw.get("contracts") or []]
     if source_root is not None and focus_items:
         _stamp_contract_hashes(contracts, focus_items, source_root)
 
-    bug_patterns = []
-    for bp in raw.get("bug_patterns") or []:
-        bug_patterns.append(BugPattern(
+    bug_patterns = [BugPattern(
             id=bp.get("id") or "",
             description=bp.get("description") or "",
             what_to_grep=bp.get("what_to_grep") or "",
             relevant_cwes=bp.get("relevant_cwes") or [],
-        ))
+        ) for bp in raw.get("bug_patterns") or []]
 
     struct_annotations = []
     for sa in raw.get("struct_annotations") or []:
@@ -1818,13 +1808,11 @@ def _parse_batch_response(
             continue
         sname = sa["struct_name"]
         if "fields" in sa and isinstance(sa["fields"], list):
-            for fld in sa["fields"]:
-                if isinstance(fld, dict) and fld.get("field_name"):
-                    struct_annotations.append({
+            struct_annotations.extend({
                         "struct_name": sname,
                         "field_name": fld["field_name"],
                         "annotation": fld.get("annotation", ""),
-                    })
+                    } for fld in sa["fields"] if isinstance(fld, dict) and fld.get("field_name"))
         elif sa.get("field_name"):
             struct_annotations.append({
                 "struct_name": sname,
@@ -3855,12 +3843,8 @@ def _apply_sage_prior(
                     concept_fns = {item.name} | {
                         ev.item for ev in concept.evidence if ev.item
                     }
-                    for inv in local_model.invariants:
-                        if inv.concept == concept.id:
-                            skipped_invariants.append(inv)
-                    for ct in local_model.contracts:
-                        if ct.function in concept_fns:
-                            skipped_contracts.append(ct)
+                    skipped_invariants.extend(inv for inv in local_model.invariants if inv.concept == concept.id)
+                    skipped_contracts.extend(ct for ct in local_model.contracts if ct.function in concept_fns)
                     skipped = True
             # Slow path: reconstruct from SAGE text content
             if not skipped:

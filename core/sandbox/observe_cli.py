@@ -174,8 +174,7 @@ def _format_summary(profile, *, run_dir: Path, kept: bool,
         if not items:
             parts.append(f"  (none — binary did no {total_label})")
             return
-        for p in items[:SAMPLE]:
-            parts.append(f"  {p}")
+        parts.extend(f"  {p}" for p in items[:SAMPLE])
         if len(items) > SAMPLE:
             parts.append(
                 f"  ... (+{len(items) - SAMPLE} more; "
@@ -191,8 +190,7 @@ def _format_summary(profile, *, run_dir: Path, kept: bool,
     if not profile.connect_targets:
         parts.append("  (none — binary made no connect() calls)")
     else:
-        for t in profile.connect_targets:
-            parts.append(f"  {t.ip}:{t.port} ({t.family})")
+        parts.extend(f"  {t.ip}:{t.port} ({t.family})" for t in profile.connect_targets)
     return "\n".join(parts)
 
 

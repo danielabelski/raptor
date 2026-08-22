@@ -350,8 +350,7 @@ def detect_flag_mode_deviations(
                             or len(have) <= len(lack):
                         continue
                     sec = security_flag_role(token)
-                    for s in lack:
-                        deviations.append(FlagModeDeviation(
+                    deviations.extend(FlagModeDeviation(
                             callee=callee,
                             position=position,
                             kind="bitmask",
@@ -368,7 +367,7 @@ def detect_flag_mode_deviations(
                                 callee, f"{position}:{token}", s,
                                 have, len(flagged),
                             ),
-                        ))
+                        ) for s in lack)
                 continue  # a bitmask position is not also a value one
 
             # Value leg: constant-resolvable majority.

@@ -195,12 +195,8 @@ def _store_corrections_to_sage(
         logger.debug("SAGE not available for correction storage")
         return
 
-    summary_parts = []
-    for p in patterns:
-        summary_parts.append(
-            f"- {p['category']}: {p['count']} FPs "
-            f"(e.g. {', '.join(p['examples'][:2])})"
-        )
+    summary_parts = [f"- {p['category']}: {p['count']} FPs "
+            f"(e.g. {', '.join(p['examples'][:2])})" for p in patterns]
 
     memory_text = (
         f"Audit corpus learning: {len(patterns)} FP pattern(s) "
@@ -246,8 +242,7 @@ def load_corrections(
             key=_safe_mtime,
             reverse=True,
         )
-        for d in corpus_dirs[:5]:
-            candidates.append(d / "prompt-corrections.json")
+        candidates.extend(d / "prompt-corrections.json" for d in corpus_dirs[:5])
 
     for path in candidates:
         if path.is_file():

@@ -8,15 +8,12 @@ VALID_RUN_STATUSES = {"running", "completed", "failed", "cancelled", "interrupte
 
 def _validate_project(data: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate a project.json dict. Returns (valid, errors)."""
-    errors = []
 
     if not isinstance(data, dict):
         return False, ["project data must be a dict"]
 
     # Required fields
-    for field in ("version", "name", "target", "output_dir"):
-        if field not in data:
-            errors.append(f"missing required field: {field}")
+    errors = [f"missing required field: {field}" for field in ("version", "name", "target", "output_dir") if field not in data]
 
     if "version" in data and not isinstance(data["version"], int):
         errors.append("version must be an integer")
@@ -112,15 +109,12 @@ def _validate_project(data: dict[str, Any]) -> tuple[bool, list[str]]:
 
 def _validate_run_metadata(data: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate a .raptor-run.json dict. Returns (valid, errors)."""
-    errors = []
 
     if not isinstance(data, dict):
         return False, ["run metadata must be a dict"]
 
     # Required fields
-    for field in ("version", "command", "timestamp", "status"):
-        if field not in data:
-            errors.append(f"missing required field: {field}")
+    errors = [f"missing required field: {field}" for field in ("version", "command", "timestamp", "status") if field not in data]
 
     if "version" in data and not isinstance(data["version"], int):
         errors.append("version must be an integer")

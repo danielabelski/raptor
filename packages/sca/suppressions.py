@@ -194,9 +194,7 @@ def _finding_view(finding: Any) -> dict[str, Any] | None:
     for adv in getattr(finding, "advisories", []) or []:
         if getattr(adv, "osv_id", None):
             advisory_ids.append(adv.osv_id)
-        for alias in getattr(adv, "aliases", []) or []:
-            if isinstance(alias, str):
-                advisory_ids.append(alias)
+        advisory_ids.extend(alias for alias in getattr(adv, "aliases", []) or [] if isinstance(alias, str))
     return {
         "finding_id": fid,
         "ecosystem": getattr(dep, "ecosystem", None),

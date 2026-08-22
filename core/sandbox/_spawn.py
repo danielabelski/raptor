@@ -887,14 +887,11 @@ def run_sandboxed(
             # abspath uses the parent's cwd-at-spawn-time, matching what
             # Landlock effectively does via fd-based normalization.
             import os.path as _osp
-            _writable = []
-            for p in (writable_paths or ()):
-                _writable.append(_osp.abspath(p))
+            _writable = [_osp.abspath(p) for p in writable_paths or ()]
             if output:
                 _writable.append(_osp.abspath(output))
             _read_allow = list(_writable)
-            for p in (readable_paths or ()):
-                _read_allow.append(_osp.abspath(p))
+            _read_allow.extend(_osp.abspath(p) for p in readable_paths or ())
             _read_allow.extend(_system_ro)
             if target:
                 _read_allow.append(_osp.abspath(target))

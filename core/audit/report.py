@@ -381,13 +381,11 @@ def write_markdown_report(
             lines.append(
                 "- Degraded: " + ", ".join(_line(d, max_chars=40)
                                            for d in others[:6]))
-        for f in edge_block.get("edge_findings", [])[:10]:
-            lines.append(
-                f"- **Contract violation:** "
+        lines.extend(f"- **Contract violation:** "
                 f"{_line(str(f.get('caller', '')), max_chars=120)} -> "
                 f"{_line(str(f.get('callee', '')), max_chars=120)}"
                 + (f" ({_line(str(f.get('cwe')), max_chars=20)})"
-                   if f.get("cwe") else ""))
+                   if f.get("cwe") else "") for f in edge_block.get("edge_findings", [])[:10])
         blind_n = edge_block.get("blind_spot_count", 0)
         if blind_n:
             lines.append("")
@@ -994,8 +992,7 @@ def _completeness_lines(report: dict[str, Any]) -> list[str]:
             f"Partial run — lifecycle status: {status.title()}. "
             "Verdict counts below reflect the journal as written."
         )
-        for label in completeness.get("missing", []):
-            lines.append(f"  Missing: {_line(label, max_chars=80)}")
+        lines.extend(f"  Missing: {_line(label, max_chars=80)}" for label in completeness.get("missing", []))
         if completeness.get("no_verdicts"):
             lines.append(
                 "  No review journal — the run stopped before any "

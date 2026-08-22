@@ -26,16 +26,12 @@ def default_cases_path() -> Path:
 def load_cases(path: Path | None = None) -> list[SelectionCase]:
     path = Path(path) if path is not None else default_cases_path()
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    cases: list[SelectionCase] = []
-    for raw in data.get("cases", []):
-        cases.append(
-            SelectionCase(
+    cases: list[SelectionCase] = [SelectionCase(
                 name=raw["name"],
                 signals=dict(raw.get("signals", {})),
                 expect_selected=tuple(raw.get("expect_selected", ())),
                 expect_not_selected=tuple(raw.get("expect_not_selected", ())),
-            )
-        )
+            ) for raw in data.get("cases", [])]
     return cases
 
 
@@ -82,13 +78,10 @@ def format_report(outcomes: list[SelectionOutcome]) -> str:
     if failed:
         lines.append("")
         lines.append("Failures:")
-        for o in failed:
-            lines.append(
-                f"  {o.case.name}\n"
+        lines.extend(f"  {o.case.name}\n"
                 f"    picked      = {list(o.picked)}\n"
                 f"    missing     = {list(o.missing)}\n"
-                f"    overfired   = {list(o.overfired)}"
-            )
+                f"    overfired   = {list(o.overfired)}" for o in failed)
     return "\n".join(lines)
 
 

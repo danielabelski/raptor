@@ -323,10 +323,7 @@ def check_typestate_violations(
                                 on_error_path=error_path,
                             )
 
-        for obj in tracked.values():
-            if (obj.state == "freed" and obj.var
-                    and _var_used_after_free(stripped, obj.var, free_lookup)):
-                    violations.append(TypeStateViolation(
+        violations.extend(TypeStateViolation(
                         type_name=obj.model.type_name,
                         operation="use",
                         current_state="freed",
@@ -337,7 +334,8 @@ def check_typestate_violations(
                             f"used at line {line_num}"
                         ),
                         violation_kind="use_after_free",
-                    ))
+                    ) for obj in tracked.values() if obj.state == "freed" and obj.var
+                    and _var_used_after_free(stripped, obj.var, free_lookup))
 
     _check_resource_leaks(tracked, len(lines), violations)
 

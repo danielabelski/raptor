@@ -4844,9 +4844,7 @@ def _heuristic_bypass_findings(
             a for a in heuristic_assumptions if a.enforced_by
         ]
         if heuristic_with_enforcers:
-            for bf in bypass_runner(heuristic_with_enforcers):
-                findings.append(
-                    {
+            findings.extend({
                         "check": f"iris_{bf.assumption.bug_class or 'bypass'}",
                         "title": (
                             f"IRIS bypass: {bf.caller_function}"
@@ -4861,8 +4859,7 @@ def _heuristic_bypass_findings(
                         "cwe": bf.assumption.bug_class or "",
                         "confidence": "medium",
                         "missing_enforcer": bf.missing_enforcer,
-                    }
-                )
+                    } for bf in bypass_runner(heuristic_with_enforcers))
     except Exception:
         logger.debug("IRIS heuristic assumption bypass failed", exc_info=True)
     return findings
@@ -7307,10 +7304,8 @@ def _run_audit_body(
     try:
         from .taint_specs import check_config_dependent, check_stored_taint
 
-        for tf in check_stored_taint(gaps, target_path=config.target_path):
-            post_loop_findings.append(tf.to_dict())
-        for tf in check_config_dependent(gaps, target_path=config.target_path):
-            post_loop_findings.append(tf.to_dict())
+        post_loop_findings.extend(tf.to_dict() for tf in check_stored_taint(gaps, target_path=config.target_path))
+        post_loop_findings.extend(tf.to_dict() for tf in check_config_dependent(gaps, target_path=config.target_path))
     except Exception:
         logger.debug("taint-spec post-loop checks failed", exc_info=True)
 
@@ -7348,24 +7343,20 @@ def _run_audit_body(
             ns_vocab = DomainVocabulary.from_domain_model(
                 domain_model, target_path=config.target_path,
             )
-        for nf in check_resource_exhaustion(
+        post_loop_findings.extend(nf.to_dict() for nf in check_resource_exhaustion(
             gaps, target_path=tp, domain_vocab=ns_vocab,
-        ):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_protocol_ambiguity(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
+        ))
+        post_loop_findings.extend(nf.to_dict() for nf in check_protocol_ambiguity(gaps, target_path=tp))
         from .negative_space import (
             check_auth_mode_registration,
             check_shared_writer_race,
             check_url_boundary_composition,
         )
         for g in gaps:
-            for nf in check_auth_mode_registration(
+            post_loop_findings.extend(nf.to_dict() for nf in check_auth_mode_registration(
                 g, domain_model=domain_model, target_path=tp,
-            ):
-                post_loop_findings.append(nf.to_dict())
-            for nf in check_url_boundary_composition(g, target_path=tp):
-                post_loop_findings.append(nf.to_dict())
+            ))
+            post_loop_findings.extend(nf.to_dict() for nf in check_url_boundary_composition(g, target_path=tp))
             if (g.get("file") or "").endswith(".go"):
                 _swr_g = dict(g)
                 with contextlib.suppress(OSError):
@@ -7374,26 +7365,18 @@ def _run_audit_body(
                         _swr_g["file_source"] = _gfp.read_text(
                             errors="replace",
                         )
-                for nf in check_shared_writer_race(_swr_g):
-                    post_loop_findings.append(nf.to_dict())
-        for nf in check_missing_app_features(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_signal_safety(
+                post_loop_findings.extend(nf.to_dict() for nf in check_shared_writer_race(_swr_g))
+        post_loop_findings.extend(nf.to_dict() for nf in check_missing_app_features(gaps, target_path=tp))
+        post_loop_findings.extend(nf.to_dict() for nf in check_signal_safety(
             gaps, target_path=tp, domain_vocab=ns_vocab,
-        ):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_ub_patterns(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_side_channels(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_multi_process(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_deployment_assumptions(gaps, target_path=tp):
-            post_loop_findings.append(nf.to_dict())
-        for nf in check_lock_ordering(
+        ))
+        post_loop_findings.extend(nf.to_dict() for nf in check_ub_patterns(gaps, target_path=tp))
+        post_loop_findings.extend(nf.to_dict() for nf in check_side_channels(gaps, target_path=tp))
+        post_loop_findings.extend(nf.to_dict() for nf in check_multi_process(gaps, target_path=tp))
+        post_loop_findings.extend(nf.to_dict() for nf in check_deployment_assumptions(gaps, target_path=tp))
+        post_loop_findings.extend(nf.to_dict() for nf in check_lock_ordering(
             gaps, target_path=tp, domain_vocab=ns_vocab,
-        ):
-            post_loop_findings.append(nf.to_dict())
+        ))
     except Exception:
         logger.debug("negative-space post-loop checks failed", exc_info=True)
 
@@ -7418,8 +7401,7 @@ def _run_audit_body(
             call_graphs=_pc_call_graphs,
         )
         if pc_result.violations:
-            for v in pc_result.violations:
-                post_loop_findings.append(v.to_dict())
+            post_loop_findings.extend(v.to_dict() for v in pc_result.violations)
             logger.info(
                 "postcondition: %d violations from %d postconditions",
                 len(pc_result.violations),
@@ -8455,17 +8437,16 @@ class _InjectModeResolver:
 
         if self._check_uninit_leak is not None and is_c:
             try:
-                for uleak in self._check_uninit_leak(
-                    src, function,
-                    joern_server=self._joern_server,
-                ):
-                    findings.append({
+                findings.extend({
                         "file": file,
                         "function": function,
                         "detector": f"uninit_leak:{uleak.tier}",
                         "line": uleak.line,
                         "description": uleak.description,
-                    })
+                    } for uleak in self._check_uninit_leak(
+                    src, function,
+                    joern_server=self._joern_server,
+                ))
             except Exception:
                 logger.debug(
                     "uninit_leak inject failed for %s:%s",
@@ -8478,14 +8459,13 @@ class _InjectModeResolver:
                     self._joern_server, file, function, self._vocab,
                 )
                 if clr.violation_found:
-                    for v in clr.violations:
-                        findings.append({
+                    findings.extend({
                             "file": file,
                             "function": function,
                             "detector": "callback_lifetime_cross",
                             "line": v.register_line or line_start,
                             "description": v.reasoning,
-                        })
+                        } for v in clr.violations)
                     if not clr.violations:
                         findings.append({
                             "file": file,
@@ -8673,8 +8653,7 @@ def _run_mechanical_detectors(
                             sg.sink_line,
                             f"{v} guard for {ar.sink_api}: {notes}",
                         ))
-                for asym in asymmetries:
-                    findings.append((
+                findings.extend((
                         fp, asym.sink_function, "sink_guard_asymmetry",
                         asym.unguarded_line,
                         (
@@ -8682,7 +8661,7 @@ def _run_mechanical_detectors(
                             f"guarded at L{asym.guarded_line}, "
                             f"unguarded at L{asym.unguarded_line}"
                         ),
-                    ))
+                    ) for asym in asymmetries)
             except Exception:
                 logger.debug("condition adequacy failed for %s", fp, exc_info=True)
 
@@ -8755,9 +8734,7 @@ def _run_mechanical_detectors(
                     if idx in _smt_cleared:
                         continue
                     cpg_results = _cpg_verify(sg, joern_server=joern_server)
-                    for cr in cpg_results:
-                        if cr.data_dep_bound is False and cr.dominates_sink is False:
-                            findings.append((
+                    findings.extend((
                                 fp, sg.sink_function, "decorative_guard_cpg",
                                 sg.sink_line,
                                 (
@@ -8765,7 +8742,7 @@ def _run_mechanical_detectors(
                                     f"on data-dep path nor dominates sink "
                                     f"{cr.sink_api}"
                                 ),
-                            ))
+                            ) for cr in cpg_results if cr.data_dep_bound is False and cr.dominates_sink is False)
             except Exception:
                 logger.debug("condition_cpg failed for %s", fp, exc_info=True)
 
@@ -13745,10 +13722,7 @@ def _normalise_r2_decompilation(source: str) -> str:
         m_call = _CALL.match(line)
         if m_call:
             func_name = m_call.group(1)
-            args = []
-            for reg in arg_order:
-                if reg in arg_vals:
-                    args.append(arg_vals[reg])
+            args = [arg_vals[reg] for reg in arg_order if reg in arg_vals]
             if args:
                 indent = line[: len(line) - len(line.lstrip())]
                 call_line = f"{indent}{func_name}({', '.join(args)});"
@@ -13838,9 +13812,7 @@ def _effective_cwe(
     texts: list[str] = []
     if outcome.hypothesis:
         texts.append(outcome.hypothesis)
-    for h in (outcome.hypotheses or review.get("hypotheses") or []):
-        if isinstance(h, dict) and h.get("mechanism"):
-            texts.append(h["mechanism"])
+    texts.extend(h["mechanism"] for h in outcome.hypotheses or review.get("hypotheses") or [] if isinstance(h, dict) and h.get("mechanism"))
     if not texts:
         return ""
 
@@ -14375,8 +14347,7 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
     if smt_verb:
         chain.append({"type": "smt", "config": {"verb": smt_verb}})
 
-    for cocci_rule in cocci_rules_for_cwe(cwe):
-        chain.append({"type": "coccinelle", "config": {"rule": cocci_rule}})
+    chain.extend({"type": "coccinelle", "config": {"rule": cocci_rule}} for cocci_rule in cocci_rules_for_cwe(cwe))
 
     codeql_query = codeql_query_for_cwe(cwe)
     if codeql_query:
@@ -22894,22 +22865,16 @@ def _fuse_all_evidence(ctx: dict[str, Any]) -> None:
     spec_ev: list[GradedEvidence] = []
     spec = ctx.get("inferred_spec")
     if spec:
-        for pc in getattr(spec, "preconditions", []) or []:
-            spec_ev.append(
-                GradedEvidence(
+        spec_ev.extend(GradedEvidence(
                     source=EvidenceSource.LLM_SPEC,
                     confidence=Confidence.LOW,
                     description=f"spec precondition: {pc}",
-                )
-            )
-        for ns in getattr(spec, "negative_specs", []) or []:
-            spec_ev.append(
-                GradedEvidence(
+                ) for pc in getattr(spec, "preconditions", []) or [])
+        spec_ev.extend(GradedEvidence(
                     source=EvidenceSource.LLM_SPEC,
                     confidence=Confidence.LOW,
                     description=f"spec negative: {ns}",
-                )
-            )
+                ) for ns in getattr(spec, "negative_specs", []) or [])
 
     ns_ev: list[GradedEvidence] = []
     for finding in ctx.get("negative_space", []):

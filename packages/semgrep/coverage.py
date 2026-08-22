@@ -32,14 +32,12 @@ def to_coverage_record(
 
     for r in results:
         files.update(r.files_examined)
-        for f in r.files_failed:
-            failures.append({
+        failures.extend({
                 "rule": r.name or "semgrep",
                 "path": f.get("path", ""),
                 "reason": f.get("reason", "error"),
-            })
-        for err in r.errors:
-            failures.append({"rule": r.name or "semgrep", "reason": err})
+            } for f in r.files_failed)
+        failures.extend({"rule": r.name or "semgrep", "reason": err} for err in r.errors)
         if r.semgrep_version:
             versions.append(r.semgrep_version)
         if r.name:

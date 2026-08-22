@@ -62,47 +62,37 @@ def _site(kind: str, ev: Any, **extra: Any) -> dict[str, Any]:
         "line": line,
         "function": getattr(ev, "enclosing_function", None),
     }
-    for k, v in extra.items():
-        if v is not None:
-            site[k] = v
+    site.update({k: v for k, v in extra.items() if v is not None})
     return site
 
 
 def build_ownership_model(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Alloc / checked-alloc / paired-free / double-free sites, in order."""
-    out: list[dict[str, Any]] = []
-    for a in getattr(si, "allocations", ()) or ():
-        out.append(_site("alloc", a, allocator=getattr(a, "allocator", None)))
-    for a in getattr(si, "checked_allocations", ()) or ():
-        out.append(_site(
+    out: list[dict[str, Any]] = [_site("alloc", a, allocator=getattr(a, "allocator", None)) for a in getattr(si, "allocations", ()) or ()]
+    out.extend(_site(
             "alloc_checked", a, allocator=getattr(a, "allocator", None),
-        ))
-    for p in getattr(si, "paired_frees", ()) or ():
-        out.append(_site(
+        ) for a in getattr(si, "checked_allocations", ()) or ())
+    out.extend(_site(
             "paired_free", p,
             allocator=getattr(p, "allocator", None),
             free_fn=getattr(p, "free_fn", None),
-        ))
-    for d in getattr(si, "double_frees", ()) or ():
-        out.append(_site(
+        ) for p in getattr(si, "paired_frees", ()) or ())
+    out.extend(_site(
             "double_free", d,
             free_fn=getattr(d, "free_fn", None),
             role=getattr(d, "role", None),
-        ))
+        ) for d in getattr(si, "double_frees", ()) or ())
     return out
 
 
 def build_privilege_model(si: SourceIntelResult) -> list[dict[str, Any]]:
     """Capability-check + LSM-hook sites."""
-    out: list[dict[str, Any]] = []
-    for c in getattr(si, "capabilities", ()) or ():
-        out.append(_site(
+    out: list[dict[str, Any]] = [_site(
             "capability", c,
             name=getattr(c, "cap_function", None),
             grade=getattr(c, "grade", None),
-        ))
-    for h in getattr(si, "lsm_hooks", ()) or ():
-        out.append(_site("lsm_hook", h, name=getattr(h, "hook_name", None)))
+        ) for c in getattr(si, "capabilities", ()) or ()]
+    out.extend(_site("lsm_hook", h, name=getattr(h, "hook_name", None)) for h in getattr(si, "lsm_hooks", ()) or ())
     return out
 
 
@@ -132,13 +122,11 @@ def build_crypto_inventory(si: SourceIntelResult) -> list[dict[str, Any]]:
     libsodium/libc) and the concrete function (`fn`) ride alongside so
     consumers can filter without re-parsing the kind string.
     """
-    out: list[dict[str, Any]] = []
-    for cc in getattr(si, "crypto_calls", ()) or ():
-        out.append(_site(
+    out: list[dict[str, Any]] = [_site(
             getattr(cc, "kind", "crypto"), cc,
             api=getattr(cc, "api", None),
             fn=getattr(cc, "fn", None),
-        ))
+        ) for cc in getattr(si, "crypto_calls", ()) or ()]
     return out
 
 

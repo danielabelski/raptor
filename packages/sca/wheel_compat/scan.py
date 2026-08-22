@@ -123,8 +123,7 @@ def evaluate_platform_compat(
 
         # One finding per (dep, problematic-pair) — operators see
         # which platform is the issue.
-        for v in non_ok:
-            findings.append(_make_finding(dep, v, rec))
+        findings.extend(_make_finding(dep, v, rec) for v in non_ok)
 
     return findings
 

@@ -160,17 +160,14 @@ class PythonExtractor:
         ``eval(...)``). Captured as ``top_level`` so it's a named, reviewable,
         reachability-eligible unit instead of anonymous interstitial.
         Assignments are globals; defs/classes/imports are their own kinds."""
-        out: list[CodeItem] = []
-        for node in getattr(tree, "body", []):
-            if isinstance(node, ast.Expr) and any(
-                isinstance(n, ast.Call) for n in ast.walk(node)
-            ):
-                out.append(CodeItem(
+        out: list[CodeItem] = [CodeItem(
                     name=f"top_level:{node.lineno}",
                     kind=KIND_TOP_LEVEL,
                     line_start=node.lineno,
                     line_end=getattr(node, "end_lineno", None) or node.lineno,
-                ))
+                ) for node in getattr(tree, "body", []) if isinstance(node, ast.Expr) and any(
+                isinstance(n, ast.Call) for n in ast.walk(node)
+            )]
         return out
 
     @staticmethod
@@ -245,9 +242,7 @@ class PythonExtractor:
         return_type = ast.unparse(node.returns) if node.returns else None
 
         # Decorators
-        attributes = []
-        for dec in node.decorator_list:
-            attributes.append(ast.unparse(dec))
+        attributes = [ast.unparse(dec) for dec in node.decorator_list]
 
         return FunctionInfo(
             name=node.name,
@@ -1432,9 +1427,7 @@ class ObjCExtractor:
             seen.add(name)
         # Plain C functions in the same translation unit.
         method_names = set(seen)
-        for fn in CExtractor().extract(filepath, content):
-            if fn.name not in method_names:
-                functions.append(fn)
+        functions.extend(fn for fn in CExtractor().extract(filepath, content) if fn.name not in method_names)
         # C extractor's post-pass already filled its own line_ends.
         functions.sort(key=lambda f: f.line_start)
         return functions
@@ -1836,9 +1829,7 @@ class TreeSitterExtractor:
         out: list[str] = []
         for child in node.children:
             if child.type == "modifiers":
-                for mod in child.children:
-                    if mod.type in ("marker_annotation", "annotation"):
-                        out.append(mod.text.decode().lstrip("@"))
+                out.extend(mod.text.decode().lstrip("@") for mod in child.children if mod.type in ("marker_annotation", "annotation"))
             elif child.type == "attribute_list":
                 # C#: attribute_list → attribute. PHP: attribute_list →
                 # attribute_group → attribute (deeper nesting).
@@ -1856,9 +1847,7 @@ class TreeSitterExtractor:
                 # Ruby: ``class X < ApplicationController`` — base is a
                 # ``constant`` / ``scope_resolution``. Java: ``extends Foo`` —
                 # base is a ``type_identifier`` / ``generic_type``. Capture both.
-                for sc in child.children:
-                    if sc.type in ("constant", "scope_resolution"):
-                        out.append(sc.text.decode())          # Ruby
+                out.extend(sc.text.decode() for sc in child.children if sc.type in ("constant", "scope_resolution"))          # Ruby
                 out.extend(self._java_base_names(child))       # Java (no-op for Ruby)
             elif child.type in ("super_interfaces", "extends_interfaces"):
                 # Java: ``implements Bar`` / interface ``extends Baz`` — record
@@ -1873,9 +1862,7 @@ class TreeSitterExtractor:
                 # ``APIView``) so framework base classes (Django/DRF/Flask
                 # class-based views) can mark the class's methods as entries.
                 # Skip keyword args (``metaclass=…``).
-                for b in child.children:
-                    if b.type in ("identifier", "attribute"):
-                        out.append(b.text.decode().split(".")[-1].strip())
+                out.extend(b.text.decode().split(".")[-1].strip() for b in child.children if b.type in ("identifier", "attribute"))
             elif child.type == "base_list":
                 # C#: ``: ControllerBase, IFoo<int>`` — record base/interface
                 # tail names so framework base classes (ControllerBase / Hub /
@@ -2741,15 +2728,12 @@ def _get_ts_languages() -> list[str]:
     if not _TS_AVAILABLE:
         _cached_ts_languages = []
         return []
-    available = []
     # Every language ``_ts_language`` can load. This list drifted behind
     # the loader — cpp, typescript, rust, csharp, ruby and php all had
     # working branches but were absent here, so the startup banner
     # under-reported what the inventory could actually parse. Keep the
     # two in sync when adding a grammar.
-    for lang in _TS_PROBE_LANGUAGES:
-        if _ts_language(lang):
-            available.append(lang)
+    available = [lang for lang in _TS_PROBE_LANGUAGES if _ts_language(lang)]
     _cached_ts_languages = available
     return available
 
@@ -3044,14 +3028,12 @@ def _extract_globals_ts(root_node, language: str) -> list[CodeItem]:
         # the declaration. Falls back to the single-name path for
         # languages where multi-spec isn't a thing.
         names = _global_names(child, language)
-        for name in names:
-            if name:
-                globals_found.append(CodeItem(
+        globals_found.extend(CodeItem(
                     name=name,
                     kind=KIND_GLOBAL,
                     line_start=child.start_point[0] + 1,
                     line_end=child.end_point[0] + 1,
-                ))
+                ) for name in names if name)
 
     return globals_found
 

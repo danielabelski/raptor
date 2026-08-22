@@ -204,13 +204,12 @@ def enrich_with_call_edges(
             caller = call.get("caller", "")
             if not caller:
                 continue
-            for callee in call.get("chain", []):
-                edges.append({
+            edges.extend({
                     "caller_file": path,
                     "caller": caller,
                     "callee": callee,
                     "callee_file": func_to_file.get(callee, ""),
-                })
+                } for callee in call.get("chain", []))
 
     context_map["call_edges"] = edges
     if edges:

@@ -237,12 +237,8 @@ def render_dockerfile(
     issues.extend(drift_issues)
 
     clean_apt = list(apt_packages or [])
-    for pkg in clean_apt:
-        if not isinstance(pkg, str) or not _APT_PACKAGE_RE.match(pkg):
-            issues.append(
-                f"apt_packages: {pkg!r} does not match allowed pattern "
-                f"(alphanumeric, dots, plus, hyphen, colon, equals, tilde)"
-            )
+    issues.extend(f"apt_packages: {pkg!r} does not match allowed pattern "
+                f"(alphanumeric, dots, plus, hyphen, colon, equals, tilde)" for pkg in clean_apt if not isinstance(pkg, str) or not _APT_PACKAGE_RE.match(pkg))
     if issues:
         return DockerfileRenderResult(ok=False, issues=issues, warnings=drift_warnings)
 
@@ -272,8 +268,7 @@ def render_dockerfile(
             f"-y --no-install-recommends "
             f"{apt_line} && rm -rf /var/lib/apt/lists/*"
         )
-    for op in clean_copy_ops:
-        lines.append(f"COPY {op['src']} {op['dst']}")
+    lines.extend(f"COPY {op['src']} {op['dst']}" for op in clean_copy_ops)
     for step in install_steps:
         step_stripped = step.strip().replace('\n', ' ').replace('\r', '')
         if not step_stripped:

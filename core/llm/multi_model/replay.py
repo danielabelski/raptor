@@ -359,12 +359,9 @@ def render_markdown(report: ReplayReport) -> str:
             "converged | iters |"
         )
         lines.append("|---|---:|---:|---:|:---:|---:|")
-        for s in sorted(report.class_summaries, key=lambda x: x.decision_class):
-            lines.append(
-                f"| `{s.decision_class}` | {s.n_findings} | "
+        lines.extend(f"| `{s.decision_class}` | {s.n_findings} | "
                 f"{s.n_flips_to_exploitable} | {s.n_flips_to_not_exploitable} | "
-                f"{'✓' if s.converged else '×'} | {s.iterations} |"
-            )
+                f"{'✓' if s.converged else '×'} | {s.iterations} |" for s in sorted(report.class_summaries, key=lambda x: x.decision_class))
     lines.append("")
     if report.class_summaries:
         lines.append("## Inferred per-model reliability (averaged across classes)")

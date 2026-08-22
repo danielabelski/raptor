@@ -112,9 +112,7 @@ def _iter_named(root):
     while stack:
         cur = stack.pop()
         yield cur
-        for c in cur.children:
-            if c.is_named:
-                stack.append(c)
+        stack.extend(c for c in cur.children if c.is_named)
 
 
 def _enclosing_method(root, line: int):
@@ -222,19 +220,15 @@ def _writers_of(method, name: str) -> list[int]:
                     and _text(lhs) == name:
                 out.append(n.start_byte)
         elif t == "update_expression":
-            for c in n.children:
-                if c.is_named and c.type == "identifier" \
-                        and _text(c) == name:
-                    out.append(n.start_byte)
+            out.extend(n.start_byte for c in n.children if c.is_named and c.type == "identifier" \
+                        and _text(c) == name)
         elif t in {"variable_declarator", "enhanced_for_statement"}:
             nm = n.child_by_field_name("name")
             if nm is not None and _text(nm) == name:
                 out.append(n.start_byte)
         elif t == "catch_formal_parameter":
-            for c in n.children:
-                if c.is_named and c.type == "identifier" \
-                        and _text(c) == name:
-                    out.append(n.start_byte)
+            out.extend(n.start_byte for c in n.children if c.is_named and c.type == "identifier" \
+                        and _text(c) == name)
     return out
 
 

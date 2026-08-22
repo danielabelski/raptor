@@ -371,19 +371,13 @@ def format_evidence_prose(
             )
 
     if record.app_sink_targets:
-        for target in record.app_sink_targets[:10]:
-            lines.append(
-                f"- APPLICATION SINK: this function directly calls "
-                f"`{_safe_name(target)}` (dangerous API)"
-            )
+        lines.extend(f"- APPLICATION SINK: this function directly calls "
+                f"`{_safe_name(target)}` (dangerous API)" for target in record.app_sink_targets[:10])
 
     if record.sanitizer_calls:
-        for sc in record.sanitizer_calls[:8]:
-            lines.append(
-                f"- SANITIZER: `{_safe_name(sc.get('callable', '?'))}` "
+        lines.extend(f"- SANITIZER: `{_safe_name(sc.get('callable', '?'))}` "
                 f"transforms param `{_safe_name(sc.get('param', '?'))}` "
-                f"before return (taint summary)"
-            )
+                f"before return (taint summary)" for sc in record.sanitizer_calls[:8])
 
     if record.transitive_taint is not None:
         tt = record.transitive_taint
@@ -559,8 +553,7 @@ def format_evidence_structured(
                     "source": "this_run",
                 })
 
-    for flow in record.joern_flows:
-        entries.append({
+    entries.extend({
             "tier": "joern",
             "evidence_tier": "xref_backed",
             "source_method": getattr(flow, "source_method", ""),
@@ -568,10 +561,9 @@ def format_evidence_structured(
             "sink_call": getattr(flow, "sink_call", ""),
             "is_inter_procedural": getattr(flow, "is_inter_procedural", False),
             "source": "this_run",
-        })
+        } for flow in record.joern_flows)
 
-    for flow in record.imported_joern_flows:
-        entries.append({
+    entries.extend({
             "tier": "joern",
             "evidence_tier": "xref_backed",
             "source_method": getattr(flow, "source_method", ""),
@@ -579,27 +571,25 @@ def format_evidence_structured(
             "sink_call": getattr(flow, "sink_call", ""),
             "is_inter_procedural": getattr(flow, "is_inter_procedural", False),
             "source": "imported",
-        })
+        } for flow in record.imported_joern_flows)
 
-    for ug in record.joern_unguarded_sinks:
-        entries.append({
+    entries.extend({
             "tier": "joern_unguarded",
             "evidence_tier": "xref_backed",
             "sink": ug.get("sink", ""),
             "line": ug.get("line", 0),
             "code": ug.get("code", ""),
             "source": "this_run",
-        })
+        } for ug in record.joern_unguarded_sinks)
 
-    for sa in record.joern_sink_args:
-        entries.append({
+    entries.extend({
             "tier": "joern_sink_arg",
             "evidence_tier": "xref_backed",
             "sink": sa.get("sink", ""),
             "arg_index": sa.get("arg_index", -1),
             "source_param": sa.get("source_param", ""),
             "source": "this_run",
-        })
+        } for sa in record.joern_sink_args)
 
     for alert in record.codeql_alerts:
         entry = {

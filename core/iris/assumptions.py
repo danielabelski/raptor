@@ -239,8 +239,5 @@ def evict_stale_assumptions(
     """Remove assumptions for files no longer in the project."""
     from core.evidence import TIER_RANK
 
-    kept = []
-    for a in assumptions:
-        if a.file in current_files or TIER_RANK.get(a.evidence_tier, 0) >= TIER_RANK.get(keep_above, 0):
-            kept.append(a)
+    kept = [a for a in assumptions if a.file in current_files or TIER_RANK.get(a.evidence_tier, 0) >= TIER_RANK.get(keep_above, 0)]
     return kept

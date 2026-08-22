@@ -290,13 +290,10 @@ def _render_markdown(summary_name: str, results: list[dict],
             examples = by_v[verdict]
             lines.append(f"### {verdict.value} ({len(examples)})")
             # Show up to 5 examples.
-            for ex in examples[:5]:
-                lines.append(
-                    f"- **{ex.cve_id}** (src={ex.source}): "
+            lines.extend(f"- **{ex.cve_id}** (src={ex.source}): "
                     f"picked=`{ex.picked_slug}@{ex.picked_sha[:12] if ex.picked_sha else ''}`, "
                     f"expected={list(ex.expected_slugs)[:3]} / {[s[:12] for s in ex.expected_shas[:3]]}"
-                    + (f". {ex.notes}" if ex.notes else "")
-                )
+                    + (f". {ex.notes}" if ex.notes else "") for ex in examples[:5])
             if len(examples) > 5:
                 lines.append(f"- … and {len(examples) - 5} more")
     return "\n".join(lines) + "\n"

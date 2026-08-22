@@ -518,15 +518,13 @@ def try_coccinelle_resolve(
     for rule_stem, result in all_results.items():
         if not result.ok and not result.matches:
             continue
-        for m in result.matches:
-            if m.file:
-                all_callers.append(CallerCandidate(
+        all_callers.extend(CallerCandidate(
                     file=m.file,
                     function="",
                     line=m.line,
                     score=8,
                     reasons=[f"coccinelle:{rule_stem}"],
-                ))
+                ) for m in result.matches if m.file)
 
     if all_callers:
         return PropagationResult(
@@ -1018,8 +1016,7 @@ def format_depth_limit_report(
         lines.append(
             "  - Build CodeQL DB (recommended for deep taint):",
         )
-        for hint_line in probe.codeql_setup_hint.splitlines():
-            lines.append(f"    {hint_line}")
+        lines.extend(f"    {hint_line}" for hint_line in probe.codeql_setup_hint.splitlines())
     lines.append(
         f"  - Raise depth: /audit --max-propagation-depth {max_depth * 2}",
     )

@@ -198,15 +198,13 @@ def _build_file_changes(
     `git diff` call.
     """
     hunk_counts = _count_hunks_per_file(diff_text)
-    out: list[FileChange] = []
-    for path in paths:
-        out.append(FileChange(
+    out: list[FileChange] = [FileChange(
             path=path,
             is_test=is_test_path(path),
             hunks_count=hunk_counts.get(path, 0),
             before_source=_show_blob(repo, before, path, timeout_s, cap_bytes),
             after_source=_show_blob(repo, after, path, timeout_s, cap_bytes),
-        ))
+        ) for path in paths]
     return tuple(out)
 
 

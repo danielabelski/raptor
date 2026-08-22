@@ -43,9 +43,7 @@ def check_lifecycle_at_function(
         for rs in field.read_sites:
             if rs.file == file_path and rs.function == function_name:
                 field_findings = check_coverage(field)
-                for f in field_findings:
-                    if f.read_site == rs:
-                        findings.append(f)
+                findings.extend(f for f in field_findings if f.read_site == rs)
 
     return findings
 
@@ -78,9 +76,7 @@ def lifecycle_findings_to_constraints(
     Each finding becomes a 'precondition' constraint that can be
     propagated through the constraint system.
     """
-    constraints: list[dict[str, Any]] = []
-    for f in findings:
-        constraints.append({
+    constraints: list[dict[str, Any]] = [{
             "kind": "precondition",
             "target": f"{f.state_field.struct_type}.{f.state_field.name}",
             "rule": (
@@ -95,5 +91,5 @@ def lifecycle_findings_to_constraints(
             "function": f.read_site.function,
             "file": f.read_site.file,
             "propagation": "callers",
-        })
+        } for f in findings]
     return constraints

@@ -908,8 +908,8 @@ def evaluate(
     joined: dict[tuple[str, str], list[RuleHit]] = {}
     for label in labels:
         row_hits: list[RuleHit] = []
-        for engine, outcome in repo_outcomes.get(
-                label.source.repo, {}).items():
+        for outcome in repo_outcomes.get(
+                label.source.repo, {}).values():
             if not outcome.ran:
                 continue
             for hit in outcome.hits:
@@ -1082,8 +1082,7 @@ def format_summary(report: dict[str, Any]) -> str:
     if engine_notes:
         lines.append("")
         lines.append("Engine status:")
-        for note in engine_notes:
-            lines.append(f"  {note}")
+        lines.extend(f"  {note}" for note in engine_notes)
 
     per_class = report.get("per_class", {})
     if per_class:
@@ -1132,10 +1131,8 @@ def format_summary(report: dict[str, Any]) -> str:
             if r["dormant_hits"]:
                 parts.append(f"dormant={len(r['dormant_hits'])}")
             lines.append(f"  {r['rule']}: {', '.join(parts)}")
-            for fid in r["fp"]:
-                lines.append(f"    FP on clean label: {fid}")
-            for fid in r["misses"]:
-                lines.append(f"    miss: {fid}")
+            lines.extend(f"    FP on clean label: {fid}" for fid in r["fp"])
+            lines.extend(f"    miss: {fid}" for fid in r["misses"])
 
     timings = report.get("rule_timings") or {}
     slowest = sorted(
@@ -1177,15 +1174,13 @@ def format_summary(report: dict[str, Any]) -> str:
     if skipped:
         lines.append("")
         lines.append(f"Skipped labels ({len(skipped)} — not failures):")
-        for s in skipped:
-            lines.append(f"  {s['function_id']}: {s['reason']}")
+        lines.extend(f"  {s['function_id']}: {s['reason']}" for s in skipped)
 
     errors = meta.get("engine_errors", [])
     if errors:
         lines.append("")
         lines.append(f"Engine errors ({len(errors)}):")
-        for e in errors:
-            lines.append(f"  {e}")
+        lines.extend(f"  {e}" for e in errors)
 
     return "\n".join(lines)
 

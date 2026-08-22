@@ -669,8 +669,7 @@ class DataflowVisualizer:
         if dataflow.sanitizers:
             lines.append("")
             lines.append("**Detected Sanitizers:**")
-            for san in dataflow.sanitizers:
-                lines.append(f"- {san}")
+            lines.extend(f"- {san}" for san in dataflow.sanitizers)
 
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
@@ -718,8 +717,7 @@ class DataflowVisualizer:
 
         if dataflow.sanitizers:
             lines.append("Detected Sanitizers:")
-            for san in dataflow.sanitizers:
-                lines.append(f"  • {san}")
+            lines.extend(f"  • {san}" for san in dataflow.sanitizers)
             lines.append("")
 
         lines.append("=" * 80)
@@ -830,8 +828,7 @@ class DataflowVisualizer:
         lines.append("")
 
         # Edges
-        for i in range(sink_id):
-            lines.append(f'    node{i} -> node{i + 1};')
+        lines.extend(f'    node{i} -> node{i + 1};' for i in range(sink_id))
 
         lines.append("}")
 

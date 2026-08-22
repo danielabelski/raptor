@@ -245,9 +245,7 @@ def render_warm_markdown(warm: dict[str, Any]) -> str:
         "| CWE | raw FPs | would-suppress | warm FPs |",
         "|-----|---------|----------------|----------|",
     ]
-    for row in warm["per_cwe"]:
-        lines.append(
-            f"| {row['cwe']} | {row['raw_fps']} | "
-            f"{row['would_suppress']} | {row['warm_fps']} |")
+    lines.extend(f"| {row['cwe']} | {row['raw_fps']} | "
+            f"{row['would_suppress']} | {row['warm_fps']} |" for row in warm["per_cwe"])
     lines.append("")
     return "\n".join(lines)

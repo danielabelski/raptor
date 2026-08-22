@@ -220,10 +220,7 @@ class BuildIDCache:
         entry_dir = self.cache_dir / build_id
         if not entry_dir.is_dir():
             return []
-        artifacts = []
-        for path in entry_dir.iterdir():
-            if path.suffix == ".json":
-                artifacts.append(path.stem)
+        artifacts = [path.stem for path in entry_dir.iterdir() if path.suffix == ".json"]
         return sorted(artifacts)
 
     def evict(self, build_id: str) -> int:

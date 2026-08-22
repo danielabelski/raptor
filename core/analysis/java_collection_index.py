@@ -443,9 +443,7 @@ def build_local_collection_index(
                         (cur.start_byte, cur.end_byte) not in consumed):
                     idx._violated.add(nm)
                 continue
-            for c in cur.children:
-                if c.is_named:
-                    stack.append(c)
+            stack.extend(c for c in cur.children if c.is_named)
 
     _bind_positional(idx)
     return idx

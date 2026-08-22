@@ -1157,15 +1157,13 @@ class CodeQLAgent:
 
             print("\n  Example Dataflow Paths:")
 
-            table_data = []
-            for example in dataflow_examples:
-                table_data.append([
+            table_data = [[
                     example["rule"],
                     example["source"],
                     "→" * (example["steps"] - 1),
                     example["sink"],
                     example["steps"]
-                ])
+                ] for example in dataflow_examples]
 
             headers = ["Rule", "Source", "Flow", "Sink", "Steps"]
             table = tabulate(table_data, headers=headers, tablefmt="simple", maxcolwidths=[20, 25, 10, 25, 5])

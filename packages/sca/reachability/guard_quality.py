@@ -304,11 +304,10 @@ def _enrich_cpg(
             "guard_quality: %d/%d CPG guard checks errored — "
             "guard evidence degraded", errored, len(cpg_results),
         )
-    for cr in cpg_results:
-        guard_details.append({
+    guard_details.extend({
             "cpg_verified": cr.verified_relevant,
             "data_dep_bound": cr.data_dep_bound,
-        })
+        } for cr in cpg_results)
 
 
 def _parse_evidence(entry: str) -> tuple:

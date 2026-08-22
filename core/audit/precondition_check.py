@@ -67,10 +67,7 @@ class PreconditionVerdict:
 
     @property
     def contradiction_summary(self) -> str:
-        parts = []
-        for c in self.checks:
-            if c.verdict == "contradicted":
-                parts.append(f"{c.check_type}: {c.evidence}")
+        parts = [f"{c.check_type}: {c.evidence}" for c in self.checks if c.verdict == "contradicted"]
         return "; ".join(parts)
 
     @property
@@ -304,9 +301,7 @@ def _check_null_termination(
             if not parameter:
                 strong_patterns.append(pat.pattern[:40])
 
-    for pat in _NULL_TERM_TOKEN_PATTERNS:
-        if pat.search(source):
-            found_patterns.append(pat.pattern[:40])
+    found_patterns.extend(pat.pattern[:40] for pat in _NULL_TERM_TOKEN_PATTERNS if pat.search(source))
 
     # Also look for the specific parameter if given
     if parameter:
@@ -400,10 +395,7 @@ def _check_bounds(
     expect_absent, found patterns yield 'supported' and their absence
     'inconclusive'.
     """
-    found = []
-    for pat in _BOUNDS_PATTERNS:
-        if pat.search(source):
-            found.append(pat.pattern[:30])
+    found = [pat.pattern[:30] for pat in _BOUNDS_PATTERNS if pat.search(source)]
 
     has_bounds = bool(found)
 
@@ -475,10 +467,7 @@ def _check_sanitization(
     doesn't prove it protects the specific vulnerable operation.
     Return 'inconclusive' instead of 'contradicted' for regex hits.
     """
-    found = []
-    for pat in _SANITIZE_PATTERNS:
-        if pat.search(source):
-            found.append(pat.pattern[:30])
+    found = [pat.pattern[:30] for pat in _SANITIZE_PATTERNS if pat.search(source)]
 
     has_sanitization = bool(found)
 
@@ -665,10 +654,7 @@ def _check_reaches_sink(
     from .source_view import sanitized_view
 
     view = sanitized_view(source, file)
-    found = []
-    for pat in _SINK_CALL_PATTERNS:
-        if pat.search(view):
-            found.append(pat.pattern[:30])
+    found = [pat.pattern[:30] for pat in _SINK_CALL_PATTERNS if pat.search(view)]
 
     has_sink = bool(found)
 

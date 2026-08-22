@@ -145,16 +145,14 @@ def extract_conditions_from_cfg(cfg) -> list[ConditionEdge]:
                 dst_line=false_succ.lineno,
                 condition=false_cond,
             ))
-            for succ in successors[2:]:
-                edges.append(ConditionEdge(
+            edges.extend(ConditionEdge(
                     src_line=node.lineno,
                     dst_line=succ.lineno,
-                ))
+                ) for succ in successors[2:])
         else:
-            for succ in successors:
-                edges.append(ConditionEdge(
+            edges.extend(ConditionEdge(
                     src_line=node.lineno,
                     dst_line=succ.lineno,
-                ))
+                ) for succ in successors)
 
     return edges

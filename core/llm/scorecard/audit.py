@@ -304,8 +304,7 @@ def render_markdown(report: AuditReport) -> str:
             f"| {summary.total_cells} "
             f"| {summary.cells_with_any_data} ",
         ]
-        for t in THRESHOLDS:
-            row_parts.append(f"| {summary.cells_at_thresholds.get(t, 0)} ")
+        row_parts.extend(f"| {summary.cells_at_thresholds.get(t, 0)} " for t in THRESHOLDS)
         row_parts.append(f"| {summary.total_observations} |")
         lines.append("".join(row_parts))
     lines.append("")
@@ -320,13 +319,10 @@ def render_markdown(report: AuditReport) -> str:
             "| decision_class | distinct models | median obs/cell | total obs |"
         )
         lines.append("|---|---:|---:|---:|")
-        for s in report.decision_class_summaries:
-            lines.append(
-                f"| `{s.decision_class}` "
+        lines.extend(f"| `{s.decision_class}` "
                 f"| {s.distinct_models} "
                 f"| {s.median_obs_primary:.1f} "
-                f"| {s.total_obs_primary} |"
-            )
+                f"| {s.total_obs_primary} |" for s in report.decision_class_summaries)
     lines.append("")
     return "\n".join(lines)
 

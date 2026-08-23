@@ -555,4 +555,45 @@ __all__ = [
     "STRING_OVERFLOW_FUNCS",
     "TOCTOU_FUNCS",
     "fortified",
+    "FORMAT_STRING_FMT_ARG_INDEX",
 ]
+
+
+# === Format-string sink → fmt-arg position ===
+# 1-based position of the format-string argument in the callee's
+# argument list. Used by consumers that must classify which callee
+# args are varargs (e.g. core/symbolic/_fmtstr.py's slot-discovery
+# primitive; the router's fmt-shape playbooks). OVERLAPS
+# FORMAT_STRING_FUNCS above rather than mirroring it: it adds back
+# the ubiquitous printf family (excluded there because ubiquity
+# kills its signal value as "dangerous imports") and omits the
+# non-varargs platform loggers (NSLog/os_log) that position
+# consumers never classify.
+#
+# ``va_list`` variants (v*printf) are listed but slot discovery
+# through a va_list is not currently supported — the caller
+# receives the arg position but symbolic analysis of the va_list
+# spill is a separate capability.
+FORMAT_STRING_FMT_ARG_INDEX: dict[str, int] = {
+    "printf": 1,
+    "vprintf": 1,
+    "fprintf": 2,
+    "vfprintf": 2,
+    "dprintf": 2,
+    "vdprintf": 2,
+    "sprintf": 2,
+    "vsprintf": 2,
+    "snprintf": 3,
+    "vsnprintf": 3,
+    "syslog": 2,       # syslog(priority, fmt, ...)
+    "vsyslog": 2,
+    # BSD wrappers
+    "err": 2,          # err(exitcode, fmt, ...)  (fmt may be NULL)
+    "errx": 2,
+    "warn": 1,         # warn(fmt, ...)
+    "warnx": 1,
+    "verr": 2, "verrx": 2, "vwarn": 1, "vwarnx": 1,
+    # Windows ANSI/Unicode
+    "wsprintfA": 2,    # wsprintfA(buffer, fmt, ...)
+    "wsprintfW": 2,
+}

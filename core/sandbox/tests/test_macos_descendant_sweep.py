@@ -415,10 +415,14 @@ class TestShimSweepIntegration:
 
     def test_normal_completion_sweeps_setsid_escapee(self):
         # Target: fork the escapee, print its pid, keep the tree alive
-        # past one shim snapshot interval (0.5s) so the escapee's ppid
-        # chain gets captured while intact, then exit 0.
+        # long enough for the shim's 0.5s-interval snapshot thread to
+        # capture the escapee's ppid chain while intact, then exit 0.
+        # The window is several snapshot cycles wide: under whole-suite
+        # parallel load the snapshot thread can be descheduled well past
+        # one interval, and a missed capture fails the test on a starved
+        # precondition rather than on the sweep behaviour under test.
         script = ("setsid sleep 300 </dev/null >/dev/null 2>&1 & "
-                  "echo $!; sleep 1.2; exit 0")
+                  "echo $!; sleep 3; exit 0")
         argv = [sys.executable, "-I", str(SHIM_PATH),
                 "/bin/sh", "-c", script]
         proc = subprocess.run(
@@ -448,7 +452,9 @@ class TestShimSweepIntegration:
         daemon = None
         try:
             daemon = int(proc.stdout.readline().strip())
-            time.sleep(1.2)   # let the shim snapshot the live tree
+            # Several snapshot cycles, for the same under-load reason as
+            # the normal-completion test above.
+            time.sleep(3)   # let the shim snapshot the live tree
             os.close(death_w)  # orchestrator "dies"
             assert proc.wait(timeout=30) == 137
             assert _wait_dead(daemon), (

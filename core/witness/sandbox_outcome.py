@@ -90,6 +90,25 @@ def outcome_from_sandbox_info(
 
     info = sandbox_info or {}
 
+    # Evidence tiering (stamped by observe.py; see its comments):
+    # ``signal_provenance == "waitstatus"`` means the parent's own
+    # waitpid saw WIFSIGNALED — kernel truth the target cannot mint via
+    # exit(2). ``"exitcode"`` means the 128+sig decoding of an exit
+    # CODE, which a hostile target forges with a one-line exit(139).
+    # Sanitizer detection is always a stderr substring match at this
+    # layer (``sanitizer_provenance == "stderr_match"``) and therefore
+    # never mechanical on its own. ``evidence_grade`` summarises the
+    # tier for verdict makers: "mechanical" (unforgeable-by-target) vs
+    # "heuristic" (target-forgeable). Legacy sandbox_info without the
+    # provenance stamps grades heuristic — fail-safe, and honest for
+    # the spawn tiers that re-encode signals as exit codes. Consumers
+    # holding a stronger oracle (dark_verify's sentinel channel, the
+    # exploit_verify waitstatus wrapper) may upgrade the grade with
+    # their own out-of-band evidence. New detail fields only: outcomes
+    # keep their historical meaning and tolerant readers are unaffected.
+    sig_prov = info.get("signal_provenance")
+    _grade = "mechanical" if sig_prov == "waitstatus" else "heuristic"
+
     # Sanitizer wins because it directly identifies a bug class, even
     # when the process exited cleanly via halt_on_error=0.
     sanitizer = info.get("sanitizer")
@@ -101,6 +120,11 @@ def outcome_from_sandbox_info(
             detail["signal"] = info["signal"]
         if info.get("evidence"):
             detail["evidence"] = info["evidence"]
+        if sig_prov:
+            detail["signal_provenance"] = sig_prov
+        if info.get("sanitizer_provenance"):
+            detail["sanitizer_provenance"] = info["sanitizer_provenance"]
+        detail["evidence_grade"] = _grade
         return WitnessOutcome.SANITIZER_REPORT, detail
 
     # Signal-killed (crash, resource-exceeded, seccomp). All collapse
@@ -119,6 +143,9 @@ def outcome_from_sandbox_info(
             detail["evidence"] = info["evidence"]
         if info.get("blocked"):
             detail["blocked"] = list(info["blocked"])
+        if sig_prov:
+            detail["signal_provenance"] = sig_prov
+        detail["evidence_grade"] = _grade
         return WitnessOutcome.EXIT_SIGNAL, detail
 
     # `crashed` without a signal: shouldn't happen with current
@@ -127,6 +154,7 @@ def outcome_from_sandbox_info(
         detail["crashed"] = True
         if info.get("evidence"):
             detail["evidence"] = info["evidence"]
+        detail["evidence_grade"] = "heuristic"
         return WitnessOutcome.EXIT_SIGNAL, detail
 
     # Sandbox enforcement only (no crash, no sanitizer).

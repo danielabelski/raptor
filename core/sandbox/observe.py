@@ -135,6 +135,18 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
 
         info["signal"] = sig_name
         info["signal_num"] = sig_num
+        # Evidence tiering (verdict-integrity): rc < 0 is the parent's
+        # own waitpid() seeing WIFSIGNALED — kernel truth that target
+        # code cannot mint through exit(2). rc in (128, 128+NSIG) is an
+        # exit-CODE convention: trusted intermediates (pid-1 shim,
+        # preexec trampoline) re-encode real signal deaths this way,
+        # but a hostile target calling exit(128+n) produces the
+        # IDENTICAL shape. Stamp the distinction so downstream verdict
+        # makers (core/witness/sandbox_outcome.py, exploit oracles) can
+        # grade waitstatus-provenance signals as mechanical evidence
+        # and exit-code-decoded ones as heuristic. New field only —
+        # existing consumers that ignore it keep their behaviour.
+        info["signal_provenance"] = "waitstatus" if rc < 0 else "exitcode"
 
         crash_signals = {
             signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS,
@@ -248,6 +260,17 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
             if died_abnormally:
                 info["crashed"] = True
             logger.info("Sandbox: %s — TSAN triggered", cmd_display)
+
+    # Evidence tiering: every sanitizer detection above is a bare
+    # stderr substring match — target code (or anything that shares the
+    # child's stderr, e.g. a hostile binary spawned by an honest
+    # exploit) can print a byte-identical fake report. Stamp the
+    # provenance so verdict makers never grade this as mechanical
+    # evidence on its own; consumers with a stronger oracle (dark_verify
+    # sentinel ordering, the exploit_verify waitstatus wrapper) upgrade
+    # explicitly.
+    if info.get("sanitizer"):
+        info["sanitizer_provenance"] = "stderr_match"
 
     # Build evidence: flat string for simple consumers, list for structured access
     if evidence_items:

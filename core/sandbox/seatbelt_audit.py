@@ -834,15 +834,14 @@ class LogStreamer:
                 env=RaptorConfig.get_safe_env(),
             )
         except OSError:
-            # WARNING (F070 W21 promote): the warm-up gate failing to
+            # WARNING (promoted from DEBUG): the warm-up gate failing to
             # spawn its probe means we will silently fall back to
             # best-effort mode and may miss early audit records. The
             # operator must see this so they can triage (ENOENT means
             # sandbox-exec is not where shutil.which claimed it was;
             # EACCES means a profile/permissions regression). Mirrors
-            # the family-wide DEBUG -> WARNING promotion in c5a4505
-            # (`fix(scorecard): promote producer-error logs ...`) and
-            # 8edf0f6 (sibling F069 in core/sandbox/proxy.py).
+            # the family-wide DEBUG -> WARNING promotion for producer-error
+            # logs (see core/sandbox/proxy.py for the sibling case).
             logger.warning(
                 "seatbelt audit warm-up Popen failed; "
                 "proceeding without warm-up gate",

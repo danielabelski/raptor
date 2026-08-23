@@ -199,6 +199,7 @@ absent, unparseable, or non-positive values warn and fall back.
 | `RAPTOR_HTTP_MAX_CONNECTIONS` | `100` | Total concurrent connections per SDK transport. |
 | `RAPTOR_HTTP2` | off | `1`/`true`/`yes`/`on` opts pooled transports into HTTP/2; additionally requires the `h2` package (opted-in-but-missing warns once and stays on HTTP/1.1). Off by default: TCP head-of-line blocking and middlebox risk are real. |
 | `RAPTOR_LLM_STREAM_TRANSPORT` | off | `1`/`true`/`yes`/`on` carries non-streaming Anthropic calls over the SDK streaming transport (identical response object). Defeats corporate-proxy idle timers during long silent generations. |
+| `RAPTOR_STUDY_MAX_OUTPUT_TOKENS` | `16384` | Output-token cap passed per call on `/understand --study` Phase 2 batch (and threat-frame derivation) structured generations, keeping responses inside upstream non-streaming request limits. Lower it if a provider truncates structured study output; raising it increases exposure to long-request aborts on non-streaming surfaces. |
 | `RAPTOR_LLM_WORKER_KEYLESS` | off | `1`/`true`/`yes`/`on` spawns analysis workers WITHOUT provider keys in env (safe baseline + routing names only) — workers rely on the credential-isolation dispatcher alone for provider auth. Opt-in because the env-direct key fallback is the resilience path when the dispatcher route is unusable and for providers the dispatcher doesn't route; flip it once the install's providers are all dispatcher-routed. |
 
 

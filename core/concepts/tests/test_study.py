@@ -359,6 +359,28 @@ class TestCluster:
         assert len(batches) == 1
         assert len(batches[0][0]) == 30
 
+    def test_oversized_file_group_splits_to_batch_target(self) -> None:
+        # A single file with more items than batch_target must split —
+        # otherwise the operator's batch sizing is silently defeated and
+        # one giant batch overruns per-call transport limits.
+        in_scope = [
+            StudyItem(id=f"f{i}", kind="function", name=f"fn{i}", file="big.c")
+            for i in range(24)
+        ]
+        batches = _cluster_items(in_scope, [], batch_target=6)
+        assert all(len(focus) <= 6 for focus, _ in batches)
+        assert sorted(it.id for focus, _ in batches for it in focus) == \
+            sorted(it.id for it in in_scope)
+
+    def test_batch_target_zero_degrades_to_singletons(self) -> None:
+        # Operator typo (--batch-target 0) must degrade, not crash.
+        in_scope = [
+            StudyItem(id=f"f{i}", kind="function", name=f"fn{i}", file="big.c")
+            for i in range(3)
+        ]
+        batches = _cluster_items(in_scope, [], batch_target=0)
+        assert sum(len(focus) for focus, _ in batches) == 3
+
     def test_context_items_from_deps(self) -> None:
         in_scope = [
             StudyItem(id="f1", kind="function", name="do_op",
@@ -1988,3 +2010,24 @@ class TestPhase2FailureHonesty:
         assert len(batches) >= 3
         big = _cluster_items(items, [], batch_target=80)
         assert len(big) == 1
+
+
+class TestStudyOutputCap:
+    def test_batch_call_carries_capped_max_tokens(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from core.concepts.model import StudyItem
+        from core.concepts.study import run_phase2
+        client = MagicMock()
+        client.generate_structured.return_value = (
+            {"concepts": [], "invariants": [], "contracts": [],
+             "bug_patterns": []}, "raw")
+        run_phase2([StudyItem(id="i", kind="function", name="f",
+                              file="a.c")], "t", client)
+        kwargs = client.generate_structured.call_args.kwargs
+        assert kwargs.get("max_tokens") == 16384
+
+    def test_cap_env_tunable(self, monkeypatch):
+        monkeypatch.setenv("RAPTOR_STUDY_MAX_OUTPUT_TOKENS", "8000")
+        from core.concepts.study import _study_max_output_tokens
+        assert _study_max_output_tokens() == 8000

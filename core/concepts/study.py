@@ -278,6 +278,24 @@ def _is_under_projects_base(directory: Path) -> bool:
 
 _DOC_MAX_BYTES = 8192
 _BATCH_WALL_TIMEOUT = 660  # seconds — abandon a hung API call.
+
+# Per-call output ceiling for Phase 2 batch calls. Study extraction is
+# a structured task, not open-ended reasoning: a batch's concepts fit
+# comfortably in this budget, and capping it keeps generation time on
+# slow/thinking models inside BOTH this module's wall timeout and the
+# provider's non-streaming request limit (Anthropic aborts ~10-minute
+# non-streaming requests; with a 128k ceiling a thinking model's batch
+# generation blew straight through it — observed live as
+# 'Request timed out ... long-requests' on every batch). Tunable via
+# RAPTOR_STUDY_MAX_OUTPUT_TOKENS; if a batch truncates at the cap,
+# shrink --batch-target rather than raising it past the transport
+# limits.
+def _study_max_output_tokens() -> int:
+    import os
+    try:
+        return int(os.environ.get("RAPTOR_STUDY_MAX_OUTPUT_TOKENS", "16384"))
+    except ValueError:
+        return 16384
 # Must exceed the slowest per-call transport timeout (claudecode
 # fallback: 600s) or healthy-but-slow CLI calls get abandoned here
 # after their tokens were already billed.
@@ -1439,7 +1457,10 @@ def _cluster_items(
     Returns list of (focus_items, context_items) tuples. Small
     per-file groups are merged into batches of ~batch_target items
     to reduce the number of LLM calls. Files with more items than
-    batch_target stay as their own batch.
+    batch_target split into consecutive chunks of at most
+    batch_target items (priority order preserved) — an unsplittable
+    file group would otherwise defeat the operator's batch sizing
+    and overrun per-call transport limits.
 
     batch_target=80 means most subsystems (<80 in-scope items) go
     in a single LLM call (~20k tokens input).  The LLM sees all
@@ -1473,8 +1494,16 @@ def _cluster_items(
                 context = _find_related_deps(pending, deps, max_context)
                 batches.append((pending, context))
                 pending = []
-            context = _find_related_deps(group, deps, max_context)
-            batches.append((group, context))
+            # Split oversized file groups into ~equal chunks of at
+            # most batch_target items each. Floor the divisor: an
+            # operator typo (--batch-target 0) must degrade to
+            # single-item batches, not crash the clustering.
+            n_chunks = -(-len(group) // max(1, batch_target))
+            size = -(-len(group) // n_chunks)
+            for i in range(0, len(group), size):
+                chunk = group[i:i + size]
+                context = _find_related_deps(chunk, deps, max_context)
+                batches.append((chunk, context))
         else:
             pending.extend(group)
             if len(pending) >= batch_target:
@@ -2441,6 +2470,11 @@ def _run_one_batch(
         llm_client.generate_structured,
         prompt, _RESPONSE_SCHEMA,
         system_prompt=_SYSTEM_PROMPT, task_type="study",
+        max_tokens=_study_max_output_tokens(),
+        # Study batches are the canonical long structured call —
+        # per-call streaming opt-in (SSE-capable surfaces honour it,
+        # others ignore it).
+        stream=True,
     )
     try:
         response = future.result(timeout=_BATCH_WALL_TIMEOUT)

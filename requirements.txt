@@ -95,6 +95,20 @@ packaging==25.0
 # Optional: Faster JSON parse/serialise (transparent fallback to stdlib json)
 # orjson==3.11.9
 
+# ELF metadata without angr: core/symbolic's load_binary falls back to
+# pyelftools when angr is absent — the fallback must not depend on the
+# heavyweight optional it exists to replace. Tiny, pure-Python.
+pyelftools==0.33
+
+# Optional: For binary symbolic execution (core/symbolic — overflow
+# witnesses, path constraints, format-string slot analysis backing
+# binary audit verification). Heavy (~1 GB installed). NOTE: claripy
+# exact-pins z3-solver (4.13.0.0 at this angr version) — when angr is
+# installed its pin owns the interpreter's z3; do not uncomment the
+# standalone z3-solver pin below at a different version (RAPTOR's SMT
+# consumers are verified against claripy's pin).
+# angr==9.3.3
+
 # Optional: For SMT-based constraint analysis (one-gadget feasibility, etc.)
 # z3-solver==4.15.4.0  # see requirements-dev.txt for bookworm/aarch64 cap
 

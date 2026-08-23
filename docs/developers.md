@@ -189,6 +189,12 @@ contributors, one line each:
 - **optional-dep-imports** (daily) — test files importing optional
   packages need an import guard, or they pass on developer hosts and
   fail on bare CI.
+- **canonical-json** (daily, `.github/scripts/check_canonical_json.py`)
+  — canonical JSON byte forms are frozen: inside the MAC/hash module
+  list every raw `json.dumps` must be `core.json.dumps_canonical` or
+  baselined with a note, and a `json.dumps` result flowing into
+  `hashlib`/`hmac` anywhere is a new canonical site that must be
+  routed through `dumps_canonical` or baselined.
 - **ci-controls doc guard** (PR,
   `.github/tests/test_ci_controls_docs.py`) — every path named in
   [ci-controls.md](ci-controls.md) must exist on disk.

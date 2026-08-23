@@ -102,6 +102,22 @@ validation-time inode pinning (carrying the O_PATH fd from the
 caller's original validation through to the mount), tracked as
 follow-up work.
 
+**Accepted residuals — no-pid-namespace teardown.** On the same
+degraded (namespace-less, operator-opt-in) posture, teardown
+containment comes from the in-band `PR_SET_CHILD_SUBREAPER` sweeper
+plus the parent-side `_RAPTOR_SBX_RUN` environ-marker backstop instead
+of a pid-namespace cascade. A run timeout now tears down
+sweeper-first (the death pipe is closed before any kill, so the
+sweeper reaps by pid tracking even for env-scrubbed daemons). Two
+arms remain open by kernel limitation and are accepted as the
+degraded envelope: (1) a descendant that re-execs with a scrubbed
+environment is invisible to the marker backstop — pid tracking by the
+live sweeper is the only in-band cover; (2) on Landlock ABI < 6 there
+is no signal scoping, so a hostile target can SIGKILL the same-UID
+sweeper before spawning daemons, leaving only the (scrub-able) marker
+backstop. Every namespace-capable host uses the pid-ns cascade and is
+unaffected.
+
 #### I2-(b). Downstream consumers treat LLM-derived artefacts as adversarial.
 
 A prompt-injected LLM can produce a structurally-valid JSON output that

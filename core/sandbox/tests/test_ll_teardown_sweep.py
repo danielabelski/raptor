@@ -162,6 +162,34 @@ class TestLandlockOnlyTeardownSweep(unittest.TestCase):
                          "env-scrubbed daemon survived — subreaper "
                          "sweep must not depend on the env marker")
 
+    def test_env_scrubbed_daemon_swept_even_on_timeout(self):
+        """Composed timeout + env-scrub shape: a run TIMEOUT used to SIGKILL
+        Popen.pid — the sweeper itself — before it could sweep, and an
+        env-scrubbed daemon is invisible to the marker backstop, so the
+        composition escaped teardown entirely. The teardown-first
+        timeout closes the death pipe before any kill, so the sweeper
+        reaps by pid tracking even on the timeout path."""
+        payload = textwrap.dedent(f"""
+            import os, time
+            pid = os.fork()
+            if pid == 0:
+                os.setsid()
+                if os.fork() == 0:
+                    os.execve("/bin/sh",
+                              ["sh", "-c", "sleep 30", {self.mark!r}],
+                              {{}})
+                os._exit(0)
+            os.waitpid(pid, 0)
+            time.sleep(60)
+        """)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self._ll_run(payload, timeout=3)
+        time.sleep(0.5)
+        self.assertEqual(_survivors(self.mark), [],
+                         "env-scrubbed daemon survived a run timeout — "
+                         "the sweeper must be allowed to sweep before "
+                         "it is killed")
+
     def test_exit_status_mirrored(self):
         r = self._ll_run("import sys; sys.exit(7)")
         self.assertEqual(r.returncode, 7,

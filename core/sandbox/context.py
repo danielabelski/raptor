@@ -245,6 +245,87 @@ def _sweep_marked_processes(token: str) -> list:
     return killed
 
 
+# Grace window for the teardown-first timeout below: how long the
+# sweeper gets to reap its subtree after the death-pipe EOF before the
+# parent falls back to SIGKILL. Sized above preexec._SWEEP_DEADLINE_S
+# so a healthy sweeper always finishes on its own.
+_TEARDOWN_SWEEP_GRACE_S = 3.0
+
+
+def _run_teardown_first_timeout(
+    cmd: list, pk: dict, death_w_holder: list, start_new_session: bool,
+) -> subprocess.CompletedProcess:
+    """subprocess.run equivalent whose TIMEOUT tears down sweeper-first.
+
+    No-pid-namespace posture only (see the call site): the direct
+    child is the PR_SET_CHILD_SUBREAPER sweeper and the target is its
+    child. subprocess.run's own timeout handling SIGKILLs the direct
+    child — killing the sweeper before it can sweep, so a timed-out
+    hostile target's descendants survived into the (weaker,
+    marker-based) parent-side backstop. Here the deadline closes the
+    per-run death pipe FIRST: the sweeper sees EOF, SIGKILLs the
+    payload subtree (preexec._reaper_split), and exits on its own;
+    only if it fails to exit within the grace window does the parent
+    SIGKILL it. The subprocess.run contract is preserved: returns
+    CompletedProcess on normal exit, raises subprocess.TimeoutExpired
+    (with captured output) on deadline.
+
+    Remaining arms of this posture, DOCUMENTED as the degraded
+    envelope rather than fixed (the userns gate refuses namespace-less
+    hosts without an explicit operator opt-in):
+
+    * marker scrub — the parent-side backstop finds survivors via the
+      ``_RAPTOR_SBX_RUN`` environ marker; a descendant that re-execs
+      with a scrubbed environment is invisible to it. Inherent to
+      marker-based sweeps; the pid-namespace cascade is the real
+      containment and every namespace-capable host uses it.
+    * sweeper killability — on Landlock ABI < 6 there is no signal
+      scoping, so a hostile target can SIGKILL the same-UID sweeper
+      before spawning daemons (the marker backstop then applies, with
+      the scrub caveat above).
+    """
+    timeout = pk.pop("timeout", None)
+    capture = pk.pop("capture_output", False)
+    if capture:
+        pk.setdefault("stdout", subprocess.PIPE)
+        pk.setdefault("stderr", subprocess.PIPE)
+    inp = pk.pop("input", None)
+    if inp is not None:
+        pk["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(
+        cmd, start_new_session=start_new_session, **pk,
+    )
+    try:
+        out, err = proc.communicate(input=inp, timeout=timeout)
+        return subprocess.CompletedProcess(
+            cmd, proc.returncode, out, err,
+        )
+    except subprocess.TimeoutExpired:
+        _death_w = death_w_holder[0]
+        if _death_w is not None:
+            death_w_holder[0] = None
+            try:
+                os.close(_death_w)
+            except OSError:
+                pass
+        try:
+            out, err = proc.communicate(
+                timeout=_TEARDOWN_SWEEP_GRACE_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Sandbox: teardown-first sweep did not complete "
+                "within %.1fs after the run timeout — killing the "
+                "sweeper directly (marker backstop still runs).",
+                _TEARDOWN_SWEEP_GRACE_S,
+            )
+            proc.kill()
+            out, err = proc.communicate()
+        raise subprocess.TimeoutExpired(
+            cmd, timeout, output=out, stderr=err,
+        )
+
+
 # Byte ceiling for recounting the (target-writable) event log. A
 # planted multi-GiB file must not serialize the parent's I/O under the
 # persist lock; past the cap the recount aborts with the overflow flag
@@ -4217,17 +4298,38 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         if _reaper_cell is not None:
                             _death_r, _death_w = os.pipe()
                             _reaper_cell["death_fd"] = _death_r
+                        _death_w_holder = [_death_w]
                         try:
                             # full_cmd IS the target, so it gets the
                             # marker-stripped env view.
                             _pk = dict(kwargs)
                             _pk["env"] = _penv
-                            result = subprocess.run(
-                                full_cmd,
-                                start_new_session=_start_new_session,
-                                **_pk,
-                                check=False,
-                            )
+                            if (
+                                _reaper_cell is not None
+                                and _death_w is not None
+                                and _pk.get("timeout")
+                            ):
+                                # Teardown-first timeout: a plain
+                                # subprocess.run timeout SIGKILLs
+                                # Popen.pid, which on this path IS the
+                                # subreaper sweeper — the sweep dies
+                                # before it can run and containment
+                                # falls back to the (scrub-able)
+                                # marker backstop. Close the death
+                                # pipe FIRST so the sweeper reaps its
+                                # subtree and exits on its own; only
+                                # then kill.
+                                result = _run_teardown_first_timeout(
+                                    full_cmd, _pk, _death_w_holder,
+                                    _start_new_session,
+                                )
+                            else:
+                                result = subprocess.run(
+                                    full_cmd,
+                                    start_new_session=_start_new_session,
+                                    **_pk,
+                                    check=False,
+                                )
                         except OSError as _ebadf:
                             if _ebadf.errno != errno.EBADF:
                                 raise
@@ -4237,7 +4339,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         finally:
                             if _reaper_cell is not None:
                                 _reaper_cell["death_fd"] = None
-                            for _dfd in (_death_w, _death_r):
+                            for _dfd in (_death_w_holder[0], _death_r):
                                 if _dfd is not None:
                                     try:
                                         os.close(_dfd)

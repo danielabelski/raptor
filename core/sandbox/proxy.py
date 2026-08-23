@@ -582,6 +582,56 @@ def _record_proxy_denial(host: str, port: int, resolved_ip: str | None,
 _NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
 
 
+def _nat64_prefixes() -> list:
+    """NAT64 prefixes whose embedded IPv4 must be re-checked.
+
+    Always includes the RFC 6052 well-known prefix. Deployments using
+    a NETWORK-SPECIFIC prefix (RFC 6052 §2.2 — an NSP out of the
+    operator's own global space, e.g. ``2001:db8:64::/96``) declare it
+    via ``RAPTOR_NAT64_PREFIXES`` (comma-separated IPv6 ``/96``
+    networks): without the declaration, an attacker-controlled DNS
+    answer of ``<NSP>::169.254.169.254`` classifies ``is_global`` and
+    the embedded metadata/RFC1918 target is invisible to this gate
+    (deployment-conditional: requires an NSP NAT64 translator on the
+    egress path AND attacker DNS on an allowlisted host). Parsed per
+    call — the proxy consults this on connection handling, not on a
+    hot loop — with malformed entries dropped loudly.
+
+    Exactly ``/96`` is accepted, matching where this gate extracts the
+    embedded IPv4 (the low 32 bits). RFC 6052's wider prefix lengths
+    (/32-/64) place the IPv4 at a prefix-length-dependent position
+    with a ``u``-octet gap — decoding them as low-32-bits would
+    re-check the WRONG address, and silently accepting them would give
+    the operator a false sense of coverage. Declare the deployment's
+    /96 form; wider-prefix positional decode is deliberately
+    unsupported until a deployment needs it.
+    """
+    nets = [_NAT64_NET]
+    raw = os.environ.get("RAPTOR_NAT64_PREFIXES", "")
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            net = ipaddress.ip_network(tok, strict=False)
+        except ValueError:
+            logger.warning(
+                "RAPTOR_NAT64_PREFIXES: ignoring malformed prefix %r",
+                tok,
+            )
+            continue
+        if net.version != 6 or net.prefixlen != 96:
+            logger.warning(
+                "RAPTOR_NAT64_PREFIXES: ignoring %r (exactly an IPv6 "
+                "/96 network is required — this gate extracts the "
+                "embedded IPv4 from the low 32 bits; RFC 6052's wider "
+                "prefixes place it elsewhere)", tok,
+            )
+            continue
+        nets.append(net)
+    return nets
+
+
 def _peer_pid_in_trees(peer_pid: int, roots: "set[int]",
                        max_hops: int = 64) -> bool:
     """True iff *peer_pid* is one of *roots* or a /proc-visible
@@ -753,7 +803,11 @@ def _ip_is_blocked(ip_str: str) -> bool:
     # embedded IPv4 and re-check it.
     if isinstance(ip, ipaddress.IPv6Address):
         embedded = []
-        if ip in _NAT64_NET:
+        # Well-known prefix plus any operator-declared network-specific
+        # prefixes (RAPTOR_NAT64_PREFIXES) — an NSP deployment's
+        # translator forwards to the embedded IPv4 exactly like the
+        # WKP, so the same re-check applies.
+        if any(ip in net for net in _nat64_prefixes()):
             embedded.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
         # IPv4-compatible ::a.b.c.d (deprecated, ::/96 minus ::/112).
         if (int(ip) >> 32) == 0 and int(ip) > 1:

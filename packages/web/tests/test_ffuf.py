@@ -278,13 +278,17 @@ def test_run_redacts_body_in_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             wordlist=wordlist,
             path_template="login",
             method="POST",
-            data="user=FUZZ&api_key=sk-verysecretvalue123",
+            data="user=FUZZ&api_key=sk-verysecretvalue123&comment=notsecretname",
         )
     )
 
     logs = "\n".join(messages)
+    # Body VALUES never reach logs — pattern redaction cannot know that a
+    # non-secret-named field (comment=...) carries a secret. Field names
+    # only.
     assert "sk-verysecretvalue123" not in logs
-    assert "user=FUZZ" in logs
+    assert "notsecretname" not in logs
+    assert "body(form fields: user, api_key, comment)" in logs
 
 
 def test_scanner_cli_wires_ffuf_method_and_data(tmp_path: Path):
@@ -1268,6 +1272,52 @@ def test_run_delivers_credentials_via_config_file_not_argv(
     assert not (tmp_path / "ffuf_config.toml").exists()
 
 
+def test_run_refuses_preplanted_symlink_at_config_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """out_dir is the sandbox's writable scope: a hostile child from a
+    previous run can leave ffuf_config.toml as a symlink. The credential
+    write must refuse to follow it instead of exfiltrating through it."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    exfil = tmp_path / "EXFIL"
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    (out_dir / "ffuf_config.toml").symlink_to(exfil)
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", out_dir)
+    runner.run(FfufConfig(wordlist=wordlist, cookies=("session=super-secret",)))
+
+    assert not exfil.exists()
+
+    # A pre-existing regular file must not keep its old (0644) mode either.
+    stale = out_dir / "ffuf_config.toml"
+    stale.write_text("old", encoding="utf-8")
+    stale.chmod(0o644)
+    seen: dict = {}
+
+    def fake_run_capture(cmd, **kwargs):
+        config_path = Path(cmd[cmd.index("-config") + 1])
+        seen["mode"] = config_path.stat().st_mode & 0o777
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run_capture)
+    runner.run(FfufConfig(wordlist=wordlist, cookies=("session=super-secret",)))
+    assert seen["mode"] == 0o600
+
+
 def test_run_keeps_config_file_only_with_reveal_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1470,8 +1520,9 @@ def test_run_redacts_authenticated_ffuf_options_from_logs(
     runner.run(FfufConfig(wordlist=wordlist, headers=(bearer,), cookies=(cookie,)))
 
     logs = "\n".join(messages)
-    assert "Authorization: [REDACTED]" in logs
-    assert "session=[REDACTED]" in logs
+    # Names-and-shapes only: header/cookie NAMES appear, values never do.
+    assert "Authorization" in logs
+    assert "cookie(session)" in logs
     assert "a" * 32 not in logs
     assert "b" * 32 not in logs
 

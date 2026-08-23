@@ -231,6 +231,48 @@ class FfufRunner:
                 segments.append(self._redact(segment))
         return "".join(segments)
 
+    def _describe_delivered(self, config: FfufConfig) -> str:
+        """Names-and-shapes summary of the options moved into the config
+        file. Values are never included — pattern-based redaction misses
+        secrets in non-secret-named fields, and this line lands in the
+        persistent audit log."""
+        parts = [
+            header.split(":", 1)[0].strip() or "<header>"
+            for header in config.headers
+        ]
+        for cookie in config.cookies:
+            names = []
+            for segment in cookie.split(";"):
+                name, sep, _value = segment.strip().partition("=")
+                names.append(name if sep else "<cookie>")
+            parts.append(f"cookie({', '.join(names)})")
+        if config.data:
+            parts.append(self._describe_body(config.data))
+        if config.vhost:
+            parts.append("Host(vhost template)")
+        return "; ".join(parts) if parts else "none"
+
+    @staticmethod
+    def _describe_body(data: str) -> str:
+        """Field-name/shape description of a request body, no values."""
+        stripped = data.lstrip()
+        if stripped.startswith(("{", "[")):
+            try:
+                parsed = json.loads(data)
+            except ValueError:
+                return f"body({len(data)} bytes, opaque)"
+            if isinstance(parsed, dict):
+                keys = ", ".join(sorted(str(key) for key in parsed))
+                return f"body(json keys: {keys})"
+            return f"body({len(data)} bytes, json)"
+        if "=" in data:
+            names = []
+            for segment in re.split(r"[&;]", data):
+                name, sep, _value = segment.partition("=")
+                names.append(name if sep else "<field>")
+            return f"body(form fields: {', '.join(names)})"
+        return f"body({len(data)} bytes, opaque)"
+
     def _redact_command(self, cmd: list[str]) -> list[str]:
         redacted: list[str] = []
         redact_next_cookie = False
@@ -809,20 +851,6 @@ class FfufRunner:
         redacted_cmd = self._redact_command(cmd)
         logger.info("Running sandboxed ffuf: %s", ' '.join(redacted_cmd))
 
-        if config_file is not None and config_content is not None:
-            # 0600 from the first byte — the TOML carries credentials.
-            fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(config_content)
-            delivered = [self._redact_header_value(h) for h in config.headers]
-            delivered.extend(self._redact_cookie_value(c) for c in config.cookies)
-            if config.data:
-                delivered.append(self._redact_body(config.data))
-            logger.info(
-                "ffuf credential-bearing options delivered via %s (0600): %s",
-                config_file.name,
-                "; ".join(delivered) if delivered else "vhost Host header",
-            )
 
         # ffuf's own -maxtime (== max_runtime) is the real cap; the
         # subprocess timeout is a backstop for a wedged process. It gets
@@ -833,6 +861,30 @@ class FfufRunner:
         returncode: int | None = None
         stderr_text = ""
         try:
+            if config_file is not None and config_content is not None:
+                # out_dir is the sandbox's WRITABLE scope, so a hostile
+                # child from a PREVIOUS run could have left this path
+                # behind as a symlink aimed anywhere on disk; O_EXCL
+                # after the unlink refuses to follow anything and
+                # guarantees a fresh 0600 inode for the credentials.
+                # Residuals accepted by design: the child itself must be
+                # able to read its own config (same UID, inside the
+                # writable scope), and 0600 never defends against
+                # same-UID processes — the channel this closes is the
+                # world-readable /proc/<pid>/cmdline.
+                config_file.unlink(missing_ok=True)
+                fd = os.open(
+                    config_file,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(config_content)
+                logger.info(
+                    "ffuf credential-bearing options delivered via %s (0600): %s",
+                    config_file.name,
+                    self._describe_delivered(config),
+                )
             # File-granular read scope: the sandbox needs the wordlist
             # FILES, not their parent directories — a wordlist under
             # /etc must not put all of /etc in the read allowlist. Both

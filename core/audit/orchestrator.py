@@ -23659,7 +23659,12 @@ def _run_dark_verification(
         if spec is None:
             continue
 
-        verify_result = execute_witness(spec, config.target_path)
+        # The run dir keeps sandbox --audit evidence for the witness's
+        # compile/run steps persistent — without it the tracer writes
+        # into the step's throwaway scratch dir, swept on completion.
+        verify_result = execute_witness(
+            spec, config.target_path, audit_run_dir=config.out_dir,
+        )
 
         prior = outcome.status
         if verify_result.verdict == "confirmed":

@@ -2908,6 +2908,138 @@ class TestCompileSandboxParity:
         assert run_cmd[0] == "/usr/bin/java"
 
 
+class TestAuditEvidencePersistence:
+    """Under the sandbox CLI --audit flag, the tracer writes evidence
+    into the call's audit target dir. Witness steps pass a throwaway
+    scratch dir as output= — evidence there is destroyed on sweep — so
+    the run's persistent output dir must travel as audit_run_dir= on
+    EVERY witness step (compile and run)."""
+
+    def _c_spec(self):
+        return DarkWitnessSpec(
+            finding_key="f1", file="add.c", function="add",
+            language="c", expected_return="7",
+            lang_config={
+                "param_types": ["int", "int"], "return_type": "int",
+                "arg_expressions": ["3", "4"], "includes": [],
+                "setup_lines": [],
+            },
+        )
+
+    def _target(self, base):
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "add.c").write_text(
+            "int add(int a, int b) { return a + b; }\n", encoding="utf-8",
+        )
+        return base
+
+    def test_witness_steps_route_audit_evidence_to_run_dir(
+        self, tmp_path, monkeypatch,
+    ):
+        from core.audit.dark_verify import _execute as ex
+
+        target = self._target(tmp_path / "src")
+        run_dir = tmp_path / "run-out"
+        run_dir.mkdir()
+        spy = _SandboxSpy([
+            _completed(),  # compile
+            _completed(stdout=json.dumps(
+                {"status": "returned", "token": "feedface", "value": "7"},
+            )),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
+
+        r = execute_witness(self._c_spec(), target, audit_run_dir=run_dir)
+        assert r.verdict == "confirmed"
+        assert len(spy.calls) == 2
+        for _cmd, kwargs in spy.calls:
+            assert kwargs.get("audit_run_dir") == str(run_dir)
+            # The persistent evidence dir is NOT the swept scratch.
+            assert kwargs["audit_run_dir"] != kwargs.get("output")
+
+    def test_missing_run_dir_does_not_cost_the_verdict(
+        self, tmp_path, monkeypatch,
+    ):
+        # The sandbox raises ValueError for a nonexistent
+        # audit_run_dir — a lost audit trail must degrade to the old
+        # scratch-dir behaviour, never to an error verdict.
+        from core.audit.dark_verify import _execute as ex
+
+        target = self._target(tmp_path)
+        spy = _SandboxSpy([
+            _completed(),
+            _completed(stdout=json.dumps(
+                {"status": "returned", "token": "feedface", "value": "7"},
+            )),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
+
+        r = execute_witness(
+            self._c_spec(), target, audit_run_dir=tmp_path / "gone",
+        )
+        assert r.verdict == "confirmed"
+        for _cmd, kwargs in spy.calls:
+            assert "audit_run_dir" not in kwargs
+
+    def test_unwritable_run_dir_does_not_cost_the_verdict(
+        self, tmp_path, monkeypatch,
+    ):
+        # The sandbox's audit-target validation also rejects an
+        # existing-but-unwritable dir with ValueError — same
+        # degradation contract as a missing one.
+        import os as os_mod
+
+        from core.audit.dark_verify import _execute as ex
+
+        target = self._target(tmp_path)
+        run_dir = tmp_path / "run-out"
+        run_dir.mkdir()
+        run_dir.chmod(0o500)
+        try:
+            if os_mod.access(run_dir, os_mod.W_OK):
+                pytest.skip("privileged user: chmod cannot revoke write")
+            spy = _SandboxSpy([
+                _completed(),
+                _completed(stdout=json.dumps(
+                    {"status": "returned", "token": "feedface",
+                     "value": "7"},
+                )),
+            ])
+            monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+            monkeypatch.setattr(
+                ex.secrets, "token_hex", lambda n=8: "feedface",
+            )
+
+            r = execute_witness(
+                self._c_spec(), target, audit_run_dir=run_dir,
+            )
+            assert r.verdict == "confirmed"
+            for _cmd, kwargs in spy.calls:
+                assert "audit_run_dir" not in kwargs
+        finally:
+            run_dir.chmod(0o700)
+
+    def test_ambient_dir_reset_after_dispatch(self, tmp_path, monkeypatch):
+        from core.audit.dark_verify import _execute as ex
+
+        target = self._target(tmp_path)
+        run_dir = tmp_path / "run-out"
+        run_dir.mkdir()
+        spy = _SandboxSpy([
+            _completed(),
+            _completed(stdout=json.dumps(
+                {"status": "returned", "token": "feedface", "value": "7"},
+            )),
+        ])
+        monkeypatch.setattr(ex, "_import_sandbox_run", lambda: spy)
+        monkeypatch.setattr(ex.secrets, "token_hex", lambda n=8: "feedface")
+
+        execute_witness(self._c_spec(), target, audit_run_dir=run_dir)
+        assert ex._AUDIT_RUN_DIR.get() is None
+
+
 class TestBoundedCapture:
     """Witness stdout/stderr reach the parent CAPPED, never as an
     unbounded in-memory pipe accumulation."""

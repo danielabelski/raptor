@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -54,6 +55,22 @@ logger = logging.getLogger(__name__)
 _WITNESS_TIMEOUT_S = 10
 _COMPILE_TIMEOUT_S = 30
 _MAX_OUTPUT_BYTES = 8192
+
+# Persistent destination for sandbox --audit evidence, set by
+# execute_witness() around executor dispatch. Every witness step
+# (compile AND run) routes stdout/stderr capture through a throwaway
+# scratch dir passed as the sandbox's ``output=`` — under the CLI
+# ``--audit`` flag that scratch dir satisfies the audit-target
+# requirement, so the tracer writes its evidence into
+# ``<scratch>/.audit/`` and the sweep destroys it with the scratch.
+# Threading the run's persistent output dir as ``audit_run_dir=``
+# (audit-signal routing only, no Landlock impact) keeps the operator's
+# audit trail. A contextvar rather than a parameter on every executor:
+# the executor dispatch table has a fixed uniform signature, and the
+# value is pure ambient plumbing the executors never read.
+_AUDIT_RUN_DIR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "dark_verify_audit_run_dir", default=None,
+)
 
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -520,11 +537,20 @@ def execute_witness(
     target_root: Path,
     *,
     timeout_s: int = _WITNESS_TIMEOUT_S,
+    audit_run_dir: str | Path | None = None,
 ) -> DarkVerifyResult:
     """Execute a witness and compare output to expectations.
 
     Dispatches to the appropriate language executor based on the spec's
     language field (auto-detected from file extension if not set).
+
+    ``audit_run_dir``: the run's persistent output directory. Under the
+    sandbox CLI ``--audit`` flag it becomes the tracer's evidence
+    destination for every witness step — without it the evidence lands
+    in the step's throwaway scratch dir and is destroyed on sweep.
+    Ignored (with a debug note) when the directory does not exist: the
+    sandbox raises ValueError for a missing audit_run_dir, and a lost
+    audit trail must not cost the witness verdict.
     """
     lang = spec.language or language_for_file(spec.file) or ""
     if lang not in _SUPPORTED_LANGS:
@@ -573,7 +599,28 @@ def execute_witness(
             finding_key=spec.finding_key, verdict="error", language=lang,
             match_detail=f"no executor for language: {lang}",
         )
-    return executor(spec, target_root, timeout_s)
+    evidence_dir: str | None = None
+    if audit_run_dir:
+        # Mirror the sandbox's own audit-target validation (exists AND
+        # writable) — either failure raises ValueError there, and a
+        # lost audit trail must degrade to the scratch-dir behaviour,
+        # never cost the verdict.
+        if Path(audit_run_dir).is_dir() and os.access(
+            audit_run_dir, os.W_OK | os.X_OK,
+        ):
+            evidence_dir = str(audit_run_dir)
+        else:
+            logger.debug(
+                "audit_run_dir %s missing or not writable — compile/run "
+                "audit evidence for this witness stays in the scratch "
+                "dir",
+                audit_run_dir,
+            )
+    token = _AUDIT_RUN_DIR.set(evidence_dir)
+    try:
+        return executor(spec, target_root, timeout_s)
+    finally:
+        _AUDIT_RUN_DIR.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1053,15 @@ def _sandbox_run_capped(
         + " 2> " + shlex.quote(str(err_path))
     )
     wrapped = ["/bin/sh", "-c", script, cmd[0], *cmd]
+    # Under the sandbox CLI --audit flag, the throwaway cap_dir passed
+    # as output= would become the tracer's evidence destination — swept
+    # with the scratch when the step completes. Route audit evidence to
+    # the run's persistent output dir instead (audit-signal only, no
+    # Landlock impact). Ambient via execute_witness(); every witness
+    # step (compile and run) funnels through here.
+    audit_run_dir = _AUDIT_RUN_DIR.get()
+    if audit_run_dir and "audit_run_dir" not in kwargs:
+        kwargs["audit_run_dir"] = audit_run_dir
     try:
         proc = sandbox_run(wrapped, **kwargs)
         if proc.stdout is None:

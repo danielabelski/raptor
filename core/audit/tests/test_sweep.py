@@ -463,6 +463,49 @@ class TestRunCodeqlSweep:
         assert result.outcome == "refuted"
         assert result.matches == []
 
+    def test_oversize_sarif_rejected_gracefully(
+        self, tmp_path: Path, monkeypatch, caplog,
+    ):
+        """A SARIF artifact past the 100 MiB cap must degrade to an
+        error SweepResult via the size-gate refusal — not by reading
+        the file and failing to parse it."""
+        import logging
+        import os
+        from types import SimpleNamespace
+
+        query = self._setup(tmp_path)
+        import core.dataflow.codeql_augmented_run as car
+
+        def fake_oversize(db_path, queries, output_path, **kw):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Sparse file: st_size past the cap without writing 100 MiB
+            # of data — load_sarif's stat gate rejects before any read.
+            with output_path.open("wb") as fh:
+                os.truncate(fh.fileno(), 100 * 1024 * 1024 + 1)
+            return SimpleNamespace(
+                sarif_path=output_path,
+                queries=tuple(queries),
+                extension_pack=None,
+                elapsed_seconds=0.0,
+            )
+
+        monkeypatch.setattr(car, "analyze", fake_oversize)
+        with caplog.at_level(logging.ERROR, logger="core.sarif.parser"):
+            result = run_codeql_sweep(
+                target_path=tmp_path,
+                file_path="a.c",
+                function_name="foo",
+                query_path=str(query),
+            )
+        assert result.outcome == "error"
+        assert result.tool == "codeql"
+        assert any(
+            "oversize" in e or "unreadable" in e for e in result.errors
+        )
+        # The refusal must come from the size gate (stat-based
+        # rejection), not from a whole-file read that failed to parse.
+        assert "too large" in caplog.text
+
     def test_analyze_failure_reported(self, tmp_path: Path, monkeypatch):
         query = self._setup(tmp_path)
         import core.dataflow.codeql_augmented_run as car

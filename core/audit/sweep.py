@@ -2374,7 +2374,24 @@ def run_codeql_sweep(
                 sarif_out,
                 timeout_seconds=300,
             )
-            sarif = _json.loads(result.sarif_path.read_text(encoding="utf-8"))
+            # Canonical bounded SARIF loader (100 MiB cap): the query
+            # runs over an untrusted target, so a hostile source tree
+            # can inflate the result set — a raw read_text()+loads
+            # here buffered the whole artifact before any size check.
+            from core.sarif.parser import load_sarif
+            sarif = load_sarif(result.sarif_path)
+
+        if sarif is None:
+            return SweepResult(
+                tool="codeql",
+                file_path=file_path,
+                function_name=function_name,
+                outcome="error",
+                errors=[
+                    f"unreadable or oversize SARIF output: {sarif_out}",
+                ],
+                rule_id=query_path,
+            )
 
         runs = sarif.get("runs") or [{}]
         sarif_results = runs[0].get("results") or []

@@ -1212,6 +1212,71 @@ def test_build_config_file_content_covers_credential_options(tmp_path: Path):
     )
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "plain ascii",
+        'quotes " and \\ backslashes \\" mixed',
+        "unicode café ünïcode",
+        "astral 😀 emoji and \U00010000 plane-1",
+        "toml-syntax [http]\\nheaders = ]",
+        "equals=and&ersands;semis",
+    ],
+)
+def test_toml_basic_string_round_trips_through_reference_parser(value: str):
+    """The emitted TOML must decode back to the EXACT input — go-toml
+    silently corrupts what the reference parser rejects, so byte-true
+    round-trip through tomllib is the safety property."""
+    import tomllib
+
+    from packages.web.ffuf import toml_basic_string
+
+    doc = tomllib.loads(f"v = {toml_basic_string(value)}")
+    assert doc["v"] == value
+
+
+def test_toml_basic_string_rejects_lone_surrogates():
+    from packages.web.ffuf import toml_basic_string
+
+    with pytest.raises(ValueError, match="unpaired surrogate"):
+        toml_basic_string("bad \udcff byte")
+
+
+def test_build_config_file_content_astral_values_round_trip(tmp_path: Path):
+    import tomllib
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    content = runner.build_config_file_content(
+        FfufConfig(wordlist=wordlist, data="note=tok😀en&user=FUZZ")
+    )
+
+    assert content is not None
+    assert tomllib.loads(content)["http"]["data"] == "note=tok😀en&user=FUZZ"
+
+
+def test_build_command_rejects_control_characters_in_headers_and_cookies(
+    tmp_path: Path,
+):
+    """Go's net/http refuses to SEND control-char headers, so ffuf exits 0
+    with zero requests — a run that reads as 'no findings'."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    for kwargs in (
+        {"headers": ("X-Bad: to\x7fken",)},
+        {"headers": ("X-Bad: to\x1bken",)},
+        {"cookies": ("session=to\x00ken",)},
+    ):
+        with pytest.raises(ValueError, match="control characters"):
+            runner.build_command(
+                FfufConfig(wordlist=wordlist, **kwargs), tmp_path / "out.json"
+            )
+
+
 def test_build_config_file_content_includes_vhost_header(tmp_path: Path):
     wordlist = tmp_path / "subdomains.txt"
     wordlist.write_text("dev\n", encoding="utf-8")

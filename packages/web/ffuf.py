@@ -47,6 +47,42 @@ WORDLIST_KEYWORD_RE = re.compile(r"^[A-Z][A-Z0-9]*$")
 ALLOWED_MODES = ("clusterbomb", "pitchfork")
 
 
+def toml_basic_string(value: str) -> str:
+    """Encode a Python str as a TOML basic string.
+
+    json.dumps is ALMOST a valid TOML encoder but represents astral-plane
+    characters as UTF-16 surrogate-pair escapes, which TOML forbids: the
+    reference parser rejects them, and go-toml v1 (ffuf's parser) silently
+    substitutes U+FFFD — corrupting a credential on the wire with no error
+    anywhere. Escape explicitly instead: \\uXXXX inside the BMP,
+    \\UXXXXXXXX above it. Lone surrogates (surrogateescape'd undecodable
+    input bytes) have no representation and are rejected loudly.
+    """
+    out = ['"']
+    for ch in value:
+        cp = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif 0xD800 <= cp <= 0xDFFF:
+            msg = (
+                "ffuf option value contains an unpaired surrogate "
+                "(undecodable input bytes?) and cannot be encoded"
+            )
+            raise ValueError(msg)
+        elif cp < 0x20 or cp == 0x7F:
+            out.append(f"\\u{cp:04X}")
+        elif cp > 0xFFFF:
+            out.append(f"\\U{cp:08X}")
+        elif cp > 0x7E:
+            out.append(f"\\u{cp:04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
 def parse_wordlist_args(
     raw: tuple[str, ...] | list[str],
 ) -> tuple[Path, tuple[tuple[Path, str], ...]]:
@@ -598,6 +634,15 @@ class FfufRunner:
         if any("\n" in cookie or "\r" in cookie for cookie in config.cookies):
             msg = "ffuf cookies must not contain newlines"
             raise ValueError(msg)
+        # Beyond CR/LF: Go's net/http refuses to SEND a header containing
+        # any control character, so ffuf would exit 0 having made zero
+        # requests — a run that reads as "no findings". Fail loudly here.
+        if any(
+            any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
+            for value in (*config.headers, *config.cookies)
+        ):
+            msg = "ffuf headers and cookies must not contain control characters"
+            raise ValueError(msg)
         if any(
             ":" not in header or not header.split(":", 1)[0].strip()
             for header in config.headers
@@ -613,8 +658,8 @@ class FfufRunner:
         keeps them off it. Only the secret-carrying options move — the
         rest of the argv stays self-describing for logs and audit trails.
 
-        Values are encoded with ``json.dumps``: JSON string escaping is a
-        valid TOML basic-string encoding (same escape set), so header,
+        Values are encoded with :func:`toml_basic_string`, which escapes
+        every metacharacter and rejects unencodable input, so header,
         cookie, and body content cannot break out of its TOML field.
         """
         headers = list(config.headers)
@@ -626,14 +671,14 @@ class FfufRunner:
         lines = ["[http]"]
         if headers:
             lines.append("    headers = [")
-            lines.extend(f"        {json.dumps(header)}," for header in headers)
+            lines.extend(f"        {toml_basic_string(header)}," for header in headers)
             lines.append("    ]")
         if config.cookies:
             lines.append("    cookies = [")
-            lines.extend(f"        {json.dumps(cookie)}," for cookie in config.cookies)
+            lines.extend(f"        {toml_basic_string(cookie)}," for cookie in config.cookies)
             lines.append("    ]")
         if config.data:
-            lines.append(f"    data = {json.dumps(config.data)}")
+            lines.append(f"    data = {toml_basic_string(config.data)}")
         return "\n".join(lines) + "\n"
 
     def build_command(

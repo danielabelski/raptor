@@ -1375,6 +1375,34 @@ def test_summarize_result_carries_vhost_host_field(tmp_path: Path):
     assert "host" not in plain
 
 
+def test_summarize_result_carries_input_map(tmp_path: Path):
+    """Raw-request runs fuzz positions the URL never echoes (JSON body
+    fields, header values); the per-result input map is then the only
+    record of which wordlist entry matched. FFUFHASH is bookkeeping,
+    not an input, and values are hostile-response-adjacent so they get
+    the same sanitization as every other echoed field."""
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    summary = runner._summarize_result({
+        "url": "https://example.test/api",
+        "status": 200,
+        "input": {
+            "FUZZ": "' OR 1=1--\r\nX-Smuggled: yes",
+            "FFUFHASH": "a1b2c3",
+        },
+    })
+    assert summary["input"] == {"FUZZ": "' OR 1=1--  X-Smuggled: yes"}
+
+    plain = runner._summarize_result({"url": "https://example.test/a", "status": 200})
+    assert "input" not in plain
+
+    hashonly = runner._summarize_result({
+        "url": "https://example.test/a", "status": 200,
+        "input": {"FFUFHASH": "a1b2c3"},
+    })
+    assert "input" not in hashonly
+
+
 def test_scanner_cli_wires_ffuf_vhost(tmp_path: Path):
     from packages.web.scanner import build_arg_parser, build_ffuf_config
 
@@ -2145,3 +2173,200 @@ def test_run_refuses_oversize_results_file(
     assert result["returncode"] == 0
     assert result["result_count"] == 0
     assert result["results"] == []
+
+
+def test_build_command_raw_request_mode(tmp_path: Path):
+    """-request replaces the URL template; the file's Host is the scope
+    anchor and the keyword may live anywhere in the request."""
+    wordlist = tmp_path / "params.txt"
+    wordlist.write_text("id\n", encoding="utf-8")
+    request = tmp_path / "req.txt"
+    request.write_text(
+        "POST /api/orders HTTP/1.1\n"
+        "Host: example.test\n"
+        "Content-Type: application/json\n"
+        "\n"
+        '{"note": "FUZZ"}\n',
+        encoding="utf-8",
+    )
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(wordlist=wordlist, request_file=request),
+        tmp_path / "out.json",
+    )
+
+    assert "-u" not in cmd
+    assert cmd[cmd.index("-request") + 1] == str(request)
+    assert cmd[cmd.index("-request-proto") + 1] == "https"
+
+
+@pytest.mark.parametrize(
+    ("request_text", "config_kwargs", "message"),
+    [
+        ("GET /x HTTP/1.1\nHost: evil.test\n\nFUZZ", {},
+         "outside the configured target scope"),
+        ("GET /x HTTP/1.1\nX-A: b\n\nFUZZ", {},
+         "exactly one Host header"),
+        ("GET /x HTTP/1.1\nHost: example.test\n\nplain", {},
+         "no substitution point"),
+        ("GET /x HTTP/1.1\nHost: example.test\n\nFUZZ",
+         {"method": "POST"}, "carries its own method"),
+        ("GET /x HTTP/1.1\nHost: example.test\n\nFUZZ",
+         {"path_template": "api/FUZZ"}, "drop the path template"),
+        ("GET /x HTTP/1.1\nHost: example.test\n\nFUZZ",
+         {"vhost": True}, "cannot be combined with vhost"),
+        ("GET /x HTTP/1.1\nHost: example.test\n\nFUZZ",
+         {"recursion": True}, "requires a URL template"),
+        # The four wire-proven scope bypasses (review PoCs A-D): ffuf's
+        # parseRawRequest diverges from a naive first-host-line scan.
+        ("GET http://evil.test/FUZZ HTTP/1.1\nHost: example.test\n\n", {},
+         "path-only request line"),
+        ("GET /x HTTP/1.1\nHost: example.test\nHost: evil.test\n\nFUZZ",
+         {}, "exactly one Host header"),
+        ("GET /x HTTP/1.1\nX-A: b\n Host: evil.test\nHost: example.test\n\nFUZZ",
+         {}, "folded"),
+        ("GET /x HTTP/1.1\nhost: example.test\n\nFUZZ", {},
+         "exact-case 'Host'"),
+        # PoC E: bare host must not widen scope to the scheme-default
+        # port when the base URL pins a different one.
+        ("GET /x HTTP/1.1\nHost: example.test\n\nFUZZ",
+         {"__base__": "https://example.test:8443"},
+         "outside the configured target scope"),
+        # PoC F/G: header section must be blank-line terminated; a Host
+        # in the body (or on a final unterminated line) is invisible to
+        # ffuf.
+        ("GET /x HTTP/1.1\nX-A: b\n\nHost: example.test FUZZ", {},
+         "exactly one Host header"),
+        ("GET /x HTTP/1.1\nHost: example.test", {},
+         "blank line"),
+    ],
+)
+def test_raw_request_mode_rejections(
+    tmp_path: Path, request_text: str, config_kwargs: dict, message: str,
+):
+    wordlist = tmp_path / "params.txt"
+    wordlist.write_text("id\n", encoding="utf-8")
+    request = tmp_path / "req.txt"
+    request.write_text(request_text, encoding="utf-8")
+    base_url = config_kwargs.pop("__base__", "https://example.test")
+    runner = FfufRunner(base_url, tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, request_file=request, **config_kwargs),
+            tmp_path / "out.json",
+        )
+
+
+def test_raw_request_host_keyword_is_neutralized_in_scope_check(tmp_path: Path):
+    """A keyword in the request file's Host would be substituted at
+    runtime — the scope compare must see the neutralized form."""
+    wordlist = tmp_path / "params.txt"
+    wordlist.write_text("id\n", encoding="utf-8")
+    request = tmp_path / "req.txt"
+    request.write_text(
+        "GET /x HTTP/1.1\nHost: FUZZ.example.test\n\nbody",
+        encoding="utf-8",
+    )
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="outside the configured target scope"):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, request_file=request),
+            tmp_path / "out.json",
+        )
+
+
+def test_run_grants_read_scope_to_request_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    wordlist = tmp_path / "params.txt"
+    wordlist.write_text("id\n", encoding="utf-8")
+    request = tmp_path / "req.txt"
+    request.write_text(
+        "GET /x HTTP/1.1\nHost: example.test\n\nFUZZ", encoding="utf-8",
+    )
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _b: "/usr/bin/ffuf")
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["kwargs"] = kwargs
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(FfufConfig(wordlist=wordlist, request_file=request))
+
+    assert str(request.resolve()) in seen["kwargs"]["readable_paths"]
+
+
+def test_build_command_calibration_knobs_and_encoders(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            calibration_strategy="advanced",
+            calibration_per_host=True,
+            encoders=("FUZZ:urlencode b64encode",),
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-acs") + 1] == "advanced"
+    assert "-ach" in cmd
+    assert cmd[cmd.index("-enc") + 1] == "FUZZ:urlencode b64encode"
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "message"),
+    [
+        ({"calibration_strategy": "wild"}, "must be 'basic' or 'advanced'"),
+        ({"calibration_strategy": "basic", "auto_calibration": False},
+         "requires auto-calibration"),
+        ({"calibration_per_host": True, "auto_calibration": False},
+         "requires auto-calibration"),
+        ({"encoders": ("urlencode",)}, "encoder spec must look like"),
+        ({"encoders": ("FUZZ:",)}, "encoder spec must look like"),
+        ({"encoders": ("W9:urlencode",)}, "unknown keyword"),
+    ],
+)
+def test_calibration_and_encoder_rejections(
+    tmp_path: Path, config_kwargs: dict, message: str,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, **config_kwargs), tmp_path / "out.json",
+        )
+
+
+def test_scanner_cli_wires_engine2_flags(tmp_path: Path):
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    wordlist = tmp_path / "w.txt"
+    wordlist.write_text("id\n", encoding="utf-8")
+    request = tmp_path / "req.txt"
+    request.write_text("GET / HTTP/1.1\nHost: x\n\nFUZZ", encoding="utf-8")
+    args = build_arg_parser().parse_args([
+        "--url", "https://example.test",
+        "--ffuf-wordlist", str(wordlist),
+        "--ffuf-calibration-strategy", "advanced",
+        "--ffuf-per-host-calibration",
+        "--ffuf-encoder", "FUZZ:urlencode",
+    ])
+
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.calibration_strategy == "advanced"
+    assert config.calibration_per_host is True
+    assert config.encoders == ("FUZZ:urlencode",)

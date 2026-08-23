@@ -139,6 +139,9 @@ class FfufConfig:
     report_limit: int = 50
     binary: str = "ffuf"
     auto_calibration: bool = True
+    calibration_strategy: str | None = None
+    calibration_per_host: bool = False
+    encoders: tuple[str, ...] = ()
     match_status: str | None = "200,204,301,302,307,401,403,405,500"
     filter_status: str | None = "404"
     filter_size: int | None = None
@@ -148,6 +151,7 @@ class FfufConfig:
     data: str | None = None
     extra_wordlists: tuple[tuple[Path, str], ...] = ()
     mode: str | None = None
+    request_file: Path | None = None
     vhost: bool = False
     vhost_host_template: str | None = None
     stop_on_403: bool = False
@@ -381,6 +385,133 @@ class FfufRunner:
         """Keywords ffuf will substitute for this configuration."""
         return ("FUZZ", *(keyword for _path, keyword in config.extra_wordlists))
 
+    _MAX_REQUEST_FILE_BYTES = 1024 * 1024
+
+    def _read_scoped_request_file(self, config: FfufConfig) -> str:
+        """The raw request file's text, origin-scope-checked.
+
+        Raw-request mode replaces the URL template, so origin
+        enforcement moves here — and it must mirror ffuf's own
+        ``parseRawRequest`` EXACTLY, failing closed on every ambiguity,
+        because any divergence between what we check and what ffuf
+        targets is a scope bypass:
+
+        * ffuf takes an absolute-URI request line over the Host header
+          entirely — we reject absolute-URI request lines;
+        * ffuf stores headers in a map (last duplicate wins) and targets
+          the case-sensitive ``Host`` key — we require exactly one
+          host-named header, spelled exactly ``Host``;
+        * ffuf TrimSpaces folded (leading-whitespace) lines into headers
+          — we reject folding;
+        * ffuf stops header parsing at the first blank line and drops a
+          final unterminated line — we scan only the terminated header
+          section and require the blank-line terminator;
+        * the compare uses the EFFECTIVE port (explicit or the
+          ``-request-proto`` scheme default) — a bare-host Host header
+          must not widen scope to a different port on the same machine.
+        """
+        path = Path(config.request_file or "")
+        if path.stat().st_size > self._MAX_REQUEST_FILE_BYTES:
+            msg = "ffuf request file exceeds 1 MiB"
+            raise ValueError(msg)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        # '\n' only: ffuf reads with ReadString('\n'); Python's
+        # splitlines() also splits on VT/FF/NEL/U+2028/29 — another
+        # divergence class.
+        lines = text.split("\n")
+        request_line = lines[0].strip()
+        parts = request_line.split(" ")
+        if len(parts) < 3:
+            msg = (
+                "ffuf request file must start with a "
+                "'METHOD /path HTTP/x.y' request line"
+            )
+            raise ValueError(msg)
+        if parts[1].lower().startswith("http"):
+            msg = (
+                "ffuf raw-request mode requires a path-only request line — "
+                "ffuf would take the target from an absolute URI and ignore "
+                "the Host header"
+            )
+            raise ValueError(msg)
+
+        host_named: list[tuple[str, str]] = []
+        terminated = False
+        for line in lines[1:]:
+            stripped = line.rstrip("\r")
+            if stripped.strip() == "":
+                terminated = True
+                break
+            if stripped[:1] in (" ", "\t"):
+                msg = (
+                    "ffuf request file must not contain folded "
+                    "(leading-whitespace) header lines"
+                )
+                raise ValueError(msg)
+            name, sep, value = stripped.partition(":")
+            if not sep:
+                msg = f"malformed header line in ffuf request file: {stripped[:40]!r}"
+                raise ValueError(msg)
+            if name.strip().lower() == "host":
+                host_named.append((name.strip(), value.strip()))
+        if not terminated:
+            msg = (
+                "ffuf request file must terminate its headers with a blank "
+                "line (ffuf drops a final unterminated line)"
+            )
+            raise ValueError(msg)
+        if len(host_named) != 1:
+            msg = (
+                f"ffuf request file must carry exactly one Host header "
+                f"(found {len(host_named)})"
+            )
+            raise ValueError(msg)
+        host_name, raw_host = host_named[0]
+        if host_name != "Host":
+            msg = (
+                "ffuf targets the exact-case 'Host' header; spell it 'Host:' "
+                f"(got {host_name!r})"
+            )
+            raise ValueError(msg)
+
+        # Neutralize keywords before the compare — a keyword inside the
+        # Host would be substituted at runtime (same rule as the URL
+        # template and vhost probes).
+        probe = raw_host
+        for keyword in self._fuzz_keywords(config):
+            probe = probe.replace(keyword, "raptor-scope-probe")
+        probe_host, probe_port = self._split_host_port(probe)
+        scheme = (urlparse(self.base_url).scheme or "https").lower()
+        default_port = 443 if scheme == "https" else 80
+        parsed_base = urlparse(self.base_url)
+        expected_host = (parsed_base.hostname or "").lower()
+        expected_port = (
+            parsed_base.port if parsed_base.port is not None else default_port
+        )
+        effective_probe_port = probe_port if probe_port is not None else default_port
+        if probe_host != expected_host or effective_probe_port != expected_port:
+            msg = (
+                "ffuf request file Host is outside the configured target "
+                f"scope: {self._redact(raw_host)}"
+            )
+            raise ValueError(msg)
+        return text
+
+    @staticmethod
+    def _split_host_port(value: str) -> tuple[str, int | None]:
+        """(lowercased host, explicit port or None); IPv6-bracket aware."""
+        value = value.strip()
+        if value.startswith("["):
+            inside, _bracket, rest = value[1:].partition("]")
+            host = inside.lower()
+            if rest.startswith(":") and rest[1:].isdigit():
+                return host, int(rest[1:])
+            return host, None
+        host, sep, port = value.rpartition(":")
+        if sep and port.isdigit():
+            return host.lower(), int(port)
+        return value.lower(), None
+
     def _build_vhost_header(self, config: FfufConfig) -> str | None:
         """Synthesize and scope-check the fuzzed Host header for vhost mode.
 
@@ -506,6 +637,56 @@ class FfufRunner:
         if config.method.upper() not in ALLOWED_METHODS:
             msg = f"ffuf method must be one of {', '.join(ALLOWED_METHODS)}"
             raise ValueError(msg)
+        if config.calibration_strategy is not None:
+            if config.calibration_strategy not in ("basic", "advanced"):
+                msg = "ffuf calibration strategy must be 'basic' or 'advanced'"
+                raise ValueError(msg)
+            if not config.auto_calibration:
+                msg = "ffuf calibration strategy requires auto-calibration"
+                raise ValueError(msg)
+        if config.calibration_per_host and not config.auto_calibration:
+            msg = "ffuf per-host calibration requires auto-calibration"
+            raise ValueError(msg)
+        for spec in config.encoders:
+            keyword, sep, chain = spec.partition(":")
+            # ffuf splits the chain on single spaces (a doubled space
+            # becomes an empty encoder name and a hard startup error),
+            # so accept exactly what ffuf accepts: single-space-joined
+            # lowercase-alphanumeric encoder names.
+            tokens = chain.split(" ")
+            if (
+                not sep
+                or not WORDLIST_KEYWORD_RE.match(keyword)
+                or not tokens
+                or not all(re.fullmatch(r"[a-z0-9]+", token) for token in tokens)
+            ):
+                msg = (
+                    f"ffuf encoder spec must look like 'FUZZ:urlencode' or "
+                    f"'W2:urlencode b64encode' (got {spec!r})"
+                )
+                raise ValueError(msg)
+        if config.request_file is not None:
+            if not Path(config.request_file).is_file():
+                msg = f"ffuf request file not found: {config.request_file}"
+                raise FileNotFoundError(msg)
+            if config.path_template != "FUZZ":
+                msg = (
+                    "ffuf raw-request mode carries its own request line; "
+                    "drop the path template"
+                )
+                raise ValueError(msg)
+            if config.method.upper() != "GET" or config.data:
+                msg = (
+                    "ffuf raw-request mode carries its own method and body; "
+                    "drop -X/-d options"
+                )
+                raise ValueError(msg)
+            if config.vhost:
+                msg = "ffuf raw-request mode cannot be combined with vhost mode"
+                raise ValueError(msg)
+            if config.recursion:
+                msg = "ffuf recursion requires a URL template, not a request file"
+                raise ValueError(msg)
         if config.vhost_host_template is not None and not config.vhost:
             msg = "ffuf vhost host template requires vhost mode"
             raise ValueError(msg)
@@ -559,6 +740,14 @@ class FfufRunner:
         if len(set(keywords)) != len(keywords):
             msg = "ffuf wordlist keywords must be unique (FUZZ is reserved for the primary)"
             raise ValueError(msg)
+        for spec in config.encoders:
+            keyword = spec.partition(":")[0]
+            if keyword not in keywords:
+                msg = (
+                    f"ffuf encoder names unknown keyword {keyword!r}; "
+                    "declare its wordlist first"
+                )
+                raise ValueError(msg)
         for kw in keywords:
             for other in keywords:
                 if kw != other and kw in other:
@@ -696,15 +885,23 @@ class FfufRunner:
         """
         self._validate_config(config)
 
+        request_text: str | None = None
+        if config.request_file is not None:
+            request_text = self._read_scoped_request_file(config)
+
         # In vhost mode the URL is fixed and the Host header carries the
         # keyword; the dataclass default path template of "FUZZ" would
         # otherwise force a URL substitution point that vhost mode forbids.
         path_template = config.path_template
         if config.vhost and path_template == "FUZZ":
             path_template = ""
-        url_template = self.build_url_template(
-            path_template, self._fuzz_keywords(config)
-        )
+        if request_text is not None:
+            # Raw-request mode: the file IS the request; no URL template.
+            url_template = ""
+        else:
+            url_template = self.build_url_template(
+                path_template, self._fuzz_keywords(config)
+            )
         if config.recursion and not url_template.endswith("FUZZ"):
             # ffuf constraint (optionsparser HasSuffix check): recursion
             # re-queues discovered directories by substituting FUZZ at the
@@ -724,15 +921,27 @@ class FfufRunner:
                 "keywords from the URL template or drop vhost mode"
             )
             raise ValueError(msg)
+        extra_haystacks: tuple[str, ...] = ()
+        if vhost_header:
+            extra_haystacks += (vhost_header,)
+        if request_text is not None:
+            extra_haystacks += (request_text,)
         self._require_fuzz_keyword(
             config,
             url_template,
-            extra_haystacks=(vhost_header,) if vhost_header else (),
+            extra_haystacks=extra_haystacks,
         )
-        cmd = [
-            config.binary,
-            "-u",
-            url_template,
+        cmd = [config.binary]
+        if request_text is not None:
+            cmd.extend([
+                "-request",
+                str(config.request_file),
+                "-request-proto",
+                urlparse(self.base_url).scheme or "https",
+            ])
+        else:
+            cmd.extend(["-u", url_template])
+        cmd.extend([
             "-w",
             str(config.wordlist),
             "-of",
@@ -750,7 +959,7 @@ class FfufRunner:
             # fired first, the kill would discard the report.
             "-maxtime",
             str(config.max_runtime),
-        ]
+        ])
         if config.stop_on_403:
             cmd.append("-sf")
         if config.stop_on_spurious:
@@ -759,6 +968,12 @@ class FfufRunner:
             cmd.append("-sa")
         if config.auto_calibration:
             cmd.append("-ac")
+            if config.calibration_strategy is not None:
+                cmd.extend(["-acs", config.calibration_strategy])
+            if config.calibration_per_host:
+                cmd.append("-ach")
+        for spec in config.encoders:
+            cmd.extend(["-enc", spec])
         if config.match_status:
             cmd.extend(["-mc", config.match_status])
         if config.filter_status:
@@ -880,6 +1095,11 @@ class FfufRunner:
                 (_resolve_wordlist(path), keyword)
                 for path, keyword in config.extra_wordlists
             ),
+            request_file=(
+                _resolve_wordlist(Path(config.request_file))
+                if config.request_file is not None
+                else None
+            ),
         )
 
         target_host = (urlparse(self.base_url).hostname or "").lower()
@@ -959,6 +1179,7 @@ class FfufRunner:
             wordlist_files = list(dict.fromkeys(
                 [str(config.wordlist)]
                 + [str(path) for path, _keyword in config.extra_wordlists]
+                + ([str(config.request_file)] if config.request_file else [])
             ))
             completed = run_untrusted_networked(
                 cmd,
@@ -1127,4 +1348,17 @@ class FfufRunner:
         host = result.get("host")
         if host:
             summary["host"] = self._clean_summary_text(host)
+        # Raw-request runs fuzz positions the URL does not echo (a JSON
+        # body field, a header value), so the per-result input map is
+        # the only record of WHICH wordlist entry matched. FFUFHASH is
+        # ffuf bookkeeping, not an input.
+        inputs = result.get("input")
+        if isinstance(inputs, dict):
+            cleaned = {
+                str(keyword): self._clean_summary_text(value)
+                for keyword, value in inputs.items()
+                if str(keyword) != "FFUFHASH"
+            }
+            if cleaned:
+                summary["input"] = cleaned
         return summary

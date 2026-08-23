@@ -298,3 +298,96 @@ def test_live_filter_regex_subtracts_matching_bodies(
     hits = {entry["url"].rsplit("/", 1)[-1] for entry in result["results"]}
     assert "backup" in hits
     assert "admin" not in hits  # its body matches the filter regex
+
+
+def test_live_raw_request_mode_fuzzes_body(
+    tmp_path: Path, fixture_server, direct_ffuf
+):
+    """-request mode on the wire: the raw request file's body keyword is
+    substituted and the requests reach the fixture."""
+    from urllib.parse import urlparse
+
+    base_url, records = fixture_server
+    host = urlparse(base_url).netloc
+    wordlist = _wordlist(tmp_path, "params.txt", ["alpha", "beta"])
+    request = tmp_path / "req.txt"
+    request.write_text(
+        "POST /login HTTP/1.1\n"
+        f"Host: {host}\n"
+        "Content-Type: application/x-www-form-urlencoded\n"
+        "Content-Length: 9\n"
+        "\n"
+        "name=FUZZ",
+        encoding="utf-8",
+    )
+
+    runner = FfufRunner(base_url, tmp_path)
+    result = runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            request_file=request,
+            auto_calibration=False,
+            threads=1,
+            timeout=5,
+            max_runtime=30,
+        )
+    )
+
+    assert result["returncode"] == 0, result["stderr"]
+    posts = [r for r in records if r["method"] == "POST"]
+    bodies = {r["body"] for r in posts}
+    assert {"name=alpha", "name=beta"} <= bodies, bodies
+    # Body-positioned fuzzing: the report URL is constant, so the input
+    # map is the only record of which entry matched.
+    matched_inputs = {
+        entry["input"]["FUZZ"]
+        for entry in result["results"]
+        if "input" in entry
+    }
+    assert matched_inputs, result["results"]
+    assert matched_inputs <= {"alpha", "beta"}
+
+
+def test_live_encoder_chain_applies(tmp_path: Path, fixture_server, direct_ffuf):
+    base_url, records = fixture_server
+    wordlist = _wordlist(tmp_path, "vals.txt", ["a b"])
+
+    runner = FfufRunner(base_url, tmp_path)
+    result = runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="search?q=FUZZ",
+            encoders=("FUZZ:urlencode",),
+            auto_calibration=False,
+            threads=1,
+            timeout=5,
+            max_runtime=30,
+        )
+    )
+
+    assert result["returncode"] == 0, result["stderr"]
+    paths = {r["path"] for r in records}
+    # The space was urlencoded by ffuf's -enc, then once more as query
+    # text: the raw 'a b' never appears.
+    assert any("q=a" in p and " " not in p for p in paths), paths
+
+
+def test_live_calibration_strategy_accepted(
+    tmp_path: Path, fixture_server, direct_ffuf
+):
+    base_url, _records = fixture_server
+    wordlist = _wordlist(tmp_path, "dirs.txt", ["admin", "nosuch"])
+
+    runner = FfufRunner(base_url, tmp_path)
+    result = runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            calibration_strategy="advanced",
+            calibration_per_host=True,
+            threads=1,
+            timeout=5,
+            max_runtime=30,
+        )
+    )
+
+    assert result["returncode"] == 0, result["stderr"]

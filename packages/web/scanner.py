@@ -472,6 +472,35 @@ Examples:
         help="Stop ffuf on all error cases (-sa)",
     )
     parser.add_argument(
+        "--ffuf-request",
+        type=Path,
+        help=(
+            "Raw HTTP request file for ffuf -request mode (its Host must "
+            "name the target; FUZZ may sit anywhere in the request). "
+            "Mutually exclusive with --ffuf-path/-method/-data/vhost/"
+            "recursion."
+        ),
+    )
+    parser.add_argument(
+        "--ffuf-calibration-strategy",
+        choices=("basic", "advanced"),
+        help="ffuf auto-calibration strategy (-acs); advanced helps recursion",
+    )
+    parser.add_argument(
+        "--ffuf-per-host-calibration",
+        action="store_true",
+        help="Calibrate filters per host (-ach); useful with vhost mode",
+    )
+    parser.add_argument(
+        "--ffuf-encoder",
+        action="append",
+        default=[],
+        help=(
+            "Keyword encoder chain for -enc, e.g. 'FUZZ:urlencode' or "
+            "'W2:urlencode b64encode' (repeatable)"
+        ),
+    )
+    parser.add_argument(
         "--ffuf-vhost",
         action="store_true",
         help=(
@@ -565,6 +594,10 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
         cookies=tuple(args.ffuf_cookie or ()),
         method=args.ffuf_method,
         data=args.ffuf_data,
+        request_file=args.ffuf_request,
+        calibration_strategy=args.ffuf_calibration_strategy,
+        calibration_per_host=bool(args.ffuf_per_host_calibration),
+        encoders=tuple(args.ffuf_encoder or ()),
         vhost=bool(args.ffuf_vhost),
         vhost_host_template=args.ffuf_vhost_host_template,
         stop_on_403=bool(args.ffuf_stop_on_403),

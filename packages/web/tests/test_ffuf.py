@@ -1370,6 +1370,28 @@ def test_run_survives_backstop_timeout_and_keeps_partial_results(
     assert result["stderr"] == "wedged"
 
 
+def test_build_command_warns_on_extreme_thread_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "packages.web.ffuf.logger.warning",
+        lambda fmt, *args: warnings.append(fmt % args if args else fmt),
+    )
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    runner.build_command(FfufConfig(wordlist=wordlist, threads=64), tmp_path / "o.json")
+    assert warnings == []
+
+    runner.build_command(
+        FfufConfig(wordlist=wordlist, threads=10000), tmp_path / "o.json"
+    )
+    assert any("unusually high" in w for w in warnings)
+
+
 def test_build_command_threads_authenticated_ffuf_options(tmp_path: Path):
     wordlist = tmp_path / "words.txt"
     wordlist.write_text("admin\n", encoding="utf-8")

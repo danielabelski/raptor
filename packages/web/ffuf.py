@@ -608,6 +608,14 @@ class FfufRunner:
         :meth:`build_config_file_content`).
         """
         self._validate_config(config)
+        if config.threads > 200:
+            # Not an error — operator opt-in — but almost always a typo'd
+            # value or a DoS-against-self against a live target.
+            logger.warning(
+                "ffuf threads=%d is unusually high for a live target; "
+                "consider --ffuf-rate to bound request pressure",
+                config.threads,
+            )
 
         # In vhost mode the URL is fixed and the Host header carries the
         # keyword; the dataclass default path template of "FUZZ" would

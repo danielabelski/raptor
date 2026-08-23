@@ -2031,3 +2031,61 @@ class TestStudyOutputCap:
         monkeypatch.setenv("RAPTOR_STUDY_MAX_OUTPUT_TOKENS", "8000")
         from core.concepts.study import _study_max_output_tokens
         assert _study_max_output_tokens() == 8000
+
+
+class TestThreatFrameDerivation:
+    def _model(self, *, with_transfer: bool):
+        from core.concepts.model import Contract, DomainModel
+        return DomainModel(contracts=[Contract(
+            function="pull_pages", file="a.c",
+            ownership_transfer=(
+                "pages reassigned to dst; caller releases"
+                if with_transfer else ""
+            ),
+        )])
+
+    def test_derives_and_labels_llm_prior(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from core.concepts.study import _derive_threat_frame_invariants
+        client = MagicMock()
+        client.generate_structured.return_value = SimpleNamespace(result={
+            "invariants": [{
+                "id": "pages_never_writable_dst",
+                "statement": "Pages pulled by pull_pages must never "
+                             "be used as a writable destination.",
+                "negation": "Writing corrupts foreign pages.",
+                "relevant_cwes": ["CWE-787"],
+                "derived_from_function": "pull_pages",
+            }],
+        })
+        model = self._model(with_transfer=True)
+        added = _derive_threat_frame_invariants(model, client)
+        assert added == 1
+        inv = model.invariants[-1]
+        assert inv.id == "tf_pages_never_writable_dst"
+        # No receipt exists for derived knowledge — llm_prior renders
+        # [unverified] at injection, a hint to check, never a fact.
+        assert inv.provenance == "llm_prior"
+        assert inv.receipt is None
+        assert "pull_pages" in inv.description
+
+    def test_no_qualifying_contracts_makes_no_llm_call(self):
+        from unittest.mock import MagicMock
+
+        from core.concepts.study import _derive_threat_frame_invariants
+        client = MagicMock()
+        model = self._model(with_transfer=False)
+        assert _derive_threat_frame_invariants(model, client) == 0
+        client.generate_structured.assert_not_called()
+
+    def test_llm_failure_is_nonfatal(self):
+        from unittest.mock import MagicMock
+
+        from core.concepts.study import _derive_threat_frame_invariants
+        client = MagicMock()
+        client.generate_structured.side_effect = RuntimeError("down")
+        model = self._model(with_transfer=True)
+        assert _derive_threat_frame_invariants(model, client) == 0
+        assert model.invariants == []

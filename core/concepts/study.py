@@ -3388,6 +3388,182 @@ def _record_discards(output_dir: Path, discards: list[dict]) -> None:
 # End-to-end
 # ------------------------------------------------------------------
 
+_THREAT_FRAME_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "invariants": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "statement": {"type": "string"},
+                    "negation": {"type": "string"},
+                    "description": {"type": "string"},
+                    "relevant_cwes": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "derived_from_function": {"type": "string"},
+                },
+                "required": [
+                    "id", "statement", "negation",
+                    "derived_from_function",
+                ],
+            },
+        },
+    },
+    "required": ["invariants"],
+}
+
+_THREAT_FRAME_SYSTEM_PROMPT = """\
+You are a security researcher deriving ADVERSARIAL invariants from
+extracted API contracts. Extraction records what code and comments
+say; real vulnerabilities live in what they leave unsaid. Your job is
+the inference a human reviewer adds on top of the mechanics.
+
+For each contract, reason about PROVENANCE and CAPABILITY:
+1. Enumerate the realistic provenances of every resource whose
+   ownership or aliasing crosses the contract (examples for kernel
+   code: user-pinned pages, zero-copy/spliced page-cache pages, shared
+   mappings, borrowed references, keyring payloads, DMA buffers).
+2. For each provenance, ask which operations the recipient may safely
+   perform on the resource — and which it must NOT (write vs read,
+   free vs keep, expose vs conceal).
+3. State invariants of the form "X must never be used as/for Y
+   (unless Z)" whose violation is a concrete security bug. Name the
+   concrete functions involved in every statement — an invariant that
+   names no function cannot be routed to the review that needs it.
+
+Phrase each invariant as a fact about what is SAFE in this codebase,
+not as a debatable norm. Where the current design already violates the
+invariant, say so in the negation: "the existing construction relies
+on every implementation honouring X" is a finding-shaped statement,
+not reassurance. A reviewer reading your invariant must not be able to
+dismiss it with "upstream has always done this" — long-standing design
+acceptance is not evidence of safety, and several CVEs in this bug
+class exist precisely because an established construction depended on
+an unwritten implementation promise.
+
+Only emit invariants that are plausible for THIS codebase's domain and
+non-obvious (do not restate the contract's own sizing or
+release-exactly-once rules). Quality over quantity: zero output for a
+contract with no adversarial angle is correct."""
+
+
+def _derive_threat_frame_invariants(
+    model: DomainModel,
+    llm_client: Any,
+    *,
+    on_progress: Any = None,
+) -> int:
+    """One structured call deriving provenance-aware adversarial
+    invariants from ownership-transfer contracts.
+
+    Motivated by a controlled A/B on CVE-2026-31431: extraction-grade
+    study captured the pull-and-reassign mechanics with verbatim
+    receipts yet the review still verdicted the violated edge clean —
+    the exploit frame ("TX pages may be zero-copy page-cache pages, so
+    a writable-dst reassignment corrupts the page cache") is written
+    nowhere in the target, so no extractor can quote it. This step
+    derives that class of knowledge explicitly and labels it honestly:
+    ``provenance=llm_prior`` (no receipt — renders [unverified] at
+    injection, a hint to check, never established fact).
+
+    Returns the number of invariants appended. Best-effort: any
+    failure logs and returns 0.
+    """
+    from core.concepts.receipts import TIER_LLM_PRIOR
+
+    qualifying = [
+        c for c in model.contracts
+        if (c.ownership_transfer or "").strip()
+        or (c.security_note or "").strip()
+    ]
+    if not qualifying or llm_client is None:
+        return 0
+
+    # Contract fields paraphrase (and often quote) the untrusted
+    # repo's doc comments — same neutralisation as every other
+    # target-derived interpolation in this module.
+    from core.security.prompt_envelope import neutralize_tag_forgery as _ntf
+    lines = []
+    for c in qualifying:
+        lines.append(
+            f"### {_ntf(c.function)} ({_ntf(c.file)})\n"
+            f"- input: {_ntf(c.input_semantics)}\n"
+            f"- output: {_ntf(c.output_semantics)}\n"
+            f"- ownership_transfer: {_ntf(c.ownership_transfer)}\n"
+            f"- security_note: {_ntf(c.security_note)}"
+        )
+    caller_hints = [
+        f"- {_ntf(c.id)}: {_ntf(c.description[:200])}"
+        for c in model.concepts
+        if any(q.function in (c.description or "") for q in qualifying)
+    ]
+    prompt = (
+        "## Contracts with ownership/aliasing transfer\n\n"
+        + "\n\n".join(lines)
+        + ("\n\n## Related extracted concepts (context)\n"
+           + "\n".join(caller_hints[:20]) if caller_hints else "")
+        + "\n\nDerive adversarial invariants per the system prompt."
+    )
+
+    try:
+        response = llm_client.generate_structured(
+            prompt, _THREAT_FRAME_SCHEMA,
+            system_prompt=_THREAT_FRAME_SYSTEM_PROMPT,
+            task_type="study",
+            max_tokens=_study_max_output_tokens(),
+            stream=True,
+        )
+        from core.llm.coerce import structured_result
+        result = structured_result(response)
+    except Exception:
+        logger.warning(
+            "threat-frame derivation LLM call failed — domain model "
+            "ships without derived adversarial invariants",
+            exc_info=True,
+        )
+        return 0
+
+    existing = {inv.id for inv in model.invariants}
+    added = 0
+    for raw in (result or {}).get("invariants") or []:
+        stmt = str(raw.get("statement") or "").strip()
+        neg = str(raw.get("negation") or "").strip()
+        if not stmt or not neg:
+            continue
+        inv_id = "tf_" + str(raw.get("id") or f"derived_{added}").strip()
+        if inv_id in existing:
+            continue
+        existing.add(inv_id)
+        model.invariants.append(Invariant(
+            id=inv_id,
+            concept="",
+            statement=stmt,
+            negation=neg,
+            description=(
+                str(raw.get("description") or "").strip()
+                + f" [threat-frame derived from "
+                  f"{raw.get('derived_from_function', '?')} contract]"
+            ).strip(),
+            confidence="derived",
+            relevant_cwes=[
+                str(x) for x in (raw.get("relevant_cwes") or [])
+            ],
+            provenance=TIER_LLM_PRIOR,
+            receipt=None,
+        ))
+        added += 1
+    if added and on_progress:
+        on_progress(
+            "threat_frame",
+            f"Derived {added} adversarial invariant(s) from "
+            f"{len(qualifying)} ownership-transfer contract(s)",
+        )
+    return added
+
+
 def run_study(
     study_list_path: Path,
     output_dir: Path,
@@ -3575,6 +3751,13 @@ def run_study(
         source_root=source_root,
         security_context=sc,
     )
+
+    try:
+        _derive_threat_frame_invariants(
+            model, llm_client, on_progress=on_progress,
+        )
+    except Exception:
+        logger.debug("threat-frame derivation skipped", exc_info=True)
 
     if vocab_entries:
         (

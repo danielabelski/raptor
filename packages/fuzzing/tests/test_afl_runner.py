@@ -248,6 +248,7 @@ class TestSandboxedCampaign:
         runner.afl_fuzz = "/usr/bin/afl-fuzz"
         runner.sandbox_rootfs = None
         runner.binary_in_rootfs = None
+        runner.cmplog_in_rootfs = None
         return runner
 
     @staticmethod
@@ -714,3 +715,45 @@ class TestNoAffinity:
         # every parallel instance would bind the same lowest CPU; the
         # scheduler spreads them instead.
         assert seen["env"]["AFL_NO_AFFINITY"] == "1"
+
+
+class TestCmplogInRootfs:
+    def test_main_instance_gets_in_rootfs_cmplog(self, tmp_path,
+                                                 monkeypatch):
+        from packages.fuzzing import afl_runner as mod
+        rootfs = TestRootfsMode._rootfs(tmp_path)
+        monkeypatch.setattr(mod.shutil, "which", lambda *_a, **_k: None)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "seed0").write_bytes(b"A")
+        runner = AFLRunner(
+            binary_path=rootfs / "src/app",
+            corpus_dir=corpus,
+            output_dir=tmp_path / "out",
+            sandbox_rootfs=rootfs,
+            binary_in_rootfs="/src/app",
+            cmplog_in_rootfs="/src-cmplog/app",
+        )
+        main_cmd = runner._build_afl_command(
+            instance_name="main", is_main=True, timeout_ms=1000)
+        sec_cmd = runner._build_afl_command(
+            instance_name="secondary1", is_main=False, timeout_ms=1000)
+        assert main_cmd[main_cmd.index("-c") + 1] == "/src-cmplog/app"
+        assert "-c" not in sec_cmd
+
+    def test_host_mode_ignores_cmplog_in_rootfs(self, tmp_path,
+                                                monkeypatch):
+        from packages.fuzzing import afl_runner as mod
+        binary = tmp_path / "target"
+        binary.write_bytes(b"\x7fELF")
+        binary.chmod(0o755)
+        (tmp_path / "corpus").mkdir()
+        monkeypatch.setattr(mod.shutil, "which",
+                            lambda *_a, **_k: "/usr/bin/afl-fuzz")
+        monkeypatch.setattr(AFLRunner, "_validate_afl_command",
+                            lambda self: None)
+        runner = AFLRunner(binary_path=binary,
+                           corpus_dir=tmp_path / "corpus",
+                           output_dir=tmp_path / "out",
+                           cmplog_in_rootfs="/src-cmplog/app")
+        assert runner.cmplog_in_rootfs is None

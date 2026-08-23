@@ -37,6 +37,9 @@ _AFL_FUZZ_CANDIDATES = ("usr/local/bin/afl-fuzz", "usr/bin/afl-fuzz")
 #: rootfs directory name under the fuzz run output dir.
 ROOTFS_DIRNAME = "afl-rootfs"
 
+#: in-image sibling tree holding the cmplog twin build.
+CMPLOG_DIRNAME = "src-cmplog"
+
 #: provenance record written next to the campaign output.
 PROVENANCE_FILENAME = "env-build.json"
 
@@ -48,6 +51,7 @@ class FuzzEnvBuild:
     ok: bool
     reason: str = ""      # "" | not_authorized | no_build_command |
     #                       stale_rootfs | no_afl_fuzz_in_image |
+    #                       broken_afl_version | unsupported_sanitizer |
     #                       (containerized_build reasons)
     detail: str = ""
     rootfs: Path | None = None
@@ -61,6 +65,10 @@ class FuzzEnvBuild:
     guessed: bool = False
     afl_fuzz: str = ""    # absolute in-rootfs afl-fuzz path
     base_image: str = ""
+    sanitizer: str = ""   # "" | "asan" — instrumentation of the build
+    cmplog_binaries: dict[str, str] = field(default_factory=dict)
+    #: repo-relative name -> in-rootfs cmplog twin path (may be empty
+    #: even when requested: the twin build can fail independently)
 
 
 def env_build_candidate(
@@ -102,6 +110,8 @@ def env_build_for_fuzzing(
     *,
     build: bool | None = None,
     timeout_seconds: int = 600,
+    sanitizer: str = "",
+    cmplog: bool = False,
 ) -> FuzzEnvBuild:
     """Build *repo* AFL-instrumented in the pinned AFL++ image and keep
     the exported rootfs under *out_dir* as the campaign substrate.
@@ -118,6 +128,9 @@ def env_build_for_fuzzing(
 
     repo = Path(repo)
     out_dir = Path(out_dir)
+    if sanitizer not in ("", "asan"):
+        return FuzzEnvBuild(ok=False, reason="unsupported_sanitizer",
+                            detail=f"sanitizer {sanitizer!r} not supported")
     if not resolve_build_execution(build, target_path=repo):
         return FuzzEnvBuild(
             ok=False, reason="not_authorized",
@@ -151,6 +164,10 @@ def env_build_for_fuzzing(
             detail=f"{rootfs_dir} already exists (kept or interrupted "
                    "earlier run) — delete it or use a fresh --out",
             command=command, command_source=source, guessed=guessed)
+    # ASAN rides afl-clang-fast's own env toggle; the cmplog twin is
+    # a full second build of the same tree with compare logging on.
+    run_env = {"AFL_USE_ASAN": "1"} if sanitizer == "asan" else None
+    aux = {CMPLOG_DIRNAME: {"AFL_LLVM_CMPLOG": "1"}} if cmplog else None
     product = containerized_build(
         repo, command,
         out_dir=out_dir / "env-built",
@@ -158,6 +175,8 @@ def env_build_for_fuzzing(
         base_image=AFL_BUILD_IMAGE,
         timeout_seconds=timeout_seconds,
         keep_rootfs=rootfs_dir,
+        run_env=run_env,
+        aux_builds=aux,
     )
     if not product.ok:
         return FuzzEnvBuild(
@@ -170,6 +189,20 @@ def env_build_for_fuzzing(
         if (rootfs_dir / cand).is_file():
             afl_fuzz = "/" + cand
             break
+    if afl_fuzz:
+        broken = _broken_afl_version(rootfs_dir / afl_fuzz.lstrip("/"))
+        if broken:
+            version, defect = broken
+            shutil.rmtree(rootfs_dir, ignore_errors=True)
+            logger.error(
+                "REFUSING to fuzz with afl-fuzz %s: %s. Use the pinned "
+                "AFL_BUILD_IMAGE (or any build without this defect).",
+                version, defect)
+            return FuzzEnvBuild(
+                ok=False, reason="broken_afl_version",
+                detail=f"afl-fuzz {version}: {defect}",
+                command=command, command_source=source, guessed=guessed,
+                base_image=AFL_BUILD_IMAGE)
     if not afl_fuzz:
         shutil.rmtree(rootfs_dir, ignore_errors=True)
         return FuzzEnvBuild(
@@ -178,9 +211,22 @@ def env_build_for_fuzzing(
             command=command, command_source=source, guessed=guessed,
             base_image=AFL_BUILD_IMAGE)
 
+    cmplog_binaries = {}
+    if cmplog:
+        for rel in sorted(product.artifacts):
+            twin = rootfs_dir / CMPLOG_DIRNAME / rel
+            if twin.is_file():
+                cmplog_binaries[rel] = f"/{CMPLOG_DIRNAME}/{rel}"
+        if not cmplog_binaries:
+            logger.warning(
+                "cmplog requested but no twin binaries found under "
+                "/%s — campaign proceeds without compare logging",
+                CMPLOG_DIRNAME)
     result = FuzzEnvBuild(
         ok=True,
         rootfs=rootfs_dir,
+        sanitizer=sanitizer,
+        cmplog_binaries=cmplog_binaries,
         binaries={rel: f"/src/{rel}" for rel in sorted(product.artifacts)},
         host_artifacts=dict(product.artifacts),
         checksums=dict(product.checksums),
@@ -192,6 +238,32 @@ def env_build_for_fuzzing(
     )
     _write_provenance(out_dir, result)
     return result
+
+
+def _broken_afl_version(afl_fuzz_path: Path) -> tuple[str, str] | None:
+    """Return (version, defect) when the afl-fuzz binary carries a
+    blocklisted version token, else None.
+
+    Artifact-level check: it fires regardless of WHERE the image came
+    from (the pinned constant, a future operator override, a stale
+    layer cache), because the failure mode it guards against is
+    silently-wrong fuzzing results.
+    """
+    from core.env.build import AFL_BROKEN_VERSIONS
+
+    try:
+        blob = afl_fuzz_path.read_bytes()
+    except OSError as exc:
+        # unreadable ≠ proven-healthy, but refusing here would fail
+        # campaigns on transient fs hiccups; log so a repeat pattern
+        # is visible.
+        logger.warning("blocklist scan could not read %s: %s",
+                       afl_fuzz_path, exc)
+        return None
+    for version, defect in AFL_BROKEN_VERSIONS.items():
+        if version.encode() in blob:
+            return version, defect
+    return None
 
 
 def _write_provenance(out_dir: Path, result: FuzzEnvBuild) -> None:
@@ -208,6 +280,8 @@ def _write_provenance(out_dir: Path, result: FuzzEnvBuild) -> None:
                            for rel, p in result.host_artifacts.items()},
         "checksums": result.checksums,
         "afl_fuzz": result.afl_fuzz,
+        "sanitizer": result.sanitizer,
+        "cmplog_binaries": result.cmplog_binaries,
         "rootfs": str(result.rootfs),
     }
     try:

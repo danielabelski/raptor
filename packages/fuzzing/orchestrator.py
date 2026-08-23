@@ -312,6 +312,8 @@ class FuzzingOrchestrator:
         seed_profile: str = "default",
         env_target: str | None = None,
         keep_env_rootfs: bool = False,
+        env_sanitizer: str = "",
+        env_cmplog: bool = False,
     ) -> dict[str, Any]:
         """Execute a planned campaign. Raises if plan.can_run is False.
 
@@ -351,7 +353,8 @@ class FuzzingOrchestrator:
         if plan.env_build:
             from packages.fuzzing.env_build import env_build_for_fuzzing
             env_build = env_build_for_fuzzing(
-                plan.target.path, out_dir, build=plan.env_build_consent)
+                plan.target.path, out_dir, build=plan.env_build_consent,
+                sanitizer=env_sanitizer, cmplog=env_cmplog)
             if not env_build.ok:
                 raise RuntimeError(
                     f"env build failed ({env_build.reason}): "
@@ -441,6 +444,9 @@ class FuzzingOrchestrator:
                     "build_command_source": env_build.command_source,
                     "guessed_build_command": env_build.guessed,
                     "binaries": env_build.binaries,
+                    "sanitizer": getattr(env_build, "sanitizer", ""),
+                    "cmplog": bool(getattr(env_build, "cmplog_binaries",
+                                           {})),
                 }
         elif plan.fuzzer == "libfuzzer":
             result = self._run_libfuzzer(plan, out_dir, duration_seconds, corpus_dir, dict_path)
@@ -579,6 +585,10 @@ class FuzzingOrchestrator:
         afl_out = out_dir / "afl"
         if env_build is not None:
             rel = self._pick_env_binary(env_build, env_target)
+            extra_flags: list[str] = []
+            if getattr(env_build, "sanitizer", "") == "asan":
+                # ASAN shadow mappings blow AFL's default memory limit
+                extra_flags += ["-m", "none"]
             runner = AFLRunner(
                 binary_path=env_build.rootfs / "src" / rel,
                 corpus_dir=corpus_dir,
@@ -589,6 +599,9 @@ class FuzzingOrchestrator:
                 sandbox_rootfs=env_build.rootfs,
                 binary_in_rootfs=env_build.binaries[rel],
                 afl_fuzz_path=env_build.afl_fuzz,
+                cmplog_in_rootfs=getattr(env_build, "cmplog_binaries",
+                                         {}).get(rel),
+                extra_afl_flags=extra_flags or None,
             )
             telemetry_target = f"{plan.target.path} :: {rel} (env-built)"
         else:

@@ -285,9 +285,8 @@ class TestCcEmission:
         assert "CC='afl-clang-fast'" in prefix
         assert "CXX='afl-clang-fast++'" in prefix
         assert "afl" in AFL_TOOLCHAIN.instrumentation
-        # pinned release tag, not a floating alias
-        assert ":" in AFL_BUILD_IMAGE
-        assert not AFL_BUILD_IMAGE.endswith((":latest", ":stable"))
+        # digest-pinned, not a floating alias
+        assert "@sha256:" in AFL_BUILD_IMAGE
 
     def test_plain_toolchains_unaffected(self):
         # HARDENED/SOFT carry no cc — the prefix shape is unchanged
@@ -360,3 +359,54 @@ class TestKeepRootfs:
                 self._repo(tmp_path), "make", out_dir=tmp_path / "out")
         assert product.ok
         assert product.rootfs is None
+
+
+class TestRunEnvAndAuxBuilds:
+    def _repo(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "Makefile").write_text("all:\n\tcc -o app main.c\n")
+        (repo / "main.c").write_text("int main(void){return 0;}\n")
+        return repo
+
+    def test_run_env_reaches_the_run_line(self, tmp_path):
+        from pathlib import Path as _P
+        patches, fake_build = _fake_container_layer(
+            lambda d: _plant_elf(_P(d) / "src" / "a"))
+        with patches[0], patches[1], patches[2], patches[3]:
+            containerized_build(
+                self._repo(tmp_path), "make", out_dir=tmp_path / "out",
+                run_env={"AFL_USE_ASAN": "1"})
+        assert "RUN AFL_USE_ASAN='1' make" in fake_build.dockerfile
+
+    def test_aux_build_stage_shape(self, tmp_path):
+        from pathlib import Path as _P
+        patches, fake_build = _fake_container_layer(
+            lambda d: _plant_elf(_P(d) / "src" / "a"))
+        with patches[0], patches[1], patches[2], patches[3]:
+            containerized_build(
+                self._repo(tmp_path), "make", out_dir=tmp_path / "out",
+                aux_builds={"src-cmplog": {"AFL_LLVM_CMPLOG": "1"}})
+        df = fake_build.dockerfile
+        # aux copy happens BEFORE any build runs (pristine tree)
+        assert df.index("COPY src /src-cmplog") < df.index("RUN ")
+        assert "WORKDIR /src-cmplog" in df
+        assert "RUN AFL_LLVM_CMPLOG='1' make" in df
+
+    def test_hostile_run_env_refused(self, tmp_path):
+        import pytest as _pytest
+        patches, _ = _fake_container_layer()
+        with patches[0], patches[1], patches[2], patches[3]:
+            with _pytest.raises(ValueError):
+                containerized_build(
+                    self._repo(tmp_path), "make", out_dir=tmp_path / "out",
+                    run_env={"X": "a' ; rm -rf / ; '"})
+
+    def test_hostile_aux_name_refused(self, tmp_path):
+        import pytest as _pytest
+        patches, _ = _fake_container_layer()
+        with patches[0], patches[1], patches[2], patches[3]:
+            with _pytest.raises(ValueError):
+                containerized_build(
+                    self._repo(tmp_path), "make", out_dir=tmp_path / "out",
+                    aux_builds={"../etc": {}})

@@ -66,10 +66,35 @@ SOFT_TOOLCHAIN = ToolchainSpec(
 #: build-on-demand). Pinned release tag: the SAME image supplies the
 #: run-time afl-fuzz (its exported rootfs is the campaign substrate),
 #: so compile-time and run-time AFL versions agree by construction.
+#: Digest-pinned stable-branch build (afl-fuzz++5.03a). NOT the
+#: v5.02c release tag: that release mis-classifies sanitizer-only
+#: crashes as normal runs whenever a cmplog binary is attached (-c) —
+#: a silent false-negative verified live and absent from this build
+#: (full matrix re-verified: cmplog discovery from a plain twin AND
+#: ASAN crash classification both correct).
 AFL_BUILD_IMAGE = (
-    "aflplusplus/aflplusplus:v5.02c@sha256:"
-    "7c3c05e8471ac174327c303a3249c77bbe046d4fe2a458918704190fff64f52f"
+    "aflplusplus/aflplusplus:stable@sha256:"
+    "1a05a7eb0db2ad6ad510e29ee4e2c4a916a51e6397ef88bf04d477700c7a06f6"
 )
+
+#: AFL++ builds with KNOWN defects that make fuzzing results silently
+#: wrong — consumers must refuse to run campaigns with these (a loud
+#: failure beats false negatives). Keyed by the version token embedded
+#: in the afl-fuzz binary. v5.02c is the current RELEASE tag, so
+#: anyone "upgrading" the pin to the newest release reintroduces it —
+#: that is exactly what this blocklist is for.
+#: Scope note: the artifact-level scan in packages/fuzzing/env_build
+#: guards ENV-BUILT campaigns; host-mode campaigns use the operator's
+#: afl-fuzz and are not scanned — a host-installed broken release has
+#: the same defect (worth a doctor-style probe if it ever bites).
+AFL_BROKEN_VERSIONS: dict[str, str] = {
+    "++5.02c": (
+        "attaching a cmplog binary (-c) suppresses sanitizer crash "
+        "classification: ASAN aborts exit(1) and afl-fuzz records "
+        "crashing inputs as normal runs — SILENT FALSE NEGATIVES "
+        "(verified live; fixed on the stable branch / 5.03a+)"
+    ),
+}
 
 #: Toolchain for AFL-instrumented builds: afl-clang-fast wraps the
 #: image's clang and injects coverage instrumentation via CC/CXX —
@@ -115,9 +140,25 @@ def containerized_build(
     base_image: str = DEFAULT_BUILD_IMAGE,
     timeout_seconds: int = 600,
     keep_rootfs: Path | str | None = None,
+    run_env: dict[str, str] | None = None,
+    aux_builds: dict[str, dict[str, str]] | None = None,
 ) -> BuildProduct:
     """Build *repo_dir* with *command* in a container; extract ELF
     executables produced under the repo tree into ``out_dir``.
+
+    ``run_env``: extra KEY=VALUE pairs prefixed to the build RUN line
+    (e.g. AFL_USE_ASAN=1 — instrumentation toggles the wrapper compiler
+    reads from its environment). Values are shell-quoted; keys must be
+    identifier-shaped.
+
+    ``aux_builds``: additional same-source build stages, mapping a
+    sibling directory name (e.g. "src-cmplog") to its own extra env.
+    Each stage runs the SAME command with the toolchain prefix, the
+    stage's env ONLY (``run_env`` is not inherited: the canonical
+    cmplog twin wants compare logging without the main stage's
+    sanitizer — see the in-function comment for the version hazard
+    this depends on). Aux artifacts stay in the image/rootfs; only
+    /src artifacts are extracted.
 
     ``keep_rootfs``: when set, the exported image filesystem is written
     there and survives the call (``product.rootfs``) for
@@ -134,7 +175,8 @@ def containerized_build(
         product = _containerized_build(
             repo_dir, command, out_dir=out_dir, toolchain=toolchain,
             base_image=base_image, timeout_seconds=timeout_seconds,
-            keep_rootfs=keep_rootfs,
+            keep_rootfs=keep_rootfs, run_env=run_env,
+            aux_builds=aux_builds,
         )
     except BaseException:
         if keep_rootfs:
@@ -159,6 +201,8 @@ def _containerized_build(
     base_image: str,
     timeout_seconds: int,
     keep_rootfs: Path | str | None,
+    run_env: dict[str, str] | None = None,
+    aux_builds: dict[str, dict[str, str]] | None = None,
 ) -> BuildProduct:
     from core.container.build import build_image
     from core.container.export import export_rootfs
@@ -189,13 +233,36 @@ def _containerized_build(
         # LABEL is the FIRST instruction so every intermediate step
         # image the legacy builder commits inherits it — that is what
         # scopes the dangling-cache prune below to exactly this build.
+        env_prefix = _env_prefix(run_env)
         dockerfile = (
             f"FROM {base_image}\n"
             f"LABEL {BUILD_LABEL}={build_id}\n"
             f"COPY src /src\n"
-            f"WORKDIR /src\n"
-            f"RUN {_flag_prefix(toolchain)}{command}\n"
         )
+        # Aux stages copy BEFORE any build runs so every stage starts
+        # from the pristine tree, not one polluted by another stage's
+        # objects.
+        for aux_name in (aux_builds or {}):
+            _validate_aux_name(aux_name)
+            dockerfile += f"COPY src /{aux_name}\n"
+        dockerfile += (
+            f"WORKDIR /src\n"
+            f"RUN {env_prefix}{_flag_prefix(toolchain)}{command}\n"
+        )
+        for aux_name, aux_env in (aux_builds or {}).items():
+            # aux stages do NOT inherit run_env: the canonical use is
+            # an AFL cmplog twin, which wants compare logging WITHOUT
+            # the main stage's sanitizer (sanitized compare tracing is
+            # needlessly slow). Safe ONLY because AFL_BUILD_IMAGE pins
+            # a build where crash classification is independent of the
+            # -c binary's instrumentation — the v5.02c release gets
+            # this wrong (silent sanitizer-crash false negatives,
+            # found empirically; see the pin comment).
+            dockerfile += (
+                f"WORKDIR /{aux_name}\n"
+                f"RUN {_env_prefix(aux_env)}"
+                f"{_flag_prefix(toolchain)}{command}\n"
+            )
         try:
             built = build_image(
                 context_dir=str(ctx), tag=tag, dockerfile_text=dockerfile,
@@ -282,6 +349,41 @@ def _dest_name(rel: str, out: Path) -> str:
         name = f"{base}.{i}"
         i += 1
     return name
+
+
+def _validate_aux_name(name: str) -> None:
+    """Aux stage names become image paths and Dockerfile tokens."""
+    import re as _re
+
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+        raise ValueError(f"invalid aux build name: {name!r}")
+    if name in ("src", "usr", "bin", "sbin", "lib", "lib64", "etc",
+                "opt", "tmp", "var", "proc", "sys", "dev", "run",
+                "boot", "home", "root"):
+        raise ValueError(
+            f"aux build name {name!r} collides with the source tree or "
+            f"an image system directory")
+
+
+def _env_prefix(run_env: dict[str, str] | None) -> str:
+    """KEY='VALUE' prefix for the RUN line (empty when None).
+
+    Keys must be identifier-shaped (they come from RAPTOR constants,
+    never from the scanned repo); values are single-quote-wrapped with
+    embedded quotes rejected rather than escaped.
+    """
+    import re as _re
+
+    if not run_env:
+        return ""
+    parts = []
+    for k, v in run_env.items():
+        if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+            raise ValueError(f"invalid run_env key: {k!r}")
+        if "'" in v or "\n" in v or "\r" in v:
+            raise ValueError(f"invalid run_env value for {k!r}")
+        parts.append(f"{k}='{v}'")
+    return " ".join(parts) + " "
 
 
 def _flag_prefix(toolchain: ToolchainSpec | None) -> str:

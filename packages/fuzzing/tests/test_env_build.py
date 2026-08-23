@@ -211,3 +211,104 @@ class TestRemediations:
         assert res.reason == "stale_rootfs"
         # the operator's kept tree is untouched
         assert (out / ROOTFS_DIRNAME / "src" / "old-binary").exists()
+
+
+class TestSanitizerAndCmplog:
+    def test_asan_and_cmplog_reach_the_build(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        rootfs = out / ROOTFS_DIRNAME
+        seen = {}
+
+        def fake_build(repo, cmd, **kw):
+            seen.update(kw)
+            product = _product(rootfs=rootfs)
+            twin = rootfs / "src-cmplog" / "app"
+            twin.parent.mkdir(parents=True, exist_ok=True)
+            twin.write_bytes(b"\x7fELF")
+            return product
+
+        with patch("core.project.trust.resolve_build_execution",
+                   return_value=True), \
+             patch("core.build.resolve.resolve_build_command",
+                   return_value=("make", "project-setting:default")), \
+             patch("core.env.build.containerized_build", fake_build):
+            res = env_build_for_fuzzing(_repo(tmp_path), out,
+                                        sanitizer="asan", cmplog=True)
+        assert res.ok
+        assert seen["run_env"] == {"AFL_USE_ASAN": "1"}
+        assert seen["aux_builds"] == {"src-cmplog": {"AFL_LLVM_CMPLOG": "1"}}
+        assert res.sanitizer == "asan"
+        assert res.cmplog_binaries == {"app": "/src-cmplog/app"}
+        prov = (out / PROVENANCE_FILENAME).read_text()
+        assert '"sanitizer": "asan"' in prov
+        assert "/src-cmplog/app" in prov
+
+    def test_cmplog_twin_missing_degrades(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        rootfs = out / ROOTFS_DIRNAME
+        with patch("core.project.trust.resolve_build_execution",
+                   return_value=True), \
+             patch("core.build.resolve.resolve_build_command",
+                   return_value=("make", "detected:make")), \
+             patch("core.env.build.containerized_build",
+                   lambda *a, **kw: _product(rootfs=rootfs)):
+            res = env_build_for_fuzzing(_repo(tmp_path), out, cmplog=True)
+        assert res.ok
+        assert res.cmplog_binaries == {}
+
+    def test_unknown_sanitizer_refused(self, tmp_path):
+        res = env_build_for_fuzzing(_repo(tmp_path), tmp_path / "out",
+                                    sanitizer="msan")
+        assert not res.ok
+        assert res.reason == "unsupported_sanitizer"
+
+
+class TestBrokenAflBlocklist:
+    """Known-broken AFL++ builds are refused at the artifact level —
+    v5.02c's cmplog+sanitizer silent-false-negative class must never
+    run a campaign, regardless of where the image came from."""
+
+    def test_blocklisted_version_refused_and_cleaned(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        rootfs = out / ROOTFS_DIRNAME
+
+        def fake_build(repo, cmd, **kw):
+            product = _product(rootfs=rootfs)
+            (rootfs / "usr/local/bin/afl-fuzz").write_bytes(
+                b"\x7fELF" + b"afl-fuzz++5.02c\x00")
+            return product
+
+        with patch("core.project.trust.resolve_build_execution",
+                   return_value=True), \
+             patch("core.build.resolve.resolve_build_command",
+                   return_value=("make", "detected:make")), \
+             patch("core.env.build.containerized_build", fake_build):
+            res = env_build_for_fuzzing(_repo(tmp_path), out)
+        assert not res.ok
+        assert res.reason == "broken_afl_version"
+        assert "++5.02c" in res.detail
+        assert "FALSE NEGATIVES" in res.detail.upper() or \
+            "false negatives" in res.detail
+        assert not rootfs.exists()
+
+    def test_healthy_version_passes(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        rootfs = out / ROOTFS_DIRNAME
+
+        def fake_build(repo, cmd, **kw):
+            product = _product(rootfs=rootfs)
+            (rootfs / "usr/local/bin/afl-fuzz").write_bytes(
+                b"\x7fELF" + b"afl-fuzz++5.03a\x00")
+            return product
+
+        with patch("core.project.trust.resolve_build_execution",
+                   return_value=True), \
+             patch("core.build.resolve.resolve_build_command",
+                   return_value=("make", "detected:make")), \
+             patch("core.env.build.containerized_build", fake_build):
+            res = env_build_for_fuzzing(_repo(tmp_path), out)
+        assert res.ok

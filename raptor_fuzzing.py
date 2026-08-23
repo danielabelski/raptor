@@ -202,6 +202,16 @@ Examples:
         "--keep-env-rootfs", action="store_true",
         help="Keep the exported AFL++ image rootfs (several GB) in the "
              "run dir after the campaign instead of deleting it")
+    ap.add_argument(
+        "--env-asan", action="store_true",
+        help="With env build-on-demand: build AFL+ASAN instrumented "
+             "(catches memory bugs that do not crash; slower — the "
+             "campaign runs with -m none)")
+    ap.add_argument(
+        "--env-cmplog", action="store_true",
+        help="With env build-on-demand: also build a cmplog twin and "
+             "attach it to the main instance (-c) — input-to-state "
+             "guidance, a large win on parsers with magic numbers")
     ap.add_argument("--check-sanitizers", action="store_true", help="Check if binary is compiled with sanitizers (ASAN, etc.)")
     ap.add_argument("--recompile-guide", action="store_true", help="Show guide for recompiling binary with AFL instrumentation and sanitizers")
     ap.add_argument("--use-showmap", action="store_true", help="Run afl-showmap after fuzzing for coverage analysis")
@@ -510,6 +520,8 @@ Examples:
                 seed_profile=args.seed_profile,
                 env_target=args.env_target,
                 keep_env_rootfs=args.keep_env_rootfs,
+                env_sanitizer="asan" if args.env_asan else "",
+                env_cmplog=args.env_cmplog,
             )
         except KeyboardInterrupt:
             print("\nCampaign interrupted by user.")

@@ -2316,5 +2316,15 @@
     "count": 15,
     "kind": "literal",
     "note": "mandatory-field manifest for the reachability adjacency cache decode gate (same persistence schema keys as _index_to_jsonable; an index missing any of them is a cache miss, not a vocabulary)"
+  },
+  "core/env/build.py::_validate_aux_name": {
+    "count": 17,
+    "kind": "literal",
+    "note": "Linux/OCI image system-directory names an aux build stage must not collide with (filesystem taxonomy, not target API names; same class as the tree-sitter node-type allowlist entry)"
+  },
+  "packages/fuzzing/env_build.py::record": {
+    "count": 11,
+    "kind": "literal",
+    "note": "env-build.json provenance record field names (serialization schema, not name vocabulary \u2014 same class as the enforcement-stats field-names entry)"
   }
 }

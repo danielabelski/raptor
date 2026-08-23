@@ -478,9 +478,6 @@
   "dead:dead_function:core/iris/api.py:load_project_assumptions": {
    "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
   },
-  "dead:dead_function:core/sandbox/host.py:one_shot_call": {
-   "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-  },
   "dead:dead_function:packages/exploit_feasibility/analyzer.py:check_binary_exploitability": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"
   },

@@ -240,6 +240,7 @@ class AFLRunner:
         sandbox_rootfs: Path | str | None = None,
         binary_in_rootfs: str | None = None,
         afl_fuzz_path: str | None = None,
+        cmplog_in_rootfs: str | None = None,
     ) -> None:
         self.binary = Path(binary_path).resolve()
         if not self.binary.exists():
@@ -322,6 +323,12 @@ class AFLRunner:
         # line uses the in-rootfs path.
         self.sandbox_rootfs = Path(sandbox_rootfs) if sandbox_rootfs else None
         self.binary_in_rootfs = binary_in_rootfs
+        # In-rootfs cmplog twin (env builds): post-pivot path handed to
+        # afl-fuzz -c on the main instance. Distinct from the host-path
+        # cmplog_binary, which stays refused in rootfs mode.
+        self.cmplog_in_rootfs = (cmplog_in_rootfs
+                                 if self.sandbox_rootfs is not None
+                                 else None)
         if self.sandbox_rootfs is not None:
             if not self.sandbox_rootfs.is_dir():
                 raise FileNotFoundError(
@@ -1215,6 +1222,8 @@ class AFLRunner:
         # Only attached to the main instance to avoid duplicating work.
         if is_main and self.cmplog_binary:
             cmd.extend(["-c", str(self.cmplog_binary)])
+        elif is_main and self.cmplog_in_rootfs:
+            cmd.extend(["-c", self.cmplog_in_rootfs])
 
         # Custom mutator library (.so), for grammar-aware or structure-aware
         # mutators (libprotobuf-mutator, custom JSON mutators, LLM bridges).

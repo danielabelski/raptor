@@ -47,6 +47,11 @@ import argparse  # noqa: E402
 from dataclasses import asdict  # noqa: E402
 
 from core.concepts.model import StudyItem  # noqa: E402
+from core.json import load_json  # noqa: E402
+
+# Study artifacts (reading/study lists) are small RAPTOR-written run
+# output.
+_MAX_STUDY_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 # ------------------------------------------------------------------
 # Patterns
@@ -1698,9 +1703,8 @@ def _load_reading_list(path: Path) -> tuple[list[str], list[str]]:
     """
     if not path.is_file():
         return [], []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    raw = load_json(path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(raw, dict):
         return [], []
     seen: set[str] = set()
     identifiers: list[str] = []
@@ -1790,9 +1794,10 @@ def _multilang_pass(
         concept_questions.extend(semantic_concepts)
 
     if reading_list_path and reading_list_path.is_file():
-        try:
-            raw = json.loads(reading_list_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        raw = load_json(
+            reading_list_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+        )
+        if not isinstance(raw, dict):
             raw = {}
         for item in raw.get("items", []):
             if item.get("resolved") or item.get("unresolvable"):
@@ -1858,9 +1863,8 @@ def _scope_from_reading_list(
     """
     if not rl_path.is_file():
         return None
-    try:
-        raw = json.loads(rl_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    raw = load_json(rl_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(raw, dict):
         return None
 
     seed_files: set[str] = set()
@@ -2003,9 +2007,8 @@ def _llm_seed_concepts(
     """Wrapper: reads names from study-list.json, then delegates to _from_names."""
     if not study_list_path.is_file():
         return []
-    try:
-        data = json.loads(study_list_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(study_list_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(data, dict):
         return []
     all_names = sorted({item["name"] for item in data.get("items", [])})
     return _llm_seed_concepts_from_names(semantic_concepts, all_names, model=model)
@@ -2141,9 +2144,8 @@ def _chase_reading_list_definitions(
     """
     if not rl_path.is_file():
         return []
-    try:
-        raw = json.loads(rl_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    raw = load_json(rl_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(raw, dict):
         return []
 
     # Collect concrete identifiers from unresolved items

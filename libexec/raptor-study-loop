@@ -45,6 +45,11 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import load_json  # noqa: E402
+
+# Study artifacts (reading/study lists, domain model, overview,
+# struct annotations) are small RAPTOR-written run output.
+_MAX_STUDY_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 # ------------------------------------------------------------------
 # Helpers
@@ -72,9 +77,8 @@ def _load_pending_reading_list(output_dir: Path) -> list[dict]:
     rl_path = output_dir / "reading-list.json"
     if not rl_path.is_file():
         return []
-    try:
-        raw = json.loads(rl_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    raw = load_json(rl_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(raw, dict):
         return []
     return [
         i for i in raw.get("items", [])
@@ -119,9 +123,8 @@ def _mark_items_resolved(output_dir: Path, idents: list[str],
     rl_path = output_dir / "reading-list.json"
     if not rl_path.is_file():
         return 0
-    try:
-        rl_data = json.loads(rl_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    rl_data = load_json(rl_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(rl_data, dict):
         return 0
 
     ident_set = {i.lower() for i in idents}
@@ -756,9 +759,8 @@ def _render_study_report(output_dir: Path) -> None:
     if not dm_path.is_file():
         return
 
-    try:
-        dm = json.loads(dm_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    dm = load_json(dm_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+    if not isinstance(dm, dict):
         return
 
     parts: list[str] = []
@@ -767,11 +769,9 @@ def _render_study_report(output_dir: Path) -> None:
     if not title:
         sl_path = output_dir / "study-list.json"
         if sl_path.is_file():
-            try:
-                sl = json.loads(sl_path.read_text(encoding="utf-8"))
+            sl = load_json(sl_path, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+            if isinstance(sl, dict):
                 title = sl.get("identifiers", "")
-            except (OSError, json.JSONDecodeError):
-                pass
     if not title:
         title = Path(target).name
 
@@ -1101,11 +1101,10 @@ def main() -> int:
     data: dict = {}
     n_items = 0
     if exit_code == 0:
-        try:
-            data = json.loads(study_list.read_text(encoding="utf-8"))
+        loaded = load_json(study_list, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
+        if isinstance(loaded, dict):
+            data = loaded
             n_items = len(data.get("items", []))
-        except (OSError, json.JSONDecodeError):
-            pass
 
         _collect_key_files(data, key_files, seen_key_files, str(target))
 
@@ -1133,13 +1132,16 @@ def main() -> int:
     dm_path_check = output_dir / "domain-model.json"
     if exit_code == 0 and dm_path_check.is_file():
         try:
-            dm_check = json.loads(dm_path_check.read_text(encoding="utf-8"))
+            dm_check = load_json(
+                dm_path_check, strict=True,
+                max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+            ) or {}
             has_invariants = any(
                 inv.get("statement") and inv.get("negation")
                 and not inv.get("mechanical_rule")
                 for inv in dm_check.get("invariants", [])
             )
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             has_invariants = False
 
         if has_invariants:
@@ -1162,7 +1164,9 @@ def main() -> int:
     dm_path = output_dir / "domain-model.json"
     if dm_path.is_file():
         try:
-            dm_data = json.loads(dm_path.read_text(encoding="utf-8"))
+            dm_data = load_json(
+                dm_path, strict=True, max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+            ) or {}
             if key_files:
                 dm_data["key_files"] = key_files
 
@@ -1170,21 +1174,25 @@ def main() -> int:
             overview_path = output_dir / "overview.json"
             if overview_path.is_file():
                 try:
-                    ov = json.loads(overview_path.read_text(encoding="utf-8"))
+                    ov = load_json(
+                        overview_path, strict=True,
+                        max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+                    ) or {}
                     if ov.get("summary"):
                         dm_data["overview_summary"] = ov["summary"]
                     if ov.get("subject_title"):
                         dm_data["subject_title"] = ov["subject_title"]
-                except (OSError, json.JSONDecodeError):
+                except (OSError, ValueError):
                     pass
 
             # Attach struct definitions from study-list for the report
             study_list_path = output_dir / "study-list.json"
             if study_list_path.is_file():
                 try:
-                    sl = json.loads(
-                        study_list_path.read_text(encoding="utf-8"),
-                    )
+                    sl = load_json(
+                        study_list_path, strict=True,
+                        max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+                    ) or {}
                     struct_defs = []
                     for item in sl.get("items", []):
                         if item.get("kind") != "struct":
@@ -1202,19 +1210,20 @@ def main() -> int:
                         })
                     if struct_defs:
                         dm_data["struct_definitions"] = struct_defs
-                except (OSError, json.JSONDecodeError):
+                except (OSError, ValueError):
                     pass
 
             # Attach struct annotations from LLM output
             annots_path = output_dir / "struct-annotations.json"
             if annots_path.is_file():
                 try:
-                    annots = json.loads(
-                        annots_path.read_text(encoding="utf-8"),
+                    annots = load_json(
+                        annots_path, strict=True,
+                        max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
                     )
                     if annots:
                         dm_data["struct_annotations"] = annots
-                except (OSError, json.JSONDecodeError):
+                except (OSError, ValueError):
                     pass
 
             # Remove legacy fields if present from older runs
@@ -1255,7 +1264,7 @@ def main() -> int:
             except BaseException:
                 Path(tmp_name).unlink(missing_ok=True)
                 raise
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             pass
 
     # --- Render human-readable report ---
@@ -1264,12 +1273,14 @@ def main() -> int:
     # --- Summary ---
     if dm_path.is_file():
         try:
-            dm = json.loads(dm_path.read_text(encoding="utf-8"))
+            dm = load_json(
+                dm_path, strict=True, max_bytes=_MAX_STUDY_ARTIFACT_BYTES,
+            ) or {}
             print(f"\nstudy-loop: DONE — {len(dm.get('concepts', []))} concepts, "
                   f"{len(dm.get('invariants', []))} invariants, "
                   f"{len(dm.get('contracts', []))} contracts",
                   file=sys.stderr)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             pass
 
     if key_files:

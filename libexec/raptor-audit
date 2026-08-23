@@ -51,6 +51,13 @@ from core.json import dumps_display  # noqa: E402
 # Python children into importing the other tree's modules (A2:
 # every SMT probe TypeError'd on a stale checkout's core.audit.sweep).
 from core.config import pin_raptor_dir_in_environ  # noqa: E402
+from core.json import load_json  # noqa: E402
+
+# Byte budgets: checklists / inventories / journal indexes track
+# target size (the checklist budget class); scope-coverage is a
+# small sidecar.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
+_MAX_META_BYTES = 8 * 1024 * 1024
 pin_raptor_dir_in_environ()
 
 
@@ -438,13 +445,12 @@ def cmd_record(args: argparse.Namespace) -> int:
         has_callers = None
         if not is_entry:
             inventory = None
-            try:
-                inventory_path = out_dir / "inventory.json"
-                if inventory_path.exists():
-                    with open(inventory_path) as inv_f:
-                        inventory = json.load(inv_f)
-            except (json.JSONDecodeError, OSError):
-                pass
+            inventory_path = out_dir / "inventory.json"
+            loaded_inv = load_json(
+                inventory_path, max_bytes=_MAX_CHECKLIST_BYTES,
+            )
+            if loaded_inv is not None:
+                inventory = loaded_inv
 
             if inventory:
                 try:
@@ -1244,10 +1250,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "threat-model auto-load failed", exc_info=True)
 
     # --- load checklist for context assembly (callers, reachability) ---
-    try:
-        checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        checklist_data = None
+    checklist_data = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
 
     # --- binary oracle ---
     binary_verdicts = None
@@ -1485,8 +1488,9 @@ def _finalize_run(
     scope_cov_path = out_dir / "scope-coverage.json"
     if scope and scope_cov_path.is_file():
         try:
-            with open(scope_cov_path, encoding="utf-8") as f:
-                _sc = json.load(f)
+            _sc = load_json(scope_cov_path, max_bytes=_MAX_META_BYTES)
+            if not isinstance(_sc, dict):
+                _sc = {}
             _zero = _sc.get("zero_slot_files") or []
             if _zero:
                 print(
@@ -1592,12 +1596,9 @@ def _check_legacy_state(project_dir: Path) -> str | None:
     index_path = project_dir / "review-journal-index.json"
     has_journal = False
     if index_path.is_file():
-        try:
-            data = json.loads(index_path.read_text())
-            if isinstance(data, dict) and data.get("entries"):
-                has_journal = True
-        except (OSError, json.JSONDecodeError):
-            pass
+        data = load_json(index_path, max_bytes=_MAX_CHECKLIST_BYTES)
+        if isinstance(data, dict) and data.get("entries"):
+            has_journal = True
     if has_journal:
         return None
 
@@ -1619,7 +1620,9 @@ def _check_legacy_state(project_dir: Path) -> str | None:
     cl_path = project_dir / "checklist.json"
     if cl_path.is_file():
         try:
-            cl = json.loads(cl_path.read_text())
+            cl = load_json(
+                cl_path, strict=True, max_bytes=_MAX_CHECKLIST_BYTES,
+            ) or {}
             for fe in cl.get("files", []):
                 for item in fe.get("items", fe.get("functions", [])) or []:
                     checked = item.get("checked_by") or []
@@ -1629,7 +1632,7 @@ def _check_legacy_state(project_dir: Path) -> str | None:
                         break
                 if legacy_sources and legacy_sources[-1].startswith("checked_by"):
                     break
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             pass
 
     if not legacy_sources:
@@ -1796,10 +1799,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # --- rebuild pipeline opts from the ORIGINAL run config ---
     from core.audit.pipeline import AuditPipelineOpts, run_audit_pipeline
 
-    try:
-        checklist_data = json.loads(checklist_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        checklist_data = None
+    checklist_data = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
 
     # Binary-oracle verdicts were enriched into checklist.json during
     # segment 1 — re-extract, no re-analysis needed.
@@ -2035,8 +2035,9 @@ def _guess_target(out_dir: Path) -> Path | None:
     checklist_path = out_dir / "checklist.json"
     if checklist_path.exists():
         try:
-            with open(checklist_path) as f:
-                data = json.load(f)
+            data = load_json(
+                checklist_path, strict=True, max_bytes=_MAX_CHECKLIST_BYTES,
+            ) or {}
             tp = data.get("target_path")
             if tp:
                 from core.run.metadata import corroborate_target_path
@@ -2048,7 +2049,7 @@ def _guess_target(out_dir: Path) -> Path | None:
                     )
                     return None
                 return Path(tp)
-        except (json.JSONDecodeError, OSError):
+        except (OSError, ValueError):
             pass
     return None
 

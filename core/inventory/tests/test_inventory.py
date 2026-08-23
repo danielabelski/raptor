@@ -716,10 +716,11 @@ class TestExtractItems:
     def test_c_macros(self):
         code = "#define BUF_SIZE 1024\n#define MAX(a,b) ((a)>(b)?(a):(b))\nvoid foo() {}\n"
         items = extract_items("test.c", "c", code)
-        macros = [i for i in items if i.kind == KIND_MACRO]
-        names = [m.name for m in macros]
-        assert "BUF_SIZE" in names
-        assert "MAX" in names
+        kinds = {i.name: i.kind for i in items}
+        # Object-like literal macro → inert constant_macro;
+        # function-like macro stays a reviewable macro.
+        assert kinds.get("BUF_SIZE") == "constant_macro"
+        assert kinds.get("MAX") == KIND_MACRO
 
     def test_c_multi_declarator_globals(self):
         # `int a, b, c;` declares three globals — pre-fix only `a` was kept,

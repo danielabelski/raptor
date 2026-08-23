@@ -34,6 +34,10 @@ def _checklist():
                  "line_start": 61, "line_end": 70},
                 {"name": "Widget", "kind": "class",
                  "line_start": 71, "line_end": 90},
+                {"name": "tty_flag", "kind": "declaration",
+                 "line_start": 91, "line_end": 91},
+                {"name": "MKTEMP_NAME", "kind": "constant_macro",
+                 "line_start": 93, "line_end": 93},
             ],
         }],
     }
@@ -65,6 +69,20 @@ class TestResolveReviewableKinds:
         assert "top_level" not in kinds
         assert "function" in kinds
 
+    def test_extraction_artifact_kinds_excluded_by_default(self):
+        # declaration / constant_macro are in NEITHER base set: pure
+        # declarations and object-like literal macros are not
+        # reviewable code.
+        kinds = _resolve_reviewable_kinds(None)
+        assert "declaration" not in kinds
+        assert "constant_macro" not in kinds
+
+    def test_extraction_artifact_kinds_opt_in(self):
+        kinds = _resolve_reviewable_kinds({"declaration", "constant_macro"})
+        assert "declaration" in kinds
+        assert "constant_macro" in kinds
+        assert "function" in kinds
+
 
 class TestDefaultKindGaps:
     def test_macros_globals_top_level_are_gaps_by_default(self):
@@ -81,6 +99,19 @@ class TestDefaultKindGaps:
         assert "UNSAFE_COPY" not in names
         assert "g_table" not in names
         assert "m.c::top_level" in names
+
+    def test_declaration_and_constant_macro_not_gaps_by_default(self):
+        names = {g["name"] for g in compute_gaps(_checklist(), [])}
+        assert "tty_flag" not in names
+        assert "MKTEMP_NAME" not in names
+
+    def test_declaration_and_constant_macro_includable(self):
+        names = {g["name"]
+                 for g in compute_gaps(
+                     _checklist(), [],
+                     include_kinds={"declaration", "constant_macro"})}
+        assert "tty_flag" in names
+        assert "MKTEMP_NAME" in names
 
     def test_batch_path_handles_new_kinds(self):
         """The GLANCE batching path keys on SLOC, not kind — small

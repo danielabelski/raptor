@@ -1045,6 +1045,11 @@
     "count": 16,
     "kind": "literal"
   },
+  "core/inventory/extractors.py::_C_INERT_INIT_TYPES": {
+    "count": 19,
+    "kind": "literal",
+    "note": "tree-sitter C grammar NODE-TYPE allowlist for the constant-macro initializer classifier (parser taxonomy, not target API names; same class as the _NON_DISTINCTIVE_TYPES language-taxonomy entry)"
+  },
   "core/inventory/extractors.py::_FUNC_TYPES": {
     "count": 16,
     "kind": "literal"

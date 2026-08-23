@@ -32,6 +32,12 @@ KIND_CLASS = "class"
 KIND_TOP_LEVEL = "top_level"        # module-scope executable code (runs at import)
 KIND_INTERSTITIAL = "interstitial"  # residue not yet classified — trends to glue
                                     # (whitespace/braces/comments) as kinds fill in
+KIND_DECLARATION = "declaration"    # file-scope pure/extern declaration — no code
+                                    # runs; kept for coverage bookkeeping, not
+                                    # reviewable by default
+KIND_CONSTANT_MACRO = "constant_macro"  # object-like macro whose body is a single
+                                        # literal/identifier — inert data, not
+                                        # reviewable by default
 
 
 @dataclass
@@ -3031,8 +3037,31 @@ def _extract_globals_ts(root_node, language: str) -> list[CodeItem]:
     else:
         scan_nodes = root_node.children
 
+    # C/C++ error recovery can hoist FUNCTION-BODY content to the root:
+    # an unparseable construct inside a body (e.g. a block-statement
+    # macro) fragments the tree, the function_definition wrapper is
+    # lost, and every local-variable declaration of the body surfaces
+    # as a root-level `declaration` node. Emitting those as globals
+    # turned each local of an affected function into a separate
+    # checklist item that consumed full review effort. Real file-scope
+    # C declarations start at column 0 in practice, hoisted locals keep
+    # their body indentation — so on a fragmented parse (root carries
+    # an error), skip indented root-level declarations. Pristine parses
+    # are unaffected.
+    c_fragmented = (
+        language in ("c", "cpp") and getattr(root_node, "has_error", False)
+    )
+
     for child in scan_nodes:
         if child.type not in target_types:
+            continue
+
+        if c_fragmented and child.start_point[1] > 0:
+            logger.debug(
+                "skipping indented root-level declaration at line %d: "
+                "fragmented parse, likely a hoisted function-body local",
+                child.start_point[0] + 1,
+            )
             continue
 
         # Only top-level declarations (not inside functions/classes).
@@ -3043,10 +3072,13 @@ def _extract_globals_ts(root_node, language: str) -> list[CodeItem]:
         # dropped. `_global_names` (plural) yields every name in
         # the declaration. Falls back to the single-name path for
         # languages where multi-spec isn't a thing.
+        kind = KIND_GLOBAL
+        if language in ("c", "cpp"):
+            kind = _c_declaration_kind(child, language)
         names = _global_names(child, language)
         globals_found.extend(CodeItem(
                     name=name,
-                    kind=KIND_GLOBAL,
+                    kind=kind,
                     line_start=child.start_point[0] + 1,
                     line_end=child.end_point[0] + 1,
                 ) for name in names if name)
@@ -3209,6 +3241,68 @@ def _global_names(node, language: str):
         yield name
 
 
+# Named node types an initializer may contain and still be pure data.
+# Anything OUTSIDE this allowlist (call_expression, new_expression,
+# binary_expression, cast_expression, sizeof_expression, lambdas, ...)
+# keeps the item a reviewable global — unknown shapes stay reviewable.
+_C_INERT_INIT_TYPES = frozenset({
+    "initializer_list", "initializer_pair",
+    "field_designator", "subscript_designator",
+    "number_literal", "char_literal", "character",
+    "string_literal", "concatenated_string", "string_content",
+    "escape_sequence",
+    "true", "false", "null", "nullptr",
+    "identifier", "field_identifier",
+    "pointer_expression",   # &handler in function-pointer tables
+    "comment",
+})
+
+
+def _c_init_is_inert(node, depth: int = 0) -> bool:
+    """True when an initializer subtree is provably pure data — every
+    named node is on the ``_C_INERT_INIT_TYPES`` allowlist. Unnamed
+    tokens (punctuation, ``&``, braces) carry no semantics of their
+    own and are skipped."""
+    if depth > 32:
+        return False
+    if node.is_named and node.type not in _C_INERT_INIT_TYPES:
+        return False
+    return all(_c_init_is_inert(c, depth + 1) for c in node.children)
+
+
+def _c_declaration_kind(node, language: str) -> str:
+    """Classify a file-scope C/C++ ``declaration`` node.
+
+    ``KIND_DECLARATION`` for the provably-inert shapes: an ``extern``
+    declaration without an initializer, and (C only) a declaration with
+    no initializer or with a pure-data initializer (literals,
+    identifiers, initializer lists — e.g. a const function-pointer
+    table). These are not reviewable code; a reviewer has nothing to
+    review but the type and the name.
+
+    Everything else stays ``KIND_GLOBAL``. C++ is deliberately
+    conservative: ``Foo bar;`` / ``Foo bar = {...};`` can run a
+    constructor at start-up, so only extern-without-initializer is
+    reclassified there. When in doubt the item stays reviewable.
+    """
+    inits = [c for c in node.children if c.type == "init_declarator"]
+    is_extern = any(
+        c.type == "storage_class_specifier" and c.text == b"extern"
+        for c in node.children
+    )
+    if is_extern and not inits:
+        return KIND_DECLARATION
+    if language != "c":
+        return KIND_GLOBAL
+    if not inits:
+        return KIND_DECLARATION
+    for init in inits:
+        value = init.child_by_field_name("value")
+        if value is not None and not _c_init_is_inert(value):
+            return KIND_GLOBAL
+    return KIND_DECLARATION
+
+
 def _c_global_names(node):
     """Yield every declared name in a C/C++ ``declaration`` node.
 
@@ -3322,11 +3416,64 @@ def _global_name(node, language: str) -> str | None:
     return None
 
 
+# Tokens an object-like macro body may consist of and still be inert
+# data: a string literal, a char literal, a number, or an identifier
+# with an optional constant subscript (`tv[0]`).
+_MACRO_INERT_TOKEN_RE = re.compile(
+    r'\s*('
+    r'"(?:\\.|[^"\\])*"'                                   # string literal
+    r"|'(?:\\.|[^'\\])+'"                                  # char literal
+    r'|[+-]?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d+)?)[uUlLfF]*'  # number
+    r'|[A-Za-z_]\w*(?:\[\d+\])?'                           # ident / ident[0]
+    r')',
+    re.ASCII,
+)
+_MACRO_COMMENT_RE = re.compile(r'/\*.*?\*/|//.*$')
+
+
+def _object_macro_body_is_inert(body: str) -> bool:
+    """True when an object-like macro body is a single literal /
+    identifier (optionally parenthesised) or the string-paste idiom
+    (``SSHDIR "/ssh_config"``). Anything with operators, calls, or
+    statements — and the empty body (config flags / include guards
+    change compilation) — stays a reviewable ``macro``."""
+    body = _MACRO_COMMENT_RE.sub(" ", body).strip()
+    if body.startswith("(") and body.endswith(")"):
+        inner = body[1:-1].strip()
+        if "(" not in inner and ")" not in inner:
+            body = inner
+    if not body:
+        return False
+    tokens = []
+    pos = 0
+    while pos < len(body):
+        m = _MACRO_INERT_TOKEN_RE.match(body, pos)
+        if not m:
+            return False
+        tokens.append(m.group(1))
+        pos = m.end()
+    if len(tokens) == 1:
+        return True
+    # Multiple tokens: only the string-paste idiom is inert — every
+    # token an identifier or string literal, at least one string.
+    return (
+        any(t.startswith('"') for t in tokens)
+        and all(t.startswith('"') or t[0].isalpha() or t[0] == "_"
+                for t in tokens)
+    )
+
+
 def _extract_macros_regex(content: str) -> list[CodeItem]:
     """Extract C/C++ #define macros via regex.
 
     Captures all #define directives including include guards. Include guards
     are legitimate code items — they're part of the file's structure.
+
+    Object-like macros (no parameter list) whose single-line body is a
+    lone literal / identifier are classified ``constant_macro`` — inert
+    named constants that carry no reviewable logic. Function-like
+    macros always stay ``macro``: an unsafe function-like macro
+    replicates its bug at every expansion site.
     """
     macros = []
     # `re.ASCII` so `\w` matches only ASCII word chars. C identifiers
@@ -3336,7 +3483,7 @@ def _extract_macros_regex(content: str) -> list[CodeItem]:
     # `#define` would have its name captured here and surfaced into
     # the inventory under a homoglyph that matches a real ASCII
     # identifier — confusing greps + downstream cross-references.
-    _DEFINE_RE = re.compile(r'^\s*#\s*define\s+(\w+)', re.ASCII)
+    _DEFINE_RE = re.compile(r'^\s*#\s*define\s+(\w+)(.*)$', re.ASCII)
     lines = content.splitlines()
     for i, line in enumerate(lines, 1):
         m = _DEFINE_RE.match(line)
@@ -3348,9 +3495,19 @@ def _extract_macros_regex(content: str) -> list[CodeItem]:
             end = i
             while end <= len(lines) and lines[end - 1].rstrip().endswith("\\"):
                 end += 1
+            rest = m.group(2)
+            # Function-like macros have `(` IMMEDIATELY after the name
+            # (a space before `(` makes the parens part of the body).
+            kind = KIND_MACRO
+            if (
+                end == i                      # single-line only
+                and not rest.startswith("(")  # object-like
+                and _object_macro_body_is_inert(rest)
+            ):
+                kind = KIND_CONSTANT_MACRO
             macros.append(CodeItem(
                 name=m.group(1),
-                kind=KIND_MACRO,
+                kind=kind,
                 line_start=i,
                 line_end=end,
             ))

@@ -45,6 +45,13 @@ _REVIEWABLE_KINDS = frozenset({"function", "method", ""})
 # extractor builds these as reviewable units; dropping them silently
 # was a pure recall hole. Opt out via --include-kinds exclusion syntax
 # ("-macro"), or override the extras entirely with a positive list.
+#
+# Deliberately in NEITHER set: "declaration" (file-scope pure/extern
+# declarations — no code runs) and "constant_macro" (object-like
+# macros whose body is a single literal/identifier). The extractor
+# keeps them in the checklist for coverage bookkeeping, but reviewing
+# them burned full LLM review + tool sweeps on items with nothing to
+# review. Operators can opt in via a positive --include-kinds list.
 _DEFAULT_EXTRA_KINDS = frozenset({"top_level", "macro", "global"})
 
 
@@ -59,6 +66,10 @@ def _resolve_reviewable_kinds(include_kinds: set | None) -> frozenset:
     * ``-kind`` entries opt out of a default extra
       (``{"-macro"}`` → defaults minus macros).
     * ``{"none"}`` → functions/methods only (pre-flip behaviour).
+
+    The extraction-artifact kinds ``declaration`` and
+    ``constant_macro`` are excluded by default (in neither base set);
+    a positive ``--include-kinds`` entry naming them opts back in.
     """
     if not include_kinds:
         return _REVIEWABLE_KINDS | _DEFAULT_EXTRA_KINDS

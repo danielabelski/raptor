@@ -27,6 +27,8 @@ from .extractors import (
 )
 from .extractors import (
     KIND_CLASS,
+    KIND_CONSTANT_MACRO,
+    KIND_DECLARATION,
     KIND_FUNCTION,
     KIND_GLOBAL,
     KIND_MACRO,
@@ -67,6 +69,8 @@ __all__ = [
     "EXTRACTORS",
     "GENERATED_MARKERS",
     "KIND_CLASS",
+    "KIND_CONSTANT_MACRO",
+    "KIND_DECLARATION",
     "KIND_FUNCTION",
     "KIND_GLOBAL",
     "KIND_MACRO",

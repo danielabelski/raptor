@@ -558,15 +558,18 @@ class TestCGlobalDeclarators:
     """C/C++ globals through declarator wrappers (array/pointer)."""
 
     def test_c_array_and_pointer_globals_captured(self):
+        # Name capture through declarator wrappers; these inert shapes
+        # now classify as ``declaration`` (still in the checklist).
         from core.inventory.extractors import (
-            _TS_AVAILABLE, extract_items, KIND_GLOBAL,
+            _TS_AVAILABLE, extract_items, KIND_DECLARATION, KIND_GLOBAL,
         )
         if not _TS_AVAILABLE:
             pytest.skip("tree-sitter required for C global extraction")
         content = ("char g_buf[8];\nchar *p;\nint x = 0;\n"
                    "int f(void) { return 0; }\n")
         items = extract_items("t.c", "c", content)
-        names = {i.name for i in items if i.kind == KIND_GLOBAL}
+        names = {i.name for i in items
+                 if i.kind in (KIND_GLOBAL, KIND_DECLARATION)}
         assert {"g_buf", "p", "x"} <= names      # array, pointer, scalar
         assert "f" not in names                  # function not a global
 
@@ -574,16 +577,169 @@ class TestCGlobalDeclarators:
         # Regression: `int (*h)(int) = foo;` must be the variable `h`, NOT the
         # initializer `foo` (the declared name is nested in the FP declarator).
         from core.inventory.extractors import (
-            _TS_AVAILABLE, extract_items, KIND_GLOBAL,
+            _TS_AVAILABLE, extract_items, KIND_DECLARATION, KIND_GLOBAL,
         )
         if not _TS_AVAILABLE:
             pytest.skip("tree-sitter required for C global extraction")
         content = "int (*h)(int) = foo;\nint x = 0;\n"
         names = {i.name for i in extract_items("t.c", "c", content)
-                 if i.kind == KIND_GLOBAL}
+                 if i.kind in (KIND_GLOBAL, KIND_DECLARATION)}
         assert "h" in names              # the function-pointer variable
         assert "foo" not in names        # NOT the initializer value
         assert "x" in names              # plain scalar still works
+
+
+# ---------------------------------------------------------------------------
+# Extraction-artifact kinds: declaration / constant_macro / hoisted locals
+# ---------------------------------------------------------------------------
+
+@requires_ts("c")
+class TestCDeclarationKind:
+    """File-scope pure/extern/inert-initializer C declarations classify
+    as ``declaration`` — kept in the checklist for coverage bookkeeping,
+    excluded from review by default. Anything whose initializer may run
+    code stays a reviewable ``global``."""
+
+    @staticmethod
+    def _kinds(content, language="c"):
+        from core.inventory.extractors import extract_items
+        return {i.name: i.kind
+                for i in extract_items("t." + ("c" if language == "c" else "cc"),
+                                       language, content)}
+
+    def test_pure_declaration_without_initializer(self):
+        kinds = self._kinds("int tty_flag;\nOptions options;\n")
+        assert kinds.get("tty_flag") == "declaration"
+        assert kinds.get("options") == "declaration"
+
+    def test_extern_declaration(self):
+        kinds = self._kinds("extern char *progname_var;\n")
+        assert kinds.get("progname_var") == "declaration"
+
+    def test_inert_constant_initializer(self):
+        kinds = self._kinds('int tty_flag = 0;\nchar *config = NULL;\n')
+        assert kinds.get("tty_flag") == "declaration"
+        assert kinds.get("config") == "declaration"
+
+    def test_const_function_pointer_table(self):
+        content = (
+            "const struct key_impl_funcs key_funcs = {\n"
+            "\t/* .size = */ NULL,\n"
+            "\t/* .alloc = */ key_alloc,\n"
+            "\t/* .cleanup = */ key_cleanup,\n"
+            "};\n"
+        )
+        kinds = self._kinds(content)
+        assert kinds.get("key_funcs") == "declaration"
+
+    def test_initializer_with_call_stays_global(self):
+        kinds = self._kinds("int counter = init_counter();\n")
+        assert kinds.get("counter") == "global"
+
+    def test_initializer_with_expression_stays_global(self):
+        # Unknown/expression shapes stay reviewable (conservative).
+        kinds = self._kinds("int limit = 60 * 60;\n")
+        assert kinds.get("limit") == "global"
+
+    def test_cpp_no_initializer_stays_global(self):
+        # C++: `Foo bar;` can run a constructor at start-up — only
+        # extern-without-initializer is reclassified there.
+        from core.testing.treesitter import ts_parser_available
+        if not ts_parser_available("cpp"):
+            pytest.skip("tree-sitter cpp grammar required")
+        kinds = self._kinds("Options options;\nextern Options other;\n",
+                            language="cpp")
+        assert kinds.get("options") == "global"
+        assert kinds.get("other") == "declaration"
+
+
+@requires_ts("c")
+class TestFragmentedParseLocals:
+    """Error recovery on an unparseable C file can hoist FUNCTION-BODY
+    locals to root scope. Those must never become checklist items —
+    each local of an affected function used to surface as a separate
+    'global' consuming full review effort."""
+
+    def test_hoisted_locals_are_not_items(self):
+        from core.inventory.extractors import extract_items
+        content = (
+            "int file_scope = 0;\n"
+            "}\n"                             # stray closer: fragmented parse
+            "\tstatic int hoisted_local;\n"   # body-indented, hoisted to root
+            "\tchar *another_local;\n"
+            "int file_scope_after;\n"
+        )
+        items = extract_items("t.c", "c", content)
+        names = {i.name for i in items}
+        assert "hoisted_local" not in names
+        assert "another_local" not in names
+        # Column-0 file-scope declarations survive the guard.
+        assert "file_scope" in names
+        assert "file_scope_after" in names
+
+    def test_pristine_parse_keeps_indented_declarations(self):
+        # The guard only fires on fragmented parses; an error-free file
+        # keeps whatever the grammar put at root, indented or not.
+        from core.inventory.extractors import extract_items
+        content = "  int indented_but_valid = 0;\n"
+        names = {i.name for i in extract_items("t.c", "c", content)}
+        assert "indented_but_valid" in names
+
+
+class TestConstantMacroKind:
+    """Object-like macros with a single literal/identifier body classify
+    as ``constant_macro``; function-like macros and anything with logic
+    stay reviewable ``macro``. Regex path — no tree-sitter needed."""
+
+    @staticmethod
+    def _kinds(content):
+        from core.inventory.extractors import _extract_macros_regex
+        return {m.name: m.kind for m in _extract_macros_regex(content)}
+
+    def test_number_body(self):
+        kinds = self._kinds("#define MKTEMP_NAME\t0\n#define MAX_SZ 0x1000\n")
+        assert kinds["MKTEMP_NAME"] == "constant_macro"
+        assert kinds["MAX_SZ"] == "constant_macro"
+
+    def test_string_body(self):
+        kinds = self._kinds('#define _PATH_PIDDIR\t\t"/var/run"\n')
+        assert kinds["_PATH_PIDDIR"] == "constant_macro"
+
+    def test_identifier_and_subscript_body(self):
+        kinds = self._kinds("#define\tatime\ttv[0]\n#define ALIAS other_name\n")
+        assert kinds["atime"] == "constant_macro"
+        assert kinds["ALIAS"] == "constant_macro"
+
+    def test_string_paste_body(self):
+        kinds = self._kinds('#define _PATH_HOSTFILE\tSSHDIR "/ssh_known_hosts"\n')
+        assert kinds["_PATH_HOSTFILE"] == "constant_macro"
+
+    def test_parenthesised_literal_body(self):
+        kinds = self._kinds("#define BUFSZ (2048)\n")
+        assert kinds["BUFSZ"] == "constant_macro"
+
+    def test_function_like_macro_stays_macro(self):
+        # An unsafe function-like macro is a real bug multiplier.
+        kinds = self._kinds(
+            "#define\tSCREWUP(str)\t{ why = str; goto screwup; }\n")
+        assert kinds["SCREWUP"] == "macro"
+
+    def test_include_guard_stays_macro(self):
+        kinds = self._kinds("#define CONFIG_H\n")
+        assert kinds["CONFIG_H"] == "macro"
+
+    def test_expression_body_stays_macro(self):
+        kinds = self._kinds("#define LIMIT (8 * 1024)\n#define NEG (u_int)-1\n")
+        assert kinds["LIMIT"] == "macro"
+        assert kinds["NEG"] == "macro"
+
+    def test_multiline_body_stays_macro(self):
+        kinds = self._kinds("#define BIG \\\n\t42\n")
+        assert kinds["BIG"] == "macro"
+
+    def test_body_comment_is_ignored(self):
+        kinds = self._kinds("#define TIMEOUT 30 /* seconds */\n")
+        assert kinds["TIMEOUT"] == "constant_macro"
 
 
 # ---------------------------------------------------------------------------

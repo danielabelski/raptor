@@ -2276,7 +2276,13 @@ def main() -> int:
                             "functions/methods. Default: top_level, macro, "
                             "global. A positive list overrides the default "
                             "extras; '-kind' opts one out (e.g. '-macro'); "
-                            "'none' restricts to functions/methods only")
+                            "'none' restricts to functions/methods only. "
+                            "The non-reviewable extraction kinds "
+                            "'declaration' (file-scope pure/extern "
+                            "declarations) and 'constant_macro' "
+                            "(object-like literal macros) are excluded by "
+                            "default; name them in a positive list to opt "
+                            "in")
     p_run.add_argument("--batch-sloc-threshold", type=int, default=None,
                        help="Batch functions at or under this SLOC per file "
                             "into combined reviews (default: 15; 0 disables "

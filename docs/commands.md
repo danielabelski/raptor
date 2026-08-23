@@ -263,6 +263,17 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--dict <path>` | Fuzzer dictionary file (when omitted, an audit-generated `fuzz.dict` is auto-discovered from the run's own or newest sibling run directory) |
 | `--input-mode {stdin,file}` | How to feed input to the target |
 
+**Env build-on-demand** (source-tree targets; see the
+[fuzzing guide](fuzzing.md#env-build-on-demand-source-trees))
+
+| Flag | Description |
+|------|-------------|
+| `--env-build` / `--no-env-build` | Authorise / refuse building the source tree AFL-instrumented in the pinned AFL++ image for this run (default: the project `build` trust marker decides) |
+| `--env-asan` | Build with AddressSanitizer -- memory bugs that never crash a plain build surface as crashes (campaign runs with `-m none`) |
+| `--env-cmplog` | Also build a compare-logging twin and attach it to the main instance -- input-to-state guidance for magic-number/checksum gates |
+| `--env-target <rel>` | Which built binary to fuzz when the build produces several |
+| `--keep-env-rootfs` | Keep the exported image rootfs (several GB) after the campaign |
+
 **Execution**
 
 | Flag | Description |
@@ -1139,17 +1150,27 @@ pre-patch (vulnerable) version.  See the
 
 ```
 /cve-env build <CVE-ID> [--product P] [--version V]
+/cve-env build --describe <TEXT_OR_FILE> [--product P] [--version V]
+/cve-env up <CVE-ID|DESC-ID> [--from DIR] [--no-verify] [--allow-egress]
+/cve-env ps
+/cve-env down <down_token>
 /cve-env doctor [--strict]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--product <P>` / `--version <V>` | Hints when the CVE record is ambiguous |
+| `--product <P>` / `--version <V>` | Hints when the CVE record is ambiguous (with `--describe`: operator assertions that put version checks in the verify plan) |
+| `--describe <text\|file>` | Build from an operator description instead of a CVE -- results are labelled `operator_described` under a `DESC-<hash>` id |
 | `--prefill auto\|off` / `--prefill-from <dir>` | Seed the agent with a prior `/cve-diff` discovery (repo, fix commit, pre-patch commit); the RAPTOR dispatch defaults to `auto`, `bin/cve-env` to off |
 | `--max-turns <N>` / `--max-cost-usd <F>` | Agent budgets (soft cost cap has a bounded productive-progress extension) |
 | `--audit-root <dir>` | Where the audit JSONL + outcome sidecar land |
 | `--silent` | Suppress the human summary (JSON on stdout is the result) |
 | `--auto-cleanup-containers` | Post-build `docker rm -f` of this run's labeled containers |
+
+`up` re-provisions a recorded spec as a running, re-verified test
+target (network-isolated by default; `--allow-egress` opts out) and
+prints the endpoint plus a `down_token`; `ps` lists live provisions;
+`down <token>` removes exactly that provision.
 
 ---
 

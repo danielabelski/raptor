@@ -94,8 +94,9 @@ def _attempt_replay(cve: CveRecord, prefill_from: str | None):
 
 def _cmd_up(args: argparse.Namespace) -> int:
     """Re-provision a recorded environment spec and LEAVE IT RUNNING,
-    printing the loopback endpoint as the test target for exploit /
-    PoC work. The environment comes from the spec a successful build
+    printing the endpoint (container address on its isolated network;
+    published loopback port under --allow-egress) as the test target
+    for exploit / PoC work. The environment comes from the spec a successful build
     recorded (CVE or operator-described DESC- id) — the verify plan
     re-adjudicates before the endpoint is handed out, so "up" never
     yields an unverified lookalike unless --no-verify says so.
@@ -1240,8 +1241,9 @@ def _build_argparser() -> argparse.ArgumentParser:
     u = sub.add_parser(
         "up",
         help="Re-provision a recorded environment spec (CVE or DESC- id) "
-             "and leave it running; prints the loopback endpoint as the "
-             "test target for exploit/PoC work",
+             "and leave it running; prints the endpoint (isolated-network "
+             "container address, or a loopback port with --allow-egress) "
+             "as the test target for exploit/PoC work",
     )
     u.add_argument("env_id",
                    help="CVE-YYYY-NNNN or DESC-<hash> of a previously "

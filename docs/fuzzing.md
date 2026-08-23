@@ -31,9 +31,10 @@ The primary engine on Linux.  RAPTOR wraps `afl-fuzz` with support for:
   available through the Python API (`AFLRunner` in `packages/fuzzing/`)
   for pipeline callers; no CLI flags.
 - **Env build-on-demand** (`--env-build`, `--no-env-build`,
-  `--env-target <rel>`, `--keep-env-rootfs`): build a source tree
-  AFL-instrumented in the pinned AFL++ image and fuzz it from the
-  image's rootfs under the sandbox -- see
+  `--env-asan`, `--env-cmplog`, `--env-target <rel>`,
+  `--keep-env-rootfs`): build a source tree AFL-instrumented in the
+  pinned AFL++ image and fuzz it from the image's rootfs under the
+  sandbox -- see
   [Env Build-on-Demand](#env-build-on-demand-source-trees).
 
 For best results, compile the target with AFL instrumentation
@@ -313,6 +314,30 @@ What happens:
    the campaign ends.  Pass `--keep-env-rootfs` to retain it (e.g. to
    replay crashes in-image), and `--env-target <rel>` to choose among
    multiple built binaries.
+
+### Sanitizer and cmplog variants
+
+- `--env-asan` builds the target with AddressSanitizer via the AFL
+  toolchain.  Memory bugs that never crash a plain build (silent
+  over-reads, use-after-free without corruption) surface as recorded
+  crashes; the campaign automatically runs with `-m none` (ASAN's
+  shadow memory is incompatible with AFL's memory limit; `-m` was
+  never a security boundary, and the sandbox's isolation -- network
+  deny, Landlock write scoping -- is unaffected).
+- `--env-cmplog` builds a second, compare-logging twin of the same
+  tree (`/src-cmplog` in the image) and attaches it to the main
+  instance (`-c`).  Input-to-state guidance cracks magic-number,
+  version-check and checksum gates that random mutation practically
+  never finds; the flags combine (`--env-asan --env-cmplog` is the
+  strongest default posture for unknown source trees).
+
+The AFL++ image is digest-pinned, and RAPTOR carries an in-code
+blocklist of AFL builds with known crash-classification defects: after
+every env build the image's `afl-fuzz` binary is scanned, and a
+blocklisted version refuses the campaign loudly (a fuzzer that
+silently drops sanitizer crashes is worse than no fuzzer).  If you see
+`broken_afl_version`, the image resolved to a known-bad build -- use
+the pinned default.
 
 There is no docker fallback for the campaign: if the sandbox's
 image-rootfs mode is unavailable, the env-build path refuses rather

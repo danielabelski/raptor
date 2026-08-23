@@ -16,12 +16,17 @@ answers "what did we look at it WITH".
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
+
+from core.json import load_json
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+
+# coverage-<tool>.json / scan_metrics.json are small RAPTOR-written
+# run records.
+_MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 # Tool display ordering — most-likely-to-fire first so the block
 # reads top-to-bottom in approximate produce-findings order.
@@ -42,12 +47,7 @@ def _load_coverage_record(out_dir: Path, tool: str) -> dict | None:
     or its coverage emit failed; both fold to ''no record to render''
     in the caller's loop)."""
     p = out_dir / f"coverage-{tool}.json"
-    if not p.is_file():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    return load_json(p, max_bytes=_MAX_RECORD_BYTES)
 
 
 def _findings_for_tool(metrics: dict, tool: str) -> int:
@@ -103,11 +103,9 @@ def render_scan_coverage(out_dir: Path) -> str | None:
     # malformed metrics falls back to ''— findings'' on each line.
     metrics: dict = {}
     metrics_path = out_dir / "scan_metrics.json"
-    if metrics_path.is_file():
-        try:
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            metrics = {}
+    loaded_metrics = load_json(metrics_path, max_bytes=_MAX_RECORD_BYTES)
+    if isinstance(loaded_metrics, dict):
+        metrics = loaded_metrics
 
     rendered_lines: list[str] = []
     for tool in _TOOL_ORDER:

@@ -117,6 +117,12 @@ def get_items(file_entry):
     return file_entry.get("items", file_entry.get("functions", [])) or []
 
 
+# checklist.json is read-modify-written many times per run and
+# tracks target size (measured 11.6-35.9 MB on big targets) — the
+# checklist budget class.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
+
+
 def _resolve_checklist_path(output_dir):
     """Resolve checklist.json path, following symlinks."""
     from pathlib import Path
@@ -226,9 +232,9 @@ def read_checklist(output_dir):
     object (a non-dict checklist is corrupt for every consumer that
     calls ``.get`` on it).
     """
-    import json
-    import logging as _logging
     from pathlib import Path
+
+    from core.json import load_json
 
     # Missing file → {} without side effects (_resolve_checklist_path
     # would mkdir the output dir, which a pure read must not do).
@@ -236,13 +242,7 @@ def read_checklist(output_dir):
         return {}
     checklist_path = _resolve_checklist_path(output_dir)
     with _checklist_lock(checklist_path):
-        try:
-            data = json.loads(checklist_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            _logging.getLogger(__name__).error(
-                "malformed JSON in %s", checklist_path,
-            )
-            return {}
+        data = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
     return data if isinstance(data, dict) else {}
 
 
@@ -258,20 +258,17 @@ def update_checklist(output_dir, transform_fn) -> None:
     Use this instead of separate load + save_checklist when modifying
     an existing checklist.
     """
-    import json
-
-    from core.json import save_json
+    from core.json import load_json, save_json
 
     checklist_path = _resolve_checklist_path(output_dir)
     with _checklist_lock(checklist_path):
-        current = {}
+        current = None
         if checklist_path.is_file():
-            try:
-                current = json.loads(
-                    checklist_path.read_text(encoding="utf-8"),
-                )
-            except (json.JSONDecodeError, OSError):
-                pass
+            current = load_json(
+                checklist_path, max_bytes=_MAX_CHECKLIST_BYTES,
+            )
+        if current is None:
+            current = {}
         updated = transform_fn(current)
         if isinstance(updated, dict):
             # Same provenance policy as save_checklist above.

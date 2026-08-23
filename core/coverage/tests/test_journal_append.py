@@ -252,3 +252,25 @@ class TestJournalByteBudget:
         assert journal_mod._load_index(index_path) == {}
         monkeypatch.setattr(journal_mod, "_MAX_JOURNAL_BYTES", 1 << 20)
         assert "k" in journal_mod._load_index(index_path)
+
+
+class TestNonFiniteWriteParity:
+    """The reader skips NaN/Infinity lines as malformed, so the writer
+    must fail loudly instead of emitting a row the next read drops."""
+
+    def test_append_rejects_non_finite_field(self, tmp_path: Path):
+        e = _entry(1)
+        e.confidence = float("nan")
+        with pytest.raises(ValueError):
+            append_entry(tmp_path, e)
+        # No torn/partial line left behind.
+        journal = tmp_path / journal_mod.JOURNAL_FILENAME
+        assert not journal.exists() or journal.read_text() == ""
+
+    def test_finite_fields_round_trip(self, tmp_path: Path):
+        e = _entry(2)
+        e.confidence = 0.75
+        append_entry(tmp_path, e)
+        loaded = load_entries(tmp_path)
+        assert len(loaded) == 1
+        assert loaded[0].confidence == 0.75

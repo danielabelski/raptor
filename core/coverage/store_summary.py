@@ -14,9 +14,10 @@ shown alongside.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+
+from core.json import loads
 
 from .registry import DEPTH_SCANNED, category_of, depth_of
 from .store import CoverageStore, iter_inventory_functions
@@ -183,8 +184,8 @@ def format_progress_trend(store_path) -> str | None:
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
+                    rows.append(loads(line))
+                except ValueError:
                     continue
     except OSError:
         return None

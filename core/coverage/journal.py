@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json, loads
+
 try:
     import fcntl
     _HAS_FCNTL = True
@@ -41,6 +43,9 @@ INDEX_SCHEMA_VERSION = 1
 # ~1 KiB line per reviewed function — even huge audits stay far under
 # this.
 _MAX_JOURNAL_BYTES = 256 * 1024 * 1024
+
+# domain-model.json is a small RAPTOR-written study artifact.
+_MAX_DOMAIN_MODEL_BYTES = 64 * 1024 * 1024
 
 VALID_VERDICTS = frozenset({
     "clean", "suspicious", "finding", "error", "dormant",
@@ -383,8 +388,13 @@ def append_entry(out_dir: Path, entry: ReviewJournalEntry) -> None:
     if token:
         entry.integrity = token
         row[journal_mac.TOKEN_KEY] = token
+    # allow_nan=False: the reader (load_journal via core.json.loads)
+    # skips NaN/Infinity lines as malformed on both backends — a
+    # non-finite float in any field would silently drop this MAC'd
+    # row on the next read. Fail loudly at write time instead (same
+    # parity rule as save_json / append_jsonl).
     data = (
-        json.dumps(row, separators=(",", ":")) + "\n"
+        json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n"
     ).encode("utf-8")
     with _append_lock:
         fd = os.open(
@@ -472,8 +482,8 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
         if not line:
             continue
         try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
+            raw = loads(line)
+        except ValueError:
             corrupt += 1
             if i == len(lines) - 1:
                 logger.debug(
@@ -920,10 +930,7 @@ def load_domain_model(
         path = _find_domain_model_file(out_dir)
     if path is None:
         return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    return load_json(path, max_bytes=_MAX_DOMAIN_MODEL_BYTES)
 
 
 def domain_model_context(out_dir: Path) -> dict[str, Any] | None:
@@ -951,7 +958,9 @@ def domain_model_context(out_dir: Path) -> dict[str, Any] | None:
             continue
         try:
             content = path.read_bytes()
-            raw = json.loads(content.decode("utf-8"))
+            # Parse the same bytes the staleness hash below covers;
+            # core.json.loads accepts bytes directly.
+            raw = loads(content)
         except (OSError, ValueError):
             return None
         if not isinstance(raw, dict):

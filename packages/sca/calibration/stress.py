@@ -82,6 +82,12 @@ from typing import Any
 
 from .project_samples import PROJECT_SAMPLES, ProjectSample
 
+from core.json import load_json
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -329,10 +335,7 @@ def _read_eco_breakdown(findings_path: Path) -> dict[str, int]:
     above already captures that as the ``error`` string.
     """
     breakdown: dict[str, int] = {}
-    try:
-        data = json.loads(findings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return breakdown
+    data = load_json(findings_path, max_bytes=_MAX_FINDINGS_BYTES)
     if not isinstance(data, list):
         return breakdown
     for f in data:
@@ -585,8 +588,12 @@ def _load_baseline(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        data = load_json(path, strict=True, max_bytes=_MAX_FINDINGS_BYTES)
+        if data is not None:
+            return data
+        # is_file()/load race — treat like a read failure below.
+        raise FileNotFoundError(path)
+    except (OSError, ValueError) as e:
         logger.warning(
             "sca.calibration.stress: baseline read failed (%s); "
             "treating as empty", e,

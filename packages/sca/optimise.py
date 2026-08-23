@@ -33,6 +33,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json
+
 from .update import (
     UpgradeChange,
     _change_to_dict,
@@ -45,6 +47,10 @@ from .update import (
 )
 from .versions import VersionError
 from .versions import compare as version_compare
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -120,10 +126,15 @@ def main(argv: Sequence[str]) -> int:
         return 3
 
     try:
-        findings_rows: list[dict[str, Any]] = json.loads(
-            result.findings_path.read_text(encoding="utf-8"),
+        loaded_rows = load_json(
+            result.findings_path, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
         )
-    except (json.JSONDecodeError, OSError) as exc:
+        if loaded_rows is None:
+            # Strict load_json soft-returns None for a MISSING file —
+            # a vanished findings file is an error, not zero findings.
+            raise FileNotFoundError(result.findings_path)
+        findings_rows: list[dict[str, Any]] = loaded_rows
+    except (OSError, ValueError) as exc:
         logger.error("raptor-sca fix: cannot read findings: %s", exc)
         return 3
 

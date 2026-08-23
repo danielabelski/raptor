@@ -22,7 +22,6 @@ shape — re-run ``raptor-sca`` if a fresh SBOM is needed.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from collections import Counter
@@ -34,6 +33,12 @@ from typing import Any, TYPE_CHECKING
 from .findings import severity_rank
 from .models import REACHABILITY_LABELS, REACHABILITY_ORDER
 from .sarif import write_sarif
+
+from core.json import load_json
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,8 +58,13 @@ def main(argv: Sequence[str]) -> int:
               file=sys.stderr)
         return 2
     try:
-        rows = json.loads(findings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        rows = load_json(
+            findings_path, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
+        )
+        if rows is None:
+            # Strict load_json soft-returns None for a missing file.
+            raise FileNotFoundError(findings_path)
+    except (OSError, ValueError) as e:
         print(f"raptor-sca render: cannot read {findings_path}: {e}", file=sys.stderr)
         return 2
     if not isinstance(rows, list):

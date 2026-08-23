@@ -25,6 +25,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.json import loads
+
 logger = logging.getLogger(__name__)
 
 CHECKER_MATCHES_FILE = "checker-matches.jsonl"
@@ -533,8 +535,8 @@ def load_variant_candidates(
         if not raw:
             continue
         try:
-            rec = json.loads(raw)
-        except json.JSONDecodeError:
+            rec = loads(raw)
+        except ValueError:
             continue
         if not isinstance(rec, dict):
             continue

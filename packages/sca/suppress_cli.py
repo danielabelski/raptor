@@ -23,10 +23,11 @@ edit flow works fine for the common case)."""
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import date
 from pathlib import Path
+
+from core.json import load_json
 
 from .suppressions import (
     SUPPRESS_FILENAME,
@@ -36,6 +37,10 @@ from .suppressions import (
 from typing import TYPE_CHECKING
 
 from core.json import dumps_display
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -135,8 +140,13 @@ def _cmd_check(*, target: Path, findings_path: Path) -> int:
         print(f"raptor-sca suppress: {suppress_path} has no entries.")
         return 0
     try:
-        rows = json.loads(findings_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        rows = load_json(
+            findings_path, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
+        )
+        if rows is None:
+            # Strict load_json soft-returns None for a missing file.
+            raise FileNotFoundError(findings_path)
+    except (OSError, ValueError) as exc:
         print(f"raptor-sca suppress: cannot read {findings_path}: {exc}",
               file=sys.stderr)
         return 2

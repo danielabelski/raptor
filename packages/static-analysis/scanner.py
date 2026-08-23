@@ -32,7 +32,7 @@ from core.json import dumps_display
 from core.config import RaptorConfig
 from core.git import clone_repository
 from core.hash import sha256_bytes, sha256_tree
-from core.json import save_json
+from core.json import load_json, save_json
 from core.logging import get_logger
 from core.run.output import unique_run_suffix
 from core.run.safe_io import safe_run_mkdir
@@ -41,6 +41,13 @@ from core.sarif.parser import generate_scan_metrics, merge_sarif, validate_sarif
 from packages import semgrep as semgrep_pkg
 
 logger = get_logger()
+
+# Byte budgets: semgrep registry pack caches are capped at download
+# time (32 MiB socket cap in cache-packs) — 64 MiB leaves headroom;
+# per-pack tool JSON / SARIF outputs over a hostile target use the
+# SARIF budget class.
+_MAX_PACK_CACHE_BYTES = 64 * 1024 * 1024
+_MAX_TOOL_JSON_BYTES = 100 * 1024 * 1024
 
 
 def _sarif_result_uri(result: dict) -> str:
@@ -363,9 +370,8 @@ def _pack_rules_applicable_count(
     )
     if not cache_file.is_file():
         return None
-    try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(cache_file, max_bytes=_MAX_PACK_CACHE_BYTES)
+    if not isinstance(data, dict):
         return None
     rules = data.get("rules") or []
     # Defensive: a future / corrupted cache file with ``rules`` as
@@ -406,9 +412,8 @@ def _pack_applicable_rule_ids(
     )
     if not cache_file.is_file():
         return None
-    try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(cache_file, max_bytes=_MAX_PACK_CACHE_BYTES)
+    if not isinstance(data, dict):
         return None
     rules = data.get("rules") or []
     if not isinstance(rules, list):
@@ -914,13 +919,9 @@ def _semgrep_dropped_files(json_paths: list) -> dict:
     under one pack's rules is invisible in the others'. Unreadable
     JSONs are skipped (that pack already failed loudly elsewhere).
     """
-    import json as _json
     dropped: dict = {}
     for jp in json_paths:
-        try:
-            data = _json.loads(Path(jp).read_text())
-        except (OSError, ValueError):
-            continue
+        data = load_json(jp, max_bytes=_MAX_TOOL_JSON_BYTES)
         for e in data.get("errors", []) if isinstance(data, dict) else []:
             etype = str(e.get("type", ""))
             if etype in _SEMGREP_RESOURCE_DROP_TYPES and e.get("path"):
@@ -2395,9 +2396,8 @@ def _sarif_has_findings(sarif_path: Path) -> bool:
     Failures (missing file, unparseable JSON) return False — callers treat
     "unknown" the same as "empty" because the goal is opportunistic cleanup.
     """
-    try:
-        data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    data = load_json(sarif_path, max_bytes=_MAX_TOOL_JSON_BYTES)
+    if not isinstance(data, dict):
         return False
     return any(run_obj.get("results") for run_obj in data.get("runs", []) or [])
 

@@ -43,6 +43,12 @@ from typing import Any, TYPE_CHECKING
 from .versions import VersionError
 from .versions import compare as version_compare
 
+from core.json import load_json
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
@@ -579,8 +585,11 @@ def _load_findings(args: argparse.Namespace) -> list[dict[str, Any]] | None:
                   file=sys.stderr)
             return None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            data = load_json(path, strict=True, max_bytes=_MAX_FINDINGS_BYTES)
+            if data is None:
+                # Strict load_json soft-returns None for a missing file.
+                raise FileNotFoundError(path)
+        except (OSError, ValueError) as e:
             print(f"raptor-sca fix: cannot read {path}: {e}", file=sys.stderr)
             return None
         if not isinstance(data, list):
@@ -609,8 +618,14 @@ def _load_findings(args: argparse.Namespace) -> list[dict[str, Any]] | None:
     )
     result = run_sca(target=target, output_dir=pre_out, options=options)
     try:
-        return json.loads(result.findings_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        data = load_json(
+            result.findings_path, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
+        )
+        if data is None:
+            # Strict load_json soft-returns None for a missing file.
+            raise FileNotFoundError(result.findings_path)
+        return data
+    except (OSError, ValueError) as exc:
         print(f"raptor-sca fix: cannot read findings: {exc}",
               file=sys.stderr)
         return None

@@ -47,7 +47,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import JsonCache
+from core.json import JsonCache, load_json
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 from . import SCA_CACHE_ROOT
 from .diff import compute_delta
 from .findings import severity_rank
@@ -152,10 +156,21 @@ def main(
         before_findings = before.findings_path
 
     try:
-        rows_before = json.loads(before_findings.read_text(encoding="utf-8"))
-        rows_after = json.loads(after.findings_path.read_text(encoding="utf-8"))
+        rows_before = load_json(
+            before_findings, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
+        )
+        rows_after = load_json(
+            after.findings_path, strict=True, max_bytes=_MAX_FINDINGS_BYTES,
+        )
+        if rows_before is None or rows_after is None:
+            # Strict load_json soft-returns None for a MISSING file —
+            # a vanished findings file must stay a hard error, not a
+            # zero-delta success.
+            raise FileNotFoundError(
+                before_findings if rows_before is None
+                else after.findings_path)
         delta = compute_delta(rows_before, rows_after)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         print(f"raptor-sca verify: cannot parse findings: {e}", file=sys.stderr)
         return 3
 

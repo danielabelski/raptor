@@ -20,13 +20,17 @@ prompt envelope.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
 from core.security.prompt_envelope import UntrustedBlock
+
+# flow-trace / context-map artifacts are RAPTOR-written run output —
+# the audit-artifact budget class.
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +100,7 @@ def _load_traces(source_dir: Path) -> list[dict[str, Any]]:
     for path in sorted(source_dir.glob("flow-trace-*.json")):
         if len(traces) >= MAX_TRACES_CACHED:
             break
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
+        data = load_json(path, max_bytes=_MAX_ARTIFACT_BYTES)
         if not isinstance(data, dict) or not data.get("steps"):
             continue
         trace_id = data.get("id") or path.stem
@@ -112,14 +113,8 @@ def _load_traces(source_dir: Path) -> list[dict[str, Any]]:
 
 def _load_context_map(source_dir: Path) -> dict[str, Any] | None:
     path = source_dir / "context-map.json"
-    try:
-        if path.is_file():
-            data = json.loads(path.read_text())
-            if isinstance(data, dict):
-                return data
-    except (OSError, ValueError):
-        pass
-    return None
+    data = load_json(path, max_bytes=_MAX_ARTIFACT_BYTES)
+    return data if isinstance(data, dict) else None
 
 
 def clear_flow_context_cache() -> None:

@@ -43,6 +43,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
+# Analysis-report / attack-path artifacts are RAPTOR-written run
+# output — the audit-artifact budget class.
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 # A seed of exactly-witnessed length: cap so a witness like
@@ -152,7 +158,9 @@ def collect_witnesses(source_dir: Path) -> tuple[list[WitnessRecord], list[dict]
     report = source_dir / "autonomous_analysis_report.json"
     if report.is_file():
         try:
-            data = json.loads(report.read_text(encoding="utf-8"))
+            data = load_json(
+                report, strict=True, max_bytes=_MAX_ARTIFACT_BYTES,
+            ) or {}
             for result in data.get("results") or []:
                 if not isinstance(result, dict):
                     continue
@@ -166,13 +174,15 @@ def collect_witnesses(source_dir: Path) -> tuple[list[WitnessRecord], list[dict]
                     model=dict(model),
                     anon_var_map=dict(witness.get("anon_var_map") or {}),
                 ))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        except (ValueError, OSError) as exc:
             skipped.append({"file": report.name, "reason": f"unreadable: {exc}"})
 
     paths_file = source_dir / "attack-paths.json"
     if paths_file.is_file():
         try:
-            data = json.loads(paths_file.read_text(encoding="utf-8"))
+            data = load_json(
+                paths_file, strict=True, max_bytes=_MAX_ARTIFACT_BYTES,
+            )
             for path in data if isinstance(data, list) else []:
                 if not isinstance(path, dict):
                     continue
@@ -184,7 +194,7 @@ def collect_witnesses(source_dir: Path) -> tuple[list[WitnessRecord], list[dict]
                     origin_id=str(path.get("id") or "unknown"),
                     model=dict(model),
                 ))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        except (ValueError, OSError) as exc:
             skipped.append({"file": paths_file.name, "reason": f"unreadable: {exc}"})
 
     if not records and not skipped and not report.is_file() and not paths_file.is_file():

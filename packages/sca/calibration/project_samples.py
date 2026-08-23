@@ -49,6 +49,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
+# findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 
@@ -877,10 +883,16 @@ def _collect_one(
             )
 
         try:
-            findings = json.loads(
-                (sca_out / "findings.json").read_text(encoding="utf-8"),
+            findings = load_json(
+                sca_out / "findings.json", strict=True,
+                max_bytes=_MAX_FINDINGS_BYTES,
             )
-        except (OSError, json.JSONDecodeError) as e:
+            if findings is None:
+                # Strict load_json soft-returns None for a MISSING
+                # file — record an error sample, not a zero-finding
+                # success.
+                raise FileNotFoundError(sca_out / "findings.json")
+        except (OSError, ValueError) as e:
             return CollectResult(
                 project=sample.name, ecosystem=sample.ecosystem,
                 written=False,

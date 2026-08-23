@@ -28,7 +28,6 @@ existing per-query JSON cache + cache-miss-on-offline logic applies.
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import time
@@ -40,6 +39,8 @@ from core.zip import extract_files_from_zip
 from .osv import parse_osv_record
 from .versions import VersionError, in_range as _in_range
 from typing import TYPE_CHECKING
+
+from core.json import loads
 
 if TYPE_CHECKING:
     from .models import Advisory
@@ -143,8 +144,8 @@ class OsvOfflineDB:
         out: list[Advisory] = []
         for raw_json in rows:
             try:
-                record = json.loads(raw_json)
-            except json.JSONDecodeError:
+                record = loads(raw_json)
+            except ValueError:
                 continue
             if version is None or _record_matches_version(
                 record, ecosystem, version, name=name,
@@ -272,8 +273,8 @@ class OsvOfflineDB:
             "DELETE FROM advisories WHERE ecosystem = ?", (ecosystem,))
         for raw in files.values():
             try:
-                record = json.loads(raw)
-            except json.JSONDecodeError:
+                record = loads(raw)
+            except ValueError:
                 skipped += 1
                 continue
             advisories_added = self._insert_record(

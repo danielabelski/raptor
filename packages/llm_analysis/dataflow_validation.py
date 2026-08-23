@@ -103,8 +103,8 @@ def discover_codeql_databases(out_dir: Path) -> dict[str, Path]:
     report_path = codeql_dir / "codeql_report.json"
     if report_path.is_file():
         try:
-            import json
-            data = json.loads(report_path.read_text(encoding="utf-8"))
+            from core.json import load_json
+            data = load_json(report_path, max_bytes=64 * 1024 * 1024)
             if not isinstance(data, dict):
                 data = {}
             for lang, info in (data.get("databases_created") or {}).items():
@@ -118,7 +118,9 @@ def discover_codeql_databases(out_dir: Path) -> dict[str, Path]:
                     norm = _normalise_language(lang) or lang
                     if norm not in out:
                         out[norm] = p
-        except (OSError, ValueError, json.JSONDecodeError):
+        except OSError:
+            # Parse failures already fold to None inside load_json;
+            # only filesystem probes below the parse can still raise.
             pass
 
     # Strategy 2: fallback scan of the codeql output dir.

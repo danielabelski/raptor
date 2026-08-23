@@ -27,8 +27,11 @@ skipped and the telemetry says so — the census never blocks prep.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -266,6 +269,87 @@ def _status_for(res: Any, *, detection: bool) -> str:
     return "finding" if reach == "entry_reachable" else "suspicious"
 
 
+_CENSUS_CACHE_DIRNAME = "prep-cache"
+_CENSUS_CACHE_FILENAME = "return-census-cache.json"
+
+
+def _source_fingerprint(source_texts: dict[str, str]) -> str:
+    """Deterministic fingerprint of the prepass input: the census is a
+    pure function of the source texts, so an unchanged fingerprint on
+    a resumed segment means the cached census is exact."""
+    h = hashlib.sha256()
+    for path in sorted(source_texts):
+        h.update(path.encode("utf-8", "replace"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(
+            source_texts[path].encode("utf-8", "replace"),
+        ).digest())
+    return h.hexdigest()
+
+
+def _census_cache_path(out_dir: Path) -> Path:
+    return out_dir / _CENSUS_CACHE_DIRNAME / _CENSUS_CACHE_FILENAME
+
+
+def _load_census_cache(
+    out_dir: Path, fingerprint: str,
+) -> dict[str, CalleeCensus] | None:
+    """The cached census, or None on miss/mismatch/corruption.
+
+    Same-run resume re-walked the whole tree every segment (the census
+    per-site scope walks are the prep phase's dominant wall cost) even
+    though the checklist is pinned and the sources unchanged.
+    """
+    path = _census_cache_path(out_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("fingerprint") != fingerprint:
+            logger.info(
+                "return-census prep cache stale (source fingerprint "
+                "changed) — re-walking",
+            )
+            return None
+        rows = data.get("census")
+        if not isinstance(rows, dict):
+            return None
+        return {
+            callee: CalleeCensus.from_full_dict(d)
+            for callee, d in rows.items()
+            if isinstance(d, dict)
+        }
+    except Exception:
+        logger.debug("return-census prep cache unreadable — re-walking",
+                     exc_info=True)
+        return None
+
+
+def _write_census_cache(
+    out_dir: Path, fingerprint: str, census: dict[str, CalleeCensus],
+) -> None:
+    """Best-effort atomic persist; a failure never costs the run."""
+    try:
+        cache_dir = out_dir / _CENSUS_CACHE_DIRNAME
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({
+            "fingerprint": fingerprint,
+            "census": {
+                callee: c.to_full_dict()
+                for callee, c in sorted(census.items())
+            },
+        })
+        fd, tmp = tempfile.mkstemp(
+            dir=str(cache_dir), suffix=".tmp",
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, _census_cache_path(out_dir))
+    except Exception:
+        logger.debug("return-census prep cache write failed",
+                     exc_info=True)
+
+
 def run_consistency_prepass(
     source_texts: dict[str, str],
     *,
@@ -344,19 +428,34 @@ def run_consistency_prepass(
     handoffs: list[dict[str, Any]] = []
 
     census: dict[str, CalleeCensus] = {}
-    try:
-        # The census self-limits to half the prepass budget: it runs
-        # BEFORE the first _over_budget() check, so without its own
-        # deadline one hostile file of module-level assignments
-        # stalls prep for hours (per-site scope walks are O(file)).
-        census = build_return_census(
-            source_texts, joern_server=joern_server,
-            budget_s=budget_s / 2,
-        )
-    except Exception:
-        _dim_failed("census")
-        logger.debug("consistency prepass: census build failed",
-                     exc_info=True)
+    census_cached = False
+    _census_fp = _source_fingerprint(source_texts)
+    if out_dir is not None:
+        cached = _load_census_cache(Path(out_dir), _census_fp)
+        if cached is not None:
+            census = cached
+            census_cached = True
+            logger.info(
+                "return census: reloaded %d callees from the prep "
+                "cache (source fingerprint match) — census re-walk "
+                "skipped", len(census),
+            )
+    if not census_cached:
+        try:
+            # The census self-limits to half the prepass budget: it runs
+            # BEFORE the first _over_budget() check, so without its own
+            # deadline one hostile file of module-level assignments
+            # stalls prep for hours (per-site scope walks are O(file)).
+            census = build_return_census(
+                source_texts, joern_server=joern_server,
+                budget_s=budget_s / 2,
+            )
+            if out_dir is not None and census:
+                _write_census_cache(Path(out_dir), _census_fp, census)
+        except Exception:
+            _dim_failed("census")
+            logger.debug("consistency prepass: census build failed",
+                         exc_info=True)
 
     wur_names = harvest_wur_declarations(source_texts)
     if target_path is not None:

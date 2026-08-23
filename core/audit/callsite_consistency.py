@@ -343,6 +343,58 @@ class CalleeCensus:
             d["truncated"] = True
         return d
 
+    def to_full_dict(self) -> dict[str, Any]:
+        """Lossless form for the prep cache — unlike :meth:`to_dict`
+        (the operator-facing ``return-census.json`` row, which keeps
+        only counts and deviant sites), this serialises EVERY site so
+        a resumed segment can reload the census instead of re-walking
+        the tree."""
+        d: dict[str, Any] = {
+            "callee": self.callee,
+            "security_relevant": self.security_relevant,
+            "truncated": self.truncated,
+            "sites": [
+                {
+                    "file": st.file,
+                    "line": st.line,
+                    "callee": st.callee,
+                    "enclosing_function": st.enclosing_function,
+                    "discarded": st.discarded,
+                    "usage": st.usage,
+                    "on_error_path": st.on_error_path,
+                    "engine": st.engine,
+                }
+                for st in self.sites
+            ],
+        }
+        if self.contract is not None:
+            d["contract"] = self.contract
+        return d
+
+    @classmethod
+    def from_full_dict(cls, d: dict[str, Any]) -> "CalleeCensus":
+        sites = [
+            CallSite(
+                file=sd.get("file", ""),
+                line=int(sd.get("line", 0)),
+                callee=sd.get("callee", d.get("callee", "")),
+                enclosing_function=sd.get("enclosing_function", ""),
+                discarded=bool(sd.get("discarded", False)),
+                usage=sd.get("usage", ""),
+                on_error_path=bool(sd.get("on_error_path", False)),
+                engine=sd.get("engine", ""),
+            )
+            for sd in d.get("sites", [])
+            if isinstance(sd, dict)
+        ]
+        return cls(
+            callee=d.get("callee", ""),
+            sites=sites,
+            security_relevant=bool(d.get("security_relevant", False)),
+            contract=d.get("contract"),
+            truncated=bool(d.get("truncated", False)),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Shared parse cache

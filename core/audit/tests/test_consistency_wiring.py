@@ -577,3 +577,84 @@ class TestPeerGroupL2Producer:
         assert {s.function for s in l2[0].siblings} == {
             "drv_read", "drv_write",
         }
+
+
+class TestCensusPrepCache:
+    """Incident regression (resume wall cost): the return census is a
+    pure function of the source texts but was re-walked from scratch
+    on every resumed segment — the dominant prep-phase wall cost. The
+    prep cache reloads it when the source fingerprint matches and
+    re-walks when it does not."""
+
+    _SRC = {
+        "a.c": (
+            "int f(void) {\n"
+            "    if (setuid(1000) != 0) return -1;\n"
+            "    return 0;\n}\n"
+            "int g(void) {\n"
+            "    if (setuid(1000) != 0) return -1;\n"
+            "    return 0;\n}\n"
+            "int h(void) {\n"
+            "    if (setuid(1000) != 0) return -1;\n"
+            "    return 0;\n}\n"
+            "int deviant(void) {\n"
+            "    setuid(1000);\n"
+            "    return 0;\n}\n"
+        ),
+    }
+
+    def test_second_run_reloads_and_skips_the_walk(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.consistency_prepass as cp
+
+        out = tmp_path / "out"
+        out.mkdir()
+        first = cp.run_consistency_prepass(dict(self._SRC), out_dir=out)
+        assert (out / "prep-cache" / "return-census-cache.json").is_file()
+        assert "setuid" in first["census"]
+
+        calls = []
+        real = cp.build_return_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(cp, "build_return_census", spy)
+        second = cp.run_consistency_prepass(dict(self._SRC), out_dir=out)
+        assert calls == [], "cache hit must skip the census re-walk"
+        c1, c2 = first["census"]["setuid"], second["census"]["setuid"]
+        assert c1.counts == c2.counts
+        assert c1.check_ratio == c2.check_ratio
+        assert [s.to_dict() for s in c1.deviants] == [
+            s.to_dict() for s in c2.deviants
+        ]
+
+    def test_changed_sources_rebuild(self, tmp_path, monkeypatch):
+        import core.audit.consistency_prepass as cp
+
+        out = tmp_path / "out"
+        out.mkdir()
+        cp.run_consistency_prepass(dict(self._SRC), out_dir=out)
+
+        calls = []
+        real = cp.build_return_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(cp, "build_return_census", spy)
+        changed = {"a.c": self._SRC["a.c"] + "\nint extra(void) { return 1; }\n"}
+        cp.run_consistency_prepass(changed, out_dir=out)
+        assert calls == [1], "fingerprint mismatch must re-walk"
+
+    def test_corrupt_cache_rebuilds(self, tmp_path):
+        import core.audit.consistency_prepass as cp
+
+        out = tmp_path / "out"
+        (out / "prep-cache").mkdir(parents=True)
+        (out / "prep-cache" / "return-census-cache.json").write_text("{nope")
+        res = cp.run_consistency_prepass(dict(self._SRC), out_dir=out)
+        assert "setuid" in res["census"]

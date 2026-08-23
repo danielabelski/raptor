@@ -90,6 +90,79 @@ if _conftest_dir not in sys.path:
 
 
 # ---------------------------------------------------------------------------
+# Git hermeticity — operator config must not steer tests; tests must
+# never touch the operator's config.
+# ---------------------------------------------------------------------------
+#
+# Incident class this kills: a test fixture whose ``cd`` / path
+# resolution failed ran ``git config user.name "Test"`` with the real
+# checkout as ambient cwd and wrote it into the operator's repo-level
+# ``.git/config`` (and any other git command — commit, tag,
+# ``checkout -b`` — could have hit the real repo the same way).
+# Two-sided containment, logic in core/testing/git_hermeticity.py:
+#
+#  * Env pinning (here, import time, inherited by every subprocess):
+#    ``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_SYSTEM`` -> /dev/null and
+#    ambient ``GIT_*`` identity/redirection variables stripped, so
+#    operator config (init.defaultBranch, commit.gpgsign, an exported
+#    GIT_DIR, ...) cannot change test outcomes, and a stray
+#    ``git config --global`` from a test can never reach the operator's
+#    real config. Forced, not setdefault — hermeticity must hold on
+#    every host. A test that genuinely needs the ambient values opts
+#    out per-test with ``@pytest.mark.ambient_git_config`` (registered
+#    in pytest.ini; nothing needs it today — the marker exists so the
+#    next legitimate case doesn't weaken the default).
+#
+#  * Ambient-config drift guard (pytest_sessionstart /
+#    pytest_sessionfinish below): fingerprint the config file(s) a
+#    repo-level ``git config`` write from inside this checkout would
+#    land in (common-dir config, plus ``config.worktree`` for linked
+#    worktrees), re-check at session end, and FAIL the session with a
+#    loud summary on drift. Read-only — the guard itself never touches
+#    the repo beyond reading those files.
+
+from core.testing import git_hermeticity as _git_hermeticity  # noqa: E402
+
+# xdist workers (and any nested pytest) inherit the controller's
+# ALREADY-PINNED environment, so calling pin_git_env() there would
+# record the pinned values as "ambient" and make the escape-hatch
+# marker silently restore /dev/null instead of the operator's real
+# values. The first (top-level) session therefore publishes the true
+# displaced snapshot through an env var; every descendant session
+# parses it instead of re-capturing.
+import json as _json  # noqa: E402
+
+_AMBIENT_GIT_ENV_HANDOFF = "RAPTOR_GIT_AMBIENT_ENV"
+if os.environ.get(_AMBIENT_GIT_ENV_HANDOFF):
+    _ambient_git_env = _json.loads(os.environ[_AMBIENT_GIT_ENV_HANDOFF])
+    _git_hermeticity.pin_git_env()  # re-assert; idempotent
+else:
+    _ambient_git_env = _git_hermeticity.pin_git_env()
+    os.environ[_AMBIENT_GIT_ENV_HANDOFF] = _json.dumps(_ambient_git_env)
+
+
+@pytest.fixture(autouse=True)
+def _ambient_git_config_escape(request):
+    """Escape hatch: restore the operator's git env for tests marked
+    ``@pytest.mark.ambient_git_config``; re-pin afterwards."""
+    if request.node.get_closest_marker("ambient_git_config") is None:
+        yield
+        return
+    pinned_state = {k: v for k, v in os.environ.items()
+                    if k.startswith("GIT_")}
+    _git_hermeticity.restore_git_env(_ambient_git_env)
+    try:
+        yield
+    finally:
+        # Exact re-pin: wipe every GIT_* — including vars outside the
+        # strip list that the marked test may have set — then reinstate
+        # the pinned state byte-for-byte.
+        for _key in [k for k in os.environ if k.startswith("GIT_")]:
+            del os.environ[_key]
+        os.environ.update(pinned_state)
+
+
+# ---------------------------------------------------------------------------
 # Build-ID binary cache isolation
 # ---------------------------------------------------------------------------
 #
@@ -185,15 +258,78 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Fail an otherwise-green session if any test overran the threshold."""
+    """Fail an otherwise-green session if any test overran the threshold
+    or mutated the ambient checkout's repo-level git config."""
+    _check_git_config_drift(session)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     if session.exitstatus == 0:
         session.exitstatus = 1
 
 
+# ---------------------------------------------------------------------------
+# Ambient git-config drift guard (fails the session).
+#
+# Companion to the git-hermeticity env pinning above: env pins cannot
+# stop a test from running git against the REAL checkout when its
+# cwd/-C resolves to the ambient repo instead of its tmp fixture. This
+# guard detects the incident class of that failure — repo-level
+# ``git config`` writes — by fingerprinting the config file(s) at
+# session start and comparing at session end, failing loudly on drift.
+# (Ref/index/hook mutations are outside its scope; the audit found no
+# pytest-reachable write-class git against the ambient repo at all —
+# the fix pattern addresses the cause, this guard alarms on its most
+# damaging symptom.) Controller-only under xdist (workers skip; the
+# controller's sessionfinish runs after all workers, so any test's
+# mutation is caught). Git-less environments skip silently, matching
+# the tree-fingerprint convention.
+# ---------------------------------------------------------------------------
+
+_git_config_at_start = None
+_git_config_drift: "list[str]" = []
+
+
+def _check_git_config_drift(session):
+    if getattr(session.config, "workerinput", None) is not None:
+        return
+    if _git_config_at_start is None:
+        return
+    now = _git_hermeticity.config_fingerprint(Path(_conftest_dir))
+    if now is None or now == _git_config_at_start:
+        return
+    _git_config_drift.extend(
+        _git_hermeticity.describe_drift(_git_config_at_start, now))
+    if session.exitstatus == 0:
+        session.exitstatus = 1
+
+
+def _git_config_drift_summary(terminalreporter):
+    if not _git_config_drift:
+        return
+    tr = terminalreporter
+    tr.section("git hermeticity guard FAILED", red=True, bold=True)
+    tr.write_line(
+        "The ambient checkout's repo-level git config changed during "
+        "this session (sha256 drift on the file(s) below). Most likely "
+        "cause is the git-touching-tests-must-be-hermetic class: a "
+        "test ran git against the REAL checkout instead of its tmp "
+        "fixture — usually a cwd/-C that fell through to the ambient "
+        "repo. (On a shared-config multi-worktree setup it can also "
+        "be another session writing the common config mid-run.)"
+    )
+    for line in _git_config_drift:
+        tr.write_line(f"  {line}")
+    tr.write_line(
+        "Fix the test to pin every git call to its own tmp repo (use "
+        "core.testing.gitrepo), then inspect and repair the file(s) "
+        "above (git config --local --list). The session exit status "
+        "has been forced to 1."
+    )
+
+
 def pytest_terminal_summary(terminalreporter):
     _tree_drift_summary(terminalreporter)
+    _git_config_drift_summary(terminalreporter)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     tr = terminalreporter
@@ -252,8 +388,11 @@ def _tree_fingerprint():
 
 
 def pytest_sessionstart(session):
-    global _tree_state_at_start
+    global _tree_state_at_start, _git_config_at_start
     _tree_state_at_start = _tree_fingerprint()
+    if getattr(session.config, "workerinput", None) is None:
+        _git_config_at_start = _git_hermeticity.config_fingerprint(
+            Path(_conftest_dir))
 
 
 def _tree_drift_summary(terminalreporter):

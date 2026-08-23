@@ -304,6 +304,86 @@ class TestLegitimateUsesKeepWorking(_Base):
         self.assertIn("OK sp", r.stdout)
 
 
+class TestThreadedCallers(_Base):
+    """connect(2) from a spawned thread notifies with the THREAD's tid.
+
+    ``pidfd_open(tid, 0)`` only accepts thread-group leaders, so every
+    threaded connect used to die in the supervisor with ENOENT before
+    any policy ran — allowed targets included. The supervisor must
+    serve non-leader tasks (PIDFD_THREAD / tgid resolution) so that
+    threads get the SAME policy verdicts as the main thread.
+    """
+
+    _THREADED = textwrap.dedent("""
+        import socket, threading
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind("/tmp/thr-listener")
+        srv.listen(2)
+        res = {{}}
+        def connect(key, path):
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                c.connect(path)
+                res[key] = "CONNECTED"
+            except OSError as e:
+                res[key] = f"DENIED {{e.errno}}"
+            finally:
+                c.close()
+        t = threading.Thread(target=connect,
+                             args=("allowed", "/tmp/thr-listener"))
+        t.start(); t.join()
+        t = threading.Thread(target=connect, args=("denied", {deny!r}))
+        t.start(); t.join()
+        print("ALLOWED", res["allowed"])
+        print("DENIED", res["denied"])
+    """)
+
+    def test_thread_gets_same_policy_as_main_thread(self):
+        import errno as errno_mod
+        deny_path, srv = self._host_listener("hostsock-thr")
+        r = self._spawn(self._THREADED.format(deny=deny_path))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(
+            "ALLOWED CONNECTED", r.stdout,
+            f"private-tmpfs connect from a spawned thread must work "
+            f"like the main thread's: {r.stdout!r} {r.stderr!r}")
+        # The denied target must get the POLICY verdict (EPERM), not
+        # an ENOENT infrastructure failure from the pidfd acquisition.
+        self.assertIn(
+            f"DENIED DENIED {errno_mod.EPERM}", r.stdout,
+            f"policy verdict for a thread's denied connect must match "
+            f"the main thread's EPERM: {r.stdout!r}")
+        self.assertFalse(self._accepted(srv))
+
+    def test_thread_served_on_simulated_pre_6_9_kernel(self):
+        """Kernels < 6.9 reject PIDFD_THREAD (EINVAL) AND refuse a
+        plain pidfd_open of a non-leader tid with EINVAL — ENOENT for
+        non-leaders only arrived with the pidfs rework (~6.16). The
+        tgid fallback must serve threaded callers under exactly that
+        errno shape, so both hops are simulated supervisor-side."""
+        import errno as errno_mod
+
+        from core.sandbox import _unix_scope as us
+
+        real = us._pidfd_open
+
+        def old_kernel(pid, flags=0):
+            if flags & us._PIDFD_THREAD:
+                raise OSError(errno_mod.EINVAL, "Invalid argument")
+            if flags == 0 and us._tgid_of(pid) != pid:
+                # Non-leader tid: pre-6.16 kernels say EINVAL.
+                raise OSError(errno_mod.EINVAL, "Invalid argument")
+            return real(pid, flags)
+
+        deny_path, srv = self._host_listener("hostsock-thr2")
+        with patch.object(us, "_pidfd_open", side_effect=old_kernel):
+            r = self._spawn(self._THREADED.format(deny=deny_path))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ALLOWED CONNECTED", r.stdout,
+                      f"{r.stdout!r} {r.stderr!r}")
+        self.assertFalse(self._accepted(srv))
+
+
 class TestSupervisorAppliesChildNetworkPolicy(_Base):
     """The supervisor executes connects in the (unconfined) parent, so
     the child's task-scoped Landlock network rules never evaluate for

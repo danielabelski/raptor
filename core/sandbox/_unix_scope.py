@@ -93,6 +93,10 @@ _SYS_PIDFD_OPEN = 434
 _SYS_PIDFD_GETFD = 438
 _SYS_OPENAT2 = 437
 
+# pidfd_open(2) flag (include/uapi/linux/pidfd.h, Linux 6.9+): open a
+# pidfd for a specific TASK rather than a thread-group leader.
+_PIDFD_THREAD = 0x80  # == O_EXCL
+
 # openat2 resolve flags (include/uapi/linux/openat2.h)
 _RESOLVE_NO_MAGICLINKS = 0x02
 _RESOLVE_NO_SYMLINKS = 0x04
@@ -171,11 +175,61 @@ def _sc(nr: int, *args) -> tuple[int, int]:
     return int(r), (ctypes.get_errno() if r == -1 else 0)
 
 
-def _pidfd_open(pid: int) -> int:
-    r, e = _sc(_SYS_PIDFD_OPEN, pid, 0)
+def _pidfd_open(pid: int, flags: int = 0) -> int:
+    r, e = _sc(_SYS_PIDFD_OPEN, pid, flags)
     if r < 0:
         raise OSError(e, os.strerror(e))
     return r
+
+
+def _tgid_of(tid: int) -> int:
+    """Thread-group id of ``tid`` from ``/proc/<tid>/status``.
+
+    ``/proc/<tid>`` resolves for non-leader tasks too (hidden from
+    readdir, directly accessible). Raises OSError when the task is
+    gone or the field is missing (treated as "deny" by the caller).
+    """
+    with open(f"/proc/{tid}/status", "rb") as f:
+        for line in f:
+            if line.startswith(b"Tgid:"):
+                return int(line.split()[1])
+    raise OSError(errno.ESRCH, os.strerror(errno.ESRCH))
+
+
+def _pidfd_open_task(tid: int) -> int:
+    """pidfd for the notifying task — leader or spawned thread.
+
+    ``seccomp_notif.pid`` is the calling THREAD's tid.
+    ``pidfd_open(tid, 0)`` only accepts thread-group leaders, so a
+    connect(2) made from a spawned thread used to fail here before any
+    policy ran — denying every threaded caller inside a mount-ns
+    sandbox. The non-leader refusal errno is kernel-dependent: EINVAL
+    through 6.15 (``pidfd_prepare`` rejects non-leaders as invalid),
+    ENOENT from the pidfs rework (~6.16) on. The supervisor always
+    passes a kernel-supplied tid > 0 with flags 0, so either errno
+    here can only mean "not a thread-group leader" (a dead tid is
+    ESRCH). For non-leader tids, retry with PIDFD_THREAD (Linux 6.9+;
+    pidfd_getfd works on task pidfds because the fd table is shared
+    across the thread group), then fall back to resolving the tgid
+    from /proc/<tid>/status on older kernels.
+
+    Identity safety is unchanged: every path is followed by the
+    caller's ID_VALID re-check — if the notification is still alive,
+    the calling task is still blocked in the syscall, so neither the
+    tid nor the tgid it belonged to can have been recycled.
+    """
+    try:
+        return _pidfd_open(tid)
+    except OSError as e:
+        if e.errno not in (errno.ENOENT, errno.EINVAL):
+            raise
+    try:
+        return _pidfd_open(tid, _PIDFD_THREAD)
+    except OSError as e:
+        # EINVAL: kernel < 6.9 rejects the flag — resolve the leader.
+        if e.errno not in (errno.EINVAL, errno.ENOENT):
+            raise
+    return _pidfd_open(_tgid_of(tid))
 
 
 def _pidfd_getfd(pidfd: int, target_fd: int) -> int:
@@ -538,12 +592,14 @@ class UnixScopeSupervisor:
             return -errno.EPERM, 0
         family = struct.unpack_from("=H", addr, 0)[0]
 
-        # Duplicate the child's socket. pidfd_open pins the process;
-        # ID_VALID after it proves we pinned the RIGHT one (the caller
-        # is still blocked in the syscall, so its pid can't have been
-        # recycled before the open).
+        # Duplicate the child's socket. pidfd_open pins the process
+        # (via the task pidfd or tgid resolution for non-leader
+        # threads — see _pidfd_open_task); ID_VALID after it proves we
+        # pinned the RIGHT one (the caller is still blocked in the
+        # syscall, so its ids can't have been recycled before the
+        # open).
         try:
-            pidfd = _pidfd_open(pid)
+            pidfd = _pidfd_open_task(pid)
         except OSError as e:
             return -(e.errno or errno.EPERM), 0
         try:

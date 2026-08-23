@@ -262,6 +262,102 @@ def _reject_non_finite_floats(data: Any) -> None:
             stack.extend(obj)
 
 
+def dumps_canonical(data: Any) -> str:
+    """Serialise *data* to the repo's canonical JSON byte form.
+
+    THE ONLY ``dumps`` that MAC / hash / content-address call sites may
+    use (enforced by ``.github/scripts/check_canonical_json.py``).
+    Always stdlib ``json`` — never orjson, never configurable — with
+    the exact option pin::
+
+        json.dumps(data, sort_keys=True, separators=(",", ":"),
+                   default=str)
+
+    This byte-matches the review-journal MAC canonical form
+    (``core/coverage/journal_mac.row_sha256``): key order and
+    whitespace never vary, arbitrary objects stringify via
+    ``default=str``, and non-ASCII escapes via the ``ensure_ascii``
+    default. Tokens minted at version N are verified at version N+1,
+    so this form is frozen FOREVER — byte drift here flips every
+    previously-minted artifact to "tampered" and invalidates every
+    digest-keyed cache built on it.
+
+    Deliberately NOT pinned: ``allow_nan``. The stdlib default (emit
+    the non-RFC ``NaN`` / ``Infinity`` tokens) is part of the frozen
+    byte contract — journal-MAC rows minted over payloads containing
+    a non-finite float must verify forever, so this helper must keep
+    producing the same bytes for them. New callers should reject
+    non-finite floats before canonicalising rather than rely on that
+    token form.
+
+    orjson is never eligible here: it emits raw UTF-8 where the
+    stdlib escapes (``caf\\u00e9`` vs ``café``), refuses int keys and
+    >64-bit ints the stdlib accepts, and has no custom-separator
+    support — any of which silently forks the canonical bytes on
+    hosts where orjson happens to be installed.
+    """
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def dumps_display(
+    data: Any,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = False,
+) -> str:
+    """Serialise *data* for human / LLM eyes (terminal output, log
+    lines, prompt embeds, LLM tool-return strings, report snippets).
+
+    Display contract: the returned string is READ, never re-parsed
+    programmatically, never hashed, never byte-compared. Callers that
+    need stable bytes want :func:`dumps_canonical` (MAC/hash lanes) or
+    :func:`save_json` (artifact files) instead. Because no consumer
+    depends on exact bytes, this helper is free to use orjson when
+    installed (measured 5-7x faster on pretty dumps of real RAPTOR
+    artifacts) and to differ cosmetically between the two encoders
+    (compact-mode separators, non-finite float rendering).
+
+    ``ensure_ascii=False`` on the stdlib branch — prompts and reports
+    should show readable UTF-8, not ``\\uXXXX`` escapes (orjson always
+    emits raw UTF-8, so the branches agree).
+
+    Path / datetime / arbitrary objects stringify via the same
+    encoder hooks as :func:`save_json`. Inputs orjson cannot encode
+    (int keys beyond ``OPT_NON_STR_KEYS``, ints outside 64 bits,
+    structures past its depth limit) fall back to the stdlib branch
+    rather than raising — a display helper must be total on anything
+    the repo can throw at it.
+
+    Args:
+        indent: 2 (default, pretty) or ``None`` (single line) or any
+            other stdlib indent. orjson only accelerates ``2``/``None``;
+            other indents take the stdlib branch.
+        sort_keys: sort object keys for stable-looking output
+            (cosmetic only — never rely on the bytes).
+    """
+    if _orjson is not None and indent in (2, None):
+        opt = _orjson.OPT_NON_STR_KEYS
+        if indent == 2:
+            opt |= _orjson.OPT_INDENT_2
+        if sort_keys:
+            opt |= _orjson.OPT_SORT_KEYS
+        try:
+            return _orjson.dumps(
+                data, option=opt, default=_orjson_default,
+            ).decode("utf-8")
+        except TypeError:
+            # orjson-only refusals (>64-bit ints, exotic keys, depth
+            # limit) — the stdlib branch below handles them all.
+            pass
+    return json.dumps(
+        data,
+        indent=indent,
+        sort_keys=sort_keys,
+        ensure_ascii=False,
+        cls=_RaptorEncoder,
+    )
+
+
 def save_json(path: str | Path, data: Any, mode: int | None = None) -> None:
     """Save data as pretty-printed JSON. Handles Path/datetime serialization.
 

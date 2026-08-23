@@ -26,16 +26,21 @@ must never affect the audit.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
 
 SCA_FINDINGS_FILENAME = "findings.json"
 SCA_VULN_TYPE = "sca:vulnerable_dependency"
+
+# SCA findings.json artifacts are RAPTOR-written run output — the
+# findings-class budget used across the audit/validate bridges.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 # Flat priority boost for functions in files that import a component
 # with advisory history — same magnitude as SCORE_TOOL_FAILED /
@@ -103,10 +108,7 @@ def _find_sca_findings(out_dir: Path) -> Path | None:
         # unlikely — but a list of sca-typed rows is the contract).
         sca_files = []
         for cand in candidates:
-            try:
-                rows = json.loads(cand.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
+            rows = load_json(cand, max_bytes=_MAX_FINDINGS_BYTES)
             if isinstance(rows, list) and any(
                 isinstance(r, dict) and r.get("vuln_type") == SCA_VULN_TYPE
                 for r in rows
@@ -131,9 +133,8 @@ def load_component_priors(out_dir: Path) -> dict[str, dict[str, Any]]:
     findings_path = _find_sca_findings(out_dir)
     if findings_path is None:
         return {}
-    try:
-        rows = json.loads(findings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    rows = load_json(findings_path, max_bytes=_MAX_FINDINGS_BYTES)
+    if not isinstance(rows, list):
         return {}
 
     priors: dict[str, dict[str, Any]] = {}

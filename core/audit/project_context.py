@@ -38,10 +38,15 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# project-context.json is a small RAPTOR-written learnings store.
+_MAX_CONTEXT_BYTES = 8 * 1024 * 1024
 
 _SCHEMA_VERSION = 1
 
@@ -140,8 +145,9 @@ def load_project_context(out_dir: Path) -> ProjectContext:
     for candidate in candidates:
         if candidate.exists():
             try:
-                with open(candidate, encoding="utf-8") as f:
-                    data = json.load(f)
+                data = load_json(candidate, max_bytes=_MAX_CONTEXT_BYTES)
+                if not isinstance(data, dict):
+                    continue
                 learnings = [Learning(
                         text=item.get("text", ""),
                         category=item.get("category", "note"),

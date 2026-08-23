@@ -11,12 +11,17 @@ import logging
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
+from core.json import load_json
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _MAX_DISCOVERED_PER_FUNCTION = 20
+
+# scope-coverage.json is a small RAPTOR-written slot-allocation report.
+_MAX_SCOPE_COVERAGE_BYTES = 8 * 1024 * 1024
 
 
 def read_function_source(
@@ -154,11 +159,9 @@ def write_tier_diagnostics(
     # sees which in-scope files got zero review slots.
     sc_path = out_dir / "scope-coverage.json"
     if sc_path.is_file():
-        try:
-            with Path(sc_path).open(encoding="utf-8") as f:
-                data["scope_coverage"] = json.load(f)
-        except (OSError, ValueError):
-            logger.debug("scope-coverage.json unreadable", exc_info=True)
+        sc = load_json(sc_path, max_bytes=_MAX_SCOPE_COVERAGE_BYTES)
+        if sc is not None:
+            data["scope_coverage"] = sc
     path = out_dir / "tier-diagnostics.json"
     with Path(path).open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

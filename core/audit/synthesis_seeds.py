@@ -23,17 +23,23 @@ the call site.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
 # Per-source seed budget. The synthesis lane cap
 # (checker_synthesis.MAX_SYNTHESIS_PER_RUN) still bounds total spend.
 MAX_SEEDS_PER_SOURCE = 2
+
+# Byte budget for one seed-source artifact (crash contexts, corpus
+# labels/findings) — RAPTOR-written run output parsed in per-file
+# loops; the audit-artifact budget class.
+_MAX_SEED_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 # Crash-type → CWE hints for crash-context seeds.
 _CRASH_TYPE_CWE = {
@@ -199,9 +205,8 @@ def seeds_from_crash_contexts(
         path = Path(run_dir) / "crash_analysis" / "crash-contexts.json"
         if not path.is_file():
             continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        data = load_json(path, max_bytes=_MAX_SEED_ARTIFACT_BYTES)
+        if not isinstance(data, dict):
             continue
         for ctx in data.get("contexts", []):
             if len(seeds) >= max_seeds:
@@ -313,10 +318,9 @@ def seeds_from_cvefix_corpus(
         )
         if not finding_path.is_file():
             continue
-        try:
-            label = json.loads(label_path.read_text(encoding="utf-8"))
-            finding = json.loads(finding_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        label = load_json(label_path, max_bytes=_MAX_SEED_ARTIFACT_BYTES)
+        finding = load_json(finding_path, max_bytes=_MAX_SEED_ARTIFACT_BYTES)
+        if not isinstance(label, dict) or not isinstance(finding, dict):
             continue
         sink = finding.get("sink") or {}
         file_path = str(sink.get("file_path") or "")

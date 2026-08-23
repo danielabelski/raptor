@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = "core/audit/summary_cache"
@@ -32,6 +34,10 @@ _DEFAULT_CACHE_DIR = "core/audit/summary_cache"
 # wild are monorepo package-lock.json files at 30-40 MB; 50 MB
 # matches the SCA parsers' cap for the same file class.
 _MAX_MANIFEST_BYTES = 50 * 1024 * 1024
+
+# Byte ceiling for one cached summaries.json — RAPTOR-written cache
+# entries, parsed per (library, version) lookup.
+_MAX_SUMMARY_FILE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -179,12 +185,8 @@ class SummaryCache:
         if not path.is_file():
             return {}
 
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            logger.debug(
-                "failed to load summary cache %s", path, exc_info=True,
-            )
+        data = load_json(path, max_bytes=_MAX_SUMMARY_FILE_BYTES)
+        if not isinstance(data, list):
             return {}
 
         result: dict[str, CachedSummary] = {}

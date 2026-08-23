@@ -18,6 +18,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
 from core.paths import confine
 from core.security.prompt_envelope import neutralize_tag_forgery, wrap_untrusted
 
@@ -63,6 +64,11 @@ def _safe_path(target_path: Path, file_path: str) -> Path | None:
 # assembly re-reads files per function, amplifying the cost). Over-cap
 # files are treated exactly like unreadable ones.
 _MAX_SOURCE_FILE_BYTES = 64 * 1024 * 1024
+
+# Byte budget for one flow-trace-*.json artifact. RAPTOR-written run
+# output (real traces are well under a MiB), re-parsed per reviewed
+# function — the audit-artifact budget class.
+_MAX_FLOW_TRACE_BYTES = 64 * 1024 * 1024
 
 
 def _read_target_text(full_path: Path) -> str | None:
@@ -3708,11 +3714,9 @@ def _load_flow_traces(
 
     traces: list[dict[str, Any]] = []
     try:
-        import json as _json
         for trace_file in sorted(out_dir.glob("flow-trace-*.json")):
-            try:
-                data = _json.loads(trace_file.read_text())
-            except (OSError, _json.JSONDecodeError):
+            data = load_json(trace_file, max_bytes=_MAX_FLOW_TRACE_BYTES)
+            if not isinstance(data, dict):
                 continue
 
             source = data.get("source", {})

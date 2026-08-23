@@ -13,10 +13,16 @@ import tempfile
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
+from core.json import load_json
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# findings.json is RAPTOR-written run output — the findings-class
+# budget used across the audit/validate bridges.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 
 def emit_finding(
@@ -77,15 +83,20 @@ def emit_finding(
 
 
 def load_findings(out_dir: Path) -> list[dict[str, Any]]:
-    """Load findings.json from the output directory."""
+    """Load findings.json from the output directory.
+
+    Corrupt/oversize content degrades to ``[]`` with a warning;
+    an UNREADABLE file (EACCES, EIO) still raises ``OSError`` —
+    findings.json is where "no findings" and "could not read the
+    findings" must stay distinguishable.
+    """
     path = out_dir / "findings.json"
-    if not path.exists():
-        return []
     try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
-    except json.JSONDecodeError:
+        data = load_json(path, strict=True, max_bytes=_MAX_FINDINGS_BYTES)
+    except ValueError:
         logger.warning("corrupt findings.json at %s", path)
+        return []
+    if data is None:
         return []
     return data if isinstance(data, list) else data.get("findings", [])
 

@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
 from core.run.scratch import scratch_dir
 
 from ._util import safe_join
@@ -55,6 +56,9 @@ _INCLUDE_WALK_DEPTH = 3
 _INCLUDE_DIR_NAMES = frozenset({"include", "includes", "inc"})
 _WALK_SKIP_DIRS = frozenset({"node_modules", "vendor", "third_party"})
 _MAX_RAW_OUTPUT = 20_000
+# gcc -fdiagnostics-format=sarif-file output over target code — the
+# SARIF budget class shared with core.sarif.parser.load_sarif.
+_MAX_SARIF_BYTES = 100 * 1024 * 1024
 
 _C_SUFFIXES = frozenset({".c"})
 _CXX_SUFFIXES = frozenset({".cc", ".cpp", ".cxx", ".C"})
@@ -483,9 +487,8 @@ def _parse_gcc_json(stderr: str) -> list[dict[str, Any]]:
 
 
 def _parse_gcc_sarif(sarif_path: Path) -> list[dict[str, Any]]:
-    try:
-        data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(sarif_path, max_bytes=_MAX_SARIF_BYTES)
+    if not isinstance(data, dict):
         return []
     diags = []
     for run in data.get("runs", []):

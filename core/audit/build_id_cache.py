@@ -82,6 +82,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json_bounded
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = ".cache/binary"
@@ -90,6 +92,12 @@ _DEFAULT_CACHE_DIR = ".cache/binary"
 # module docstring. Bump on any incompatible layout/schema change.
 _FORMAT_VERSION = 1
 _FORMAT_MARKER = "format.json"
+
+# Byte ceiling for one cache envelope. The directory is shared and
+# writable by external producers (see get()'s docstring), so a
+# planted multi-GB envelope must be refused before the read, not
+# buffered. Edge-index artifacts are the largest legitimate entries.
+_MAX_ENVELOPE_BYTES = 64 * 1024 * 1024
 
 
 def _valid_build_id(build_id: str) -> bool:
@@ -189,8 +197,12 @@ class BuildIDCache:
         if not path.is_file():
             return None
         try:
-            entry = json.loads(path.read_text())
-        except Exception:
+            # Bounded helper (capped read + growth re-check), not
+            # plain load_json: the cache dir is writable by external
+            # producers, so the stat-then-uncapped-read window would
+            # let a racing writer balloon the read past the gate.
+            entry = load_json_bounded(path, max_bytes=_MAX_ENVELOPE_BYTES)
+        except (OSError, ValueError):
             logger.debug("failed to read cache %s", path, exc_info=True)
             return None
         version = entry.get("format_version", 1) if isinstance(entry, dict) else None

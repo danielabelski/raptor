@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 # on big targets — 256 MiB mirrors the coverage-store budget).
 _MAX_COVERAGE_BYTES = 64 * 1024 * 1024
 _MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
+# Flow-trace artifacts are RAPTOR-written run output, parsed in a
+# glob loop — the audit-artifact budget class.
+_MAX_FLOW_TRACE_BYTES = 64 * 1024 * 1024
 
 SCORE_ENTRY_POINT = 10
 SCORE_SINK = 8
@@ -599,11 +602,9 @@ def load_flow_traces(out_dir: Path) -> list[dict[str, Any]]:
     """Load all flow-trace-*.json files from the output directory."""
     traces = []
     for path in sorted(out_dir.glob("flow-trace-*.json")):
-        try:
-            with Path(path).open(encoding="utf-8") as f:
-                traces.append(json.load(f))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.debug("skipping %s: %s", path, exc)
+        data = load_json(path, max_bytes=_MAX_FLOW_TRACE_BYTES)
+        if isinstance(data, dict):
+            traces.append(data)
     return traces
 
 

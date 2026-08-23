@@ -14,10 +14,11 @@ Integration points:
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,12 @@ GRAPH_SUBDIR = "graph"
 GRAPH_FILENAME = "binary-graph.sqlite"
 INVESTIGATION_FILENAME = "binary-investigation.json"
 CONTEXT_MAP_FILENAME = "binary-context-map.json"
+
+# Byte budgets: run manifests are tiny descriptors; investigation /
+# binary-context-map artifacts are RAPTOR-written run output — the
+# audit-artifact budget class.
+_MAX_RUN_META_BYTES = 1024 * 1024
+_MAX_BINARY_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -129,14 +136,17 @@ def find_binary_run_dirs(
                 manifest = child / RUN_METADATA_FILE
                 if not manifest.exists():
                     continue
+                meta = load_json(manifest, max_bytes=_MAX_RUN_META_BYTES)
+                if not isinstance(meta, dict):
+                    continue
                 try:
-                    meta = json.loads(manifest.read_text())
                     sibling_target = meta.get("target_path") or meta.get("target", "")
                     if not sibling_target:
                         continue
                     if Path(sibling_target).resolve() != resolved_target:
                         continue
-                except (json.JSONDecodeError, OSError):
+                except OSError:
+                    # Path.resolve on an unresolvable stored path.
                     continue
             candidates.append(child)
     except OSError:
@@ -207,10 +217,8 @@ def _load_investigation(run_dir: Path) -> tuple:
     if not inv_path.exists():
         return [], []
 
-    try:
-        data = json.loads(inv_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        logger.debug("failed to read %s", inv_path, exc_info=True)
+    data = load_json(inv_path, max_bytes=_MAX_BINARY_ARTIFACT_BYTES)
+    if not isinstance(data, dict):
         return [], []
 
     surfaces: list[BinaryRankedSurface] = []
@@ -272,9 +280,8 @@ def _load_binary_context_map(run_dir: Path) -> tuple:
     if not ctx_path.exists():
         return [], []
 
-    try:
-        data = json.loads(ctx_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    data = load_json(ctx_path, max_bytes=_MAX_BINARY_ARTIFACT_BYTES)
+    if not isinstance(data, dict):
         return [], []
 
     surfaces: list[BinaryRankedSurface] = []

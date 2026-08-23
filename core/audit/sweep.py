@@ -26,12 +26,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json
+
 from ._util import is_valid_identifier, safe_join
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# Sibling-run checklist.json parses in a per-run loop; big targets
+# legitimately reach tens of MiB — the checklist budget class.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 
 _ROLE_RE = _re.compile(r"^//\s*@role:\s*(\w+)", _re.MULTILINE)
@@ -289,9 +295,8 @@ def _load_checklist_hashes(run_dir: Path) -> dict[str, str]:
     path = run_dir / "checklist.json"
     if not path.is_file():
         return {}
-    try:
-        checklist = _json.loads(path.read_text())
-    except (OSError, _json.JSONDecodeError):
+    checklist = load_json(path, max_bytes=_MAX_CHECKLIST_BYTES)
+    if not isinstance(checklist, dict):
         return {}
     out: dict[str, str] = {}
     for f in checklist.get("files", []):

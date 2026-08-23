@@ -9,10 +9,10 @@ else is filtered out before any LLM submission.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json
 from core.llm.coerce import structured_result
 from core.security.prompt_framing import with_audit_framing
 
@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Flow-trace artifacts are RAPTOR-written run output, parsed in a
+# glob loop — the audit-artifact budget class.
+_MAX_FLOW_TRACE_BYTES = 64 * 1024 * 1024
 
 CHAIN_SCHEMA = {
     "type": "object",
@@ -84,7 +88,9 @@ def _load_flow_trace_pairs(out_dir: Path) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
     for ft_path in out_dir.glob("flow-trace-*.json"):
         try:
-            ft = json.loads(ft_path.read_text(encoding="utf-8"))
+            ft = load_json(ft_path, max_bytes=_MAX_FLOW_TRACE_BYTES)
+            if not isinstance(ft, dict):
+                continue
             hops = ft.get("hops", [])[:50]
             keys = [f"{hop['file']}:{hop['function']}" for hop in hops if isinstance(hop, dict) and hop.get("file") and hop.get("function")]
             for i, a in enumerate(keys):

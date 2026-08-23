@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from core.coverage.journal import make_function_key
+from core.json import load_json
 
 from ._util import extract_context_map_set, safe_join
 from .strategy import strategies_from_item
@@ -88,6 +89,10 @@ _MAX_HYDRATED_SLOC = 2000            # per function, lines
 _MAX_HYDRATED_FUNCTION_BYTES = 256 * 1024
 _MAX_HYDRATED_FILE_BYTES = 8 * 1024 * 1024
 _MAX_HYDRATED_TOTAL_BYTES = 64 * 1024 * 1024
+
+# context-map.json is RAPTOR-written run output (measured multi-MiB
+# on big targets) — the audit-artifact budget class.
+_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
 
 
 def compute_gaps(
@@ -1333,14 +1338,8 @@ def gap_for_site(
 def load_context_map(out_dir: Path) -> dict[str, Any] | None:
     """Load context-map.json if present."""
     path = out_dir / "context-map.json"
-    if not path.exists():
-        return None
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        logger.error("malformed JSON in %s", path)
-        return None
+    data = load_json(path, max_bytes=_MAX_CONTEXT_MAP_BYTES)
+    return data if isinstance(data, dict) else None
 
 
 def write_gaps(gaps: list[dict[str, Any]], out_dir: Path) -> Path:

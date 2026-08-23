@@ -509,3 +509,66 @@ class TestSameNamedSitesFold:
             "one verified review must suppress exactly one same-named "
             "site; the unreviewed sibling stays a gap"
         )
+
+
+class TestSpanBoundCredits:
+    """A coverage credit belongs to the SITE that earned it. The
+    checklist lists functions before same-named prototypes, so a
+    count-based credit let an unreviewed 169-line body absorb its
+    reviewed 1-line prototype's credit on every recomputation — a
+    real vulnerability inside such a body was missed exactly this
+    way."""
+
+    _PROTO_SOURCE = "".join(
+        ["char *fn(const char *p);\n"]           # line 1: prototype
+        + [f"int filler_{i};\n" for i in range(2, 5)]
+        + ["char *fn(const char *p)\n",           # line 5: body
+           "{\n", "    return 0;\n", "}\n"]
+    )
+
+    def test_reviewed_prototype_does_not_cover_unreviewed_body(
+            self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "r.c").write_text(self._PROTO_SOURCE, encoding="utf-8")
+        checklist = {
+            "target_path": str(target),
+            "files": [{
+                "path": "r.c",
+                "language": "c",
+                "items": [
+                    # Function FIRST — the extraction's kind-grouped
+                    # order, the exact trap.
+                    {"name": "fn", "kind": "function",
+                     "line_start": 5, "line_end": 8},
+                    {"name": "fn", "kind": "global",
+                     "line_start": 1, "line_end": 1},
+                ],
+            }],
+        }
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir()
+        # The eligibility screen's items_by_key keeps the FIRST
+        # same-named item (the function), so the journaled strategies
+        # must match the FUNCTION item's inference to be admitted —
+        # this test targets credit binding, not eligibility (the
+        # screen's own coarse keying is a separate re-review-cost
+        # issue).
+        fn_item = checklist["files"][0]["items"][0]
+        append_entry(run_dir, ReviewJournalEntry(
+            ts=now_iso(), run_id="run1", file="r.c", function="fn",
+            verdict="clean",
+            source_hash=hash_span(target / "r.c", 1, 1),
+            line_start=1, line_end=1,
+            strategies=sorted(strategies_from_item(dict(fn_item), "r.c")),
+        ))
+        gaps = compute_gaps(
+            checklist, [], out_dir=run_dir,
+            reuse_sink={}, own_run_reuse=True,
+        )
+        leftover = [(g["name"], g["line_start"]) for g in gaps
+                    if g["name"] == "fn"]
+        assert leftover == [("fn", 5)], (
+            "the unreviewed BODY must surface; pre-fix it absorbed "
+            "the prototype's credit and vanished"
+        )

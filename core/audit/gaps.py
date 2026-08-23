@@ -168,12 +168,13 @@ def compute_gaps(
           is_stale, old_annotation (if stale)
     """
     covered_functions = _build_covered_set(coverage_records)
-    # Per-key multiplicity from the hash-verified journal fold: N
-    # verified per-site entries for one file:function key allow N
-    # same-named occurrences to be suppressed (see
+    # Span-bound credits from the hash-verified journal fold: each
+    # verified per-site entry credits ITS OWN line_start under the
+    # file:function key, so suppression lands on the reviewed site
+    # and never on an unreviewed same-named sibling (see
     # _consume_covered_key). Coverage records stay at the historical
     # one-per-key floor.
-    covered_credits: dict[str, int] = {}
+    covered_credits: dict[str, list[int]] = {}
     # Fold LLM review journal into covered_functions. See amendment
     # §7: the coverage store's journal import only fires at run
     # completion, so within a single run compute_gaps has no visibility
@@ -361,7 +362,8 @@ def compute_gaps(
 
             if _consume_covered_key(
                     covered_functions, consumed_covered, func_key,
-                    credits=covered_credits):
+                    credits=covered_credits,
+                    line_start=item.get("line_start") or 0):
                 continue
 
             # ``checked_by`` on the checklist item was removed under
@@ -1369,6 +1371,7 @@ def _consume_covered_key(
     consumed: dict,
     func_key: str,
     credits: dict | None = None,
+    line_start: int = 0,
 ) -> bool:
     """True when ``func_key`` should be suppressed as already covered.
 
@@ -1379,20 +1382,31 @@ def _consume_covered_key(
     and let the rest surface as gaps — over-reviewing an overload
     beats never reviewing it.
 
-    ``credits`` (from the hash-verified journal fold) lifts that
-    one-per-key floor when the journal proves N distinct sites of the
-    same name were reviewed: N verified per-site entries suppress N
-    occurrences. Without it, a resumed run re-buys every same-named
-    sibling (macro redefinitions reviewed 8+ times) on every fold.
+    ``credits`` (from the hash-verified journal fold) replaces that
+    one-per-key floor with SPAN-BOUND suppression: each credited
+    ``line_start`` suppresses exactly the item at that span, and a
+    span-less legacy credit (0) acts as a single wildcard. Count-based
+    credits were not enough — the checklist lists functions before
+    same-named prototypes, so the first-encountered (unreviewed) body
+    absorbed its reviewed prototype's credit on every recomputation
+    and was never scheduled; a real vulnerability inside such a body
+    was missed exactly this way. Keys covered only by coverage
+    records (no journal credit) keep the historical one-per-key rule.
     """
     if func_key not in covered:
         return False
-    allowed = 1
-    if credits is not None:
-        allowed = max(1, credits.get(func_key, 1))
+    if credits is not None and func_key in credits:
+        spans = credits[func_key]
+        if line_start and line_start in spans:
+            spans.remove(line_start)
+            return True
+        if 0 in spans:
+            spans.remove(0)
+            return True
+        return False
     seen = consumed.get(func_key, 0)
     consumed[func_key] = seen + 1
-    return seen < allowed
+    return seen == 0
 
 
 def _fold_journal_into_covered(
@@ -1777,10 +1791,18 @@ def _verify_entries_fold(
 
     from .journal import is_function_grade
 
-    def _credit(key: str) -> None:
+    def _credit(key: str, line_start: int) -> None:
         covered.add(key)
         if credits is not None:
-            credits[key] = credits.get(key, 0) + 1
+            # Span-BOUND credit: the credit belongs to the reviewed
+            # site, not to the key. Count-based credits let an
+            # unreviewed same-named sibling absorb a reviewed
+            # sibling's credit (checklist extraction lists functions
+            # before same-named prototypes, so a reviewed 1-line
+            # prototype suppressed its unreviewed 169-line body on
+            # every recomputation — a real vulnerability was missed
+            # that way). 0 = span-less legacy credit (wildcard).
+            credits.setdefault(key, []).append(int(line_start or 0))
 
     tampered = 0
     unstamped_credited = 0
@@ -1841,7 +1863,7 @@ def _verify_entries_fold(
             # row with no checkable hash carries nothing — crediting
             # it was the forged-empty-hash suppression channel.
             if verified_row:
-                _credit(key)
+                _credit(key, getattr(entry, "line_start", 0))
             else:
                 unstamped_unverifiable += 1
             continue
@@ -1917,7 +1939,12 @@ def _verify_entries_fold(
             # accepted an attacker-stored 1-char "hash" against ~1/16
             # of real hashes; a short prefix is not drift evidence,
             # it is no evidence.
-            if not any(h == stored for h in computable):
+            matched_span = next(
+                (span for span, h in zip(entry_spans, candidates)
+                 if h and h == stored),
+                None,
+            )
+            if matched_span is None:
                 stale += 1
                 logger.debug(
                     "journal-fold: %s changed since %s review "
@@ -1930,7 +1957,7 @@ def _verify_entries_fold(
                 # suppression (legacy tolerance) but never import an
                 # unauthenticated verdict as a $0 reuse.
                 unstamped_credited += 1
-                _credit(key)
+                _credit(key, matched_span[0])
                 continue
             if reuse_sink is not None:
                 reason = _reuse_ineligibility(
@@ -1955,7 +1982,11 @@ def _verify_entries_fold(
                     )
                     continue
                 reuse_sink.setdefault(key, entry)
-            _credit(key)
+            # Credit the span WHERE VERIFICATION SUCCEEDED: for an
+            # unchanged function that merely moved, the current
+            # checklist span matched — binding the entry's recorded
+            # span would leave the moved item unsuppressed.
+            _credit(key, matched_span[0])
 
     if stale:
         logger.info(

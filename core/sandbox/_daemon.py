@@ -172,8 +172,48 @@ _SAFE_EVAL_NODES = {
 }
 _SAFE_EVAL_CALLABLES = {"p64", "p32", "p16", "u64", "u32", "u16", "int"}
 
+# Compute budgets. The compute language exists for exploit arithmetic
+# over leaked pointers/values — 64-to-a-few-hundred-bit quantities.
+# CPython's int_max_str_digits guard does NOT cover base-16 parsing,
+# so a hostile target printing "0x" + megabytes of hex used to mint a
+# multi-megabit binding, and LLM-authored squaring/shift chains over
+# such bindings burned unbounded daemon CPU (no timeout existed).
+# _INT_BIT_CEILING bounds every binding and every intermediate result
+# (2**20 bits ≈ 131 KB — orders of magnitude past any legitimate
+# exploit arithmetic, cheap for a single op); _MAX_HEX_DIGITS bounds
+# the parse (512-bit headroom over 64-bit leaks); the per-expression
+# wall-clock deadline is the belt-and-braces backstop.
+_MAX_HEX_DIGITS = 128
+_INT_BIT_CEILING = 1 << 20
+_COMPUTE_DEADLINE_S = 2.0
+
+
+def _cap_result(value: Any, expr: str) -> Any:
+    """Enforce the magnitude budget on a compute (sub)result."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value.bit_length() > _INT_BIT_CEILING:
+            msg = (
+                f"compute result exceeds {_INT_BIT_CEILING}-bit "
+                f"budget in {expr!r}"
+            )
+            raise ValueError(msg)
+    elif isinstance(value, (bytes, str)) and len(value) > (
+            _INT_BIT_CEILING // 8):
+        msg = f"compute result exceeds byte budget in {expr!r}"
+        raise ValueError(msg)
+    return value
+
 
 def _safe_eval(expr: str, bindings: dict) -> Any:
+    """Evaluate a compute expression under explicit budgets.
+
+    A hand-rolled recursive evaluator (NOT compile+eval): every
+    intermediate result is magnitude-capped as it is produced, the
+    fast-blowup operators (int*int, <<) are pre-checked so the
+    oversized value is never materialised, and a wall-clock deadline
+    bounds the whole expression. The node/callable allowlists are
+    unchanged from the eval-based predecessor.
+    """
     tree = ast.parse(expr, mode="eval")
     for node in ast.walk(tree):
         cls_name = type(node).__name__
@@ -202,18 +242,137 @@ def _safe_eval(expr: str, bindings: dict) -> Any:
         "u16": lambda b: _u(b, 2),
         "int": int,
     }
-    return eval(compile(tree, "<compute>", "eval"),
-                {"__builtins__": {}}, ns)
+
+    deadline = time.monotonic() + _COMPUTE_DEADLINE_S
+
+    def _ev(node: ast.AST) -> Any:
+        if time.monotonic() > deadline:
+            msg = f"compute deadline exceeded in {expr!r}"
+            raise ValueError(msg)
+        if isinstance(node, ast.Constant):
+            return _cap_result(node.value, expr)
+        if isinstance(node, ast.Name):
+            if node.id not in ns:
+                # NameError, matching the eval-based predecessor's
+                # contract: bare names resolve only against bindings +
+                # helpers, never builtins.
+                msg = f"name {node.id!r} is not defined in {expr!r}"
+                raise NameError(msg)
+            return ns[node.id]
+        if isinstance(node, ast.UnaryOp):
+            operand = _ev(node.operand)
+            if isinstance(node.op, ast.USub):
+                return _cap_result(-operand, expr)
+            if isinstance(node.op, ast.Invert):
+                return _cap_result(~operand, expr)
+            msg = f"disallowed unary op in {expr!r}"
+            raise ValueError(msg)
+        if isinstance(node, ast.BinOp):
+            left = _ev(node.left)
+            right = _ev(node.right)
+            return _cap_result(_binop(left, node.op, right), expr)
+        if isinstance(node, ast.Subscript):
+            value = _ev(node.value)
+            sl = node.slice
+            # py3.8 wrapped plain indices in ast.Index; 3.9+ inlines.
+            if type(sl).__name__ == "Index":
+                sl = sl.value  # type: ignore[attr-defined]
+            if isinstance(sl, ast.Slice):
+                lower = _ev(sl.lower) if sl.lower is not None else None
+                upper = _ev(sl.upper) if sl.upper is not None else None
+                step = _ev(sl.step) if sl.step is not None else None
+                return _cap_result(value[lower:upper:step], expr)
+            return _cap_result(value[_ev(sl)], expr)
+        if isinstance(node, ast.Call):
+            fname = getattr(node.func, "id", None)
+            fn = ns.get(fname)
+            if not callable(fn):
+                msg = f"disallowed call: {fname!r} in {expr!r}"
+                raise ValueError(msg)
+            args = [_ev(a) for a in node.args]
+            if node.keywords:
+                msg = f"keyword arguments not allowed in {expr!r}"
+                raise ValueError(msg)
+            return _cap_result(fn(*args), expr)
+        msg = f"disallowed node: {type(node).__name__} in {expr!r}"
+        raise ValueError(msg)
+
+    def _binop(left: Any, op: ast.AST, right: Any) -> Any:
+        both_int = (
+            isinstance(left, int) and not isinstance(left, bool)
+            and isinstance(right, int) and not isinstance(right, bool)
+        )
+        if isinstance(op, ast.Mult):
+            # Pre-check: never materialise an over-budget product.
+            if both_int and (
+                left.bit_length() + right.bit_length()
+                > _INT_BIT_CEILING + 1
+            ):
+                msg = f"compute product exceeds bit budget in {expr!r}"
+                raise ValueError(msg)
+            if isinstance(left, (bytes, str)) or isinstance(
+                    right, (bytes, str)):
+                seq, count = (
+                    (left, right)
+                    if isinstance(left, (bytes, str)) else (right, left)
+                )
+                if isinstance(count, int) and len(seq) * max(count, 0) \
+                        > _INT_BIT_CEILING // 8:
+                    msg = (
+                        f"compute repetition exceeds byte budget in "
+                        f"{expr!r}"
+                    )
+                    raise ValueError(msg)
+            return left * right
+        if isinstance(op, ast.LShift):
+            # Pre-check: `1 << leak` with a large in-budget VALUE as
+            # the shift count would materialise a gigabit int.
+            if both_int and (
+                right > _INT_BIT_CEILING
+                or left.bit_length() + max(right, 0) > _INT_BIT_CEILING
+            ):
+                msg = f"compute shift exceeds bit budget in {expr!r}"
+                raise ValueError(msg)
+            return left << right
+        if isinstance(op, ast.Add):
+            return left + right
+        if isinstance(op, ast.Sub):
+            return left - right
+        if isinstance(op, ast.FloorDiv):
+            return left // right
+        if isinstance(op, ast.Mod):
+            return left % right
+        if isinstance(op, ast.BitAnd):
+            return left & right
+        if isinstance(op, ast.BitOr):
+            return left | right
+        if isinstance(op, ast.BitXor):
+            return left ^ right
+        if isinstance(op, ast.RShift):
+            return left >> right
+        msg = f"disallowed operator {type(op).__name__} in {expr!r}"
+        raise ValueError(msg)
+
+    return _cap_result(_ev(tree.body), expr)
 
 
 def _parse_bytes_to_int(raw: bytes) -> int | None:
     text = raw.decode("utf-8", errors="replace")
     m = re.search(r"0x([0-9a-fA-F]+)", text)
     if m:
-        try:
-            return int(m.group(1), 16)
-        except ValueError:
-            pass
+        digits = m.group(1)
+        # Hex parsing is EXEMPT from CPython's int_max_str_digits
+        # guard, so a hostile target printing "0x" + megabytes of hex
+        # used to mint a multi-megabit int binding in one call. Budget
+        # the digit count; an over-budget run is treated as no hex
+        # match (never silently truncated to a wrong-but-plausible
+        # value) and the decimal branch below still applies (bounded
+        # by int_max_str_digits).
+        if len(digits) <= _MAX_HEX_DIGITS:
+            try:
+                return int(digits, 16)
+            except ValueError:
+                pass
     m = re.search(r"(-?\d{2,})", text)
     if m:
         try:

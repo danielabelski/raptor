@@ -44,6 +44,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.json import dumps_display
+
 LABEL_MUST_NOT_SUPPRESS = "must_not_suppress"
 LABEL_MAY_SUPPRESS = "may_suppress"
 
@@ -2501,7 +2503,7 @@ def _format_markdown(report: PrecisionReport) -> str:
         f"- corpus: {report.corpus_name}",
         f"- fixtures: {report.n_fixtures} "
         f"({report.n_must_not} must-not-suppress)",
-        f"- verdicts: {json.dumps(report.verdict_counts, sort_keys=True)}",
+        f"- verdicts: {dumps_display(report.verdict_counts, indent=None, sort_keys=True)}",
         "- toolchain: "
         + ", ".join(f"{k}={v}" for k, v in sorted(report.toolchain.items())),
         "",
@@ -2533,7 +2535,7 @@ def _format_markdown(report: PrecisionReport) -> str:
     for cls in sorted(report.cross_tab):
         lines.append(f"### {cls}")
         for lbl in sorted(report.cross_tab[cls]):
-            row = json.dumps(report.cross_tab[cls][lbl], sort_keys=True)
+            row = dumps_display(report.cross_tab[cls][lbl], indent=None, sort_keys=True)
             lines.append(f"- {lbl}: {row}")
     lines.append("")
     return "\n".join(lines)

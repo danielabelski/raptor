@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.security.prompt_output_sanitise import sanitise_code, sanitise_string
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ def _format_value(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, (dict, list)):
-        return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        return dumps_display(value, sort_keys=True)
     return str(value)
 
 

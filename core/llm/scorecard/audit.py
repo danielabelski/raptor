@@ -25,12 +25,12 @@ See the calibrated-aggregation arc design for context.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+from core.json import dumps_display
 from core.llm.scorecard.scorecard import (
     ALL_EVENT_TYPES,
     EventType,
@@ -332,7 +332,7 @@ def render_markdown(report: AuditReport) -> str:
 
 def render_json(report: AuditReport) -> str:
     payload = asdict(report)
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return dumps_display(payload, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------

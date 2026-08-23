@@ -463,7 +463,6 @@ def generate_sample_config() -> str:
     the actual defaults. Includes a commented example showing the
     api_key field format. Called by migration guidance and CLI help.
     """
-    import json
 
     from .model_data import PROVIDER_DEFAULT_MODELS
 
@@ -471,7 +470,9 @@ def generate_sample_config() -> str:
     for provider, model in PROVIDER_DEFAULT_MODELS.items():
         models.append({"provider": provider, "model": model})
 
-    raw = json.dumps({"models": models}, indent=2)
+    from core.json import dumps_display
+
+    raw = dumps_display({"models": models})
 
     # Add a commented example showing how to add an API key.
     # Our JSON parser strips // comments, so this is safe to copy-paste.

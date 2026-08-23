@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+from core.json import dumps_display
 from core.logging import get_logger
 
 from .cc_adapter import strip_json_fences
@@ -771,7 +772,7 @@ class LLMProvider(ABC):
         ``generate`` (providers without per-request timeout support
         ignore it there).
         """
-        schema_json = json.dumps(schema, indent=2)
+        schema_json = dumps_display(schema)
         schema_block = (
             f"\n\n## Output format\n"
             f"Respond with JSON matching this schema:\n"
@@ -924,7 +925,7 @@ class LLMProvider(ABC):
             "Available tools:",
         ]
         for t in tools:
-            schema_json = json.dumps(t.input_schema, indent=2)
+            schema_json = dumps_display(t.input_schema)
             lines.append(f"- name: {t.name}")
             lines.append(f"  description: {t.description}")
             lines.append(f"  input_schema: {schema_json}")
@@ -945,7 +946,7 @@ class LLMProvider(ABC):
                 elif isinstance(block, ToolCall):
                     parts.append(
                         f"assistant called tool {block.name!r} "
-                        f"with input {json.dumps(block.input)}"
+                        f"with input {dumps_display(block.input, indent=None)}"
                     )
                 elif isinstance(block, ToolResult):
                     err = " [ERROR]" if block.is_error else ""
@@ -4668,7 +4669,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         for t in tools:
             lines.append(f"- {t.name}: {t.description}")
             lines.append(
-                f"  input_schema: {json.dumps(t.input_schema)}"
+                f"  input_schema: {dumps_display(t.input_schema, indent=None)}"
             )
         if extra:
             lines.extend(["", extra])
@@ -4687,7 +4688,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
                 elif isinstance(block, ToolCall):
                     parts.append(
                         f"assistant called tool {block.name!r} with "
-                        f"input {json.dumps(block.input)}"
+                        f"input {dumps_display(block.input, indent=None)}"
                     )
                 elif isinstance(block, ToolResult):
                     err = " [error]" if block.is_error else ""
@@ -4733,7 +4734,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             # callers can see what went wrong rather than silently
             # dropping it.
             return TurnResponse(
-                content=[TextBlock(text=json.dumps(result))],
+                content=[TextBlock(text=dumps_display(result, indent=None))],
                 stop_reason=StopReason.COMPLETE,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,

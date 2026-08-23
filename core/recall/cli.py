@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import dumps_display, load_json
 from core.recall.manifest import PROFILES, ManifestError, load_manifest
 from core.recall.matcher import clean_region_hits, match_findings
 from core.recall.cvefix_manifest import main as cvefix_manifest_main
@@ -308,7 +308,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
     delta = compare_reports(base, new)
-    print(json.dumps(delta, indent=2))
+    print(dumps_display(delta))
     return 0
 
 

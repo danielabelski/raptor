@@ -20,6 +20,7 @@ from pathlib import Path
 from shlex import quote
 from typing import Any, ClassVar
 
+from core.json import dumps_display
 from core.logging import get_logger
 from core.sandbox import SandboxSetupError
 from core.sandbox import run as _sandbox_run
@@ -1735,7 +1736,6 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
 def main() -> None:
     """CLI entry point for testing."""
     import argparse
-    import json
 
     parser = argparse.ArgumentParser(description="Detect build systems")
     parser.add_argument("--repo", required=True, help="Repository path")
@@ -1764,7 +1764,7 @@ def main() -> None:
             "env_vars": build_system.env_vars,
             "confidence": build_system.confidence,
         }
-        print(json.dumps(output, indent=2))
+        print(dumps_display(output))
     else:
         print(f"\n{'=' * 70}")
         print(f"BUILD SYSTEM DETECTED: {build_system.type.upper()}")

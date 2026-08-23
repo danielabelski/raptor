@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from core.json import dumps_display
+
 from .scorecard import (
     ALL_EVENT_TYPES,
     EventType,
@@ -477,7 +479,6 @@ def cmd_list(args: argparse.Namespace) -> int:
     event_type = getattr(args, "event_type", EventType.CHEAP_SHORT_CIRCUIT)
     stats = _sort_stats(stats, sort_key=sort_key, event_type=event_type)
     if getattr(args, "json", False):
-        import json as _json
         cells = []
         for s in stats:
             d = _stats_to_json(s)
@@ -490,7 +491,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         if hl:
             out["freshness_half_life_days"] = hl
             out["freshness_impact"] = sc.measure_freshness_impact(hl)
-        print(_json.dumps(out, indent=2, default=str))
+        print(dumps_display(out))
         return 0
     print(_render_table(stats, event_type=event_type, drift_map=drift_map))
     if hl:
@@ -566,7 +567,6 @@ def cmd_summary(args: argparse.Namespace) -> int:
     most_used = max(calls_per_model.items(), key=lambda x: x[1], default=(None, 0))
 
     if getattr(args, "json", False):
-        import json as _json
         out = {
             "cells_total": len(stats),
             "models_total": len(models),
@@ -586,7 +586,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
             ),
             "recent_cells_7d": recent,
         }
-        print(_json.dumps(out, indent=2, default=str))
+        print(dumps_display(out))
         return 0
 
     print(f"scorecard summary ({args.path}):")
@@ -652,7 +652,6 @@ def cmd_recommend(args: argparse.Namespace) -> int:
     hl = getattr(args, "freshness_half_life_days", None)
 
     if getattr(args, "json", False):
-        import json as _json
         def _r(row):
             m, ub, cpc, _pol, n = row
             return {"model": m, "max_miss_pct": ub, "cost_per_call": cpc, "n": n}
@@ -669,7 +668,7 @@ def cmd_recommend(args: argparse.Namespace) -> int:
         }
         if not sc_rows and fall_through:
             out["least_bad"] = {"model": fall_through[0][0]}
-        print(_json.dumps(out, indent=2, default=str))
+        print(dumps_display(out))
         return 0
 
     # Freshness banner — when an operator passes --freshness, surface that the
@@ -741,12 +740,11 @@ def cmd_chain_closure(args: argparse.Namespace) -> int:
             f"Fire /exploit with --scorecard <path> to populate."
         )
         if getattr(args, "json", False):
-            import json as _json
-            print(_json.dumps({
+            print(dumps_display({
                 "decision_class": target_dc,
                 "candidates": [],
                 "message": msg,
-            }, indent=2))
+            }))
         else:
             print(msg, file=sys.stderr)
         return 0
@@ -802,12 +800,11 @@ def cmd_chain_closure(args: argparse.Namespace) -> int:
         return None
 
     if getattr(args, "json", False):
-        import json as _json
-        print(_json.dumps({
+        print(dumps_display({
             "decision_class": target_dc,
             "candidates": rows,
             "recommendation": _recommendation(),
-        }, indent=2))
+        }))
         return 0
 
     print(f"chain-closure ranking for {target_dc}:")
@@ -829,7 +826,6 @@ def cmd_compare(args: argparse.Namespace) -> int:
     sc = ModelScorecard(args.path)
     all_stats = sc.get_stats()
     if getattr(args, "json", False):
-        import json as _json
         by_dc_a = {s.decision_class: s for s in all_stats if s.model == args.model_a}
         by_dc_b = {s.decision_class: s for s in all_stats if s.model == args.model_b}
         out = {
@@ -843,7 +839,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 for dc in sorted(set(by_dc_a) & set(by_dc_b))
             ],
         }
-        print(_json.dumps(out, indent=2, default=str))
+        print(dumps_display(out))
         return 0
     print(_render_compare(
         all_stats, all_stats,

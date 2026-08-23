@@ -5,7 +5,6 @@ No Claude Code, no LLM — pure Python.
 """
 
 import argparse
-import json
 import os
 import stat as _stat
 import sys
@@ -13,6 +12,7 @@ from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.json import dumps_display
 from core.run.output import unique_run_suffix
 
 from .oplock import OpLockContention, project_op_lock
@@ -139,7 +139,7 @@ def _emit_json_payload(payload) -> None:
     payload, indent=2, sort_keys=True))`` — pipe-friendly, one
     trailing newline.
     """
-    data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    data = dumps_display(payload, sort_keys=True).encode("utf-8")
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.write(b"\n")
 
@@ -2273,7 +2273,6 @@ def _print_diff(result) -> None:
 
 def _do_correlate(project, json_out: bool=False) -> None:
     """Cross-run finding correlation — action-oriented output."""
-    import json
 
     from .correlate import correlate_project
 
@@ -2281,7 +2280,7 @@ def _do_correlate(project, json_out: bool=False) -> None:
     summary = result["summary"]
 
     if json_out:
-        print(json.dumps(result, indent=2))
+        print(dumps_display(result))
         return
 
     print(f"Project: {project.name}")

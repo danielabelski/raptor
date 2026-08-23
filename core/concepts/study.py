@@ -20,6 +20,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.json import dumps_display
 from core.llm.coerce import structured_result
 from core.paths import confine
 
@@ -2514,12 +2515,11 @@ def _run_one_batch(
         sorted(result.keys()), n_c, n_i, n_ct, n_sm,
     )
     if n_c == 0 and n_i == 0 and n_ct == 0:
-        import json as _json
         logger.warning(
             "Phase 2 batch %d/%d: LLM returned empty result. "
             "Raw (first 2000 chars): %s",
             idx + 1, total,
-            _json.dumps(result, indent=None)[:2000],
+            dumps_display(result, indent=None)[:2000],
         )
 
     src_root = Path(source_root) if source_root else None

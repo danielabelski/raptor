@@ -69,7 +69,6 @@ batch shares the same prompt prefix so cache reads soften the cost.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import secrets
@@ -79,6 +78,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Any, Callable
 
+from core.json import dumps_display
 from core.llm.structured_call import unwrap_structured_response
 from core.security.log_sanitisation import escape_nonprintable
 
@@ -237,7 +237,7 @@ def _default_render(item: Any) -> str:
     if isinstance(item, str):
         return item
     try:
-        return json.dumps(item, sort_keys=True, default=str)
+        return dumps_display(item, indent=None, sort_keys=True)
     except (TypeError, ValueError):
         return str(item)
 

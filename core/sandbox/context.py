@@ -5085,27 +5085,87 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
         kwargs["exclude_tmp_baseline"] = True
     # fd 1/2 pass-through: the stdin/setsid defences above plug fd 0
     # and /dev/tty, but when the caller doesn't capture, the child
-    # inherits the operator's terminal on fd 1/2 — and a PTY slave is
-    # opened O_RDWR, which setsid() does NOT revoke. A target that
-    # read()s its OWN stdout/stderr taps the operator's keystrokes:
-    # the exact channel the surrounding defences exist to close. Hand
-    # the child a WRITE-ONLY reopen of the same terminal instead
-    # (output identical; reads fail EBADF).
+    # inherits the operator's fd 1/2 with whatever access mode the
+    # PARENT opened them — and read rights ride the descriptor past
+    # every path-based layer. Two readable shapes exist:
+    #   * a PTY slave is opened O_RDWR, which setsid() does NOT
+    #     revoke — a target that read()s its OWN stdout/stderr taps
+    #     the operator's keystrokes;
+    #   * a non-tty O_RDWR descriptor (regular file opened rw, a
+    #     socket, an rw FIFO) hands the child read access to content
+    #     the sandbox policy never granted.
+    # Hand the child a WRITE-ONLY reopen instead (output identical;
+    # reads fail EBADF). ttys reopen via ttyname; other reopenable
+    # objects (regular files, FIFOs) via the fd's /proc//dev magic
+    # link with the original O_APPEND preserved. Sockets have no
+    # write-only reopen — plug with DEVNULL and tell the operator to
+    # capture instead (discarding output is strictly safer than
+    # granting a read channel to the operator's socket peer).
+    # Write-only pass-throughs (the normal shell-redirect shape) are
+    # untouched.
     _wo_fds: list = []
     if not kwargs.get("capture_output"):
+        import fcntl as _fcntl
+        import stat as _stat
         for _name, _fd in (("stdout", 1), ("stderr", 2)):
             if _name in kwargs:
                 continue
             try:
-                if not os.isatty(_fd):
-                    continue
-                _wfd = os.open(os.ttyname(_fd),
-                               os.O_WRONLY | os.O_NOCTTY)
+                _is_tty = os.isatty(_fd)
+                if not _is_tty:
+                    _mode = os.fstat(_fd).st_mode
+                    try:
+                        _acc = _fcntl.fcntl(
+                            _fd, _fcntl.F_GETFL) & os.O_ACCMODE
+                    except OSError:
+                        _acc = os.O_RDWR  # unknown → treat as readable
+                    if _acc == os.O_WRONLY:
+                        continue  # not readable — safe to inherit
+                    if _stat.S_ISSOCK(_mode):
+                        logger.warning(
+                            "run_untrusted: %s is a readable socket "
+                            "descriptor — plugging with /dev/null "
+                            "(no write-only reopen exists for "
+                            "sockets). Pass capture_output=True or "
+                            "an explicit %s= pipe to keep the "
+                            "output.", _name, _name,
+                        )
+                        kwargs[_name] = subprocess.DEVNULL
+                        continue
+                    _flags = os.O_WRONLY | os.O_NOCTTY
+                    try:
+                        if _fcntl.fcntl(_fd, _fcntl.F_GETFL) \
+                                & os.O_APPEND:
+                            _flags |= os.O_APPEND
+                    except OSError:
+                        pass
+                    _fd_link = (
+                        f"/proc/self/fd/{_fd}"
+                        if sys.platform != "darwin"
+                        else f"/dev/fd/{_fd}"
+                    )
+                    _wfd = os.open(_fd_link, _flags)
+                    if _stat.S_ISREG(_mode) and not (
+                            _flags & os.O_APPEND):
+                        # A fresh open starts at offset 0; carry the
+                        # inherited stream position so the child
+                        # appends after prior parent output instead
+                        # of clobbering it.
+                        try:
+                            os.lseek(_wfd,
+                                     os.lseek(_fd, 0, os.SEEK_CUR),
+                                     os.SEEK_SET)
+                        except OSError:
+                            pass
+                else:
+                    _wfd = os.open(os.ttyname(_fd),
+                                   os.O_WRONLY | os.O_NOCTTY)
             except OSError as _tty_exc:
                 logger.warning(
-                    "run_untrusted: could not reopen the %s tty "
-                    "write-only for the child (%s) — the inherited "
-                    "descriptor may be readable.", _name, _tty_exc,
+                    "run_untrusted: could not reopen the %s "
+                    "descriptor write-only for the child (%s) — the "
+                    "inherited descriptor may be readable.",
+                    _name, _tty_exc,
                 )
                 continue
             kwargs[_name] = _wfd

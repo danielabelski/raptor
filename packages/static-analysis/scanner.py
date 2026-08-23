@@ -28,6 +28,7 @@ from pathlib import Path
 # packages/static-analysis/scanner.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
+from core.json import dumps_display
 from core.config import RaptorConfig
 from core.git import clone_repository
 from core.hash import sha256_bytes, sha256_tree
@@ -3497,7 +3498,7 @@ def main() -> None:
             "metrics": metrics,
             "duration": duration,
         }
-        print(json.dumps(result, indent=2))
+        print(dumps_display(result, indent=2))
         # Aggregate any tracer-emitted .sandbox-denials.jsonl into
         # sandbox-summary.json. The lifecycle hook lives in raptor.py
         # / raptor_agentic.py for top-level invocations — neither

@@ -23,7 +23,6 @@ Run from the repo root:
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from dataclasses import asdict
@@ -39,6 +38,7 @@ sys.path.insert(0, str(REPO))
 # Hard-SET (never setdefault): children of this tree must import this
 # tree even when the launching shell exported RAPTOR_DIR for another
 # checkout (see core.config.pin_raptor_dir).
+from core.json import dumps_display
 from core.config import pin_raptor_dir_in_environ
 
 pin_raptor_dir_in_environ()
@@ -121,7 +121,7 @@ def _show(v) -> None:
     print(f"  confidence: {d['confidence']:.2f}")
     print(f"  used_llm:   {d['used_llm']}")
     print(f"  cost_usd:   ${d['cost_usd']:.4f}")
-    print(f"  signals:    {json.dumps(d['signals'], default=str)}")
+    print(f"  signals:    {dumps_display(d['signals'], indent=None)}")
     print(f"  reasoning:  {d['reasoning'][:200]}")
     if d.get("llm_error"):
         print(f"  llm_error:  {d['llm_error']}")

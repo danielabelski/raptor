@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json import dumps_display
+
 from .languages import detect_engine
 from .library import RuleLibrary
 from .models import CheckerSynthesisResult, SeedBug
@@ -432,5 +434,5 @@ def cli_main(argv: list[str] | None = None) -> int:
         library_dir=Path(args.library_dir) if args.library_dir else None,
         promote=not args.no_promote,
     )
-    print(json.dumps(report.to_dict(), indent=2))
+    print(dumps_display(report.to_dict(), indent=2))
     return 0

@@ -34,6 +34,7 @@ from typing import Any, TYPE_CHECKING
 # positional-walk fallback that silently imports a different checkout.
 sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
+from core.json import dumps_display
 from core.config import RaptorConfig
 from core.json import load_json, save_json
 from core.run.metadata import complete_run, fail_run, start_run
@@ -676,7 +677,7 @@ def _run_harness(args: argparse.Namespace) -> int:
         print(f"raptor-binary: harness failed: {exc}", file=sys.stderr)
         return 2
     if args.json:
-        print(json.dumps(spec, separators=(",", ":"), sort_keys=True))
+        print(dumps_display(spec, indent=None, sort_keys=True))
         return 0
     print("Mode: harness")
     print(f"Status: {spec['status']}")
@@ -724,7 +725,7 @@ def _print_file(run_dir: str, filename: str, *, json_output: bool = False) -> in
     except json.JSONDecodeError as exc:
         print(f"raptor-binary: invalid JSON in {path}: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    print(dumps_display(payload, indent=None, sort_keys=True))
     return 0
 
 

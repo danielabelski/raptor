@@ -26,6 +26,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 from packages.binary_analysis.graph_store import (  # noqa: E402
     graph_path_for_run,
@@ -63,7 +64,7 @@ def main() -> int:
     else:
         payload = graph_summary(db_path)
     if args.json or args.edges or args.evidence:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(dumps_display(payload, indent=2, sort_keys=True))
         return 0
     if not payload.get("exists"):
         print(f"✗ Binary graph: not found ({db_path})", file=sys.stderr)

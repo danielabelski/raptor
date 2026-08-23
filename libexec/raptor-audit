@@ -44,6 +44,7 @@ if not (os.environ.get("CLAUDECODE")
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 # Hard-SET (never setdefault) so an ambient RAPTOR_DIR exported by the
 # launching shell for a DIFFERENT checkout cannot steer this run's
@@ -221,7 +222,7 @@ def cmd_context(args: argparse.Namespace) -> int:
         })
 
     from core.security.redaction import redact_secrets
-    raw = json.dumps(ctx, indent=2, default=str) if args.json else format_context_for_prompt(ctx)
+    raw = dumps_display(ctx) if args.json else format_context_for_prompt(ctx)
     sanitised = redact_secrets(raw)
     sys.stdout.write(sanitised)
     sys.stdout.write("\n")
@@ -842,7 +843,7 @@ def cmd_rules(args: argparse.Namespace) -> int:
         if "error" in result:
             print(f"error: {result['error']}", file=sys.stderr)
             return 1
-        print(json.dumps(result, indent=2))
+        print(dumps_display(result, indent=2))
         return 0
 
     else:
@@ -997,7 +998,7 @@ def cmd_ast(args: argparse.Namespace) -> int:
         "indirection": sorted(graph.indirection),
     }
 
-    print(json.dumps(result, indent=2))
+    print(dumps_display(result, indent=2))
     return 0
 
 

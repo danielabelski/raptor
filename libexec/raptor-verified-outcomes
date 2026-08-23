@@ -33,6 +33,7 @@ import json  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -61,7 +62,7 @@ def main(argv=None) -> int:
     outcomes = collect_outcomes(out_dir, project_root=project_root)
 
     if args.json:
-        json.dump([o.to_dict() for o in outcomes], sys.stdout, indent=2)
+        sys.stdout.write(dumps_display([o.to_dict() for o in outcomes]))
         sys.stdout.write("\n")
     else:
         sys.stdout.write(render_outcome_summary(outcomes))

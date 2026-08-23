@@ -16,6 +16,7 @@ from typing import ClassVar
 # packages/codeql/language_detector.py -> repo root
 sys.path.insert(0, str(Path(__file__).parents[2]))
 
+from core.json import dumps_display
 from core.logging import get_logger
 
 logger = get_logger()
@@ -647,7 +648,6 @@ class LanguageDetector:
 def main() -> None:
     """CLI entry point for testing."""
     import argparse
-    import json
 
     parser = argparse.ArgumentParser(description="Detect languages in repository")
     parser.add_argument("--repo", required=True, help="Repository path")
@@ -669,7 +669,7 @@ def main() -> None:
             }
             for lang, info in supported.items()
         }
-        print(json.dumps(output, indent=2))
+        print(dumps_display(output, indent=2))
     else:
         print(f"\n{'=' * 70}")
         print("DETECTED LANGUAGES (CodeQL-supported only)")

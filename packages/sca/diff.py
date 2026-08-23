@@ -33,6 +33,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.security.log_sanitisation import escape_nonprintable
 
 from .findings import severity_rank
@@ -99,7 +100,7 @@ def main(argv: Sequence[str]) -> int:
     )
 
     if args.json:
-        out_text = json.dumps(_delta_to_dict(delta), indent=2)
+        out_text = dumps_display(_delta_to_dict(delta), indent=2)
     elif args.pr_comment:
         out_text = render_pr_comment(delta, repo_label=args.repo_label)
     else:

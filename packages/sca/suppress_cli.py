@@ -35,6 +35,8 @@ from .suppressions import (
 )
 from typing import TYPE_CHECKING
 
+from core.json import dumps_display
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -96,7 +98,7 @@ def _cmd_list(target: Path, *, emit_json: bool) -> int:
         return 1
     entries = load(suppress_path)
     if emit_json:
-        print(json.dumps(
+        print(dumps_display(
             [_entry_to_dict(e) for e in entries], indent=2,
         ))
         return 0

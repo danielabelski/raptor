@@ -21,13 +21,14 @@ scan + bump pipelines use.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 
 from . import SCA_CACHE_ROOT
 from typing import TYPE_CHECKING
+
+from core.json import dumps_display
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -209,7 +210,7 @@ def _emit_json(payload, out_path: str | None) -> int:
     success, 3 on I/O failure (matches the CLI's infra-failure
     exit code so CI gates can differentiate write errors from
     drift / no-drift)."""
-    text = json.dumps(payload, sort_keys=True, indent=2)
+    text = dumps_display(payload, sort_keys=True)
     if not out_path:
         print(text)
         return 0

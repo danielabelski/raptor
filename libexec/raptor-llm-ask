@@ -37,6 +37,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 
 def main() -> int:
@@ -187,9 +188,9 @@ def main() -> int:
                 **kwargs,
             )
             if args.raw:
-                print(json.dumps(response.result))
+                print(dumps_display(response.result, indent=None))
             else:
-                print(json.dumps(response.result, indent=2))
+                print(dumps_display(response.result, indent=2))
             if args.debug:
                 print(f"\n--- model={response.model} "
                       f"cost=${response.cost:.4f} ---",

@@ -30,6 +30,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 
 def main() -> int:
@@ -163,7 +164,7 @@ def main() -> int:
         )
 
     if args.json_output:
-        print(json.dumps(result.to_dict(), indent=2))
+        print(dumps_display(result.to_dict(), indent=2))
         return 0
 
     if result.rule is None:

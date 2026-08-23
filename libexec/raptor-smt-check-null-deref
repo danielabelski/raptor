@@ -45,6 +45,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 
 from packages.exploit_feasibility.smt_verbs import check_null_deref  # noqa: E402
 
@@ -72,7 +73,7 @@ def main() -> int:
         print(f"raptor-smt-check-null-deref: {e}", file=sys.stderr)
         return 2
 
-    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write(dumps_display(result))
     sys.stdout.write("\n")
     return 0
 

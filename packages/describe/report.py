@@ -40,11 +40,11 @@ build (separate arc).
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.json import dumps_display
 from packages.describe.recommendations import recommend_next
 from packages.describe.target_shape import TargetShape, infer_target_shape
 from packages.describe.tool_readiness import ToolCheck, check_tool_readiness
@@ -475,7 +475,7 @@ def format_json(report: DescribeReport) -> str:
             for r in recommend_next(s)
         ],
     }
-    return json.dumps(doc, indent=2)
+    return dumps_display(doc, indent=2)
 
 
 def _short_int(n: int) -> str:

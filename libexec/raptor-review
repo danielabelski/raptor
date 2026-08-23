@@ -52,6 +52,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_display  # noqa: E402
 from core.security.prompt_output_sanitise import sanitise_string  # noqa: E402
 
 
@@ -285,7 +286,7 @@ def _show_function(file, function, cm, entries, index, ann_dir, args, out_dir=No
         journal_entry = index[key]
 
     if getattr(args, "raw", False) and journal_entry:
-        print(json.dumps(journal_entry.to_dict(), indent=2))
+        print(dumps_display(journal_entry.to_dict(), indent=2))
         return
 
     header = f"─── {_line(file)} :: {_line(function)} "
@@ -407,7 +408,7 @@ def cmd_findings(args):
             all_findings[key] = e
 
     if getattr(args, "raw", False):
-        print(json.dumps([e.to_dict() for e in all_findings.values()], indent=2))
+        print(dumps_display([e.to_dict() for e in all_findings.values()], indent=2))
         return
 
     if not all_findings:
@@ -449,7 +450,7 @@ def cmd_gaps(args):
         return
 
     if getattr(args, "raw", False):
-        print(json.dumps(gaps, indent=2))
+        print(dumps_display(gaps, indent=2))
         return
 
     print(f"  {len(gaps)} function(s) need review")
@@ -538,7 +539,7 @@ def cmd_history(args):
         return
 
     if getattr(args, "raw", False):
-        print(json.dumps([e.to_dict() for e in entries], indent=2))
+        print(dumps_display([e.to_dict() for e in entries], indent=2))
         return
 
     for e in entries:
@@ -752,7 +753,7 @@ def cmd_edges(args):
         print("edge-obligations.json unreadable.")
         return
     if getattr(args, "raw", False):
-        print(json.dumps(ob, indent=2))
+        print(dumps_display(ob, indent=2))
         return
 
     reviewed = {}
@@ -865,7 +866,7 @@ def cmd_diff(args):
         elif prior.verdict != entry.verdict:
             changed.append((prior, entry))
     if getattr(args, "raw", False):
-        print(json.dumps({
+        print(dumps_display({
             "run_a": run_a.name, "run_b": run_b.name,
             "changed": [
                 {"file": e.file, "function": e.function,

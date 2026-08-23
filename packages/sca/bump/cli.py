@@ -23,11 +23,12 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from core.json import dumps_display
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -200,7 +201,7 @@ def main(argv: Sequence[str]) -> int:
         return 3
 
     if args.emit_json:
-        sys.stdout.write(json.dumps(_report_to_dict(report), indent=2))
+        sys.stdout.write(dumps_display(_report_to_dict(report), indent=2))
         sys.stdout.write("\n")
     elif args.pr_comment:
         from .pr_comment import render_pr_comment as _render_pr

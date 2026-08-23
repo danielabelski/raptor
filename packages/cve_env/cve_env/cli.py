@@ -21,6 +21,8 @@ from cve_env.config import AGENTIC_AUDIT_ROOT, VERSION_ASSERTION_CMD_PATTERN
 from cve_env.models import CveRecord, HostInfo, derive_build_method
 from cve_env.tools.arch import detect_host_arch
 
+from core.json import dumps_display
+
 # Validate CVE-ID format BEFORE invoking build()/LLM. Stops bogus IDs
 # (lowercase, missing dash, wrong year width, etc.) at argparse time
 # instead of wasting an SDK round-trip on certain failure.
@@ -163,7 +165,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         # this provision created (label-scoped).
         "down_token": env.provision_id,
     }
-    print(json.dumps(payload, indent=2))
+    print(dumps_display(payload, indent=2))
     if endpoint:
         print(f"up: environment running at {endpoint[0]}:{endpoint[1]} — "
               f"tear down with: cve-env down {env.provision_id}",
@@ -203,7 +205,7 @@ def _cmd_ps(args: argparse.Namespace) -> int:
         rows.append({"down_token": token, "name": name,
                      "endpoint": endpoint, "image": image,
                      "running_for": age.strip()})
-    print(json.dumps(rows, indent=2))
+    print(dumps_display(rows, indent=2))
     print(f"ps: {len(rows)} live provision(s)"
           + (" — tear down with: cve-env down <down_token>" if rows
              else ""), file=sys.stderr)
@@ -222,7 +224,7 @@ def _cmd_down(args: argparse.Namespace) -> int:
 
     removed = remove_labeled_containers(OWNER_LABEL, args.token)
     remove_labeled_images(OWNER_LABEL, args.token)
-    print(json.dumps({"token": args.token,
+    print(dumps_display({"token": args.token,
                       "removed_containers": removed}))
     return 0
 

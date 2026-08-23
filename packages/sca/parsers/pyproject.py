@@ -28,7 +28,7 @@ import sys
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 from .requirements import _spec_bounds
 
 if TYPE_CHECKING:
@@ -169,14 +169,13 @@ def _load(path: Path) -> dict[str, Any] | None:
             path,
         )
         return None
-    try:
-        text = path.read_bytes()
-    except OSError as e:
-        logger.warning("sca.parsers.pyproject: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return None
 
     try:
-        return _tomllib.loads(text.decode("utf-8", errors="replace"))
+        return _tomllib.loads(text)
     except _tomllib.TOMLDecodeError as e:
         logger.warning("sca.parsers.pyproject: TOML parse failed for %s: %s", path, e)
         return None

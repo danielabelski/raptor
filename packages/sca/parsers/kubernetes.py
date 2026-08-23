@@ -42,7 +42,7 @@ from core.oci.image_ref import split_image_ref as _split_image_ref
 
 from ..models import Confidence, Dependency, PinStyle
 from ..models import classify_pin_style as _classify_pin_style
-from . import register
+from . import _safe_read, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -72,12 +72,9 @@ _WORKLOAD_KINDS = {
 
 @register(predicate=lambda p: _is_k8s_manifest(p))
 def parse(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.kubernetes: read failed for %s: %s", path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         import yaml                 # type: ignore[import-untyped]

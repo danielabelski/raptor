@@ -28,7 +28,7 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -175,10 +175,9 @@ def _load_root(path: Path):
             "sca.parsers.pom: skipping %s — 'defusedxml' not installed", path,
         )
         return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.pom: read failed for %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return None
 
     try:

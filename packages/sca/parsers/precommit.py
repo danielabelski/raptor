@@ -56,7 +56,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +75,9 @@ _GITHUB_FALLBACK_ECOSYSTEM = "GitHub"
 
 @register(filenames=[".pre-commit-config.yaml", ".pre-commit-config.yml"])
 def parse(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.precommit: read failed for %s: %s", path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         import yaml                 # type: ignore[import-untyped]

@@ -55,7 +55,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +71,9 @@ _KEYVAL_RE = re.compile(r"^\s*([A-Za-z0-9_\-]+)\s*=\s*(.+?)\s*$")
 
 @register(filenames=[".gitmodules"])
 def parse(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.gitmodules: read failed for %s: %s", path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     sections = _parse_sections(text)
@@ -201,10 +198,10 @@ def _resolve_submodule_sha(
         return None
     if not candidate.is_file():
         return None
-    try:
-        contents = candidate.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+    contents = _safe_read.read_bounded(candidate, follow_symlinks=False)
+    if contents is None:
         return None
+    contents = contents.strip()
     # HEAD may carry a direct SHA or a ``ref: refs/heads/<branch>``.
     if contents.startswith("ref:"):
         ref = contents[4:].strip()
@@ -219,13 +216,12 @@ def _resolve_submodule_sha(
             return None
         if not ref_path.is_file():
             return None
-        try:
-            ref_contents = ref_path.read_text(
-                encoding="utf-8", errors="replace",
-            ).strip()
-        except OSError:
+        ref_contents = _safe_read.read_bounded(
+            ref_path, follow_symlinks=False,
+        )
+        if ref_contents is None:
             return None
-        return _validate_sha(ref_contents)
+        return _validate_sha(ref_contents.strip())
     return _validate_sha(contents)
 
 

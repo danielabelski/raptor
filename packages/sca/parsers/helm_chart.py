@@ -43,7 +43,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -57,12 +57,9 @@ _PURL_TYPE = "helm"
 
 @register(filenames=["Chart.yaml", "Chart.lock"])
 def parse(path: Path) -> list[Dependency]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.helm_chart: read failed for %s: %s", path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         import yaml                 # type: ignore[import-untyped]
@@ -184,13 +181,9 @@ def chart_repository_hosts(target: Path) -> list[str]:
 
     found: set = set()
     for path in target.rglob("Chart.yaml"):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            logger.debug(
-                "sca.parsers.helm_chart: read failed for %s during "
-                "host extraction: %s", path, e,
-            )
+        text = _safe_read.read_bounded(path, follow_symlinks=False)
+        if text is None:
+            # ``read_bounded`` already logged the underlying reason.
             continue
         try:
             import yaml             # type: ignore[import-untyped]

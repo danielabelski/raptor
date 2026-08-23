@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 logger = logging.getLogger(__name__)
 
@@ -181,12 +181,9 @@ def _parse_file(
         return []
     visited.add(resolved)
 
-    try:
-        text = resolved.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.requirements: read failed for %s: %s", resolved, e
-        )
+    text = _safe_read.read_bounded(resolved, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     deps: list[Dependency] = []

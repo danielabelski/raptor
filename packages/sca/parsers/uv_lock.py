@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 try:
     import tomllib                  # Python 3.11+
@@ -68,14 +68,12 @@ _PURL_TYPE = "pypi"
 
 @register(filenames=["uv.lock"])
 def parse(path: Path) -> list[Dependency]:
-    try:
-        with Path(path).open("rb") as f:
-            data = tomllib.load(f)
-    except OSError as e:
-        logger.warning(
-            "sca.parsers.uv_lock: read failed for %s: %s", path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         logger.warning(
             "sca.parsers.uv_lock: TOML parse failed for %s: %s",

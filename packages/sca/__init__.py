@@ -357,9 +357,14 @@ def compose_proxy_hosts(target: Path | None = None) -> list:
     # ingress-nginx / argoproj / etc.) is skipped with
     # "host not on the allowlist".
     try:
+        from .parsers._safe_read import scan_root_context
         from .parsers.helm_chart import chart_repository_hosts
+        # Scan-root context: Chart.yaml reads are bounded and refuse
+        # symlinks unless the resolved target stays inside the tree.
+        with scan_root_context(target):
+            chart_hosts = chart_repository_hosts(target)
         _extend_repo_hosts(
-            hosts, seen, chart_repository_hosts(target),
+            hosts, seen, chart_hosts,
             source="chart deps", added=added, rejected=rejected,
         )
     except Exception:

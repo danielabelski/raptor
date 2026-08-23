@@ -42,7 +42,7 @@ import logging
 import re
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -70,10 +70,9 @@ def parse_manifest(path: Path) -> list[Dependency]:
     they redirect to a different module name; the original module is
     excluded.
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.gomod: cannot read %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     requires = _parse_require_block(text)
@@ -127,10 +126,9 @@ def parse_lockfile(path: Path) -> list[Dependency]:
     ``/go.mod`` lines duplicate module entries with the same version;
     we dedupe.
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.gomod: cannot read %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     out: list[Dependency] = []

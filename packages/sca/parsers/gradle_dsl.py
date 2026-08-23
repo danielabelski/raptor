@@ -35,7 +35,7 @@ import logging
 import re
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -129,10 +129,9 @@ _PLUGIN_ACCESSOR_RE = re.compile(
 def parse(path: Path) -> list[Dependency]:
     """Parse a Gradle build script and emit one Dependency per
     recognised dependency declaration."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.gradle_dsl: %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     out: list[Dependency] = []

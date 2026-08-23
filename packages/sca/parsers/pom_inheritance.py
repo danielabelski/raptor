@@ -78,6 +78,8 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+
+from . import _safe_read
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -379,10 +381,13 @@ class PomInheritanceResolver:
             candidate = candidate / "pom.xml"
         if not candidate.is_file():
             return None
+        text = _safe_read.read_bounded(candidate, follow_symlinks=False)
+        if text is None:
+            # ``read_bounded`` already logged the underlying reason.
+            return None
         try:
-            text = candidate.read_text(encoding="utf-8", errors="replace")
             root = DET.fromstring(text)
-        except (OSError, DET.ParseError) as e:
+        except DET.ParseError as e:
             logger.debug(
                 "sca.pom_inheritance: local parent %s parse failed: %s",
                 candidate, e,

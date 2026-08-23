@@ -32,7 +32,7 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -170,8 +170,13 @@ def parse_lockfile(path: Path) -> list[Dependency]:
 # ---------------------------------------------------------------------------
 
 def _load_toml(path: Path) -> dict:
-    with path.open("rb") as f:
-        return tomllib.load(f)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason;
+        # keep this loader's raise contract for its callers' handlers.
+        msg = f"bounded read refused {path}"
+        raise OSError(msg)
+    return tomllib.loads(text)
 
 
 def _build_dep(

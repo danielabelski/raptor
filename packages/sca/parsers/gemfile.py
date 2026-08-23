@@ -36,7 +36,7 @@ import logging
 import re
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -81,10 +81,9 @@ _MAX_SPEC_TAIL_LEN = 512
 @register(filenames=["Gemfile"])
 def parse_manifest(path: Path) -> list[Dependency]:
     """Parse a ``Gemfile`` and emit one Dependency per ``gem`` line."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.gemfile: cannot read %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     out: list[Dependency] = []
@@ -144,10 +143,9 @@ def parse_lockfile(path: Path) -> list[Dependency]:
     the listed gem and don't get separate entries (they appear as their
     own top-level rows in the GEM section anyway).
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.gemfile: cannot read %s: %s", path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     out: list[Dependency] = []

@@ -50,7 +50,7 @@ from pathlib import Path
 from collections.abc import Iterator
 
 from ..models import Confidence, Dependency, PinStyle
-from . import register
+from . import _safe_read, register
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +89,9 @@ def parse_cmake_lists(path: Path) -> list[Dependency]:
     sources (the ``add_executable`` / ``add_library`` rules)
     are out of scope — we only emit pulled-in external deps.
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.debug("sca.parsers.cmake_fetchcontent: skip %s (%s)",
-                      path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
 
     out: list[Dependency] = []

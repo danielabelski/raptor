@@ -67,6 +67,7 @@ from .discovery import find_manifests
 from .models import Dependency, PinStyle
 from .osv import OsvClient
 from .parsers import parse_manifest
+from .parsers._safe_read import scan_root_context
 from .registries.crates import CratesClient
 from .registries.debian import DebianClient
 from .registries.golang import GoClient
@@ -425,8 +426,13 @@ def plan(
                 kept.append(m)
         manifests = kept
     raw_deps: list[Dependency] = []
-    for m in manifests:
-        raw_deps.extend(parse_manifest(m))
+    # Scan-root context: the bounded readers refuse symlinked
+    # manifests UNLESS the resolved target stays inside the declared
+    # root (legitimate monorepo layouts) — same wrapping the pipeline
+    # applies around its parse loop.
+    with scan_root_context(target):
+        for m in manifests:
+            raw_deps.extend(parse_manifest(m))
 
     # Derive the project's (arch, libc) platform matrix once for the
     # whole run, from the target's committed build artifacts (Dockerfile

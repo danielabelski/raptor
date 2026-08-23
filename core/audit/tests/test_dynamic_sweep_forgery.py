@@ -259,8 +259,45 @@ int main(void) {
 """
 
 
+def _sandbox_delivers_signals() -> bool:
+    """True when the effective sandbox tier reports child signal
+    deaths as waitstatus signals. On postures without user
+    namespaces the pid-1 shim / no-ns fallback re-encodes a signal
+    death as exit 128+sig, and the sweep's signal-grade bar
+    deliberately refuses that laundered form (an exit code is
+    forgeable) — the confirmed lanes are documented as dark there,
+    so this recall pin only applies where signals are visible."""
+    import subprocess as _sp
+    import tempfile as _tf
+
+    from core.sandbox import context as _ctx
+    try:
+        with _tf.TemporaryDirectory(prefix="sigprobe-") as out:
+            # A KERNEL-generated fault via the system interpreter:
+            # kill(2)-style self-signals are ignored for the sandbox's
+            # namespace-init child, and the venv interpreter cannot
+            # boot under the restricted-read sandbox ($HOME denied) —
+            # a real fault through /usr/bin/python3 matches how the
+            # sweep's compiled harnesses actually die.
+            r = _ctx.run_untrusted(
+                ["/usr/bin/python3", "-c",
+                 "import ctypes; ctypes.string_at(0)"],
+                target="/tmp", output=out,
+                capture_output=True, timeout=60,
+            )
+    except Exception:
+        return False
+    return isinstance(r, _sp.CompletedProcess) and r.returncode < 0
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux sandbox")
+@pytest.mark.skipif(
+    not _sandbox_delivers_signals(),
+    reason="sandbox tier launders signal deaths to exit codes; the "
+           "sanitizer confirmed lane is documented-dark here and the "
+           "recall pin cannot apply",
+)
 class TestGenuineUbsanStillSanitizerGrade:
     """Recall pin for the signal-grade bar: a GENUINE UBSan-only hit
     (the CWE-190 class the sweep targets) must still classify as

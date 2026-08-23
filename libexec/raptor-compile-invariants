@@ -94,7 +94,11 @@ def main() -> int:
         from core.llm.config import LLMConfig
         cfg = LLMConfig()
         mc = cfg.config_for_model(parsed.model)
-        if not mc.api_key:
+        # Some providers are keyless BY DESIGN: Bedrock creds attach at
+        # the dispatcher, claudecode carries its own CLI auth, ollama
+        # is a local server. Only key-carrying providers fail fast.
+        keyless_ok = {"bedrock", "claudecode", "claudecode-resumable", "ollama"}
+        if not mc.api_key and mc.provider not in keyless_ok:
             _progress(f"no API key for --model {parsed.model}")
             return 1
         client = LLMClient(pinned_model=parsed.model)

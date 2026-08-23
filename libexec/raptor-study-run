@@ -102,11 +102,13 @@ def main() -> int:
 
         cfg = LLMConfig()
         mc = cfg.config_for_model(parsed.model)
-        # Dispatcher-routed providers (Bedrock) are keyless BY DESIGN —
-        # workers never hold AWS credentials; the dispatcher attaches
-        # them at the parent's trust boundary. Only key-carrying
-        # providers fail fast here.
-        if not mc.api_key and mc.provider != "bedrock":
+        # Some providers are keyless BY DESIGN: Bedrock workers never
+        # hold AWS credentials (the dispatcher attaches them at the
+        # parent's trust boundary), the claudecode subprocess carries
+        # its own CLI auth, and ollama is a local server. Only
+        # key-carrying providers fail fast here.
+        keyless_ok = {"bedrock", "claudecode", "claudecode-resumable", "ollama"}
+        if not mc.api_key and mc.provider not in keyless_ok:
             print(
                 f"study-run: no API key for --model {parsed.model}\n"
                 f"  Set the provider env var or add the key to models.json",

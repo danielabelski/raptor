@@ -1303,7 +1303,35 @@ def _run_native_binary(
         spec, proc, sandbox_info, lang, expected_token=expected_token)
 
 
-def _sanitizer_matches(expected: str, detail: dict) -> bool:
+# One sanitizer report line: the bug-type-and-context tail of an
+# `ERROR:`/`WARNING:`/`SUMMARY:` sanitizer header (ASAN
+# "heap-buffer-overflow on address 0x...", TSAN "data race (pid=...)").
+# Full-line capture, not `(\S+)`: multi-word bug types must stay
+# matchable by substring.
+_SANITIZER_REPORT_RE = re.compile(
+    r"(?:ERROR|WARNING|SUMMARY): \w*Sanitizer:? ([^\n]+)"
+)
+
+def _window_sanitizer_reports(window_text: str) -> list[str]:
+    """Sanitizer report lines (lowercased, deduplicated, order kept)
+    inside a verified stderr window.
+
+    No extraction cap: the window text is already bounded by the
+    capture machinery, so the result is inherently bounded — a fixed
+    cap N would hand report-line spam a new suppression lever (N
+    forged lines push the genuine report, typically LAST because the
+    sanitizer aborts at the fault, out of the match set)."""
+    return list(dict.fromkeys(
+        m.group(1).lower()
+        for m in _SANITIZER_REPORT_RE.finditer(window_text)
+    ))
+
+
+def _sanitizer_matches(
+    expected: str,
+    detail: dict,
+    window_reports: list[str] | None = None,
+) -> bool:
     """True when the observed sanitizer report matches the witness's
     stated expectation.
 
@@ -1312,6 +1340,21 @@ def _sanitizer_matches(expected: str, detail: dict) -> bool:
     (``"asan"``). The sandbox classifier reports the family in
     ``detail["sanitizer"]`` and the report's bug type inside
     ``detail["evidence"]`` (``"AddressSanitizer: heap-buffer-overflow"``).
+
+    ``window_reports``: when the pre-call sentinel is verified, the
+    report lines extracted from the POST-sentinel stderr window. They
+    are authoritative for type matching — the whole-stream evidence
+    string is first-match-derived, so a decoy `ERROR:
+    AddressSanitizer: <wrong-type>` line printed before the real
+    report would rename a genuine crash's bug type (flipping confirmed
+    to inconclusive), and a forged expected-type line planted BEFORE
+    the sentinel would match a report the target call never produced.
+    An EMPTY list is still authoritative: a verified window whose
+    "Sanitizer" text carries no report-shaped line (bare mentions
+    only) fails the type match rather than falling back to the
+    whole-stream evidence — the fallback would hand pre-sentinel
+    forgeries the match back. Only ``None`` (no verified window at
+    all: legacy token-less callers) uses the evidence substring check.
     """
     exp = (expected or "").strip().lower()
     if not exp:
@@ -1319,6 +1362,8 @@ def _sanitizer_matches(expected: str, detail: dict) -> bool:
     family = str(detail.get("sanitizer", "")).strip().lower()
     if exp == family:
         return True
+    if window_reports is not None:
+        return any(exp in report for report in window_reports)
     evidence = str(detail.get("evidence", "")).lower()
     return bool(evidence) and exp in evidence
 
@@ -1359,6 +1404,7 @@ def _classify_native_output(
 
     call_reached = True
     sanitizer_after_call = True
+    window_reports: list[str] | None = None
     if expected_token:
         stderr_text = proc.stderr or ""
         marker = _CALL_MARKER_PREFIX + expected_token
@@ -1373,6 +1419,16 @@ def _classify_native_output(
             # inside the target call, after the sentinel.
             post = stderr_text[marker_at + len(marker):]
             sanitizer_after_call = "Sanitizer" in post
+            # Anchor bug-type matching to the verified window too:
+            # the sandbox classifier's evidence string is first-match
+            # over the WHOLE stream, so a decoy line before the real
+            # report (or before the sentinel) steers it. The window's
+            # report lines are authoritative — including when EMPTY
+            # (a real post-sentinel sanitizer always prints a
+            # report-shaped header line; bare "Sanitizer" mentions
+            # with the only report-shaped text pre-sentinel are a
+            # forgery, not a crash).
+            window_reports = _window_sanitizer_reports(post)
 
     if stderr_truncated:
         # A truncated stream may only classify when the markers the
@@ -1429,7 +1485,9 @@ def _classify_native_output(
     if outcome == WitnessOutcome.SANITIZER_REPORT:
         sanitizer_type = detail.get("sanitizer", "")
         if spec.expected_sanitizer:
-            if _sanitizer_matches(spec.expected_sanitizer, detail):
+            if _sanitizer_matches(
+                spec.expected_sanitizer, detail, window_reports,
+            ):
                 return DarkVerifyResult(
                     finding_key=spec.finding_key,
                     verdict="confirmed",

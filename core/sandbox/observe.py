@@ -18,6 +18,7 @@ import re
 import signal
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from core.sandbox.summary import record_denial
 
@@ -28,6 +29,11 @@ logger = logging.getLogger(__name__)
 # to the subprocess itself and to post-mortem tools that see the real
 # arguments on the process.
 _CMD_DISPLAY_MAX_ARGS = 3
+
+# Cap on distinct ASAN bug types extracted from one stderr stream — a
+# hostile target spamming forged `ERROR: AddressSanitizer: <type>` lines
+# must not balloon the evidence string.
+_MAX_ASAN_BUG_TYPES = 8
 
 # Patterns in stderr that signal sandbox enforcement — the process tried
 # something that was blocked
@@ -90,8 +96,8 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
     - blocked: list of sandbox-enforcement events (added by _check_blocked
       after _interpret_result runs; present only when sandbox layers fired)
     """
-    info = {"crashed": False, "resource_exceeded": False}
-    evidence_items = []
+    info: dict[str, Any] = {"crashed": False, "resource_exceeded": False}
+    evidence_items: list[str] = []
 
     try:
         rc = int(result.returncode)
@@ -193,8 +199,7 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
     if stderr_text:
         if "AddressSanitizer" in stderr_text:
             info["sanitizer"] = "asan"
-            asan_match = re.search(r"ERROR: AddressSanitizer: (\S+)", stderr_text)
-            # bug_type comes from an ASAN error line in stderr, which a
+            # Bug types come from ASAN error lines in stderr, which a
             # malicious binary can forge (ASAN prints attacker-influenced
             # symbols / addresses and nothing stops the target binary
             # printing a fake `ERROR: AddressSanitizer: \x1b[31m…` to
@@ -202,10 +207,25 @@ def _interpret_result(result: subprocess.CompletedProcess, cmd_display: str) -> 
             # including ESC sequences. Without sanitisation, the
             # logger.info below would inject terminal escapes into any
             # operator watching live output.
+            #
+            # EVERY reported type is kept (deduplicated, bounded), not
+            # just the first match: first-match extraction let one
+            # decoy `ERROR: AddressSanitizer: <wrong-type>` line
+            # printed by the target before the real report rename the
+            # bug type of a genuine, fully-retained crash — consumers
+            # that compare the extracted type against a prediction
+            # then read the mismatch as "not the predicted bug". The
+            # bound keeps a type-spamming target from ballooning the
+            # evidence string.
             from core.security.log_sanitisation import escape_nonprintable
-            bug_type = escape_nonprintable(
-                asan_match.group(1) if asan_match else "unknown"
-            )
+            reported_types: list[str] = []
+            for m in re.finditer(r"ERROR: AddressSanitizer: (\S+)", stderr_text):
+                t = escape_nonprintable(m.group(1))
+                if t not in reported_types:
+                    reported_types.append(t)
+                    if len(reported_types) >= _MAX_ASAN_BUG_TYPES:
+                        break
+            bug_type = ", ".join(reported_types) if reported_types else "unknown"
             evidence_items.append(f"AddressSanitizer: {bug_type}")
             if died_abnormally:
                 info["crashed"] = True

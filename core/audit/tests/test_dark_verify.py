@@ -4231,6 +4231,108 @@ class TestHarnessTokenBinding:
             spec, proc, info, "c", expected_token="feedface")
         assert r.verdict == "confirmed"
 
+    def test_post_sentinel_decoy_does_not_rename_real_report(self):
+        # One wrong-type line printed by the target call before the
+        # real report must not flip a genuine, fully-retained crash to
+        # inconclusive: type matching is anchored to ALL report lines
+        # in the verified post-sentinel window, not to the whole-stream
+        # classifier evidence (which is first-match-derived — here it
+        # carries only the decoy type).
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=1)
+        proc.stderr = (
+            "__raptor_witness_start__:feedface\n"
+            "ERROR: AddressSanitizer: decoy-type\n"
+            "==1==ERROR: AddressSanitizer: heap-buffer-overflow on "
+            "address 0x602000000011\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: decoy-type"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
+    def test_pre_sentinel_forged_type_does_not_match(self):
+        # The reverse steering direction: a forged expected-type line
+        # planted BEFORE the sentinel (setup output) must not satisfy
+        # the type match when the real post-sentinel report is a
+        # different bug — the verified window is authoritative.
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=1)
+        proc.stderr = (
+            "ERROR: AddressSanitizer: heap-buffer-overflow\n"
+            "__raptor_witness_start__:feedface\n"
+            "==1==ERROR: AddressSanitizer: global-buffer-overflow on "
+            "address 0x602000000011\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: heap-buffer-overflow"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+        assert "does not match" in r.match_detail
+
+    def test_report_spam_does_not_evict_real_report(self):
+        # Type extraction from the verified window is uncapped
+        # (window size is already bounded by the capture machinery):
+        # a fixed cap would let N distinct forged report lines push
+        # the genuine report — typically LAST, the sanitizer aborts
+        # at the fault — out of the match set.
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=1)
+        spam = "".join(
+            f"ERROR: AddressSanitizer: forged-{i}\n" for i in range(40)
+        )
+        proc.stderr = (
+            "__raptor_witness_start__:feedface\n"
+            + spam
+            + "==1==ERROR: AddressSanitizer: heap-buffer-overflow on "
+            "address 0x602000000011\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: forged-0"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
+    def test_bare_mention_window_never_reopens_evidence_fallback(self):
+        # A verified window whose only "Sanitizer" text is a bare
+        # mention (no report-shaped line) must FAIL the type match —
+        # falling back to the whole-stream evidence would hand a
+        # pre-sentinel forged report the match back.
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="heap-buffer-overflow")
+        proc = _completed(returncode=-6)
+        proc.stderr = (
+            "ERROR: AddressSanitizer: heap-buffer-overflow\n"
+            "__raptor_witness_start__:feedface\n"
+            "note: AddressSanitizer shadow bytes follow\n"
+        )
+        info = {"sanitizer": "asan",
+                "evidence": "AddressSanitizer: heap-buffer-overflow"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "inconclusive"
+
+    def test_multiword_bug_type_matches_in_window(self):
+        # TSAN-style multi-word types must stay matchable: window
+        # extraction keeps the full report line, not the first token.
+        from core.audit.dark_verify._execute import _classify_native_output
+        spec = self._spec(expected_sanitizer="data race")
+        proc = _completed(returncode=1)
+        proc.stderr = (
+            "__raptor_witness_start__:feedface\n"
+            "WARNING: ThreadSanitizer: data race (pid=7)\n"
+        )
+        info = {"sanitizer": "tsan",
+                "evidence": "ThreadSanitizer: data race detected"}
+        r = _classify_native_output(
+            spec, proc, info, "c", expected_token="feedface")
+        assert r.verdict == "confirmed"
+
     def test_sanitizer_without_sentinel_never_confirms(self):
         from core.audit.dark_verify._execute import _classify_native_output
         spec = self._spec(expected_sanitizer="heap-buffer-overflow")

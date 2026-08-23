@@ -1311,6 +1311,53 @@ class TestTopLevelRunMapRoot(unittest.TestCase):
         self.assertIn("ok", result.stdout)
 
 
+class TestSanitizerBugTypeExtraction(unittest.TestCase):
+    """Bug-type extraction must keep every reported ASAN type — a decoy
+    line printed by the target before the real report must not rename a
+    genuine crash's bug type (consumers comparing the type against a
+    prediction would read the mismatch as "not the predicted bug")."""
+
+    def _interpret(self, stderr: str):
+        from core.sandbox import _interpret_result
+
+        class FakeResult:
+            returncode = 1
+        r = FakeResult()
+        r.stderr = stderr
+        _interpret_result(r, "bin")
+        return r.sandbox_info
+
+    def test_decoy_line_does_not_shadow_real_bug_type(self):
+        info = self._interpret(
+            "ERROR: AddressSanitizer: decoy-type\n"
+            "==7==ERROR: AddressSanitizer: heap-buffer-overflow on "
+            "address 0x602000000011\n"
+        )
+        self.assertEqual(info.get("sanitizer"), "asan")
+        self.assertIn("heap-buffer-overflow", info.get("evidence", ""))
+
+    def test_duplicate_types_deduplicated(self):
+        info = self._interpret(
+            "==7==ERROR: AddressSanitizer: heap-buffer-overflow\n"
+            "==7==ERROR: AddressSanitizer: heap-buffer-overflow\n"
+        )
+        self.assertEqual(
+            info.get("evidence"),
+            "AddressSanitizer: heap-buffer-overflow",
+        )
+
+    def test_type_spam_is_bounded(self):
+        from core.sandbox.observe import _MAX_ASAN_BUG_TYPES
+        spam = "".join(
+            f"ERROR: AddressSanitizer: forged-{i}\n" for i in range(100)
+        )
+        info = self._interpret(spam)
+        evidence = info.get("evidence", "")
+        self.assertEqual(
+            evidence.count("forged-"), _MAX_ASAN_BUG_TYPES,
+        )
+
+
 class TestSanitizerStderrBytes(unittest.TestCase):
     """_interpret_result must detect sanitizer reports in bytes stderr (text=False)."""
 

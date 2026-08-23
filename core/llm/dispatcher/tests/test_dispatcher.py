@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import socket
 import stat
@@ -451,6 +452,99 @@ class TestLayer4TokenLifecycle:
             # transport blows up); the caller's request must succeed.
             r = c.post("http://_/anthropic/v1/messages", content=b"{}")
         assert r.status_code == 200
+
+    def test_broken_renewal_plane_warns_once_after_streak(self, caplog):
+        """A permanently broken renewal plane must not stay silent
+        until the token hard-401s at TTL, hours later: after N
+        consecutive renewal failures the client emits exactly ONE
+        WARNING (further failures stay quiet; a success resets the
+        latch so a later broken streak warns again)."""
+        from core.llm.dispatcher.client import (
+            _RENEW_FAILURE_WARN_THRESHOLD,
+            _TokenRenewalAuth,
+        )
+
+        def _renew_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("renewal plane down")
+
+        renew_client = httpx.Client(
+            transport=httpx.MockTransport(_renew_handler),
+        )
+        auth = _TokenRenewalAuth("tok-warn", renew_client=renew_client)
+
+        def _renewals(n: int) -> None:
+            for _ in range(n):
+                # Force each attempt due (the backoff scheduling is
+                # covered elsewhere; this test targets the streak
+                # accounting).
+                auth._expires_at = None
+                auth._maybe_renew()
+
+        with caplog.at_level(logging.DEBUG, logger="core.llm.dispatcher.client"):
+            _renewals(_RENEW_FAILURE_WARN_THRESHOLD - 1)
+            warnings = [
+                r for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            assert warnings == []  # below threshold: DEBUG only
+            _renewals(1)
+            warnings = [
+                r for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            assert len(warnings) == 1
+            assert "consecutive" in warnings[0].getMessage()
+            # Further failures do not spam.
+            _renewals(3)
+            warnings = [
+                r for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            assert len(warnings) == 1
+
+    def test_renewal_success_resets_failure_streak(self, caplog):
+        """HTTP-status failures count toward the streak too, and one
+        success resets both the counter and the warn latch."""
+        from core.llm.dispatcher.client import (
+            _RENEW_FAILURE_WARN_THRESHOLD,
+            _TokenRenewalAuth,
+        )
+
+        responses: list[httpx.Response] = []
+
+        def _renew_handler(request: httpx.Request) -> httpx.Response:
+            return responses.pop(0)
+
+        renew_client = httpx.Client(
+            transport=httpx.MockTransport(_renew_handler),
+        )
+        auth = _TokenRenewalAuth("tok-reset", renew_client=renew_client)
+
+        def _renewals(n: int) -> None:
+            for _ in range(n):
+                auth._expires_at = None
+                auth._maybe_renew()
+
+        with caplog.at_level(logging.DEBUG, logger="core.llm.dispatcher.client"):
+            # A near-threshold 5xx streak, then a success.
+            responses.extend(
+                httpx.Response(500)
+                for _ in range(_RENEW_FAILURE_WARN_THRESHOLD - 1)
+            )
+            responses.append(httpx.Response(200, json={
+                "expires_at": time.time() + 3600, "ttl_s": 3600,
+            }))
+            _renewals(_RENEW_FAILURE_WARN_THRESHOLD)
+            assert not [
+                r for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            # A fresh full streak after the reset warns (once).
+            responses.extend(
+                httpx.Response(503)
+                for _ in range(_RENEW_FAILURE_WARN_THRESHOLD)
+            )
+            _renewals(_RENEW_FAILURE_WARN_THRESHOLD)
+            warnings = [
+                r for r in caplog.records if r.levelno == logging.WARNING
+            ]
+            assert len(warnings) == 1
 
     def test_client_renewal_outlives_original_ttl(self, fake_creds, tmp_path):
         """End-to-end regression for the incident class: a worker that

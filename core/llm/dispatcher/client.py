@@ -45,6 +45,14 @@ _RENEW_PATH = "/_token/renew"
 _RENEW_MARGIN_MIN_S = 30.0
 _RENEW_MARGIN_MAX_S = 3600.0
 _RENEW_RETRY_BACKOFF_S = 30.0
+# Consecutive renewal failures before ONE WARNING is emitted.
+# Individual failures stay at DEBUG (renewal is best-effort and a
+# transient blip self-heals), but a permanently broken renewal plane
+# means the worker token hard-401s at TTL — hours later — and the
+# operator deserves the heads-up when the pattern sets in, not at the
+# expiry. Latched: one WARNING per broken streak; a successful
+# renewal resets both the counter and the latch.
+_RENEW_FAILURE_WARN_THRESHOLD = 3
 
 
 class _TokenRenewalAuth(httpx.Auth):
@@ -65,10 +73,12 @@ class _TokenRenewalAuth(httpx.Auth):
     the main request is ever attempted, so a slow-to-accept dispatcher
     inside the renewal margin would have converted healthy requests
     into failures. Here every renewal exception is swallowed (logged
-    at debug, retried after a backoff); HTTP-status failures behave as
-    before — a genuinely dead token still 401s on the main request,
-    and a dispatcher without the endpoint (403/404/405) disables
-    further attempts.
+    at debug, retried after a backoff; one WARNING once a streak of
+    ``_RENEW_FAILURE_WARN_THRESHOLD`` consecutive failures suggests
+    the renewal plane is broken rather than blipping); HTTP-status
+    failures behave as before — a genuinely dead token still 401s on
+    the main request, and a dispatcher without the endpoint
+    (403/404/405) disables further attempts.
 
     Thread-safe: one renewal in flight at a time; concurrent requests
     skip the renewal leg rather than stampede or block.
@@ -88,6 +98,9 @@ class _TokenRenewalAuth(httpx.Auth):
         self._margin_s = _RENEW_MARGIN_MIN_S
         self._lock = threading.Lock()
         self._renew_inflight = False
+        # Broken-renewal-plane visibility (see the threshold constant).
+        self._consecutive_failures = 0
+        self._failure_warned = False
         self._disabled = (
             socket_path is None and renew_client is None
         ) or os.environ.get(
@@ -156,8 +169,43 @@ class _TokenRenewalAuth(httpx.Auth):
                 self._expires_at = (
                     time.time() + _RENEW_RETRY_BACKOFF_S + self._margin_s
                 )
+            self._note_renew_failure("transport error")
         finally:
             self._release_renewal()
+
+    def _note_renew_failure(self, why: str) -> None:
+        """Count a failed renewal attempt; escalate to ONE WARNING
+        when the streak reaches the threshold (a permanently broken
+        renewal plane otherwise surfaces only at token TTL, hours
+        later, as a hard 401)."""
+        with self._lock:
+            self._consecutive_failures += 1
+            should_warn = (
+                self._consecutive_failures >= _RENEW_FAILURE_WARN_THRESHOLD
+                and not self._failure_warned
+            )
+            if should_warn:
+                self._failure_warned = True
+            count = self._consecutive_failures
+        if should_warn:
+            _logger.warning(
+                "llm-dispatcher client: token renewal has failed %d "
+                "consecutive times (last: %s) — if this persists the "
+                "worker token expires at its TTL and requests will "
+                "start failing with 401",
+                count, why,
+            )
+
+    def _note_renew_success(self) -> None:
+        """Reset the failure streak; log recovery once if we warned."""
+        with self._lock:
+            recovered = self._failure_warned
+            self._consecutive_failures = 0
+            self._failure_warned = False
+        if recovered:
+            _logger.info(
+                "llm-dispatcher client: token renewal recovered",
+            )
 
     def _note_renew_response(self, response: httpx.Response) -> None:
         if response.status_code == 200:
@@ -180,6 +228,7 @@ class _TokenRenewalAuth(httpx.Auth):
                         _RENEW_MARGIN_MAX_S,
                         max(_RENEW_MARGIN_MIN_S, ttl_s * 0.5),
                     )
+            self._note_renew_success()
             return
         if response.status_code in (403, 404, 405):
             # Endpoint absent (older dispatcher) or this token kind is
@@ -195,6 +244,7 @@ class _TokenRenewalAuth(httpx.Auth):
         # token doesn't double every request with a futile renew leg.
         with self._lock:
             self._expires_at = time.time() + _RENEW_RETRY_BACKOFF_S + self._margin_s
+        self._note_renew_failure(f"HTTP {response.status_code}")
 
     # -- httpx auth flows -----------------------------------------------
 

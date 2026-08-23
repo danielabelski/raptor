@@ -105,7 +105,8 @@ def test_f046_all_unchanged():
     assert set(core.json.__all__) == {
         "CacheEnvelope", "JsonBudgetExceededError", "JsonCache",
         "MISSING", "TTL_FOREVER",
-        "append_jsonl", "dumps_canonical", "dumps_display",
+        "append_jsonl", "dumps_artifact", "dumps_canonical",
+        "dumps_display",
         "load_json", "load_json_bounded",
         "load_json_with_comments", "load_jsonl", "loads",
         "loads_bounded", "save_json",

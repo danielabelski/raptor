@@ -238,6 +238,49 @@ class TestOrjsonBackend(unittest.TestCase):
         finally:
             u._orjson = saved
 
+    def test_save_sort_keys_both_backends(self):
+        """save_json(sort_keys=True) orders keys on both encoder arms
+        (cosmetic — stable operator diffs, never a byte contract)."""
+        import core.json.utils as u
+        overrides = [None] + ([u._orjson] if u._orjson is not None else [])
+        for override in overrides:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                with TemporaryDirectory() as d:
+                    p = Path(d) / "out.json"
+                    save_json(p, {"z": 1, "a": 2}, sort_keys=True)
+                    text = p.read_text()
+                    self.assertLess(text.index('"a"'), text.index('"z"'))
+            finally:
+                u._orjson = saved
+
+    def test_save_utf8_parity_both_backends(self):
+        """Non-ASCII writes as raw UTF-8 on BOTH arms. orjson cannot
+        escape, so the stdlib arm passes ensure_ascii=False — otherwise
+        the bytes a save_json call wrote depended on which encoder was
+        installed."""
+        import core.json.utils as u
+        overrides = [None] + ([u._orjson] if u._orjson is not None else [])
+        for override in overrides:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                with TemporaryDirectory() as d:
+                    p = Path(d) / "out.json"
+                    save_json(p, {"k": "café"})
+                    self.assertIn("café", p.read_text(encoding="utf-8"))
+            finally:
+                u._orjson = saved
+
+    def test_save_big_int_falls_back_to_stdlib(self):
+        """>64-bit ints are an orjson TypeError — save_json must fall
+        back to the stdlib arm instead of failing the write."""
+        with TemporaryDirectory() as d:
+            p = Path(d) / "out.json"
+            save_json(p, {"n": 2**70})
+            self.assertEqual(json.loads(p.read_text())["n"], 2**70)
+
     def test_save_roundtrip_stdlib(self):
         import core.json.utils as u
         saved = u._orjson

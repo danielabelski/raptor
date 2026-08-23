@@ -1,4 +1,5 @@
-"""Tests for the string-level dumpers: ``dumps_canonical`` / ``dumps_display``.
+"""Tests for the string-level dumpers: ``dumps_canonical`` /
+``dumps_display`` / ``dumps_artifact``.
 
 ``dumps_canonical`` is the frozen canonical byte form for MAC / hash /
 content-address call sites — the tests here pin its bytes against the
@@ -11,6 +12,12 @@ it must byte-match forever).
 contractual, so the tests assert behaviour (round-trip fidelity,
 readable UTF-8, totality on awkward inputs) rather than exact output,
 and exercise both the orjson and stdlib branches where possible.
+
+``dumps_artifact`` is the string-returning arm of ``save_json`` — the
+tests pin the parity that matters (identical bytes to a ``save_json``
+write minus the trailing newline, non-finite rejection on both
+branches, the ``ensure_ascii=True`` stdlib pin) without freezing the
+rest of the byte form.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from pathlib import Path
 import pytest
 
 import core.json.utils as utils
-from core.json.utils import dumps_canonical, dumps_display
+from core.json.utils import dumps_artifact, dumps_canonical, dumps_display
 
 # Representative payload shapes drawn from the real canonical lanes:
 # journal rows (verdict/spans/producer), scorecard sidecar payloads,
@@ -190,3 +197,84 @@ class TestDumpsDisplay:
         or orjson's null, but never raises."""
         out = dumps_display({"x": float("nan")}, indent=None)
         assert ("NaN" in out) or ("null" in out)
+
+
+class TestDumpsArtifact:
+    """``dumps_artifact`` is save_json's string arm — same encoder
+    hooks, same non-finite rejection on both branches, no file write,
+    no trailing newline. Bytes are stable JSON but not contractual."""
+
+    ROUND_TRIP_FIXTURES = TestDumpsDisplay.ROUND_TRIP_FIXTURES
+
+    def test_round_trip(self) -> None:
+        for payload in self.ROUND_TRIP_FIXTURES:
+            assert json.loads(dumps_artifact(payload)) == payload
+            assert json.loads(dumps_artifact(payload, indent=None)) == payload
+
+    def test_save_json_parity(self, tmp_path: Path) -> None:
+        """dumps_artifact(data) + newline == the bytes save_json writes
+        (whatever encoder is installed) — it IS the serialising arm."""
+        payload = {"b": [1, 2.5], "a": "café", "p": Path("/tmp/x"),
+                   "d": datetime(2026, 1, 2, 3, 4, 5)}
+        out = tmp_path / "artifact.json"
+        utils.save_json(out, payload)
+        assert dumps_artifact(payload) + "\n" == out.read_text(encoding="utf-8")
+
+    def test_no_trailing_newline(self) -> None:
+        assert not dumps_artifact({"a": 1}).endswith("\n")
+
+    def test_non_finite_raises_value_error(self) -> None:
+        """save_json parity: NaN/Infinity raise on BOTH branches (the
+        stdlib via allow_nan=False, orjson via the pre-scan) instead of
+        silently writing null."""
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError):
+                dumps_artifact({"x": bad})
+            with pytest.raises(ValueError):
+                dumps_artifact({"x": bad}, indent=None)
+
+    def test_ensure_ascii_true_escapes(self) -> None:
+        """ensure_ascii=True pins ASCII-safe output (stdlib branch,
+        regardless of installed encoder) — the sandbox-telemetry form."""
+        out = dumps_artifact({"k": "café"}, ensure_ascii=True)
+        assert "caf\\u00e9" in out
+        assert out.isascii()
+
+    def test_default_readable_utf8(self) -> None:
+        assert "café" in dumps_artifact({"k": "café"})
+
+    def test_sort_keys(self) -> None:
+        out = dumps_artifact({"z": 1, "a": 2}, sort_keys=True)
+        assert out.index('"a"') < out.index('"z"')
+
+    def test_indent_variants(self) -> None:
+        assert "\n" not in dumps_artifact({"a": {"b": 1}}, indent=None)
+        assert ' "a"' in dumps_artifact({"a": 1}, indent=1)
+        assert '    "a"' in dumps_artifact({"a": 1}, indent=4)
+
+    def test_path_and_datetime_stringify(self) -> None:
+        parsed = json.loads(dumps_artifact({
+            "p": Path("/tmp/x"), "d": datetime(2026, 1, 2, 3, 4, 5),
+        }))
+        assert parsed["p"] == "/tmp/x"
+        assert parsed["d"] == "2026-01-02T03:04:05"
+
+    def test_total_on_big_ints(self) -> None:
+        """>64-bit ints are an orjson TypeError — fall back to stdlib."""
+        assert json.loads(dumps_artifact({"n": 2**70}))["n"] == 2**70
+
+    def test_int_keys(self) -> None:
+        assert json.loads(dumps_artifact({1: "a"}, indent=None)) == {"1": "a"}
+
+    def test_stdlib_branch_when_orjson_absent(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(utils, "_orjson", None)
+        payload = {"unicode": "café", "n": [1, 2]}
+        assert json.loads(dumps_artifact(payload)) == payload
+        with pytest.raises(ValueError):
+            dumps_artifact({"x": float("nan")})
+
+    def test_orjson_branch_when_installed(self) -> None:
+        pytest.importorskip("orjson")
+        payload = {"unicode": "café", "n": [1, 2]}
+        assert json.loads(dumps_artifact(payload)) == payload

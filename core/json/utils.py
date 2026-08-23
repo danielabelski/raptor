@@ -455,7 +455,82 @@ def dumps_display(
     )
 
 
-def save_json(path: str | Path, data: Any, mode: int | None = None) -> None:
+def dumps_artifact(
+    data: Any,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = False,
+    ensure_ascii: bool = False,
+) -> str:
+    """Serialise *data* as artifact JSON — :func:`save_json` without
+    the file write.
+
+    For callers that need the serialised string rather than a file:
+    embedding a JSON document inside a larger artifact, writing through
+    an already-open file object, string-returning ``to_json()``
+    serializers, or writers that add their own framing. The artifact
+    contract matches ``save_json``: the output is stable *JSON* (any
+    reader parses it back to the same data), but the exact bytes are
+    NOT contractual — hash / byte-compare consumers must use
+    :func:`dumps_canonical` instead (enforced by
+    ``.github/scripts/check_canonical_json.py``).
+
+    Non-finite floats (NaN, Infinity) raise ``ValueError`` on BOTH
+    encoder paths, exactly like ``save_json``: the stdlib branch via
+    ``allow_nan=False``, the orjson branch via the same pre-scan
+    (orjson would otherwise silently emit ``null``). Path / datetime /
+    arbitrary objects stringify via the same encoder hooks as
+    ``save_json``.
+
+    No trailing newline — callers writing whole files add ``"\\n"``
+    themselves (or use ``save_json``, which owns the newline AND the
+    atomic tempfile+rename write).
+
+    Args:
+        indent: 2 (default — the repo's artifact form) or ``None``
+            (compact) or any other stdlib indent. orjson only
+            accelerates ``indent=2``; every other indent takes the
+            stdlib branch.
+        sort_keys: sort object keys. Cosmetic on this surface (stable
+            operator diffs) — never a byte contract. Only supported
+            for str-keyed objects: with non-str keys the sort order
+            differs between encoders (orjson sorts the stringified
+            keys, the stdlib sorts the raw values), and MIXED-type
+            keys raise ``TypeError`` on the stdlib branch only.
+        ensure_ascii: ``True`` forces the stdlib branch (orjson cannot
+            escape non-ASCII) — for writers that pin ASCII-safe output
+            by intent, e.g. the sandbox security-telemetry files.
+    """
+    if _orjson is not None and indent == 2 and not ensure_ascii:
+        _reject_non_finite_floats(data)
+        opt = _orjson.OPT_INDENT_2 | _orjson.OPT_NON_STR_KEYS
+        if sort_keys:
+            opt |= _orjson.OPT_SORT_KEYS
+        try:
+            return _orjson.dumps(
+                data, option=opt, default=_orjson_default,
+            ).decode("utf-8")
+        except TypeError:
+            # orjson-only refusals (>64-bit ints, exotic keys, depth
+            # limit) — the stdlib branch below handles them all.
+            pass
+    return json.dumps(
+        data,
+        indent=indent,
+        sort_keys=sort_keys,
+        ensure_ascii=ensure_ascii,
+        cls=_RaptorEncoder,
+        allow_nan=False,
+    )
+
+
+def save_json(
+    path: str | Path,
+    data: Any,
+    mode: int | None = None,
+    *,
+    sort_keys: bool = False,
+) -> None:
     """Save data as pretty-printed JSON. Handles Path/datetime serialization.
 
     Non-finite floats (NaN, Infinity) raise ``ValueError`` on BOTH
@@ -480,14 +555,41 @@ def save_json(path: str | Path, data: Any, mode: int | None = None) -> None:
         mode: Optional POSIX file permission bits (e.g. 0o600). When set,
               the mode is installed on the tempfile before rename — no
               chmod-after-rename window.
+        sort_keys: sort object keys. Cosmetic (stable operator diffs
+              across runs) — never a byte contract; hash/byte-compare
+              lanes use :func:`dumps_canonical`. Str-keyed objects
+              only (see the same caveat on :func:`dumps_artifact`).
     """
     if _orjson is not None:
         _reject_non_finite_floats(data)
-        content = _orjson.dumps(
-            data,
-            option=_orjson.OPT_INDENT_2 | _orjson.OPT_NON_STR_KEYS,
-            default=_orjson_default,
-        ).decode("utf-8") + "\n"
+        opt = _orjson.OPT_INDENT_2 | _orjson.OPT_NON_STR_KEYS
+        if sort_keys:
+            opt |= _orjson.OPT_SORT_KEYS
+        try:
+            content = _orjson.dumps(
+                data, option=opt, default=_orjson_default,
+            ).decode("utf-8") + "\n"
+        except TypeError:
+            # orjson-only refusals (>64-bit ints, exotic keys, depth
+            # limit) — the stdlib branch below handles them all.
+            content = _stdlib_artifact_dumps(data, sort_keys=sort_keys)
     else:
-        content = json.dumps(data, indent=2, cls=_RaptorEncoder, allow_nan=False) + "\n"
+        content = _stdlib_artifact_dumps(data, sort_keys=sort_keys)
     write_text_atomically(path, content, mode=mode, tmp_prefix=".~savejson-")
+
+
+def _stdlib_artifact_dumps(data: Any, *, sort_keys: bool) -> str:
+    """stdlib arm of ``save_json`` (shared by the orjson-refusal
+    fallback): indent=2, newline-terminated, non-finite floats raise.
+
+    ``ensure_ascii=False`` for branch parity: orjson always emits raw
+    UTF-8, so the stdlib arm must too — otherwise the same save_json
+    call writes ``café`` on hosts with orjson and ``caf\\u00e9``
+    without it. Both forms parse identically; artifact bytes are not
+    contractual (hash lanes pin :func:`dumps_canonical`), so aligning
+    on readable UTF-8 is safe and makes the encoder invisible.
+    """
+    return json.dumps(
+        data, indent=2, sort_keys=sort_keys, ensure_ascii=False,
+        cls=_RaptorEncoder, allow_nan=False,
+    ) + "\n"

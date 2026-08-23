@@ -301,3 +301,152 @@ class TestFunctionSpansFallback:
         )
         spans = function_spans("void f(int a) {\n}\n", "x.c")
         assert [s.name for s in spans] == ["f"]
+
+
+class TestFieldCensusPrepCache:
+    """Resume wall cost: the field census is a pure function of the
+    source texts + priority-field set but was re-walked (and, in a
+    fresh process, re-parsed) on every resumed segment. The prep
+    cache reloads it when the input fingerprint matches and re-walks
+    when it does not."""
+
+    _SRC = {"a.c": SRC}
+
+    def test_second_build_reloads_and_skips_the_walk(
+        self, tmp_path, monkeypatch,
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        first = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        assert (out / "prep-cache" / "field-census-cache.json").is_file()
+        assert first.fields
+
+        calls = []
+        real = fc.build_field_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(fc, "build_field_census", spy)
+        second = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        assert calls == [], "cache hit must skip the census re-walk"
+        assert second.to_dict() == first.to_dict()
+        assert second.tier == first.tier
+        assert second.degraded == first.degraded
+
+    def test_reload_is_lossless_beyond_the_operator_shape(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        first = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        second = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        # Full fidelity: untruncated site code, span params/staticness —
+        # fields to_dict() does not carry.
+        for name, rec in first.fields.items():
+            rec2 = second.fields[name]
+            assert [w.code for w in rec.writes] == [
+                w.code for w in rec2.writes
+            ]
+            assert [w.lock_held for w in rec.writes] == [
+                w.lock_held for w in rec2.writes
+            ]
+        for fp, spans in first.functions.items():
+            spans2 = second.functions[fp]
+            assert [s.params for s in spans] == [s.params for s in spans2]
+            assert [s.is_static for s in spans] == [
+                s.is_static for s in spans2
+            ]
+
+    def test_changed_sources_rebuild(self, tmp_path, monkeypatch):
+        out = tmp_path / "out"
+        out.mkdir()
+        fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+
+        calls = []
+        real = fc.build_field_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(fc, "build_field_census", spy)
+        changed = {"a.c": SRC + "\nvoid extra(struct ch *c) { c->port = 0; }\n"}
+        fc.build_field_census_cached(changed, out_dir=out)
+        assert calls == [1], "fingerprint mismatch must re-walk"
+
+    def test_changed_priority_fields_rebuild(self, tmp_path, monkeypatch):
+        out = tmp_path / "out"
+        out.mkdir()
+        fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+
+        calls = []
+        real = fc.build_field_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(fc, "build_field_census", spy)
+        fc.build_field_census_cached(
+            dict(self._SRC), out_dir=out,
+            priority_fields=frozenset({"port"}),
+        )
+        assert calls == [1], "priority-field change must re-walk"
+
+    def test_corrupt_cache_rebuilds(self, tmp_path):
+        out = tmp_path / "out"
+        (out / "prep-cache").mkdir(parents=True)
+        (out / "prep-cache" / "field-census-cache.json").write_text("{nope")
+        census = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        assert census.fields
+
+    def test_no_out_dir_means_no_cache(self, tmp_path):
+        census = fc.build_field_census_cached(dict(self._SRC))
+        assert census.fields
+
+    def test_changed_caps_rebuild(self, tmp_path, monkeypatch):
+        out = tmp_path / "out"
+        out.mkdir()
+        fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+
+        calls = []
+        real = fc.build_field_census
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(fc, "build_field_census", spy)
+        fc.build_field_census_cached(
+            dict(self._SRC), out_dir=out, max_fields=3,
+        )
+        assert calls == [1], "non-default caps must re-walk"
+
+    def test_reload_preserves_field_order(self, tmp_path):
+        # fields insertion order is the prioritised cap order and the
+        # lifecycle channels iterate it — the reload must not re-sort.
+        out = tmp_path / "out"
+        out.mkdir()
+        first = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        second = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        assert list(second.fields) == list(first.fields)
+        assert list(second.functions) == list(first.functions)
+
+    def test_broken_shape_cache_rebuilds(self, tmp_path):
+        import json as _json
+
+        out = tmp_path / "out"
+        (out / "prep-cache").mkdir(parents=True)
+        # json-valid, fingerprint-matching, but a shape from_full_dict
+        # chokes on — must degrade to the re-walk, not raise.
+        fp = fc._census_fingerprint(dict(self._SRC), frozenset(), {})
+        (out / "prep-cache" / "field-census-cache.json").write_text(
+            _json.dumps({
+                "fingerprint": fp,
+                "payload": {"fields": {"port": {"writes": [
+                    {"line": "not-a-number"},
+                ]}}},
+            }),
+        )
+        census = fc.build_field_census_cached(dict(self._SRC), out_dir=out)
+        assert census.fields

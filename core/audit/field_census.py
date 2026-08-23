@@ -205,6 +205,116 @@ class FieldCensus:
             },
         }
 
+    def to_full_dict(self) -> dict[str, Any]:
+        """Lossless form for the prep cache — unlike :meth:`to_dict`
+        (the operator-facing ``field-census.json`` shape, which
+        truncates site code and drops function params), this
+        serialises every site and span field so a resumed segment can
+        reload the census instead of re-walking the tree. Mapping
+        order is preserved: ``fields`` insertion order is the
+        prioritised cap order and channel consumers iterate it."""
+        return {
+            "tier": self.tier,
+            "telemetry": self.telemetry,
+            "fields": {
+                name: {
+                    "field": rec.field,
+                    "tier": rec.tier,
+                    "sites_capped": rec.sites_capped,
+                    "writes": [
+                        {
+                            "file": w.file,
+                            "line": w.line,
+                            "function": w.function,
+                            "owner": w.owner,
+                            "rhs_class": w.rhs_class,
+                            "code": w.code,
+                            "lock_held": w.lock_held,
+                        }
+                        for w in rec.writes
+                    ],
+                    "reads": [
+                        {
+                            "file": r.file,
+                            "line": r.line,
+                            "function": r.function,
+                            "owner": r.owner,
+                            "context": r.context,
+                            "code": r.code,
+                        }
+                        for r in rec.reads
+                    ],
+                }
+                for name, rec in self.fields.items()
+            },
+            "functions": {
+                fp: [
+                    {
+                        "name": s.name,
+                        "start": s.start,
+                        "end": s.end,
+                        "params": list(s.params),
+                        "is_static": s.is_static,
+                    }
+                    for s in spans
+                ]
+                for fp, spans in self.functions.items()
+            },
+        }
+
+    @classmethod
+    def from_full_dict(cls, d: dict[str, Any]) -> "FieldCensus":
+        census = cls(
+            tier=d.get("tier", TIER_TREE_SITTER),
+            telemetry=dict(d.get("telemetry") or {}),
+        )
+        for name, rd in (d.get("fields") or {}).items():
+            if not isinstance(rd, dict):
+                continue
+            census.fields[name] = FieldRecord(
+                field=rd.get("field", name),
+                tier=rd.get("tier", TIER_TREE_SITTER),
+                sites_capped=bool(rd.get("sites_capped", False)),
+                writes=[
+                    FieldWrite(
+                        file=wd.get("file", ""),
+                        line=int(wd.get("line", 0)),
+                        function=wd.get("function", ""),
+                        owner=wd.get("owner", ""),
+                        rhs_class=wd.get("rhs_class", RHS_UNKNOWN),
+                        code=wd.get("code", ""),
+                        lock_held=wd.get("lock_held", ""),
+                    )
+                    for wd in rd.get("writes", [])
+                    if isinstance(wd, dict)
+                ],
+                reads=[
+                    FieldRead(
+                        file=sd.get("file", ""),
+                        line=int(sd.get("line", 0)),
+                        function=sd.get("function", ""),
+                        owner=sd.get("owner", ""),
+                        context=sd.get("context", "expr"),
+                        code=sd.get("code", ""),
+                    )
+                    for sd in rd.get("reads", [])
+                    if isinstance(sd, dict)
+                ],
+            )
+        for fp, spans in (d.get("functions") or {}).items():
+            census.functions[fp] = [
+                FunctionSpan(
+                    name=sd.get("name", ""),
+                    start=int(sd.get("start", 0)),
+                    end=int(sd.get("end", 0)),
+                    params=tuple(sd.get("params") or ()),
+                    is_static=bool(sd.get("is_static", False)),
+                )
+                for sd in spans
+                if isinstance(sd, dict)
+            ]
+        return census
+
 
 # ── regex tier ──────────────────────────────────────────────────────
 
@@ -640,6 +750,95 @@ def build_field_census(
         census.tier = TIER_REGEX if tiers_seen == {TIER_REGEX} else "mixed"
     telemetry["tier"] = census.tier
     telemetry["wall_time_s"] = round(time.monotonic() - t0, 3)
+    return census
+
+
+_CACHE_FILENAME = "field-census-cache.json"
+
+
+def _census_fingerprint(
+    source_texts: dict[str, str],
+    priority_fields: frozenset[str],
+    kwargs: dict[str, Any],
+) -> str:
+    """Deterministic fingerprint of the census inputs: the census is a
+    pure function of the source texts, the priority-field set (the set
+    reorders the field cap), and any non-default caps/budget, so an
+    unchanged fingerprint on a resumed segment means the cached census
+    is exact."""
+    from .prep_cache import content_fingerprint, source_fingerprint
+
+    items = [
+        ("sources", source_fingerprint(source_texts).encode("ascii")),
+        (
+            "priority-fields",
+            "\0".join(sorted(priority_fields)).encode("utf-8", "replace"),
+        ),
+    ]
+    if kwargs:
+        items.append((
+            "params",
+            repr(sorted(kwargs.items())).encode("utf-8", "replace"),
+        ))
+    return content_fingerprint(items)
+
+
+def build_field_census_cached(
+    source_texts: dict[str, str],
+    *,
+    out_dir: Path | str | None = None,
+    priority_fields: frozenset[str] = frozenset(),
+    **kwargs: Any,
+) -> FieldCensus:
+    """:func:`build_field_census` behind the prep-cache reload seam.
+
+    Same-run resume re-walked (and, on a fresh process, re-parsed)
+    every census file each segment even though the checklist is
+    pinned and the sources unchanged. Reload the cached census on a
+    fingerprint match; rebuild loudly on mismatch or corruption. No
+    ``out_dir`` means no cache — behaviour is exactly the raw build.
+    """
+    from .prep_cache import load_prep_cache, write_prep_cache
+
+    fingerprint: str | None = None
+    if out_dir is not None:
+        fingerprint = _census_fingerprint(
+            source_texts, priority_fields, kwargs,
+        )
+        cached = load_prep_cache(
+            out_dir, _CACHE_FILENAME, fingerprint, label="field-census",
+        )
+        if isinstance(cached, dict):
+            try:
+                census = FieldCensus.from_full_dict(cached)
+            except Exception:
+                # A json-valid cache with a broken shape must degrade
+                # to the rebuild, never escape into the caller's
+                # channel block.
+                logger.debug(
+                    "field-census prep cache reload failed — "
+                    "re-walking", exc_info=True,
+                )
+            else:
+                logger.info(
+                    "field census: reloaded %d fields / %d files from "
+                    "the prep cache (input fingerprint match) — census "
+                    "re-walk skipped",
+                    len(census.fields), len(census.functions),
+                )
+                return census
+    census = build_field_census(
+        source_texts, priority_fields=priority_fields, **kwargs,
+    )
+    if (
+        out_dir is not None
+        and fingerprint is not None
+        and (census.fields or census.functions)
+    ):
+        write_prep_cache(
+            out_dir, _CACHE_FILENAME, fingerprint, census.to_full_dict(),
+            label="field-census",
+        )
     return census
 
 

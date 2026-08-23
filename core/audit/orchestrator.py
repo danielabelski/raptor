@@ -4678,7 +4678,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         from .condition_smt import DomainVocabulary
         from .fail_open_roles import RoleContext as _CensusRoleCtx
         from .field_census import (
-            build_field_census,
+            build_field_census_cached,
             priority_fields_from_study_list,
             seed_injected_hypotheses,
             write_census_artifact,
@@ -4700,8 +4700,9 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             channel_vocab = DomainVocabulary.from_domain_model(
                 prep_domain_model, target_path=config.target_path,
             )
-            field_census = build_field_census(
+            field_census = build_field_census_cached(
                 census_texts,
+                out_dir=config.out_dir,
                 priority_fields=priority_fields_from_study_list(
                     config.out_dir,
                 ),

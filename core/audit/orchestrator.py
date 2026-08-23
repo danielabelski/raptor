@@ -8252,14 +8252,37 @@ def _reconcile_cost_ledgers(config, result) -> None:
         )
         scale = max(tel_total, ledger_total)
         if scale > 0 and abs(tel_total - ledger_total) > 0.01 * scale:
-            logger.warning(
-                "cost reconciliation: telemetry ledger $%.2f vs "
-                "summary ledger $%.2f (%.1f%% divergence) — some "
-                "spend is unbooked or double-booked",
-                tel_total,
-                ledger_total,
-                100.0 * abs(tel_total - ledger_total) / scale,
+            gap = abs(tel_total - ledger_total)
+            # Known-legitimate component before alarming: the summary
+            # ledger's floor includes failed-attempt spend (timeouts,
+            # aborted long calls) that per-call telemetry deliberately
+            # never books — money gone with no outcome to carry it.
+            failed = float(
+                getattr(
+                    result.cost_tracker,
+                    "total_failed_attempts_cost_usd",
+                    0.0,
+                ) or 0.0
             )
+            if ledger_total > tel_total and failed >= gap - 0.01 * scale:
+                logger.info(
+                    "cost reconciliation: telemetry ledger $%.2f vs "
+                    "summary ledger $%.2f — the $%.2f gap is covered "
+                    "by recorded failed-attempt spend ($%.2f), which "
+                    "telemetry never books per-call",
+                    tel_total, ledger_total, gap, failed,
+                )
+            else:
+                logger.warning(
+                    "cost reconciliation: telemetry ledger $%.2f vs "
+                    "summary ledger $%.2f (%.1f%% divergence; "
+                    "recorded failed-attempt spend $%.2f) — residual "
+                    "spend is unbooked or double-booked",
+                    tel_total,
+                    ledger_total,
+                    100.0 * gap / scale,
+                    failed,
+                )
 
 
 def _composite_tool_runner(joern_runner, codeql_runner):

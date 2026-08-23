@@ -241,6 +241,38 @@ class TestReconcileLedgers:
         del result
         assert [w for w in warnings if "cost reconciliation" in w]
 
+    def test_failed_attempt_covered_gap_does_not_warn(self, monkeypatch):
+        """Ledger > telemetry with the gap covered by recorded
+        failed-attempt spend is the DOCUMENTED design (telemetry never
+        books per-call spend of attempts that raised) — it must read
+        as information, not as an unbooked/double-booked alarm."""
+        from core.audit import orchestrator as orch
+        from core.llm import telemetry
+
+        sink = telemetry.TelemetrySink(
+            __import__("pathlib").Path("/nonexistent-dir/t.jsonl"),
+        )
+        sink.record(self._rec("review", 27.28))
+
+        warnings: list[str] = []
+        real_warning = orch.logger.warning
+
+        def _capture(msg, *args, **kw):
+            warnings.append(msg % args if args else str(msg))
+            real_warning(msg, *args, **kw)
+
+        monkeypatch.setattr(orch.logger, "warning", _capture)
+        monkeypatch.setattr(telemetry, "_sink", sink)
+
+        result = OrchestratorResult()
+        result.cost_tracker.record_call("review", cost_usd=27.28)
+        result.cost_tracker.record_failed_attempt(
+            "review", cost_usd=10.0)
+        client = SimpleNamespace(total_cost=37.28)
+        config = SimpleNamespace(llm_budget_client=client, out_dir=None)
+        orch._reconcile_cost_ledgers(config, result)
+        assert not [w for w in warnings if "cost reconciliation" in w]
+
     def test_divergence_under_one_percent_quiet(self, monkeypatch):
         result, warnings = self._reconcile(
             monkeypatch,

@@ -25,6 +25,7 @@ from .cc_adapter import (
     CCDispatchConfig,
     build_cc_command,
     strip_json_fences,
+    system_prompt_file_for,
     extract_envelope_metadata,
     parse_cc_structured,
     parse_cc_freeform,
@@ -58,4 +59,5 @@ __all__ = [
     "parse_cc_freeform",
     "parse_cc_structured",
     "strip_json_fences",
+    "system_prompt_file_for",
 ]

@@ -6,12 +6,20 @@ The subprocess counterpart to the SDK providers in ``core.llm.providers``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from core.security.redaction import redact_secrets
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -477,8 +485,6 @@ def neutral_cwd() -> str:
     global _neutral_cwd
     if _neutral_cwd is None or not os.path.isdir(_neutral_cwd):
         import atexit
-        import contextlib
-
         from core.run.scratch import scratch_dir
         stack = contextlib.ExitStack()
         _neutral_cwd = str(stack.enter_context(scratch_dir("raptor-cc-cwd-")))
@@ -496,7 +502,9 @@ class CCDispatchConfig:
     timeout_s: int = 300
     json_schema: dict[str, Any] | None = None
     capture_json_envelope: bool = True
-    # System prompt passed via the `--system-prompt` flag rather than
+    # System prompt passed via the CLI's system-prompt channel
+    # (`--system-prompt-file`, or inline `--system-prompt` for
+    # out-of-repo back-compat — see build_cc_command) rather than
     # prepended to the user prompt. Pre-fix `ClaudeCodeLLMProvider`
     # concatenated `f"{system_prompt}\n\n{prompt}"` and sent the
     # combined text as the user message — the model then saw it as
@@ -550,7 +558,6 @@ _CC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def _env_cc_effort() -> str | None:
-    import os
     raw = os.environ.get("RAPTOR_CC_EFFORT", "").strip().lower()
     if not raw:
         return None
@@ -564,16 +571,35 @@ def _env_cc_effort() -> str | None:
 
 
 def _env_cc_fallback_model() -> str | None:
-    import os
     raw = os.environ.get("RAPTOR_CC_FALLBACK_MODEL", "").strip()
     return raw or None
 
 
-def build_cc_command(config: CCDispatchConfig) -> list[str]:
+def build_cc_command(
+    config: CCDispatchConfig,
+    *,
+    system_prompt_file: Path | str | None = None,
+) -> list[str]:
     """Build the argument list for ``claude -p``.
 
     Does not include the prompt (passed via stdin) or sandbox wrapping
     (caller decides sandbox posture).
+
+    ``system_prompt_file``: path to a file already holding
+    ``config.system_prompt`` (see ``system_prompt_file_for``). When
+    given and a system prompt is set, the command carries
+    ``--system-prompt-file <path>`` instead of the inline
+    ``--system-prompt <text>`` form.
+
+    Hygiene contract: in-repo callers MUST use the file form. The
+    inline form puts the full system prompt — which can embed operator
+    context and target excerpts — into the child's argv, where it is
+    world-readable via ``/proc/<pid>/cmdline`` on multi-user hosts
+    (``ps -eaf`` showed ~44KB argv per ``claude -p`` child pre-fix).
+    The inline fallback exists only for out-of-repo back-compat.
+    ``--json-schema`` deliberately stays on argv: the CLI has no file
+    variant for it, and the value is structural (schema shape, bounded
+    size), not operator/target content.
     """
     cmd = [config.claude_bin, "-p"]
     if config.session_id:
@@ -591,11 +617,15 @@ def build_cc_command(config: CCDispatchConfig) -> list[str]:
     if config.exclude_dynamic_sections:
         cmd.append("--exclude-dynamic-system-prompt-sections")
     if config.system_prompt is not None and config.system_prompt.strip():
-        # `--system-prompt` keeps the system prompt in its own
-        # role-channel rather than concatenated to the user
-        # prompt. See CCDispatchConfig.system_prompt comment for
-        # the prompt-injection rationale.
-        cmd.extend(["--system-prompt", config.system_prompt])
+        # `--system-prompt`/`--system-prompt-file` keeps the system
+        # prompt in its own role-channel rather than concatenated to
+        # the user prompt. See CCDispatchConfig.system_prompt comment
+        # for the prompt-injection rationale, and this function's
+        # docstring for why the file form is mandatory in-repo.
+        if system_prompt_file is not None:
+            cmd.extend(["--system-prompt-file", str(system_prompt_file)])
+        else:
+            cmd.extend(["--system-prompt", config.system_prompt])
     for d in config.add_dirs:
         cmd.extend(["--add-dir", str(d)])
     if config.stream_json:
@@ -624,6 +654,56 @@ def build_cc_command(config: CCDispatchConfig) -> list[str]:
             "--mcp-config", '{"mcpServers": {}}',
         ])
     return cmd
+
+
+@contextlib.contextmanager
+def system_prompt_file_for(config: CCDispatchConfig) -> Iterator[Path | None]:
+    """Stage ``config.system_prompt`` in a private tempfile for the
+    ``--system-prompt-file`` argv-hygiene form (see build_cc_command).
+
+    Yields ``None`` when the config carries no system prompt (empty or
+    unset — mirrors build_cc_command's emit condition, so the pair
+    composes as ``build_cc_command(cfg, system_prompt_file=path)``
+    unconditionally). Otherwise yields the path of a 0600 tempfile
+    (``cc-sysprompt-*.txt`` in TMPDIR) holding the prompt utf-8; the
+    file is unlinked when the block exits, so keep the child's spawn
+    AND wait inside the ``with`` block.
+
+    Sandboxed callers (Landlock restrict_reads / mount-ns spawns) must
+    add the yielded path to the run's ``readable_paths`` — TMPDIR is
+    not readable inside the sandbox by default.
+
+    Residual: a SIGKILL between spawn and cleanup leaves the 0600 file
+    behind in TMPDIR. It is same-user-readable only (never in argv, so
+    never in /proc/<pid>/cmdline), and pytest runs are contained by the
+    session scratch redirect.
+    """
+    if config.system_prompt is None or not config.system_prompt.strip():
+        yield None
+        return
+    fd, raw_path = tempfile.mkstemp(prefix="cc-sysprompt-", suffix=".txt")
+    path = Path(raw_path)
+    try:
+        try:
+            # 0600 is guaranteed by the mkstemp contract; assert
+            # anyway — the prompt can embed operator context and
+            # target excerpts, so a permissive-umask regression in a
+            # future tempfile implementation must fail loud, not leak.
+            mode = stat.S_IMODE(os.fstat(fd).st_mode)
+            if mode != 0o600:
+                msg = f"mkstemp returned mode {mode:04o}, expected 0600"
+                raise AssertionError(msg)
+        except BaseException:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(config.system_prompt)
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 def strip_json_fences(text: str) -> str:

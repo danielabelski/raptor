@@ -1,6 +1,13 @@
 """Tests for core.llm.cc_adapter — CC subprocess transport utilities."""
 
 import json
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from core.llm.cc_adapter import (
     CCDispatchConfig,
@@ -9,6 +16,7 @@ from core.llm.cc_adapter import (
     parse_cc_freeform,
     parse_cc_structured,
     strip_json_fences,
+    system_prompt_file_for,
 )
 
 
@@ -57,6 +65,108 @@ class TestBuildCCCommand:
         cmd = build_cc_command(config)
         idx = cmd.index("--json-schema")
         assert json.loads(cmd[idx + 1]) == schema
+
+
+class TestSystemPromptArgvHygiene:
+    """System prompts must never ride argv in-repo: argv is
+    world-readable via /proc/<pid>/cmdline on multi-user hosts, and
+    system prompts can embed operator context and target excerpts
+    (~44KB per ``claude -p`` child observed in ``ps -eaf`` pre-fix).
+    ``build_cc_command``'s file form + ``system_prompt_file_for`` is
+    the mandated pairing (see build_cc_command's docstring)."""
+
+    def test_file_form_keeps_prompt_text_off_argv(self, tmp_path):
+        # ps-visibility regression test: with the file form, the argv
+        # joined string must not contain the system-prompt text. Fails
+        # on the pre-fix inline-only build_cc_command.
+        secret = "OPERATOR CONTEXT plus target excerpt " + "x" * 4096
+        config = CCDispatchConfig(claude_bin="claude", system_prompt=secret)
+        spf = tmp_path / "sysprompt.txt"
+        spf.write_text(secret, encoding="utf-8")
+        cmd = build_cc_command(config, system_prompt_file=spf)
+        assert "--system-prompt-file" in cmd
+        assert cmd[cmd.index("--system-prompt-file") + 1] == str(spf)
+        assert "--system-prompt" not in cmd
+        assert secret not in " ".join(cmd)
+
+    def test_inline_back_compat_without_file(self):
+        # Out-of-repo callers that pass no file keep the inline form.
+        config = CCDispatchConfig(claude_bin="claude", system_prompt="be brief")
+        cmd = build_cc_command(config)
+        assert cmd[cmd.index("--system-prompt") + 1] == "be brief"
+        assert "--system-prompt-file" not in cmd
+
+    def test_empty_prompt_emits_neither_flag(self, tmp_path):
+        # Mirrors system_prompt_file_for's yield-None condition so the
+        # pair composes unconditionally.
+        spf = tmp_path / "sysprompt.txt"
+        spf.write_text("", encoding="utf-8")
+        for sp in (None, "", "   \n"):
+            config = CCDispatchConfig(claude_bin="claude", system_prompt=sp)
+            cmd = build_cc_command(config, system_prompt_file=spf)
+            assert "--system-prompt" not in cmd
+            assert "--system-prompt-file" not in cmd
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+    def test_child_proc_cmdline_never_contains_prompt(self, tmp_path):
+        """Empirical /proc check: spawn a stub ``claude`` through the
+        CM + file-form pairing and read the child's OWN
+        /proc/self/cmdline — the exact bytes ``ps -eaf`` shows any
+        other user on the host."""
+        secret = "SYSPROMPT-SENTINEL " + "y" * 8000
+        stub = tmp_path / "claude"
+        stub.write_text(
+            "#!/bin/sh\ntr '\\0' ' ' < /proc/self/cmdline\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        config = CCDispatchConfig(
+            claude_bin=str(stub),
+            system_prompt=secret,
+            capture_json_envelope=False,
+        )
+        with system_prompt_file_for(config) as spf:
+            cmd = build_cc_command(config, system_prompt_file=spf)
+            proc = subprocess.run(
+                cmd, input="user prompt", capture_output=True,
+                text=True, timeout=30, check=True,
+            )
+        assert secret not in proc.stdout          # child argv, via /proc
+        assert secret not in " ".join(cmd)        # constructed argv
+        assert "--system-prompt-file" in proc.stdout
+
+
+class TestSystemPromptFileFor:
+    def test_yields_none_when_no_prompt(self):
+        for sp in (None, "", "   \n"):
+            config = CCDispatchConfig(claude_bin="claude", system_prompt=sp)
+            with system_prompt_file_for(config) as spf:
+                assert spf is None
+
+    def test_writes_0600_exact_content_and_unlinks(self):
+        prompt = "line one\nnon-ascii: café → sink\n"
+        config = CCDispatchConfig(claude_bin="claude", system_prompt=prompt)
+        with system_prompt_file_for(config) as spf:
+            assert isinstance(spf, Path)
+            assert spf.name.startswith("cc-sysprompt-")
+            assert spf.name.endswith(".txt")
+            assert stat.S_IMODE(spf.stat().st_mode) == 0o600
+            assert spf.read_text(encoding="utf-8") == prompt
+        assert not spf.exists()
+
+    def test_unlinked_on_exception(self):
+        config = CCDispatchConfig(claude_bin="claude", system_prompt="sp")
+        with pytest.raises(RuntimeError, match="boom"):
+            with system_prompt_file_for(config) as spf:
+                raise RuntimeError("boom")
+        assert not spf.exists()
+
+    def test_tolerates_early_unlink(self):
+        # A cleanup race (session-scratch sweeper, operator tmpwatch)
+        # must not turn CM exit into an exception.
+        config = CCDispatchConfig(claude_bin="claude", system_prompt="sp")
+        with system_prompt_file_for(config) as spf:
+            os.unlink(spf)
 
 
 class TestStripJsonFences:

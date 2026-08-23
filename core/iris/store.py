@@ -125,9 +125,9 @@ def _floor_unverified_tiers(
     return rows
 
 
-def _envelope_trusted(data: dict, *, target_path: "Path | None") -> str:
-    """'' when the envelope's tiers may be honoured, else the reason
-    they must floor."""
+def _tier_floor_reason(data: dict, *, target_path: "Path | None") -> str:
+    """The reason the envelope's tiers must floor, or '' when they
+    may be honoured (provenance verified, target binding present)."""
     from . import integrity as _integrity
     if not _integrity.verify_envelope(data):
         return "failed provenance verification"
@@ -169,7 +169,7 @@ def load_specs(
             )
             return []
     specs = _specs_from_list(data.get("specs", []))
-    reason = _envelope_trusted(data, target_path=target_path)
+    reason = _tier_floor_reason(data, target_path=target_path)
     if reason:
         _floor_unverified_tiers(specs, path, reason)
     return specs
@@ -201,7 +201,7 @@ def load_assumptions(
             )
             return []
     assumptions = assumptions_from_list(data.get("assumptions", []))
-    reason = _envelope_trusted(data, target_path=target_path)
+    reason = _tier_floor_reason(data, target_path=target_path)
     if reason:
         _floor_unverified_tiers(
             assumptions, path, reason, kind="assumption")
@@ -369,7 +369,7 @@ def persist_refined_specs(
         return None
 
     existing = _specs_from_list(meta.get("specs", []))
-    reason = _envelope_trusted(meta, target_path=None)
+    reason = _tier_floor_reason(meta, target_path=None)
     if reason:
         # Never launder: an unverified store's tiers must not survive
         # into the (freshly stamped) merged envelope.

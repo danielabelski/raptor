@@ -161,6 +161,7 @@ patches.
 | `--threat-model-refresh` | Force-refresh an existing threat model |
 | `--threat-model-use-stale` | Accept a stale threat model without refresh |
 | `--validate` | Run the full [validation pipeline](#validate) on exploitable findings |
+| `--rank` | Reorder findings most-promising-first (listwise LLM ranking) before analysis, so `--max-findings` / `--max-cost-usd` cut the least promising tail; needs an external analysis model, ordering only |
 | `--gap-audit` | Run the [/audit](#audit) orchestrator over the coverage residual after analysis (not `--audit`, which is the sandbox audit mode) |
 | `--gap-audit-budget <n>` | Max functions the gap-audit post-pass reviews (default: all gaps) |
 | `--gap-audit-strategy <name>` | Restrict the gap-audit post-pass to one strategy |

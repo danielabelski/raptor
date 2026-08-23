@@ -31,6 +31,26 @@ _CATEGORIES = ("static", "llm", "runtime")
 _REVIEWABLE_KINDS = ("function", "top_level")
 
 
+def _workflow_step_files(checklist: dict[str, Any]) -> set[str]:
+    """File paths whose inventory items are CI-workflow units.
+
+    The GitHub-workflow extractor is the only YAML extractor with
+    reviewable output (jobs/steps named ``job:<id>`` /
+    ``job:<id>.step-<n>``, kinded ``function``) — a yaml-language file
+    entry with items IS a workflow. The path check covers legacy
+    checklists written before the per-file ``language`` field.
+    """
+    out: set[str] = set()
+    for fe in checklist.get("files", []):
+        path = fe.get("path")
+        if not path:
+            continue
+        if (fe.get("language") == "yaml"
+                or ".github/workflows/" in path.replace("\\", "/")):
+            out.add(path)
+    return out
+
+
 def file_level_view(run_dirs: Iterable[Path]) -> dict[str, Any]:
     """File-level coverage for the no-inventory case: per-tool files-examined
     from the coverage records, plus run provenance from each ``.raptor-run.json``.
@@ -394,6 +414,8 @@ def store_view(store: CoverageStore, checklist: dict[str, Any]) -> dict[str, Any
     total_gap = 0
     verdicts = {"clean": 0, "open": 0, "found_then_lost": 0, "unexamined": 0}
     review_gap: list[dict[str, Any]] = []
+    workflow_files = _workflow_step_files(checklist)
+    workflow_excluded = 0
 
     for file, name, lo, hi, kind in iter_inventory_functions(checklist):
         total += 1
@@ -430,12 +452,22 @@ def store_view(store: CoverageStore, checklist: dict[str, Any]) -> dict[str, Any
         # (Completeness counts above — total/by_kind/examined/verdicts — still
         # include every kind.)
         if kind in _REVIEWABLE_KINDS:
-            reviewable_total += 1
-            if reviewed:
+            # CI workflow jobs/steps carry kind "function" but are not
+            # units an LLM reviews one-by-one — scanners own them.
+            # Leading the gap with `.github/workflows/...:job:ci.step-N`
+            # entries misstates the review debt, so they are excluded
+            # from the reviewable denominator AND the gap (counted so
+            # the summary can state the exclusion). Total inventory
+            # counts above still include them.
+            if file in workflow_files and (name or "").startswith("job:"):
+                workflow_excluded += 1
+            elif reviewed:
+                reviewable_total += 1
                 reviewed_count += 1
             else:
                 # not reviewed — even if the LLM merely READ the file, it lands
                 # here (that's the point: read ≠ reviewed).
+                reviewable_total += 1
                 llm_gap.append({"file": file, "function": name, "line": lo})
 
         verdicts[verdict] = verdicts.get(verdict, 0) + 1
@@ -459,6 +491,7 @@ def store_view(store: CoverageStore, checklist: dict[str, Any]) -> dict[str, Any
         "gap_no_tool": total_gap,
         "gap_no_llm": len(llm_gap),
         "llm_gap_functions": llm_gap,
+        "llm_gap_workflow_excluded": workflow_excluded,
         "verdicts": verdicts,
         "review_gap": review_gap,
         "provenance": store.provenance_summary(),
@@ -507,7 +540,13 @@ def format_store_view(view: dict[str, Any], max_gap: int = 15) -> str:
 
     lines.append("  Gaps:")
     lines.append(f"    no tool at all: {view['gap_no_tool']}")
-    lines.append(f"    no LLM review:  {view['gap_no_llm']}")
+    wf_excluded = view.get("llm_gap_workflow_excluded", 0)
+    wf_note = (
+        f"  ({wf_excluded} workflow-step item"
+        f"{'s' if wf_excluded != 1 else ''} excluded)"
+        if wf_excluded else ""
+    )
+    lines.append(f"    no LLM review:  {view['gap_no_llm']}{wf_note}")
 
     # Found-then-lost is the one to flag loudly: a prior finding's detail was
     # discarded, so re-examine rather than trust "covered".

@@ -89,6 +89,68 @@ def test_store_view_counts_interstitial_by_kind_and_surfaces_gap(tmp_path):
     assert "function 1" in out and "interstitial 1" in out
 
 
+def test_store_view_excludes_workflow_steps_from_llm_gap(tmp_path):
+    # CI workflow jobs/steps (yaml inventory, `job:` names, kind
+    # "function") are not LLM-reviewable units — they must stay OUT of
+    # the LLM-review gap count/listing while remaining in the total
+    # inventory counts, and the exclusion must be reported.
+    s = _store(tmp_path)
+    checklist = {"files": [
+        {"path": "a.c", "language": "c", "lines": 100, "items": [
+            {"name": "f1", "kind": "function", "line_start": 1,
+             "line_end": 20},
+        ]},
+        {"path": ".github/workflows/ci.yml", "language": "yaml",
+         "lines": 40, "items": [
+             {"name": "job:ci", "kind": "function", "line_start": 2,
+              "line_end": 30},
+             {"name": "job:ci.step-1", "kind": "function",
+              "line_start": 10, "line_end": 14},
+             {"name": "job:ci.step-2", "kind": "function",
+              "line_start": 15, "line_end": 20},
+         ]},
+    ]}
+    v = store_view(s, checklist)
+
+    # Inventory completeness unchanged: every item still counted.
+    assert v["total_functions"] == 4
+    assert v["items_by_kind"] == {"function": 4}
+    # Gap scoped to real reviewable units: only f1.
+    assert v["gap_no_llm"] == 1
+    gap_names = {g["function"] for g in v["llm_gap_functions"]}
+    assert gap_names == {"f1"}
+    assert v["llm_reviewable"] == 1
+    assert v["llm_gap_workflow_excluded"] == 3
+
+    out = format_store_view(v)
+    assert "no LLM review:  1  (3 workflow-step items excluded)" in out
+    assert "job:ci.step-1" not in out
+
+
+def test_store_view_workflow_exclusion_without_language_field(tmp_path):
+    # Legacy checklists predate the per-file language field — the
+    # .github/workflows/ path is the fallback signal.
+    s = _store(tmp_path)
+    checklist = {"files": [
+        {"path": ".github/workflows/release.yml", "lines": 20, "items": [
+            {"name": "job:release.step-1", "kind": "function",
+             "line_start": 5, "line_end": 9},
+        ]},
+    ]}
+    v = store_view(s, checklist)
+    assert v["gap_no_llm"] == 0
+    assert v["llm_gap_workflow_excluded"] == 1
+    out = format_store_view(v)
+    assert "(1 workflow-step item excluded)" in out
+
+
+def test_store_view_no_exclusion_note_without_workflow_items(tmp_path):
+    s = _store(tmp_path)
+    v = store_view(s, _CHECKLIST)
+    assert v["llm_gap_workflow_excluded"] == 0
+    assert "workflow-step" not in format_store_view(v)
+
+
 def test_render_run_coverage_store_view(tmp_path):
     import json
 

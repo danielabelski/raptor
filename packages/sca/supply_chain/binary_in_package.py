@@ -72,6 +72,7 @@ from collections.abc import Iterable, Sequence
 
 from ..discovery import EXCLUDED_DIR_NAMES
 from ..models import Confidence, Dependency, Manifest
+from ..parsers import _safe_read
 
 # Subset of EXCLUDED_DIR_NAMES that's safe to skip during binary
 # scanning.  We DELIBERATELY recurse into ``dist/``, ``build/``,
@@ -275,9 +276,12 @@ def _manifest_declares_native(manifest: Manifest) -> bool:
         # Today we only know how to peek at npm package.json bodies.
         # Cargo's ``links`` is in TOML and not parsed here yet.
         return False
+    text = _safe_read.read_bounded(manifest.path, follow_symlinks=False)
+    if text is None:
+        return False
     try:
-        data = json.loads(manifest.path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return False
     if not isinstance(data, dict):
         return False

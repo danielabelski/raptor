@@ -40,9 +40,16 @@ _PURL_TYPE = "composer"
 @register(filenames=["composer.json"])
 def parse_manifest(path: Path) -> list[Dependency]:
     """Parse a ``composer.json`` and emit one Dependency per declared dep."""
+    # Bounded read — same posture as parse_lockfile below: a hostile
+    # oversized (or symlinked) composer.json is treated as
+    # unparseable rather than buffered whole and fed to the parser.
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
+        return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError) as e:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
         logger.warning("sca.parsers.composer: %s: %s", path, e)
         return []
 

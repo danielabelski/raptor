@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
+from ..parsers import _safe_read
 from . import _hook_patterns
 from typing import TYPE_CHECKING
 
@@ -85,13 +86,9 @@ def scan_manifests(
 def _scan_one(
     path: Path, host: Dependency,
 ) -> list[ComposerLifecycleFinding]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.debug(
-            "sca.supply_chain.composer_lifecycle_hooks: %s read failed: %s",
-            path, e,
-        )
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         data = _json.loads(text)
@@ -166,11 +163,12 @@ def _scan_one(
 def _host_dep(
     deps: list[Dependency], manifest: Manifest,
 ) -> Dependency | None:
+    text = _safe_read.read_bounded(manifest.path, follow_symlinks=False)
+    if text is None:
+        return None
     try:
-        data = _json.loads(manifest.path.read_text(
-            encoding="utf-8", errors="replace",
-        ))
-    except (OSError, _json.JSONDecodeError):
+        data = _json.loads(text)
+    except _json.JSONDecodeError:
         return None
     if not isinstance(data, dict):
         return None

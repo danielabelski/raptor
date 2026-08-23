@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass
 
 from ..models import Confidence, Dependency, Manifest, PinStyle
+from ..parsers import _safe_read
 from . import _hook_patterns, _intree_resolve
 from typing import TYPE_CHECKING
 
@@ -121,10 +122,12 @@ def _resolve_host(
       4. Fallback to the generic placeholder when reading the name
          fails.
     """
+    text = _safe_read.read_bounded(manifest.path, follow_symlinks=False)
+    if text is None:
+        return _placeholder_for_manifest(manifest)
     try:
-        text = manifest.path.read_text(encoding="utf-8", errors="replace")
         data = _json.loads(text)
-    except (OSError, _json.JSONDecodeError):
+    except _json.JSONDecodeError:
         return _placeholder_for_manifest(manifest)
     if not isinstance(data, dict):
         return _placeholder_for_manifest(manifest)
@@ -170,11 +173,9 @@ class InstallHookFinding:
 
 
 def _scan_one(path: Path, host: Dependency) -> list[InstallHookFinding]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.debug("sca.supply_chain.install_hooks: %s read failed: %s",
-                     path, e)
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         data = _json.loads(text)

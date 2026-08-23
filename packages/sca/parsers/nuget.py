@@ -507,10 +507,12 @@ def parse_packages_config(path: Path) -> list[Dependency]:
             "stdlib parser (XXE / billion-laughs exposure)", path,
         )
         return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.warning("sca.parsers.nuget: cannot read %s: %s", path, e)
+    # Bounded read — same posture as the .csproj parser above: a
+    # hostile oversized (or symlinked) packages.config is treated as
+    # unparseable rather than buffered whole and fed to the parser.
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
         return []
     try:
         root = _safe_fromstring(text)
@@ -579,10 +581,17 @@ def parse_lockfile(path: Path) -> list[Dependency]:
           }
         }
     """
+    # Bounded read — a hostile oversized (or symlinked)
+    # packages.lock.json is treated as unparseable rather than
+    # buffered whole and fed to the JSON parser.
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
+        # ``read_bounded`` already logged the underlying reason.
+        return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("sca.parsers.nuget: cannot read %s: %s", path, e)
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning("sca.parsers.nuget: cannot parse %s: %s", path, e)
         return []
 
     if not isinstance(data, dict):

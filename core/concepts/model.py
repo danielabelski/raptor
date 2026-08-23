@@ -244,42 +244,47 @@ class DomainModel:
             return cls()
         if not isinstance(raw, dict):
             return cls()
-        # Tolerate schema drift in on-disk models: a concept written by
+        # Tolerate schema drift in on-disk models: any record written by
         # an older schema (or a partial writer) must degrade, never
         # crash the loader — sibling-run models are consulted
-        # opportunistically and may predate required fields.
-        _required_defaults = {
-            f.name: "" for f in dataclasses.fields(Concept)
-            if f.default is dataclasses.MISSING
-            and f.default_factory is dataclasses.MISSING
-            and f.type in ("str", str)
-        }
+        # opportunistically and may predate required fields. The
+        # defaults cover EVERY dataclass the loader constructs, not
+        # just Concept: the Concept.description drift recurred as
+        # Invariant.concept when a later schema added that field.
+        def _drift_load(dc_type: type, record: dict) -> dict:
+            defaults = {
+                f.name: "" for f in dataclasses.fields(dc_type)
+                if f.default is dataclasses.MISSING
+                and f.default_factory is dataclasses.MISSING
+                and f.type in ("str", str)
+            }
+            return {**defaults, **_filter_fields(dc_type, record)}
+
         concepts = [
             Concept(**{
-                **_required_defaults,
-                **_filter_fields(Concept, c),
+                **_drift_load(Concept, c),
                 "evidence": [
-                    Evidence(**_filter_fields(Evidence, e))
+                    Evidence(**_drift_load(Evidence, e))
                     for e in c.get("evidence", [])
                 ],
             })
             for c in raw.get("concepts", [])
         ]
         invariants = [
-            Invariant(**_filter_fields(Invariant, i))
+            Invariant(**_drift_load(Invariant, i))
             for i in raw.get("invariants", [])
         ]
         contracts = [
-            Contract(**_filter_fields(Contract, c))
+            Contract(**_drift_load(Contract, c))
             for c in raw.get("contracts", [])
         ]
         sc_raw = raw.get("security_context")
         security_context = (
-            SecurityContext(**_filter_fields(SecurityContext, sc_raw))
+            SecurityContext(**_drift_load(SecurityContext, sc_raw))
             if sc_raw else None
         )
         bug_patterns = [
-            BugPattern(**_filter_fields(BugPattern, bp))
+            BugPattern(**_drift_load(BugPattern, bp))
             for bp in raw.get("bug_patterns", [])
         ]
         def _vocab_list(key: str) -> list:

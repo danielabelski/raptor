@@ -160,3 +160,56 @@ class TestCompleteRunReport:
         assert "Run segments: 2" in report["summary"]
         md = write_markdown_report(report, out).read_text()
         assert "Run segments: 2" in md
+
+
+class TestStudyStarvationLabel:
+    """Zero study output with questions still pending is a NAMED
+    completeness gap, not a silent detail."""
+
+    def _pending_list(self, out_dir):
+        from core.concepts.reading_list import ReadingList, ReadingListItem
+        rl = ReadingList.load(out_dir / "reading-list.json")
+        rl.items.append(ReadingListItem(
+            id="q1", question="is len checked?", source_command="/audit",
+        ))
+        rl.save()
+
+    def test_starved_run_named_in_missing(self, tmp_path):
+        import json as _json
+        from core.audit.report import _assess_completeness
+        (tmp_path / "study-stats.json").write_text(_json.dumps(
+            {"re_reviews": 0, "stale_batches": 0,
+             "stopped_reason": "max_seconds"}))
+        self._pending_list(tmp_path)
+        c = _assess_completeness(tmp_path)
+        assert any("study results" in m for m in c["missing"])
+        assert any("max_seconds" in m for m in c["missing"])
+
+    def test_no_stats_file_is_silent(self, tmp_path):
+        from core.audit.report import _assess_completeness
+        self._pending_list(tmp_path)
+        assert not any(
+            "study results" in m
+            for m in _assess_completeness(tmp_path)["missing"]
+        )
+
+    def test_healthy_study_is_silent(self, tmp_path):
+        import json as _json
+        from core.audit.report import _assess_completeness
+        (tmp_path / "study-stats.json").write_text(_json.dumps(
+            {"re_reviews": 7, "stale_batches": 0, "stopped_reason": ""}))
+        self._pending_list(tmp_path)
+        assert not any(
+            "study results" in m
+            for m in _assess_completeness(tmp_path)["missing"]
+        )
+
+    def test_zero_pending_is_silent(self, tmp_path):
+        import json as _json
+        from core.audit.report import _assess_completeness
+        (tmp_path / "study-stats.json").write_text(_json.dumps(
+            {"re_reviews": 0, "stale_batches": 0, "stopped_reason": "x"}))
+        assert not any(
+            "study results" in m
+            for m in _assess_completeness(tmp_path)["missing"]
+        )

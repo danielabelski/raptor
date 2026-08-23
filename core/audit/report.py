@@ -687,6 +687,38 @@ _RESUMABLE_STATUSES = frozenset({
 })
 
 
+def _study_starvation_label(out_dir: Path) -> str | None:
+    """Label naming study starvation, or ``None`` when study is fine.
+
+    Starvation = the consumer's persisted stats (``study-stats.json``,
+    written at drain) show zero re-reviews while ``reading-list.json``
+    still carries pending questions. Absent stats (older runs, no
+    study-eligible files) stay silent — absence of evidence is not a
+    gap claim.
+    """
+    try:
+        stats_path = out_dir / "study-stats.json"
+        if not stats_path.is_file():
+            return None
+        stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        if not isinstance(stats, dict) or stats.get("re_reviews"):
+            return None
+        from core.concepts.reading_list import ReadingList
+        pending = len(
+            ReadingList.load(out_dir / "reading-list.json").pending(),
+        )
+        if pending <= 0:
+            return None
+        reason = stats.get("stopped_reason") or "unknown"
+        return (
+            f"study results (0 re-reviews; {pending} questions still "
+            f"pending; consumer stopped: {reason})"
+        )
+    except Exception:
+        logger.debug("study starvation assessment failed", exc_info=True)
+        return None
+
+
 def _assess_completeness(out_dir: Path) -> dict[str, Any]:
     """State how complete this run dir is — never assume.
 
@@ -712,6 +744,13 @@ def _assess_completeness(out_dir: Path) -> dict[str, Any]:
         label for name, label in _EXPECTED_ARTIFACTS
         if not (out_dir / name).is_file()
     ]
+    # Study starvation is a completeness gap, not a silent detail: a
+    # run whose study consumer produced zero re-reviews while
+    # questions are still pending reviewed everything hypothesis-blind
+    # (empty invariants). Name it so the operator sees it.
+    study_gap = _study_starvation_label(out_dir)
+    if study_gap:
+        missing.append(study_gap)
     no_verdicts = not (out_dir / "review-journal.jsonl").is_file()
     partial = bool(missing) or status != "completed"
     return {

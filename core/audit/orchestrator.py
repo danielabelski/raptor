@@ -10573,8 +10573,18 @@ def _check_budget(
     config: OrchestratorConfig,
     start_time: float,
     result: OrchestratorResult,
+    *,
+    skip_max_seconds: bool = False,
 ) -> bool:
-    """Return True when budget is exhausted."""
+    """Return True when budget is exhausted.
+
+    ``skip_max_seconds`` lets a CONSUMER loop defer wall-clock
+    enforcement to its producer: the study consumer stopping on
+    ``max_seconds`` while the review loop is still dispatching paid
+    reviews saves no wall clock (the producer governs it) and starves
+    those very reviews of study results. Cost caps and SIGTERM are
+    never skipped — money is fungible across threads.
+    """
     # Keep the on-disk spend floor fresh while any loop polls the
     # rails — this is what books a hard-killed segment's spend for
     # the next resume segment.
@@ -10586,7 +10596,11 @@ def _check_budget(
         result.terminated_by = "sigterm"
         _persist_spend_floor(config, result, force=True)
         return True
-    if config.max_seconds and time.monotonic() - start_time >= config.max_seconds:
+    if (
+        not skip_max_seconds
+        and config.max_seconds
+        and time.monotonic() - start_time >= config.max_seconds
+    ):
         result.terminated_by = "max_seconds"
         return True
     if config.max_cost_usd:
@@ -10729,6 +10743,10 @@ class StudyQueue:
         with self._not_empty:
             self._producer_done = True
             self._not_empty.notify_all()
+
+    def producer_done(self) -> bool:
+        with self._not_empty:
+            return self._producer_done
 
     def is_done(self) -> bool:
         with self._not_empty:
@@ -12162,6 +12180,50 @@ def _announce_study_disabled(reason: str) -> None:
     )
 
 
+_STUDY_REQUEUE_CAP = 200
+
+
+def _requeue_pending_study(
+    config: OrchestratorConfig,
+    study_queue: StudyQueue,
+) -> int:
+    """Re-enqueue persisted pending reading-list items (resume path).
+
+    A resumed segment's reviews are mostly $0 re-imports that never
+    re-produce study questions, so the queue starts empty and prior
+    segments' unanswered questions stay starved forever. Bounded and
+    best-effort; the consumer's flush-back is idempotent by
+    deterministic item id and ``_dedup_batch`` drops already-studied
+    concepts, so re-enqueueing cannot duplicate. Returns the count.
+    """
+    try:
+        if not config.out_dir:
+            return 0
+        from core.concepts.reading_list import ReadingList
+        rl = ReadingList.load(Path(config.out_dir) / "reading-list.json")
+        pending = rl.pending()[:_STUDY_REQUEUE_CAP]
+        for it in pending:
+            study_queue.enqueue(StudyRequest(
+                question=it.question,
+                source_file=it.source_file,
+                source_function=it.source_function,
+                priority=it.priority,
+                resolution=it.resolution,
+                context=it.context,
+            ))
+        if pending:
+            logger.info(
+                "study-consumer: re-queued %d pending reading-list "
+                "item(s) persisted by prior segments", len(pending),
+            )
+        return len(pending)
+    except Exception:
+        logger.debug(
+            "study-consumer: reading-list re-queue failed", exc_info=True,
+        )
+        return 0
+
+
 def _study_consumer_loop(
     study_queue: StudyQueue,
     config: OrchestratorConfig,
@@ -12219,6 +12281,8 @@ def _study_consumer_loop(
         except Exception:  # noqa: BLE001 - probes degrade to capped-out
             determine_budget = None
 
+    _requeue_pending_study(config, study_queue)
+
     while not study_queue.is_done():
         # Idle at the top of every iteration: the drain path uses the
         # working flag to tell "mid-batch, let it finish" apart from
@@ -12228,7 +12292,17 @@ def _study_consumer_loop(
         # batches, re-reviews) — without this gate it kept working
         # long past max_seconds/max_cost (observed 27min against a
         # 900s cap) because only the main review loop checked budget.
-        if _check_budget(config, start_time, result):
+        # Wall-clock enforcement defers to the PRODUCER while it is
+        # still feeding the queue: the review loop enforces
+        # max_seconds itself, and the consumer tripping on it first
+        # starves the very reviews still being paid for of study
+        # results (a four-segment run got zero study output this way
+        # — every segment's supervisor bound was spent before the
+        # consumer's first batch). Cost caps stay absolute.
+        if _check_budget(
+            config, start_time, result,
+            skip_max_seconds=not study_queue.producer_done(),
+        ):
             logger.info(
                 "study-consumer: run budget exhausted (%s) — stopping",
                 result.terminated_by,
@@ -12625,6 +12699,20 @@ def _study_consumer_loop(
         re_review_count,
         stale_batches,
     )
+    # Persist the consumer's outcome so the report's completeness
+    # block can NAME study starvation (a four-segment run produced
+    # zero study output across every segment and the report said
+    # nothing). Best-effort — never blocks the drain.
+    try:
+        if config.out_dir:
+            from core.json import save_json
+            save_json(Path(config.out_dir) / "study-stats.json", {
+                "re_reviews": re_review_count,
+                "stale_batches": stale_batches,
+                "stopped_reason": result.terminated_by or "",
+            })
+    except Exception:
+        logger.debug("study-stats persist failed", exc_info=True)
 
 
 def _is_suspicious_outcome(key: str, outcomes: _LockedOutcomes) -> bool:

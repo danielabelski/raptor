@@ -393,3 +393,90 @@ class TestSuppressionGate:
         q.signal_consumer_done()
         assert q.consumer_done
         assert len(hold_set) == 2
+
+
+class TestProducerAwareBudgetGate:
+    """The consumer defers wall-clock enforcement to its producer:
+    max_seconds must not stop study while reviews are still being paid
+    for (a four-segment run produced zero study output because every
+    segment's supervisor-derived bound was spent before the consumer's
+    first batch)."""
+
+    def _config(self, tmp_path, **over):
+        from core.audit.orchestrator import OrchestratorConfig
+        cfg = OrchestratorConfig(
+            target_path=tmp_path, out_dir=tmp_path,
+        )
+        for k, v in over.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    def test_skip_max_seconds_defers_wall_clock(self, tmp_path):
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _check_budget,
+        )
+        cfg = self._config(tmp_path, max_seconds=1)
+        result = OrchestratorResult()
+        started_long_ago = time.monotonic() - 100
+        assert _check_budget(cfg, started_long_ago, result) is True
+        assert result.terminated_by == "max_seconds"
+        result2 = OrchestratorResult()
+        assert _check_budget(
+            cfg, started_long_ago, result2, skip_max_seconds=True,
+        ) is False
+
+    def test_skip_never_bypasses_cost_cap(self, tmp_path):
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _check_budget,
+        )
+        cfg = self._config(tmp_path, max_seconds=1, max_cost_usd=5.0)
+        result = OrchestratorResult()
+        result.total_cost_usd = 9.0
+        assert _check_budget(
+            cfg, time.monotonic() - 100, result, skip_max_seconds=True,
+        ) is True
+        assert result.terminated_by == "max_cost_usd"
+
+    def test_producer_done_accessor(self):
+        q = StudyQueue()
+        assert q.producer_done() is False
+        q.signal_producer_done()
+        assert q.producer_done() is True
+
+
+class TestRequeuePendingStudy:
+    def test_pending_items_requeued_resolved_skipped(self, tmp_path):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _requeue_pending_study,
+        )
+        from core.concepts.reading_list import ReadingList, ReadingListItem
+        rl = ReadingList.load(tmp_path / "reading-list.json")
+        rl.items.append(ReadingListItem(
+            id="a", question="does X free Y?", source_command="/audit",
+            source_file="a.c", source_function="f",
+        ))
+        rl.items.append(ReadingListItem(
+            id="b", question="answered", source_command="/audit",
+            source_file="a.c", source_function="g",
+        ))
+        rl.items[1].resolve("concept-1")
+        rl.save()
+        q = StudyQueue()
+        cfg = OrchestratorConfig(target_path=tmp_path, out_dir=tmp_path)
+        n = _requeue_pending_study(cfg, q)
+        assert n == 1
+        batch = q.dequeue_batch(max_items=10, timeout=0.1)
+        assert len(batch) == 1
+        assert batch[0].question == "does X free Y?"
+        assert batch[0].source_file == "a.c"
+
+    def test_no_out_dir_is_noop(self, tmp_path):
+        from core.audit.orchestrator import (
+            OrchestratorConfig,
+            _requeue_pending_study,
+        )
+        cfg = OrchestratorConfig(target_path=tmp_path, out_dir=None)
+        assert _requeue_pending_study(cfg, StudyQueue()) == 0

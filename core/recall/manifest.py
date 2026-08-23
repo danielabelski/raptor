@@ -50,7 +50,6 @@ never recall.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -289,9 +288,15 @@ def parse_manifest(data: Any) -> RecallManifest:
 
 def load_manifest(path: Path) -> RecallManifest:
     """Load and validate a manifest file."""
+    from core.json import load_json
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        data = load_json(path, strict=True, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError) as exc:
         msg = f"cannot read manifest {path}: {exc}"
         raise ManifestError(msg) from exc
+    if data is None:
+        # load_json returns None (no raise) for a missing file even
+        # under strict=True — keep the historical error contract.
+        msg = f"cannot read manifest {path}: file not found"
+        raise ManifestError(msg)
     return parse_manifest(data)

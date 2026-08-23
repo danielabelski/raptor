@@ -23,10 +23,14 @@ Contract notes:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
+
+# Byte budget per overlay sidecar — small per-CVE records.
+_MAX_SIDECAR_BYTES = 8 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +55,9 @@ def load_overlay(overlay_dir: Path | str | None) -> dict[str, dict[str, Any]]:
         return {}
     out: dict[str, dict[str, Any]] = {}
     for path in sorted(root.glob(f"*{SIDECAR_SUFFIX}")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.debug("env_overlay: unreadable sidecar %s", path,
-                         exc_info=True)
+        data = load_json(path, max_bytes=_MAX_SIDECAR_BYTES)
+        if data is None:
+            logger.debug("env_overlay: unreadable sidecar %s", path)
             continue
         cve_id = data.get("cve_id") if isinstance(data, dict) else None
         if not cve_id:

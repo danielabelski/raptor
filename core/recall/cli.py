@@ -8,7 +8,9 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+from core.json import load_json
 from core.recall.manifest import PROFILES, ManifestError, load_manifest
 from core.recall.matcher import clean_region_hits, match_findings
 from core.recall.cvefix_manifest import main as cvefix_manifest_main
@@ -28,6 +30,23 @@ from core.recall.score import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Byte budget for operator-supplied recall reports.
+_MAX_REPORT_BYTES = 64 * 1024 * 1024
+
+
+def _load_report_file(path: Path) -> Any:
+    """Strict bounded load of an operator-supplied report path.
+
+    Raises OSError/ValueError (matching the CLI error handlers); a
+    missing file raises instead of returning None so every failure
+    reaches the same error-and-exit-2 path.
+    """
+    data = load_json(path, strict=True, max_bytes=_MAX_REPORT_BYTES)
+    if data is None:
+        msg = f"{path}: file not found"
+        raise OSError(msg)
+    return data
 
 
 def _repo_root() -> Path:
@@ -124,8 +143,8 @@ def _cmd_census(args: argparse.Namespace) -> int:
     from core.recall.matcher import clean_region_hits
 
     try:
-        report = json.loads(args.report.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        report = _load_report_file(args.report)
+    except (OSError, ValueError) as exc:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
 
@@ -216,8 +235,8 @@ def _cmd_warm(args: argparse.Namespace) -> int:
     )
 
     try:
-        report = json.loads(args.report.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        report = _load_report_file(args.report)
+    except (OSError, ValueError) as exc:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
     records = load_suppression_records(args.suppressions)
@@ -283,9 +302,9 @@ def _cmd_verify_enforced(args: argparse.Namespace) -> int:
 
 def _cmd_compare(args: argparse.Namespace) -> int:
     try:
-        base = json.loads(args.base.read_text(encoding="utf-8"))
-        new = json.loads(args.new.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        base = _load_report_file(args.base)
+        new = _load_report_file(args.new)
+    except (OSError, ValueError) as exc:
         print(f"error: cannot read report: {exc}", file=sys.stderr)
         return 2
     delta = compare_reports(base, new)

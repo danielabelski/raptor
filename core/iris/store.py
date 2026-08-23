@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from core.evidence import EvidenceTier, TIER_RANK, stronger
+from core.json import load_json
 
 from .assumptions import (
     SafetyAssumption,
@@ -36,6 +37,9 @@ import contextlib
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 2
+
+# Byte budget for store envelopes / refined-spec artifacts.
+_MAX_STORE_BYTES = 64 * 1024 * 1024
 _STORE_DIR = "iris-specs"
 _STORE_FILE = "specs.json"
 
@@ -152,12 +156,7 @@ def load_specs(
     path = _store_path(out_dir)
     if not path.is_file():
         return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        logger.debug("iris.store: failed to load %s", path, exc_info=True)
-        return []
+    data = load_json(path, max_bytes=_MAX_STORE_BYTES)
     if not isinstance(data, dict):
         return []
     if target_path is not None:
@@ -184,12 +183,7 @@ def load_assumptions(
     path = _store_path(out_dir)
     if not path.is_file():
         return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        logger.debug("iris.store: failed to load assumptions from %s", path, exc_info=True)
-        return []
+    data = load_json(path, max_bytes=_MAX_STORE_BYTES)
     if not isinstance(data, dict):
         return []
     if target_path is not None:
@@ -213,10 +207,7 @@ def load_store_metadata(out_dir: Path) -> dict[str, Any]:
     path = _store_path(out_dir)
     if not path.is_file():
         return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
+    data = load_json(path, max_bytes=_MAX_STORE_BYTES)
     if not isinstance(data, dict):
         return {}
     return data
@@ -293,14 +284,7 @@ def load_refined_specs(out_dir: Path) -> list[TaintSpec]:
     path = Path(out_dir) / "iris-taint-specs-refined.json"
     if not path.is_file():
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        logger.debug(
-            "iris.store: failed to load refined artifact %s",
-            path, exc_info=True,
-        )
-        return []
+    data = load_json(path, max_bytes=_MAX_STORE_BYTES)
     if not isinstance(data, list):
         return []
     return _specs_from_list(data)

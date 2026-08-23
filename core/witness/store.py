@@ -29,6 +29,7 @@ import logging
 from pathlib import Path
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
+from core.json import load_json
 from core.witness.types import Witness, compute_bytes_hash
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,9 @@ class WitnessStoreError(Exception):
 
 
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+# Byte budget for a single witness manifest — small JSON documents.
+_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def _valid_hash_key(bytes_hash: str) -> bool:
@@ -264,7 +268,19 @@ class WitnessStore:
             )
             raise WitnessStoreError(msg)
         try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data = load_json(
+                manifest_path, strict=True,
+                max_bytes=_MAX_MANIFEST_BYTES,
+            )
+            if data is None:
+                # strict load_json still returns None (no raise) for a
+                # missing file — the is_file check above can race a
+                # concurrent delete; keep the WitnessStoreError
+                # contract instead of crashing in from_dict.
+                msg = (
+                    f"manifest at {manifest_path} vanished during read"
+                )
+                raise WitnessStoreError(msg)
             witness = Witness.from_dict(data)
         except json.JSONDecodeError as exc:
             msg = f"manifest at {manifest_path} is malformed JSON: {exc}"
@@ -300,7 +316,19 @@ class WitnessStore:
                 )
                 continue
             try:
-                data = json.loads(manifest.read_text(encoding="utf-8"))
+                data = load_json(
+                    manifest, strict=True,
+                    max_bytes=_MAX_MANIFEST_BYTES,
+                )
+                if data is None:
+                    # Missing-file race (glob → delete → load):
+                    # strict load_json returns None instead of
+                    # raising; skip like any other unreadable row.
+                    logger.warning(
+                        "WitnessStore: skipping vanished manifest %s",
+                        manifest,
+                    )
+                    continue
                 witness = Witness.from_dict(data)
             except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError) as exc:
                 logger.warning(

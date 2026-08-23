@@ -305,8 +305,14 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     try:
-        spec = CvefixSpec.from_dict(
-            json.loads(args.spec.read_text(encoding="utf-8")))
+        from core.json import load_json
+        spec_doc = load_json(
+            args.spec, strict=True, max_bytes=8 * 1024 * 1024)
+        if spec_doc is None:
+            # strict load_json still returns None for a missing file.
+            msg = f"cannot read spec {args.spec}: file not found"
+            raise CvefixManifestError(msg)
+        spec = CvefixSpec.from_dict(spec_doc)
         recall_m, twin = generate_manifests(spec)
     except (OSError, ValueError, CvefixManifestError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -188,13 +188,11 @@ def get_bypass_findings(
     path = Path(out_dir) / "iris-bypass-findings.json"
     if not path.is_file():
         return []
-    try:
-        import json
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return [BypassFinding.from_dict(d) for d in data]
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        logger.debug("iris.api: failed to load bypass findings from %s", path, exc_info=True)
+    from core.json import load_json
+    data = load_json(path, max_bytes=64 * 1024 * 1024)
+    if not isinstance(data, list):
         return []
+    return [BypassFinding.from_dict(d) for d in data]
 
 
 _ANNOTATION_STATUS_TO_ROLE = {

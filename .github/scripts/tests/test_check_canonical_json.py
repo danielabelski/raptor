@@ -143,6 +143,172 @@ class TestRule2DumpsFlowsToHash:
         ))
         assert det.scan_tree(root) == []
 
+    def test_incremental_update_form_flagged(
+            self, det, tmp_path: Path) -> None:
+        """h = hashlib.sha256(); h.update(json.dumps(...)) — the
+        incremental feed is the same canonical lane as the
+        constructor-argument form."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x):\n"
+            "    h = hashlib.sha256()\n"
+            "    h.update(json.dumps(x, sort_keys=True).encode())\n"
+            "    return h.hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:fingerprint" in keys
+
+    def test_incremental_update_via_tainted_name_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x):\n"
+            "    encoded = json.dumps(x).encode()\n"
+            "    h = hashlib.sha256()\n"
+            "    h.update(encoded)\n"
+            "    return h.hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:fingerprint" in keys
+
+    def test_chained_update_on_constructor_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def feed(x):\n"
+            "    hashlib.sha256().update(json.dumps(x).encode())\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:feed" in keys
+
+    def test_update_with_untainted_data_is_clean(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x, raw: bytes):\n"
+            "    print(json.dumps(x))\n"
+            "    h = hashlib.sha256()\n"
+            "    h.update(raw)\n"
+            "    return h.hexdigest()\n"
+        ))
+        assert det.scan_tree(root) == []
+
+    def test_tuple_unpack_taint_flagged(
+            self, det, tmp_path: Path) -> None:
+        """a, b = json.dumps(x), other — the unpacked name carries
+        the dumps output into the hash."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x, other):\n"
+            "    encoded, meta = json.dumps(x), other\n"
+            "    return hashlib.sha256(encoded.encode()).hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:fingerprint" in keys
+
+    def test_tuple_unpack_position_precision(
+            self, det, tmp_path: Path) -> None:
+        """Positional tuple assignment taints only the position that
+        received the dumps output — hashing the OTHER element stays
+        clean."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x, other: bytes):\n"
+            "    encoded, meta = json.dumps(x), other\n"
+            "    return hashlib.sha256(meta).hexdigest()\n"
+        ))
+        assert det.scan_tree(root) == []
+
+    def test_tuple_unpack_from_call_taints_all_names(
+            self, det, tmp_path: Path) -> None:
+        """A non-literal RHS containing dumps taints every unpacked
+        name (conservative fallback)."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x):\n"
+            "    a, b = (json.dumps(x), 1) if x else ('', 2)\n"
+            "    return hashlib.sha256(b).hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:fingerprint" in keys
+
+    def test_annotated_assignment_taint_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib, json\n"
+            "def fingerprint(x):\n"
+            "    encoded: str = json.dumps(x)\n"
+            "    return hashlib.sha256(encoded.encode()).hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert "dumps_flows_to_hash:core/newmod.py:fingerprint" in keys
+
+
+class TestRuleSubstrateDumpsFlowsToHash:
+    """dumps_display / dumps_artifact output is encoder-dependent —
+    feeding it to a hash forks digests across hosts."""
+
+    def test_display_into_hash_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib\n"
+            "from core.json import dumps_display\n"
+            "def fingerprint(x):\n"
+            "    s = dumps_display(x)\n"
+            "    return hashlib.sha256(s.encode()).hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert ("substrate_dumps_flows_to_hash:core/newmod.py:fingerprint"
+                ) in keys
+
+    def test_artifact_into_hash_update_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib\n"
+            "from core.json import dumps_artifact\n"
+            "def fingerprint(x):\n"
+            "    h = hashlib.sha256()\n"
+            "    h.update(dumps_artifact(x).encode())\n"
+            "    return h.hexdigest()\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert ("substrate_dumps_flows_to_hash:core/newmod.py:fingerprint"
+                ) in keys
+
+    def test_module_attribute_call_form_flagged(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib\n"
+            "import core.json as cj\n"
+            "def fingerprint(x):\n"
+            "    return hashlib.sha256(cj.dumps_display(x).encode())\n"
+        ))
+        keys = {det.finding_key(f) for f in det.scan_tree(root)}
+        assert ("substrate_dumps_flows_to_hash:core/newmod.py:fingerprint"
+                ) in keys
+
+    def test_display_without_hash_is_clean(
+            self, det, tmp_path: Path) -> None:
+        root = _tree(tmp_path, "core/newmod.py", (
+            "from core.json import dumps_display\n"
+            "def show(x):\n"
+            "    print(dumps_display(x))\n"
+        ))
+        assert det.scan_tree(root) == []
+
+    def test_canonical_dumper_into_hash_is_clean(
+            self, det, tmp_path: Path) -> None:
+        """dumps_canonical is THE hash-lane serializer — hashing its
+        output is the blessed pattern, not a finding."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib\n"
+            "from core.json import dumps_canonical\n"
+            "def fingerprint(x):\n"
+            "    return hashlib.sha256("
+            "dumps_canonical(x).encode()).hexdigest()\n"
+        ))
+        assert det.scan_tree(root) == []
+
 
 class TestBaselineSemantics:
     def test_baselined_finding_passes_and_stale_warns(
@@ -209,4 +375,41 @@ class TestRealTreeContract:
         new = {det.finding_key(f) for f in findings} - set(baseline)
         assert ("raw_dumps_in_canonical_module:"
                 "core/coverage/journal_mac.py:_injected_bad_canonical"
+                ) in new
+
+    def test_injected_dumps_in_typosquat_module_fails(
+            self, det, tmp_path: Path) -> None:
+        """The typosquat list refresher's byte-compare form is frozen
+        via the module list: a NEW raw dumps there (outside the
+        baselined refresh_all site) is a NEW finding."""
+        root = _tree(
+            tmp_path, "packages/sca/refresh_typosquat_lists.py", (
+                "import json\n"
+                "def _injected_writer(names, target):\n"
+                "    target.write_text(json.dumps(names, indent=2))\n"
+            ))
+        findings = det.scan_tree(root)
+        baseline = det.load_baseline(
+            _SCRIPT.parent / "canonical_json_baseline.json")
+        new = {det.finding_key(f) for f in findings} - set(baseline)
+        assert ("raw_dumps_in_canonical_module:"
+                "packages/sca/refresh_typosquat_lists.py:_injected_writer"
+                ) in new
+
+    def test_injected_substrate_dumps_into_hash_fails(
+            self, det, tmp_path: Path) -> None:
+        """A dumps_display-into-hash flow anywhere in the tree is a NEW
+        finding against the shipped baseline (no such flow is
+        baselined)."""
+        root = _tree(tmp_path, "core/newmod.py", (
+            "import hashlib\n"
+            "from core.json import dumps_display\n"
+            "def _injected(x):\n"
+            "    return hashlib.sha256(dumps_display(x).encode())\n"
+        ))
+        findings = det.scan_tree(root)
+        baseline = det.load_baseline(
+            _SCRIPT.parent / "canonical_json_baseline.json")
+        new = {det.finding_key(f) for f in findings} - set(baseline)
+        assert ("substrate_dumps_flows_to_hash:core/newmod.py:_injected"
                 ) in new

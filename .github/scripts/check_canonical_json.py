@@ -29,11 +29,19 @@ Two detector rules:
 
   dumps_flows_to_hash
       repo-wide heuristic: a ``json.dumps(...)`` result that flows into
-      ``hashlib.*`` / ``hmac.*`` within the same function — either
-      nested directly in the call or via an intermediate local name —
-      is a NEW canonical site that missed the table. Route it through
-      ``dumps_canonical`` (or baseline it with the reason its byte
-      form must differ).
+      ``hashlib.*`` / ``hmac.*`` within the same function — nested
+      directly in the constructor call, via an intermediate local name
+      (including tuple-unpack and annotated assignments), or fed to a
+      hash object's ``.update(...)`` — is a NEW canonical site that
+      missed the table. Route it through ``dumps_canonical`` (or
+      baseline it with the reason its byte form must differ).
+
+  substrate_dumps_flows_to_hash
+      same flow detection for the substrate's NON-canonical dumpers
+      (``dumps_display`` / ``dumps_artifact``): their bytes are
+      explicitly non-contractual and encoder-dependent (orjson when
+      installed), so hashing them silently forks digests across hosts.
+      Hash lanes must use ``dumps_canonical``.
 
 CI semantics (baseline pattern, cf. ``check_miswiring.py`` /
 ``check_vocab_lists.py``): findings are keyed WITHOUT line numbers
@@ -101,7 +109,15 @@ CANONICAL_MODULES = frozenset({
     "core/concepts/model.py",
     "packages/sca/calibration/build.py",
     "core/json/jsonl.py",
+    # unchanged-detection byte compare against the previously-written
+    # blob — the emitted byte form is the change detector itself
+    "packages/sca/refresh_typosquat_lists.py",
 })
+
+# The substrate's non-canonical serializers: bytes are explicitly
+# NON-contractual (encoder-dependent when orjson is installed), so
+# their output must never feed a hash.
+NON_CANONICAL_SUBSTRATE_DUMPERS = {"dumps_display", "dumps_artifact"}
 
 HASH_MODULE_NAMES = {"hashlib", "hmac"}
 
@@ -181,14 +197,24 @@ class _FunctionScanner(ast.NodeVisitor):
         self.qual_stack: list[str] = []
         self.raw_dumps: list[tuple[str, int]] = []       # (qualname, lineno)
         self.hash_flows: list[tuple[str, int]] = []      # (qualname, lineno)
-        # per-function name-taint state, pushed/popped with scope
+        # (qualname, lineno) — dumps_display/dumps_artifact into hash
+        self.substrate_hash_flows: list[tuple[str, int]] = []
+        # per-function name-taint state, pushed/popped with scope:
+        # names holding raw-dumps output / substrate-dumps output /
+        # hashlib-hmac hash objects (for the .update() form)
         self._tainted_stack: list[set[str]] = [set()]
+        self._display_tainted_stack: list[set[str]] = [set()]
+        self._hash_obj_stack: list[set[str]] = [set()]
 
     # -- scope handling ---------------------------------------------------
     def _enter(self, name: str, node: ast.AST) -> None:
         self.qual_stack.append(name)
         self._tainted_stack.append(set())
+        self._display_tainted_stack.append(set())
+        self._hash_obj_stack.append(set())
         self.generic_visit(node)
+        self._hash_obj_stack.pop()
+        self._display_tainted_stack.pop()
         self._tainted_stack.pop()
         self.qual_stack.pop()
 
@@ -209,6 +235,14 @@ class _FunctionScanner(ast.NodeVisitor):
     def _tainted(self) -> set[str]:
         return self._tainted_stack[-1]
 
+    @property
+    def _display_tainted(self) -> set[str]:
+        return self._display_tainted_stack[-1]
+
+    @property
+    def _hash_objs(self) -> set[str]:
+        return self._hash_obj_stack[-1]
+
     # -- helpers ----------------------------------------------------------
     def _contains_json_dumps(self, node: ast.AST) -> bool:
         for sub in ast.walk(node):
@@ -217,28 +251,106 @@ class _FunctionScanner(ast.NodeVisitor):
                 return True
         return False
 
+    def _contains_substrate_dumps(self, node: ast.AST) -> bool:
+        """dumps_display(...) / dumps_artifact(...) anywhere below
+        *node* — matched by trailing callee name so every import form
+        (bare, aliased-module attribute) is covered."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                parts = _callee_parts(sub.func)
+                if parts and parts[-1] in NON_CANONICAL_SUBSTRATE_DUMPERS:
+                    return True
+        return False
+
     def _references_tainted(self, node: ast.AST) -> bool:
         return any(
             isinstance(sub, ast.Name) and sub.id in self._tainted
             for sub in ast.walk(node))
 
+    def _references_display_tainted(self, node: ast.AST) -> bool:
+        return any(
+            isinstance(sub, ast.Name) and sub.id in self._display_tainted
+            for sub in ast.walk(node))
+
+    @staticmethod
+    def _target_names(target: ast.expr) -> list[ast.Name]:
+        """Name nodes bound by an assignment target, including the
+        elements of (possibly nested) tuple/list unpacking and the
+        inner target of a starred element."""
+        names: list[ast.Name] = []
+        stack: list[ast.expr] = [target]
+        while stack:
+            t = stack.pop()
+            if isinstance(t, ast.Name):
+                names.append(t)
+            elif isinstance(t, (ast.Tuple, ast.List)):
+                stack.extend(t.elts)
+            elif isinstance(t, ast.Starred):
+                stack.append(t.value)
+        return names
+
+    def _bind(self, target: ast.expr, value: ast.expr) -> None:
+        """Propagate taint from *value* into the names *target* binds.
+
+        Tuple targets match positionally against a tuple/list literal
+        value (``a, b = json.dumps(x), other`` taints only ``a``);
+        any other shape taints every bound name conservatively.
+        """
+        if isinstance(target, (ast.Tuple, ast.List)) \
+                and isinstance(value, (ast.Tuple, ast.List)) \
+                and len(target.elts) == len(value.elts) \
+                and not any(isinstance(e, ast.Starred) for e in target.elts):
+            for t_elt, v_elt in zip(target.elts, value.elts):
+                self._bind(t_elt, v_elt)
+            return
+        names = self._target_names(target)
+        if not names:
+            return
+        if self._contains_json_dumps(value) or self._references_tainted(value):
+            self._tainted.update(n.id for n in names)
+        if self._contains_substrate_dumps(value) \
+                or self._references_display_tainted(value):
+            self._display_tainted.update(n.id for n in names)
+        if isinstance(value, ast.Call) and _is_hash_call(value):
+            self._hash_objs.update(n.id for n in names)
+
     # -- detectors ----------------------------------------------------------
     def visit_Assign(self, node: ast.Assign) -> None:
-        if self._contains_json_dumps(node.value) \
-                or self._references_tainted(node.value):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    self._tainted.add(t.id)
+        for t in node.targets:
+            self._bind(t, node.value)
         self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._bind(node.target, node.value)
+        self.generic_visit(node)
+
+    def _is_hash_update(self, call: ast.Call) -> bool:
+        """``<hash-obj>.update(...)`` — the incremental feed form:
+        the receiver is a name bound to a hashlib/hmac constructor
+        result, or the constructor call itself (chained)."""
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "update"):
+            return False
+        recv = func.value
+        if isinstance(recv, ast.Name):
+            return recv.id in self._hash_objs
+        return isinstance(recv, ast.Call) and _is_hash_call(recv)
 
     def visit_Call(self, node: ast.Call) -> None:
         if _is_json_dumps(node, self.json_aliases, self.bare_dumps):
             self.raw_dumps.append((self._qualname, node.lineno))
-        if _is_hash_call(node):
+        if _is_hash_call(node) or self._is_hash_update(node):
             args = list(node.args) + [kw.value for kw in node.keywords]
             for a in args:
                 if self._contains_json_dumps(a) or self._references_tainted(a):
                     self.hash_flows.append((self._qualname, node.lineno))
+                    break
+            for a in args:
+                if self._contains_substrate_dumps(a) \
+                        or self._references_display_tainted(a):
+                    self.substrate_hash_flows.append(
+                        (self._qualname, node.lineno))
                     break
         self.generic_visit(node)
 
@@ -274,6 +386,15 @@ def scan_tree(root: Path) -> list[dict]:
                 "use core.json.dumps_canonical or baseline with the "
                 "reason its byte form must differ"),
         } for qual, lineno in scanner.hash_flows)
+        findings.extend({
+            "rule": "substrate_dumps_flows_to_hash",
+            "file": rel, "line": lineno, "symbol": qual,
+            "detail": (
+                f"dumps_display/dumps_artifact output flows into "
+                f"hashlib/hmac in {rel} ({qual}) — those serializers' "
+                "bytes are non-contractual and encoder-dependent; hash "
+                "lanes must use core.json.dumps_canonical"),
+        } for qual, lineno in scanner.substrate_hash_flows)
     return findings
 
 

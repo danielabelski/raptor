@@ -91,6 +91,9 @@
   },
   "raw_dumps_in_canonical_module:packages/sca/calibration/build.py:_write_if_changed": {
    "note": "byte-identical-reproducibility contract: unchanged-detection byte compare + CI auto-PR keyed on content change — frozen"
+  },
+  "raw_dumps_in_canonical_module:packages/sca/refresh_typosquat_lists.py:refresh_all": {
+   "note": "unchanged-detection byte compare: the freshly-rendered blob is compared against the previously-written file to decide updated-vs-unchanged, so the emitted byte form (indent=2, stdlib) is the change detector itself — frozen"
   }
  }
 }

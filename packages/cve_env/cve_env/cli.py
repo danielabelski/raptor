@@ -120,6 +120,14 @@ def _cmd_up(args: argparse.Namespace) -> int:
               "out an unverified endpoint (pass --no-verify to insist)",
               file=sys.stderr)
         return 1
+    if getattr(args, "allow_egress", False):
+        from core.env.spec import NetworkPolicy
+
+        # explicit operator override of the spec's isolated default
+        spec.network = NetworkPolicy(mode="unrestricted")
+    if getattr(getattr(spec, "network", None), "mode", "") == "unrestricted":
+        print("up: egress ALLOWED for this instance (default docker "
+              "bridge, full outbound)", file=sys.stderr)
     print(f"up: provisioning recorded spec from {source_run}",
           file=sys.stderr)
     from core.env.provision import provision
@@ -131,6 +139,15 @@ def _cmd_up(args: argparse.Namespace) -> int:
         print(f"up: {result.reason or 'provision failed'}"
               f"{': ' + result.detail if result.detail else ''}",
               file=sys.stderr)
+        if (result.reason == "verify_failed"
+                and getattr(getattr(spec, "network", None), "mode",
+                            "isolated") == "isolated"):
+            # recorded specs were often first verified on the
+            # full-egress build path; an app fetching at STARTUP fails
+            # here with no clue otherwise.
+            print("up: note — the instance launched network-isolated "
+                  "per its spec; if the app needs outbound at startup, "
+                  "retry with --allow-egress", file=sys.stderr)
         return 1
     endpoint = env.handle.endpoint()
     payload = {
@@ -154,6 +171,41 @@ def _cmd_up(args: argparse.Namespace) -> int:
         print(f"up: environment running (no published endpoint on the "
               f"{env.tier} tier) — tear down with: cve-env down "
               f"{env.provision_id}", file=sys.stderr)
+    return 0
+
+
+def _cmd_ps(args: argparse.Namespace) -> int:
+    """List live `cve-env up` provisions: down_token, endpoint, image,
+    age. The registry is docker itself (the OWNER_LABEL on every
+    provision-created container) — nothing to get stale."""
+    from core.container.proc import run_cli
+    from core.env.provision import OWNER_LABEL
+
+    fmt = ('{{.Label "' + OWNER_LABEL + '"}}\t{{.Names}}\t{{.Ports}}'
+           '\t{{.Image}}\t{{.RunningFor}}')
+    res = run_cli(["docker", "ps", "--filter", f"label={OWNER_LABEL}",
+                   "--format", fmt], timeout=30)
+    if res.returncode != 0:
+        print(f"ps: docker ps failed: {(res.stderr or '').strip()[:300]}",
+              file=sys.stderr)
+        return 1
+    rows = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 5 or not parts[0]:
+            continue
+        token, name, ports, image, age = parts
+        endpoint = None
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)->", ports)
+        if m:
+            endpoint = {"host": m.group(1), "port": int(m.group(2))}
+        rows.append({"down_token": token, "name": name,
+                     "endpoint": endpoint, "image": image,
+                     "running_for": age.strip()})
+    print(json.dumps(rows, indent=2))
+    print(f"ps: {len(rows)} live provision(s)"
+          + (" — tear down with: cve-env down <down_token>" if rows
+             else ""), file=sys.stderr)
     return 0
 
 
@@ -223,6 +275,10 @@ def _describe_record(args: argparse.Namespace) -> CveRecord:
     if not text:
         print("--describe is empty (file or text)", file=sys.stderr)
         raise SystemExit(2)
+    if len(text) > 4000:
+        print(f"--describe: description is {len(text)} chars; the agent "
+              f"prompt embeds the first ~4000 (sanitized) and truncates "
+              f"the rest at a word boundary", file=sys.stderr)
     # json array encoding: unambiguous field boundaries (a plain join
     # would let a newline inside --product alias a different triple).
     digest = hashlib.sha256(json.dumps(
@@ -1197,7 +1253,18 @@ def _build_argparser() -> argparse.ArgumentParser:
                    help="skip re-running the verify plan before handing "
                         "out the endpoint (default: verify, and refuse "
                         "the endpoint on failure)")
+    u.add_argument("--allow-egress", action="store_true",
+                   help="launch with network.mode=unrestricted (the "
+                        "default docker bridge, full egress) instead "
+                        "of the spec's isolated default")
     u.set_defaults(func=_cmd_up)
+
+    ps = sub.add_parser(
+        "ps",
+        help="List live `cve-env up` provisions (down_token, endpoint, "
+             "image, age)",
+    )
+    ps.set_defaults(func=_cmd_ps)
 
     dn = sub.add_parser(
         "down",

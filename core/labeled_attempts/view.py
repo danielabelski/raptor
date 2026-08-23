@@ -1026,6 +1026,11 @@ def render_outcome_summary(outcomes: Iterable[VerifiedOutcome]) -> str:
                 f"{o.oracle.value}: {_safe_terminal(obs)}; {repro}"
                 if obs else f"{o.oracle.value}; {repro}"
             )
+            if o.evidence.get("operator_described"):
+                # --describe builds: verified against an operator
+                # assertion, not a CVE record — a weaker oracle the
+                # reader must see, not infer from a DESC- id.
+                detail += "; operator-described"
             lines.append(f"  - {fid}  {cwe}  {where}  [{detail}]")
 
     return "\n".join(lines).rstrip() + "\n"

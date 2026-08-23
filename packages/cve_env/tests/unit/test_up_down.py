@@ -13,7 +13,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cve_env.cli import _build_argparser, _cmd_down, _cmd_up
+from cve_env.cli import (
+    _build_argparser,
+    _cmd_down,
+    _cmd_up,
+    _describe_record,
+)
 
 
 def _spec(source_run="/runs/a"):
@@ -32,7 +37,9 @@ def _env(endpoint=("127.0.0.1", 32801), verified=True):
 
 
 def _args(**over):
-    base = dict(env_id="DESC-aaaabbbbcccc", from_dir=None, no_verify=False)
+    base = dict(env_id="DESC-aaaabbbbcccc", from_dir=None, no_verify=False,
+                allow_egress=False, describe="nginx 1.18",
+                product=None, version=None)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -208,3 +215,106 @@ class TestReviewRemediations:
                                "host": "127.0.0.1", "port": 32813,
                                "send_text": "x"}])
         assert out == [{"type": "tcp_probe_check", "send_text": "x"}]
+
+
+class TestPs:
+    def test_ps_parses_docker_rows(self, capsys):
+        from types import SimpleNamespace as NS
+
+        from cve_env.cli import _cmd_ps
+        out = ('tok123\traptor-env-abc\t127.0.0.1:32816->80/tcp\t'
+               'nginx:1.18.0\t5 minutes ago\n')
+        with patch("core.container.proc.run_cli",
+                   return_value=NS(returncode=0, stdout=out, stderr="")):
+            rc = _cmd_ps(NS())
+        assert rc == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert rows == [{"down_token": "tok123", "name": "raptor-env-abc",
+                         "endpoint": {"host": "127.0.0.1", "port": 32816},
+                         "image": "nginx:1.18.0",
+                         "running_for": "5 minutes ago"}]
+
+    def test_ps_empty_is_clean(self, capsys):
+        from types import SimpleNamespace as NS
+
+        from cve_env.cli import _cmd_ps
+        with patch("core.container.proc.run_cli",
+                   return_value=NS(returncode=0, stdout="", stderr="")):
+            rc = _cmd_ps(NS())
+        assert rc == 0
+        assert json.loads(capsys.readouterr().out) == []
+
+
+class TestEgressPolicy:
+    def test_up_default_is_isolated(self, capsys):
+        seen = {}
+
+        def fake_provision(spec, **kw):
+            seen["mode"] = getattr(getattr(spec, "network", None),
+                                   "mode", "isolated")
+            return SimpleNamespace(ok=True, environment=_env(),
+                                   reason="", detail="")
+
+        spec = _spec()
+        spec.network = SimpleNamespace(mode="isolated", egress_hosts=())
+        with patch("cve_env.infra.spec_record.find_replayable_spec",
+                   return_value=spec), \
+             patch("core.env.provision.provision", fake_provision):
+            rc = _cmd_up(_args())
+        assert rc == 0
+        assert seen["mode"] == "isolated"
+        assert "egress ALLOWED" not in capsys.readouterr().err
+
+    def test_allow_egress_flag_sets_unrestricted_and_warns(self, capsys):
+        spec = _spec()
+        spec.network = SimpleNamespace(mode="isolated", egress_hosts=())
+        outcome = SimpleNamespace(ok=True, environment=_env(),
+                                  reason="", detail="")
+        with patch("cve_env.infra.spec_record.find_replayable_spec",
+                   return_value=spec), \
+             patch("core.env.provision.provision", return_value=outcome):
+            rc = _cmd_up(_args(allow_egress=True))
+        assert rc == 0
+        assert spec.network.mode == "unrestricted"
+        assert "egress ALLOWED" in capsys.readouterr().err
+
+    def test_isolated_verify_failure_names_the_out(self, capsys):
+        spec = _spec()
+        spec.network = SimpleNamespace(mode="isolated", egress_hosts=())
+        outcome = SimpleNamespace(ok=False, environment=None,
+                                  reason="verify_failed", detail="probe")
+        with patch("cve_env.infra.spec_record.find_replayable_spec",
+                   return_value=spec), \
+             patch("core.env.provision.provision", return_value=outcome):
+            rc = _cmd_up(_args())
+        assert rc == 1
+        assert "--allow-egress" in capsys.readouterr().err
+
+
+class TestDescribeTruncationWarning:
+    def test_long_description_warns(self, capsys):
+        _describe_record(_args(describe="x" * 4500))
+        assert "embeds the first ~4000" in capsys.readouterr().err
+
+    def test_short_description_silent(self, capsys):
+        _describe_record(_args(describe="nginx 1.18"))
+        assert "embeds the first" not in capsys.readouterr().err
+
+
+class TestScorecardSegregation:
+    def test_desc_id_routes_to_described_class(self):
+        from unittest.mock import MagicMock
+
+        from cve_env.infra.scorecard import (
+            DECISION_CLASS,
+            DECISION_CLASS_DESCRIBED,
+            record_build_outcome,
+        )
+        sc = MagicMock()
+        assert record_build_outcome("m1", "DESC-aaaabbbbcccc", "success",
+                                    scorecard=sc)
+        assert sc.record_event.call_args.args[0] == DECISION_CLASS_DESCRIBED
+        sc2 = MagicMock()
+        assert record_build_outcome("m1", "CVE-2018-7600", "success",
+                                    scorecard=sc2)
+        assert sc2.record_event.call_args.args[0] == DECISION_CLASS

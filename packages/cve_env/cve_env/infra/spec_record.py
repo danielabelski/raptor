@@ -31,6 +31,21 @@ from pathlib import Path
 from core.env.spec import EnvironmentSpec, RunSpec, SourceSpec
 from core.env.store import RUN_SPEC_FILENAME, save_run_spec
 
+
+def _id_spec_filename(cve_id: str) -> str:
+    """Collision-proof per-id spec filename for shared directories.
+
+    The canonical ``environment-spec.json`` is one-per-directory, so on
+    a SHARED audit root (the bin/cve-env facade default) a later
+    successful build of a different id silently overwrote the earlier
+    spec — its $0 replay was lost. Both CVE- and DESC- ids are
+    filename-safe; the substitution is defensive.
+    """
+    import re as _re
+
+    safe = _re.sub(r"[^A-Za-z0-9._-]", "_", cve_id)
+    return f"environment-spec.{safe}.json"
+
 logger = logging.getLogger(__name__)
 
 #: Local tags the in-session build tools assign — never replayable.
@@ -160,7 +175,15 @@ def record_run_spec(
         spec = derive_replay_spec(cve_id, version, tool_uses)
         if spec is None:
             return None
-        return save_run_spec(spec, out_dir)
+        path = save_run_spec(spec, out_dir)
+        # Collision-proof twin: the canonical name is latest-wins on
+        # shared directories; the per-id copy survives later builds of
+        # other ids (the reader prefers it).
+        from core.atomic_fs import write_text_atomically
+
+        write_text_atomically(Path(out_dir) / _id_spec_filename(cve_id),
+                              spec.to_json() + "\n")
+        return path
     except Exception:  # noqa: BLE001 — recording must never break a build
         logger.debug("spec_record: recording failed", exc_info=True)
         return None
@@ -199,8 +222,13 @@ def find_replayable_spec(
     for root, direct in roots:
         candidates = [root] if direct else _subdirs(root)
         for d in candidates:
-            path = d / RUN_SPEC_FILENAME
+            # per-id file first (immune to latest-wins overwrites on
+            # shared dirs), canonical name second (older runs).
+            path = d / _id_spec_filename(cve_id)
             spec = _load_matching(path, cve_id)
+            if spec is None:
+                path = d / RUN_SPEC_FILENAME
+                spec = _load_matching(path, cve_id)
             if spec is None:
                 continue
             spec.markers.setdefault("origin", {})["source_run"] = str(d)

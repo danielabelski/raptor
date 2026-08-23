@@ -31,6 +31,11 @@ if TYPE_CHECKING:  # pragma: no cover — type-only import
 logger = logging.getLogger(__name__)
 
 DECISION_CLASS = "cve-env:build"
+#: Operator-described (--describe) builds are a WEAKER oracle than
+#: CVE-pinned ones (the verify plan asserts only what the operator
+#: described) — a separate decision class keeps their reliability
+#: stats from inflating or diluting the CVE-build cell.
+DECISION_CLASS_DESCRIBED = "cve-env:build-described"
 
 # status → outcome. Absent statuses record nothing.
 _ADJUDICATION: dict[str, str] = {
@@ -76,7 +81,10 @@ def record_build_outcome(
         from core.llm.scorecard.scorecard import EventType
 
         sc = scorecard if scorecard is not None else _default_scorecard()
-        sc.record_event(DECISION_CLASS, model_id, EventType.TOOL_EVIDENCE, outcome)
+        decision_class = (DECISION_CLASS_DESCRIBED
+                          if cve_id.startswith("DESC-")
+                          else DECISION_CLASS)
+        sc.record_event(decision_class, model_id, EventType.TOOL_EVIDENCE, outcome)
         return True
     except Exception:  # noqa: BLE001 — telemetry must never break the run
         logger.debug(

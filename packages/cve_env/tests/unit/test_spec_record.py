@@ -113,11 +113,31 @@ class TestRecordAndFind:
             "CVE-1999-0001", out_dir=tmp_path) is None
 
     def test_find_ignores_unverified_marker(self, tmp_path):
-        path = record_run_spec(CVE, "8.5.0", _uses(), tmp_path)
-        data = json.loads(path.read_text())
-        data["markers"]["origin"]["verified"] = False
-        path.write_text(json.dumps(data))
+        record_run_spec(CVE, "8.5.0", _uses(), tmp_path)
+        # recording writes the canonical file AND the per-id twin —
+        # the unverified marker must gate BOTH lookups
+        for path in tmp_path.glob("environment-spec*.json"):
+            data = json.loads(path.read_text())
+            data["markers"]["origin"]["verified"] = False
+            path.write_text(json.dumps(data))
         assert find_replayable_spec(CVE, out_dir=tmp_path) is None
+
+    def test_shared_dir_overwrite_survives_via_id_twin(self, tmp_path):
+        """The facade's shared audit root: a later build of a DIFFERENT
+        id overwrites the canonical environment-spec.json; the earlier
+        id's replay must survive through its per-id twin."""
+        record_run_spec(CVE, "8.5.0", _uses(), tmp_path)
+        other = "CVE-2020-1234"
+        record_run_spec(other, "2.0",
+                        [{"name": "docker_run",
+                          "input": {"image": "other:2.0",
+                                    "container_port": 80}},
+                         {"name": "verify", "input": {"plan": _VERIFY_PLAN}}],
+                        tmp_path)
+        first = find_replayable_spec(CVE, out_dir=tmp_path)
+        second = find_replayable_spec(other, out_dir=tmp_path)
+        assert first is not None and first.source.image_ref == "drupal:8.5.0"
+        assert second is not None and second.source.image_ref == "other:2.0"
 
     def test_find_newest_across_project_runs(self, tmp_path):
         import os

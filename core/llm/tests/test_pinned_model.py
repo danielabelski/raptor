@@ -106,6 +106,30 @@ def test_pinned_llm_config_no_credentials_returns_bare_config():
     assert cfg.fallback_models == []
 
 
+def test_pinned_llm_config_provider_name_uses_provider_builder(monkeypatch):
+    """A pin that names a PROVIDER ("claudecode") uses that provider
+    builder's config verbatim — including its own model_name — instead
+    of falling through provider inference to a keyless anthropic config
+    that dies with an SDK auth error at call time."""
+    monkeypatch.setenv("RAPTOR_CC_MODEL", "claude-opus-4-7")
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+    cfg = _pinned_llm_config("claudecode")
+    assert cfg.primary_model.provider == "claudecode"
+    assert cfg.primary_model.model_name == "claude-opus-4-7"
+    assert cfg.fallback_models == []
+
+
+def test_pinned_llm_config_provider_name_unavailable_raises(monkeypatch):
+    """Provider-name pin whose backend is absent fails loudly at
+    construction instead of synthesising a config for the wrong provider."""
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(ValueError, match="claudecode"):
+        _pinned_llm_config("claudecode")
+
+
 @patch("core.llm.detection.detect_llm_availability")
 def test_llmclient_pinned_banner_suppresses_default_primary(mock_detect, monkeypatch):
     """With ``pinned_model``, banner reports the pin instead of the

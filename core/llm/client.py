@@ -969,6 +969,21 @@ def _pinned_llm_config(model_name: str) -> 'LLMConfig':
         _get_configured_models,
     )
 
+    if model_name in _PROVIDER_BUILDERS:
+        # The pin names a provider, not a model ("claudecode",
+        # "ollama"): use that provider builder's config verbatim — its
+        # own model_name (e.g. the CC session sentinel) is the correct
+        # pin. Without this the name falls through provider inference,
+        # defaults to anthropic, and dies with a keyless-SDK auth error.
+        base = _PROVIDER_BUILDERS[model_name]()
+        if base is None:
+            raise ValueError(
+                f"pinned provider '{model_name}' is not available "
+                f"(backend not installed or not running)"
+            )
+        return LLMConfig(primary_model=replace(base, role="code"),
+                         fallback_models=[])
+
     if "/" in model_name:
         provider, model_name = model_name.split("/", 1)
     else:

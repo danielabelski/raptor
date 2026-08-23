@@ -121,7 +121,8 @@ def _normalise_tokens(body: str) -> list[str]:
 
 
 def _fingerprints(tokens: list[str]) -> frozenset[int]:
-    """Winnowed k-gram fingerprint set (Schleimer et al.)."""
+    """Winnowed k-gram fingerprint set (Schleimer, Wilkerson &
+    Aiken, SIGMOD 2003)."""
     if len(tokens) < K_GRAM:
         return frozenset()
     hashes = [

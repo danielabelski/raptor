@@ -1,4 +1,5 @@
-"""/validate → /audit feedback loop (Reflexion pattern).
+"""/validate → /audit feedback loop (Reflexion pattern — Shinn et
+al., NeurIPS 2023, arXiv:2303.11366; see docs/references.md).
 
 Reads a /validate report (Stage-D ``stage-d.json`` or final
 ``findings.json``), matches findings back to prior audit review

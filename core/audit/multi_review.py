@@ -377,8 +377,9 @@ def run_self_consistency(
 ) -> MultiModelResult:
     """Self-consistency: same model N times, majority vote.
 
-    Wang et al. (2022) showed that sampling multiple independent reasoning
-    chains and taking the majority verdict outperforms a single chain.
+    Wang et al. (ICLR 2023, arXiv:2203.11171) showed that sampling
+    multiple independent reasoning chains and taking the majority
+    verdict outperforms a single chain.
     """
     if n_samples < 2:
         msg = "n_samples must be >= 2 for self-consistency"

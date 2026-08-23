@@ -201,7 +201,13 @@ def compute_gaps(
         if _sf and _sfn:
             crypto_by_key.setdefault(f"{_sf}:{_sfn}", []).append(_site)
     current_spans: dict[str, tuple] = {}
-    items_by_key: dict[str, tuple] = {}
+    # key → {line_start: (item, fp)}: same-named items (function +
+    # prototype pairs, macro redefinitions, C++ overloads) share one
+    # file:function key but live at different SITES with different
+    # strategy inference inputs. Keying per site lets the reuse
+    # eligibility screen compare a journal entry against the item it
+    # actually reviewed rather than the first same-named occurrence.
+    items_by_key: dict[str, dict[int, tuple]] = {}
     for file_info in checklist.get("files", []):
         fp = file_info.get("path", "")
         if not fp:
@@ -221,18 +227,28 @@ def compute_gaps(
                 # First occurrence wins for same-named items — matches
                 # _consume_covered_key's one-suppression-per-key rule.
                 current_spans.setdefault(f"{fp}:{name}", (ls, le))
-                items_by_key.setdefault(f"{fp}:{name}", (item, fp))
+                items_by_key.setdefault(f"{fp}:{name}", {}).setdefault(
+                    ls, (item, fp))
 
-    def _current_strategies(key: str) -> list | None:
+    def _current_strategies(key: str, line_start: int = 0) -> list | None:
         """CURRENT strategy inference for a checklist item, computed
         on demand for the reuse eligibility screen only (cheap
         metadata munging, but there is no reason to run it for every
         item on every run). Same inputs as the gap-building loop
         below, so the comparison against the journaled strategy set
-        is apples-to-apples. None when the item is unknown."""
-        found = items_by_key.get(key)
-        if found is None:
+        is apples-to-apples. None when the item is unknown.
+
+        Resolved per SITE: an exact ``line_start`` match wins; a key
+        with a single site resolves to its sole item regardless; and
+        ``line_start`` 0/unknown (or one matching no current site)
+        falls back to the first site — the legacy behaviour, and
+        identical to it for every non-colliding name."""
+        sites = items_by_key.get(key)
+        if not sites:
             return None
+        found = sites.get(line_start) if line_start else None
+        if found is None:
+            found = next(iter(sites.values()))
         item, fp = found
         try:
             return sorted(strategies_from_item(
@@ -1565,7 +1581,8 @@ def _context_staleness(
             cur_hash[:len(entry_hash)] == entry_hash[:len(cur_hash)]):
         return None
     current = (
-        current_strategies_fn(key) if current_strategies_fn is not None
+        current_strategies_fn(key, getattr(entry, "line_start", 0) or 0)
+        if current_strategies_fn is not None
         else None
     )
     if not current:
@@ -1617,7 +1634,9 @@ def _reuse_ineligibility(
       was briefed with; if the CURRENT strategy inference for the
       function differs (new sink reachability, changed metadata, a
       strategy landing), the review context materially changed and
-      the entry is re-reviewed. Entries without recorded strategies
+      the entry is re-reviewed. The current inference is resolved at
+      the entry's own site (``line_start``) so same-named siblings
+      never cross-compare. Entries without recorded strategies
       (non-gap review paths) only match a currently-empty set.
     * domain-model context — when the domain model changed since the
       review AND gained concepts/invariants relevant to this
@@ -1638,7 +1657,13 @@ def _reuse_ineligibility(
         if bare_model_id(entry_model) != bare_model_id(current_model):
             return f"model changed ({entry_model} → {current_model})"
     if current_strategies_fn is not None:
-        current = current_strategies_fn(key)
+        # Resolved at the entry's own SITE: same-named items (function
+        # + prototype pairs, macro redefinitions) share one key but
+        # infer different strategy sets — comparing every entry
+        # against the first same-named item mispaired the check by
+        # construction and refused valid reuse.
+        current = current_strategies_fn(
+            key, getattr(entry, "line_start", 0) or 0)
         if current is not None and (
                 frozenset(entry.strategies or []) != frozenset(current)):
             # Set compare: the journaled order (and any duplicate) of

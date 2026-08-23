@@ -548,13 +548,11 @@ class TestSpanBoundCredits:
         }
         run_dir = tmp_path / "run1"
         run_dir.mkdir()
-        # The eligibility screen's items_by_key keeps the FIRST
-        # same-named item (the function), so the journaled strategies
-        # must match the FUNCTION item's inference to be admitted —
-        # this test targets credit binding, not eligibility (the
-        # screen's own coarse keying is a separate re-review-cost
-        # issue).
-        fn_item = checklist["files"][0]["items"][0]
+        # The eligibility screen resolves strategies PER SITE, so the
+        # journaled strategies must match the PROTOTYPE site's own
+        # inference to be admitted — this test targets credit
+        # binding, not eligibility.
+        fn_item = checklist["files"][0]["items"][1]
         append_entry(run_dir, ReviewJournalEntry(
             ts=now_iso(), run_id="run1", file="r.c", function="fn",
             verdict="clean",
@@ -572,3 +570,162 @@ class TestSpanBoundCredits:
             "the unreviewed BODY must surface; pre-fix it absorbed "
             "the prototype's credit and vanished"
         )
+
+
+_COLLISION_SOURCE = """\
+int check_pw(const char *pw) {
+    if (!pw)
+        return -1;
+    return strcmp(pw, stored) == 0;
+}
+
+int check_pw(const char *pw);
+"""
+
+# A function + declaration collision pair: same name, one
+# file:function key, two sites whose strategy inference DIFFERS (the
+# extern visibility on the declaration adds input_handling).
+_FUNC_SITE = {
+    "name": "check_pw", "kind": "function",
+    "line_start": 1, "line_end": 5,
+}
+_PROTO_SITE = {
+    "name": "check_pw", "kind": "function",
+    "line_start": 7, "line_end": 7,
+    "metadata": {"visibility": "extern"},
+}
+
+
+def _collision_target(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+    (target / "auth.c").write_text(_COLLISION_SOURCE, encoding="utf-8")
+    return target
+
+
+def _collision_checklist(target):
+    return {
+        "target_path": str(target),
+        "files": [{
+            "path": "auth.c",
+            "language": "c",
+            "items": [dict(_FUNC_SITE), dict(_PROTO_SITE)],
+        }],
+    }
+
+
+def _site_strategies(site):
+    return sorted(strategies_from_item(dict(site), "auth.c"))
+
+
+def _collision_entry(target, site, **over):
+    fields = {
+        "ts": now_iso(),
+        "run_id": "run1",
+        "file": "auth.c",
+        "function": "check_pw",
+        "verdict": "clean",
+        "source_hash": hash_span(
+            target / "auth.c", site["line_start"], site["line_end"]),
+        "line_start": site["line_start"],
+        "line_end": site["line_end"],
+        "strategies": _site_strategies(site),
+        "model": "model-a",
+        "body": "segment-1 review body",
+    }
+    fields.update(over)
+    return ReviewJournalEntry(**fields)
+
+
+class TestPerSiteEligibility:
+    """The reuse-eligibility screen resolves CURRENT strategies at the
+    entry's own SITE. Same-named collision pairs (function +
+    prototype, macro redefinitions) share one file:function key but
+    infer different strategy sets — comparing every entry against the
+    first same-named item mispaired the check by construction,
+    refusing valid reuse and re-buying paid reviews on every resume."""
+
+    def test_prototype_entry_admitted_at_its_own_site(self, tmp_path):
+        # The PROTOTYPE's journal entry carries the prototype-item
+        # strategies. Pre-fix it was refused ("strategy set changed")
+        # via mispairing with the FUNCTION item's inference.
+        target = _collision_target(tmp_path)
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir(exist_ok=True)
+        append_entry(run_dir, _collision_entry(target, _PROTO_SITE))
+
+        sink: dict = {}
+        stats: dict = {}
+        gaps = compute_gaps(
+            _collision_checklist(target), [], out_dir=run_dir,
+            reuse_sink=sink, own_run_reuse=True,
+            current_model="model-a", reuse_stats=stats,
+        )
+        assert stats == {}, f"eligibility refused a valid entry: {stats}"
+        assert "auth.c:check_pw" in sink
+        assert sink["auth.c:check_pw"].line_start == 7
+        leftover = [g for g in gaps if g["name"] == "check_pw"]
+        assert len(leftover) == 1, (
+            "the reviewed site's credit must suppress one occurrence; "
+            "only the unreviewed sibling stays a gap"
+        )
+
+    def test_single_site_key_resolves_to_sole_item(self, tmp_path):
+        # Single-site key (the overwhelming case): an entry whose
+        # recorded span no longer matches any current site still
+        # resolves to the key's sole item — identical to the legacy
+        # first-item behaviour.
+        target = _write_target(tmp_path)
+        run_dir = _run_dir(
+            tmp_path, _entry(target, line_start=2, line_end=6))
+        sink: dict = {}
+        stats: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], out_dir=run_dir,
+            reuse_sink=sink, own_run_reuse=True,
+            current_model="model-a", reuse_stats=stats,
+        )
+        assert stats == {}
+        assert "auth.c:check_pw" in sink
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_zero_line_start_falls_back_to_first_site(self, tmp_path):
+        # A legacy entry with no recorded site (line_start 0) keeps
+        # the historical first-site resolution: admitted with the
+        # FIRST item's strategies, refused with a sibling's.
+        target = _collision_target(tmp_path)
+
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir(exist_ok=True)
+        append_entry(run_dir, _collision_entry(
+            target, _FUNC_SITE,
+            source_hash=hash_span(target / "auth.c", 1, 5),
+            line_start=0, line_end=0,
+        ))
+        sink: dict = {}
+        stats: dict = {}
+        compute_gaps(
+            _collision_checklist(target), [], out_dir=run_dir,
+            reuse_sink=sink, own_run_reuse=True,
+            current_model="model-a", reuse_stats=stats,
+        )
+        assert stats == {}
+        assert "auth.c:check_pw" in sink
+
+        run2 = tmp_path / "run2"
+        run2.mkdir(exist_ok=True)
+        append_entry(run2, _collision_entry(
+            target, _FUNC_SITE,
+            source_hash=hash_span(target / "auth.c", 1, 5),
+            line_start=0, line_end=0,
+            strategies=_site_strategies(_PROTO_SITE),
+        ))
+        sink2: dict = {}
+        stats2: dict = {}
+        compute_gaps(
+            _collision_checklist(target), [], out_dir=run2,
+            reuse_sink=sink2, own_run_reuse=True,
+            current_model="model-a", reuse_stats=stats2,
+        )
+        assert stats2 == {"auth.c:check_pw": "strategy_changed"}
+        assert sink2 == {}

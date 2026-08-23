@@ -293,3 +293,65 @@ class TestFormatFindingsSummary:
         text = format_findings_summary(export)
         assert "Dark" in text
         assert "/validate" in text
+
+class TestConfirmedByDiscrimination:
+    """Incident regression (openssh instrumented corpus):
+    ``discovery.confirmed_by`` read a never-set outcome attribute and
+    exported ``[]`` on 185/185 findings while ``verification_tier``
+    claimed tool_backed on 137 of them — 136 were disproven in
+    validation. confirmed_by is now derived from confirming-role
+    receipts, and tool_backed with no confirming receipt is capped."""
+
+    def test_confirmed_by_derived_from_confirming_receipt(self):
+        outcome = FakeOutcome(
+            evidence_tool="semgrep:rule-1",
+            review_result={"hypothesis": "overflow"},
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["discovery"]["confirmed_by"] == ["semgrep:rule-1"]
+
+    def test_detection_stamp_stays_out_of_confirmed_by(self):
+        outcome = FakeOutcome(
+            evidence_tool="smt:check-toctou",
+            review_result={"hypothesis": "toctou"},
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["discovery"]["confirmed_by"] == []
+
+    def test_secondary_confirmation_lands_in_confirmed_by(self):
+        outcome = FakeOutcome(
+            evidence_tool="smt:check-toctou",
+            review_result={
+                "hypothesis": "toctou",
+                "secondary_confirmations": [
+                    {"mechanism": "m", "evidence_tool": "coccinelle:r1"},
+                    # premise-blocked confirmations do not confirm
+                    {"mechanism": "b", "evidence_tool": "smt",
+                     "premise_blocked": True},
+                ],
+            },
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["discovery"]["confirmed_by"] == ["coccinelle:r1"]
+
+    def test_tool_backed_with_empty_confirmed_by_is_capped(self):
+        # Journaled-attribute path: the recorded tier says tool_backed
+        # but no receipt qualifies — the export must not ship the claim.
+        outcome = FakeOutcome(
+            evidence_tool="smt:check-toctou",
+            review_result={"hypothesis": "toctou"},
+        )
+        outcome.verification_tier = "tool_backed"
+        finding = build_graded_finding(outcome)
+        assert finding["verification_tier"] == "llm_only"
+        assert finding["confidence"] != "high"
+
+    def test_tool_backed_with_confirming_receipt_survives(self):
+        outcome = FakeOutcome(
+            evidence_tool="semgrep:rule-1",
+            review_result={"hypothesis": "overflow"},
+        )
+        outcome.verification_tier = "tool_backed"
+        finding = build_graded_finding(outcome)
+        assert finding["verification_tier"] == "tool_backed"
+        assert finding["discovery"]["confirmed_by"] == ["semgrep:rule-1"]

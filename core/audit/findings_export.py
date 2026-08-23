@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .evidence_grade import (
+    Confidence,
     GradedEvidence,
     finding_confidence,
     grade_evidence_record,
@@ -80,6 +81,39 @@ def build_graded_finding(
             tier = ""
     if not tier:
         tier = getattr(outcome, "verification_tier", "") or "speculative"
+
+    # ``discovery.confirmed_by`` used to read a never-set outcome
+    # attribute and exported ``[]`` on every finding (185/185 on the
+    # instrumented corpus) while the tier claimed tool_backed. Derive
+    # it from the receipts that actually confirm: the confirming-role
+    # parts of the evidence stamp (detection-role variants stay out —
+    # they corroborate, they do not convict) plus secondary-hypothesis
+    # dispatch confirmations.
+    _confirmed_by = getattr(outcome, "confirmed_by", None)
+    _confirmed_by = _confirmed_by if isinstance(_confirmed_by, list) else []
+    if not _confirmed_by:
+        for part in (evidence_tool or "").split("+"):
+            part = part.strip()
+            if part and is_tool_evidence(part) and part not in _confirmed_by:
+                _confirmed_by.append(part)
+        for sec in review_result.get("secondary_confirmations") or []:
+            sec_tool = sec.get("evidence_tool") if isinstance(sec, dict) else ""
+            if sec_tool and not sec.get("premise_blocked") \
+                    and sec_tool not in _confirmed_by:
+                _confirmed_by.append(sec_tool)
+
+    # Discrimination gate (measured, not theoretical): tool_backed
+    # with no confirming receipt means the tier came from a journaled
+    # attribute or a grading path that bypassed the evidence firewall.
+    # On the instrumented corpus 136 of 137 tool_backed findings were
+    # disproven in validation — the stamps confirmed lexical shape,
+    # not vulnerability. Cap confidence at medium and tier at llm_only
+    # until a confirming receipt exists; the CONFIRMED tier (dynamic
+    # crash/sanitizer, solver witnesses) is above this gate.
+    if not _confirmed_by and tier == "tool_backed":
+        tier = "llm_only"
+        if confidence is Confidence.HIGH:
+            confidence = Confidence.MEDIUM
 
     finding: dict[str, Any] = {
         "id": finding_id,
@@ -166,7 +200,7 @@ def build_graded_finding(
         discovery_sources.append("llm_review")
     review_depth = getattr(outcome, "review_depth", "")
     tokens_spent = getattr(outcome, "tokens_spent", 0)
-    confirmed_by = getattr(outcome, "confirmed_by", [])
+    confirmed_by = _confirmed_by
     discovered_by_attr = getattr(outcome, "discovered_by", "")
 
     finding["discovery"] = {

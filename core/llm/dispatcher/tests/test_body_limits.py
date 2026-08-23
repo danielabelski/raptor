@@ -238,11 +238,13 @@ class TestChildBudgetReservation:
 
             first, first_reserved = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
+                upstream_path="/v1/messages",
             )
             assert first is None
             assert first_reserved > 0
             second, _ = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
+                upstream_path="/v1/messages",
             )
             assert second is not None
             status, why = second
@@ -256,6 +258,7 @@ class TestChildBudgetReservation:
             d._release_child_reservation(rec, first_reserved)
             third, _ = d._authorize_child_request(
                 rec, "anthropic", "POST", body,
+                upstream_path="/v1/messages",
             )
             assert third is None
         finally:

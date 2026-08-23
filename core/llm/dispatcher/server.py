@@ -139,6 +139,30 @@ _CHILD_DEFAULT_REQUEST_BUDGET = 1_000
 # Anthropic Messages shape; the dispatcher fronts either the first-
 # party API or Bedrock Mantle. Everything else is parent/worker-only.
 _CHILD_ALLOWED_PROVIDERS = frozenset({"anthropic", "bedrock"})
+
+# Upstream paths a scoped CHILD token may reach (post-provider-prefix,
+# query string stripped, trailing slash normalised). Enumerated from
+# the CC skill-pass child's actual needs (core/orchestration/
+# skill_dispatch.py + cc_adapter.cc_subprocess_env): the Messages API
+# and its token counter, on the plain Anthropic shape and on the
+# Bedrock Mantle shape (proxy-mode Bedrock children are forced onto
+# Mantle — CLAUDE_CODE_USE_MANTLE=1 with base .../bedrock/mantle — so
+# their paths arrive as /mantle/v1/messages after the provider-prefix
+# strip; the unprefixed /v1/... form is the same rule's legacy
+# routing). The bedrock inference-profiles GET probe is answered
+# canned pre-authorization. Deliberately NOT prefix-matched:
+# /v1/messages/batches (deferred-cost — no usage frame, books $0
+# against real spend), /v1/files, /v1/organizations/* and the rest of
+# the upstream surface stay 403 for child tokens. The /runtime/*
+# Bedrock surface is deliberately absent — proxy-mode children are
+# Mantle-forced; extend explicitly if a runtime-only child ever
+# becomes a supported shape.
+_CHILD_ALLOWED_PATHS = frozenset({
+    "/v1/messages",
+    "/v1/messages/count_tokens",
+    "/mantle/v1/messages",
+    "/mantle/v1/messages/count_tokens",
+})
 # Child-token management endpoints — the parent/worker plane. Served
 # on the UDS ONLY (peer-UID-verified, worker-token-gated); the TCP
 # plane refuses them wholesale so a child holding only its scoped
@@ -1077,16 +1101,39 @@ class LLMDispatcher:
 
         Returns ``(deny, reserved_usd)``: ``deny`` is
         ``(http_status, reason)`` to reject (nothing reserved), or
-        None to allow. Order: provider scope → method shape → model
-        allowlist → budget. The budget check runs BEFORE the forward
-        so an exhausted token never reaches the provider.
+        None to allow. Order: provider scope → method shape → upstream
+        path allowlist → model allowlist → budget. The budget check
+        runs BEFORE the forward so an exhausted token never reaches
+        the provider.
+
+        The path allowlist (``_CHILD_ALLOWED_PATHS``) pins scoped
+        child tokens to the two endpoints a CC skill-pass child
+        legitimately needs — ``/v1/messages`` and
+        ``/v1/messages/count_tokens`` (the Bedrock rule receives the
+        same anthropic-shaped path and rewrites it in
+        ``prepare_request``; its ``inference-profiles`` GET probe is
+        answered canned before authorization). Everything else on the
+        upstream surface is refused 403: batch creation
+        (``/v1/messages/batches``) is DEFERRED-COST — the streamed
+        response carries no usage frame, so ``_book_child_usage``
+        booked $0 while the operator's key incurred real provider
+        spend — and the files / admin APIs allow cross-run data
+        persistence and org-level probing with the operator's real
+        key. A prompt-injected child is the exact principal this
+        plane exists to contain.
 
         Cost-free endpoints (see :func:`_is_cost_free_endpoint`) skip
         the per-request budget reservation — they book $0 by
         construction, so there is no worst-case cost to reserve and
         the ceiling fallback must not 402 them. Scope, shape, and
         model-allowlist enforcement apply unchanged, and a
-        hard-exhausted token is still refused.
+        hard-exhausted token is still refused. The exemption composes
+        BEHIND the path allowlist: only admitted paths can reach it,
+        so a cost-free-looking path outside the allowlist
+        (``/v1/foo/count_tokens``) is 403'd here and never skips
+        reservation; fragment-bearing targets never reach either
+        check (400 pre-routing, and the classifier refuses ``#``
+        independently).
 
         On allow, ``reserved_usd`` — the request's derived worst-case
         cost for priced models, the flat env-knob estimate for
@@ -1106,6 +1153,13 @@ class LLMDispatcher:
             return (
                 405, "scoped token: only POST requests are permitted",
             ), 0.0
+        path_only = (upstream_path or "").partition("?")[0].rstrip("/")
+        if path_only not in _CHILD_ALLOWED_PATHS:
+            return (403, (
+                f"scoped token: upstream path '{path_only or '/'}' not "
+                f"permitted (child tokens may reach only "
+                f"{sorted(_CHILD_ALLOWED_PATHS)})"
+            )), 0.0
         model = ""
         max_tokens: int | None = None
         try:

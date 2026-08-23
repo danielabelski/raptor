@@ -2401,12 +2401,18 @@ class TestPostLoopReceiptRescue:
         outcome = self._clean_outcome()
         result = OrchestratorResult()
         result.outcomes = [outcome]
+        result.clean = 1
 
         flipped = _post_loop_receipt_rescue(
             result, [self._receipt()], config,
         )
         assert flipped == 1
         assert outcome.status == "suspicious"
+        # Tally counters move with the flip — the final summary line
+        # prints from them (observed live: "0 suspicious" printed while
+        # the journal held three post-loop flips).
+        assert result.clean == 0
+        assert result.suspicious == 1
         assert "anti_self_refutation" in outcome.body
         rows = [
             e for e in load_audit_log(config.out_dir)

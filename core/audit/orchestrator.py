@@ -21409,6 +21409,18 @@ def _post_loop_receipt_rescue(
         )
         outcome.status = rv.demote_to
         outcome.body = f"[{rv.gate}: {rv.reason}]\n\n" + (outcome.body or "")
+        # Keep the tally counters in step with the flip — the final
+        # "Audit complete" line prints from them, and without this it
+        # said "0 suspicious" while the re-journalled verdicts (the
+        # authoritative record) held the flips.
+        with result._lock:
+            result.clean -= 1
+            if rv.demote_to == "finding":
+                result.findings += 1
+            elif rv.demote_to in ("dormant", "dark"):
+                result.dormant += 1
+            else:
+                result.suspicious += 1
         flipped += 1
     return flipped
 

@@ -3813,9 +3813,11 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     discovered_tests: dict[str, Any] | None = None
     try:
-        from core.analysis.test_discovery import discover_tests
+        from core.analysis.test_discovery import discover_tests_cached
 
-        discovered_tests = discover_tests(config.target_path)
+        discovered_tests = discover_tests_cached(
+            config.target_path, config.out_dir,
+        )
         if discovered_tests:
             logger.info(
                 "test_discovery: %d functions with tests",

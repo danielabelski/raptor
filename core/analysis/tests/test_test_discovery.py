@@ -172,3 +172,144 @@ class TestSummaryMessage:
         assert "beta" in result
         assert "1 scanned test files" in caplog.text
         assert "2 test-tree files skipped" in caplog.text
+
+
+class TestTestDiscoveryPrepCache:
+    """Resume wall cost: test discovery is a pure function of the
+    test-tree files but re-ran the extraction/inference pass on every
+    resumed audit segment. The prep cache reloads the mapping when the
+    test-tree fingerprint matches and re-scans when it does not."""
+
+    def _make_suite(self, tmp_path):
+        target = tmp_path / "target"
+        tests = target / "tests"
+        tests.mkdir(parents=True)
+        (tests / "test_mod.py").write_text(
+            "def test_alpha():\n"
+            "    r = alpha(1)\n"
+            "    assert r == 2\n"
+            "\n"
+            "def test_beta_empty():\n"
+            "    assert beta('') is None\n",
+        )
+        return target
+
+    def test_second_run_reloads_and_skips_the_scan(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.analysis.test_discovery as td
+
+        target = self._make_suite(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        first = td.discover_tests_cached(target, out)
+        assert "alpha" in first
+        assert (
+            out / "prep-cache" / "test-discovery-cache.json"
+        ).is_file()
+
+        calls = []
+        real = td.discover_tests
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(td, "discover_tests", spy)
+        second = td.discover_tests_cached(target, out)
+        assert calls == [], "cache hit must skip the extraction pass"
+        assert set(second) == set(first)
+        for fn, cases in first.items():
+            assert [
+                (c.test_file, c.test_function, c.target_function,
+                 c.assertions)
+                for c in cases
+            ] == [
+                (c.test_file, c.test_function, c.target_function,
+                 c.assertions)
+                for c in second[fn]
+            ]
+
+    def test_changed_test_tree_rebuilds(self, tmp_path, monkeypatch):
+        import core.analysis.test_discovery as td
+
+        target = self._make_suite(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        td.discover_tests_cached(target, out)
+
+        calls = []
+        real = td.discover_tests
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(td, "discover_tests", spy)
+        (target / "tests" / "test_more.py").write_text(
+            "def test_gamma():\n    assert gamma() == 3\n",
+        )
+        rebuilt = td.discover_tests_cached(target, out)
+        assert calls == [1], "fingerprint mismatch must re-scan"
+        assert "gamma" in rebuilt
+
+    def test_corrupt_cache_rebuilds(self, tmp_path):
+        import core.analysis.test_discovery as td
+
+        target = self._make_suite(tmp_path)
+        out = tmp_path / "out"
+        (out / "prep-cache").mkdir(parents=True)
+        (out / "prep-cache" / "test-discovery-cache.json").write_text(
+            "{nope",
+        )
+        result = td.discover_tests_cached(target, out)
+        assert "alpha" in result
+
+    def test_no_out_dir_means_no_cache(self, tmp_path):
+        import core.analysis.test_discovery as td
+
+        target = self._make_suite(tmp_path)
+        result = td.discover_tests_cached(target, None)
+        assert "alpha" in result
+
+    def test_empty_result_is_cached_too(self, tmp_path, monkeypatch):
+        import core.analysis.test_discovery as td
+
+        target = tmp_path / "target"
+        (target / "tests").mkdir(parents=True)
+        (target / "tests" / "test_x.sh").write_text("exit 0\n")
+        out = tmp_path / "out"
+        out.mkdir()
+        assert td.discover_tests_cached(target, out) == {}
+
+        calls = []
+        real = td.discover_tests
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(td, "discover_tests", spy)
+        assert td.discover_tests_cached(target, out) == {}
+        assert calls == [], "an empty mapping is a valid cached result"
+
+    def test_broken_shape_cache_rebuilds(self, tmp_path):
+        import json as _json
+
+        import core.analysis.test_discovery as td
+
+        target = self._make_suite(tmp_path)
+        out = tmp_path / "out"
+        (out / "prep-cache").mkdir(parents=True)
+        fp = td._test_tree_fingerprint(target.resolve())
+        # json-valid, fingerprint-matching, but a shape the reload
+        # chokes on — must degrade to the re-scan, not raise.
+        (out / "prep-cache" / "test-discovery-cache.json").write_text(
+            _json.dumps({
+                "fingerprint": fp,
+                "payload": {"alpha": [{"assertions": 42}]},
+            }),
+        )
+        result = td.discover_tests_cached(target, out)
+        assert "alpha" in result
+        assert result["alpha"][0].assertions

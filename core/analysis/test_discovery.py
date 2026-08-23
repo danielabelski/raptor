@@ -142,6 +142,107 @@ def discover_tests(
     return result
 
 
+_CACHE_FILENAME = "test-discovery-cache.json"
+
+
+def _test_tree_fingerprint(target: Path) -> str:
+    """Deterministic fingerprint of the discovery inputs: the test
+    files the walk finds (same enumeration, same 500-file cap) and
+    their contents. Hashing the bytes is a small fraction of the
+    extraction/inference pass over the same files."""
+    from core.audit.prep_cache import content_fingerprint
+
+    test_files, _skipped = _find_test_files(target)
+
+    def _items():
+        for f in test_files:
+            try:
+                yield str(f.relative_to(target)), f.read_bytes()
+            except (OSError, ValueError):
+                yield str(f), b""
+
+    return content_fingerprint(_items())
+
+
+def discover_tests_cached(
+    target_path: Path,
+    out_dir: Path | str | None = None,
+) -> Dict[str, List[TestCase]]:
+    """:func:`discover_tests` behind the audit prep-cache reload seam.
+
+    A resumed audit segment re-ran the whole extraction/inference pass
+    over every test file even though the tree was unchanged. Reload
+    the mapping on a fingerprint match; rebuild loudly on mismatch or
+    corruption. No ``out_dir`` means no cache — behaviour is exactly
+    the raw discovery.
+    """
+    target = Path(target_path).resolve()
+    if out_dir is None or not target.is_dir():
+        return discover_tests(target_path)
+
+    from core.audit.prep_cache import load_prep_cache, write_prep_cache
+
+    try:
+        fingerprint = _test_tree_fingerprint(target)
+    except Exception:
+        logger.debug("test-discovery fingerprint failed", exc_info=True)
+        return discover_tests(target_path)
+
+    cached = load_prep_cache(
+        out_dir, _CACHE_FILENAME, fingerprint, label="test-discovery",
+    )
+    if isinstance(cached, dict):
+        try:
+            result: Dict[str, List[TestCase]] = {
+                fn: [
+                    TestCase(
+                        test_file=tc.get("test_file", ""),
+                        test_function=tc.get("test_function", ""),
+                        target_function=tc.get("target_function", fn),
+                        assertions=list(tc.get("assertions") or []),
+                    )
+                    for tc in cases
+                    if isinstance(tc, dict)
+                ]
+                for fn, cases in cached.items()
+                if isinstance(cases, list)
+            }
+        except Exception:
+            # A json-valid cache with a broken shape must degrade to
+            # the re-scan, never escape into the caller.
+            logger.debug(
+                "test-discovery prep cache reload failed — re-scanning",
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "test_discovery: reloaded %d test cases for %d "
+                "functions from the prep cache (test-tree fingerprint "
+                "match) — extraction pass skipped",
+                sum(len(v) for v in result.values()), len(result),
+            )
+            return result
+
+    result = discover_tests(target_path)
+    write_prep_cache(
+        out_dir, _CACHE_FILENAME, fingerprint,
+        {
+            fn: [
+                {
+                    "test_file": tc.test_file,
+                    "test_function": tc.test_function,
+                    "target_function": tc.target_function,
+                    "assertions": tc.assertions,
+                }
+                for tc in cases
+            ]
+            for fn, cases in sorted(result.items())
+        },
+        label="test-discovery",
+    )
+    return result
+
+
 def format_tests_for_context(
     tests: Sequence[TestCase],
     depth: str = "oneline",

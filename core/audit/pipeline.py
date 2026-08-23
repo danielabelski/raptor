@@ -161,6 +161,9 @@ class AuditPipelineOpts:
     # Opt-in (--pre-scan): bounded semgrep baseline pass when no scan
     # SARIF exists in this run or any fresh sibling run.
     pre_scan: bool = False
+    # Caller-contract call-site digest in the review context
+    # (--no-caller-contract-context to disable).
+    caller_contract_context: bool = True
     # Parallel review scheduling: "cost" = most-expensive-first
     # makespan packing (default), "priority" = time-to-first-finding.
     schedule: str = "cost"
@@ -347,6 +350,7 @@ def _build_orchestrator_config(
         domain_model_import=opts.domain_model_import,
         annotations_read=opts.annotations_read,
         pre_scan=opts.pre_scan,
+        caller_contract_context=opts.caller_contract_context,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,
         probe_determine_value=opts.probe_determine_value,

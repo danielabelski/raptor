@@ -397,20 +397,32 @@ def _scan_file_for_calls(
     return sites
 
 
-def enumerate_call_sites(
+def enumerate_call_sites_with_report(
     target_path: Path,
     function_name: str,
     *,
     def_file: str = "",
     def_span: tuple[int, int] | None = None,
     inventory: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """In-repo call sites of ``function_name``.
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """In-repo call sites of ``function_name``, plus how they were found.
 
     Prefers the inventory call graph to pick candidate files, falling
     back to a bounded scan of the tree. The defining span is excluded.
+
+    The report describes the path that actually produced the sites —
+    ``method`` is "call-graph" only when the graph both answered and
+    yielded sites, "tree-scan" whenever the fallback ran (including a
+    present-but-unresolving inventory) — plus ``scan_capped`` and
+    ``scanned_files`` for the bounded scan, so consumers render
+    enumeration honesty from what executed, not from what was passed.
     """
     target_path = Path(target_path)
+    report: dict[str, Any] = {
+        "method": "tree-scan",
+        "scan_capped": False,
+        "scanned_files": 0,
+    }
     callers = _caller_files_from_inventory(
         inventory, def_file, function_name,
     )
@@ -430,12 +442,14 @@ def enumerate_call_sites(
                 site["caller"] = caller.get("name", "")
                 sites.append(site)
         if sites:
-            return sites
+            report["method"] = "call-graph"
+            return sites, report
 
     # Fallback: bounded tree scan.
     scanned = 0
     for path in sorted(target_path.rglob("*")):
         if scanned >= _MAX_SCAN_FILES:
+            report["scan_capped"] = True
             break
         if not path.is_file() or path.suffix.lower() not in _SOURCE_SUFFIXES:
             continue
@@ -448,6 +462,27 @@ def enumerate_call_sites(
         sites.extend(_scan_file_for_calls(
             path, rel, function_name, skip_span=skip,
         ))
+    report["scanned_files"] = scanned
+    return sites, report
+
+
+def enumerate_call_sites(
+    target_path: Path,
+    function_name: str,
+    *,
+    def_file: str = "",
+    def_span: tuple[int, int] | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """In-repo call sites of ``function_name``.
+
+    Prefers the inventory call graph to pick candidate files, falling
+    back to a bounded scan of the tree. The defining span is excluded.
+    """
+    sites, _report = enumerate_call_sites_with_report(
+        target_path, function_name,
+        def_file=def_file, def_span=def_span, inventory=inventory,
+    )
     return sites
 
 

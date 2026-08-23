@@ -570,6 +570,11 @@ class OrchestratorConfig:
     # local rule library, so the SARIF corroboration channels have
     # something to corroborate against.
     pre_scan: bool = False
+    # Caller-contract call-site digest in the review context for
+    # teardown-named / pointer-param-dealloc functions
+    # (--no-caller-contract-context to disable).  Context-only channel:
+    # it never stamps evidence_tool and never touches verdict lanes.
+    caller_contract_context: bool = True
     # Review scheduling with >1 worker: "cost" (default) dispatches
     # predicted-longest reviews first (LPT makespan packing);
     # "priority" keeps the highest-priority-first order (better
@@ -9572,6 +9577,7 @@ def _build_context(
         annotations_dir=ann_dir,
         inventory=config.inventory,
         out_dir=config.out_dir,
+        caller_contract=getattr(config, "caller_contract_context", True),
     )
 
     if evidence_index:

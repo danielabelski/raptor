@@ -191,6 +191,7 @@ def assemble_context(
     annotations_dir: Path | None = None,
     inventory: dict[str, Any] | None = None,
     out_dir: Path | None = None,
+    caller_contract: bool = True,
 ) -> dict[str, Any]:
     """Assemble a context slice for one function.
 
@@ -225,6 +226,12 @@ def assemble_context(
         inventory, file_path, function_name, line_start, context_map,
     )
     _enrich_callees_with_source(ctx["callees"], target_path, checklist)
+    if caller_contract:
+        ctx["caller_contract"] = _build_caller_contract_digest(
+            target_path, file_path, function_name,
+            line_start, line_end,
+            ctx["metadata"], ctx.get("source", ""), inventory,
+        )
     ctx["existing_annotation"] = _load_existing_annotation(
         annotations_dir, file_path, function_name,
         out_dir=out_dir,
@@ -893,7 +900,19 @@ def format_context_for_prompt(
                 "the 20 listed; the rest stay pending)")
         sections.append(PromptSection("edge_contracts", "\n".join(ec), 1))
 
-    if ctx.get("callers"):
+    caller_contract_digest = ctx.get("caller_contract")
+    if caller_contract_digest:
+        sections.append(PromptSection(
+            "caller_contract",
+            _format_caller_contract(caller_contract_digest),
+            0,
+        ))
+
+    # The full-site digest supersedes the shallow first-call-per-caller
+    # section — rendering both would pay twice for weaker evidence.
+    if ctx.get("callers") and not (
+        caller_contract_digest and caller_contract_digest.get("sites")
+    ):
         cp = ["\n### Callers (1-hop)"]
         for c in ctx["callers"][:10]:
             line = c.get('line_start', '?')
@@ -2106,6 +2125,147 @@ def _extract_metadata(
                     result.update(meta)
                 return result
     return {}
+
+
+def _build_caller_contract_digest(
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    line_start: int,
+    line_end: int | None,
+    metadata: dict[str, Any],
+    source: str,
+    inventory: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Caller-contract digest for contract-risk functions (teardown
+    helpers, pointer-parameter dealloc wrappers) — None for everything
+    else.  Resilient: context assembly never fails on digest errors."""
+    try:
+        from .caller_contract import (
+            build_caller_contract_digest,
+            is_contract_risk_function,
+        )
+
+        if not is_contract_risk_function(function_name, metadata, source):
+            return None
+        return build_caller_contract_digest(
+            target_path, file_path, function_name,
+            line_start=line_start, line_end=line_end,
+            inventory=inventory,
+        )
+    except Exception:
+        logger.debug(
+            "caller-contract digest failed for %s:%s",
+            file_path, function_name, exc_info=True,
+        )
+        return None
+
+
+#: Cap on rendered excerpt characters in one caller-contract section.
+#: The section is priority 0 (never shed), so a pathological digest
+#: (many sites x long lines) must bound itself rather than crowd out
+#: sheddable context under a tight prompt budget.
+_CALLER_CONTRACT_MAX_RENDER_CHARS = 8000
+
+
+def _format_caller_contract(digest: dict[str, Any]) -> str:
+    """Render the caller-contract digest as a prompt section.
+
+    Carries its own epistemic framing: all-sites-clean demotes the
+    hypothesis to an API-robustness note, it never proves the function
+    safe — and the enumeration honesty line keeps the model from
+    treating a static, indirect-call-blind listing as exhaustive.
+    """
+    fn = _defend_identifier(digest.get("function", "?"))
+    total = digest.get("total_sites", 0)
+    lines = [
+        f"\n### Caller-contract evidence ({total} in-repo call sites)",
+    ]
+    if digest.get("declined"):
+        lines.append(
+            f"`{fn}` has {total} in-repo call sites — too many to "
+            "enumerate usefully.  Misuse-contract hypotheses about "
+            "this function cannot be caller-verified here.",
+        )
+        return "\n".join(lines)
+    if total == 0:
+        if digest.get("scan_capped"):
+            lines.append(
+                f"Bounded tree scan capped at "
+                f"{digest.get('scanned_files', 0)} files before covering "
+                "the tree — enumeration incomplete; the absence of "
+                "listed sites is NOT evidence that no callers exist.",
+            )
+        else:
+            lines.append(
+                "No in-repo call sites found (external-only or indirect "
+                "callers).  Caller behaviour cannot be verified from "
+                "this tree.",
+            )
+        return "\n".join(lines)
+    method = (
+        "call graph" if digest.get("enumeration") == "call-graph"
+        else "bounded tree scan"
+    )
+    honesty = f"Enumerated mechanically ({method})."
+    uncertain = digest.get("uncertain_callers")
+    if uncertain:
+        honesty += (
+            f"  {uncertain} additional caller(s) could not be resolved "
+            "definitively — enumeration is incomplete."
+        )
+    if digest.get("scan_capped"):
+        honesty += (
+            f"  The scan hit its {digest.get('scanned_files', 0)}-file "
+            "cap — additional sites may exist; enumeration is "
+            "incomplete."
+        )
+    test_excluded = digest.get("test_sites_excluded", 0)
+    if test_excluded:
+        honesty += (
+            f"  {test_excluded} test-file call site(s) set aside "
+            "(tests exercise contracts defensively; they are weak "
+            "caller evidence)."
+        )
+    honesty += (
+        "  Static enumeration misses indirect calls (function "
+        "pointers, macros); this is evidence about the listed sites "
+        "only."
+    )
+    lines.append(honesty)
+    rendered_chars = 0
+    sites_rendered = 0
+    size_capped = False
+    for site in digest.get("sites", []):
+        if rendered_chars >= _CALLER_CONTRACT_MAX_RENDER_CHARS:
+            size_capped = True
+            break
+        ident = _defend_identifier(
+            f"{site.get('file', '?')}:{site.get('caller') or '?'}",
+            max_length=512,
+        )
+        lines.append(f"- `{ident}` line {site.get('line', '?')}:")
+        if site.get("excerpt"):
+            block = _fenced(site["excerpt"])
+            lines.append(block)
+            rendered_chars += len(block)
+        sites_rendered += 1
+    if total > sites_rendered:
+        reason = " — digest size-capped" if size_capped else ""
+        lines.append(
+            f"- (+{total - sites_rendered} more sites not "
+            f"shown{reason})",
+        )
+    lines.append(
+        'Weigh misuse-contract hypotheses ("crashes if called twice", '
+        '"if a caller passes NULL") against these sites.  If every '
+        "enumerated site upholds the assumed precondition, the missing "
+        "guard is an API-robustness note: report it at confidence low, "
+        "not as a vulnerability — the contract is only "
+        "violated-in-waiting.  A concrete violating call site is what "
+        "makes it a finding."
+    )
+    return "\n".join(lines)
 
 
 def _enrich_callers_with_call_sites(

@@ -2331,5 +2331,10 @@
     "count": 11,
     "kind": "literal",
     "note": "env-build.json provenance record field names (serialization schema, not name vocabulary \u2014 same class as the enforcement-stats field-names entry)"
+  },
+  "core/audit/caller_contract.py::digest": {
+    "count": 10,
+    "kind": "literal",
+    "note": "result-dict field names of the caller-contract digest (identity, render caps, enumeration-honesty fields), not an API-name vocabulary \u2014 call sites are enumerated from the call graph / tree scan, never name-matched against this list"
   }
 }

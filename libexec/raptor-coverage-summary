@@ -342,23 +342,28 @@ def _neutralise_journaled_marks(run_dir, keys):
         )
         from core.json import load_json
         index = load_json(project_dir / INDEX_FILENAME) or {}
-        journaled = {
-            (row.get("file"), row.get("function"))
-            for row in (index.get("entries") or {}).values()
-            if isinstance(row, dict) and row.get("producer") == "mark"
-        }
+        # Per-SITE: the index keys marks by (…, line_start), so a
+        # withdrawal must land on the SAME span to evict the mark row
+        # — one neutralising entry per journaled mark site.
+        journaled: dict = {}
+        for row in (index.get("entries") or {}).values():
+            if isinstance(row, dict) and row.get("producer") == "mark":
+                journaled.setdefault(
+                    (row.get("file"), row.get("function")), set(),
+                ).add(int(row.get("line_start") or 0))
         touched = False
         for file_path, func_name in keys:
-            if (file_path, func_name) not in journaled:
-                continue
-            append_entry(run_dir, ReviewJournalEntry(
-                ts=now_iso(), run_id=run_dir.name,
-                file=file_path, function=func_name,
-                verdict="error", source_hash="",
-                lesson="operator unmark — review assertion withdrawn",
-                model="operator", producer="mark",
-            ))
-            touched = True
+            for line_start in sorted(
+                    journaled.get((file_path, func_name), ())):
+                append_entry(run_dir, ReviewJournalEntry(
+                    ts=now_iso(), run_id=run_dir.name,
+                    file=file_path, function=func_name,
+                    verdict="error", source_hash="",
+                    line_start=line_start,
+                    lesson="operator unmark — review assertion withdrawn",
+                    model="operator", producer="mark",
+                ))
+                touched = True
         if touched:
             merge_into_index(project_dir, run_dir)
     except Exception as exc:  # noqa: BLE001 — neutralisation is additive

@@ -101,7 +101,8 @@ class TestEdgeIdentity:
         entry = _edge_entry(target)
         assert entry.key == "routes.c:handle->svc.c:run_query"
         assert entry.key != "routes.c:handle"
-        assert entry.index_key.endswith(":svc.c:run_query")
+        # Edge suffix precedes the span suffix in the index key.
+        assert ":svc.c:run_query@" in entry.index_key
 
     def test_two_span_hash_covers_both_endpoints(self, tmp_path):
         target = _target(tmp_path)

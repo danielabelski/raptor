@@ -249,8 +249,17 @@ class ReviewJournalEntry:
             # caller's index key would evict the caller's function
             # verdict from the compacted index (same eviction class
             # the producer segment exists to prevent).
-            return f"{base}:{self.edge_callee}"
-        return base
+            base = f"{base}:{self.edge_callee}"
+        # Span suffix ('@' cannot appear in the colon-joined segments'
+        # separator role): same-named items at different spans (macro
+        # redefinitions, C++ overloads) are distinct review subjects —
+        # without the suffix they evict each other at merge time, so a
+        # NEW run's cross-run reuse only ever sees one of N reviewed
+        # sites and re-buys the rest (companion of the same-run
+        # per-site fold fix). Legacy span-less keys are re-homed
+        # losslessly at merge time (entries always carried line_start
+        # in their FIELDS; only the key lacked it).
+        return f"{base}@{self.line_start or 0}"
 
     def to_dict(self) -> dict[str, Any]:
         d = {k: v for k, v in asdict(self).items() if v is not None}
@@ -630,14 +639,24 @@ def latest_function_grade_index(
     either wrongly suppress on a finding-grade entry or wrongly
     resurface a properly audited function. Kind-aware consumers (the
     audit gap fold) use this collapse instead.
+
+    Collapse identity is per-SITE — ``(file, function, line_start)``,
+    keyed ``file:function@line`` — not per-``(file, function)``:
+    same-named items at different spans (macro redefinitions, C++
+    overloads) are distinct review subjects, and the coarse collapse
+    starved all but one of their verdicts, so cross-run reuse re-bought
+    the N-1 siblings on every new run (companion of the same-run
+    per-site fold). Computed from entry FIELDS, so legacy span-less
+    index rows collapse correctly too.
     """
     result: dict[str, ReviewJournalEntry] = {}
     for entry in load_index_full(project_dir).values():
         if not is_function_grade(entry):
             continue
-        existing = result.get(entry.key)
+        site_key = f"{entry.key}@{entry.line_start or 0}"
+        existing = result.get(site_key)
         if existing is None or entry.ts > existing.ts:
-            result[entry.key] = entry
+            result[site_key] = entry
     return result
 
 
@@ -707,6 +726,34 @@ def merge_into_index(project_dir: Path, run_dir: Path) -> int:
     with _flock(index_path):
         index = _load_index(index_path)
         merged = 0
+
+        # Lazy legacy-key migration: re-home any row whose on-disk key
+        # no longer matches its entry's current ``index_key`` (span
+        # suffix added, and any earlier key-format generation). The
+        # entry CONTENT is untouched — fields are the source of truth
+        # and keys are opaque handles — so this is lossless; latest-ts
+        # wins if the new home is already occupied. Without re-homing,
+        # a legacy coarse key would sit forever as a stale duplicate
+        # of one of its per-site successors.
+        rehomed = 0
+        for old_key in list(index.keys()):
+            try:
+                entry = _entry_from_dict(index[old_key])
+            except (TypeError, KeyError, ValueError):
+                continue  # unreadable row: leave in place, never drop
+            new_key = entry.index_key
+            if new_key == old_key:
+                continue
+            existing = index.get(new_key)
+            if existing is None or entry.ts > existing.get("ts", ""):
+                index[new_key] = index[old_key]
+            del index[old_key]
+            rehomed += 1
+        if rehomed:
+            logger.info(
+                "journal index: re-homed %d legacy-format key(s)", rehomed,
+            )
+
         for entry in run_entries:
             key = entry.index_key
             existing = index.get(key)
@@ -714,7 +761,7 @@ def merge_into_index(project_dir: Path, run_dir: Path) -> int:
                 index[key] = entry.to_dict()
                 merged += 1
 
-        if merged:
+        if merged or rehomed:
             _write_index(index_path, index)
 
     return merged

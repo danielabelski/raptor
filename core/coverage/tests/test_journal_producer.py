@@ -103,9 +103,11 @@ class TestLatestFunctionGradeIndex:
         merge_into_index(project, run)
 
         collapsed = latest_function_grade_index(project)
-        assert set(collapsed) == {"src/a.c:f"}
-        assert collapsed["src/a.c:f"].verdict == "clean"
-        assert entry_producer(collapsed["src/a.c:f"]) == "audit"
+        # Site-keyed collapse (file:function@line_start; these test
+        # entries carry no span, so @0).
+        assert set(collapsed) == {"src/a.c:f@0"}
+        assert collapsed["src/a.c:f@0"].verdict == "clean"
+        assert entry_producer(collapsed["src/a.c:f@0"]) == "audit"
         # And the shadowing premise holds on the plain collapse (the
         # two entries share model + empty-strategy index keys only when
         # producers differ on ts — assert the plain view disagrees so
@@ -124,5 +126,62 @@ class TestLatestFunctionGradeIndex:
         merge_into_index(project, run)
 
         assert set(latest_function_grade_index(project)) == {
-            "src/a.c:f", "src/a.c:h",
+            "src/a.c:f@0", "src/a.c:h@0",
         }
+
+
+class TestPerSiteIndexKeys:
+    """Same-named items at different spans (macro redefinitions, C++
+    overloads) must not evict each other at merge time, and legacy
+    span-less index keys must be re-homed losslessly."""
+
+    def _site_entry(self, line, ts=None):
+        entry = _entry(function="SSHINT", ts=ts)
+        entry.line_start = line
+        return entry
+
+    def test_same_named_sites_do_not_evict(self, tmp_path):
+        project = tmp_path / "project"
+        run = project / "run1"
+        run.mkdir(parents=True)
+        from core.coverage.journal import append_entry, load_index_full
+        append_entry(run, self._site_entry(10))
+        append_entry(run, self._site_entry(30))
+        merge_into_index(project, run)
+        entries = load_index_full(project).values()
+        spans = sorted(e.line_start for e in entries
+                       if e.function == "SSHINT")
+        assert spans == [10, 30], (
+            "both sites must survive the merge — pre-fix the second "
+            "evicted the first (shared span-less index key)"
+        )
+        collapsed = latest_function_grade_index(project)
+        assert {"src/a.c:SSHINT@10", "src/a.c:SSHINT@30"} <= set(collapsed)
+
+    def test_legacy_spanless_key_rehomed_losslessly(self, tmp_path):
+        import json
+        project = tmp_path / "project"
+        project.mkdir(parents=True)
+        run = project / "run1"
+        run.mkdir()
+        from core.coverage.journal import (
+            INDEX_FILENAME,
+            append_entry,
+            load_index_full,
+        )
+        # Simulate a pre-fix index: one row under a span-less key.
+        legacy = self._site_entry(10)
+        legacy_key = legacy.index_key.rsplit("@", 1)[0]
+        (project / INDEX_FILENAME).write_text(json.dumps({
+            "schema_version": 1,
+            "entries": {legacy_key: legacy.to_dict()},
+        }))
+        # Any subsequent merge re-homes the legacy row.
+        append_entry(run, self._site_entry(30))
+        merge_into_index(project, run)
+        raw = json.loads((project / INDEX_FILENAME).read_text())["entries"]
+        assert legacy_key not in raw, "legacy key must be re-homed"
+        entries = load_index_full(project).values()
+        spans = sorted(e.line_start for e in entries
+                       if e.function == "SSHINT")
+        assert spans == [10, 30], "re-homing must not lose the entry"

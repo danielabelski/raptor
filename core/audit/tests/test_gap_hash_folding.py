@@ -226,3 +226,67 @@ class TestHashAwareFolding:
 
         gaps = compute_gaps(checklist, [], project_dir=project)
         assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+
+_TWO_SITE_SOURCE = """\
+#define SSHINT(x) ((x) + 1)
+int a;
+#define SSHINT(x) ((x) + 2)
+int b;
+"""
+
+
+class TestCrossRunSameNamedSites:
+    """Cross-run reuse must credit every reviewed SITE of a same-named
+    item: the project index stores per-site rows (span-suffixed keys)
+    and the fold collapses per site, so a new run on unchanged source
+    suppresses all reviewed siblings instead of re-buying N-1 of them."""
+
+    def _setup(self, tmp_path, reviewed_lines):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "conf.c").write_text(_TWO_SITE_SOURCE, encoding="utf-8")
+        project = tmp_path / "project"
+        run = project / "run1"
+        run.mkdir(parents=True)
+        for line in reviewed_lines:
+            append_entry(run, ReviewJournalEntry(
+                ts=now_iso(), run_id="run1",
+                file="conf.c", function="SSHINT",
+                verdict="clean",
+                source_hash=hash_span(target / "conf.c", line, line),
+                line_start=line, line_end=line,
+                producer="audit",
+            ))
+        merge_into_index(project, run)
+        checklist = {
+            "target_path": str(target),
+            "files": [{
+                "path": "conf.c",
+                "language": "c",
+                "items": [
+                    {"name": "SSHINT", "kind": "macro",
+                     "line_start": 1, "line_end": 1},
+                    {"name": "SSHINT", "kind": "macro",
+                     "line_start": 3, "line_end": 3},
+                ],
+            }],
+        }
+        return checklist, project
+
+    def test_both_reviewed_sites_stay_covered(self, tmp_path):
+        checklist, project = self._setup(tmp_path, [1, 3])
+        gaps = compute_gaps(checklist, [], project_dir=project)
+        assert [g for g in gaps if g["name"] == "SSHINT"] == [], (
+            "both sites carry hash-verified prior-run reviews — "
+            "resurfacing either re-buys a paid review on every re-run"
+        )
+
+    def test_unreviewed_sibling_still_surfaces(self, tmp_path):
+        checklist, project = self._setup(tmp_path, [1])
+        gaps = compute_gaps(checklist, [], project_dir=project)
+        leftover = [g for g in gaps if g["name"] == "SSHINT"]
+        assert len(leftover) == 1, (
+            "one prior-run review must suppress exactly one site; "
+            "the unreviewed sibling stays a gap"
+        )

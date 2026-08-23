@@ -979,6 +979,7 @@ class ProjectManager:
 
         added = 0
         skipped = 0
+        adopted: list[Path] = []
         dest_base = project.output_path
 
         def _adopt_one(run_src: Path) -> bool:
@@ -1034,6 +1035,7 @@ class ProjectManager:
             # snapshot no-ops until the project has a checklist).
             from core.run.metadata import project_run_projections
             project_run_projections(dest)
+            adopted.append(dest)
             return True
 
         # `add_runs` is the user-facing import path — operators
@@ -1061,9 +1063,57 @@ class ProjectManager:
 
         if added:
             logger.info("Added %d run(s) to project '%s'", added, name)
+            self._ensure_adopted_coverage(project, adopted)
         if skipped:
             logger.info("Skipped %d run(s) already in project '%s'", skipped, name)
         return added
+
+    def _ensure_adopted_coverage(self, project: Project,
+                                 adopted: list[Path]) -> None:
+        """Make adopted runs' coverage reach the durable project store.
+
+        ``_snapshot_run_coverage`` no-ops when the project directory has
+        no ``checklist.json`` — and a freshly retro-created project has
+        none, so the projections re-run at adoption merged the journal
+        but never landed the coverage snapshot. Build the project
+        checklist from the project target with the same inventory
+        builder the run lifecycle uses (one bounded inventory pass —
+        the cost the next lifecycle run would have paid anyway), then
+        re-run the projections for each adopted run so the snapshot
+        lands now instead of silently waiting for a future run.
+
+        Best-effort by contract: adoption already moved the runs, so
+        nothing here may raise. A missing target is a silent skip (the
+        codebase may have been deleted since the runs completed); a
+        checklist build failure logs and leaves the pre-existing
+        behaviour (snapshot deferred to the next lifecycle run).
+        """
+        checklist_path = project.output_path / "checklist.json"
+        if checklist_path.exists() or not adopted:
+            return
+        target = Path(project.target)
+        if not target.exists():
+            return  # target gone — nothing to inventory
+        try:
+            from core.inventory import build_inventory
+            inventory = build_inventory(str(target), str(project.output_path))
+            logger.info(
+                "adopt: built project checklist from %s (%d files, "
+                "%d items) so adopted coverage reaches the durable store",
+                target, inventory.get("total_files", 0),
+                inventory.get("total_items", 0),
+            )
+        except Exception:
+            logger.info(
+                "adopt: project checklist build failed for %s — adopted "
+                "coverage lands on the next lifecycle run instead", target,
+            )
+            logger.debug("adopt: checklist build failure detail",
+                         exc_info=True)
+            return
+        from core.run.metadata import project_run_projections
+        for dest in adopted:
+            project_run_projections(dest)
 
     def remove_run(self, name: str, run_name: str, to_path: str | None = None) -> None:
         """Remove a run from the project directory.

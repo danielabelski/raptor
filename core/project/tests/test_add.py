@@ -231,3 +231,73 @@ class TestAdoptionProjections(unittest.TestCase):
             "audit_20260101_000002", target=self.target_code)
         inferred = self.mgr.adopt_target_for(str(run_dir))
         self.assertEqual(str(Path(self.target_code).resolve()), inferred)
+
+    def test_adoption_builds_checklist_and_snapshots_coverage(self):
+        """A fresh retro-created project has no checklist.json, so the
+        coverage snapshot no-ops and the adopted run's review history
+        never reaches the durable store. Adoption must build the
+        project checklist from the target and re-run the projections
+        so the journal-derived coverage lands in coverage.json."""
+        (Path(self.target_code) / "a.py").write_text(
+            "def f():\n    return 1\n")
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+        run_dir = self._run_with_journal(
+            "audit_20260101_000003", target=self.target_code)
+        # Journal the function the target actually contains, so the
+        # store import can anchor it to an inventory line range.
+        from core.coverage.journal import (
+            ReviewJournalEntry,
+            append_entry,
+            now_iso,
+        )
+        append_entry(run_dir, ReviewJournalEntry(
+            ts=now_iso(), run_id="audit_20260101_000003",
+            file="a.py", function="f", verdict="clean",
+            source_hash="cd34", line_start=1, line_end=2,
+        ))
+
+        self.assertEqual(self.mgr.add_directory("myapp", str(run_dir)), 1)
+
+        project = self.mgr.load("myapp")
+        checklist_path = project.output_path / "checklist.json"
+        self.assertTrue(checklist_path.exists(),
+                        "adoption must build the project checklist")
+        cov_path = project.output_path / "coverage.json"
+        self.assertTrue(cov_path.exists(),
+                        "adopted coverage must reach the durable store")
+        from core.coverage.store import CoverageStore
+        store = CoverageStore(cov_path)
+        tools = store.tool_coverage_of_range("a.py", 1, 2)
+        self.assertIn("audit", tools,
+                      "journal-derived review must be in the store")
+
+    def test_adoption_checklist_noop_when_target_missing(self):
+        """Target deleted since the runs completed: adoption still
+        succeeds, no checklist is fabricated, nothing raises."""
+        gone = str(Path(self.tmpdir.name) / "gone")
+        self.mgr.create("ghost", gone, output_dir=str(
+            Path(self.tmpdir.name) / "ghost_out"))
+        run_dir = self._run_with_journal(
+            "audit_20260101_000004", target=gone)
+        self.assertEqual(self.mgr.add_directory("ghost", str(run_dir)), 1)
+        project = self.mgr.load("ghost")
+        self.assertFalse((project.output_path / "checklist.json").exists())
+
+    def test_adoption_leaves_existing_checklist_alone(self):
+        """A project that already has a checklist keeps it byte-for-byte;
+        the snapshot fires through the normal projection path."""
+        import json as _json
+        (Path(self.target_code) / "a.py").write_text(
+            "def f():\n    return 1\n")
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+        project = self.mgr.load("myapp")
+        existing = {"files": [{"path": "a.py", "items": [
+            {"name": "f", "line_start": 1, "line_end": 2}]}]}
+        checklist_path = project.output_path / "checklist.json"
+        checklist_path.write_text(_json.dumps(existing))
+        run_dir = self._run_with_journal(
+            "audit_20260101_000005", target=self.target_code)
+        self.assertEqual(self.mgr.add_directory("myapp", str(run_dir)), 1)
+        self.assertEqual(_json.loads(checklist_path.read_text()), existing)

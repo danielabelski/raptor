@@ -1033,7 +1033,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  True and sanitisation cannot engage (unsupported
                  platform, no mount-ns, no target/output), raise
                  RuntimeError instead of logging the degradation
-                 warning.
+                 warning. Also binds PER-RUN coverage: a per-overlay
+                 bind failure or missing target inside the mount-ns
+                 child aborts setup (instead of skip-and-continue),
+                 and a mount-ns setup/exec failure raises
+                 SandboxSetupError instead of degrading to the
+                 Landlock-only fallback (which cannot apply the
+                 persona at all).
         etc_overlay: Dict mapping in-sandbox /etc paths (e.g.
                  "/etc/sudoers") to host source files bind-mounted
                  over them during mount-ns init (mount-ns backend
@@ -2296,8 +2302,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _persona_tmpdir = _tf.mkdtemp(prefix="raptor-persona-")
             _effective_cpu_count = cpu_count if cpu_count is not None else 4
             try:
+                # strict rides ON the persona: apply_overlay (in the
+                # mount-ns child) treats per-target failures as setup
+                # failures instead of skip-and-continue, so a
+                # fail-closed persona request cannot silently run
+                # with host-real identity files.
                 _persona = build_persona(
                     Path(_persona_tmpdir), cpu_count=_effective_cpu_count,
+                    strict=bool(require_sanitisation),
                 )
             except BaseException:
                 _shutil.rmtree(_persona_tmpdir, ignore_errors=True)
@@ -3258,6 +3270,38 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     "reasonable mount-ns bind set; audit can't engage "
                     "for this tool. Other tools in the same workflow "
                     "still audit normally.")
+        # Persona fail-closed gate (pre-spawn arm): every route that
+        # abandons the mount-ns spawn path — pass_fds/input= kwarg
+        # compat, the B fallback (cmd[0] outside the bind tree), a
+        # speculative-failure-cache hit, or a per-call
+        # skip_mount_ns=True — runs the command WITHOUT the
+        # fingerprint persona (it only rides run_sandboxed's mount-ns
+        # setup). A require_sanitisation caller must get a refusal,
+        # not a silent host-real run. Mirrors rootfs gate #2 above;
+        # the post-spawn M/X arm is gated separately below.
+        if (_persona is not None and require_sanitisation
+                and (not spawn_eligible or _skip_mount_ns)):
+            from .errors import SandboxSetupError
+            _reason = (
+                _b_fallback_reason
+                or ("per-call skip_mount_ns=True bypasses the "
+                    "mount-ns backend" if _skip_mount_ns else
+                    "pass_fds=/input= are not plumbed through the "
+                    "fork-based spawn path")
+            )
+            msg_0 = (
+                f"sandbox(require_sanitisation=True).run() cannot "
+                f"engage the mount-ns spawn backend for this call "
+                f"({_reason}) — refusing the Landlock-only path, "
+                f"which cannot apply the fingerprint persona."
+            )
+            raise SandboxSetupError(
+                msg_0,
+                _b_fallback_instr
+                or "drop pass_fds=/input=/skip_mount_ns= for this "
+                   "call, or drop require_sanitisation= to accept "
+                   "host-real identity surfaces on degrade.",
+            )
         # Audit mode (b2/b3) requires the _spawn path because the
         # tracer needs to PTRACE_SEIZE a target the parent forked
         # itself. The Landlock-only fallback uses bare subprocess.run
@@ -3673,6 +3717,33 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "present) and cmd[0] names a path "
                                     "that exists INSIDE the image.",
                                 )
+                            # Persona fail-closed gate: the Landlock-
+                            # only retry below runs WITHOUT mount-ns,
+                            # so the fingerprint persona (bind-mounts
+                            # + UTS) silently does not apply — the
+                            # exact half-state require_sanitisation
+                            # forbids. This is also where a strict
+                            # apply_overlay per-target failure lands
+                            # ('M' status from the spawn child).
+                            if _persona is not None and require_sanitisation:
+                                from .errors import SandboxSetupError
+                                msg_0 = (
+                                    f"sandbox(require_sanitisation="
+                                    f"True): mount-ns setup or exec "
+                                    f"failed ({_setup_status[0]}: "
+                                    f"{_setup_status[1]}) — refusing "
+                                    f"the Landlock-only fallback, "
+                                    f"which cannot apply the "
+                                    f"fingerprint persona."
+                                )
+                                raise SandboxSetupError(
+                                    msg_0,
+                                    "fix the mount-ns failure (see "
+                                    "the child diagnostic above) or "
+                                    "drop require_sanitisation= to "
+                                    "accept host-real identity "
+                                    "surfaces on degrade.",
+                                )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns
                             # directly (saves the doubled subprocess
@@ -3903,6 +3974,32 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             "degrades gracefully (e.g. `--sandbox "
                             "full`). RAPTOR will not silently "
                             "downgrade for you.",
+                        )
+                    # Persona fail-closed gate (catch-all arm): the
+                    # Landlock-only path never applies the fingerprint
+                    # persona, so any demotion reaching here —
+                    # including mid-setup spawn errors and an
+                    # availability flap after the context-entry check
+                    # — is the host-real half-state
+                    # require_sanitisation forbids. The early gates
+                    # (pre-spawn kwarg/B-fallback/cache/skip_mount_ns,
+                    # post-spawn M/X) give more specific messages;
+                    # this one backstops every other route.
+                    if _persona is not None and require_sanitisation:
+                        from .errors import SandboxSetupError
+                        _demote_why = (
+                            _mount_ns_degraded or _b_fallback_reason
+                            or "mount-ns spawn was demoted for this "
+                               "call")
+                        raise SandboxSetupError(
+                            "sandbox(require_sanitisation=True): this "
+                            "call was demoted from the mount-ns "
+                            f"backend ({_demote_why}) — refusing the "
+                            "Landlock-only path, which cannot apply "
+                            "the fingerprint persona.",
+                            "fix the demotion cause, or drop "
+                            "require_sanitisation= to accept "
+                            "host-real identity surfaces on degrade.",
                         )
                     if restrict_reads and not exclude_tmp_baseline:
                         import tempfile as _tempfile_dem

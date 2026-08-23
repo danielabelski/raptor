@@ -864,11 +864,28 @@ class FfufRunner:
         # mount-ns file bind and the Landlock read rule are created for
         # the path the child actually opens, and a symlinked wordlist
         # would leave its original path dangling inside the namespace.
+        def _resolve_wordlist(path: Path) -> Path:
+            resolved = Path(os.path.realpath(path))
+            if resolved.parent != Path(os.path.abspath(path)).parent:
+                # A repo-shipped wordlist that is secretly a symlink into
+                # e.g. ~/.ssh would now be granted (and its lines sprayed
+                # at the target as fuzz candidates). Can't be an error —
+                # cross-directory symlinks are a legitimate operator
+                # setup — but it must be loud.
+                logger.warning(
+                    "ffuf wordlist %s resolves OUTSIDE its directory to %s; "
+                    "the sandbox read grant follows the resolved file — "
+                    "verify the symlink is yours, not the scanned repo's",
+                    self._redact(str(path)),
+                    self._redact(str(resolved)),
+                )
+            return resolved
+
         config = replace(
             config,
-            wordlist=Path(os.path.realpath(config.wordlist)),
+            wordlist=_resolve_wordlist(config.wordlist),
             extra_wordlists=tuple(
-                (Path(os.path.realpath(path)), keyword)
+                (_resolve_wordlist(path), keyword)
                 for path, keyword in config.extra_wordlists
             ),
         )

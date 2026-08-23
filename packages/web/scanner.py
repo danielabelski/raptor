@@ -198,7 +198,14 @@ class WebScanner:
         ffuf_results = None
         if self.ffuf and self.ffuf_config:
             logger.info("Phase 2b: ffuf content discovery")
-            ffuf_results = self.ffuf.run(self.ffuf_config)
+            try:
+                ffuf_results = self.ffuf.run(self.ffuf_config)
+            except (ValueError, OSError) as e:
+                # A late failure (wordlist deleted or re-pointed since the
+                # CLI preflight, sandbox setup error) must not discard the
+                # crawl/fuzz/verification phases' report with it.
+                logger.warning("Phase 2b: ffuf content discovery failed: %s", e)
+                ffuf_results = {"tool": "ffuf", "status": "error", "reason": str(e)}
 
         # Phase 3: Generate Report
         logger.info("Phase 3: Generating Security Report")
@@ -531,6 +538,14 @@ def build_ffuf_config(args: "argparse.Namespace") -> FfufConfig | None:
     if not args.ffuf_wordlist:
         return None
     wordlist, extra_wordlists = parse_wordlist_args(args.ffuf_wordlist)
+    # Resolve symlinks NOW so the parse-time preflight validates exactly
+    # the paths the run will use (a symlink whose TARGET contains ':' or
+    # ',' must fail here, not in Phase 2b). run() re-resolves, which is
+    # idempotent on already-resolved paths.
+    wordlist = Path(os.path.realpath(wordlist))
+    extra_wordlists = tuple(
+        (Path(os.path.realpath(path)), keyword) for path, keyword in extra_wordlists
+    )
     return FfufConfig(
         wordlist=wordlist,
         extra_wordlists=extra_wordlists,

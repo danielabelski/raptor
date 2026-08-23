@@ -826,6 +826,96 @@ def test_build_command_rejects_wordlist_paths_ffuf_would_misparse(tmp_path: Path
             )
 
 
+def test_run_warns_when_wordlist_symlink_escapes_its_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    outside = tmp_path / "elsewhere" / "real.txt"
+    outside.parent.mkdir()
+    outside.write_text("admin\n", encoding="utf-8")
+    link = tmp_path / "repo" / "wordlist.txt"
+    link.parent.mkdir()
+    link.symlink_to(outside)
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "packages.web.ffuf.logger.warning",
+        lambda fmt, *args: warnings.append(fmt % args if args else fmt),
+    )
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(FfufConfig(wordlist=link))
+
+    assert any("resolves OUTSIDE its directory" in w for w in warnings)
+
+
+def test_scanner_cli_preflight_validates_resolved_wordlist_paths(
+    tmp_path: Path,
+):
+    """A symlink whose TARGET path contains ':' must fail at parse time,
+    not in Phase 2b — the preflight has to see the resolved path."""
+    from packages.web.scanner import build_arg_parser, build_ffuf_config
+
+    weird_dir = tmp_path / "data:v2"
+    weird_dir.mkdir()
+    real = weird_dir / "w.txt"
+    real.write_text("admin\n", encoding="utf-8")
+    link = tmp_path / "clean.txt"
+    link.symlink_to(real)
+
+    args = build_arg_parser().parse_args(
+        ["--url", "https://example.test", "--ffuf-wordlist", str(link)]
+    )
+    config = build_ffuf_config(args)
+
+    assert config is not None
+    assert config.wordlist == real  # resolved at parse time
+    runner = FfufRunner("https://example.test", tmp_path)
+    with pytest.raises(ValueError, match="must not contain"):
+        runner.build_command(config, tmp_path / "out.json")
+
+
+def test_scan_survives_late_ffuf_failure(tmp_path: Path):
+    """A wordlist deleted between preflight and Phase 2b must degrade to
+    an error entry in the report, not abort the scan and discard the
+    crawl/fuzz output."""
+    from unittest.mock import patch
+
+    from packages.web.scanner import WebScanner
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+
+    with patch("packages.web.scanner.WebClient"), patch(
+        "packages.web.scanner.WebCrawler"
+    ):
+        scanner = WebScanner(
+            "http://example.com",
+            None,
+            tmp_path,
+            ffuf_config=FfufConfig(wordlist=wordlist),
+        )
+        scanner.crawler.crawl.return_value = {
+            "stats": {"total_pages": 1, "total_parameters": 0},
+            "discovered_parameters": [],
+            "pages": [],
+        }
+        wordlist.unlink()  # the late failure
+
+        report = scanner.scan()
+
+    assert report["ffuf"]["status"] == "error"
+    assert "wordlist not found" in report["ffuf"]["reason"]
+    assert report["discovery"]["total_pages"] == 1  # crawl output survived
+
+
 def test_scanner_cli_preflights_ffuf_config_before_scanning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

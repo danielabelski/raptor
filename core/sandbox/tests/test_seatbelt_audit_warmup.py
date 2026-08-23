@@ -18,6 +18,7 @@ import json
 from unittest import mock
 
 
+from core.sandbox import probes as _probes
 from core.sandbox import seatbelt_audit
 from core.sandbox.seatbelt import SANDBOX_KEXT_SENDER
 
@@ -125,7 +126,7 @@ def test_warm_up_returns_true_when_target_pid_event_seen(tmp_path):
         seatbelt_audit.subprocess, "Popen",
         return_value=_FakeWarmUp(target_pid),
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -152,7 +153,7 @@ def test_warm_up_returns_false_when_no_target_pid_event(tmp_path):
         seatbelt_audit.subprocess, "Popen",
         return_value=_FakeWarmUp(target_pid),
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -168,7 +169,7 @@ def test_warm_up_returns_false_when_sandbox_exec_missing(tmp_path):
     streamer._proc = _FakeProc(_FakeStdout([]))
 
     with mock.patch.object(
-        seatbelt_audit.shutil, "which", return_value=None,
+        _probes, "_find_sandbox_binary", return_value=None,
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=False,
     ):
@@ -187,7 +188,7 @@ def test_warm_up_returns_false_when_sandbox_exec_oserror(tmp_path):
         seatbelt_audit.subprocess, "Popen",
         side_effect=OSError("denied"),
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -216,7 +217,7 @@ def test_warm_up_invokes_sandbox_exec_with_deny_default_profile(tmp_path):
     with mock.patch.object(
         seatbelt_audit.subprocess, "Popen", side_effect=_capture_popen,
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -267,7 +268,7 @@ def test_warm_up_skips_non_kext_entries(tmp_path):
         seatbelt_audit.subprocess, "Popen",
         return_value=_FakeWarmUp(target_pid),
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -298,7 +299,7 @@ def test_start_proceeds_in_best_effort_when_warm_up_times_out(tmp_path):
     ), mock.patch.object(
         seatbelt_audit.subprocess, "Popen", side_effect=_popen_substitute,
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -423,7 +424,7 @@ def test_warm_up_reaps_child_even_on_match(tmp_path):
     with mock.patch.object(
         seatbelt_audit.subprocess, "Popen", return_value=warm_up,
     ), mock.patch.object(
-        seatbelt_audit.shutil, "which",
+        _probes, "_find_sandbox_binary",
         return_value="/usr/bin/sandbox-exec",
     ), mock.patch.object(
         seatbelt_audit.Path, "exists", return_value=True,
@@ -431,3 +432,35 @@ def test_warm_up_reaps_child_even_on_match(tmp_path):
         streamer._warm_up_until_attached()
 
     assert wait_called, "warm-up child was not reaped via wait()"
+
+
+def test_warm_up_never_resolves_sandbox_exec_from_path(
+        tmp_path, monkeypatch):
+    """Trusted-dirs pin: the warm-up executes sandbox-exec in the UNSANDBOXED
+    parent, so it must resolve via the trusted-dirs helper, never the
+    inherited PATH — a PATH-planted stub (direnv/.envrc shape) must
+    not run. On hosts without a real /usr/bin/sandbox-exec (Linux CI)
+    the gate returns False without executing anything."""
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "sandbox-exec"
+    marker = tmp_path / "stub-executed"
+    stub.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub_dir))
+
+    streamer = _make_streamer(tmp_path)
+    streamer._proc = _FakeProc(_FakeStdout([]))
+
+    import shutil as real_shutil
+    assert real_shutil.which("sandbox-exec") == str(stub)
+
+    if seatbelt_audit.Path("/usr/bin/sandbox-exec").exists():
+        import pytest
+        pytest.skip("real sandbox-exec present (darwin host)")
+
+    result = streamer._warm_up_until_attached()
+    assert result is False
+    assert not marker.exists(), (
+        "PATH-planted sandbox-exec stub was executed by the warm-up"
+    )

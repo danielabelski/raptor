@@ -48,7 +48,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -113,9 +112,10 @@ _WARM_UP_TIMEOUT_S = 5.0
 # keeps the warm-up cheap and side-effect-free.
 _WARM_UP_SBPL = "(version 1)(deny default (with report))"
 
-# Path to the system sandbox-exec binary. Resolved via shutil.which at
-# call site so a non-standard PATH (operator override) works, falling
-# back to the canonical /usr/bin location that ships with macOS.
+# Path to the system sandbox-exec binary. The warm-up resolves it via
+# the trusted-dirs helper (probes._find_sandbox_binary) — never the
+# inherited PATH — falling back to the canonical /usr/bin location
+# that ships with macOS.
 _SANDBOX_EXEC_FALLBACK = "/usr/bin/sandbox-exec"
 
 
@@ -801,8 +801,16 @@ class LogStreamer:
         """
         import selectors as _selectors
 
+        # Trusted-dirs resolution, never the inherited PATH: the
+        # warm-up executes this binary in the UNSANDBOXED parent, so a
+        # PATH-planted sandbox-exec stub (direnv/.envrc-compatible
+        # attack surface) would run host-side with the parent's
+        # authority. Same doctrine (and helper) as the Linux
+        # uidmap/getcap pinning in _spawn.py — this site was the one
+        # shutil.which() left behind.
+        from core.sandbox.probes import _find_sandbox_binary
         sandbox_exec = (
-            shutil.which("sandbox-exec") or _SANDBOX_EXEC_FALLBACK
+            _find_sandbox_binary("sandbox-exec") or _SANDBOX_EXEC_FALLBACK
         )
         if not Path(sandbox_exec).exists():
             # Non-Darwin host or stripped install — no point spawning
@@ -838,7 +846,8 @@ class LogStreamer:
             # spawn its probe means we will silently fall back to
             # best-effort mode and may miss early audit records. The
             # operator must see this so they can triage (ENOENT means
-            # sandbox-exec is not where shutil.which claimed it was;
+            # sandbox-exec is not where the trusted-dirs resolution
+            # claimed it was;
             # EACCES means a profile/permissions regression). Mirrors
             # the family-wide DEBUG -> WARNING promotion for producer-error
             # logs (see core/sandbox/proxy.py for the sibling case).

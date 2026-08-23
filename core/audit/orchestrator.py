@@ -5655,7 +5655,9 @@ def _record_phase_abort(config: Any, result: Any, exc: Exception) -> None:
         )
 
 
-def _clear_phase_abort(config: Any, *phases: str) -> None:
+def _clear_phase_abort(
+    config: Any, *phases: str, result: Any = None,
+) -> None:
     """Supersede stale sidecar abort records for *phases*.
 
     A run that aborted a phase, then was reopened/resumed with a fixed
@@ -5665,7 +5667,32 @@ def _clear_phase_abort(config: Any, *phases: str) -> None:
     driver on successful completion; a phase that aborted THIS call
     never reaches its clear (the abort path returns first). Best-effort
     like the recorder.
+
+    ``result``: the current run's in-memory state. A phase name several
+    drivers share ("checker-synthesis": mid-loop, external seeds,
+    post-loop auto-rules) can abort in one leg and complete in a LATER
+    leg of the SAME run — that completion supersedes nothing, the
+    aborted leg's work is still lost. Phases recorded in
+    ``result.phase_aborts`` are therefore never cleared; only records a
+    PRIOR segment left behind (absent from this run's memory) are
+    stale. Fail-noisy by construction: a kept record makes the operator
+    look, a dropped one hides real loss.
     """
+    if result is not None:
+        # Duck-typed guard: drivers are exercised with stub results in
+        # tests, and the supersede is best-effort — a result without
+        # abort state reads as "no in-run aborts", the pre-guard
+        # behaviour.
+        try:
+            with result._lock:
+                aborted_this_run = {
+                    a.split(":", 1)[0] for a in result.phase_aborts
+                }
+        except AttributeError:
+            aborted_this_run = set()
+        phases = tuple(p for p in phases if p not in aborted_this_run)
+        if not phases:
+            return
     out_dir = getattr(config, "out_dir", None)
     if not out_dir:
         return
@@ -5929,7 +5956,8 @@ def _iris_refine_and_bypass(
     else:
         # Completed without an abort: supersede any stale sidecar
         # record a prior (reopened/resumed) segment left behind.
-        _clear_phase_abort(config, "iris-synth", "iris-assumptions")
+        _clear_phase_abort(config, "iris-synth", "iris-assumptions",
+                            result=result)
     return bypass_runner, iris_bypass_findings
 
 
@@ -13289,7 +13317,7 @@ def _synthesize_external_seeds(
                 )
     # Completed without an abort: supersede any stale sidecar record
     # from a prior (reopened/resumed) segment.
-    _clear_phase_abort(config, "checker-synthesis")
+    _clear_phase_abort(config, "checker-synthesis", result=result)
     return queued
 
 
@@ -16926,7 +16954,7 @@ def _auto_synthesize_rules(
 
     # Completed without an auth abort (the abort path returns early):
     # supersede any stale sidecar record from a prior segment.
-    _clear_phase_abort(config, "checker-synthesis")
+    _clear_phase_abort(config, "checker-synthesis", result=result)
 
 
 def _run_critique(
@@ -20574,7 +20602,7 @@ def _adversarial_refute_pass(
 
     # Completed without an auth abort (the abort path returns early):
     # supersede any stale sidecar record from a prior segment.
-    _clear_phase_abort(config, "adversarial-refute")
+    _clear_phase_abort(config, "adversarial-refute", result=result)
 
 
 _C_EXTS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx"})

@@ -363,3 +363,80 @@ class TestPhaseAbortRunState:
 
         _clear_phase_abort(SimpleNamespace(out_dir=tmp_path), "iris-synth")
         assert not (tmp_path / "phase-aborts.json").is_file()
+
+    def test_clear_keeps_same_run_abort(self, tmp_path):
+        """A phase that aborted in THIS run is never superseded: several
+        drivers share one phase name (checker-synthesis: mid-loop,
+        external seeds, post-loop auto-rules), and a later completed leg
+        does not recover the aborted leg's lost work."""
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _clear_phase_abort,
+            _record_phase_abort,
+        )
+        from core.audit.report import load_phase_aborts
+
+        result = OrchestratorResult()
+        config = SimpleNamespace(out_dir=tmp_path)
+        _record_phase_abort(config, result, self._abort("checker-synthesis"))
+
+        _clear_phase_abort(config, "checker-synthesis", result=result)
+        assert [r["phase"] for r in load_phase_aborts(tmp_path)] == [
+            "checker-synthesis",
+        ]
+        assert result.phase_aborts
+
+    def test_clear_supersedes_prior_segment_with_result(self, tmp_path):
+        """The cross-segment supersede purpose survives the guard: a
+        record only the SIDECAR carries (prior reopened/resumed
+        segment, absent from this run's memory) still clears when the
+        phase completes."""
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _clear_phase_abort,
+            _record_phase_abort,
+        )
+        from core.audit.report import load_phase_aborts
+
+        config = SimpleNamespace(out_dir=tmp_path)
+        _record_phase_abort(config, None, self._abort("checker-synthesis"))
+
+        result = OrchestratorResult()
+        _clear_phase_abort(config, "checker-synthesis", result=result)
+        assert load_phase_aborts(tmp_path) == []
+
+    def test_later_completed_leg_does_not_hide_midloop_abort(
+        self, tmp_path, monkeypatch,
+    ):
+        """End-to-end through a real leg driver: mid-loop synthesis
+        aborts on a dead credential, the external-seed leg of the same
+        phase later completes — the sidecar record must survive."""
+        import core.audit.checker_synthesis as cs
+        import core.audit.synthesis_seeds as ss
+        from core.audit.orchestrator import (
+            OrchestratorResult,
+            _record_phase_abort,
+            _synthesize_external_seeds,
+        )
+        from core.audit.report import load_phase_aborts
+
+        result = OrchestratorResult()
+        config = SimpleNamespace(out_dir=tmp_path)
+        _record_phase_abort(config, result, self._abort("checker-synthesis"))
+
+        seed = SimpleNamespace(seed=SimpleNamespace(provenance="journal"))
+        monkeypatch.setattr(
+            ss, "collect_external_seeds",
+            lambda config, checklist=None, exclude_keys=None: [seed],
+        )
+        monkeypatch.setattr(
+            cs, "synthesize_from_external_seed",
+            lambda ext, config, synthesis_count=0: None,
+        )
+
+        shared = SimpleNamespace(synthesis_queue=[], checker_library=None)
+        queued = _synthesize_external_seeds(config, result, shared, {})
+        assert queued == 0
+        assert [r["phase"] for r in load_phase_aborts(tmp_path)] == [
+            "checker-synthesis",
+        ]

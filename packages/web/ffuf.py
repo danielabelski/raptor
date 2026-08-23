@@ -976,6 +976,7 @@ class FfufRunner:
 
         results: list[dict[str, Any]] = []
         if output_file.exists():
+            parsed: Any = None
             try:
                 # Size-gated BEFORE the read: an over-budget results
                 # file raises with the observed size and is reported
@@ -983,13 +984,19 @@ class FfufRunner:
                 parsed = load_json_bounded(
                     output_file, max_bytes=_MAX_FFUF_OUTPUT_BYTES,
                 )
-                if isinstance(parsed, dict):
-                    raw_results = parsed.get("results") or []
-                    if isinstance(raw_results, list):
-                        results = [r for r in raw_results if isinstance(r, dict)]
             except ValueError as exc:
-                # Malformed JSON, undecodable bytes, or over budget.
+                # Malformed JSON, undecodable bytes, or over budget —
+                # either way the raw file may still embed the delivered
+                # credentials in its config block: restrict it.
                 logger.warning("Could not parse ffuf JSON output: %s", exc)
+                self._restrict_report(output_file)
+            if isinstance(parsed, dict):
+                raw_results = parsed.get("results") or []
+                if isinstance(raw_results, list):
+                    results = [r for r in raw_results if isinstance(r, dict)]
+                self._scrub_report(output_file, parsed)
+            elif parsed is not None:
+                self._restrict_report(output_file)
 
         summarized_results = [self._summarize_result(r) for r in results[: config.report_limit]]
         return {
@@ -1001,8 +1008,74 @@ class FfufRunner:
             "reported_result_count": len(summarized_results),
             "omitted_result_count": max(0, len(results) - len(summarized_results)),
             "results": summarized_results,
-            "stderr": self._redact(stderr_text.strip()),
+            "stderr": self._redact(self._redact_stderr(stderr_text.strip())),
         }
+
+    @staticmethod
+    def _restrict_report(output_file: Path) -> None:
+        """0600 fallback when the raw report cannot be rewritten: ffuf
+        embeds its full resolved config — delivered headers, cookies,
+        and body verbatim — in the report, at 0644 by default."""
+        try:
+            output_file.chmod(0o600)
+        except OSError:
+            logger.debug("could not restrict ffuf report mode", exc_info=True)
+
+    def _scrub_report(self, output_file: Path, parsed: dict[str, Any]) -> None:
+        """Strip ffuf's embedded config and command line from the kept raw
+        report and rewrite it as a fresh 0600 inode.
+
+        Deleting the 0600 credentials TOML while ffuf's own report keeps
+        the same header/cookie/body values at 0644 would make the
+        at-rest guarantee theater. RAPTOR consumes only the results
+        array; reveal_secrets keeps the report untouched.
+        """
+        if self.reveal_secrets:
+            return
+        removed = [key for key in ("config", "commandline") if key in parsed]
+        if not removed:
+            return
+        scrubbed = {key: item for key, item in parsed.items() if key not in removed}
+        scrubbed["redacted_keys"] = removed
+        try:
+            output_file.unlink(missing_ok=True)
+            fd = os.open(
+                output_file,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(scrubbed, handle)
+        except OSError as exc:
+            logger.warning("could not scrub ffuf report %s: %s", output_file, exc)
+
+    _BANNER_LINE_RE = re.compile(r"^(\s*::\s*(Header|Data)\s*:\s*)(.*)$")
+
+    def _redact_stderr(self, text: str) -> str:
+        """Scrub ffuf's startup banner from captured stderr.
+
+        Even in noninteractive mode the banner echoes every delivered
+        header (cookies fold into a Cookie header) and the request body
+        as ' :: Header : ...' / ' :: Data : ...' lines. Names stay,
+        values go — the generic pattern redactor cannot know which
+        values are secret.
+        """
+        if self.reveal_secrets:
+            return text
+        lines = []
+        for line in text.split("\n"):
+            matched = self._BANNER_LINE_RE.match(line)
+            if not matched:
+                lines.append(line)
+                continue
+            prefix, kind, value = matched.groups()
+            if kind == "Header":
+                name, sep, _val = value.partition(":")
+                redacted = f"{name.strip()}: [REDACTED]" if sep else "[REDACTED]"
+            else:
+                redacted = "[REDACTED]"
+            lines.append(prefix + redacted)
+        return "\n".join(lines)
 
     def _clean_summary_text(self, value: object) -> str:
         """Sanitize a report field that echoes response-influenced data.

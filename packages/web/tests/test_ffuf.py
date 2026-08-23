@@ -1120,6 +1120,123 @@ def test_run_refuses_to_parse_oversized_report(
 
     assert result["result_count"] == 0
     assert result["results"] == []
+    # Unparsed report may embed credentials in its config block: 0600.
+    assert (tmp_path / "ffuf_results.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_run_scrubs_ffuf_config_block_from_kept_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ffuf embeds its full resolved config (delivered headers, cookies,
+    body verbatim) plus its command line in the raw report at 0644;
+    keeping that next to the deleted 0600 TOML would make the at-rest
+    guarantee theater."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "commandline": "ffuf -H 'Authorization: Bearer atrest-secret-1'",
+                    "config": {"http_headers": {"Authorization": "Bearer atrest-secret-1"}},
+                    "results": [{"url": "https://example.test/admin", "status": 200}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(
+        FfufConfig(wordlist=wordlist, headers=("Authorization: Bearer atrest-secret-1",))
+    )
+
+    assert result["result_count"] == 1
+    kept = tmp_path / "ffuf_results.json"
+    raw = kept.read_text(encoding="utf-8")
+    assert "atrest-secret-1" not in raw
+    parsed = json.loads(raw)
+    assert "config" not in parsed and "commandline" not in parsed
+    assert sorted(parsed["redacted_keys"]) == ["commandline", "config"]
+    assert parsed["results"]  # results survive intact
+    assert kept.stat().st_mode & 0o777 == 0o600
+
+
+def test_run_keeps_report_config_block_with_reveal_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(
+            json.dumps({"config": {"k": "v"}, "results": []}), encoding="utf-8"
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path, reveal_secrets=True)
+    runner.run(FfufConfig(wordlist=wordlist))
+
+    parsed = json.loads((tmp_path / "ffuf_results.json").read_text(encoding="utf-8"))
+    assert parsed["config"] == {"k": "v"}
+
+
+def test_run_redacts_ffuf_banner_values_in_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ffuf's startup banner echoes delivered headers and body to stderr
+    even in noninteractive mode; names stay, values go."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    banner = (
+        " :: Method           : POST\n"
+        " :: Header           : Authorization: Bearer BANNERSECRET999\n"
+        " :: Header           : X-Custom-Thing: CUSTOMSECRET666\n"
+        " :: Data             : user=FUZZ&comment=PLAINSECRET888\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr=banner)
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="login",
+            method="POST",
+            data="user=FUZZ&comment=PLAINSECRET888",
+            headers=(
+                "Authorization: Bearer BANNERSECRET999",
+                "X-Custom-Thing: CUSTOMSECRET666",
+            ),
+        )
+    )
+
+    stderr = result["stderr"]
+    assert "BANNERSECRET999" not in stderr
+    assert "CUSTOMSECRET666" not in stderr
+    assert "PLAINSECRET888" not in stderr
+    assert "Authorization: [REDACTED]" in stderr
+    assert "X-Custom-Thing: [REDACTED]" in stderr
+    assert ":: Method           : POST" in stderr  # non-value lines untouched
 
 
 def test_summarize_result_sanitizes_hostile_report_fields(tmp_path: Path):

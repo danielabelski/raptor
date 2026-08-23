@@ -160,6 +160,13 @@ Examples:
     ap.add_argument("--duration", type=int, default=3600, help="Fuzzing duration in seconds (default: 3600)")
     ap.add_argument("--parallel", type=int, default=1, help="Number of parallel AFL instances (default: 1, ceiling: tuning.json)")
     ap.add_argument("--max-crashes", type=int, default=10, help="Maximum crashes to analyse (default: 10)")
+    ap.add_argument(
+        "--rank-crashes", action="store_true",
+        help="LLM re-rank of collected crashes before the --max-crashes "
+             "analysis cap, so the cap cuts the least promising tail "
+             "(ordering only; needs an external analysis model; collects "
+             "3x the cap to rank over)",
+    )
     ap.add_argument("--timeout", type=int, default=1000, help="Timeout per execution in ms (default: 1000)")
     ap.add_argument("--out", help="Output directory (default: fuzz_<binary>_<timestamp>_pid<N>_<tail> under the configured output root)")
     ap.add_argument("--dict", help="Path to AFL dictionary file for structured input fuzzing")
@@ -691,11 +698,18 @@ Examples:
             extra_afl_flags=sage_afl_flags or None,
         )
 
+        # With --rank-crashes the campaign runs to a 3x-cap pool so
+        # the ranker has a tail to cut — the AFL runner early-stops
+        # at max_crashes, so the wider pool must be requested HERE,
+        # not just at collection time.
+        collect_cap = (
+            args.max_crashes * 3 if args.rank_crashes else args.max_crashes
+        )
         num_crashes, crashes_dir = afl_runner.run_fuzzing(
             duration=args.duration,
             parallel_jobs=_clamp_parallel(args.parallel),
             timeout_ms=args.timeout,
-            max_crashes=args.max_crashes,
+            max_crashes=collect_cap,
         )
 
         if afl_runner.campaign_failed:
@@ -765,7 +779,17 @@ Examples:
     try:
         # Collect crashes
         collector = CrashCollector(crashes_dir)
-        crashes = collector.collect_crashes(max_crashes=args.max_crashes)
+        # With --rank-crashes, collect the 3x-cap pool the campaign
+        # was asked to produce — ranking sees no stack identity, so
+        # the analysis loop walks past post-GDB duplicates and
+        # backfills from the pool up to the analysis cap. Note the
+        # wider pool also widens the witness records and the counts
+        # fed to the autonomous planner: those are real crashes and
+        # recording them is intentional.
+        collect_cap = (
+            args.max_crashes * 3 if args.rank_crashes else args.max_crashes
+        )
+        crashes = collector.collect_crashes(max_crashes=collect_cap)
         ranked_crashes = collector.rank_crashes_by_exploitability(crashes)
 
         print(f"\nCollected {len(crashes)} unique crashes")
@@ -879,15 +903,39 @@ Examples:
             logger.info("Applying goal-directed crash prioritization...")
             ranked_crashes = goal_planner.prioritize_crashes_for_goal(ranked_crashes)
 
+        # Opt-in LLM re-rank before the --max-crashes cap below —
+        # supersedes the heuristic orderings above when it produces
+        # signal, falls back to them when it cannot.
+        if args.rank_crashes:
+            from packages.fuzzing.crash_ranking import rank_crash_queue
+            ranked_crashes, rank_note = rank_crash_queue(
+                ranked_crashes,
+                llm_config=getattr(llm_agent, "llm_config", None),
+            )
+            print(f"  {rank_note}")
+
         analysed = 0
         exploitable = 0
         exploits_generated = 0
         seen_stack_hashes = set()  # Track stack hashes for deduplication
         skipped_duplicates = 0
 
-        for idx, crash in enumerate(ranked_crashes[:args.max_crashes], 1):
+        # With --rank-crashes, walk the FULL ranked pool and count
+        # non-duplicate attempts up to the cap: listwise ranking
+        # clusters similar crashes, so a pre-sliced window would let
+        # post-GDB duplicates burn analysis slots with no backfill —
+        # the wider pool exists precisely to backfill past them.
+        crash_pool = (
+            ranked_crashes if args.rank_crashes
+            else ranked_crashes[:args.max_crashes]
+        )
+        attempted = 0
+        for crash in crash_pool:
+            if attempted >= args.max_crashes:
+                break
+            idx = attempted + 1
             print(f"\n{'█' * 70}")
-            print(f"CRASH {idx}/{min(len(crashes), args.max_crashes)}")
+            print(f"CRASH {idx}/{min(len(crash_pool), args.max_crashes)}")
             print(f"{'█' * 70}")
 
             # Get crash context with GDB
@@ -905,6 +953,7 @@ Examples:
 
             if crash_context.stack_hash:
                 seen_stack_hashes.add(crash_context.stack_hash)
+            attempted += 1
 
             # Classify crash type
             crash_context.crash_type = crash_analyser.classify_crash_type(crash_context)
@@ -1015,7 +1064,7 @@ Examples:
                             success=True  # Assumed success without validation
                         )
 
-            print(f"\nProgress: {analysed}/{len(ranked_crashes[:args.max_crashes])} analysed, "
+            print(f"\nProgress: {analysed}/{min(len(crash_pool), args.max_crashes)} analysed, "
                   f"{exploitable} exploitable, "
                   f"{exploits_generated} exploits, "
                   f"{skipped_duplicates} duplicates skipped")

@@ -457,3 +457,40 @@ class TestRootfsSymlinkedMountpointRefused(_RootfsE2EBase):
             "image with a symlinked /dev mountpoint must be refused, "
             "not silently set up with diverted binds"
         ))
+
+
+class TestRootfsGate5LoadBearing(unittest.TestCase):
+    """Rootfs fail-closed gate #5 is LOAD-BEARING for the loader-var
+    posture: a rootfs run whose mount-ns spawn setup fails mid-flight
+    must raise SandboxSetupError, never degrade to the Landlock-only
+    host-filesystem path — on that path the (image-config-derived,
+    target-influenceable) caller env would be applied to launcher
+    execs on the host. core/env/handle.py's strict_env is the second
+    gate; this test pins the first so a future tier change cannot
+    silently remove it."""
+
+    def test_spawn_setup_failure_raises_not_degrades(self):
+        if not _mount_ns_usable():
+            self.skipTest(
+                "mount-ns unusable here (gate #3 fires before gate #5)"
+            )
+        import unittest.mock as mock
+
+        from core.sandbox import _spawn as spawn_mod
+        from core.sandbox import run as sandbox_run
+        from core.sandbox.errors import SandboxSetupError
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rootfs = os.path.join(tmp.name, "rootfs")
+        os.makedirs(os.path.join(rootfs, "bin"))
+
+        with mock.patch.object(
+            spawn_mod, "run_sandboxed",
+            side_effect=RuntimeError("simulated spawn-setup failure"),
+        ), self.assertRaises(SandboxSetupError) as ctx:
+            sandbox_run(
+                ["/bin/true"], rootfs=rootfs, block_network=True,
+                capture_output=True, text=True, timeout=30,
+            )
+        self.assertIn("refusing the Landlock-only", str(ctx.exception))

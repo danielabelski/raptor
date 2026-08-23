@@ -227,6 +227,29 @@ class SandboxHandle(RuntimeHandle):
                 timeout=timeout_seconds,
                 cwd=(workdir or self.workdir) or None,
                 env=(dict(self.env) if self.env else None),
+                # ``self.env`` merges the built container image's
+                # config Env — every ENV line of an agent-authored
+                # (target-influenceable) Dockerfile flows through here
+                # verbatim. strict_env strips DANGEROUS_ENV_VARS
+                # (LD_PRELOAD / LD_LIBRARY_PATH / DYLD_* / PYTHON*
+                # loader vars) before the sandbox applies the dict, so
+                # a hostile `ENV LD_PRELOAD=...` can never ride the
+                # target env — and, on any future tier change, can
+                # never reach a launcher exec. Rootfs runs are pinned
+                # to the mount-ns tier by rootfs fail-closed gate #5
+                # (context.py — spawn-setup failure raises
+                # SandboxSetupError instead of degrading to the
+                # host-filesystem path); this is the single-gate
+                # reinforcement so the containment does not rest on
+                # that gate alone. Images that legitimately set loader
+                # vars in config Env lose them — accepted: loader vars
+                # from an untrusted image are exactly the primitive
+                # being removed. Residual: DANGEROUS_ENV_VARS is an
+                # exact-name blocklist — loader-adjacent names outside
+                # it (e.g. GCONV_PATH-class knobs) ride through; the
+                # gate-#5 mount-ns pin remains the containment for
+                # anything the list misses.
+                strict_env=True,
             )
         except Exception as exc:  # noqa: BLE001 — outcome shape, not raise
             # SandboxSetupError is a BaseException and deliberately NOT

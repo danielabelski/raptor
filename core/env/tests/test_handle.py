@@ -78,3 +78,38 @@ def test_sandbox_handle_gates_on_rootfs_support(tmp_path) -> None:
     assert h.state()["Running"] is True
     h.teardown()
     assert h.state()["Running"] is False
+
+
+def test_sandbox_handle_exec_strips_loader_env(tmp_path) -> None:
+    """SandboxHandle.exec runs the image config Env — agent-authored,
+    target-influenceable content. The sandbox call must carry
+    strict_env=True so loader vars (LD_PRELOAD et al.) from a hostile
+    Dockerfile ENV are stripped rather than applied to the exec
+    (loader-var single-gate reinforcement alongside rootfs fail-closed
+    gate #5)."""
+    from unittest.mock import MagicMock
+
+    from core.env.handle import SandboxHandle, sandbox_rootfs_supported
+
+    if not sandbox_rootfs_supported():
+        import pytest
+        pytest.skip("sandbox image-rootfs mode unavailable on this tree")
+
+    (tmp_path / "bin").mkdir()
+    h = SandboxHandle(
+        tmp_path,
+        env={"PATH": "/usr/bin", "LD_PRELOAD": "/rootfs/evil.so"},
+    )
+    run_mock = MagicMock()
+    run_mock.return_value = MagicMock(
+        returncode=0, stdout="ok", stderr="", sandbox_info={},
+    )
+    with patch("core.sandbox.run", run_mock):
+        outcome = h.exec("true")
+    assert outcome.ok
+    kwargs = run_mock.call_args.kwargs
+    assert kwargs["strict_env"] is True
+    # The image env still flows (strict_env strips inside the sandbox
+    # layer; the handle passes the dict through unmodified).
+    assert kwargs["env"]["LD_PRELOAD"] == "/rootfs/evil.so"
+    assert kwargs["rootfs"] == str(tmp_path)

@@ -265,6 +265,37 @@ _AF_PACKET = 17
 _SOCK_RAW = 3
 _SOCK_DGRAM = 2
 
+# Kernel-bypass stream transports (denied unconditionally, hard_deny).
+# Landlock's network rules cover IPPROTO_TCP only and the UDP block
+# matches SOCK_DGRAM only, so an SCTP one-to-one socket —
+# socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP) — was created past every
+# socket() rule and connect(2)ed past Landlock CONNECT_TCP: full
+# bidirectional stream egress to any host:port on the Landlock-port-pin
+# postures (egress-proxy tier 2, any caller passing allowed_tcp_ports
+# on the shared netns). Worse, SCTP_SOCKOPT_CONNECTX performs the
+# connect IN-KERNEL through a setsockopt pointer no seccomp filter can
+# inspect, so even the connect-notify supervisor is architecturally
+# blind to it — denying socket creation covers connectx by
+# construction. DCCP has the same shape (its own socket type, not
+# covered by Landlock TCP rules), and MPTCP (IPPROTO_MPTCP=262) is a
+# distinct sk_protocol that predates Landlock's TCP hook on some
+# kernels — denied alongside rather than audited per kernel version.
+# Judgment, documented: nothing in RAPTOR's sandboxed tool population
+# (compilers, scanners, interpreters, fuzzers, LLM-emitted exploits,
+# build systems) legitimately speaks SCTP, DCCP, or opts into MPTCP;
+# apps must request these protocols explicitly, so the deny costs
+# nothing on the supported workloads. The netns egress tier was never
+# exposed (no route out); this closes the tier-2 / shared-netns arm.
+# SOCK_SEQPACKET / SOCK_DCCP on AF_INET* are denied by TYPE as well:
+# protocol=0 with those types defaults to SCTP / DCCP in the kernel,
+# dodging a protocol-only match. AF_UNIX SOCK_SEQPACKET is unaffected
+# (family-scoped rules).
+_IPPROTO_SCTP = 132
+_IPPROTO_DCCP = 33
+_IPPROTO_MPTCP = 262
+_SOCK_SEQPACKET = 5
+_SOCK_DCCP = 6
+
 # AF_INET / AF_INET6 constants — used by the UDP block. Only filtered
 # when the caller requests it (proxy mode); otherwise DNS via UDP/53
 # is needed for normal operation. Under proxy mode, the proxy resolves
@@ -445,7 +476,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     filesystem + network audit coverage. EXCEPTION: the escape-primitive
     subset (_AUDIT_HARD_DENY_SYSCALLS — ptrace/process_vm_*, keyring,
     bpf/userfaultfd, io_uring_*), the blocked tty ioctls, AND the
-    socket()-argument rules (blocked families, SOCK_RAW, the UDP block)
+    socket()-argument rules (blocked families, SOCK_RAW, the
+    SCTP/DCCP/MPTCP kernel-bypass transports, the UDP block)
     keep the ERRNO action under audit too; converting THOSE denials
     into allow-and-log would grant an audited child the very
     capabilities the sandbox exists to deny (e.g. socket(AF_UNIX) →
@@ -779,6 +811,57 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         _os_write(2, b"RAPTOR: seccomp SOCK_RAW rule failed -- "
                                      b"refusing to exec without filter\n")
                         os._exit(126)
+
+                    # Kernel-bypass stream transports — see the
+                    # _IPPROTO_SCTP constant block for the full
+                    # rationale (SCTP dodges Landlock's TCP-only port
+                    # rules and its CONNECTX setsockopt dodges the
+                    # connect-notify supervisor; DCCP/MPTCP share the
+                    # not-IPPROTO_TCP gap). Unconditional and
+                    # hard_deny: escape-primitive class, must not
+                    # downgrade to allow-and-log under audit mode.
+                    # (a) protocol-argument denies, family-agnostic:
+                    # MASKED_EQ low-32 on arg 2 for the same
+                    # high-bit-set reason as the family rules.
+                    for proto in (_IPPROTO_SCTP, _IPPROTO_DCCP,
+                                  _IPPROTO_MPTCP):
+                        arg = _ScmpArgCmp(arg=2, op=_SCMP_CMP_MASKED_EQ,
+                                          datum_a=_ARG32_MASK,
+                                          datum_b=proto)
+                        arg_arr = (_ScmpArgCmp * 1)(arg)
+                        ret = lib.seccomp_rule_add_array(
+                            ctx, hard_deny, socket_num, 1, arg_arr,
+                        )
+                        if ret < 0:
+                            _os_write(2, b"RAPTOR: seccomp SCTP-family "
+                                         b"protocol rule failed -- refusing"
+                                         b" to exec without filter\n")
+                            os._exit(126)
+                    # (b) type-argument denies on AF_INET/AF_INET6:
+                    # socket(AF_INET, SOCK_SEQPACKET, 0) defaults to
+                    # SCTP and socket(AF_INET, SOCK_DCCP, 0) to DCCP,
+                    # so a zero protocol argument would dodge (a).
+                    # Family-scoped: AF_UNIX SOCK_SEQPACKET (legit
+                    # IPC) is untouched.
+                    for fam in (_AF_INET, _AF_INET6):
+                        for sock_type in (_SOCK_SEQPACKET, _SOCK_DCCP):
+                            args = (_ScmpArgCmp * 2)(
+                                _ScmpArgCmp(arg=0, op=_SCMP_CMP_MASKED_EQ,
+                                            datum_a=_ARG32_MASK,
+                                            datum_b=fam),
+                                _ScmpArgCmp(arg=1, op=_SCMP_CMP_MASKED_EQ,
+                                            datum_a=_SOCK_TYPE_MASK,
+                                            datum_b=sock_type),
+                            )
+                            ret = lib.seccomp_rule_add_array(
+                                ctx, hard_deny, socket_num, 2, args,
+                            )
+                            if ret < 0:
+                                _os_write(2, b"RAPTOR: seccomp SCTP-family"
+                                             b" type rule failed -- "
+                                             b"refusing to exec without "
+                                             b"filter\n")
+                                os._exit(126)
 
                 # AF_UNIX connect scoping (enforcement only): route
                 # every connect(2) to the parent-side supervisor via

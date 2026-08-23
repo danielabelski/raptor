@@ -103,7 +103,9 @@ def cmd_gaps(args: argparse.Namespace) -> int:
         coverage_records,
         context_map=context_map,
         strategy_filter=args.strategy,
-        budget=args.budget if not args.prioritize else None,
+        # --prioritize and --rank both defer the budget cut until
+        # after their re-ordering (rank-then-spend).
+        budget=args.budget if not (args.prioritize or args.rank) else None,
         scope=args.scope,
         scope_floor=args.scope_floor,
         annotations_dir=annotations_dir,
@@ -116,9 +118,30 @@ def cmd_gaps(args: argparse.Namespace) -> int:
         gaps = score_functions(
             gaps, context_map=context_map, flow_traces=flow_traces,
         )
+        if args.rank:
+            # Rank BEFORE budget truncation so the cut drops the
+            # least promising within-tier tail (rank-then-spend).
+            from core.audit.gap_ranking import rank_gap_queue
+            gaps, rank_note = rank_gap_queue(
+                gaps, model=args.rank_model, head=args.rank_head,
+            )
+            print(f"  {rank_note}", file=sys.stderr)
         if args.budget and args.budget > 0:
             # Records the dropped tail as not attempted (budget);
             # scoped runs get the per-file floor + zero-slot report.
+            gaps = truncate_gaps_to_budget(
+                gaps, args.budget, out_dir,
+                scope=args.scope, scope_floor=args.scope_floor,
+            )
+    elif args.rank:
+        # Non-prioritized path: budget was deferred above so the cut
+        # drops the least promising within-tier tail here too.
+        from core.audit.gap_ranking import rank_gap_queue
+        gaps, rank_note = rank_gap_queue(
+            gaps, model=args.rank_model, head=args.rank_head,
+        )
+        print(f"  {rank_note}", file=sys.stderr)
+        if args.budget and args.budget > 0:
             gaps = truncate_gaps_to_budget(
                 gaps, args.budget, out_dir,
                 scope=args.scope, scope_floor=args.scope_floor,
@@ -2049,6 +2072,15 @@ def main() -> int:
                         help="Restrict to files under this path prefix (repeatable)")
     p_gaps.add_argument("--strategy", default=None)
     p_gaps.add_argument("--budget", type=int, default=None)
+    p_gaps.add_argument("--rank", action="store_true",
+                        help="LLM listwise re-rank of the queue head, strictly "
+                             "within priority tiers (metadata-level signal; "
+                             "ordering only, never drops a gap)")
+    p_gaps.add_argument("--rank-model", default=None,
+                        help="model for --rank (default: session default)")
+    p_gaps.add_argument("--rank-head", type=int, default=None,
+                        help="max gaps the LLM re-ranks "
+                             "(default: core.audit.gap_ranking's head cap)")
     p_gaps.add_argument("--prioritize", action="store_true",
                         help="Score and re-sort by attack-surface proximity")
     p_gaps.add_argument("--annotations-dir", default=None,

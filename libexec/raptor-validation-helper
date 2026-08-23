@@ -1159,8 +1159,48 @@ def _run_guard_dominance(workdir, target, data):
 # E: Validate Stage D output + discover binaries
 # ---------------------------------------------------------------------------
 
+# Leading-byte magics for real executable formats. Exec-bit discovery
+# alone matches shell scripts and autotools helpers too — an observed
+# source-only tree yielded 38 "executables" (config.sub, config.guess,
+# install-sh, *.rc / *.init service scripts) and zero real binaries.
+# Only files that start with a known binary-format magic may enter the
+# source→binary map: a mispaired entry feeds Stage E feasibility (and
+# PoC-evidence execution) the wrong program entirely.
+_BINARY_MAGICS = (
+    b"\x7fELF",           # ELF
+    b"\xfe\xed\xfa\xce",  # Mach-O 32-bit big-endian
+    b"\xce\xfa\xed\xfe",  # Mach-O 32-bit little-endian
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64-bit big-endian
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64-bit little-endian
+    b"\xca\xfe\xba\xbe",  # Mach-O universal (fat)
+    b"\xbe\xba\xfe\xca",  # Mach-O universal (fat, swapped)
+)
+
+# Suffixes that name the same program as their stem — the only cases
+# where a dotted basename may collapse to a shared (stem) key.
+_SHARED_STEM_SUFFIXES = {".exe", ".bin"}
+
+
+def _is_binary_executable(path):
+    """True when ``path`` starts with a known binary-format magic
+    (ELF, Mach-O, PE). Scripts and other text files with the exec bit
+    set return False. Read failures return False — a file we cannot
+    read cannot be analysed or executed downstream either."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(4)
+    except OSError:
+        return False
+    if head[:2] == b"MZ":  # PE / DOS
+        return True
+    return any(head.startswith(magic) for magic in _BINARY_MAGICS)
+
+
 def _discover_executables(target):
-    """Find executable files in target directory. Returns {stem: path}.
+    """Find binary executables in target directory. Returns {name: path}.
+
+    Keys are full basenames (``sshd``, ``foo.bin``→``foo``); only real
+    binary formats (per ``_is_binary_executable``) are returned.
 
     Pre-fix used `find -executable` which is a GNU find extension.
     On BSD find (macOS, FreeBSD), `-executable` is unrecognised
@@ -1234,38 +1274,58 @@ def _discover_executables(target):
                 ["find", target, "-type", "f", "-perm", "+111"],
                 capture_output=True, text=True, timeout=30, check=False, env=_env
             )
-        # Track collisions on stem. Pre-fix `result[p.stem] = str(p)`
-        # silently OVERWROTE earlier entries when two binaries
-        # shared a stem (e.g. `bin/foo` and `lib/foo`, or
-        # `build/release/test` and `build/debug/test` — common
-        # in projects with multi-target builds). Whichever path
-        # `find` returned LAST won; the other was dropped without
-        # a log line. Operator's Stage E then mapped findings to
-        # the wrong binary (e.g. release-build binary chosen
-        # when the finding came from the debug-build's source).
-        # Build a per-stem LIST so the caller can choose
-        # (currently picks the first, but the data structure
-        # supports an explicit selector / log when multiple).
-        seen_stems: dict[str, list[str]] = {}
+        # Filter to real binary formats FIRST, then key by full
+        # basename. Pre-fix keyed by `Path.stem` with no format
+        # check, so (a) unrelated dotted basenames collided —
+        # `config.sub` vs `config.guess` both became 'config',
+        # `sshd.rc` vs `sshd.init` both became 'sshd' — with
+        # whichever path `find` printed last silently winning, and
+        # (b) exec-bit scripts counted as executables at all.
+        # Basenames collapse to a shared stem key only for
+        # ``_SHARED_STEM_SUFFIXES`` (foo.exe IS the program 'foo');
+        # identical keys from different dirs (e.g. `bin/foo` and
+        # `lib/foo`, or multi-target `build/release/test` vs
+        # `build/debug/test`) still collide intentionally and go
+        # through the per-key LIST below.
+        skipped_non_binary = []
+        seen_names: dict[str, list[str]] = {}
         for line in proc.stdout.strip().split("\n"):
             if line:
                 p = Path(line)
-                seen_stems.setdefault(p.stem, []).append(str(p))
-        for stem, paths in seen_stems.items():
+                if not _is_binary_executable(p):
+                    skipped_non_binary.append(p.name)
+                    continue
+                key = (p.stem if p.suffix.lower() in _SHARED_STEM_SUFFIXES
+                       else p.name)
+                seen_names.setdefault(key, []).append(str(p))
+        if skipped_non_binary:
+            # Name what was skipped instead of a bare count — a
+            # bare "38 executables" on a source-only tree hid that
+            # every one was a script / autotools helper.
+            _SKIP_PRINT_CAP = 10
+            shown = ", ".join(sorted(skipped_non_binary)[:_SKIP_PRINT_CAP])
+            extra = len(skipped_non_binary) - _SKIP_PRINT_CAP
+            print(
+                f"  Skipped {len(skipped_non_binary)} exec-bit "
+                f"non-binary file(s) (scripts / autotools helpers): "
+                f"{shown}" + (f" (+{extra} more)" if extra > 0 else ""),
+                file=sys.stderr,
+            )
+        for name, paths in seen_names.items():
             if len(paths) > 1:
                 # Log the collision so operator sees they have
-                # multiple build outputs with the same stem.
+                # multiple build outputs with the same name.
                 # Pick the SHORTEST path — heuristic for "most
                 # canonical" (build/release/test < build/debug/test
                 # only when sorted lexically; shortest works for
                 # `bin/foo` < `tools/_aux/foo`).
                 paths.sort(key=lambda s: (len(s), s))
                 print(
-                    f"⚠️  multiple executables named {stem!r}: "
+                    f"⚠️  multiple executables named {name!r}: "
                     f"{paths!r} — picking {paths[0]!r}",
                     file=sys.stderr,
                 )
-            result[stem] = paths[0]
+            result[name] = paths[0]
     return result
 
 

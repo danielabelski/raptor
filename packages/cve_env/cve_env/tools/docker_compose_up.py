@@ -16,7 +16,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +31,7 @@ from core.container.compose import (
     _mounts_docker_socket,
     _pick_host_port,
     build_stack,
+    cleanup_staging,
     down_stack,
     inject_labels,
     parse_ps_json,
@@ -153,8 +153,7 @@ def _teardown_stack(cve_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 -- teardown is best-effort
         logger.warning("teardown: compose down failed: %s", exc)
     try:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        cleanup_staging(staging)
     except OSError as exc:
         logger.warning("teardown: rmtree %s failed: %s", staging, exc)
 
@@ -259,7 +258,7 @@ def docker_compose_up_payload(
             time.sleep(5)
 
     if last_exc is not None:
-        shutil.rmtree(staging, ignore_errors=True)
+        cleanup_staging(staging)
         return {
             "ok": False,
             "reason": f"compose up failed: {last_exc}",

@@ -960,7 +960,12 @@ class BuildDetector:
                     sample_src,
                 )
 
-        # Create build dir and script once — reused across heuristic and CC
+        # Create build dir and script once — reused across heuristic and CC.
+        # Hand-rolled (not scratch_dir, not reaper-listed): cleanup
+        # ownership transfers to the caller via cleanup_paths, and the
+        # dir lives under the scanned repo, not the system tmp — the
+        # tmp reaper only sweeps the system tmp root, so a SIGKILL
+        # residue here is operator-visible in the target tree instead.
         import tempfile
         build_dir = Path(tempfile.mkdtemp(prefix=".raptor_build_", dir=self.repo_path))
         fd, script_name = tempfile.mkstemp(

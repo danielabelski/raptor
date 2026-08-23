@@ -488,10 +488,12 @@ class BinaryUnderstand:
         quick mode — callers that need them must run the full
         pipeline.
         """
+        import contextlib as _contextlib
         import os as _os
-        import tempfile as _tempfile
 
         import r2pipe
+
+        from core.run.scratch import scratch_dir
 
         # Sandbox r2 via the libexec wrapper. r2pipe reads R2PIPE_R2 from
         # env and spawns the wrapper instead of `radare2` directly; the
@@ -516,12 +518,15 @@ class BinaryUnderstand:
                 f"Reinstall RAPTOR or check libexec/ is intact."
             )
             raise RuntimeError(msg)
-        # mkdtemp now happens inside the try below — pre-fix it ran
-        # outside, so KeyboardInterrupt / MemoryError between the
-        # mkdtemp call and entering the try block left the scratch
-        # dir behind. Initialise to None so the finally can safely
-        # reference it on the early-raise path.
-        _r2_scratch: str | None = None
+        # Scratch creation happens inside the try below — pre-fix it
+        # ran outside, so KeyboardInterrupt / MemoryError between the
+        # creation call and entering the try block left the scratch
+        # dir behind. The ExitStack is empty until then, so the
+        # finally's close() is safe on the early-raise path. Cleanup
+        # and reaper listing come from core.run.scratch (the
+        # r2-sandbox- prefix is in the reaper's static tuple, so a
+        # SIGKILLed analysis strands nothing past the age floor).
+        _r2_stack = _contextlib.ExitStack()
         # Single try/finally guarding env-restore + scratch cleanup —
         # MUST wrap r2pipe.open() itself, not just the post-open
         # analysis. A failure in r2pipe.open (wrapper crash, mount-ns
@@ -541,10 +546,12 @@ class BinaryUnderstand:
         ctx.decompilation_limit = max_decompile
         _saved_env: dict[str, str | None] = {}
         try:
-            # mkdtemp inside the try — pre-fix this ran outside, so
-            # KeyboardInterrupt / MemoryError between mkdtemp and
-            # entering the try left the scratch dir behind.
-            _r2_scratch = _tempfile.mkdtemp(prefix="r2-sandbox-")
+            # Scratch entered inside the try — pre-fix this ran
+            # outside, so KeyboardInterrupt / MemoryError between
+            # creation and entering the try left the scratch dir
+            # behind.
+            _r2_scratch = str(
+                _r2_stack.enter_context(scratch_dir("r2-sandbox-")))
             _env_overrides = {
                 "R2PIPE_R2": str(_wrapper),
                 "OUTPUT_DIR": _r2_scratch,
@@ -617,16 +624,13 @@ class BinaryUnderstand:
                             _os.environ.pop(k, None)
                         else:
                             _os.environ[k] = v
-            # Best-effort scratch cleanup. The wrapper bind-mounted
-            # this dir into the sandbox so r2 could write any
-            # incidental output; on exit the binds tear down with
-            # the namespace and the dir's contents (if any) are
-            # ours to remove.
-            import shutil as _shutil
-            # _r2_scratch can be None if the early-raise path
-            # (mkdtemp inside try just below) never assigned it.
-            if _r2_scratch is not None:
-                _shutil.rmtree(_r2_scratch, ignore_errors=True)
+            # Best-effort scratch cleanup (scratch_dir's exit). The
+            # wrapper bind-mounted this dir into the sandbox so r2
+            # could write any incidental output; on exit the binds
+            # tear down with the namespace and the dir's contents
+            # (if any) are ours to remove. The stack is empty when
+            # the early-raise path never entered the scratch.
+            _r2_stack.close()
 
         logger.info(
             "radare2 analysis: %s interesting funcs, %s dangerous sinks, %s entry points, %s fuzz priorities", len(ctx.interesting_functions), len(ctx.dangerous_sinks), len(ctx.entry_points), len(ctx.fuzz_priorities)

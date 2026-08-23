@@ -746,3 +746,52 @@ def test_unpublished_container_gets_container_ip_endpoint() -> None:
             cco.ComposeContainer(service="web", container_id="cid",
                                  host_port=None, container_port=None))
     assert out.host_port is None and out.host_ip == "127.0.0.1"
+
+
+# -- staging keepalive (live-owner protection for the reaper) ------------------
+
+
+class TestStagingKeepalive:
+    """The staging dir is reaper-listed (raptor-compose-): a live stack
+    bind-mounts from it while nothing refreshes its top-level mtime, so
+    ownership carries a scratch keepalive from creation until
+    cleanup_staging()."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_keepalive(self, monkeypatch):
+        from core.run import scratch as scratch_mod
+        monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+
+    def _src(self, tmp_path: Path) -> Path:
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "docker-compose.yml").write_text(
+            yaml.safe_dump({"services": {"web": {"image": "x"}}}))
+        return src
+
+    def test_registered_until_cleanup_staging(self, tmp_path: Path) -> None:
+        from core.run import scratch as scratch_mod
+        src = self._src(tmp_path)
+        with patch.object(cco, "_resolve_effective_model",
+                          _identity_resolver):
+            _, staging = cco.rewrite_for_localhost(
+                src / "docker-compose.yml")
+        try:
+            assert str(staging) in scratch_mod._keepalive_paths
+        finally:
+            cco.cleanup_staging(staging)
+        assert str(staging) not in scratch_mod._keepalive_paths
+        assert not staging.exists()
+
+    def test_failed_rewrite_unregisters(self, tmp_path: Path,
+                                        monkeypatch) -> None:
+        from core.run import scratch as scratch_mod
+        src = self._src(tmp_path)
+
+        def _boom(*a: Any, **kw: Any) -> None:
+            raise cco.ComposeError("rewrite failed")
+
+        monkeypatch.setattr(cco, "_rewrite_ports_in_place", _boom)
+        with pytest.raises(cco.ComposeError):
+            cco.rewrite_for_localhost(src / "docker-compose.yml")
+        assert scratch_mod._keepalive_paths == set()

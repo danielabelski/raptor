@@ -302,6 +302,11 @@ class SourceBuilder:
                 error=f"not a GitHub URL: {source_url!r}",
             )
 
+        # Hand-rolled (not scratch_dir): ownership is object-scoped
+        # (cleanup() / retain() / config.cleanup decide removal, past
+        # this method's lifetime). The cve-env-source- prefix is listed
+        # in core.run.tmp_reaper's static tuple, so a SIGKILLed build
+        # strands nothing past the age floor.
         work = self.config.work_dir or Path(tempfile.mkdtemp(prefix="cve-env-source-"))
         if self.config.work_dir is None:
             self._temp_dirs.append(work)

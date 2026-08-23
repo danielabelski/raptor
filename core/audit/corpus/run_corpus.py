@@ -41,6 +41,7 @@ from core.audit.pipeline import (
     dampen_file_pileup as _dampen_file_pileup_generic,
 )
 from core.llm.coerce import structured_result
+from core.run.scratch import keepalive_register, keepalive_unregister
 
 from .sources import FIXTURES_DIR
 
@@ -363,7 +364,16 @@ def _build_excerpt_tree(
         if src_dir is None or not src_dir.is_dir():
             continue
 
+        # Hand-rolled (not scratch_dir): ownership transfers to the
+        # corpus loop, which releases every excerpt dir in its finally
+        # (_release_excerpt_trees). The corpus-excerpt- prefix is
+        # listed in core.run.tmp_reaper's static tuple, so a SIGKILLed
+        # run strands nothing past the age floor — and the keepalive
+        # is what makes that listing safe: an excerpt tree is written
+        # once and then read for the whole (possibly multi-day) run,
+        # so the owner keeps it fresh until release.
         tmp = Path(tempfile.mkdtemp(prefix=f"corpus-excerpt-{repo_key}-"))
+        keepalive_register(tmp)
         copied = 0
         for rel_file in sorted(files):
             src = src_dir / rel_file
@@ -378,6 +388,15 @@ def _build_excerpt_tree(
         print(f"  Excerpt: {repo_key} — {copied} file(s)", flush=True)
 
     return excerpt_dirs
+
+
+def _release_excerpt_trees(excerpt_dirs: dict[str, Path]) -> None:
+    """Release the excerpt trees `_build_excerpt_tree` handed over:
+    drop each dir's keepalive (so an abandoned tree can age out for
+    the reaper) and best-effort-remove it."""
+    for d in excerpt_dirs.values():
+        keepalive_unregister(d)
+        shutil.rmtree(str(d), ignore_errors=True)
 
 
 def _copy_perlasm_drivers(tmp: Path, src_dir: Path) -> int:
@@ -3141,8 +3160,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
             finally:
                 if excerpt_dirs:
-                    for d in excerpt_dirs.values():
-                        shutil.rmtree(str(d), ignore_errors=True)
+                    _release_excerpt_trees(excerpt_dirs)
             wall_s = time.monotonic() - t0
 
             # Mechanism attribution: join run-directory receipts back

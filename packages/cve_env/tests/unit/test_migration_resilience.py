@@ -231,7 +231,10 @@ def test_compose_invocation_falls_back_when_probe_times_out() -> None:
 
     with (
         patch(
-            "cve_env.tools.docker_compose_up.shutil.which",
+            # _compose_invocation lives in core.container.compose —
+            # patch shutil where IT looks it up (the tool module no
+            # longer imports shutil itself).
+            "core.container.compose.shutil.which",
             side_effect=lambda b: f"/usr/bin/{b}",
         ),
         patch(

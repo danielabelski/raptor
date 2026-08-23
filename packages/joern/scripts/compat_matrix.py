@@ -48,6 +48,7 @@ interpreter.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -73,6 +74,7 @@ sys.path.insert(0, str(REPO))
 # checkout (see core.config.pin_raptor_dir). Import must follow the
 # sys.path insert above.
 from core.config import pin_raptor_dir_in_environ  # noqa: E402
+from core.run.scratch import scratch_dir  # noqa: E402
 
 pin_raptor_dir_in_environ()
 
@@ -270,8 +272,13 @@ def run_e2e(joern_dir: str) -> dict:
     results: dict = {"joern_version": joern_version() or "?"}
     t0 = time.monotonic()
 
-    fixture_dir = Path(tempfile.mkdtemp(prefix="joern-matrix-src-"))
-    cpg_dir = Path(tempfile.mkdtemp(prefix="joern-matrix-cpg-"))
+    # Scratch via core.run.scratch: removed when the stack closes in
+    # the finally below, and the joern-matrix- prefix is listed in the
+    # tmp reaper's static tuple, so a SIGKILLed matrix run strands
+    # nothing past the age floor.
+    _scratch = contextlib.ExitStack()
+    fixture_dir = _scratch.enter_context(scratch_dir("joern-matrix-src-"))
+    cpg_dir = _scratch.enter_context(scratch_dir("joern-matrix-cpg-"))
     srv = None
     try:
         (fixture_dir / "vuln.c").write_text(_FIXTURE_C, encoding="utf-8")
@@ -336,8 +343,7 @@ def run_e2e(joern_dir: str) -> dict:
                 # signalling and TimeoutExpired from the post-SIGKILL
                 # wait; a wiring bug must still crash the matrix.
                 pass
-        shutil.rmtree(fixture_dir, ignore_errors=True)
-        shutil.rmtree(cpg_dir, ignore_errors=True)
+        _scratch.close()
 
     results["total_s"] = round(time.monotonic() - t0)
     results["pass"] = "exception" not in results and not any(
@@ -415,6 +421,11 @@ def main() -> int:
         print(f"resolving newest {args.versions} release tags...", flush=True)
         tags = _newest_tags(args.versions)
 
+    # Hand-rolled (not scratch_dir): ownership is conditional — the dir
+    # survives on --keep or an operator-supplied --workdir. The
+    # joern-matrix- prefix is listed in the tmp reaper's static tuple,
+    # so an auto-created dir stranded by SIGKILL (or forgotten --keep
+    # output) is reclaimed past the age floor.
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="joern-matrix-"))
     workdir.mkdir(parents=True, exist_ok=True)
 

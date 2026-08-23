@@ -375,7 +375,10 @@ def _envbuild_out_dir() -> Path:
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="raptor-oracle-envbuild-"))
     # Artifacts must outlive the resolve call (the oracle reads them
-    # later in-process) but not the process.
+    # later in-process) but not the process — atexit-scoped ownership,
+    # which no context manager can express. SIGKILL skips atexit; the
+    # prefix is listed in core.run.tmp_reaper's static tuple so the
+    # next run's sweep reclaims strays.
     atexit.register(shutil.rmtree, tmp, True)
     return tmp
 

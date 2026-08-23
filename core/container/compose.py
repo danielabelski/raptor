@@ -58,6 +58,7 @@ from typing import Any
 import yaml
 
 from core.container.proc import docker_child_env, run_cli
+from core.run.scratch import keepalive_register, keepalive_unregister
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ class ComposeContainer:
 class ComposeStack:
     project_name: str
     compose_file: Path
-    staging_dir: Path  # tmpdir created by rewrite_for_localhost; caller should rmtree on teardown
+    staging_dir: Path  # tmpdir from rewrite_for_localhost; caller runs cleanup_staging() on teardown
     containers: tuple[ComposeContainer, ...]
     primary: ComposeContainer
 
@@ -198,7 +199,15 @@ def rewrite_for_localhost(
     (otherwise the compose path would be exempt from auto-cleanup).
     """
     source_dir = compose_file.parent
+    # Hand-rolled (not scratch_dir): ownership transfers to the caller,
+    # who runs cleanup_staging() after down_stack. The raptor-compose-
+    # prefix is listed in core.run.tmp_reaper's static tuple, so a
+    # SIGKILLed stack strands nothing past the age floor — and the
+    # keepalive is what makes that listing safe: a long-running stack
+    # bind-mounts from this dir while nothing refreshes its top-level
+    # mtime, so the owner keeps it fresh until teardown.
     staging = Path(tempfile.mkdtemp(prefix="raptor-compose-"))
+    keepalive_register(staging)
     try:
         # symlinks=True preserves links AS links — symlinks=False would
         # DEREFERENCE them, copying arbitrary host files (~/.aws/credentials,
@@ -206,7 +215,7 @@ def rewrite_for_localhost(
         # bind-mount content shipped into a hostile stack.
         shutil.copytree(source_dir, staging, dirs_exist_ok=True, symlinks=True)
     except OSError:
-        shutil.rmtree(staging, ignore_errors=True)
+        cleanup_staging(staging)
         raise
     pruned = _prune_escaping_symlinks(staging)
     if pruned:
@@ -219,9 +228,21 @@ def rewrite_for_localhost(
         _rewrite_ports_in_place(staged_compose, labels=labels,
                                 allow_devices=allow_devices)
     except ComposeError:
-        shutil.rmtree(staging, ignore_errors=True)
+        cleanup_staging(staging)
         raise
     return staged_compose, staging
+
+
+def cleanup_staging(staging: str | Path) -> None:
+    """Release a staging dir made by :func:`rewrite_for_localhost`.
+
+    The one teardown path for staging ownership: drops the keepalive
+    (so a dir this process abandoned can age out for the reaper) and
+    best-effort-removes the tree. Callers run it after ``down_stack``;
+    the rewrite's own failure paths use it too.
+    """
+    keepalive_unregister(staging)
+    shutil.rmtree(staging, ignore_errors=True)
 
 
 def _prune_escaping_symlinks(staging: Path) -> int:

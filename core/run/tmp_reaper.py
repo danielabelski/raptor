@@ -116,6 +116,57 @@ _DIR_PREFIXES = (
     # containment exists — so a killed collection/run leaks them
     # directly under the system tmp (one per collecting worker).
     "raptor-coord-isolation-",
+    # r2 analysis scratch (packages/binary_analysis/
+    # radare2_understand.py, via core.run.scratch); removed when the
+    # analysis exits.
+    "r2-sandbox-",
+    # Cocci-hunt sandbox scratch (packages/code_understanding/dispatch/
+    # hunt_cocci_dispatch.py, via core.run.scratch); removed when the
+    # dispatch exits.
+    "raptor-cocci-hunt-",
+    # Binary-oracle env-build artifact dir (core/analysis/
+    # binary_oracle_cli.py); the artifacts outlive the resolve call and
+    # are rmtree'd atexit, which SIGKILL skips.
+    "raptor-oracle-envbuild-",
+    # Corpus excerpt trees (core/audit/corpus/run_corpus.py); ownership
+    # passes to the corpus loop, released in its finally. The owner
+    # holds a scratch keepalive while live (excerpt trees are written
+    # once, then read for multi-day runs — quiet mtime is normal), so
+    # presence past the floor always means a dead owner.
+    "corpus-excerpt-",
+    # Compose staging copies (core/container/compose.py); ownership
+    # passes to the caller, cleanup_staging() after down_stack. The
+    # owner holds a scratch keepalive while the stack runs (bind-mount
+    # sources don't refresh the top-level mtime).
+    "raptor-compose-",
+    # Env-provisioner work dirs (core/env/provision.py; removed at
+    # Environment.teardown / provision failure). The owner holds a
+    # scratch keepalive while the environment is live (a sandbox
+    # rootfs's mtime froze at export). The startswith match also
+    # covers core/env/build.py's raptor-env-build- staging contexts —
+    # same always-cleaned contract, context-manager lifetime.
+    "raptor-env-",
+    # cve-env source-checkout work dirs (packages/cve_env
+    # tools/source_build.py; cleanup()-scoped). retain() hands
+    # ownership to the operator — a retained dir surviving past the
+    # age floor is forgotten debug output, reclaimed like
+    # raptor_recon_ above.
+    "cve-env-source-",
+    # cve-env fused-build docker contexts (packages/cve_env
+    # agent/tools.py; rmtree'd on build failure, kept for the agent
+    # session on success — kept contexts have no exit-path cleanup at
+    # all and are reclaimed only by this sweep past the age floor).
+    "cve-env-dfgbuild-",
+    # Joern compat-matrix scratch (packages/joern/scripts/
+    # compat_matrix.py): per-version fixture/CPG dirs (via
+    # core.run.scratch) and the auto-created download workdir
+    # (rmtree'd unless --keep; --keep survivors past the floor are
+    # forgotten debug output, same contract as raptor_recon_).
+    "joern-matrix-",
+    # SCA stress-run ephemeral clone root (packages/sca/calibration/
+    # stress.py, RAPTOR_SCA_STRESS_EPHEMERAL=1 mode; rmtree'd in its
+    # finally).
+    "raptor-sca-stress-",
 )
 
 # Prefixes registered at runtime by core.run.scratch.scratch_dir for

@@ -314,6 +314,12 @@ def _maybe_fuse_build(payload: dict[str, Any], args: dict[str, Any]) -> dict[str
     ctx = str(args.get("context_dir") or "").strip()
     auto_tmpdir = False
     if not ctx:
+        # Hand-rolled (not scratch_dir): on build success the context
+        # dir is handed to the agent session (docker_run reuses it);
+        # only a failed build removes it here. The cve-env-dfgbuild-
+        # prefix is listed in core.run.tmp_reaper's static tuple, so
+        # kept contexts are reclaimed past the age floor once the
+        # session is gone.
         ctx = tempfile.mkdtemp(prefix="cve-env-dfgbuild-")
         auto_tmpdir = True
     result = _docker_build.docker_build(

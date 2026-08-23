@@ -31,6 +31,9 @@ _SCRATCH_ADOPTERS = [
     "core/dataflow/barrier_synth.py",
     "packages/recon/agent.py",
     "core/llm/cc_adapter.py",
+    "core/inventory/perlasm.py",
+    "packages/binary_analysis/radare2_understand.py",
+    "packages/code_understanding/dispatch/hunt_cocci_dispatch.py",
 ]
 
 _MKDTEMP = re.compile(r"\bmkdtemp\s*\(")

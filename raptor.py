@@ -320,6 +320,11 @@ def _unpack_archive_target(target: str, args: list, out_dir: Path):
         # Extract to a unique temp sibling, then atomically promote to <sha>/.
         # Presence of <sha>/ therefore means a COMPLETE extraction, and a
         # concurrent run racing us just loses the os.replace harmlessly.
+        # Hand-rolled (not scratch_dir, not reaper-listed): publish-by-
+        # rename ownership under the run output's _sources cache, not
+        # the system tmp — the tmp reaper only sweeps the system tmp
+        # root, so a SIGKILL residue here is operator-visible in the
+        # cache instead.
         tmp = Path(tempfile.mkdtemp(dir=sources_root, prefix=".extract-"))
         try:
             stats = extract_to_dir(target, tmp)

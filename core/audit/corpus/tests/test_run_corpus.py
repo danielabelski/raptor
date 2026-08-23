@@ -1820,3 +1820,35 @@ class TestReceiptFlooredSuppressionExemption:
         o, _ = _parse_audit_log_outcomes(log)
         assert o["a.go:W"]["receipt_floored"] is True
         assert o["a.go:W"]["status"] == "suspicious"
+
+
+class TestExcerptTreeKeepalive:
+    """Excerpt trees are reaper-listed (corpus-excerpt-): written once,
+    then read for a possibly multi-day run — mtime-quiet while live —
+    so the builder holds a scratch keepalive per tree until the corpus
+    loop releases it."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        import tempfile
+
+        from core.run import scratch as scratch_mod
+        monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+        # Keep the mkdtemp inside the test's private tmp.
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def test_registered_until_release(self, tmp_path):
+        from core.run import scratch as scratch_mod
+
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.c").write_text("int x;")
+        dirs = run_corpus._build_excerpt_tree(
+            [_label(repo="r", file="a.c")], {"r": src})
+        assert dirs, "excerpt tree not built"
+        for d in dirs.values():
+            assert str(d) in scratch_mod._keepalive_paths
+        run_corpus._release_excerpt_trees(dirs)
+        for d in dirs.values():
+            assert str(d) not in scratch_mod._keepalive_paths
+            assert not d.exists()

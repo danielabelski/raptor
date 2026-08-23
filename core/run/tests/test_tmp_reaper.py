@@ -407,3 +407,123 @@ class TestStartRunHook:
         out = tmp_path / "run"
         start_run(out, "scan")
         assert calls == ["tmp", "logs", ("runs", out.parent)]
+
+
+# Production scratch sites whose cleanup is exit-path-only (rmtree in a
+# finally, an atexit hook, or an owner object's teardown). SIGKILL and
+# OOM skip every exit path, and a runtime register_dir_prefix() call
+# dies with the process that made it — cross-process reclamation of
+# these strays requires a static _DIR_PREFIXES entry.
+_PRODUCTION_SCRATCH_PREFIXES = (
+    "r2-sandbox-",             # packages/binary_analysis/radare2_understand.py
+    "raptor-cocci-hunt-",      # packages/code_understanding/dispatch/hunt_cocci_dispatch.py
+    "raptor-oracle-envbuild-", # core/analysis/binary_oracle_cli.py
+    "corpus-excerpt-",         # core/audit/corpus/run_corpus.py
+    "raptor-compose-",         # core/container/compose.py
+    "raptor-env-",             # core/env/provision.py (+ raptor-env-build-)
+    "cve-env-source-",         # packages/cve_env .../tools/source_build.py
+    "cve-env-dfgbuild-",       # packages/cve_env .../agent/tools.py
+    "joern-matrix-",           # packages/joern/scripts/compat_matrix.py
+    "raptor-sca-stress-",      # packages/sca/calibration/stress.py
+)
+
+
+class TestProductionScratchPrefixContract:
+
+    @pytest.mark.parametrize("prefix", _PRODUCTION_SCRATCH_PREFIXES)
+    def test_prefix_listed_static(self, prefix):
+        from core.run import tmp_reaper
+        assert prefix in tmp_reaper._DIR_PREFIXES, (
+            f"{prefix!r} scratch dirs are cleaned on exit paths only; "
+            "without a static _DIR_PREFIXES entry a SIGKILLed run "
+            "strands them in the system tmp forever"
+        )
+
+    def test_stale_production_scratch_reaped(self, tmp_root):
+        dirs = [
+            _make_old_dir(tmp_root, p + "stray01")
+            for p in _PRODUCTION_SCRATCH_PREFIXES
+        ]
+        reaped = reap_stale_tmp()
+        assert sorted(reaped) == sorted(dirs)
+        for d in dirs:
+            assert not d.exists()
+
+
+class TestSigkilledProcessStrays:
+    """Own-pgid SIGKILL drill: a child process creates one scratch dir
+    per production prefix and kills its own process group — no
+    interpreter exit path (finally / atexit / __exit__) ever runs,
+    mirroring an OOM-kill or an operator ``kill -9`` of a pipeline.
+    A FRESH interpreter then sweeps: only the static prefix tuple is
+    visible cross-process, so this proves end-to-end reclamation."""
+
+    def test_strays_reaped_by_fresh_process_sweep(self, tmp_path):
+        import sys
+
+        repo_root = Path(__file__).resolve().parents[3]
+        child_code = (
+            "import os, sys, tempfile\n"
+            "for prefix in sys.argv[1:]:\n"
+            "    tempfile.mkdtemp(prefix=prefix, dir=os.environ['TMPDIR'])\n"
+            "os.kill(0, 9)\n"  # SIGKILL own pgid: no exit path runs
+        )
+        env = {k: v for k, v in os.environ.items()
+               if k != "RAPTOR_TMP_REAP_MAX_AGE_H"}
+        env["TMPDIR"] = str(tmp_path)
+        proc = subprocess.run(
+            [sys.executable, "-c", child_code,
+             *_PRODUCTION_SCRATCH_PREFIXES],
+            env=env, start_new_session=True, capture_output=True,
+            timeout=60,
+        )
+        assert proc.returncode == -9, proc.stderr.decode()
+        strays = list(tmp_path.iterdir())
+        assert len(strays) == len(_PRODUCTION_SCRATCH_PREFIXES)
+        for d in strays:
+            os.utime(d, (_OLD, _OLD))
+
+        env["PYTHONPATH"] = str(repo_root)
+        sweeper = subprocess.run(
+            [sys.executable, "-c",
+             "from core.run.tmp_reaper import reap_stale_tmp;"
+             "print(len(reap_stale_tmp()))"],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert sweeper.returncode == 0, sweeper.stderr
+        assert sweeper.stdout.strip() == str(len(strays))
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestLiveOwnerKeepalive:
+    """The ownership-transfer prefixes whose dirs can legitimately sit
+    mtime-quiet past the age floor WHILE ALIVE (env work dirs: sandbox
+    rootfs mtime froze at export; compose staging: bind-mount sources;
+    corpus excerpts: read-only for multi-day runs). Their owners hold a
+    scratch keepalive from creation to cleanup — that pairing is what
+    makes the static listing safe, and its absence (dead owner) is what
+    makes the dir reapable."""
+
+    _QUIET_LIVE_PREFIXES = ("raptor-env-", "raptor-compose-",
+                            "corpus-excerpt-")
+
+    @pytest.fixture(autouse=True)
+    def _isolated_keepalive(self, monkeypatch):
+        from core.run import scratch as scratch_mod
+        monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+
+    def test_live_owner_survives_dead_owner_reaped(self, tmp_root):
+        from core.run import scratch as scratch_mod
+        from core.run.scratch import keepalive_register, keepalive_unregister
+        for prefix in self._QUIET_LIVE_PREFIXES:
+            d = _make_old_dir(tmp_root, prefix + "live01")
+            keepalive_register(d)
+            # >24h quiet, owner alive: the ticker's refresh protects it.
+            scratch_mod._keepalive_tick()
+            assert reap_stale_tmp() == [], prefix
+            assert d.is_dir(), prefix
+            # Owner cleaned up (or died — no more refresh): reclaimable.
+            keepalive_unregister(d)
+            os.utime(d, (_OLD, _OLD))
+            assert reap_stale_tmp() == [d], prefix
+            assert not d.exists(), prefix

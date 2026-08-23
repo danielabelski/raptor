@@ -172,11 +172,12 @@ def run_stress_sweep(
     cleanup_dir: Path | None = None
     if out_root is None:
         if os.environ.get("RAPTOR_SCA_STRESS_EPHEMERAL"):
-            # Register the prefix with the tmp reaper so a dir orphaned
-            # by SIGTERM/OOM (which skips the ``finally`` below) is
-            # reclaimed by the next run's sweep.
-            from core.run import tmp_reaper
-            tmp_reaper.register_dir_prefix("raptor-sca-stress-")
+            # A dir orphaned by SIGTERM/OOM (which skips the
+            # ``finally`` below) is reclaimed by the next run's sweep:
+            # the raptor-sca-stress- prefix is listed in
+            # core.run.tmp_reaper's static tuple. (A runtime
+            # register_dir_prefix() call could not deliver that — it
+            # dies with the process that made it.)
             cleanup_dir = Path(tempfile.mkdtemp(prefix="raptor-sca-stress-"))
             out_root = cleanup_dir
         else:

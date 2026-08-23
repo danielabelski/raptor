@@ -50,6 +50,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.run.scratch import scratch_dir
+
 logger = logging.getLogger(__name__)
 
 # Virtual path prefix for generated-file records in the checklist.
@@ -237,9 +239,8 @@ def generate_asm(gen: PerlasmGenerator, flavour: str, target: Path,
     # poisoned record). The generator writes only its own output file;
     # the move into the keyed cache slot is done HERE, by trusted code,
     # after the run is validated.
-    tmp_dir = Path(tempfile.mkdtemp(prefix="gen-", dir=cache_dir))
-    tmp_path = tmp_dir / "out.S"
-    try:
+    with scratch_dir("gen-", dir=cache_dir) as tmp_dir:
+        tmp_path = tmp_dir / "out.S"
         try:
             proc = run_untrusted(
                 ["perl", str(gen.path), flavour, str(tmp_path)],
@@ -330,8 +331,6 @@ def generate_asm(gen: PerlasmGenerator, flavour: str, target: Path,
             except OSError:
                 pass
         return cached, None
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _sloc(text: str) -> int:

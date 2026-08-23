@@ -267,3 +267,101 @@ def test_teardown_removes_owned_workdir(tmp_path, monkeypatch) -> None:
     assert owned.exists()  # alive while the environment lives
     env.teardown()
     assert not owned.exists()
+
+
+# -- owned-workdir keepalive (live-owner protection for the reaper) -----------
+
+
+def test_owned_workdir_keepalive_live_then_released_on_fail(
+        tmp_path, monkeypatch) -> None:
+    """The provisioner-owned work dir is reaper-listed (raptor-env-): a
+    live environment can sit mtime-quiet past the age floor (a sandbox
+    rootfs's mtime froze at export), so provision holds a scratch
+    keepalive from mkdtemp until the failure cleanup / teardown."""
+    from core.container.containers import LaunchResult
+    from core.run import scratch as scratch_mod
+
+    monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+    owned = tmp_path / "owned-work"
+    owned.mkdir()
+    monkeypatch.setattr(pv.tempfile, "mkdtemp",
+                        lambda prefix="": str(owned))
+    monkeypatch.setattr(pv, "remove_labeled_containers", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
+    monkeypatch.setattr(
+        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+
+    def _launch_asserting_registered(**kw: Any) -> "LaunchResult":
+        # Registration must hold while the provision is in flight.
+        assert str(owned) in scratch_mod._keepalive_paths
+        return LaunchResult(ok=False, reason="run_failed",
+                            reason_class="transport", stderr="x")
+
+    monkeypatch.setattr(pv, "launch_container", _launch_asserting_registered)
+    out = pv.provision(_image_spec())  # no workdir → provisioner-owned
+    assert not out.ok
+    assert str(owned) not in scratch_mod._keepalive_paths
+    assert not owned.exists()
+
+
+def test_caller_workdir_not_keepalive_registered(tmp_path,
+                                                 monkeypatch) -> None:
+    from core.container.containers import LaunchResult
+    from core.run import scratch as scratch_mod
+
+    monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+    monkeypatch.setattr(pv, "remove_labeled_containers", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
+    monkeypatch.setattr(
+        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+    monkeypatch.setattr(
+        pv, "launch_container",
+        lambda **kw: LaunchResult(ok=False, reason="run_failed",
+                                  reason_class="transport", stderr="x"))
+    out = pv.provision(_image_spec(), workdir=tmp_path)
+    assert not out.ok
+    assert scratch_mod._keepalive_paths == set()
+
+
+def test_environment_teardown_releases_keepalive(tmp_path,
+                                                 monkeypatch) -> None:
+    from core.run import scratch as scratch_mod
+
+    monkeypatch.setattr(scratch_mod, "_keepalive_paths", set())
+    monkeypatch.setattr(pv, "remove_labeled_containers", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
+    monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
+
+    from core.env.handle import ExecOutcome, RuntimeHandle
+
+    class _Handle(RuntimeHandle):
+        tier = "docker"
+
+        def endpoint(self) -> tuple[str, int] | None:
+            return None
+
+        def state(self) -> dict[str, Any]:
+            return {}
+
+        def logs(self, tail: int = 500) -> str:
+            return ""
+
+        def exec(self, command: str, *, timeout_seconds: float = 30.0,
+                 workdir: str = "") -> ExecOutcome:
+            raise NotImplementedError
+
+        def teardown(self) -> None:
+            pass
+
+    owned = tmp_path / "owned-work"
+    owned.mkdir()
+    scratch_mod._keepalive_paths.add(str(owned))  # as provision does
+    env = pv.Environment(
+        spec=_image_spec(), handle=_Handle(), image_ref="x",
+        provision_id="cafe0001dead", owned_workdir=owned,
+    )
+    env.teardown()
+    assert str(owned) not in scratch_mod._keepalive_paths
+    assert not owned.exists()

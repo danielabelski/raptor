@@ -758,6 +758,12 @@ def import_project(zip_path: Path, projects_dir: Path,
             # so a failed import destroyed the previous data with no
             # rollback. Failure cleanup now only ever removes the
             # staging dir import itself created.
+            # Hand-rolled (not scratch_dir, not reaper-listed):
+            # publish-by-rename ownership (the staging dir BECOMES the
+            # project dir on success), under the project output base,
+            # not the system tmp — the tmp reaper only sweeps the
+            # system tmp root, so a SIGKILL residue here is
+            # operator-visible next to the projects instead.
             import tempfile
             Path(output_base).mkdir(parents=True, exist_ok=True)
             staging_dir = Path(tempfile.mkdtemp(

@@ -40,9 +40,9 @@ otherwise falls through to the default LLM dispatch.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,6 +50,7 @@ from typing import Any
 from collections.abc import Callable
 
 from core.llm.config import ModelConfig
+from core.run.scratch import scratch_dir
 from core.llm.providers import create_provider
 from packages.coccinelle.models import SpatchResult
 from packages.coccinelle.runner import is_available as spatch_is_available
@@ -388,19 +389,22 @@ def cocci_hunt_dispatch(
     # ``spatch_runner=`` wins (used by tests to inject mocks). Built
     # before the rule tempfile so failure here has nothing to clean up.
     effective_runner = spatch_runner
-    scratch_output: Path | None = None
+    _scratch_stack = contextlib.ExitStack()
     if effective_runner is None and sandbox:
         try:
             # Writable scratch for the sandbox: hosts the fake $HOME
             # (fake_home requires an output dir) and bounds Landlock's
-            # writable scope. Removed in the finally below.
-            scratch_output = Path(tempfile.mkdtemp(prefix="raptor-cocci-hunt-"))
+            # writable scope. Removed when the stack closes in the
+            # finally below; the raptor-cocci-hunt- prefix is listed in
+            # the tmp reaper's static tuple, so a SIGKILLed hunt
+            # strands nothing past the age floor.
+            scratch_output = _scratch_stack.enter_context(
+                scratch_dir("raptor-cocci-hunt-"))
             effective_runner = _make_locked_sandbox_runner(
                 Path(repo_path), scratch_output,
             )
         except Exception as exc:  # noqa: BLE001 - fail closed, surface as error variant
-            if scratch_output is not None:
-                shutil.rmtree(scratch_output, ignore_errors=True)
+            _scratch_stack.close()
             return [{"error": (
                 f"sandbox unavailable for spatch — refusing to run the "
                 f"LLM-emitted rule unisolated: {type(exc).__name__}: {exc}"
@@ -434,8 +438,7 @@ def cocci_hunt_dispatch(
             rule_path.unlink()
         except OSError:
             pass
-        if scratch_output is not None:
-            shutil.rmtree(scratch_output, ignore_errors=True)
+        _scratch_stack.close()
 
     if not result.ok and not result.matches:
         # Nothing matched AND spatch reported errors — surface the

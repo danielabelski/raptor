@@ -39,6 +39,7 @@ from core.container.lifecycle import (
 from core.env.handle import DockerHandle, RuntimeHandle, SandboxHandle
 from core.env.store import save_run_spec
 from core.env.verify import VerifyHooks, verify_plan
+from core.run.scratch import keepalive_register, keepalive_unregister
 
 if TYPE_CHECKING:
     from core.env.spec import EnvironmentSpec
@@ -77,6 +78,7 @@ class Environment:
         remove_labeled_networks(OWNER_LABEL, self.provision_id)
         remove_labeled_images(OWNER_LABEL, self.provision_id)
         if self.owned_workdir is not None:
+            keepalive_unregister(self.owned_workdir)
             shutil.rmtree(self.owned_workdir, ignore_errors=True)
 
 
@@ -182,8 +184,18 @@ def provision(
     provision_id = uuid.uuid4().hex[:12]
     labels = {OWNER_LABEL: provision_id}
     created_work = workdir is None
+    # Hand-rolled (not scratch_dir): ownership transfers to the
+    # Environment (removed at teardown / provision failure), outliving
+    # this function. The raptor-env- prefix is listed in
+    # core.run.tmp_reaper's static tuple, so a SIGKILLed provision
+    # strands nothing past the age floor — and the keepalive below is
+    # what makes that listing safe: a live environment's work dir can
+    # sit mtime-quiet for days (a sandbox rootfs's mtime froze at
+    # export), so the owner refreshes it until teardown.
     work = Path(workdir) if workdir else Path(
         tempfile.mkdtemp(prefix="raptor-env-"))
+    if created_work:
+        keepalive_register(work)
 
     def _fail(**kw: Any) -> ProvisionOutcome:
         """Failure outcome + exact-scope cleanup. A launch that failed
@@ -194,6 +206,7 @@ def provision(
         remove_labeled_networks(OWNER_LABEL, provision_id)
         remove_labeled_images(OWNER_LABEL, provision_id)
         if created_work:
+            keepalive_unregister(work)
             shutil.rmtree(work, ignore_errors=True)
         return ProvisionOutcome(ok=False, **kw)
 

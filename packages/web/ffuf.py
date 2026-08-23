@@ -563,8 +563,50 @@ class FfufRunner:
             msg = "ffuf headers must be in 'Name: value' form"
             raise ValueError(msg)
 
-    def build_command(self, config: FfufConfig, output_file: Path) -> list[str]:
-        """Return argv for a safe, non-shell ffuf invocation."""
+    def build_config_file_content(self, config: FfufConfig) -> str | None:
+        """TOML for the credential-bearing options (headers, cookies, body).
+
+        Anything on the child argv is readable by every same-UID process
+        via /proc; delivering these values through ffuf's ``-config`` file
+        keeps them off it. Only the secret-carrying options move — the
+        rest of the argv stays self-describing for logs and audit trails.
+
+        Values are encoded with ``json.dumps``: JSON string escaping is a
+        valid TOML basic-string encoding (same escape set), so header,
+        cookie, and body content cannot break out of its TOML field.
+        """
+        headers = list(config.headers)
+        vhost_header = self._build_vhost_header(config)
+        if vhost_header is not None:
+            headers.append(vhost_header)
+        if not headers and not config.cookies and not config.data:
+            return None
+        lines = ["[http]"]
+        if headers:
+            lines.append("    headers = [")
+            lines.extend(f"        {json.dumps(header)}," for header in headers)
+            lines.append("    ]")
+        if config.cookies:
+            lines.append("    cookies = [")
+            lines.extend(f"        {json.dumps(cookie)}," for cookie in config.cookies)
+            lines.append("    ]")
+        if config.data:
+            lines.append(f"    data = {json.dumps(config.data)}")
+        return "\n".join(lines) + "\n"
+
+    def build_command(
+        self,
+        config: FfufConfig,
+        output_file: Path,
+        config_file: Path | None = None,
+    ) -> list[str]:
+        """Return argv for a safe, non-shell ffuf invocation.
+
+        When ``config_file`` is given, the credential-bearing options
+        (headers, cookies, body) are NOT emitted on the argv — the caller
+        delivers them via that ffuf ``-config`` TOML instead (see
+        :meth:`build_config_file_content`).
+        """
         self._validate_config(config)
 
         # In vhost mode the URL is fixed and the Host header carries the
@@ -652,14 +694,17 @@ class FfufRunner:
             cmd.extend(["-e", ",".join(config.extensions)])
         if config.method.upper() != "GET":
             cmd.extend(["-X", config.method.upper()])
-        if config.data:
-            cmd.extend(["-d", config.data])
-        for header in config.headers:
-            cmd.extend(["-H", header])
-        if vhost_header is not None:
-            cmd.extend(["-H", vhost_header])
-        for cookie in config.cookies:
-            cmd.extend(["-b", cookie])
+        if config_file is not None:
+            cmd.extend(["-config", str(config_file)])
+        else:
+            if config.data:
+                cmd.extend(["-d", config.data])
+            for header in config.headers:
+                cmd.extend(["-H", header])
+            if vhost_header is not None:
+                cmd.extend(["-H", vhost_header])
+            for cookie in config.cookies:
+                cmd.extend(["-b", cookie])
         for extra_path, keyword in config.extra_wordlists:
             cmd.extend(["-w", f"{extra_path}:{keyword}"])
         if config.extra_wordlists:
@@ -732,12 +777,31 @@ class FfufRunner:
         # stale file would be silently misattributed to this run on the
         # error and backstop-timeout paths.
         output_file.unlink(missing_ok=True)
-        cmd = self.build_command(config, output_file)
+        config_content = self.build_config_file_content(config)
+        config_file = (
+            self.out_dir / "ffuf_config.toml" if config_content is not None else None
+        )
+        cmd = self.build_command(config, output_file, config_file=config_file)
         # build_command uses the operator-facing name; swap in the
         # resolved real path for the exec.
         cmd[0] = binary_path
         redacted_cmd = self._redact_command(cmd)
         logger.info("Running sandboxed ffuf: %s", ' '.join(redacted_cmd))
+
+        if config_file is not None and config_content is not None:
+            # 0600 from the first byte — the TOML carries credentials.
+            fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(config_content)
+            delivered = [self._redact_header_value(h) for h in config.headers]
+            delivered.extend(self._redact_cookie_value(c) for c in config.cookies)
+            if config.data:
+                delivered.append(self._redact_body(config.data))
+            logger.info(
+                "ffuf credential-bearing options delivered via %s (0600): %s",
+                config_file.name,
+                "; ".join(delivered) if delivered else "vhost Host header",
+            )
 
         # ffuf's own -maxtime (== max_runtime) is the real cap; the
         # subprocess timeout is a backstop for a wedged process. It gets
@@ -780,6 +844,12 @@ class FfufRunner:
                 config.max_runtime,
                 grace,
             )
+        finally:
+            # Credentials should not persist at rest beyond the run; the
+            # redacted log line above records what was delivered.
+            # reveal_secrets keeps the file for local debugging.
+            if config_file is not None and not self.reveal_secrets:
+                config_file.unlink(missing_ok=True)
 
         results: list[dict[str, Any]] = []
         if output_file.exists():

@@ -1142,6 +1142,136 @@ def test_scanner_cli_wires_ffuf_vhost(tmp_path: Path):
     assert config.vhost_host_template == "FUZZ.example.test"
 
 
+def test_build_config_file_content_covers_credential_options(tmp_path: Path):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    content = runner.build_config_file_content(
+        FfufConfig(
+            wordlist=wordlist,
+            headers=('X-Quote: va"lue', "Authorization: Bearer tok"),
+            cookies=("session=abc",),
+            data="user=FUZZ&password=hunter2",
+        )
+    )
+
+    assert content is not None
+    assert content.startswith("[http]\n")
+    # json.dumps escaping doubles as TOML basic-string escaping.
+    assert '"X-Quote: va\\"lue",' in content
+    assert '"Authorization: Bearer tok",' in content
+    assert '"session=abc",' in content
+    assert 'data = "user=FUZZ&password=hunter2"' in content
+
+    assert (
+        runner.build_config_file_content(FfufConfig(wordlist=wordlist)) is None
+    )
+
+
+def test_build_config_file_content_includes_vhost_header(tmp_path: Path):
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    content = runner.build_config_file_content(
+        FfufConfig(wordlist=wordlist, vhost=True)
+    )
+
+    assert content is not None
+    assert '"Host: FUZZ.example.test",' in content
+
+
+def test_run_delivers_credentials_via_config_file_not_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Argv is /proc-readable by any same-UID process; credential-bearing
+    options must ride ffuf's -config TOML (0600) instead, and the file
+    must not outlive the run."""
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        config_path = Path(cmd[cmd.index("-config") + 1])
+        seen["config_mode"] = config_path.stat().st_mode & 0o777
+        seen["config_content"] = config_path.read_text(encoding="utf-8")
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    secret_header = "Authorization: Bearer " + "a" * 32
+    secret_cookie = "session=" + "b" * 32
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(
+        FfufConfig(
+            wordlist=wordlist,
+            headers=(secret_header,),
+            cookies=(secret_cookie,),
+            data="user=FUZZ&api_key=sk-livesecret",
+        )
+    )
+
+    assert "-H" not in seen["cmd"]
+    assert "-b" not in seen["cmd"]
+    assert "-d" not in seen["cmd"]
+    assert seen["config_mode"] == 0o600
+    assert secret_header in seen["config_content"]
+    assert secret_cookie in seen["config_content"]
+    assert "sk-livesecret" in seen["config_content"]
+    # Credentials must not persist at rest after the run.
+    assert not (tmp_path / "ffuf_config.toml").exists()
+
+
+def test_run_keeps_config_file_only_with_reveal_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path, reveal_secrets=True)
+    runner.run(FfufConfig(wordlist=wordlist, cookies=("session=abc",)))
+
+    assert (tmp_path / "ffuf_config.toml").exists()
+
+
+def test_run_removes_config_file_on_backstop_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import subprocess
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist, cookies=("session=abc",)))
+
+    assert result["timed_out"] is True
+    assert not (tmp_path / "ffuf_config.toml").exists()
+
+
 def test_run_grants_grace_beyond_ffuf_maxtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The subprocess timeout must exceed -maxtime so ffuf's own clean
     shutdown (which flushes the JSON report) always wins the race."""

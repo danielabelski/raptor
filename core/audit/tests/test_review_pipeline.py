@@ -1070,6 +1070,21 @@ class TestConfirmedTier:
         )
         assert o.compute_tier() == "tool_backed"
 
+    def test_detection_role_stamp_does_not_grade_tool_backed(self):
+        # Incident regression (openssh instrumented corpus): 136/137
+        # tool_backed findings were disproven; the dominant stamps
+        # were detection-role smt:check-* variants that graded
+        # tool_backed purely because "smt" was in tools_dispatched.
+        # A stamp the evidence firewall rejects must not export
+        # tool_backed through the dispatched-name path.
+        from core.audit.orchestrator import ReviewOutcome
+        o = ReviewOutcome(
+            file="f.c", function="fn", status="finding",
+            body="toctou", evidence_tool="smt:check-toctou",
+            tools_dispatched={"smt"},
+        )
+        assert o.compute_tier() == "llm_only"
+
 
 # ── Fix 5c-5: Contract-delegation co-occurrence ─────────────────
 

@@ -418,6 +418,41 @@ class TestDetectionVariantFirewall:
         assert is_tool_evidence("smt+ptr_lifecycle:stale-alias-naming")
         assert is_tool_evidence("fail_open:handler-outcome-naming+coccinelle")
 
+    def test_smt_detection_verbs_are_not_tool_evidence(self):
+        # Incident regression (openssh instrumented corpus): these
+        # stamps backed 88 exported tool_backed findings with 0
+        # survivors through /validate — the channel's own role table
+        # (sweep._SMT_VERB_ROLES) already classified them detection,
+        # but the firewall never consulted it.
+        for stamp in (
+            "smt:check-toctou",
+            "smt:check-null-propagation",
+            "smt:check-auth-bypass",
+            "smt:check-resource-leak",
+            "smt:check-early-release",
+            "smt:check-lock-domain",
+            "smt:check-overflow-to-oob",
+            "smt:check-negative-bypass",
+            "smt:invariant-preservation",
+        ):
+            assert not is_tool_evidence(stamp), stamp
+
+    def test_smt_verification_verbs_and_witnesses_qualify(self):
+        # Verification-role verbs and concrete solver witnesses keep
+        # their receipts; dead_path_smt is a real Z3 run that was
+        # previously invisible to the firewall.
+        for stamp in (
+            "smt",
+            "smt:check-overflow",
+            "smt:check-oob",
+            "smt:check-null-deref",
+            "smt:validate-path",
+            "smt:check-auth-bypass:witness",
+            "dead_path_smt",
+            "dead_path_smt:witness",
+        ):
+            assert is_tool_evidence(stamp), stamp
+
     def test_bare_joern_reachability_is_not_tool_evidence(self):
         # joern:live / joern:pre_sweep are guard-blind reachability —
         # detection-role at the promotion sites; grading them as

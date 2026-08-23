@@ -721,8 +721,17 @@ class ReviewOutcome:
         if any(t.strip().endswith(":witness") for t in tools):
             return VerificationTier.CONFIRMED.value
 
+        from .evidence_grade import _PROVENANCE_WRAPPERS, is_tool_evidence
+        if not is_tool_evidence(self.evidence_tool):
+            # Detection-role receipts corroborate but may not convict:
+            # a stamp the evidence-grade firewall rejects must not
+            # export tool_backed just because its tool namespace was
+            # dispatched.  (Instrumented corpus: 136/137 tool_backed
+            # findings disproven; the dominant stamps were
+            # detection-role smt:check-* variants.)
+            return VerificationTier.LLM_ONLY.value
+
         first_tool = et_lower.split("+")[0].strip()
-        from .evidence_grade import _PROVENANCE_WRAPPERS
         for _wrapper in _PROVENANCE_WRAPPERS:
             if first_tool.startswith(_wrapper):
                 # Provenance wrapper (e.g. ``clean-refuted:smt``): the

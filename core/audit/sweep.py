@@ -1266,6 +1266,28 @@ def get_smt_verb_role(verb: str) -> str:
     return _SMT_VERB_ROLES.get(bare, "detection")
 
 
+def is_detection_rule_id(stamp: str) -> bool:
+    """SMT-channel detection-grade stamp classification.
+
+    The single authority for which smt evidence stamps may not promote
+    or sustain a verdict alone — consulted by the evidence-grade
+    firewall (``is_tool_evidence`` via ``_DETECTION_CLASSIFIER_MODULES``)
+    so the role table above and the firewall can never drift.  Before
+    this, the table's demotions were honoured at the promotion sites
+    but ``smt:check-toctou``-class stamps still graded as full tool
+    evidence and exported ``verification_tier=tool_backed``.
+
+    A ``:witness`` suffix records a concrete solver model and keeps the
+    stamp's receipt; verbs the table does not name keep their current
+    grading (the firewall only demotes what the channel has explicitly
+    classified as detection-role).
+    """
+    if ":" not in stamp or stamp.endswith(":witness"):
+        return False
+    verb = stamp.split(":", 2)[1]
+    return _SMT_VERB_ROLES.get(verb) == "detection"
+
+
 # SMT verbs whose intrinsic predicate is satisfiable for almost any
 # unconstrained operand assignment: "can these bitvectors wrap / index
 # past a free-variable bound?" — yes, always, unless a guard forbids

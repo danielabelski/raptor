@@ -104,6 +104,11 @@ _TOOL_NAMESPACES = frozenset(VALID_EVIDENCE_TOOLS | {
     "dynamic", "frida", "dark_verify", "precondition",
     "fail_open", "consistency", "ptr_lifecycle", "lock_region",
     "resource_bounds", "release_order", "protocol_state",
+    # Z3 path-infeasibility proof from the decorative-guard detector —
+    # a real solver run, previously graded tool_backed only through
+    # compute_tier's dispatched-name loophole (invisible to this
+    # firewall).
+    "dead_path_smt",
 })
 
 
@@ -128,6 +133,12 @@ _DETECTION_CLASSIFIER_MODULES: dict[str, str] = {
     # hold an LLM-authored claim against demotion. joern:flow /
     # joern:guard-dominance / joern:taint:* keep verification role.
     "joern": "core.audit.joern_verify",
+    # SMT verbs the channel's own role table (sweep._SMT_VERB_ROLES)
+    # demotes to detection: hypothesis-shaped local checks whose
+    # receipts confirm lexical feasibility, not vulnerability.  On the
+    # instrumented 185-finding corpus these stamps backed 88 exported
+    # tool_backed findings with 0 survivors through /validate.
+    "smt": "core.audit.sweep",
 }
 
 
@@ -183,6 +194,15 @@ def _is_detection_variant(part: str) -> bool:
         return part.endswith("-unreceipted") or part in (
             "protocol_state:dead-state-field",
             "protocol_state:unvalidated-peer-write",
+        )
+    # smt: mirrors sweep._SMT_VERB_ROLES detection entries (":witness"
+    # keeps its receipt — a concrete solver model discriminates).
+    if part.startswith("smt:") and not part.endswith(":witness"):
+        return part.split(":", 2)[1] in (
+            "invariant-preservation", "check-overflow-to-oob",
+            "check-negative-bypass", "check-auth-bypass",
+            "check-resource-leak", "check-null-propagation",
+            "check-early-release", "check-lock-domain", "check-toctou",
         )
     return False
 

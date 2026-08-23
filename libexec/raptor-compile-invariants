@@ -105,6 +105,21 @@ def main() -> int:
     else:
         client = LLMClient()
 
+    # Self-serve the in-process LLM dispatcher for dispatcher-only
+    # providers (Bedrock) — same gate as raptor-study-run /
+    # raptor-llm-ask; no-op when a route exists or none is needed.
+    try:
+        from core.llm.dispatcher.lifecycle import (
+            ensure_route_for_model_configs,
+        )
+        configs = [getattr(client.config, "primary_model", None)]
+        configs += list(getattr(client.config, "fallback_models", []) or [])
+        ensure_route_for_model_configs(
+            configs, label="raptor-compile-invariants",
+        )
+    except Exception:  # noqa: BLE001 — provider errors surface at call time
+        pass
+
     def llm_callable(prompt, schema, system_prompt):
         try:
             data, _full = client.generate_structured(

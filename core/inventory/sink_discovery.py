@@ -360,6 +360,126 @@ class SinkDiscoveryResult:
             },
         }
 
+    def to_full_dict(self) -> dict:
+        """Lossless form for the audit prep cache — unlike
+        :meth:`as_dict` (the context-map enrichment shape, which
+        drops the ``direct`` flag and the unreachable verdicts), this
+        serialises every field so a resumed audit segment can reload
+        the discovery result instead of re-parsing the tree."""
+        return {
+            "direct_sinks": [
+                {
+                    "file": s.file,
+                    "function": s.function,
+                    "line": s.line,
+                    "target": s.target,
+                    "direct": s.direct,
+                }
+                for s in self.direct_sinks
+            ],
+            "transitive_reach": [
+                {
+                    "file": t.file,
+                    "function": t.function,
+                    "distance": t.distance,
+                    "sinks": t.sinks,
+                    "chain": (
+                        [
+                            {"file": h.file, "function": h.function}
+                            for h in t.chain
+                        ]
+                        if t.chain is not None else None
+                    ),
+                }
+                for t in self.transitive_reach
+            ],
+            "framework_apis": [
+                {
+                    "name": f.name,
+                    "caller_count": f.caller_count,
+                    "files": f.files,
+                }
+                for f in self.framework_apis
+            ],
+            "dangerous_target_counts": self.dangerous_target_counts,
+            "unreachable_eligible": (
+                [
+                    {
+                        "file": v.file,
+                        "function": v.function,
+                        "eligible": v.eligible,
+                        "reason": v.reason,
+                    }
+                    for _, v in sorted(self.unreachable_eligible.items())
+                ]
+                if self.unreachable_eligible is not None else None
+            ),
+        }
+
+    @classmethod
+    def from_full_dict(cls, d: dict) -> "SinkDiscoveryResult":
+        unreachable = d.get("unreachable_eligible")
+        return cls(
+            direct_sinks=[
+                SinkInfo(
+                    file=sd.get("file", ""),
+                    function=sd.get("function", ""),
+                    line=int(sd.get("line", 0)),
+                    target=sd.get("target", ""),
+                    direct=bool(sd.get("direct", True)),
+                )
+                for sd in d.get("direct_sinks", [])
+                if isinstance(sd, dict)
+            ],
+            transitive_reach=[
+                TransitiveReach(
+                    file=td.get("file", ""),
+                    function=td.get("function", ""),
+                    distance=int(td.get("distance", 0)),
+                    sinks=list(td.get("sinks") or []),
+                    chain=(
+                        [
+                            ChainHop(
+                                file=hd.get("file", ""),
+                                function=hd.get("function", ""),
+                            )
+                            for hd in td["chain"]
+                            if isinstance(hd, dict)
+                        ]
+                        if td.get("chain") is not None else None
+                    ),
+                )
+                for td in d.get("transitive_reach", [])
+                if isinstance(td, dict)
+            ],
+            framework_apis=[
+                FrameworkAPI(
+                    name=fd.get("name", ""),
+                    caller_count=int(fd.get("caller_count", 0)),
+                    files=list(fd.get("files") or []),
+                )
+                for fd in d.get("framework_apis", [])
+                if isinstance(fd, dict)
+            ],
+            dangerous_target_counts=dict(
+                d.get("dangerous_target_counts") or {},
+            ),
+            unreachable_eligible=(
+                {
+                    (vd.get("file", ""), vd.get("function", "")):
+                    UnreachableVerdict(
+                        file=vd.get("file", ""),
+                        function=vd.get("function", ""),
+                        eligible=bool(vd.get("eligible", False)),
+                        reason=vd.get("reason", ""),
+                    )
+                    for vd in unreachable
+                    if isinstance(vd, dict)
+                }
+                if unreachable is not None else None
+            ),
+        )
+
 
 def _reconstruct_chain(
     start: FuncKey,
@@ -769,53 +889,16 @@ def discover_sinks_for_target(
         logger.warning("sink_discovery: target %s is not a directory", target)
         return SinkDiscoveryResult([], [], [], {})
 
-    from core.inventory.languages import detect_language
-
     call_graphs: dict[str, FileCallGraph] = {}
 
     # Language → extractor function
     extractors = _get_call_graph_extractors()
 
-    scope_prefixes = (
-        tuple(str(Path(s).resolve()) for s in scope_dirs)
-        if scope_dirs else None
-    )
-
-    budget_remaining = _AGGREGATE_CAP
-
-    for source_file in _iter_source_files(target):
-        if scope_prefixes and not str(
-            source_file.resolve()
-        ).startswith(scope_prefixes):
-            continue
-        try:
-            rel = str(source_file.relative_to(target))
-        except ValueError:
-            continue
-        lang = detect_language(rel)
-        if not lang:
-            continue
-        if languages and lang not in languages:
-            continue
-        extractor = extractors.get(lang)
-        if not extractor:
-            continue
-        # All name/scope/language filters passed — now the lstat-based
-        # byte gates, before any read. lstat also re-refuses symlinks
-        # (the walk already skips them) and special files.
-        try:
-            st = source_file.lstat()
-        except OSError:
-            continue
-        if not stat.S_ISREG(st.st_mode) or st.st_size > _PER_FILE_CAP:
-            continue
-        if st.st_size > budget_remaining:
-            logger.warning(
-                "sink_discovery: aggregate byte budget (%d) exhausted "
-                "at %s; remaining files skipped", _AGGREGATE_CAP, rel,
-            )
-            break
-        budget_remaining -= st.st_size
+    for source_file, rel, lang in iter_discovery_source_files(
+        target, languages=languages, scope_dirs=scope_dirs,
+        budget_warning=True,
+    ):
+        extractor = extractors[lang]
         try:
             content = source_file.read_text(encoding="utf-8", errors="replace")
             graph = extractor(content)
@@ -837,6 +920,68 @@ def discover_sinks_for_target(
         framework_threshold=framework_threshold,
         framework_min_files=framework_min_files,
     )
+
+
+def iter_discovery_source_files(
+    target: Path,
+    *,
+    languages: set[str] | None = None,
+    scope_dirs: list | None = None,
+    budget_warning: bool = False,
+):
+    """Yield ``(path, rel, lang)`` for every file the discovery walk
+    reads, applying the same gates in the same walk order (scope,
+    language/extractor support, the lstat byte gates, and the
+    aggregate byte budget).
+
+    This is the single definition of the discovery input set: the
+    walk in :func:`discover_sinks_for_target` and any fingerprint of
+    its inputs (the audit prep cache) both consume it, so the two can
+    never drift.
+    """
+    from core.inventory.languages import detect_language
+
+    extractors = _get_call_graph_extractors()
+    scope_prefixes = (
+        tuple(str(Path(s).resolve()) for s in scope_dirs)
+        if scope_dirs else None
+    )
+    budget_remaining = _AGGREGATE_CAP
+
+    for source_file in _iter_source_files(target):
+        if scope_prefixes and not str(
+            source_file.resolve()
+        ).startswith(scope_prefixes):
+            continue
+        try:
+            rel = str(source_file.relative_to(target))
+        except ValueError:
+            continue
+        lang = detect_language(rel)
+        if not lang:
+            continue
+        if languages and lang not in languages:
+            continue
+        if not extractors.get(lang):
+            continue
+        # All name/scope/language filters passed — now the lstat-based
+        # byte gates, before any read. lstat also re-refuses symlinks
+        # (the walk already skips them) and special files.
+        try:
+            st = source_file.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _PER_FILE_CAP:
+            continue
+        if st.st_size > budget_remaining:
+            if budget_warning:
+                logger.warning(
+                    "sink_discovery: aggregate byte budget (%d) exhausted "
+                    "at %s; remaining files skipped", _AGGREGATE_CAP, rel,
+                )
+            break
+        budget_remaining -= st.st_size
+        yield source_file, rel, lang
 
 
 def _get_call_graph_extractors():

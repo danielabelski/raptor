@@ -443,3 +443,112 @@ class TestDiscoveryWalkBounds:
         (tmp_path / "link.py").symlink_to(tmp_path / "real.py")
         names = {p.name for p in _iter_source_files(tmp_path)}
         assert names == {"real.py"}
+
+
+class TestFullDictRoundTrip:
+    """to_full_dict/from_full_dict must be lossless — the audit prep
+    cache reloads the discovery result from it on resumed segments."""
+
+    def _result(self):
+        from core.inventory.sink_discovery import (
+            ChainHop,
+            FrameworkAPI,
+            SinkDiscoveryResult,
+            SinkInfo,
+            TransitiveReach,
+            UnreachableVerdict,
+        )
+        return SinkDiscoveryResult(
+            direct_sinks=[
+                SinkInfo(file="a.py", function="run", line=3,
+                         target="os.system"),
+                SinkInfo(file="b.py", function="wrap", line=9,
+                         target="wrapper of: os.system", direct=False),
+            ],
+            transitive_reach=[
+                TransitiveReach(
+                    file="a.py", function="entry", distance=2,
+                    sinks=["os.system"],
+                    chain=[
+                        ChainHop(file="a.py", function="mid"),
+                        ChainHop(file="a.py", function="run"),
+                    ],
+                ),
+                TransitiveReach(
+                    file="c.py", function="lone", distance=1,
+                    sinks=["eval"], chain=[],
+                ),
+            ],
+            framework_apis=[
+                FrameworkAPI(name="app.route", caller_count=7,
+                             files=["a.py", "b.py"]),
+            ],
+            dangerous_target_counts={"os.system": 1},
+            unreachable_eligible={
+                ("d.py", "idle"): UnreachableVerdict(
+                    file="d.py", function="idle", eligible=True,
+                    reason="no transitive reach, no indirection",
+                ),
+                ("e.py", "cb"): UnreachableVerdict(
+                    file="e.py", function="cb", eligible=False,
+                    reason="indirection flags: ['fn_pointer']",
+                ),
+            },
+        )
+
+    def test_round_trip_is_lossless(self):
+        import json as _json
+
+        from core.inventory.sink_discovery import SinkDiscoveryResult
+        orig = self._result()
+        # Through JSON, as the prep cache stores it.
+        blob = _json.loads(_json.dumps(orig.to_full_dict()))
+        back = SinkDiscoveryResult.from_full_dict(blob)
+        assert back.to_full_dict() == orig.to_full_dict()
+        # The lossy fields as_dict drops survive the full round trip.
+        assert [s.direct for s in back.direct_sinks] == [True, False]
+        assert back.unreachable_eligible is not None
+        assert back.unreachable_eligible[("d.py", "idle")].eligible
+        assert not back.unreachable_eligible[("e.py", "cb")].eligible
+        # The operator/context-map shape is identical too.
+        assert back.as_dict() == orig.as_dict()
+
+    def test_round_trip_none_unreachable(self):
+        from core.inventory.sink_discovery import SinkDiscoveryResult
+        orig = SinkDiscoveryResult([], [], [], {})
+        back = SinkDiscoveryResult.from_full_dict(orig.to_full_dict())
+        assert back.unreachable_eligible is None
+        assert back.to_full_dict() == orig.to_full_dict()
+
+
+class TestIterDiscoverySourceFiles:
+    def test_yields_the_walk_input_set(self, tmp_path):
+        from core.inventory.sink_discovery import (
+            iter_discovery_source_files,
+        )
+        (tmp_path / "a.py").write_text("import os\nos.system('x')\n")
+        (tmp_path / "notes.txt").write_text("not source\n")
+        rels = [rel for _p, rel, _l in
+                iter_discovery_source_files(tmp_path)]
+        assert rels == ["a.py"]
+
+    def test_respects_scope_dirs(self, tmp_path):
+        from core.inventory.sink_discovery import (
+            iter_discovery_source_files,
+        )
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "in.py").write_text("x = 1\n")
+        (tmp_path / "out.py").write_text("y = 2\n")
+        rels = [rel for _p, rel, _l in iter_discovery_source_files(
+            tmp_path, scope_dirs=[str(tmp_path / "src")],
+        )]
+        assert rels == [str(Path("src") / "in.py")]
+
+    def test_respects_aggregate_budget(self, tmp_path, monkeypatch):
+        import core.inventory.sink_discovery as sd
+        (tmp_path / "a.py").write_text("x = 1\n")
+        (tmp_path / "b.py").write_text("y = 2\n")
+        monkeypatch.setattr(sd, "_AGGREGATE_CAP", 7)
+        rels = [rel for _p, rel, _l in
+                sd.iter_discovery_source_files(tmp_path)]
+        assert len(rels) == 1

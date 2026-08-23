@@ -140,28 +140,109 @@ def codeql_pre_sweep(
     )
 
 
+_SINK_CACHE_FILENAME = "sink-discovery-cache.json"
+
+
+def _sink_discovery_fingerprint(target_path, scope_dirs) -> str | None:
+    """Deterministic fingerprint of the discovery inputs: the file
+    set + contents the discovery walk would read, enumerated by the
+    walk's own gate chain (:func:`iter_discovery_source_files`) so
+    the fingerprint and the build can never drift. Hashing the bytes
+    is a small fraction of re-extracting every call graph."""
+    try:
+        from core.inventory.sink_discovery import (
+            iter_discovery_source_files,
+        )
+
+        from .prep_cache import content_fingerprint
+
+        return content_fingerprint(
+            (rel, path.read_bytes())
+            for path, rel, _lang in iter_discovery_source_files(
+                Path(target_path), scope_dirs=scope_dirs,
+            )
+        )
+    except Exception:
+        logger.debug("sink-discovery fingerprint failed", exc_info=True)
+        return None
+
+
 def build_sink_results(
     target_path, taint_approx_results=None,
     *, checklist=None, out_dir=None, scope=None,
 ):
-    """Run sink discovery on the target."""
+    """Run sink discovery on the target.
+
+    The discovery result (a pure function of the source tree) rides
+    the prep-cache reload seam: a resumed segment reloads it on an
+    unchanged tree instead of re-extracting every call graph. The
+    heuristic project-sink pass below stays live every run — it also
+    consumes this run's taint approximation, and it is cheap next to
+    the tree parse.
+    """
     if not target_path or not Path(target_path).is_dir():
         return None
 
-    try:
-        from core.inventory.sink_discovery import discover_sinks_for_target
-        scope_dirs = (
-            [str(Path(target_path) / s) for s in scope]
-            if scope else None
-        )
-        result = discover_sinks_for_target(
-            Path(target_path), scope_dirs=scope_dirs,
-        )
-    except ImportError:
-        return None
-    except Exception:
-        logger.debug("sink discovery failed", exc_info=True)
-        return None
+    scope_dirs = (
+        [str(Path(target_path) / s) for s in scope]
+        if scope else None
+    )
+
+    result = None
+    fingerprint: str | None = None
+    if out_dir is not None:
+        from .prep_cache import load_prep_cache
+
+        fingerprint = _sink_discovery_fingerprint(target_path, scope_dirs)
+        if fingerprint is not None:
+            cached = load_prep_cache(
+                out_dir, _SINK_CACHE_FILENAME, fingerprint,
+                label="sink discovery",
+            )
+            if isinstance(cached, dict):
+                try:
+                    from core.inventory.sink_discovery import (
+                        SinkDiscoveryResult,
+                    )
+
+                    result = SinkDiscoveryResult.from_full_dict(cached)
+                    logger.info(
+                        "sink discovery: reloaded %d direct / %d "
+                        "transitive sinks from the prep cache (tree "
+                        "fingerprint match) — call-graph re-extraction "
+                        "skipped",
+                        len(result.direct_sinks),
+                        len(result.transitive_reach),
+                    )
+                except Exception:
+                    result = None
+                    logger.debug(
+                        "sink-discovery cache reload failed — "
+                        "re-extracting", exc_info=True,
+                    )
+
+    if result is None:
+        try:
+            from core.inventory.sink_discovery import (
+                discover_sinks_for_target,
+            )
+            result = discover_sinks_for_target(
+                Path(target_path), scope_dirs=scope_dirs,
+            )
+        except ImportError:
+            return None
+        except Exception:
+            logger.debug("sink discovery failed", exc_info=True)
+            return None
+        if out_dir is not None and fingerprint is not None:
+            from .prep_cache import write_prep_cache
+
+            # Persist BEFORE the heuristic merge below mutates the
+            # result — the cache holds the pure function of the tree.
+            write_prep_cache(
+                out_dir, _SINK_CACHE_FILENAME, fingerprint,
+                result.to_full_dict(), label="sink discovery",
+            )
 
     call_graphs: dict[str, Any] | None = None
     if checklist:

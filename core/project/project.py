@@ -40,6 +40,23 @@ DEFAULT_OUTPUT_BASE = RaptorConfig.BASE_OUT_DIR / "projects"
 
 _PROJECT_SCHEMA_VERSION = 4
 
+# URL-shaped targets (/web scans) are stored and matched as opaque
+# strings, never Path-resolved. Same pattern as core/run/output.py.
+_URL_SCHEME_RE = re.compile(r"\A[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
+def _normalize_url_target(target: str) -> str:
+    """Light URL-target normalization: trailing slashes only.
+
+    Matches the web scanner's own base_url.rstrip("/"), so a project
+    created from "https://x/" still matches a run against
+    "https://x". Anything deeper (case folding, port defaults) stays
+    verbatim — URL targets otherwise match exactly.
+    """
+    stripped = target.rstrip("/")
+    # Never strip into the scheme separator of a bare authority-less URL.
+    return stripped if "://" in stripped else target
+
 
 # Valid trust markers (schema v4). Operator assertions, never auto-set
 # by detection heuristics, persisted in the project JSON under
@@ -109,8 +126,13 @@ _MAX_SETTING_LEN = 4096
 MACHINE_PROJECT_PREFIXES = ("corpus-",)
 
 
-def _run_target_path(run_dir: Path) -> Path | None:
-    """The target a run's ``.raptor-run.json`` records, or ``None``."""
+def _run_target_path(run_dir: Path) -> Path | str | None:
+    """The target a run's ``.raptor-run.json`` records, or ``None``.
+
+    URL-shaped targets (``/web`` runs) come back as the verbatim
+    string — resolving them as filesystem paths would anchor the URL
+    to the cwd (the adopt/retro-create mangling this guards against).
+    """
     meta_path = Path(run_dir) / ".raptor-run.json"
     if not meta_path.is_file():
         return None
@@ -121,14 +143,26 @@ def _run_target_path(run_dir: Path) -> Path | None:
     raw = meta.get("target_path") if isinstance(meta, dict) else None
     if not raw or not isinstance(raw, str):
         return None
+    if _URL_SCHEME_RE.match(raw):
+        return _normalize_url_target(raw)
     try:
         return Path(raw).resolve()
     except OSError:
         return None
 
 
-def _same_target(recorded: Path, project_target: str) -> bool:
-    """Whether a run's recorded target names the project's target."""
+def _same_target(recorded: Path | str, project_target: str) -> bool:
+    """Whether a run's recorded target names the project's target.
+
+    URL targets compare as normalized strings on both sides; mixing a
+    URL with a filesystem path is never the same target.
+    """
+    recorded_is_url = isinstance(recorded, str)
+    project_is_url = bool(_URL_SCHEME_RE.match(project_target))
+    if recorded_is_url != project_is_url:
+        return False
+    if recorded_is_url:
+        return recorded == _normalize_url_target(project_target)
     try:
         return recorded == Path(project_target).resolve()
     except OSError:
@@ -724,9 +758,18 @@ class ProjectManager:
             resolved_binaries.append(
                 str(Path(b).resolve()) if resolve_target else b)
 
+        # URL targets (/web scans) are opaque strings, not filesystem
+        # paths — resolving https://example.com against the cwd would
+        # store a nonsense path. Same rule as core/run/output.py.
+        if _URL_SCHEME_RE.match(target):
+            resolved_target = _normalize_url_target(target)
+        elif resolve_target:
+            resolved_target = str(Path(target).resolve())
+        else:
+            resolved_target = target
         project = Project(
             name=name,
-            target=str(Path(target).resolve()) if resolve_target else target,
+            target=resolved_target,
             output_dir=output_dir,
             created=created or datetime.now(timezone.utc).isoformat(),
             description=description,
@@ -1241,7 +1284,11 @@ class ProjectManager:
         one project/store even though their ``target`` paths differ. Callers
         that have built an inventory pass its ``content_identity``; callers that
         haven't pass nothing and get the original path-only behaviour."""
-        resolved = str(Path(target).resolve())
+        resolved = (
+            _normalize_url_target(target)
+            if _URL_SCHEME_RE.match(target)
+            else str(Path(target).resolve())
+        )
         for project in self.list_projects():
             if project.target == resolved:
                 return project

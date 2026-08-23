@@ -331,6 +331,25 @@ class TestCompileInvariant:
 
     @patch("packages.checker_synthesis.synthesise._dual_control")
     @patch("packages.checker_synthesis.synthesise._write_rule")
+    def test_fixtures_persist_in_result(self, mock_write, mock_dc, tmp_path):
+        """The drafted fixtures reach the manifest even on failure —
+        a 0/N compile run was undiagnosable because nothing kept them
+        (observed live: 10 invariants, every one 'did not match
+        positive test fixture', no fixture on disk to reproduce)."""
+        mock_write.return_value = tmp_path / "checkers" / "test.yml"
+        mock_dc.return_value = (
+            False, ["dual control: rule did not match positive test fixture"],
+        )
+        inv = _make_invariant()
+        r = compile_invariant(
+            inv, "semgrep", _stub_llm(), tmp_path, max_retries=0)
+        assert not r.success
+        assert r.test_positive == "void bad(void) { copy_page(a, b); }"
+        assert r.to_dict()["test_positive"] == r.test_positive
+        assert r.to_dict()["test_negative"] == r.test_negative
+
+    @patch("packages.checker_synthesis.synthesise._dual_control")
+    @patch("packages.checker_synthesis.synthesise._write_rule")
     def test_dual_control_failure_retries(self, mock_write, mock_dc, tmp_path):
         mock_write.return_value = tmp_path / "checkers" / "test.yml"
         mock_dc.side_effect = [

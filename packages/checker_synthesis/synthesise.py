@@ -396,9 +396,19 @@ def _dual_control(
         pos_matches, pos_errors = _run_engine(dummy, rule_path, pos_file)
         errors.extend(pos_errors)
         if not pos_matches:
-            errors.append(
-                "dual control: rule did not match positive test fixture"
-            )
+            if pos_errors:
+                # Same fail-closed policy as the negative side: an
+                # engine error means the fixture may not even have
+                # parsed — reporting it as "did not match" sends the
+                # retry loop chasing the wrong defect.
+                errors.append(
+                    "dual control: engine errored on positive fixture "
+                    "— no-match proves nothing (fixture may not parse)"
+                )
+            else:
+                errors.append(
+                    "dual control: rule did not match positive test fixture"
+                )
             return False, errors
 
         neg_matches, neg_errors = _run_engine(dummy, rule_path, neg_file)

@@ -45,6 +45,11 @@ class CompilationResult:
     dual_control: bool = False
     matches: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Persisted for post-mortem: when dual control fails, the drafted
+    # fixtures ARE the defect surface — without them a 0/N compile run
+    # is undiagnosable after the fact.
+    test_positive: str = ""
+    test_negative: str = ""
 
     @property
     def success(self) -> bool:
@@ -61,6 +66,8 @@ class CompilationResult:
             "dual_control": self.dual_control,
             "matches": self.matches,
             "errors": self.errors,
+            "test_positive": self.test_positive,
+            "test_negative": self.test_negative,
         }
 
 
@@ -430,6 +437,7 @@ class _DualControlOracle:
         evidence = {
             "rule_id": rule_id, "body": body,
             "rule_path": rule_path, "rationale": rationale,
+            "test_positive": test_pos, "test_negative": test_neg,
         }
 
         ext = _fixture_ext(self._inv, self._engine)
@@ -445,6 +453,20 @@ class _DualControlOracle:
             return Verdict(passed=True, evidence=evidence)
 
         dc_feedback = "; ".join(e for e in dc_errors if "dual control:" in e)
+        if "did not match positive" in dc_feedback:
+            # The rule and its own fixture disagree — hand the retry
+            # both sides of the disagreement. Without the fixture in
+            # the feedback the retry redrafts blind and fails the same
+            # way (observed live: 10/10 invariants, two attempts each,
+            # identical one-line failure).
+            dc_feedback += (
+                "\nYour rule failed to match YOUR OWN positive fixture."
+                " Rewrite both so the fixture is a minimal, plainly"
+                " violating snippet and the rule matches it — prefer"
+                " matching the call/construct itself over assignment or"
+                " context forms that engines treat more literally."
+                f"\nThe fixture that did not match:\n{test_pos}"
+            )
         return Verdict(
             passed=False, feedback=dc_feedback,
             evidence={**evidence, "dc_errors": dc_errors},
@@ -498,6 +520,8 @@ def compile_invariant(
         result.rule_path = ev.get("rule_path")
         result.rationale = ev.get("rationale", "")
         result.dual_control = dr.verdict.passed
+        result.test_positive = ev.get("test_positive", "")
+        result.test_negative = ev.get("test_negative", "")
         if "dc_errors" in ev:
             result.errors.extend(ev["dc_errors"])
 

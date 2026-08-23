@@ -7,6 +7,10 @@
     "count": 12,
     "kind": "literal"
   },
+  "core/concepts/compiler.py::to_dict": {
+    "count": 11,
+    "kind": "literal"
+  },
   "core/analysis/cfg_builder_cpp.py::_BULK_COPY_FUNCS": {
     "count": 25,
     "kind": "literal"

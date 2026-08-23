@@ -77,9 +77,14 @@ def main() -> int:
     from core.concepts.model import DomainModel
     model = DomainModel.load(dm_path)
 
+    from core.concepts.model import CONFIDENCE_GRADES
     qualified = [
         inv for inv in model.invariants
         if inv.statement and inv.negation and not inv.mechanical_rule
+        # Same grade ladder compile_model enforces — off-ladder
+        # confidences (e.g. "derived" threat-frame invariants) never
+        # compile, so counting them as eligible overstates the work.
+        and inv.confidence in CONFIDENCE_GRADES
     ]
     if not qualified:
         _progress("no uncompiled invariants with statement + negation")

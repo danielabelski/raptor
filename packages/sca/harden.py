@@ -50,7 +50,6 @@ What harden does NOT do (deferred):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import subprocess
 import sys
@@ -60,7 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import JsonCache
+from core.json import JsonCache, save_json
 
 from . import SCA_CACHE_ROOT, default_client
 from .discovery import find_manifests
@@ -271,10 +270,7 @@ def main(argv: Sequence[str]) -> int:
 
     # Emit candidates.json regardless of whether we apply.
     candidates_path = out_dir / "candidates.json"
-    candidates_path.write_text(
-        json.dumps([asdict(c) for c in candidates], indent=2),
-        encoding="utf-8",
-    )
+    save_json(candidates_path, [asdict(c) for c in candidates])
 
     # --check: gate-mode for CI. Don't apply, don't emit a patch — just
     # report whether there's anything that *could* be applied with the
@@ -1370,10 +1366,7 @@ def _run_self_test(
         )
 
         post_path = out_dir / "candidates.post-apply.json"
-        post_path.write_text(
-            json.dumps([asdict(c) for c in post_candidates], indent=2),
-            encoding="utf-8",
-        )
+        save_json(post_path, [asdict(c) for c in post_candidates])
         print(f"raptor-sca fix --harden --self-test: post-apply candidates → {post_path}")
 
         if post_actionable > 0:

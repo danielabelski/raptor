@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import json
 import logging
 import os
 import re
@@ -43,7 +42,7 @@ from typing import Any, TYPE_CHECKING
 from .versions import VersionError
 from .versions import compare as version_compare
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 # findings.json artifacts are RAPTOR-written run output — the
 # findings-class budget.
@@ -126,13 +125,10 @@ def main(argv: Sequence[str]) -> int:
         cache_root=Path(args.cache_root) if args.cache_root else None,
     )
 
-    (out_dir / "changes.json").write_text(
-        json.dumps(
-            [_change_to_dict(c, compat_reports.get(_change_key(c)))
-             for c in changes],
-            indent=2,
-        ),
-        encoding="utf-8",
+    save_json(
+        out_dir / "changes.json",
+        [_change_to_dict(c, compat_reports.get(_change_key(c)))
+         for c in changes],
     )
     (out_dir / "changes.md").write_text(
         _render_changes_markdown(changes, compat_reports),
@@ -217,8 +213,9 @@ def main(argv: Sequence[str]) -> int:
             result = hash_pin_workflows(
                 target_dir, write=args.hash_pin_write,
             )
-            (out_dir / "hash-pin.json").write_text(
-                json.dumps({
+            save_json(
+                out_dir / "hash-pin.json",
+                {
                     "changed_files": [str(p) for p in result.changed_files],
                     "changes": [
                         {"file": str(c.file), "line": c.line,
@@ -231,8 +228,7 @@ def main(argv: Sequence[str]) -> int:
                           "reason": r}
                         for f, ln, a, r in result.skipped
                     ],
-                }, indent=2),
-                encoding="utf-8",
+                },
             )
             verb = "rewrote" if args.hash_pin_write else "would rewrite"
             print(f"raptor-sca fix --cve-only --hash-pin: {verb} {len(result.changes)} "
@@ -280,9 +276,7 @@ def _run_cascade_validation(
 
     summary = _validate_ecosystems_parallel(work_items, out_dir)
 
-    (out_dir / "cascade.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8",
-    )
+    save_json(out_dir / "cascade.json", summary)
     oks = sum(1 for s in summary if s["verdict"] == "ok")
     conflicts = sum(1 for s in summary if s["verdict"] == "conflict")
     print(f"raptor-sca fix --cve-only --allow-cascade: {oks} ecosystem(s) resolve "
@@ -392,14 +386,14 @@ def _run_external_validation(manifest: Path, out_dir: Path) -> None:
               file=sys.stderr)
         return
     result = resolver.dry_run(manifest.parent)
-    (out_dir / "validate-against.json").write_text(
-        json.dumps({
+    save_json(
+        out_dir / "validate-against.json",
+        {
             "manifest": str(manifest),
             "ecosystem": eco,
             "verdict": "ok" if result.success else "conflict",
             "error": result.error,
-        }, indent=2),
-        encoding="utf-8",
+        },
     )
     verb = "validates" if result.success else "fails"
     print(f"raptor-sca fix --cve-only --validate-against: {manifest.name} {verb} via "

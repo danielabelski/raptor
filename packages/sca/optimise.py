@@ -25,7 +25,6 @@ Outputs (under ``--out``):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import sys
@@ -33,7 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 from .update import (
     UpgradeChange,
@@ -276,10 +275,7 @@ def main(argv: Sequence[str]) -> int:
         import shutil
         shutil.rmtree(proposed_root, ignore_errors=True)
 
-    (out_dir / "changes.json").write_text(
-        json.dumps([_change_to_dict(c) for c in changes], indent=2),
-        encoding="utf-8",
-    )
+    save_json(out_dir / "changes.json", [_change_to_dict(c) for c in changes])
     (out_dir / "changes.md").write_text(
         _render_optimise_markdown(changes), encoding="utf-8",
     )
@@ -479,8 +475,9 @@ def _run_hash_pin(
     """
     from .hash_pin import hash_pin_workflows
     hp_result = hash_pin_workflows(target, write=write)
-    (out_dir / "hash-pin.json").write_text(
-        json.dumps({
+    save_json(
+        out_dir / "hash-pin.json",
+        {
             "changed_files": [str(p) for p in hp_result.changed_files],
             "changes": [
                 {"file": str(c.file), "line": c.line,
@@ -492,8 +489,7 @@ def _run_hash_pin(
                 {"file": str(f), "line": ln, "action": a, "reason": r}
                 for f, ln, a, r in hp_result.skipped
             ],
-        }, indent=2),
-        encoding="utf-8",
+        },
     )
     if not hp_result.changes:
         return None

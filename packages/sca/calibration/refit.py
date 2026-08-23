@@ -62,6 +62,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import save_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -831,10 +833,7 @@ def _emit_joint_report(
         out_path = refit_dir / f"{report.snapshot_date}.joint.json"
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(out_path, report.to_dict(), sort_keys=True)
     return report
 
 
@@ -850,10 +849,7 @@ def _emit_report(
         out_path = refit_dir / f"{report.snapshot_date}.json"
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(out_path, report.to_dict(), sort_keys=True)
     return report
 
 

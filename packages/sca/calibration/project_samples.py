@@ -35,7 +35,6 @@ clone target so re-runs are reproducible.
 
 from __future__ import annotations
 
-import json
 import logging
 import multiprocessing as mp
 import os
@@ -49,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 # findings.json artifacts are RAPTOR-written run output — the
 # findings-class budget.
@@ -920,10 +919,7 @@ def _collect_one(
         },
         "findings": sanitised,
     }
-    out_path.write_text(
-        json.dumps(output, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(out_path, output, sort_keys=True)
     return CollectResult(
         project=sample.name, ecosystem=sample.ecosystem,
         written=True, error=None,

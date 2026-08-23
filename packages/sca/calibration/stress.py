@@ -68,7 +68,6 @@ but the corresponding sample no longer does, that's reported
 from __future__ import annotations
 
 import concurrent.futures
-import json
 import logging
 import os
 import subprocess
@@ -82,7 +81,7 @@ from typing import Any
 
 from .project_samples import PROJECT_SAMPLES, ProjectSample
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 # findings.json artifacts are RAPTOR-written run output — the
 # findings-class budget.
@@ -578,11 +577,7 @@ def write_baseline(
         },
         "projects": dict(sorted(projects.items())),
     }
-    baseline_path.parent.mkdir(parents=True, exist_ok=True)
-    baseline_path.write_text(
-        json.dumps(output, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(baseline_path, output, sort_keys=True)
 
 
 def _load_baseline(path: Path) -> dict[str, Any]:

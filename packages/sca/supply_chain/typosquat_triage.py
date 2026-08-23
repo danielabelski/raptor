@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 
+from core.json import save_json
+
 from .typosquat_audit import Candidate, _load_name_set
 
 logger = logging.getLogger(__name__)
@@ -240,11 +242,9 @@ def apply_auto_legit(
 
 
 def _atomic_write_json(path: Path, obj: object) -> None:
-    """Atomic JSON write via the shared primitive in
-    :mod:`core.atomic_fs`. See that module for the guarantees."""
-    from core.atomic_fs import write_text_atomically
-    text = _json.dumps(obj, indent=2) + "\n"
-    write_text_atomically(path, text)
+    """Atomic JSON write via the shared substrate writer
+    (tempfile + rename; see :func:`core.json.save_json`)."""
+    save_json(path, obj)
 
 
 # ---------------------------------------------------------------------------

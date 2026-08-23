@@ -22,12 +22,12 @@ https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html
 from __future__ import annotations
 
 import hashlib
-import json as _json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
 from core.security.prompt_output_sanitise import sanitise_string
 
 if TYPE_CHECKING:
@@ -126,15 +126,7 @@ def write_sarif(path: Path, *, target: Path, rows: Sequence[dict[str, Any]],
                 generated_at: datetime | None = None) -> int:
     """Atomically write SARIF 2.1.0 to ``path``; returns ``len(rows)``."""
     doc = build_sarif(target=target, rows=rows, generated_at=generated_at)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as fh:
-            _json.dump(doc, fh, indent=2)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-    tmp.replace(path)
+    save_json(path, doc)
     return len(rows)
 
 

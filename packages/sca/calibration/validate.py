@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -158,10 +160,7 @@ def validate_corpus(
         out_path = validation_dir / f"{snapshot}.json"
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(out_path, report.to_dict(), sort_keys=True)
     return report
 
 

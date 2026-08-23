@@ -22,13 +22,13 @@ emitting twice doubles operator confusion about which is canonical.
 
 from __future__ import annotations
 
-import json as _json
 import logging
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
 from core.security.prompt_output_sanitise import sanitise_string
 
 
@@ -76,11 +76,7 @@ def write_sbom_json(
                     serial_number=serial_number,
                     image_fingerprints=image_fingerprints,
                     project_license=project_license)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        _json.dump(bom, fh, indent=2)
-    tmp.replace(path)
+    save_json(path, bom)
     return len(bom.get("components", []))
 
 

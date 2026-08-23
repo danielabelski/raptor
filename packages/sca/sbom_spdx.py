@@ -33,13 +33,12 @@ What's NOT emitted (deferred):
 
 from __future__ import annotations
 
-import json as _json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
-from ._atomic import atomic_write_text
+from core.json import save_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -69,7 +68,7 @@ def write_sbom_spdx_json(
         namespace_uri=namespace_uri,
         project_license=project_license,
     )
-    atomic_write_text(path, _json.dumps(doc, indent=2) + "\n")
+    save_json(path, doc)
 
 
 def render_sbom_spdx(

@@ -39,7 +39,6 @@ Caveats:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 import sys
@@ -47,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import JsonCache, load_json
+from core.json import JsonCache, load_json, save_json
 
 # findings.json artifacts are RAPTOR-written run output — the
 # findings-class budget.
@@ -179,16 +178,16 @@ def main(
     delta_md = _render_markdown(target, proposed, applied, delta, summary)
     from ._atomic import atomic_write_text
     atomic_write_text(out_dir / "delta.md", delta_md)
-    atomic_write_text(
+    save_json(
         out_dir / "delta.json",
-        json.dumps({
+        {
             "applied": [str(p) for p in applied],
             "summary": summary,
             "new": delta.new,
             "resolved": delta.resolved,
             "suppression_added": delta.suppression_added,
             "suppression_lifted": delta.suppression_lifted,
-        }, indent=2),
+        },
     )
 
     sys.stdout.write(delta_md)

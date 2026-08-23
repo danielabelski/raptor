@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 # findings.json artifacts are RAPTOR-written run output — the
 # findings-class budget.
@@ -230,11 +230,8 @@ def main(argv: Sequence[str]) -> int:
         results.append(row)
 
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(
-        json.dumps({"results": results, "dropped_over_cap": dropped},
-                   indent=2) + "\n",
-        encoding="utf-8",
-    )
+    save_json(summary_path,
+              {"results": results, "dropped_over_cap": dropped})
     print(f"wrote {summary_path}")
     if dropped:
         # No silent caps: the operator must see what was not attempted.

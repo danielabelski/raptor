@@ -327,6 +327,8 @@ def _emit_baseline_delta(
     """
     import json as _json
 
+    from core.json import save_json
+
     from .diff import (
         _delta_to_dict,
         _render_markdown,
@@ -353,10 +355,7 @@ def _emit_baseline_delta(
         return
 
     delta = compute_delta(baseline_rows, current_rows)
-    (output_dir / "baseline-delta.json").write_text(
-        _json.dumps(_delta_to_dict(delta), indent=2),
-        encoding="utf-8",
-    )
+    save_json(output_dir / "baseline-delta.json", _delta_to_dict(delta))
     (output_dir / "baseline-delta.md").write_text(
         _render_markdown(str(baseline_path), str(current_findings), delta),
         encoding="utf-8",

@@ -1015,6 +1015,11 @@ def get_reviewed_set(out_dir: Path) -> set:
         if entry.get("action") in ("record", "orchestrator_review"):
             if entry.get("status") == "error":
                 continue
+            if entry.get("edge_callee"):
+                # Edge-contract records review one outgoing EDGE, not
+                # the caller function — they must never suppress the
+                # caller's own function review.
+                continue
             key = entry.get("key", "")
             if key:
                 reviewed.add(key)
@@ -9599,6 +9604,15 @@ def _commit_outcome(
         "cost_usd": outcome.cost_usd,
         "duration_s": outcome.duration_s,
     }
+    if gap.get("edge_callee"):
+        # Tier-1 edge-contract reviews journal under an edge-suffixed
+        # key, but this audit-log record's key is the caller's plain
+        # function key — without the stamp, get_reviewed_set() treats
+        # the caller as already reviewed and the workqueue silently
+        # drops its function review (observed live: both --pin targets
+        # skipped because the edge pass had reviewed one of their
+        # outgoing edges first).
+        entry["edge_callee"] = gap["edge_callee"]
     _qualified = (
         gap.get("qualified_name")
         or getattr(outcome, "function_qualified", "")
@@ -9792,6 +9806,11 @@ def _check_finding_gates(
             if _bare_key(e.get("key", "")) == key
             and e.get("action") in ("record", "orchestrator_review")
             and e.get("status") in ("finding", "suspicious")
+            # Edge-contract records review one outgoing EDGE — a prior
+            # edge suspicion must not make the caller's own function
+            # review count as re-recording (same screen as
+            # get_reviewed_set).
+            and not e.get("edge_callee")
         ]
         if prior_records and not outcome.evidence_tool:
             violations.append("G3: re-recording without new tool evidence")

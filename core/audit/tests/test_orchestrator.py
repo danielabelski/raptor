@@ -123,6 +123,25 @@ class TestGetReviewedSet:
         assert "src/auth.c:check_pw" in result
         assert "src/auth.c" not in result
 
+    def test_edge_contract_records_never_mark_caller_reviewed(
+        self, tmp_path: Path,
+    ):
+        """A tier-1 edge-contract record reviews one outgoing EDGE, not
+        the caller function. Without the edge_callee screen the caller
+        was treated as reviewed and its function review silently
+        dropped from the workqueue (observed live on pinned targets)."""
+        log = tmp_path / ".audit-log.jsonl"
+        log.write_text(
+            '{"action":"orchestrator_review","key":"src/a.c:recv:66",'
+            '"status":"clean","edge_callee":"src/b.c:pull"}\n'
+            '{"action":"orchestrator_review","key":"src/a.c:send:20",'
+            '"status":"clean"}\n'
+        )
+        result = get_reviewed_set(tmp_path)
+        assert "src/a.c:recv" not in result
+        assert "src/a.c:recv:66" not in result
+        assert "src/a.c:send" in result
+
     def test_error_status_excluded(self, tmp_path: Path):
         log = tmp_path / ".audit-log.jsonl"
         log.write_text(

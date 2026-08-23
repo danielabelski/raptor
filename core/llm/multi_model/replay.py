@@ -53,6 +53,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from collections.abc import Sequence
 
+from core.json import dumps_artifact
 from core.llm.multi_model.dawid_skene import (
     DawidSkeneResult,
     estimate_partitioned,
@@ -386,7 +387,10 @@ def render_markdown(report: ReplayReport) -> str:
 
 
 def render_json(report: ReplayReport) -> str:
-    return json.dumps(asdict(report), indent=2, sort_keys=True)
+    # Artifact, not display: the rendering is persisted to the replay
+    # output file as well as printed, and both forms are consumed as a
+    # JSON document (jq, downstream tooling) rather than read as prose.
+    return dumps_artifact(asdict(report), sort_keys=True)
 
 
 # ---------------------------------------------------------------------------

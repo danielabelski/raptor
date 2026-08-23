@@ -28,7 +28,7 @@ from pathlib import Path
 from . import SCA_CACHE_ROOT
 from typing import TYPE_CHECKING
 
-from core.json import dumps_display
+from core.json import dumps_artifact
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -205,12 +205,16 @@ def _fingerprint_image_ref(ref: str, _args):
             pass
 
 
-def _emit_json(payload, out_path: str | None) -> int:
+def _emit_json(payload: dict, out_path: str | None) -> int:
     """Print to stdout or write to ``out_path``. Returns 0 on
     success, 3 on I/O failure (matches the CLI's infra-failure
     exit code so CI gates can differentiate write errors from
     drift / no-drift)."""
-    text = dumps_display(payload, sort_keys=True)
+    # Artifact, not display: --out persists the document for CI
+    # gates/baselines and the stdout form is piped into scripts — both
+    # sinks are consumed as JSON, not read as prose. One artifact
+    # rendering keeps them byte-identical.
+    text = dumps_artifact(payload, sort_keys=True)
     if not out_path:
         print(text)
         return 0

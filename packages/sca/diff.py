@@ -33,7 +33,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import dumps_display
+from core.json import dumps_artifact
 from core.security.log_sanitisation import escape_nonprintable
 
 from .findings import severity_rank
@@ -100,7 +100,13 @@ def main(argv: Sequence[str]) -> int:
     )
 
     if args.json:
-        out_text = dumps_display(_delta_to_dict(delta), indent=2)
+        # Artifact, not display: the same string is persisted via
+        # --out and piped from stdout into jq/CI scripts — it is
+        # consumed as a JSON document, not read as prose. Render once
+        # through the artifact dumper so both sinks carry identical,
+        # parseable bytes (and non-finite floats fail loudly instead
+        # of emitting a document some readers reject).
+        out_text = dumps_artifact(_delta_to_dict(delta))
     elif args.pr_comment:
         out_text = render_pr_comment(delta, repo_label=args.repo_label)
     else:

@@ -23,12 +23,32 @@ def _finding(**overrides):
 
 class TestDeriveVerificationTier:
     def test_execution_oracle_confirms(self):
-        f = _finding(execute_outcome="exit_signal")
+        f = _finding(
+            execute_outcome="exit_signal",
+            execute_detail={"evidence_grade": "mechanical"},
+        )
         assert derive_verification_tier(f) == "confirmed"
 
     def test_sanitizer_report_confirms(self):
-        f = _finding(execute_outcome="sanitizer_report")
+        f = _finding(
+            execute_outcome="sanitizer_report",
+            execute_detail={"evidence_grade": "mechanical"},
+        )
         assert derive_verification_tier(f) == "confirmed"
+
+    def test_ungraded_execution_outcome_does_not_confirm(self):
+        # Verdict-forgery fix: a dynamic outcome without mechanical-
+        # grade evidence (legacy shape, or the target-forgeable
+        # heuristic shapes) must never confirm on its own.
+        f = _finding(execute_outcome="exit_signal")
+        assert derive_verification_tier(f) == "llm_only"
+
+    def test_heuristic_grade_does_not_confirm(self):
+        f = _finding(
+            execute_outcome="sanitizer_report",
+            execute_detail={"evidence_grade": "heuristic"},
+        )
+        assert derive_verification_tier(f) == "llm_only"
 
     def test_off_target_execution_does_not_confirm(self):
         f = _finding(
@@ -173,8 +193,19 @@ class TestToDictStamping:
         vuln.analysis = {"is_true_positive": True}
         vuln.exploit_code = "x"
         vuln.execute_outcome = "sanitizer_report"
+        vuln.execute_detail = {"evidence_grade": "mechanical"}
         d = vuln.to_dict()
         assert d["verification_tier"] == "confirmed"
+
+    def test_ungraded_execution_outcome_stays_uncorroborated(self, tmp_path):
+        # Target-forgeable evidence (no mechanical grade) must not
+        # stamp confirmed on the exported finding.
+        vuln = self._vuln(tmp_path)
+        vuln.analysis = {"is_true_positive": True}
+        vuln.exploit_code = "x"
+        vuln.execute_outcome = "sanitizer_report"
+        d = vuln.to_dict()
+        assert d["verification_tier"] != "confirmed"
 
 
 class TestMergedReportWiring:

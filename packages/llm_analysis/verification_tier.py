@@ -15,9 +15,15 @@ actually carries; tier assignment is pure dict inspection, no LLM):
 
 * ``confirmed`` — the sandboxed execution oracle observed a bug
   trigger for this finding's exploit (``execute_outcome`` in
-  ``exit_signal`` / ``sanitizer_report`` / ``flag_captured``), and the
-  intent judge did not rule the run ``off_target`` (an off-target
-  crash proves a different bug, not this one).
+  ``exit_signal`` / ``sanitizer_report`` / ``flag_captured``) with
+  MECHANICAL-grade evidence (``execute_detail.evidence_grade ==
+  "mechanical"`` — the waitstatus oracle saw a real WIFSIGNALED, not a
+  target-forgeable exit code or stderr substring; see
+  ``exploit_verify``), and the intent judge did not rule the run
+  ``off_target`` (an off-target crash proves a different bug, not this
+  one). Heuristic-grade or ungraded dynamic outcomes deliberately do
+  NOT confirm: a hostile scanned repo can mint them with a printed
+  fake sanitizer report or an exit(139).
 * ``tool_backed`` — a static mechanical validator corroborated the
   verdict beyond the original detector match: an SMT sat witness on
   the finding's path conditions (``analysis.smt_witness.model``), or a
@@ -80,9 +86,21 @@ def derive_verification_tier(finding: dict[str, Any]) -> str:
 
     outcome = finding.get("execute_outcome")
     if outcome in _DYNAMIC_OUTCOMES:
-        intent = finding.get("intent_match") or {}
-        if intent.get("verdict") != "off_target":
-            return VerificationTier.CONFIRMED.value
+        # Evidence-grade gate: only mechanical-grade execution evidence
+        # (waitstatus-oracle-anchored — see exploit_verify) may confirm.
+        # Absent or heuristic grades fall through to the tool_backed /
+        # llm_only receipts below — fail-safe, because a hostile target
+        # forges the heuristic shapes (fake sanitizer stderr, exit(139))
+        # without any prompt injection.
+        exec_detail = finding.get("execute_detail")
+        grade = (
+            exec_detail.get("evidence_grade")
+            if isinstance(exec_detail, dict) else None
+        )
+        if grade == "mechanical":
+            intent = finding.get("intent_match") or {}
+            if intent.get("verdict") != "off_target":
+                return VerificationTier.CONFIRMED.value
 
     smt = analysis.get("smt_witness") or finding.get("smt_witness") or {}
     if isinstance(smt, dict) and smt.get("model"):

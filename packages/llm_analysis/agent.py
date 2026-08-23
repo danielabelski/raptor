@@ -1722,9 +1722,12 @@ class AutonomousSecurityAgentV2:
         The P9 execution oracle for /agentic: same
         ``exploit_verify.compile_and_execute`` machinery the
         crash-agent uses (sandboxed run, network blocked, outcome
-        classified via ``core.witness.outcome_from_sandbox_info`` —
-        sanitizer report / crash signal are mechanical observations
-        the LLM cannot fabricate). Threads the outcome onto the
+        classified via ``core.witness.outcome_from_sandbox_info``).
+        The raw outcome is NOT unforgeable — a hostile target binary
+        can print a fake sanitizer report or exit(139) into the shared
+        stream — so ``execute_detail.evidence_grade`` carries the
+        waitstatus-oracle tier and only ``"mechanical"`` may reach the
+        CONFIRMED verification tier. Threads the outcome onto the
         finding as ``execute_outcome`` / ``execute_detail``; the
         witness recorder upgrades the Witness from NOT_RUN to the
         observed outcome.

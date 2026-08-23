@@ -71,6 +71,21 @@ class ReproductionResult:
     reproduced: bool = False        # every run matched expected
     deterministic: bool = False     # every run produced the SAME outcome
     reason: str = ""
+    # Weakest evidence grade across the runs: "mechanical" only when
+    # EVERY run graded mechanical. What "mechanical" means differs by
+    # lane: LLM_EMIT_RUN runs ride compile_and_execute's waitstatus
+    # supervisor (oracle-anchored), while the input-replay lane
+    # consumes the SUBSTRATE grade from
+    # core.witness.outcome_from_sandbox_info ungated — i.e. parent
+    # waitpid provenance only, with no sentinel/oracle upgrade, so on
+    # spawn tiers that re-encode signals as 128+sig exit codes replay
+    # runs grade heuristic even for genuine crashes. Either way a
+    # deterministic reproduction of a target-forged outcome (fake
+    # sanitizer stderr, exit(139) — the hostile binary replays its own
+    # forgery perfectly under the binary-hash pin) grades "heuristic";
+    # consumers must not read tier 1.5 as mechanical proof unless this
+    # field says so.
+    evidence_grade: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -81,6 +96,7 @@ class ReproductionResult:
             "reproduced": self.reproduced,
             "deterministic": self.deterministic,
             "reason": self.reason,
+            "evidence_grade": self.evidence_grade,
         }
 
 
@@ -90,6 +106,7 @@ def _finalize(
     n: int,
     *,
     reason: str = "",
+    grades: list[str] | None = None,
 ) -> ReproductionResult:
     """Build the result from the per-run observed outcomes."""
     reproduced = bool(observed) and all(o == expected for o in observed)
@@ -107,6 +124,15 @@ def _finalize(
                 f"non-deterministic: outcomes varied across runs "
                 f"({observed})"
             )
+    # Weakest-wins: one heuristic (or ungraded) run demotes the whole
+    # reproduction — the honest reading of mixed evidence.
+    grade = ""
+    if observed:
+        grade = "mechanical" if (
+            grades
+            and len(grades) == len(observed)
+            and all(g == "mechanical" for g in grades)
+        ) else "heuristic"
     return ReproductionResult(
         attempted=True,
         runs=n,
@@ -115,6 +141,7 @@ def _finalize(
         reproduced=reproduced,
         deterministic=deterministic,
         reason=reason,
+        evidence_grade=grade,
     )
 
 
@@ -222,14 +249,15 @@ def _reproduce_source(
     # fire again. Sanitizer name lives in the bundle's outcome_detail.
     sanitizers = None
     if expected == WitnessOutcome.SANITIZER_REPORT.value:
-        san_name = (bundle.outcome_detail or {}).get("sanitizer")
+        san_name = (bundle.outcome_detail or {}).get("sanitizer") or ""
         flag = _SANITIZER_FLAG.get(san_name)
         if flag:
             sanitizers = [flag]
 
     observed: list[str] = []
+    grades: list[str] = []
     for i in range(n):
-        compiled, errors, outcome, _detail = compile_and_execute(
+        compiled, errors, outcome, detail = compile_and_execute(
             exploit_code,
             None,  # no target source path → attempt gcc unconditionally
             f"{bundle.witness_hash[:12]}-rep{i}",
@@ -247,8 +275,9 @@ def _reproduce_source(
                 ),
             )
         observed.append(outcome.value if outcome is not None else "none")
+        grades.append(str((detail or {}).get("evidence_grade") or ""))
 
-    return _finalize(expected, observed, n)
+    return _finalize(expected, observed, n, grades=grades)
 
 
 def _reproduce_replay(
@@ -305,6 +334,7 @@ def _reproduce_replay(
         )
 
     observed: list[str] = []
+    grades: list[str] = []
     for _i in range(n):
         try:
             # run_untrusted, not run: the target binary is untrusted
@@ -327,6 +357,7 @@ def _reproduce_replay(
             raise  # sandbox isolation could not engage — fail loud, never mask as a benign result
         except Exception as e:  # noqa: BLE001 — best-effort per run
             observed.append("error")
+            grades.append("")
             log.debug("reproduce replay run raised: %s", e)
             continue
         sandbox_info = getattr(result, "sandbox_info", None)
@@ -335,8 +366,9 @@ def _reproduce_replay(
             sandbox_info, returncode=returncode,
         )
         observed.append(outcome.value)
+        grades.append(str(_detail.get("evidence_grade") or ""))
 
-    return _finalize(expected, observed, n)
+    return _finalize(expected, observed, n, grades=grades)
 
 
 def attach_reproduction(

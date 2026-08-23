@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -765,6 +765,19 @@ class FfufRunner:
         # Landlock-only fallback tier (selftest-05 scanner precedent).
         binary_path = os.path.realpath(binary_path)
 
+        # Wordlists follow the same realpath rule as the binary: the
+        # mount-ns file bind and the Landlock read rule are created for
+        # the path the child actually opens, and a symlinked wordlist
+        # would leave its original path dangling inside the namespace.
+        config = replace(
+            config,
+            wordlist=Path(os.path.realpath(config.wordlist)),
+            extra_wordlists=tuple(
+                (Path(os.path.realpath(path)), keyword)
+                for path, keyword in config.extra_wordlists
+            ),
+        )
+
         target_host = (urlparse(self.base_url).hostname or "").lower()
         if not target_host:
             msg = "ffuf base URL must include a hostname"
@@ -812,15 +825,20 @@ class FfufRunner:
         returncode: int | None = None
         stderr_text = ""
         try:
-            wordlist_dirs = list(dict.fromkeys(
-                [str(config.wordlist.parent)]
-                + [str(path.parent) for path, _keyword in config.extra_wordlists]
+            # File-granular read scope: the sandbox needs the wordlist
+            # FILES, not their parent directories — a wordlist under
+            # /etc must not put all of /etc in the read allowlist. Both
+            # enforcement tiers support file paths (Landlock path_beneath
+            # rules on O_PATH fds; mount-ns per-file bind with stub
+            # creation).
+            wordlist_files = list(dict.fromkeys(
+                [str(config.wordlist)]
+                + [str(path) for path, _keyword in config.extra_wordlists]
             ))
             completed = run_untrusted_networked(
                 cmd,
-                target=str(config.wordlist.parent),
                 output=str(self.out_dir),
-                readable_paths=wordlist_dirs,
+                readable_paths=wordlist_files,
                 proxy_hosts=[target_host],
                 fake_home=True,
                 tool_paths=[str(Path(binary_path).parent)],

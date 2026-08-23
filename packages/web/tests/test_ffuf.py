@@ -702,10 +702,13 @@ def test_build_command_rejects_mode_without_extra_wordlists(tmp_path: Path):
         )
 
 
-def test_run_grants_read_scope_to_all_wordlist_dirs(
+def test_run_grants_file_granular_read_scope_to_wordlists(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """The read allowlist carries the wordlist FILES, not their parent
+    directories — a wordlist under /etc must not make /etc readable —
+    and no directory-wide target scope is requested."""
     words = tmp_path / "primary" / "words.txt"
     words.parent.mkdir()
     words.write_text("admin\n", encoding="utf-8")
@@ -734,9 +737,45 @@ def test_run_grants_read_scope_to_all_wordlist_dirs(
     )
 
     assert captured["kwargs"]["readable_paths"] == [
-        str(words.parent),
-        str(params.parent),
+        str(words.resolve()),
+        str(params.resolve()),
     ]
+    assert captured["kwargs"].get("target") is None
+    assert captured["kwargs"]["output"] == str(tmp_path)
+
+
+def test_run_resolves_symlinked_wordlists_for_argv_and_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same rule as the binary realpath fix: the bind and read rule are
+    created for the path the child opens, so a symlinked wordlist must
+    resolve in BOTH the argv -w value and the read allowlist."""
+    real = tmp_path / "store" / "words.txt"
+    real.parent.mkdir()
+    real.write_text("admin\n", encoding="utf-8")
+    link = tmp_path / "lists" / "words.txt"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    runner.run(FfufConfig(wordlist=link))
+
+    resolved = str(real.resolve())
+    assert captured["cmd"][captured["cmd"].index("-w") + 1] == resolved
+    assert captured["kwargs"]["readable_paths"] == [resolved]
 
 
 def test_parse_wordlist_args_splits_primary_and_keyed_extras(tmp_path: Path):

@@ -300,9 +300,12 @@ def _child_request_reserve_usd() -> float:
 # Output-token ceiling used when a priced request declares no usable
 # ``max_tokens``: sized to the largest output window a shipping
 # Anthropic model exposes so the derived ceiling stays a true upper
-# bound (the Messages API requires max_tokens, so this fallback only
+# bound. The Messages API requires max_tokens, so this fallback only
 # fires for malformed traffic — which then needs a budget generous
-# enough to cover a full-window response to be admitted).
+# enough to cover a full-window response to be admitted. Cost-free
+# endpoints (count_tokens), which legitimately carry no max_tokens,
+# are exempt from the reservation entirely (see
+# ``_is_cost_free_endpoint``).
 _CEILING_DEFAULT_MAX_OUTPUT_TOKENS = 128_000
 
 
@@ -351,6 +354,31 @@ def _request_cost_ceiling_usd(
         body_len * in_rate * ANTHROPIC_CACHE_WRITE_MULTIPLIER
         + out_tokens * out_rate
     ) / 1_000_000.0
+
+
+def _is_cost_free_endpoint(upstream_path: str) -> bool:
+    """True for provider endpoints that never book usage cost.
+
+    ``/v1/messages/count_tokens`` (Anthropic API and the Bedrock
+    Mantle surface) is free: no priced tokens are generated, so the
+    per-request budget reservation has nothing to cap. Without the
+    exemption, a count_tokens request — which legitimately carries no
+    ``max_tokens`` — hits the full-output-window ceiling fallback and
+    a small-budget scoped token gets a spurious 402 on an endpoint
+    that costs nothing.
+
+    Fail-closed on fragments: request targets containing ``#`` are
+    rejected with a 400 before routing (RFC 7230 — no legitimate
+    client sends one), but this classifier independently refuses them
+    too so the exemption can never be steered by a fragment
+    (``/v1/messages#/count_tokens`` reads cost-free as a string while
+    the forwarding URL parser drops the fragment and targets the
+    priced endpoint).
+    """
+    if "#" in upstream_path:
+        return False
+    path = upstream_path.partition("?")[0].rstrip("/")
+    return path.endswith("/count_tokens")
 
 
 # The conventional proxy-route family (same set core.llm.egress
@@ -1043,7 +1071,7 @@ class LLMDispatcher:
 
     def _authorize_child_request(
         self, rec: _TokenRecord, provider_name: str, method: str,
-        body: bytes,
+        body: bytes, upstream_path: str = "",
     ) -> tuple[tuple[int, str] | None, float]:
         """Scoped-token enforcement before the forward leg.
 
@@ -1052,6 +1080,13 @@ class LLMDispatcher:
         None to allow. Order: provider scope → method shape → model
         allowlist → budget. The budget check runs BEFORE the forward
         so an exhausted token never reaches the provider.
+
+        Cost-free endpoints (see :func:`_is_cost_free_endpoint`) skip
+        the per-request budget reservation — they book $0 by
+        construction, so there is no worst-case cost to reserve and
+        the ceiling fallback must not 402 them. Scope, shape, and
+        model-allowlist enforcement apply unchanged, and a
+        hard-exhausted token is still refused.
 
         On allow, ``reserved_usd`` — the request's derived worst-case
         cost for priced models, the flat env-knob estimate for
@@ -1102,6 +1137,12 @@ class LLMDispatcher:
                         f"scoped token budget exhausted: spent "
                         f"${rec.spent_usd:.4f} of ${rec.budget_usd:.4f}"
                     )), 0.0
+                if _is_cost_free_endpoint(upstream_path):
+                    # Free endpoint: nothing to reserve, no ceiling to
+                    # derive. (count_tokens carries no max_tokens, so
+                    # the priced-model ceiling below would price a
+                    # full-window response and 402 small budgets.)
+                    return None, 0.0
                 ceiling = _request_cost_ceiling_usd(
                     model, max_tokens, len(body),
                 )
@@ -1747,6 +1788,28 @@ def _make_request_handler(
                 return
 
             # ---- provider routing via path prefix ----
+            # RFC 7230: a request-target never contains a fragment —
+            # '#' can only arrive from a hand-crafted client. It is
+            # also actively dangerous here: path classification (the
+            # cost-free count_tokens exemption below) sees the raw
+            # string while the forwarding leg's URL parser drops the
+            # fragment, so '/v1/messages#/count_tokens' would classify
+            # free and forward to the PRICED endpoint. Reject the
+            # malformed target outright rather than trying to
+            # normalise it.
+            if "#" in self.path:
+                dispatcher._audit(AuditEvent(
+                    ts=time.time(), event="provider.reject",
+                    peer_pid=None, peer_uid=None,
+                    token_id=(rec.token_id or _short(rec.value)),
+                    worker_label=rec.worker_label,
+                    status="reject",
+                    reason="fragment in request target",
+                ))
+                self._send_simple(
+                    400, "request target must not contain a fragment",
+                )
+                return
             provider_name: str | None = None
             upstream_path = self.path
             for prefix, name in _PROVIDER_FROM_PATH_PREFIX.items():
@@ -1820,7 +1883,7 @@ def _make_request_handler(
             reserved_usd = 0.0
             if rec.kind == "child":
                 deny, reserved_usd = dispatcher._authorize_child_request(
-                    rec, provider_name, method, body,
+                    rec, provider_name, method, body, upstream_path,
                 )
                 if deny is not None:
                     status, why = deny

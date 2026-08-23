@@ -540,6 +540,152 @@ class TestReservationIsACap:
             upstream.shutdown()
             d.shutdown()
 
+    def test_count_tokens_exempt_from_reservation_ceiling(
+        self, fake_creds, tmp_path,
+    ):
+        """``/v1/messages/count_tokens`` is cost-free: it books $0 by
+        construction and legitimately carries no ``max_tokens``, so it
+        must never be refused by the full-output-window ceiling
+        fallback. Pre-fix a small-budget token got a 402 on the free
+        endpoint."""
+        upstream = _Upstream("json")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token, _info = d.allocate_child(
+                "cc-count", budget_usd=0.01, models=[_PRICED_MODEL],
+                ttl_s=600,
+            )
+            body = json.dumps({
+                "model": _PRICED_MODEL, "messages": [],
+            }).encode()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            with _uds_client(d) as client:
+                # Guard: a real messages call with no usable max_tokens
+                # still hits the full-window ceiling on this budget.
+                blocked = client.post(
+                    "http://_/anthropic/v1/messages",
+                    headers=headers, content=body,
+                )
+                assert blocked.status_code == 402
+                assert "ceiling" in blocked.json()["error"]
+                assert upstream.requests == []
+                # The free endpoint carries the same no-max_tokens body
+                # but must be admitted and forwarded.
+                resp = client.post(
+                    "http://_/anthropic/v1/messages/count_tokens",
+                    headers=headers, content=body,
+                )
+                assert resp.status_code == 200
+                assert upstream.requests[-1]["path"].endswith(
+                    "/count_tokens",
+                )
+                # Nothing stays reserved after the free call settles.
+                rec = d._tokens[token]
+                assert rec.reserved_usd == 0.0
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_fragment_masquerade_cannot_claim_the_exemption(
+        self, fake_creds, tmp_path,
+    ):
+        """A hand-crafted request target of
+        ``/v1/messages#/count_tokens`` must not ride the cost-free
+        exemption: the raw path string ends with ``/count_tokens``
+        while the forwarding leg's URL parser drops the fragment and
+        targets the PRICED ``/v1/messages`` — an admission-ceiling
+        bypass. The dispatcher rejects fragment-bearing targets with
+        a 400 (RFC 7230: request-targets carry no fragments) and
+        nothing is forwarded or reserved. Raw socket: httpx would
+        strip the fragment client-side, hiding the masquerade."""
+        import socket as _socket
+
+        upstream = _Upstream("json")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token, _info = d.allocate_child(
+                "cc-frag", budget_usd=0.01, models=[_PRICED_MODEL],
+                ttl_s=600,
+            )
+            body = json.dumps({
+                "model": _PRICED_MODEL, "messages": [],
+            }).encode()
+            request = (
+                b"POST /anthropic/v1/messages#/count_tokens HTTP/1.1\r\n"
+                b"Host: _\r\n"
+                b"Authorization: Bearer " + token.encode() + b"\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+            with _socket.socket(
+                _socket.AF_UNIX, _socket.SOCK_STREAM,
+            ) as sock:
+                sock.settimeout(10.0)
+                sock.connect(str(d.socket_path))
+                sock.sendall(request)
+                raw = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    raw += chunk
+            status_line = raw.split(b"\r\n", 1)[0]
+            assert b" 400 " in status_line, status_line
+            # Never forwarded: the priced endpoint saw nothing.
+            assert upstream.requests == []
+            # Nothing left reserved on the token.
+            rec = d._tokens[token]
+            assert rec.reserved_usd == 0.0
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
+    def test_count_tokens_still_enforces_scope_and_exhaustion(
+        self, fake_creds, tmp_path,
+    ):
+        """The exemption skips only the reservation: model allowlist
+        and hard budget exhaustion still refuse the free endpoint."""
+        upstream = _Upstream("json")
+        d = _make_dispatcher(fake_creds, tmp_path, upstream)
+        try:
+            token, _info = d.allocate_child(
+                "cc-count-scope", budget_usd=0.01,
+                models=[_PRICED_MODEL], ttl_s=600,
+            )
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            with _uds_client(d) as client:
+                off_list = client.post(
+                    "http://_/anthropic/v1/messages/count_tokens",
+                    headers=headers,
+                    content=json.dumps({
+                        "model": "claude-haiku-4-5", "messages": [],
+                    }).encode(),
+                )
+                assert off_list.status_code == 403
+                # Hard exhaustion beats the exemption.
+                rec = d._tokens[token]
+                with d._tokens_lock:
+                    rec.spent_usd = 1.0
+                exhausted = client.post(
+                    "http://_/anthropic/v1/messages/count_tokens",
+                    headers=headers,
+                    content=json.dumps({
+                        "model": _PRICED_MODEL, "messages": [],
+                    }).encode(),
+                )
+                assert exhausted.status_code == 402
+                assert "exhausted" in exhausted.json()["error"]
+        finally:
+            upstream.shutdown()
+            d.shutdown()
+
     def test_release_returns_captured_amount_after_knob_lowered(
         self, fake_creds, tmp_path, monkeypatch,
     ):

@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 _UNBLOCKING_WEIGHT = 0.2
 
+#: Priority lost per dependency level when a caller's priority is
+#: inherited by its callees — keeps the caller itself ahead of its
+#: subtree once the subtree drains, without burying the subtree.
+_PROPAGATION_DECAY = 0.1
+
 
 @dataclass(frozen=True)
 class ReviewTask:
@@ -321,6 +326,36 @@ class TaskGraph:
             dep_count = len(graph._dependents.get(key, []))
             bonus = (dep_count / max_dep_count) * _UNBLOCKING_WEIGHT
             graph._effective_priority[key] = task.priority + bonus
+
+        # Propagate priority DOWN dependency chains (caller -> its
+        # callees), so a high-priority interior node's whole unreviewed
+        # callee subtree competes at (nearly) the caller's own rank.
+        # Without this, dependency gating inverts the documented
+        # priority order: the ready frontier is all leaves, entry-point
+        # handlers with deep callee trees become ready last, and a
+        # cost-capped run spends its entire budget on low-score leaf
+        # utilities without ever reaching the functions the priority
+        # scores exist to reach (observed live: 8 of the 132 top-scored
+        # functions reviewed after hundreds of dispatches).
+        # Reverse-topological relaxation; cycles are already broken.
+        order: list[str] = []
+        indegree = {
+            k: len(graph._dependents.get(k, [])) for k in graph._tasks
+        }
+        stack = [k for k, d in indegree.items() if d == 0]
+        while stack:
+            k = stack.pop()
+            order.append(k)
+            for dep in graph._tasks[k].depends_on:
+                indegree[dep] -= 1
+                if indegree[dep] == 0:
+                    stack.append(dep)
+        for k in order:
+            eff = graph._effective_priority[k]
+            inherited = eff - _PROPAGATION_DECAY
+            for dep in graph._tasks[k].depends_on:
+                if graph._effective_priority[dep] < inherited:
+                    graph._effective_priority[dep] = inherited
 
         for key, remaining in graph._remaining_deps.items():
             if not remaining:

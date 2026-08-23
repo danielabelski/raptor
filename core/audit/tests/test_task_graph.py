@@ -871,3 +871,69 @@ class TestDispatchDeduplication:
                 g.mark_complete(t.key)
         assert g.pending == 0
         assert len(seen) == len(set(seen)) == 4
+
+
+class TestPriorityPropagation:
+    """Incident regression: dependency gating inverted the documented
+    priority order — the ready frontier is all leaves, so a
+    cost-capped run reviewed hundreds of low-score leaf utilities
+    while the top-scored entry-point handlers (deep callee trees)
+    stayed unready. A caller's priority now propagates down its
+    unreviewed callee chain (with a small per-level decay)."""
+
+    def _graph(self):
+        wq = [
+            {"file": "a.c", "name": "leaf_util", "line_start": 1,
+             "priority_score": -1.0},
+            {"file": "b.c", "name": "handler", "line_start": 1,
+             "priority_score": 12.0},
+            {"file": "c.c", "name": "midscore_leaf", "line_start": 1,
+             "priority_score": 3.0},
+        ]
+        edges = [{
+            "caller_file": "b.c", "caller": "handler",
+            "callee_file": "a.c", "callee": "leaf_util",
+        }]
+        return TaskGraph.from_workqueue(wq, edges, schedule="priority")
+
+    def test_high_priority_callers_lift_their_callees(self):
+        g = self._graph()
+        first = g.pop_ready(1)[0]
+        # Pre-fix: midscore_leaf (3.0) outranks leaf_util (-1.0) and
+        # the handler's budget drains into unrelated leaves first.
+        assert first.key == "a.c:leaf_util:1", (
+            "the score-12 handler's callee must inherit its rank"
+        )
+        g.mark_complete(first.key)
+        second = g.pop_ready(1)[0]
+        assert second.key == "b.c:handler:1"
+
+    def test_decay_keeps_caller_ahead_of_its_subtree(self):
+        g = self._graph()
+        assert (
+            g._effective_priority["b.c:handler:1"]
+            > g._effective_priority["a.c:leaf_util:1"]
+            > g._effective_priority["c.c:midscore_leaf:1"]
+        )
+
+    def test_propagation_is_transitive(self):
+        wq = [
+            {"file": "a.c", "name": "l2", "line_start": 1,
+             "priority_score": 0.0},
+            {"file": "a.c", "name": "l1", "line_start": 9,
+             "priority_score": 0.0},
+            {"file": "b.c", "name": "top", "line_start": 1,
+             "priority_score": 10.0},
+            {"file": "c.c", "name": "other", "line_start": 1,
+             "priority_score": 5.0},
+        ]
+        edges = [
+            {"caller_file": "b.c", "caller": "top",
+             "callee_file": "a.c", "callee": "l1"},
+            {"caller_file": "a.c", "caller": "l1",
+             "callee_file": "a.c", "callee": "l2"},
+        ]
+        g = TaskGraph.from_workqueue(wq, edges, schedule="priority")
+        # l2 inherits ~10 through two levels and beats the score-5 leaf.
+        first = g.pop_ready(1)[0]
+        assert first.key == "a.c:l2:1"

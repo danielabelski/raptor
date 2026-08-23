@@ -2612,7 +2612,12 @@ class AnthropicProvider(LLMProvider):
                     "model": self.config.model_name,
                     "response_model": pydantic_model,
                     "messages": messages,
-                    "max_tokens": self.config.max_tokens,
+                    # Per-call override honoured: callers cap
+                    # structured generations (e.g. study batches) to
+                    # stay inside non-streaming request limits — the
+                    # config ceiling is the default, not a floor.
+                    "max_tokens": kwargs.get(
+                        "max_tokens", self.config.max_tokens),
                 }
                 # Per-call timeout ceiling (see ``generate``): without
                 # it structured review calls ran at the client-level

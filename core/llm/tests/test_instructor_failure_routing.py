@@ -318,3 +318,33 @@ class TestGeminiStructuredSafetyBlock:
             self._mock_response('{"result": "ok"}', "STOP", 20))
         out = provider.generate_structured("t", {"result": "string"})
         assert out.result["result"] == "ok"
+
+
+def test_instructor_path_honours_per_call_max_tokens(monkeypatch) -> None:
+    """A caller-supplied max_tokens must reach the instructor create
+    call — pre-fix the path hardcoded config.max_tokens, so callers
+    capping structured generations (study batches staying inside
+    non-streaming request limits) silently ran at the full ceiling."""
+    pytest.importorskip("anthropic")
+    from core.llm.providers import AnthropicProvider
+
+    provider = AnthropicProvider(ModelConfig(
+        provider="anthropic", model_name="claude-opus-4-7",
+        api_key="sk-test", max_tokens=128000, timeout=1,
+    ))
+    captured = {}
+
+    class _FakeInstructor:
+        class messages:
+            @staticmethod
+            def create_with_completion(**kw):
+                captured.update(kw)
+                raise RuntimeError("stop after capture")
+
+    provider.instructor_client = _FakeInstructor()
+    with pytest.raises(Exception):
+        provider.generate_structured(
+            "p", {"type": "object", "properties": {}},
+            max_tokens=1234,
+        )
+    assert captured.get("max_tokens") == 1234

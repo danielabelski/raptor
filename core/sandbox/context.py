@@ -4840,8 +4840,12 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
     """Run a single command in a sandbox. Convenience wrapper.
 
     Use this instead of subprocess.run() for any command that processes
-    untrusted content. Applies get_safe_env(), resource limits, and
-    namespace isolation automatically.
+    untrusted content — and prefer run_untrusted() when the COMMAND
+    ITSELF comes from or is influenced by the analysed target: it is
+    the fail-closed variant (refuses to execute when the sandbox
+    cannot engage, where this wrapper degrades with a warning).
+    Applies get_safe_env(), resource limits, and namespace isolation
+    automatically.
 
     Accepts the same sandbox-configuration kwargs as sandbox() — forwards
     them into a one-shot context.

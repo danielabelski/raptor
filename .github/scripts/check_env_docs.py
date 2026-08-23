@@ -454,6 +454,45 @@ _ENV_PREFIX_ASSIGN = re.compile(
 )
 
 
+def _mask_quoted(line: str) -> str:
+    """Blank the CONTENTS of quoted spans, keeping the quote chars.
+
+    An env-prefix assignment (`VAR=x cmd`) starts outside quotes; text
+    that merely LOOKS like one inside a quoted string (a `read -p`
+    prompt offering "[a=approve / N=decide later]") must not register.
+    Quoted assignment VALUES survive because the `NAME=` part sits
+    before the opening quote. Simple state machine: single quotes are
+    literal; inside double quotes a backslash escapes the next char.
+    Contents mask to a non-space placeholder so quoted values keep
+    their single-token shape (a space placeholder would split
+    `VAR="$A/$B"` into fake token boundaries and invent trailing
+    context for the lookahead). Unterminated quotes mask to end of
+    line (fail-safe: masking too much drops a candidate, never
+    invents one).
+    """
+    out = []
+    quote: str | None = None
+    escaped = False
+    for ch in line:
+        if quote is None:
+            out.append(ch)
+            if ch in ("'", '"'):
+                quote = ch
+        else:
+            if escaped:
+                out.append("x")
+                escaped = False
+            elif quote == '"' and ch == "\\":
+                out.append("x")
+                escaped = True
+            elif ch == quote:
+                out.append(ch)
+                quote = None
+            else:
+                out.append("x")
+    return "".join(out)
+
+
 def _shebang_kind(path: Path) -> str:
     try:
         head = path.open("rb").read(80).split(b"\n", 1)[0]
@@ -501,8 +540,10 @@ def _scan_bash(path: Path, rel: str, inv: Inventory) -> None:
         if m:
             exported.add(m.group(1))
             inv.add(m.group(1), Occurrence(rel, lineno, "export"))
-        # VAR=x command — env for a single child
-        for m in _ENV_PREFIX_ASSIGN.finditer(line):
+        # VAR=x command — env for a single child. Sweep a
+        # quote-masked copy so prompt/message strings that contain
+        # `WORD=...` shapes cannot register as child-writes.
+        for m in _ENV_PREFIX_ASSIGN.finditer(_mask_quoted(line)):
             name = m.group(1)
             if _BASH_ASSIGN.match(line.strip()) and \
                     line.strip().startswith(name + "="):

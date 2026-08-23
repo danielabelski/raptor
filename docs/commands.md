@@ -270,6 +270,7 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--duration <secs>` | Fuzz duration in seconds (default 3600) |
 | `--parallel <n>` | Number of parallel fuzzing jobs |
 | `--max-crashes <n>` | Stop after N unique crashes (default 10) |
+| `--rank-crashes` | LLM re-rank of collected crashes before the `--max-crashes` analysis cap (ordering only; needs an external analysis model; collects 3× the cap to rank over) |
 | `--timeout <ms>` | Per-execution timeout in milliseconds (default 1000) |
 | `--out <dir>` | Output directory override |
 | `--check-sanitizers` | Verify sanitiser availability |
@@ -445,6 +446,7 @@ exploitable.  Stages run in order: 0 (inventory) through A--F (LLM stages) to
 | `--findings <file>` | Findings file to validate |
 | `--binary <path>` | Debug binary for feasibility analysis |
 | `--skip-feasibility` | Skip binary feasibility stage |
+| `--rank` | Stage 0: LLM re-rank of the bridge's priority targets most-promising-first before persistence (ordering only; head- and budget-capped) |
 | `--out <dir>` | Output directory (shared with [/understand](#understand) for pipeline handoff) |
 
 See [validation pipeline](validation.md) for stage
@@ -521,6 +523,7 @@ Rust identifiers resolve in-process.
 |------|-------------|
 | `--out <dir>` | Output directory |
 | `--model <name>` | LLM model (repeatable) |
+| `--rank` | Multi-model `--hunt`: reorder the merged items most-promising-first before `hunt-result.json` is written (ordering only; head- and budget-capped) |
 | `--target <path>` | Target path |
 | `--runtime-dir <dir>` | Runtime data directory |
 | `--fuzz-dir <dir>` | Fuzz data directory |
@@ -689,6 +692,7 @@ harness generation, and fuzzing.
 | Flag | Description |
 |------|-------------|
 | `--ingress <point>` | Ingress point for harness |
+| `--llm-rank` | LLM re-rank of the ingress candidates before the default selection cascade (ordering only; explicit `--ingress` wins) |
 | `--abi {buffer-size\|cstring}` | ABI convention for input |
 | `--device <dev>` | Device target |
 | `--ioctl-code <code>` | IOCTL code for device harnesses |

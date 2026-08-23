@@ -40,6 +40,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from core.json import loads
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -340,4 +342,4 @@ class SanitizerEvidence:
 
     @classmethod
     def from_json(cls, text: str) -> SanitizerEvidence:
-        return cls.from_dict(json.loads(text))
+        return cls.from_dict(loads(text))

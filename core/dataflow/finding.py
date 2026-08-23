@@ -21,6 +21,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
+from core.json import loads
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
@@ -182,4 +184,4 @@ class Finding:
 
     @classmethod
     def from_json(cls, text: str) -> Finding:
-        return cls.from_dict(json.loads(text))
+        return cls.from_dict(loads(text))

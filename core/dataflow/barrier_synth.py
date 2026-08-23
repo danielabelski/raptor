@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,8 +33,13 @@ from core.dataflow.codeql_augmented_run import (
     RunnerFn,
     analyze,
 )
+from core.json import load_json
 from core.llm.coerce import extract_fenced_code
 from core.run.scratch import scratch_dir
+
+# CodeQL SARIF over corpus code — the SARIF budget class shared with
+# core.sarif.parser.load_sarif.
+_MAX_SARIF_BYTES = 100 * 1024 * 1024
 
 # sink-class -> (customizations module, module name exposing Source/Sink/Sanitizer).
 # Python: each module imports Concepts/RemoteFlowSources/BarrierGuards and
@@ -464,9 +468,8 @@ def _count_sarif_results(sarif_path: Path, target_uri: str | None = None,
     (a file with N unrelated findings shouldn't make a correct single-flow
     barrier look unsound). The preserve check stays file-scoped (the pre-fix vuln
     sits at a different line after the patch's line shifts)."""
-    try:
-        data = json.loads(Path(sarif_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(sarif_path, max_bytes=_MAX_SARIF_BYTES)
+    if not isinstance(data, dict):
         return 0
     if target_uri is None:
         return sum(len(r.get("results") or []) for r in (data.get("runs") or []))
@@ -502,9 +505,8 @@ def _summarise_surviving_finding(
     Shape:
       ``"surviving flow: <source-file>:<line> <msg> -> ... -> <sink-file>:<line> <sink-snippet>"``
     """
-    try:
-        data = json.loads(Path(sarif_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = load_json(sarif_path, max_bytes=_MAX_SARIF_BYTES)
+    if not isinstance(data, dict):
         return ""
 
     def _result_uri(res):
@@ -1248,6 +1250,7 @@ def model_completer(model_name: str) -> Completer:
     every call here passes ``model_config=`` anyway.
     """
     from core.llm.client import LLMClient
+
 
     client = LLMClient(pinned_model=model_name)
     # client.config.primary_model is already the pinned + credentialed config

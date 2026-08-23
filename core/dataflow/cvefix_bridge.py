@@ -23,7 +23,6 @@ is injectable so the orchestration is unit-testable with no LLM and no CodeQL.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import sqlite3
@@ -33,6 +32,7 @@ from collections import Counter
 from pathlib import Path
 
 from core.config import RaptorConfig
+from core.json import load_json
 from core.dataflow import cvefix_walk
 from core.dataflow.barrier_synth import (
     BarrierProposal,
@@ -47,6 +47,10 @@ from core.dataflow.cvefix_loader import CveFixPair
 from core.git import safe_git_readonly_command
 from core.paths import strip_file_uri
 from typing import TYPE_CHECKING
+
+# CodeQL SARIF over corpus code — the SARIF budget class shared with
+# core.sarif.parser.load_sarif.
+_MAX_SARIF_BYTES = 100 * 1024 * 1024
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -347,9 +351,8 @@ def _extract_proposal(
     sink_class = _CWE_SINK.get(pair.cwe)
     if sink_class is None:
         return None
-    try:
-        data = json.loads(Path(sarif_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = load_json(sarif_path, max_bytes=_MAX_SARIF_BYTES)
+    if not isinstance(data, dict):
         return None
     for run in data.get("runs", []):
         for res in run.get("results", []):
@@ -669,6 +672,7 @@ def synthesize_from_results(
 
 def main(argv=None) -> None:
     import argparse
+
 
     ap = argparse.ArgumentParser(description="Synthesize barriers over walker FP-candidates.")
     ap.add_argument("--results", type=Path, default=Path("/data/corpus/walk-results.db"))

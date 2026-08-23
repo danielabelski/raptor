@@ -33,6 +33,8 @@ suppressed or not.
 from __future__ import annotations
 
 import json
+
+from core.json import loads
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -248,7 +250,7 @@ def read_parity_records(path: str | Path) -> list[ParityRecord]:
         if not line:
             continue
         try:
-            out.append(ParityRecord.from_json(json.loads(line)))
+            out.append(ParityRecord.from_json(loads(line)))
         except (ValueError, KeyError, TypeError):
             continue
     return out

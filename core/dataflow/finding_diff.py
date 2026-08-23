@@ -18,11 +18,11 @@ This module does NOT run CodeQL. PR2b-2 wires the subprocess.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 from core.dataflow.adapters.codeql import from_sarif_result
+from core.json import loads
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -116,13 +116,13 @@ def diff_sarif_files(
             )
             raise RuntimeError(msg)
     try:
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        baseline = loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
         msg = f"baseline SARIF read/parse failed: {e}"
         raise RuntimeError(msg) from e
     try:
-        augmented = json.loads(augmented_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        augmented = loads(augmented_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
         msg = f"augmented SARIF read/parse failed: {e}"
         raise RuntimeError(msg) from e
     return diff_sarif_data(baseline, augmented)

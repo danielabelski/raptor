@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from core.json import loads
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -236,4 +238,4 @@ class GroundTruth:
 
     @classmethod
     def from_json(cls, text: str) -> GroundTruth:
-        return cls.from_dict(json.loads(text))
+        return cls.from_dict(loads(text))

@@ -534,6 +534,17 @@ def _domain_model_role(
     for inv in model.get("invariants") or []:
         if not isinstance(inv, dict):
             continue
+        # Registry grade is promote-capable, so only receipt-backed
+        # invariants qualify — the DomainVocabulary provenance rule
+        # (receipt present, provenance != llm_prior) shared with
+        # protocol_state and the invariant gate. Derived threat-frame
+        # invariants (llm_prior, receipt-less by construction) are
+        # review HINTS; an LLM guess must never bind a guard role
+        # that can promote another LLM's hypothesis.
+        if str(inv.get("provenance") or "") == "llm_prior":
+            continue
+        if not inv.get("receipt"):
+            continue
         text = " ".join(
             str(inv.get(k) or "")
             for k in ("statement", "negation", "mechanical_rule", "id")

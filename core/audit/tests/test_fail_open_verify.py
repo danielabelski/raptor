@@ -90,9 +90,19 @@ def _out_dir_with_domain_model(tmp_path, statement, *, contract=None):
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     model = {
+        # Receipt-backed: registry-grade guard roles demand the
+        # DomainVocabulary provenance rule (receipt present,
+        # provenance != llm_prior) — receipt-less invariants are
+        # review hints and no longer bind promote-capable roles.
         "invariants": [{
             "id": "inv-verify-before-dispatch",
             "statement": statement,
+            "provenance": "verbatim",
+            "receipt": {
+                "file": "src/dispatch.c", "line": 1,
+                "quote": statement[:60], "verified": True,
+                "tier": "verbatim",
+            },
         }],
     }
     if contract:

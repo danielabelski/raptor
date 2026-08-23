@@ -158,3 +158,76 @@ class TestRemoveRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdoptionProjections(unittest.TestCase):
+    """Adopted runs must become VISIBLE: target-mismatched runs are
+    refused, and an adopted run's journal reaches the project index
+    (the completion-time merge already fired before adoption)."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _run_with_journal(self, name, target=None):
+        import json as _json
+        run_dir = Path(self.tmpdir.name) / name
+        run_dir.mkdir()
+        (run_dir / "findings.json").write_text("[]")
+        meta = {"version": 2, "command": "audit", "status": "completed",
+                "timestamp": "2026-01-01T00:00:00+00:00"}
+        if target:
+            meta["target_path"] = target
+        (run_dir / RUN_METADATA_FILE).write_text(_json.dumps(meta))
+        from core.coverage.journal import (
+            ReviewJournalEntry,
+            append_entry,
+            now_iso,
+        )
+        append_entry(run_dir, ReviewJournalEntry(
+            ts=now_iso(), run_id=name, file="a.c", function="f",
+            verdict="clean", source_hash="ab12", line_start=1, line_end=3,
+        ))
+        return run_dir
+
+    def test_adopted_run_journal_reaches_project_index(self):
+        self.mgr.create("myapp", self.target_code, output_dir=self.output_dir)
+        run_dir = self._run_with_journal(
+            "audit_20260101_000000", target=self.target_code)
+        added = self.mgr.add_directory("myapp", str(run_dir))
+        self.assertEqual(added, 1)
+        from core.coverage.journal import load_index
+        project = self.mgr.load("myapp")
+        idx = load_index(project.output_path)
+        self.assertIn("a.c:f", idx)
+        self.assertEqual(idx["a.c:f"].verdict, "clean")
+
+    def test_foreign_target_run_refused(self):
+        self.mgr.create("myapp", self.target_code, output_dir=self.output_dir)
+        other = Path(self.tmpdir.name) / "othercode"
+        other.mkdir()
+        run_dir = self._run_with_journal(
+            "audit_20260101_000001", target=str(other))
+        added = self.mgr.add_directory("myapp", str(run_dir))
+        self.assertEqual(added, 0)
+        self.assertTrue(run_dir.exists(), "refused run must stay in place")
+
+    def test_metadata_less_run_still_adoptable(self):
+        self.mgr.create("myapp", self.target_code, output_dir=self.output_dir)
+        run_dir = Path(self.tmpdir.name) / "scan-legacy"
+        run_dir.mkdir()
+        (run_dir / "findings.json").write_text("[]")
+        self.assertEqual(self.mgr.add_directory("myapp", str(run_dir)), 1)
+
+    def test_adopt_target_inference(self):
+        run_dir = self._run_with_journal(
+            "audit_20260101_000002", target=self.target_code)
+        inferred = self.mgr.adopt_target_for(str(run_dir))
+        self.assertEqual(str(Path(self.target_code).resolve()), inferred)

@@ -8,6 +8,7 @@ Output directories live wherever the user specifies (default: out/projects/<name
 import contextlib
 import os
 import re
+import json
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -106,6 +107,32 @@ _MAX_SETTING_LEN = 4096
 # active by a crashed run turned every subsequent no-path command into
 # an audit of /tmp under the default-target rules.
 MACHINE_PROJECT_PREFIXES = ("corpus-",)
+
+
+def _run_target_path(run_dir: Path) -> Path | None:
+    """The target a run's ``.raptor-run.json`` records, or ``None``."""
+    meta_path = Path(run_dir) / ".raptor-run.json"
+    if not meta_path.is_file():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = meta.get("target_path") if isinstance(meta, dict) else None
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return Path(raw).resolve()
+    except OSError:
+        return None
+
+
+def _same_target(recorded: Path, project_target: str) -> bool:
+    """Whether a run's recorded target names the project's target."""
+    try:
+        return recorded == Path(project_target).resolve()
+    except OSError:
+        return False
 
 
 def is_machine_project_name(name: str) -> bool:
@@ -908,6 +935,27 @@ class ProjectManager:
         save_json(self.projects_dir / f"{name}.json", project.to_dict())
         return project
 
+    def adopt_target_for(self, directory: str) -> str | None:
+        """Infer a project target from a run dir's recorded metadata.
+
+        The retro-create flow (``raptor project adopt``): the run
+        already knows which codebase it analysed, so ``--target`` is
+        only needed when no run carries metadata. Returns the first
+        recorded ``target_path`` found (the directory itself, or its
+        first child run), or ``None``.
+        """
+        src = Path(directory).resolve()
+        recorded = _run_target_path(src)
+        if recorded is not None:
+            return str(recorded)
+        if src.is_dir():
+            for child in sorted(src.iterdir()):
+                if child.is_dir():
+                    recorded = _run_target_path(child)
+                    if recorded is not None:
+                        return str(recorded)
+        return None
+
     def add_directory(self, name: str, directory: str, target: str | None = None,
                       output_dir: str | None = None) -> int:
         """Add existing run directory (or directory of runs) to a project.
@@ -933,6 +981,61 @@ class ProjectManager:
         skipped = 0
         dest_base = project.output_path
 
+        def _adopt_one(run_src: Path) -> bool:
+            """Move one run in and re-run its completion projections.
+
+            Refuses a run whose recorded target is a DIFFERENT
+            codebase — adopting it would poison the project's
+            cross-run verdict reuse and coverage store with foreign
+            verdicts (the mirror image of the stale-active-project
+            footgun). Runs without recorded metadata are admitted:
+            the import is operator-gated and the metadata is
+            backfilled below.
+            """
+            recorded = _run_target_path(run_src)
+            if recorded is not None and not _same_target(
+                    recorded, project.target):
+                logger.warning(
+                    "adopt refused for %s: run target %s != project "
+                    "target %s", run_src.name, recorded, project.target,
+                )
+                return False
+            dest = dest_base / run_src.name
+            try:
+                dest.mkdir()
+            except FileExistsError:
+                return False
+            dest.rmdir()
+            shutil.move(str(run_src), str(dest))
+            generate_run_metadata(dest)
+            # An adopted run already had its completion, so the
+            # projections that make its data VISIBLE (journal → index
+            # merge, reads-manifest conversion, coverage snapshot)
+            # never fired for this project. The journal merge is
+            # called DIRECTLY with the known project dir — the
+            # completion chokepoint infers the project from the run's
+            # parent via checklist.json/coverage.json, which a
+            # freshly retro-created project does not have yet.
+            try:
+                from core.coverage.journal import merge_run_into_index
+                merged = merge_run_into_index(dest_base, dest)
+                if merged:
+                    logger.info(
+                        "adopt: %d journal entries merged into the "
+                        "project index from %s", merged, dest.name,
+                    )
+            except Exception:
+                logger.debug(
+                    "adopt: journal merge failed for %s", dest,
+                    exc_info=True,
+                )
+            # Reads-manifest conversion + coverage snapshot keep the
+            # completion chokepoint's best-effort semantics (the
+            # snapshot no-ops until the project has a checklist).
+            from core.run.metadata import project_run_projections
+            project_run_projections(dest)
+            return True
+
         # `add_runs` is the user-facing import path — operators
         # explicitly bring in directories that may not have
         # `.raptor-run.json` yet (legacy runs, manually-copied
@@ -943,30 +1046,18 @@ class ProjectManager:
         # (unlike sweep / cleanup paths which run automatically).
         if is_run_directory(src, strict=False):
             # Single run directory
-            dest = dest_base / src.name
-            try:
-                dest.mkdir()
-            except FileExistsError:
-                skipped = 1
-            else:
-                dest.rmdir()
-                shutil.move(str(src), str(dest))
-                generate_run_metadata(dest)
+            if _adopt_one(src):
                 added = 1
+            else:
+                skipped = 1
         else:
             # Directory containing runs
             for child in sorted(src.iterdir()):
                 if child.is_dir() and is_run_directory(child, strict=False):
-                    dest = dest_base / child.name
-                    try:
-                        dest.mkdir()
-                    except FileExistsError:
-                        skipped += 1
-                    else:
-                        dest.rmdir()
-                        shutil.move(str(child), str(dest))
-                        generate_run_metadata(dest)
+                    if _adopt_one(child):
                         added += 1
+                    else:
+                        skipped += 1
 
         if added:
             logger.info("Added %d run(s) to project '%s'", added, name)

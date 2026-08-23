@@ -486,6 +486,24 @@ def main() -> None:
     p_add.add_argument("--target", metavar="<path>", help="Target path (creates project if needed)")
     p_add.add_argument("--output-dir", default=None, metavar="<dir>", help="Custom output directory")
 
+    # adopt — retro-create + add: give existing project-less run(s) a
+    # project after the fact. Target defaults to what the run itself
+    # recorded.
+    p_adopt = sub.add_parser(
+        "adopt",
+        help="Retro-create a project around existing run(s) "
+             "(create-if-missing + add; target inferred from the run)",
+        usage="raptor project adopt <name> <run-or-directory>... "
+              "[--target <path>]", **_F)
+    p_adopt.add_argument("name", help="Project name (created if missing)")
+    p_adopt.add_argument(
+        "runs", nargs="+",
+        help="Run directory(ies), or a directory containing runs")
+    p_adopt.add_argument(
+        "--target", metavar="<path>",
+        help="Target path (default: inferred from the first run's "
+             ".raptor-run.json)")
+
     # remove
     p_remove = sub.add_parser("remove", help="Move a run out of the project",
                               usage="raptor project remove <name> <run> --to <path>", **_F)
@@ -1035,9 +1053,33 @@ def main() -> None:
             added = mgr.add_directory(args.name, args.directory, target=args.target,
                                        output_dir=args.output_dir)
             if added:
-                print(f"Added {added} run(s) to project '{args.name}'")
+                print(f"Added {added} run(s) to project '{args.name}' "
+                      "(journal index + coverage projections re-run)")
             else:
-                print(f"No new runs added (already present or none found in {args.directory})")
+                print(f"No new runs added (already present, target mismatch, "
+                      f"or none found in {args.directory})")
+
+        elif args.subcommand == "adopt":
+            target = args.target
+            if not target and not mgr.load(args.name):
+                for candidate in args.runs:
+                    target = mgr.adopt_target_for(candidate)
+                    if target:
+                        print(f"Target inferred from run metadata: {target}")
+                        break
+                if not target:
+                    print("No project by that name, no --target, and no run "
+                          "records a target — pass --target explicitly.")
+                    return
+            total = 0
+            for candidate in args.runs:
+                total += mgr.add_directory(args.name, candidate, target=target)
+            if total:
+                print(f"Adopted {total} run(s) into project '{args.name}' "
+                      "(journal index + coverage projections re-run)")
+            else:
+                print("No runs adopted (already present, target mismatch, "
+                      "or no run directories found)")
 
         elif args.subcommand == "remove":
             mgr.remove_run(args.name, args.run, to_path=args.to)

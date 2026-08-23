@@ -1104,6 +1104,24 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
     return None
 
 
+def project_run_projections(output_dir: Path) -> None:
+    """Re-run the project-facing completion projections for one run.
+
+    The journal-index merge, reads-manifest conversion, and coverage
+    snapshot normally fire exactly once, at ``complete_run`` — a run
+    ADOPTED into a project after the fact (retro-created project,
+    ``raptor project add``/``adopt``) already had its completion and
+    missed them, so its verdicts stay invisible to cross-run reuse,
+    ``/review``, and ``/project coverage``. Same best-effort semantics
+    as the completion chokepoint: each step no-ops or logs at debug,
+    never raises. Idempotent — the index merge is latest-ts keyed and
+    the coverage import is interval-union.
+    """
+    _merge_run_journal(output_dir)
+    _convert_reads_manifest(output_dir)
+    _snapshot_run_coverage(output_dir)
+
+
 def _merge_run_journal(output_dir: Path) -> None:
     """Best-effort: merge this run's review journals (run root + one-
     level tool subdirs, see ``merge_run_into_index``) into the

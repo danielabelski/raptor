@@ -35,7 +35,8 @@ Manage projects — named workspaces that corral analysis runs into one director
 | `delete <name> [--purge] [--yes]` | Remove project (--purge also deletes output) |
 | `rename <old> <new>` | Rename a project |
 | `notes <name> [<text>] [--file <path>]` | View or update notes |
-| `add <name> <dir> [--target <path>]` | Add existing runs to a project |
+| `add <name> <dir> [--target <path>]` | Add existing runs to a project (target-validated; journal index + coverage projections re-run) |
+| `adopt <name> <run-or-dir>... [--target <path>]` | Retro-create a project around existing run(s) — create-if-missing + add; target inferred from the run's metadata |
 | `remove <name> <run> --to <path>` | Move a run out of the project |
 | `report [<name>]` | Generate merged report across all runs |
 | `diff <name> <run1> <run2>` | Compare findings between two runs |

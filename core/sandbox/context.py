@@ -1258,7 +1258,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         )
         if _proxy_netns_capable:
             _use_proxy_netns = True
-            import tempfile as _tmpf
+            from .proxy import lane_socket_path, make_lane_dir
             # Per-instance PRIVATE lane directory, mode 0700 with a
             # random per-context name. The lane socket used to live in
             # the shared OUTPUT dir, where it was readdir-discoverable
@@ -1271,19 +1271,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # the parent-side forwarder needs the socket — it snapshots
             # the HOST mount view before the child pivots — so the
             # socket needs no presence inside the sandbox at all.
-            # mkdtemp gives 0700 + a unique name; the SO_PEERCRED gate
-            # at the proxy lane (see proxy._handle_unix_client) is the
+            # make_lane_dir gives 0700 + a unique name AND a socket
+            # path guaranteed to fit sun_path regardless of how deep
+            # the ambient temp dir is; the SO_PEERCRED gate at the
+            # proxy lane (see proxy._handle_unix_client) is the
             # enforcement backstop for same-uid processes that still
             # reach the inode.
-            _lane_base = _tmpf.gettempdir()
-            if len(_lane_base.encode()) > 60:
-                # sun_path is 108 bytes; a deep TMPDIR would overflow
-                # it once the mkdtemp token + filename are appended.
-                _lane_base = "/tmp"
-            _proxy_lane_dir = _tmpf.mkdtemp(
-                prefix=".raptor-lane-", dir=_lane_base,
-            )
-            _proxy_unix_path = os.path.join(_proxy_lane_dir, "lane.sock")
+            _proxy_lane_dir = make_lane_dir()
+            _proxy_unix_path = lane_socket_path(_proxy_lane_dir)
             try:
                 proxy_instance.bind_unix(
                     _proxy_unix_path,

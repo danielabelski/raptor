@@ -166,6 +166,66 @@ def _stderr_write(message: str) -> None:
     except OSError:
         pass
 
+
+# ─── lane socket placement ──────────────────────────────────────────
+# The name every lane socket carries inside its private directory.
+LANE_SOCKET_NAME = "lane.sock"
+_LANE_DIR_PREFIX = ".raptor-lane-"
+# struct sockaddr_un's sun_path is 104 bytes on macOS/BSD and 108 on
+# Linux (NUL included). Budget the FULL socket path against the
+# smaller limit with margin so bind() can never fail with
+# "AF_UNIX path too long" on either platform.
+_MAX_LANE_SOCKET_PATH_BYTES = 100
+# tempfile.mkdtemp appends this many random characters to the prefix.
+_MKDTEMP_SUFFIX_LEN = 8
+
+
+def make_lane_dir() -> str:
+    """Create the per-instance private directory for one lane socket.
+
+    Guarantees, by construction:
+
+    - 0700 with a random per-instance name (``mkdtemp``): sibling
+      same-uid processes cannot readdir-discover the socket, and two
+      concurrent contexts never collide.
+    - The full socket path (``<dir>/<LANE_SOCKET_NAME>``) fits in
+      ``sun_path`` on every supported platform. A deep
+      environment-supplied temp dir (pytest basetemp via $TMPDIR,
+      macOS per-user /var/folders trees) is never honoured when it
+      would overflow — the directory falls back to a short system
+      base (``/run/user/<uid>`` then ``/tmp``) instead of letting
+      ``bind()`` fail with "AF_UNIX path too long".
+
+    Callers own cleanup (``shutil.rmtree`` of the returned dir).
+    """
+    import tempfile
+
+    budget = _MAX_LANE_SOCKET_PATH_BYTES - len("/" + LANE_SOCKET_NAME)
+    candidates = [tempfile.gettempdir(), f"/run/user/{os.getuid()}", "/tmp"]
+    for base in candidates:
+        dir_len = (len(os.path.abspath(base).encode())
+                   + len("/" + _LANE_DIR_PREFIX) + _MKDTEMP_SUFFIX_LEN)
+        if dir_len > budget or not os.path.isdir(base):
+            continue
+        try:
+            return tempfile.mkdtemp(prefix=_LANE_DIR_PREFIX, dir=base)
+        except OSError:
+            continue
+    # Unreachable in practice: "/tmp" always fits the budget, so only
+    # a host with no usable /tmp at all lands here.
+    msg = (
+        f"no short-path base for a lane socket: none of {candidates} "
+        f"is a writable directory within the {budget}-byte sun_path "
+        f"budget"
+    )
+    raise OSError(msg)
+
+
+def lane_socket_path(lane_dir: str) -> str:
+    """The lane socket path inside a ``make_lane_dir()`` directory."""
+    return os.path.join(lane_dir, LANE_SOCKET_NAME)
+
+
 # Connection bounds — per-tunnel and aggregate. Tunable via EgressProxy
 # constructor kwargs but the defaults are deliberately conservative.
 _DEFAULT_IDLE_TIMEOUT = 300.0        # seconds of silence before forced close

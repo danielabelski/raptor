@@ -10,7 +10,10 @@ audit-mode leniency (gate-2 semantics).
 """
 
 import os
+import shutil
 import socket
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -100,11 +103,17 @@ class TestLanePortAllowlist:
         finally:
             proxy.stop()
 
-    def test_unix_lane_carries_port_contract(self, reset_proxy,
-                                             tmp_path):
+    def test_unix_lane_carries_port_contract(
+            self, reset_proxy: None) -> None:
+        # The socket lives in a product-made lane dir, NOT under
+        # tmp_path: pytest's basetemp can be deep enough (macOS
+        # /var/folders trees, nested CI workspaces) to overflow
+        # sun_path, and lane placement is the product's problem —
+        # make_lane_dir guarantees a bindable short path.
+        lane_dir = proxy_mod.make_lane_dir()
         proxy = proxy_mod.EgressProxy(allowed_hosts={_HOST})
         try:
-            sock_path = str(tmp_path / "lane.sock")
+            sock_path = proxy_mod.lane_socket_path(lane_dir)
             proxy.bind_unix(sock_path, label="netns-ctx",
                             allowed_ports=[443])
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -119,3 +128,50 @@ class TestLanePortAllowlist:
             assert b" 403 " in buf.split(b"\r\n", 1)[0]
         finally:
             proxy.stop()
+            shutil.rmtree(lane_dir, ignore_errors=True)
+
+
+class TestLaneDirShortPath:
+    """make_lane_dir must yield a bindable socket path no matter how
+    deep the ambient temp dir is — the CI condition that broke the
+    unix-lane test was a pytest basetemp deep enough that
+    tmp_path/"lane.sock" overflowed sun_path (108 bytes on Linux,
+    104 on macOS)."""
+
+    def test_deep_tmpdir_still_yields_bindable_lane_socket(
+            self, reset_proxy: None, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        deep = tmp_path
+        while len(str(deep)) < 140:
+            deep = deep / "deeply-nested-ci-workspace-segment"
+        deep.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("TMPDIR", str(deep))
+        # gettempdir() caches its answer; clear so $TMPDIR is re-read
+        # (monkeypatch restores the attribute afterwards).
+        monkeypatch.setattr(tempfile, "tempdir", None)
+
+        lane_dir = proxy_mod.make_lane_dir()
+        try:
+            sock_path = proxy_mod.lane_socket_path(lane_dir)
+            assert len(sock_path.encode()) <= 100
+            assert not sock_path.startswith(str(deep))
+            # 0700, per-instance private.
+            assert os.stat(lane_dir).st_mode & 0o777 == 0o700
+            # And the guarantee that matters: the path binds.
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                s.bind(sock_path)
+            finally:
+                s.close()
+        finally:
+            shutil.rmtree(lane_dir, ignore_errors=True)
+
+    def test_two_lane_dirs_never_collide(
+            self, reset_proxy: None) -> None:
+        a = proxy_mod.make_lane_dir()
+        b = proxy_mod.make_lane_dir()
+        try:
+            assert a != b
+        finally:
+            shutil.rmtree(a, ignore_errors=True)
+            shutil.rmtree(b, ignore_errors=True)

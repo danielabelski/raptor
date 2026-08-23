@@ -56,12 +56,22 @@ import stat as _stat
 
 __all__ = ["open_pinned"]
 
-_O_COMPONENT = os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+# O_PATH is Linux-only; the pinned walk backs the mount-ns bind
+# machinery, which never engages on platforms without it (macOS uses
+# the seatbelt tier). Import must stay safe there — open_pinned raises
+# at CALL time instead.
+_O_PATH = getattr(os, "O_PATH", 0)
+_HAVE_O_PATH = hasattr(os, "O_PATH")
+_O_COMPONENT = _O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
 def open_pinned(canonical_path: str) -> int:
     """Open *canonical_path* as an O_PATH fd via a symlink-refusing
     component walk.
+
+    Requires O_PATH (Linux). On platforms without it, raises
+    ``OSError(ENOSYS)`` at call time — callers on those platforms run
+    the seatbelt tier and never reach the mount-ns bind path.
 
     ``canonical_path`` must be absolute and should be the output of
     ``os.path.realpath`` taken immediately before the call (see module
@@ -70,6 +80,9 @@ def open_pinned(canonical_path: str) -> int:
     ``ENOENT``/``ENOTDIR`` for vanished/replaced components — and
     ``ValueError`` for relative paths.
     """
+
+    if not _HAVE_O_PATH:
+        raise OSError(errno.ENOSYS, "O_PATH unavailable on this platform")
     if not canonical_path.startswith("/"):
         msg = f"open_pinned requires an absolute path: {canonical_path!r}"
         raise ValueError(msg)

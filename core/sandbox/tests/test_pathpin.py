@@ -35,6 +35,11 @@ if str(REPO) not in sys.path:
 from core.sandbox._pathpin import open_pinned  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
+    not hasattr(os, "O_PATH"),
+    reason="O_PATH is Linux-only; the pinned walk never engages on this platform",
+)
+
+pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Linux O_PATH semantics",
 )
 

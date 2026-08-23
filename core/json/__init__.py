@@ -30,7 +30,10 @@ from typing import Any
 # with __all__ below.
 _LAZY_EXPORTS = {
     "CacheEnvelope":          ("core.json.cache", "CacheEnvelope"),
-    "JsonBudgetExceededError": ("core.json.bounded", "JsonBudgetExceededError"),
+    # Canonical home is core.json.utils (core.json.bounded re-exports
+    # it) — resolving here avoids importing the bounded module for
+    # consumers that only catch the error.
+    "JsonBudgetExceededError": ("core.json.utils", "JsonBudgetExceededError"),
     "JsonCache":              ("core.json.cache", "JsonCache"),
     # MISSING lives outside core.json.* so test_f046's sys.modules
     # reset doesn't replace the singleton — see core/sentinels/.
@@ -42,6 +45,7 @@ _LAZY_EXPORTS = {
     "load_json":              ("core.json.utils", "load_json"),
     "load_json_bounded":      ("core.json.bounded", "load_json_bounded"),
     "load_jsonl":             ("core.json.jsonl", "load_jsonl"),
+    "loads":                  ("core.json.utils", "loads"),
     "loads_bounded":          ("core.json.bounded", "loads_bounded"),
     "save_json":              ("core.json.utils", "save_json"),
     "load_json_with_comments": ("core.json.utils", "load_json_with_comments"),
@@ -89,6 +93,7 @@ __all__ = [
     "load_json_bounded",
     "load_json_with_comments",
     "load_jsonl",
+    "loads",
     "loads_bounded",
     "save_json",
 ]

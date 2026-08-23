@@ -360,6 +360,93 @@ class TestOrjsonBackend(unittest.TestCase):
                 u._orjson = saved
 
 
+class TestLoads(unittest.TestCase):
+    """Public string-level loads: budget gate, backends, hardening."""
+
+    def _both_backends(self):
+        import core.json.utils as u
+        backends = [("stdlib", None)]
+        if u._orjson is not None:
+            backends.append(("orjson", u._orjson))
+        return u, backends
+
+    def test_parses_str_and_bytes_both_backends(self):
+        from core.json import loads
+        u, backends = self._both_backends()
+        for name, override in backends:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                self.assertEqual(loads('{"a": 1}'), {"a": 1}, name)
+                self.assertEqual(loads(b'{"a": 1}'), {"a": 1}, name)
+            finally:
+                u._orjson = saved
+
+    def test_bom_tolerated_both_backends(self):
+        from core.json import loads
+        u, backends = self._both_backends()
+        for name, override in backends:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                self.assertEqual(loads("\ufeff" + '{"a": 1}'), {"a": 1}, name)
+                self.assertEqual(
+                    loads(b'\xef\xbb\xbf{"a": 1}'), {"a": 1}, name)
+            finally:
+                u._orjson = saved
+
+    def test_budget_breach_raises_and_warns(self):
+        from core.json import JsonBudgetExceededError, loads
+        payload = '{"a": "' + "x" * 64 + '"}'
+        with self.assertLogs("core.json.utils", level="WARNING") as cm:
+            with self.assertRaises(JsonBudgetExceededError):
+                loads(payload, max_bytes=16)
+        self.assertTrue(
+            any("refusing to parse" in line for line in cm.output))
+        # The subclass contract: plain ValueError handlers catch it.
+        self.assertTrue(issubclass(JsonBudgetExceededError, ValueError))
+
+    def test_budget_gate_runs_before_parse(self):
+        from core.json import JsonBudgetExceededError, loads
+        # Malformed AND oversize: the budget error proves the gate
+        # fired before any parse attempt.
+        with self.assertRaises(JsonBudgetExceededError):
+            loads("{" * 64, max_bytes=16)
+
+    def test_under_budget_parses(self):
+        from core.json import loads
+        self.assertEqual(loads('{"a": 1}', max_bytes=8), {"a": 1})
+
+    def test_non_finite_rejected_both_backends(self):
+        from core.json import loads
+        u, backends = self._both_backends()
+        for name, override in backends:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                with self.assertRaises(ValueError, msg=name):
+                    loads('{"v": NaN}')
+            finally:
+                u._orjson = saved
+
+    def test_allow_non_finite_falls_back_to_stdlib(self):
+        import math
+
+        from core.json import loads
+        result = loads('{"v": NaN}', allow_non_finite=True)
+        self.assertTrue(math.isnan(result["v"]))
+
+    def test_malformed_raises(self):
+        from core.json import loads
+        with self.assertRaises(ValueError):
+            loads("{not json")
+
+    def test_budget_error_shared_with_bounded_helpers(self):
+        import core.json.bounded as b
+        from core.json import JsonBudgetExceededError
+        self.assertIs(b.JsonBudgetExceededError, JsonBudgetExceededError)
+
+
 class TestOrjsonBigIntDivergence(unittest.TestCase):
     """Pin the documented big-int divergence between the two backends.
 

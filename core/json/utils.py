@@ -22,7 +22,12 @@ except ImportError:
     _orjson = None
 
 
-def _loads(text: str, *, parse_constant=None, allow_non_finite: bool = False) -> Any:
+def _loads(
+    text: str | bytes | bytearray,
+    *,
+    parse_constant=None,
+    allow_non_finite: bool = False,
+) -> Any:
     """Parse JSON text, using orjson when available for speed.
 
     KNOWN DIVERGENCE — big integers become floats on the orjson path.
@@ -49,6 +54,23 @@ def _loads(text: str, *, parse_constant=None, allow_non_finite: bool = False) ->
         # big-int-identity data through here.
         return _orjson.loads(text)
     return json.loads(text, parse_constant=parse_constant)
+
+
+class JsonBudgetExceededError(ValueError):
+    """JSON input exceeds its byte budget.
+
+    Raised (never returned) so an over-budget payload can't be
+    mistaken for an empty-but-valid document. The message always
+    names the observed size and the budget.
+
+    Subclasses ``ValueError`` so call sites with an existing
+    ``except ValueError`` / ``except json.JSONDecodeError``
+    malformed-input path degrade the same way for over-budget input
+    without new plumbing — while callers that want to report the
+    refusal distinctly can catch the subclass. Defined here (not in
+    ``core.json.bounded``, which re-exports it) so both the bounded
+    helpers and :func:`loads` can raise it without an import cycle.
+    """
 
 
 def _orjson_default(obj: Any) -> Any:
@@ -174,6 +196,53 @@ def load_json(
         # path as a JSONDecodeError rather than an uncaught crash.
         logger.warning("load_json: failed to parse %s: %s", p, e)
         return None
+
+
+def loads(
+    data: str | bytes | bytearray,
+    *,
+    max_bytes: int | None = None,
+    allow_non_finite: bool = False,
+) -> Any:
+    """Parse in-memory JSON text with an optional size gate.
+
+    The string-level counterpart of :func:`load_json` for non-file
+    sources — subprocess stdout, HTTP bodies, artifact lines — with
+    the same backend (orjson when installed; see :func:`_loads` for
+    the big-int divergence) and the same non-finite hardening.
+
+    Strict contract: in-memory sources have no missing-file soft
+    path, so every failure raises — ``JsonBudgetExceededError``
+    (a ``ValueError`` subclass) when the input exceeds ``max_bytes``,
+    ``json.JSONDecodeError`` / ``ValueError`` on malformed input or a
+    rejected non-finite constant, ``RecursionError`` on pathological
+    nesting. The budget gate runs BEFORE the parse: for ``bytes`` it
+    is exact; for ``str`` it counts characters (a lower bound on the
+    UTF-8 byte length — the string is already materialised, so the
+    gate's job is bounding parse cost, which scales with length).
+
+    A single leading UTF-8 BOM is stripped (both ``str`` and
+    ``bytes``), mirroring ``load_json``'s ``utf-8-sig`` tolerance —
+    the backends otherwise disagree on BOM-prefixed input. Bytes are
+    expected to be UTF-8.
+    """
+    if max_bytes is not None and len(data) > max_bytes:
+        unit = "bytes" if isinstance(data, (bytes, bytearray)) else "characters"
+        msg = (
+            f"JSON input is {len(data)} {unit} — exceeds the "
+            f"{max_bytes}-byte budget; refusing to parse"
+        )
+        logger.warning("%s", msg)
+        raise JsonBudgetExceededError(msg)
+    if isinstance(data, (bytes, bytearray)):
+        if data[:3] == b"\xef\xbb\xbf":
+            data = data[3:]
+    elif data[:1] == "\ufeff":
+        data = data[1:]
+    parse_constant = None if allow_non_finite else _reject_non_finite
+    return _loads(
+        data, parse_constant=parse_constant, allow_non_finite=allow_non_finite,
+    )
 
 
 def _strip_json_comments(text: str) -> str:

@@ -30,18 +30,15 @@ import stat as _stat
 from pathlib import Path
 from typing import Any
 
-from core.json.utils import _reject_non_finite
+from core.json.utils import JsonBudgetExceededError, _reject_non_finite
+
+__all__ = [
+    "JsonBudgetExceededError",  # canonical home: core.json.utils
+    "load_json_bounded",
+    "loads_bounded",
+]
 
 logger = logging.getLogger(__name__)
-
-
-class JsonBudgetExceededError(ValueError):
-    """JSON input exceeds its byte budget.
-
-    Raised (never returned) so an over-budget payload can't be
-    mistaken for an empty-but-valid document. The message always
-    names the observed size and the budget.
-    """
 
 
 def loads_bounded(data: str | bytes, *, max_bytes: int) -> Any:

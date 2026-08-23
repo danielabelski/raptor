@@ -1231,7 +1231,9 @@ class TestSpatchScratchTmpdir:
     The runner gives every invocation a private scratch TMPDIR and
     removes it unconditionally."""
 
-    def _run_and_capture_env(self, tmp_path, *, boom=False):
+    def _run_and_capture_env(
+        self, tmp_path: Path, *, boom: bool = False,
+    ) -> dict:
         import subprocess as _sp
         rule = tmp_path / "r.cocci"
         rule.write_text(
@@ -1239,7 +1241,7 @@ class TestSpatchScratchTmpdir:
         )
         target = tmp_path / "x.c"
         target.write_text("void f() {}\n")
-        captured = {}
+        captured: dict = {}
 
         def _fake(cmd, **kwargs):
             captured["env"] = kwargs.get("env") or {}
@@ -1251,10 +1253,23 @@ class TestSpatchScratchTmpdir:
                 raise _sp.TimeoutExpired(cmd, 1)
             return MagicMock(stdout="", stderr="", returncode=0)
 
+        # Stub at run_rule's documented test seam (subprocess_runner=)
+        # rather than patching the global subprocess.run: the default
+        # runner is core.sandbox.run, whose internal exec primitive is
+        # an implementation detail — on the no-namespace posture its
+        # timeout path execs via a Popen-based teardown-first wrapper,
+        # which a subprocess.run patch never intercepts (the REAL
+        # spatch then runs, and the env this helper captures is
+        # whatever sandbox-internal probe called subprocess.run last —
+        # no scratch TMPDIR). The scratch-dir contract under test
+        # lives in run_rule itself, above the runner seam.
         with patch(
             "packages.coccinelle.runner.is_available", return_value=True,
-        ), patch("subprocess.run", side_effect=_fake):
-            run_rule(target, rule, env=dict(os.environ))
+        ):
+            run_rule(
+                target, rule, env=dict(os.environ),
+                subprocess_runner=_fake,
+            )
         return captured
 
     def test_private_tmpdir_passed_and_removed(self, tmp_path):

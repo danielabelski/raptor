@@ -496,10 +496,9 @@ through the agentic pipeline with `--no-patches`.
 /exploit [<target_path>]
 ```
 
-Accepts the same flags as [/agentic](#agentic) minus `--no-exploits`.  The
-exploit engine uses CWE-specific composers, a GDB sub-loop for info-leak
-eligibility, and the REPLicator substrate for multi-round format-string and
-similar chains.
+Accepts the same flags as [/agentic](#agentic) minus `--no-exploits`.
+Proof-of-concept generation is LLM-driven (beta) and gated by the
+mandatory exploit-feasibility analysis below.
 
 See [exploit feasibility](binary-analysis.md) for constraint analysis and
 the mandatory `exploitation_paths` check.

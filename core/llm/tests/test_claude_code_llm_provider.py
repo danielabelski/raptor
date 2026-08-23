@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -248,13 +249,16 @@ def test_generate_disables_internal_cc_tools(monkeypatch) -> None:
 
 
 def test_generate_with_system_prompt_uses_system_flag(monkeypatch) -> None:
-    """`system_prompt` flows through CC's --system-prompt flag, not via prompt prepend.
+    """`system_prompt` flows through CC's system-prompt channel, not via
+    prompt prepend.
 
     Pre-cluster-107 the provider concatenated `f"{system_prompt}\\n\\n{prompt}"`
     and sent the combined text as the user message. That folded the
     system instruction into user content, where a hostile user prompt
-    could re-instruct over it. Routing through `--system-prompt` keeps the
-    system layer in its own role-channel.
+    could re-instruct over it. Routing through the system-prompt channel
+    keeps the system layer in its own role-channel. It travels as
+    `--system-prompt-file` (0600 tempfile), never inline argv — inline
+    is world-readable via /proc/<pid>/cmdline on multi-user hosts.
     """
     import core.llm.cc_adapter as _cc_adapter
     captured: dict[str, Any] = {}
@@ -262,6 +266,11 @@ def test_generate_with_system_prompt_uses_system_flag(monkeypatch) -> None:
     def fake_stream(cmd, prompt, *, env, timeout_s):
         captured["cmd"] = list(cmd)
         captured["prompt"] = prompt
+        # The tempfile is unlinked when the dispatch CM exits — read
+        # it at spawn time, exactly as the real child would.
+        idx = cmd.index("--system-prompt-file")
+        captured["system_prompt"] = Path(cmd[idx + 1]).read_text(
+            encoding="utf-8")
         return _stream_freeform()
 
     monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
@@ -270,9 +279,12 @@ def test_generate_with_system_prompt_uses_system_flag(monkeypatch) -> None:
 
     assert captured["prompt"] == "user question"
     cmd = captured["cmd"]
-    assert "--system-prompt" in cmd
-    sys_idx = cmd.index("--system-prompt") + 1
-    assert cmd[sys_idx] == "you are helpful"
+    assert captured["system_prompt"] == "you are helpful"
+    # argv hygiene: the prompt text never appears in argv.
+    assert "--system-prompt" not in cmd
+    assert "you are helpful" not in " ".join(cmd)
+    # ...and the tempfile does not outlive the call.
+    assert not Path(cmd[cmd.index("--system-prompt-file") + 1]).exists()
 
 
 def test_generate_extracts_cost_and_tokens(monkeypatch) -> None:
@@ -724,13 +736,18 @@ def test_turn_propagates_envelope_cost_to_compute_cost(monkeypatch) -> None:
 
 
 def test_turn_passes_system_through_to_subprocess(monkeypatch) -> None:
-    """``system`` arg goes via the CC `--system-prompt` flag."""
+    """``system`` arg goes via CC's system-prompt channel
+    (`--system-prompt-file`; inline argv would be world-readable via
+    /proc/<pid>/cmdline)."""
     import core.llm.cc_adapter as _cc_adapter
     captured: dict[str, Any] = {}
 
     def fake_stream(cmd, prompt, *, env, timeout_s):
         captured["cmd"] = list(cmd)
         captured["prompt"] = prompt
+        idx = cmd.index("--system-prompt-file")
+        captured["system_prompt"] = Path(cmd[idx + 1]).read_text(
+            encoding="utf-8")
         return _stream_freeform()
 
     monkeypatch.setattr(_cc_adapter, "run_cc_streaming", fake_stream)
@@ -741,9 +758,9 @@ def test_turn_passes_system_through_to_subprocess(monkeypatch) -> None:
         system="be careful",
     )
     cmd = captured["cmd"]
-    assert "--system-prompt" in cmd
-    sys_idx = cmd.index("--system-prompt") + 1
-    assert "be careful" in cmd[sys_idx]
+    assert "be careful" in captured["system_prompt"]
+    assert "--system-prompt" not in cmd
+    assert "be careful" not in " ".join(cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -957,12 +974,13 @@ def test_resumable_second_turn_omits_system_prompt(monkeypatch) -> None:
 
     msgs = [Message(role="user", content=[TextBlock(text="hi")])]
     p.turn(msgs, _TOOL_DEFS, system="be helpful")
-    assert "--system-prompt" in calls[0]
+    assert "--system-prompt-file" in calls[0]
 
     msgs.append(Message(role="assistant", content=[TextBlock(text="ok")]))
     msgs.append(Message(role="user", content=[TextBlock(text="more")]))
     p.turn(msgs, _TOOL_DEFS, system="be helpful")
     assert "--system-prompt" not in calls[1]
+    assert "--system-prompt-file" not in calls[1]
 
 
 def test_reset_session_clears_state() -> None:

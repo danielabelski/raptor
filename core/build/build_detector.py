@@ -1574,6 +1574,7 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
                 build_cc_command,
                 cc_subprocess_env,
                 strip_json_fences,
+                system_prompt_file_for,
             )
             config = CCDispatchConfig(
                 claude_bin=claude_bin,
@@ -1599,37 +1600,51 @@ print(f"Compiled {{ok}}/{{total}} files ({{fail}} failed)")
             # env: backend overlay (CLAUDE_CODE_*/ANTHROPIC_*/AWS_*) so a
             # Bedrock/Vertex-backed CLI child can authenticate; the
             # sandbox's proxy env still overrides HTTPS_PROXY.
-            result = _sandbox_run(
-                build_cc_command(config),
-                target=repo_path, output=repo_path,
-                # mint_aws_credentials: sandboxed child (see
-                # cc_adapter._mint_child_aws_credentials) — an IAM-role
-                # Bedrock host leaves it credential-starved otherwise.
-                env=cc_subprocess_env(mint_aws_credentials=True),
-                use_egress_proxy=True,
-                # The CC child reads the UNTRUSTED repo (add_dirs +
-                # Read/Grep/Glob) and its prompt embeds untrusted
-                # compiler stderr — repo content can steer what the
-                # child does, so this is repo-influenced egress and
-                # must use the netns tier (00015 doctrine, same as
-                # the sca agent's CC dispatches). On a netns-less
-                # host the SandboxSetupError is swallowed by this
-                # method's except handler and flag inference is
-                # skipped rather than run through the weaker tier.
-                require_proxy_netns=True,
-                proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
-                # Read confinement, same posture as the other CC
-                # dispatch sites (skill_dispatch, the sub-agent
-                # dispatcher): the child carries backend credentials
-                # in env and reads hostile repo content + compiler
-                # stderr, so on Landlock-only hosts restrict_reads is
-                # what keeps prompt-steered Read/Grep/Glob away from
-                # $HOME and /proc beyond the calibrated CLI floor.
-                restrict_reads=True,
-                readable_paths=readable_paths_for_cc_dispatch(claude_bin),
-                caller_label="codeql-build-detect",
-                input=prompt, capture_output=True, text=True, timeout=180,
-            )
+            #
+            # System prompt (when the config carries one) rides a 0600
+            # tempfile + --system-prompt-file — never in the child's
+            # world-readable /proc/<pid>/cmdline (see
+            # build_cc_command's hygiene contract). Spawn AND wait
+            # stay inside the CM; the file path joins readable_paths
+            # because restrict_reads=True keeps TMPDIR outside the
+            # sandbox's read allowlist.
+            with system_prompt_file_for(config) as _sys_prompt_path:
+                readable_paths = readable_paths_for_cc_dispatch(claude_bin)
+                if _sys_prompt_path is not None:
+                    readable_paths = [*readable_paths, str(_sys_prompt_path)]
+                result = _sandbox_run(
+                    build_cc_command(
+                        config, system_prompt_file=_sys_prompt_path,
+                    ),
+                    target=repo_path, output=repo_path,
+                    # mint_aws_credentials: sandboxed child (see
+                    # cc_adapter._mint_child_aws_credentials) — an IAM-role
+                    # Bedrock host leaves it credential-starved otherwise.
+                    env=cc_subprocess_env(mint_aws_credentials=True),
+                    use_egress_proxy=True,
+                    # The CC child reads the UNTRUSTED repo (add_dirs +
+                    # Read/Grep/Glob) and its prompt embeds untrusted
+                    # compiler stderr — repo content can steer what the
+                    # child does, so this is repo-influenced egress and
+                    # must use the netns tier (00015 doctrine, same as
+                    # the sca agent's CC dispatches). On a netns-less
+                    # host the SandboxSetupError is swallowed by this
+                    # method's except handler and flag inference is
+                    # skipped rather than run through the weaker tier.
+                    require_proxy_netns=True,
+                    proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
+                    # Read confinement, same posture as the other CC
+                    # dispatch sites (skill_dispatch, the sub-agent
+                    # dispatcher): the child carries backend credentials
+                    # in env and reads hostile repo content + compiler
+                    # stderr, so on Landlock-only hosts restrict_reads is
+                    # what keeps prompt-steered Read/Grep/Glob away from
+                    # $HOME and /proc beyond the calibrated CLI floor.
+                    restrict_reads=True,
+                    readable_paths=readable_paths,
+                    caller_label="codeql-build-detect",
+                    input=prompt, capture_output=True, text=True, timeout=180,
+                )
             if result.returncode != 0 or not result.stdout.strip():
                 return None
 

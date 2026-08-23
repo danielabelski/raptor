@@ -863,7 +863,7 @@ def orchestrate(
 
         def dispatch_fn(prompt, schema, system_prompt, temperature, model):
             # Route the system prompt through CC's dedicated
-            # `--system-prompt` channel (CCDispatchConfig.system_prompt).
+            # system-prompt channel (CCDispatchConfig.system_prompt).
             # Pre-fix it was folded into the user prompt via stdin,
             # regressing the documented trust separation — operator
             # instructions and finding-derived content arrived on the

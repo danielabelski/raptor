@@ -4046,12 +4046,13 @@ class ClaudeCodeLLMProvider(LLMProvider):
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
+            system_prompt_file_for,
         )
 
         call_timeout = self._effective_timeout_s(kwargs.pop("timeout_s", None))
 
         # Pass the user prompt as-is and route the system prompt
-        # through CC's `--system-prompt` flag (see CCDispatchConfig.system_prompt
+        # through CC's system-prompt channel (see CCDispatchConfig.system_prompt
         # comment for the prompt-injection rationale).
         cc_config = CCDispatchConfig(
             claude_bin=self._claude_bin,
@@ -4067,7 +4068,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
             system_prompt=system_prompt,
             model=self._cli_model(),
         )
-        cmd = build_cc_command(cc_config)
 
         # Sanitised baseline (get_safe_env strips shell-evaluated
         # vars a poisoned dotfile might set) + the backend env
@@ -4083,9 +4083,18 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # negative durations on long CC calls.
         start = _time.monotonic()
         try:
-            sr = run_cc_streaming(
-                cmd, prompt, env=_cc_env, timeout_s=call_timeout,
-            )
+            # System prompt rides a 0600 tempfile + --system-prompt-file
+            # so it never appears in the child's world-readable
+            # /proc/<pid>/cmdline (see build_cc_command's hygiene
+            # contract). Spawn AND wait stay inside the CM: the file
+            # must outlive the child.
+            with system_prompt_file_for(cc_config) as _sys_prompt_path:
+                cmd = build_cc_command(
+                    cc_config, system_prompt_file=_sys_prompt_path,
+                )
+                sr = run_cc_streaming(
+                    cmd, prompt, env=_cc_env, timeout_s=call_timeout,
+                )
         except subprocess.TimeoutExpired as e:
             msg = f"claude -p timed out after {call_timeout}s"
             raise RuntimeError(msg) from e
@@ -4158,17 +4167,18 @@ class ClaudeCodeLLMProvider(LLMProvider):
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
+            system_prompt_file_for,
         )
 
-        # Route system_prompt through CC's `--system-prompt` flag instead of
-        # concatenating into the user prompt. Pre-fix this path used
+        # Route system_prompt through CC's system-prompt channel instead
+        # of concatenating into the user prompt. Pre-fix this path used
         # `f"{system_prompt}\n\n{prompt}"`, mixing the trusted system
         # message into the same channel as user content. The
         # generate() path above (the freeform sibling of this method)
-        # already uses `--system-prompt` correctly. The structured path's
-        # f-string concat:
+        # already uses the system-prompt channel correctly. The
+        # structured path's f-string concat:
         #
-        #   * Drops the trust separation that CC's `--system-prompt` flag
+        #   * Drops the trust separation that CC's system-prompt flag
         #     gives us — operator system instructions and finding
         #     content arrive on the SAME channel from the model's
         #     perspective.
@@ -4180,7 +4190,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         # Bring this site in line with generate(): full_prompt is
         # the user content; system_prompt routes through
         # CCDispatchConfig.system_prompt (which build_cc_command
-        # converts into a `--system-prompt` flag).
+        # converts into a `--system-prompt-file` flag).
         call_timeout = self._effective_timeout_s(kwargs.pop("timeout_s", None))
 
         cc_config = CCDispatchConfig(
@@ -4194,7 +4204,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
             system_prompt=system_prompt,
             model=self._cli_model(),
         )
-        cmd = build_cc_command(cc_config)
 
         # Sanitised baseline (get_safe_env strips shell-evaluated
         # vars a poisoned dotfile might set) + the backend env
@@ -4208,9 +4217,17 @@ class ClaudeCodeLLMProvider(LLMProvider):
 
         start = _time.monotonic()
         try:
-            sr = run_cc_streaming(
-                cmd, prompt, env=_cc_env, timeout_s=call_timeout,
-            )
+            # System prompt via 0600 tempfile + --system-prompt-file —
+            # never in the child's world-readable /proc/<pid>/cmdline
+            # (see build_cc_command's hygiene contract). Spawn AND
+            # wait stay inside the CM.
+            with system_prompt_file_for(cc_config) as _sys_prompt_path:
+                cmd = build_cc_command(
+                    cc_config, system_prompt_file=_sys_prompt_path,
+                )
+                sr = run_cc_streaming(
+                    cmd, prompt, env=_cc_env, timeout_s=call_timeout,
+                )
         except subprocess.TimeoutExpired as e:
             msg = f"claude -p timed out after {call_timeout}s"
             raise RuntimeError(msg) from e
@@ -4272,7 +4289,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
         byte-stable (measured on this transport: 19k cache-read
         tokens and ~13x input-cost drop on the second
         identical-prefix call — see cc_adapter.CCDispatchConfig).
-        The system prompt travels via ``--system-prompt`` and the
+        The system prompt travels via ``--system-prompt-file`` and the
         audit composes it once per run, so run-stable material moved
         into it bills at the cached-input rate from the second call
         on. Per-call cache-read/-write counters stream back in the
@@ -4440,6 +4457,7 @@ class ClaudeCodeLLMProvider(LLMProvider):
             CCDispatchConfig,
             build_cc_command,
             run_cc_streaming,
+            system_prompt_file_for,
         )
 
         schema = self._build_turn_schema(tools)
@@ -4466,7 +4484,6 @@ class ClaudeCodeLLMProvider(LLMProvider):
             session_id=self._session_id,
             persist_session=True,
         )
-        cmd = build_cc_command(cc_config)
 
         from .cc_adapter import cc_subprocess_env
 
@@ -4474,9 +4491,17 @@ class ClaudeCodeLLMProvider(LLMProvider):
 
         start = _time.monotonic()
         try:
-            sr = run_cc_streaming(
-                cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
-            )
+            # System prompt via 0600 tempfile + --system-prompt-file —
+            # never in the child's world-readable /proc/<pid>/cmdline
+            # (see build_cc_command's hygiene contract). Spawn AND
+            # wait stay inside the CM.
+            with system_prompt_file_for(cc_config) as _sys_prompt_path:
+                cmd = build_cc_command(
+                    cc_config, system_prompt_file=_sys_prompt_path,
+                )
+                sr = run_cc_streaming(
+                    cmd, prompt, env=_cc_env, timeout_s=self._timeout_s,
+                )
         except subprocess.TimeoutExpired:
             err_msg = f"claude -p timed out after {self._timeout_s}s"
             logger.warning("ClaudeCodeLLMProvider._turn_resumable: %s", err_msg)

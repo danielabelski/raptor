@@ -580,6 +580,7 @@ def run_skill_dispatch(
             CCDispatchConfig,
             build_cc_command,
             cc_subprocess_env,
+            system_prompt_file_for,
         )
         dispatch_config = CCDispatchConfig(
             claude_bin=claude_bin,
@@ -641,60 +642,73 @@ def run_skill_dispatch(
             # target + run_dir are auto-allowlisted via the
             # target=/output= positional args; $HOME secrets stay
             # denied.
-            proc = run_untrusted_networked(
-                build_cc_command(dispatch_config),
-                text=True,
-                **stdin_kwargs,
-                timeout=timeout_s,
-                target=str(target), output=str(run_dir),
-                # Explicit cwd: the claude CLI treats its working
-                # directory as a project root (CLAUDE.md, .claude
-                # settings, workspace-trust posture). Inheriting the
-                # parent's cwd handed the child whatever project the
-                # OPERATOR happened to be sitting in — an untrusted
-                # workspace whose permission rules the CLI loudly
-                # ignores. The run dir is RAPTOR-owned, carries no
-                # project config, and is already writable via
-                # output=; tool grants come from --allowed-tools.
-                cwd=str(run_dir),
-                # env-mode children get mint_aws_credentials=True:
-                # sandboxed — Landlock denies ~/.aws and the egress
-                # allowlist has no IMDS route, so on IAM-role Bedrock
-                # hosts their own AWS credential chain is dead ("Could
-                # not load credentials from any providers", rc=1); the
-                # parent resolves the chain and attaches frozen session
-                # credentials at its trust boundary. Proxy-mode
-                # children carry no credentials at all (see above).
-                env=child_env,
-                # Trust-marker propagation: this child is RAPTOR's own
-                # claude binary running a skill pass on the same
-                # operator-approved run (gated above by cc-trust +
-                # rule-of-two). Its job is to drive libexec/ helpers
-                # (raptor-validation-helper, raptor-run-lifecycle)
-                # whose preamble refuses callers without CLAUDECODE /
-                # _RAPTOR_TRUSTED — the default marker strip left the
-                # validate post-pass child looking untrusted (rc=1,
-                # A4). A parent that holds no marker propagates
-                # nothing: an untrusted parent stays refused.
-                keep_trust_markers=True,
-                readable_paths=(
-                    [str(_RAPTOR_DIR)]
-                    + [str(d) for d in context_dirs]
-                    + _readable_paths_for_cc_dispatch(claude_bin)
-                ),
-                # Proxy mode: loopback-only allowlist (deny-all remote —
-                # the child talks solely to the bridged dispatcher).
-                proxy_hosts=_proxy_hosts_for_cc_dispatch(
-                    claude_bin, credential_mode=credential_mode,
-                ),
-                # Proxy mode: relay in-netns 127.0.0.1:<port> to the
-                # dispatcher UDS so the CLI's ANTHROPIC_BASE_URL works
-                # inside the empty network namespace.
-                loopback_unix_bridges=(
-                    cc_proxy_creds.bridges if cc_proxy_creds else None
-                ),
-                caller_label=caller_label,
-            )
+            #
+            # System prompt (when the config carries one) rides a 0600
+            # tempfile + --system-prompt-file — never in the child's
+            # world-readable /proc/<pid>/cmdline (see
+            # build_cc_command's hygiene contract). Spawn AND wait stay
+            # inside the CM; the file path joins readable_paths because
+            # TMPDIR is outside the sandbox's read allowlist.
+            with system_prompt_file_for(dispatch_config) as _sys_prompt_path:
+                proc = run_untrusted_networked(
+                    build_cc_command(
+                        dispatch_config,
+                        system_prompt_file=_sys_prompt_path,
+                    ),
+                    text=True,
+                    **stdin_kwargs,
+                    timeout=timeout_s,
+                    target=str(target), output=str(run_dir),
+                    # Explicit cwd: the claude CLI treats its working
+                    # directory as a project root (CLAUDE.md, .claude
+                    # settings, workspace-trust posture). Inheriting the
+                    # parent's cwd handed the child whatever project the
+                    # OPERATOR happened to be sitting in — an untrusted
+                    # workspace whose permission rules the CLI loudly
+                    # ignores. The run dir is RAPTOR-owned, carries no
+                    # project config, and is already writable via
+                    # output=; tool grants come from --allowed-tools.
+                    cwd=str(run_dir),
+                    # env-mode children get mint_aws_credentials=True:
+                    # sandboxed — Landlock denies ~/.aws and the egress
+                    # allowlist has no IMDS route, so on IAM-role Bedrock
+                    # hosts their own AWS credential chain is dead ("Could
+                    # not load credentials from any providers", rc=1); the
+                    # parent resolves the chain and attaches frozen session
+                    # credentials at its trust boundary. Proxy-mode
+                    # children carry no credentials at all (see above).
+                    env=child_env,
+                    # Trust-marker propagation: this child is RAPTOR's own
+                    # claude binary running a skill pass on the same
+                    # operator-approved run (gated above by cc-trust +
+                    # rule-of-two). Its job is to drive libexec/ helpers
+                    # (raptor-validation-helper, raptor-run-lifecycle)
+                    # whose preamble refuses callers without CLAUDECODE /
+                    # _RAPTOR_TRUSTED — the default marker strip left the
+                    # validate post-pass child looking untrusted (rc=1,
+                    # A4). A parent that holds no marker propagates
+                    # nothing: an untrusted parent stays refused.
+                    keep_trust_markers=True,
+                    readable_paths=(
+                        [str(_RAPTOR_DIR)]
+                        + [str(d) for d in context_dirs]
+                        + _readable_paths_for_cc_dispatch(claude_bin)
+                        + ([str(_sys_prompt_path)]
+                           if _sys_prompt_path is not None else [])
+                    ),
+                    # Proxy mode: loopback-only allowlist (deny-all remote —
+                    # the child talks solely to the bridged dispatcher).
+                    proxy_hosts=_proxy_hosts_for_cc_dispatch(
+                        claude_bin, credential_mode=credential_mode,
+                    ),
+                    # Proxy mode: relay in-netns 127.0.0.1:<port> to the
+                    # dispatcher UDS so the CLI's ANTHROPIC_BASE_URL works
+                    # inside the empty network namespace.
+                    loopback_unix_bridges=(
+                        cc_proxy_creds.bridges if cc_proxy_creds else None
+                    ),
+                    caller_label=caller_label,
+                )
         except subprocess.TimeoutExpired:
             lifecycle_settled = True
             fail_lifecycle(run_dir, f"timeout after {timeout_s}s")

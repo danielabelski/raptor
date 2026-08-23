@@ -21,6 +21,7 @@ from core.llm.cc_adapter import (
     cc_subprocess_env,
     parse_cc_freeform,
     parse_cc_structured,
+    system_prompt_file_for,
 )
 from core.security.log_sanitisation import escape_nonprintable
 from core.security.redaction import redact_secrets
@@ -40,7 +41,7 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
     Used as a dispatch_fn callable by dispatch_task().
 
     ``system_prompt`` routes through CCDispatchConfig.system_prompt
-    (the ``--system-prompt`` flag) — never fold it into ``prompt``:
+    (the ``--system-prompt-file`` channel) — never fold it into ``prompt``:
     concatenation sends operator instructions on the same channel as
     finding-derived user content, dropping the role separation CC's
     prompt-injection defences key off (see CCDispatchConfig).
@@ -70,7 +71,6 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
         json_schema=effective_schema,
         system_prompt=system_prompt,
     )
-    cmd = build_cc_command(config)
 
     try:
         from core.llm.cc_proxy_hosts import (
@@ -100,18 +100,34 @@ def invoke_cc_simple(prompt, schema, repo_path, claude_bin, out_dir,
         # authenticate (bare get_safe_env leaves it credential-less and
         # it hangs to timeout). The sandbox's proxy_env_overrides still
         # win for HTTPS_PROXY, so egress stays on the chokepoint.
-        proc = run_untrusted_networked(
-            cmd, input=prompt, capture_output=True, text=True,
-            timeout=timeout, target=str(repo_path), output=str(out_dir),
-            # mint_aws_credentials: sandboxed child — Landlock denies
-            # ~/.aws, egress denies IMDS; on IAM-role Bedrock hosts its
-            # own AWS chain is dead. The parent attaches frozen session
-            # credentials at its trust boundary.
-            env=cc_subprocess_env(mint_aws_credentials=True),
-            readable_paths=readable_paths_for_cc_dispatch(claude_bin),
-            proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
-            caller_label="claude-sub-agent",
-        )
+        #
+        # System prompt via 0600 tempfile + --system-prompt-file — never
+        # in the child's world-readable /proc/<pid>/cmdline (see
+        # build_cc_command's hygiene contract). Spawn AND wait stay
+        # inside the CM; the file path joins readable_paths because the
+        # child runs restrict_reads=True and TMPDIR is outside the
+        # sandbox's read allowlist (the mount-ns backend bind-mounts
+        # file entries at their original paths, Landlock adds a
+        # per-file read rule).
+        with system_prompt_file_for(config) as _sys_prompt_path:
+            cmd = build_cc_command(
+                config, system_prompt_file=_sys_prompt_path,
+            )
+            readable_paths = readable_paths_for_cc_dispatch(claude_bin)
+            if _sys_prompt_path is not None:
+                readable_paths = [*readable_paths, str(_sys_prompt_path)]
+            proc = run_untrusted_networked(
+                cmd, input=prompt, capture_output=True, text=True,
+                timeout=timeout, target=str(repo_path), output=str(out_dir),
+                # mint_aws_credentials: sandboxed child — Landlock denies
+                # ~/.aws, egress denies IMDS; on IAM-role Bedrock hosts its
+                # own AWS chain is dead. The parent attaches frozen session
+                # credentials at its trust boundary.
+                env=cc_subprocess_env(mint_aws_credentials=True),
+                readable_paths=readable_paths,
+                proxy_hosts=proxy_hosts_for_cc_dispatch(claude_bin),
+                caller_label="claude-sub-agent",
+            )
     except subprocess.TimeoutExpired:
         return DispatchResult(result={"error": f"timeout after {timeout}s"})
     except (FileNotFoundError, PermissionError) as e:

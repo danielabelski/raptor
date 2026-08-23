@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat as _stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -46,7 +47,17 @@ def captured_helper_kwargs():
     captured: list[dict] = []
 
     def _capture(cmd, *args, **kwargs):
-        captured.append({"cmd": cmd, "args": args, "kwargs": kwargs})
+        entry = {"cmd": cmd, "args": args, "kwargs": kwargs}
+        # The --system-prompt-file tempfile is unlinked when the
+        # dispatch CM exits, so its content/mode must be snapshotted
+        # at spawn time — exactly what a real child would see.
+        if "--system-prompt-file" in cmd:
+            spf = Path(cmd[cmd.index("--system-prompt-file") + 1])
+            entry["system_prompt_file_content"] = spf.read_text(
+                encoding="utf-8")
+            entry["system_prompt_file_mode"] = _stat.S_IMODE(
+                spf.stat().st_mode)
+        captured.append(entry)
         # Return a stub that downstream parsing can chew on without crashing
         return MagicMock(returncode=0, stdout="{}", stderr="")
 
@@ -446,10 +457,13 @@ def test_conformant_response_untouched_by_floor(tmp_path):
 def test_invoke_cc_simple_routes_system_prompt_via_flag(
     captured_helper_kwargs, tmp_path,
 ):
-    """The system prompt travels on CC's dedicated `--system-prompt`
+    """The system prompt travels on CC's dedicated system-prompt
     channel, never folded into the stdin user prompt — folding drops
     the role separation the subprocess's prompt-injection defences
-    key off (see CCDispatchConfig.system_prompt)."""
+    key off (see CCDispatchConfig.system_prompt). It rides
+    ``--system-prompt-file`` (0600 tempfile), never inline argv: the
+    inline form is world-readable via /proc/<pid>/cmdline on
+    multi-user hosts."""
     from packages.llm_analysis.cc_dispatch import invoke_cc_simple
 
     out_dir = tmp_path / "out"
@@ -468,11 +482,23 @@ def test_invoke_cc_simple_routes_system_prompt_via_flag(
     )
 
     assert len(captured_helper_kwargs) == 1
-    cmd = captured_helper_kwargs[0]["cmd"]
-    assert "--system-prompt" in cmd
-    assert cmd[cmd.index("--system-prompt") + 1] == "operator system instructions"
+    entry = captured_helper_kwargs[0]
+    cmd = entry["cmd"]
+    assert "--system-prompt-file" in cmd
+    spf_path = cmd[cmd.index("--system-prompt-file") + 1]
+    assert entry["system_prompt_file_content"] == (
+        "operator system instructions")
+    assert entry["system_prompt_file_mode"] == 0o600
+    # argv hygiene: the prompt text itself never appears in argv.
+    assert "--system-prompt" not in cmd
+    assert "operator system instructions" not in " ".join(cmd)
+    # The tempfile is unlinked once the dispatch returns.
+    assert not Path(spf_path).exists()
+    # The sandboxed child runs restrict_reads=True — the tempfile must
+    # be on the read allowlist or the CLI can't load its system prompt.
+    assert spf_path in entry["kwargs"]["readable_paths"]
     # stdin carries ONLY the user prompt.
-    assert captured_helper_kwargs[0]["kwargs"]["input"] == "user content only"
+    assert entry["kwargs"]["input"] == "user content only"
 
 
 def test_invoke_cc_simple_no_system_prompt_omits_flag(
@@ -496,3 +522,51 @@ def test_invoke_cc_simple_no_system_prompt_omits_flag(
 
     assert len(captured_helper_kwargs) == 1
     assert "--system-prompt" not in captured_helper_kwargs[0]["cmd"]
+    assert "--system-prompt-file" not in captured_helper_kwargs[0]["cmd"]
+
+
+def test_sysprompt_tempfile_readable_inside_restrict_reads_sandbox(tmp_path):
+    """The ``--system-prompt-file`` tempfile lives in host TMPDIR —
+    outside the restrict_reads default read allowlist. The dispatch
+    sites append its path to ``readable_paths``; this proves the
+    sandbox actually lets the child read it there (Landlock adds a
+    per-file rule; the mount-ns backend bind-mounts file entries at
+    their original path), i.e. a real ``claude`` child can load its
+    system prompt. No LLM, no network — a plain ``cat`` child."""
+    from core.llm.cc_adapter import CCDispatchConfig, system_prompt_file_for
+    from core.sandbox import check_landlock_available
+    from core.sandbox import run as sandbox_run
+
+    if not check_landlock_available():
+        pytest.skip("Landlock not available")
+
+    sentinel = "SYSPROMPT-SANDBOX-READ-PROOF-4c1b"
+    config = CCDispatchConfig(claude_bin="claude", system_prompt=sentinel)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    # With the readable_paths entry the dispatch sites add: readable.
+    with system_prompt_file_for(config) as spf:
+        r = sandbox_run(
+            ["cat", str(spf)],
+            target=str(out), output=str(out),
+            restrict_reads=True,
+            readable_paths=[str(spf)],
+            capture_output=True, text=True, timeout=60,
+        )
+    assert r.returncode == 0, (
+        f"sandboxed child could not read the sysprompt tempfile: "
+        f"rc={r.returncode} stderr={(r.stderr or '')[:300]!r}"
+    )
+    assert sentinel in r.stdout
+
+    # Without it: denied (Landlock EACCES) or absent (mount-ns fresh
+    # /tmp, ENOENT) — proves the readable_paths append is load-bearing.
+    with system_prompt_file_for(config) as spf:
+        r = sandbox_run(
+            ["cat", str(spf)],
+            target=str(out), output=str(out),
+            restrict_reads=True,
+            capture_output=True, text=True, timeout=60,
+        )
+    assert sentinel not in (r.stdout or "")

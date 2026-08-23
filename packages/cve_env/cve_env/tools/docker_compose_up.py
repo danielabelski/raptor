@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,13 @@ def _allow_all_devices(allow_devices: bool) -> bool:
 
 
 def project_name_for(cve_id: str) -> str:
-    """Deterministic compose project name (``cveenv-<sanitized-cve-id>``)."""
+    """Deterministic compose project-name prefix (``cveenv-<cve-id>``).
+
+    The prefix keeps a CVE's stacks greppable across the daemon;
+    launches salt it per launch (see ``docker_compose_up_payload``) so
+    two concurrent runs on the SAME CVE never share one compose
+    project.
+    """
     return project_name("cveenv", cve_id)
 
 
@@ -206,7 +213,16 @@ def docker_compose_up_payload(
             "cve_id": cve_id,
         }
 
-    project = project_name_for(cve_id)
+    # Per-launch project name: deterministic per-CVE prefix + a salt.
+    # A purely deterministic name made every process running the SAME
+    # CVE share one compose project — a concurrent run's `up`
+    # recreated the sibling's stack and its `down` tore the sibling's
+    # containers away. Nothing re-derives the name after launch:
+    # teardown reads it from _ACTIVE_STACKS, and cross-process orphan
+    # cleanup is label-scoped, so the salt costs no resumability. The
+    # retry loop below reuses ONE salt (its down/up must address the
+    # same project).
+    project = f"{project_name_for(cve_id)}-{uuid.uuid4().hex[:8]}"
     # Auto-retry-on-transient. If `up_stack` fails with a retry-eligible
     # class, prune + retry once before surfacing.
     from cve_env.tools._failure_class import classify_docker_stderr, is_retry_eligible

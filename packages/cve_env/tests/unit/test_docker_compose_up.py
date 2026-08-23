@@ -544,7 +544,59 @@ def test_payload_up_success_returns_primary(mock_run: Any, tmp_path: Path) -> No
         assert result["primary_service"] == "web"
         assert result["host_port"] == 32789
         assert result["host_ip"] == "127.0.0.1"
-        assert result["project_name"] == "cveenv-cve-2018-7600"
+        # Deterministic per-CVE prefix + per-launch salt.
+        prefix, _, salt = result["project_name"].rpartition("-")
+        assert prefix == "cveenv-cve-2018-7600"
+        assert salt and salt.isalnum()
+    finally:
+        reset_active_stacks()
+
+
+@patch("core.container.compose.run_compose")
+def test_payload_project_names_unique_per_launch(
+    mock_run: Any, tmp_path: Path
+) -> None:
+    """Two launches of the SAME CVE must not share a compose project.
+
+    Deterministic-only names collided for same-CVE concurrent runs:
+    the second process's ``up`` recreated the first's stack and its
+    ``down`` tore the first's containers away. The name keeps the
+    deterministic per-CVE prefix and gains a per-launch salt; teardown
+    reads the recorded name, never re-derives it."""
+
+    def run_compose_side_effect(args: list[str], **kwargs: Any) -> str:
+        if "ps" in args:
+            return json.dumps(
+                [
+                    {
+                        "ID": "cid",
+                        "Service": "web",
+                        "Publishers": [
+                            {"PublishedPort": 32789, "TargetPort": 80}
+                        ],
+                    }
+                ]
+            )
+        return ""
+
+    mock_run.side_effect = run_compose_side_effect
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        yaml.safe_dump(
+            {"services": {"web": {"image": "x:1", "ports": ["8080:80"]}}}
+        )
+    )
+    try:
+        r1 = docker_compose_up_payload(
+            compose_yaml_path=str(compose), cve_id="CVE-2018-7600"
+        )
+        r2 = docker_compose_up_payload(
+            compose_yaml_path=str(compose), cve_id="CVE-2018-7600"
+        )
+        assert r1["ok"] and r2["ok"]
+        for r in (r1, r2):
+            assert r["project_name"].startswith("cveenv-cve-2018-7600-")
+        assert r1["project_name"] != r2["project_name"]
     finally:
         reset_active_stacks()
 

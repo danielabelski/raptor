@@ -565,9 +565,19 @@ def prepare_A(workdir, target=None):
             for f in checklist.get("files", []):
                 src = f["path"]
                 stem = Path(src).stem
-                prefix = stem.split("_")[0] if "_" in stem else ""
-                poc = build_exes.get(stem) or (build_exes.get(prefix) if prefix else "")
-                orig = executables.get(stem) or (executables.get(prefix) if prefix else "")
+                # Exact-stem match only: a source file maps to the
+                # discovered artifact whose basename equals the source
+                # stem (foo.c → foo), and discovery already filtered
+                # candidates to real binary formats. The pre-fix
+                # `stem.split("_")[0]` prefix fallback paired
+                # auth_pam.c-class names with ANY 'auth' artifact,
+                # and combined with the old stem-keyed discovery it
+                # paired sshd.c with a contrib sshd.rc init script as
+                # its 'original' binary — which a PoC-evidence step
+                # would have EXECUTED. No fuzzy fallback: an unmapped
+                # source is recorded as unmapped, never mispaired.
+                poc = build_exes.get(stem, "")
+                orig = executables.get(stem, "")
                 entry = {}
                 if poc:
                     entry["poc"] = poc
@@ -1330,21 +1340,22 @@ def _discover_executables(target):
 
 
 def _match_finding_to_binary(finding, executables):
-    """Match a finding's source file to a discovered binary."""
+    """Match a finding's source file to a discovered binary.
+
+    Exact-stem match only: the discovery key (the binary's basename,
+    magic-filtered to real binary formats) must equal the source
+    file's stem (foo.c → foo). The pre-fix `stem.split("_")[0]`
+    prefix fallback and the mutual-startswith scan paired
+    auth_pam.c-class names with ANY 'auth' artifact — a mispairing
+    here hands Stage E feasibility (and PoC evidence execution) the
+    wrong program entirely, so no match beats a fuzzy match. The
+    single-artifact env-build case is handled by the caller's
+    ``single_env_binary`` fallback, not by fuzzing this lookup.
+    """
     src = finding.get("file", "")
     if not src:
         return ""
-    stem = Path(src).stem
-    if stem in executables:
-        return executables[stem]
-    if "_" in stem:
-        prefix = stem.split("_")[0]
-        if prefix in executables:
-            return executables[prefix]
-    for name, path in executables.items():
-        if stem.startswith(name) or name.startswith(stem):
-            return path
-    return ""
+    return executables.get(Path(src).stem, "")
 
 
 def _any_elf(executables):
@@ -1408,7 +1419,7 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
                 single_env_binary = next(iter(env_built.values()))[0]
 
     matched = 0
-    skipped = 0
+    skipped = []  # (finding id, reason) — named in the group summary
     for finding in data.get("findings", []):
         if finding.get("status") == "disproven":
             continue
@@ -1435,9 +1446,10 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
                 print(f"  {finding['id']}: matched -> {bp}")
                 matched += 1
         if not bp:
+            reason = "no binary found"
             finding.setdefault("feasibility", {})["status"] = "skipped"
-            finding["stage_e_summary"] = {"status": "skipped", "reason": "no binary found"}
-            skipped += 1
+            finding["stage_e_summary"] = {"status": "skipped", "reason": reason}
+            skipped.append((finding["id"], reason))
 
     _save_findings(workdir, data)
 
@@ -1446,9 +1458,15 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
         bp = f.get("feasibility", {}).get("binary_path", "")
         if bp:
             groups.setdefault(bp, []).append(f["id"])
-    print(f"{len(groups)} binary group(s), {matched} matched, {skipped} skipped")
+    print(f"{len(groups)} binary group(s), {matched} matched, "
+          f"{len(skipped)} skipped")
     for bp, ids in groups.items():
         print(f"  {bp}: {', '.join(ids)}")
+    # Name what was skipped and why — an anonymous count hid which
+    # findings never reached feasibility analysis (and made a run
+    # where EVERYTHING was skipped look like routine attrition).
+    for fid, reason in skipped:
+        print(f"  skipped: {fid} ({reason})")
 
     if mitigation_matrix and groups:
         _run_mitigation_matrix(workdir, target, data, build)

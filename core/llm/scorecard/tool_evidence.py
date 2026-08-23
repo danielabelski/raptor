@@ -29,10 +29,11 @@ auto-policy gate (Wilson over ``CHEAP_SHORT_CIRCUIT``) is unaffected.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+
+from core.json import load_json
 
 from . import _MAX_REASONING_CHARS
 from .scorecard import EventType, ModelScorecard
@@ -41,6 +42,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
+
+# orchestrated_report.json / findings.json are RAPTOR-written run
+# output — the findings-class budget.
+_MAX_REPORT_BYTES = 64 * 1024 * 1024
 
 
 def record_tool_evidence_outcome(
@@ -224,12 +229,8 @@ def auto_back_prop_from_validate_run(
     findings_path = out / "findings.json"
     if not orch_path.exists() or not findings_path.exists():
         return 0
-    try:
-        analysis = json.loads(orch_path.read_text(encoding="utf-8"))
-        validation = json.loads(findings_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        logger.debug("auto_back_prop: cannot read reports under %s: %s", out, e)
-        return 0
+    analysis = load_json(orch_path, max_bytes=_MAX_REPORT_BYTES)
+    validation = load_json(findings_path, max_bytes=_MAX_REPORT_BYTES)
     # Top-level shape guard — a hand-edited or upstream-corrupted list/scalar
     # would AttributeError on `.get(...)` later.
     if not isinstance(analysis, dict) or not isinstance(validation, dict):

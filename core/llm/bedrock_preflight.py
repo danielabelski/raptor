@@ -31,11 +31,16 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.json import load_json
+
 if TYPE_CHECKING:  # pragma: no cover
     from core.llm.config import ModelConfig
     from core.llm.dispatcher.auth import CredentialStore
 
 logger = logging.getLogger(__name__)
+
+# The preflight cache is a tiny RAPTOR-written record.
+_MAX_CACHE_BYTES = 1024 * 1024
 
 _CACHE_PATH = Path(
     os.environ.get("RAPTOR_BEDROCK_PREFLIGHT_CACHE")
@@ -82,11 +87,8 @@ def _cache_key(model: str, surface: str, region: str, profile: str,
 
 
 def _read_cache() -> dict:
-    try:
-        data = json.loads(_CACHE_PATH.read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    data = load_json(_CACHE_PATH, max_bytes=_MAX_CACHE_BYTES)
+    return data if isinstance(data, dict) else {}
 
 
 def _write_cache(cache: dict) -> None:

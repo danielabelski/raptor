@@ -17,6 +17,11 @@ from pathlib import Path
 from . import REPO_ROOT
 from .banner import format_banner, read_logo, read_random_quote
 
+# Byte budgets for the small local records init reads: the
+# tool-versions probe cache and the operator's models.json config.
+_MAX_CACHE_BYTES = 1024 * 1024
+_MAX_CONFIG_BYTES = 8 * 1024 * 1024
+
 # No sys.path mutation here: this module is only importable when the
 # repo root is already importable (relative imports above prove it),
 # so the former module-level insert was pure global state pollution
@@ -183,13 +188,12 @@ def _cached_cli_version(binary: str) -> str | None:
         os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     ) / "raptor"
     cache_file = cache_dir / "tool-versions.json"
+    from core.json import load_json
+
     cache: dict = {}
-    try:
-        loaded = json.loads(cache_file.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            cache = loaded
-    except (OSError, ValueError):
-        pass
+    loaded = load_json(cache_file, max_bytes=_MAX_CACHE_BYTES)
+    if isinstance(loaded, dict):
+        cache = loaded
     hit = cache.get(binary)
     if isinstance(hit, dict) and hit.get("key") == key \
             and isinstance(hit.get("version"), str):
@@ -307,7 +311,6 @@ def check_llm() -> tuple[list, list]:
 
     Returns (lines, warnings).
     """
-    import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     lines = []
@@ -322,11 +325,10 @@ def check_llm() -> tuple[list, list]:
             notice = _tighten_config_perms(config_path)
             if notice:
                 warnings.append(notice)
-            try:
-                data = json.loads(config_path.read_text(encoding="utf-8"))
+            from core.json import load_json
+            data = load_json(config_path, max_bytes=_MAX_CONFIG_BYTES)
+            if data is not None:
                 models = data.get("models", []) if isinstance(data, dict) else data
-            except (json.JSONDecodeError, OSError):
-                pass
 
         # Also check env vars for providers not in models.json
         env_keys = {

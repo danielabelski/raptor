@@ -52,6 +52,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from core.json import loads
 from core.logging import get_logger
 
 from .metadata import RUN_METADATA_FILE, load_run_metadata
@@ -139,8 +140,8 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
         logger.warning("stamp_findings: read failed %s: %s", path, e)
         return -1
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as e:
+        data = loads(raw)
+    except ValueError as e:
         logger.warning("stamp_findings: parse failed %s: %s", path, e)
         return -1
 

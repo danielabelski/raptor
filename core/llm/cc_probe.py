@@ -30,12 +30,17 @@ import subprocess
 import time
 from pathlib import Path
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
 
 # RAPTOR_CC_PROBE_CACHE overrides the on-disk probe-cache location so
 # tests and sandboxed runs can isolate it: the cached model identity
 # feeds every LLMConfig construction via _resolve_claudecode_model, so
 # a warm operator cache must be pinnable away from hermetic runs.
+# The probe cache is a tiny RAPTOR-written record.
+_MAX_CACHE_BYTES = 1024 * 1024
+
 _CACHE_PATH = Path(
     os.environ.get("RAPTOR_CC_PROBE_CACHE")
     or Path.home() / ".raptor" / "cache" / "cc-probe.json"
@@ -112,9 +117,8 @@ def extract_model_from_envelope(envelope: dict) -> str | None:
 
 
 def _read_cache(signature: str) -> str | None:
-    try:
-        data = json.loads(_CACHE_PATH.read_text())
-    except (OSError, ValueError):
+    data = load_json(_CACHE_PATH, max_bytes=_MAX_CACHE_BYTES)
+    if not isinstance(data, dict):
         return None
     if data.get("signature") != signature:
         return None

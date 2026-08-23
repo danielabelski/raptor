@@ -54,7 +54,7 @@ from typing import Any, TYPE_CHECKING
 # stability rationale.
 from core.sentinels import MISSING
 
-from .utils import _reject_non_finite
+from .utils import _loads, _reject_non_finite
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -638,8 +638,10 @@ class JsonCache:
         # Reject at parse time so the existing JSONDecodeError /
         # ValueError handler treats it as a corrupt entry and the
         # cache falls back to MISSING.
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh, parse_constant=_reject_non_finite)
+        data = _loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite,
+        )
         if not isinstance(data, dict):
             # ValueError (not TypeError): the corrupt-entry handlers in
             # try_get catch ValueError; this must land in that bucket.

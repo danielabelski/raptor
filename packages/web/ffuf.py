@@ -8,6 +8,7 @@ origin before spawning the external binary.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -709,6 +710,11 @@ class FfufRunner:
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
         output_file = self.out_dir / "ffuf_results.json"
+        # A reused output dir (routine with project runs) may hold a
+        # previous run's report; ffuf only writes on graceful exit, so a
+        # stale file would be silently misattributed to this run on the
+        # error and backstop-timeout paths.
+        output_file.unlink(missing_ok=True)
         cmd = self.build_command(config, output_file)
         # build_command uses the operator-facing name; swap in the
         # resolved real path for the exec.
@@ -752,8 +758,8 @@ class FfufRunner:
             else:
                 stderr_text = stderr_raw or ""
             logger.warning(
-                "ffuf did not exit at -maxtime %ds; killed after %ds grace, "
-                "keeping any partial results",
+                "ffuf did not exit at -maxtime %ds; killed after %ds grace — "
+                "the report reflects only what ffuf flushed before the kill",
                 config.max_runtime,
                 grace,
             )
@@ -788,18 +794,34 @@ class FfufRunner:
             "stderr": self._redact(stderr_text.strip()),
         }
 
+    def _clean_summary_text(self, value: object) -> str:
+        """Sanitize a report field that echoes response-influenced data.
+
+        Redact first — truncating before redaction could split a secret
+        token mid-pattern — then strip newlines (log/report injection)
+        and bound the length.
+        """
+        text = self._redact(value)
+        return text.replace("\r", " ").replace("\n", " ")[:2048]
+
+    @staticmethod
+    def _clean_summary_int(value: object) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
     def _summarize_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Keep ffuf report entries compact and secret-redacted."""
-        summary = {
-            "url": self._redact(result.get("url", "")),
-            "status": result.get("status"),
-            "length": result.get("length"),
-            "words": result.get("words"),
-            "lines": result.get("lines"),
+        """Keep ffuf report entries compact, typed, and secret-redacted."""
+        summary: dict[str, Any] = {
+            "url": self._clean_summary_text(result.get("url", "")),
+            "status": self._clean_summary_int(result.get("status")),
+            "length": self._clean_summary_int(result.get("length")),
+            "words": self._clean_summary_int(result.get("words")),
+            "lines": self._clean_summary_int(result.get("lines")),
         }
         # vhost runs answer "which Host matched", not "which URL": ffuf
         # reports the substituted Host value in the per-result host field.
         host = result.get("host")
         if host:
-            summary["host"] = self._redact(host)
+            summary["host"] = self._clean_summary_text(host)
         return summary

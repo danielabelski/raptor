@@ -970,6 +970,90 @@ def test_build_command_rejects_invalid_vhost_configs(
         )
 
 
+def test_run_removes_stale_report_before_spawning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ffuf only writes its report on graceful exit; a stale file left in
+    a reused output dir must not be misattributed to a run that died."""
+    import subprocess
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+
+    stale = tmp_path / "ffuf_results.json"
+    stale.write_text(
+        json.dumps({"results": [{"url": "https://example.test/stale", "status": 200}]}),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist))
+
+    assert result["timed_out"] is True
+    assert result["result_count"] == 0
+    assert result["results"] == []
+
+
+def test_run_refuses_to_parse_oversized_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr("packages.web.ffuf.shutil.which", lambda _binary: "/usr/bin/ffuf")
+    monkeypatch.setattr("packages.web.ffuf._MAX_FFUF_OUTPUT_BYTES", 64)
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text(
+            json.dumps({"results": [{"url": "https://example.test/" + "a" * 200}]}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", fake_run)
+
+    runner = FfufRunner("https://example.test", tmp_path)
+    result = runner.run(FfufConfig(wordlist=wordlist))
+
+    assert result["result_count"] == 0
+    assert result["results"] == []
+
+
+def test_summarize_result_sanitizes_hostile_report_fields(tmp_path: Path):
+    """Report fields echo attacker-influenced response data: newlines are
+    log/report injection, huge strings bypass report_limit (a count cap),
+    and non-int numerics are type confusion for downstream consumers."""
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    summary = runner._summarize_result(
+        {
+            "url": "https://example.test/x\nINJECTED-LOG-LINE " + "a" * 5000,
+            "status": "200",
+            "length": {"nested": "object"},
+            "words": 3,
+            "lines": True,
+            "host": "dev.example.test\r\nX-Smuggled: yes",
+        }
+    )
+
+    assert "\n" not in summary["url"]
+    assert "\r" not in summary["host"]
+    assert len(summary["url"]) <= 2048
+    assert summary["status"] is None
+    assert summary["length"] is None
+    assert summary["words"] == 3
+    assert summary["lines"] is None
+    assert "INJECTED-LOG-LINE" in summary["url"]  # content kept, newline gone
+
+
 def test_summarize_result_carries_vhost_host_field(tmp_path: Path):
     runner = FfufRunner("https://example.test", tmp_path)
 

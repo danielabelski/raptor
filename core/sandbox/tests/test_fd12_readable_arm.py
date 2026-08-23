@@ -26,6 +26,7 @@ import fcntl
 import os
 import socket
 import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -141,3 +142,130 @@ class TestFd12ReadableArm(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import core.sandbox.context as ctx  # noqa: E402
+
+
+class TestReopenWriteOnlyHelper(unittest.TestCase):
+    """The write-only reopen must be VERIFIED, not assumed: BSD
+    /dev/fd opens are dup(2)s that ignore flags, so a naive reopen
+    silently keeps the descriptor readable."""
+
+    def test_dup_semantics_platform_returns_none_without_getpath(self):
+        # Simulate BSD /dev/fd behavior on any platform: the fd-link
+        # open returns a dup (original access mode preserved), and no
+        # F_GETPATH exists — the helper must refuse rather than hand
+        # back a readable descriptor.
+        import fcntl
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            path = tf.name
+        self.addCleanup(os.unlink, path)
+        fd = os.open(path, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        real_open = os.open
+
+        def dup_open(p, flags, *a, **kw):
+            if isinstance(p, str) and (
+                    p.startswith("/proc/self/fd/")
+                    or p.startswith("/dev/fd/")):
+                return os.dup(int(p.rsplit("/", 1)[1]))
+            return real_open(p, flags, *a, **kw)
+
+        had = hasattr(fcntl, "F_GETPATH")
+        saved = getattr(fcntl, "F_GETPATH", None)
+        if had:
+            delattr(fcntl, "F_GETPATH")
+        try:
+            with patch.object(os, "open", side_effect=dup_open):
+                self.assertIsNone(
+                    ctx._reopen_write_only(fd, os.O_WRONLY))
+        finally:
+            if had:
+                fcntl.F_GETPATH = saved
+
+    def test_getpath_fallback_reopens_by_pinned_identity(self):
+        # With dup-semantics fd-links but a working F_GETPATH, the
+        # helper reopens by real path and pins device/inode identity.
+        import fcntl
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            path = tf.name
+        self.addCleanup(os.unlink, path)
+        fd = os.open(path, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        real_open = os.open
+        real_fcntl = fcntl.fcntl
+        FAKE_GETPATH = 0x7F001234
+
+        def dup_open(p, flags, *a, **kw):
+            if isinstance(p, str) and (
+                    p.startswith("/proc/self/fd/")
+                    or p.startswith("/dev/fd/")):
+                return os.dup(int(p.rsplit("/", 1)[1]))
+            return real_open(p, flags, *a, **kw)
+
+        def fake_fcntl(f, cmd, arg=0):
+            if cmd == FAKE_GETPATH:
+                return path.encode() + b"\x00" * 8
+            return real_fcntl(f, cmd, arg)
+
+        had = hasattr(fcntl, "F_GETPATH")
+        saved = getattr(fcntl, "F_GETPATH", None)
+        fcntl.F_GETPATH = FAKE_GETPATH
+        try:
+            with patch.object(os, "open", side_effect=dup_open), \
+                    patch.object(fcntl, "fcntl", side_effect=fake_fcntl):
+                wfd = ctx._reopen_write_only(fd, os.O_WRONLY)
+            self.assertIsNotNone(wfd)
+            self.addCleanup(os.close, wfd)
+            self.assertEqual(
+                fcntl.fcntl(wfd, fcntl.F_GETFL) & os.O_ACCMODE,
+                os.O_WRONLY)
+            self.assertEqual(os.fstat(wfd).st_ino, os.fstat(fd).st_ino)
+        finally:
+            if had:
+                fcntl.F_GETPATH = saved
+            else:
+                delattr(fcntl, "F_GETPATH")
+
+    def test_getpath_identity_mismatch_refuses(self):
+        # A path swapped between F_GETPATH and open must be refused
+        # (device/inode pin), not handed to the child.
+        import fcntl
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            path = tf.name
+        self.addCleanup(os.unlink, path)
+        with tempfile.NamedTemporaryFile(delete=False) as tf2:
+            other = tf2.name
+        self.addCleanup(os.unlink, other)
+        fd = os.open(path, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        real_open = os.open
+        real_fcntl = fcntl.fcntl
+        FAKE_GETPATH = 0x7F001234
+
+        def dup_open(p, flags, *a, **kw):
+            if isinstance(p, str) and (
+                    p.startswith("/proc/self/fd/")
+                    or p.startswith("/dev/fd/")):
+                return os.dup(int(p.rsplit("/", 1)[1]))
+            return real_open(p, flags, *a, **kw)
+
+        def fake_fcntl(f, cmd, arg=0):
+            if cmd == FAKE_GETPATH:
+                return other.encode() + b"\x00" * 8  # swapped target
+            return real_fcntl(f, cmd, arg)
+
+        had = hasattr(fcntl, "F_GETPATH")
+        saved = getattr(fcntl, "F_GETPATH", None)
+        fcntl.F_GETPATH = FAKE_GETPATH
+        try:
+            with patch.object(os, "open", side_effect=dup_open), \
+                    patch.object(fcntl, "fcntl", side_effect=fake_fcntl):
+                self.assertIsNone(
+                    ctx._reopen_write_only(fd, os.O_WRONLY))
+        finally:
+            if had:
+                fcntl.F_GETPATH = saved
+            else:
+                delattr(fcntl, "F_GETPATH")

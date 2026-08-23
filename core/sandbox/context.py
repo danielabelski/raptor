@@ -5032,6 +5032,55 @@ def _require_userns_or_optin(entry: str, restrict_reads: bool=True) -> bool:
     raise SandboxSetupError(msg)
 
 
+def _reopen_write_only(fd: int, flags: int) -> "int | None":
+    """Reopen *fd*'s file write-only, returning the new fd or None.
+
+    Linux's /proc/self/fd magic links honour the requested flags. BSD
+    /dev/fd opens are dup(2)s — flags are ignored and the descriptor
+    keeps its original access mode — so the result is VERIFIED
+    write-only; when it is not, fall back to a true reopen by real
+    path (F_GETPATH, macOS) pinned by device/inode identity against
+    the original descriptor. Returns None when no verified write-only
+    reopen exists (caller must fail closed, e.g. plug with /dev/null).
+    """
+    import fcntl as _fcntl
+    fd_link = (
+        f"/proc/self/fd/{fd}" if sys.platform != "darwin"
+        else f"/dev/fd/{fd}"
+    )
+    try:
+        wfd = os.open(fd_link, flags)
+    except OSError:
+        wfd = -1
+    if wfd >= 0:
+        try:
+            if _fcntl.fcntl(wfd, _fcntl.F_GETFL) & os.O_ACCMODE \
+                    == os.O_WRONLY:
+                return wfd
+        except OSError:
+            pass
+        os.close(wfd)
+    getpath = getattr(_fcntl, "F_GETPATH", None)
+    if getpath is None:
+        return None
+    try:
+        raw = _fcntl.fcntl(fd, getpath, bytes(1024))
+        path = raw.split(b"\x00", 1)[0].decode(
+            sys.getfilesystemencoding(), "surrogateescape")
+        cand = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        st_old, st_new = os.fstat(fd), os.fstat(cand)
+        if (st_old.st_dev, st_old.st_ino) \
+                == (st_new.st_dev, st_new.st_ino):
+            return cand
+    except OSError:
+        pass
+    os.close(cand)
+    return None
+
+
 def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | None = None,
                   limits: dict | None = None,
                   restrict_reads: bool = True,
@@ -5241,12 +5290,19 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                             _flags |= os.O_APPEND
                     except OSError:
                         pass
-                    _fd_link = (
-                        f"/proc/self/fd/{_fd}"
-                        if sys.platform != "darwin"
-                        else f"/dev/fd/{_fd}"
-                    )
-                    _wfd = os.open(_fd_link, _flags)
+                    _wfd_opt = _reopen_write_only(_fd, _flags)
+                    if _wfd_opt is None:
+                        logger.warning(
+                            "run_untrusted: %s has no verified "
+                            "write-only reopen on this platform — "
+                            "plugging with /dev/null. Pass "
+                            "capture_output=True or an explicit "
+                            "%s= pipe to keep the output.",
+                            _name, _name,
+                        )
+                        kwargs[_name] = subprocess.DEVNULL
+                        continue
+                    _wfd = _wfd_opt
                     if _stat.S_ISREG(_mode) and not (
                             _flags & os.O_APPEND):
                         # A fresh open starts at offset 0; carry the

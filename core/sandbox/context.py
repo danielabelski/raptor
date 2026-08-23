@@ -1682,47 +1682,49 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
     # apply — a strict abort inside a scanner child surfaces as
     # "isolation could not engage", never as a silent "0 findings".
     if strict_required:
-        if not use_sandbox:
-            from .errors import SandboxSetupError
-            if sys.platform == "darwin":
-                msg = (
-                    "sandbox profile 'strict' requires the seatbelt "
-                    "backend, but sandbox-exec is unavailable or failed "
-                    "its smoke test on this host"
-                )
-                raise SandboxSetupError(
-                    msg,
-                    "verify /usr/bin/sandbox-exec exists and can run a "
-                    "minimal profile; or explicitly choose a profile "
-                    "that degrades gracefully (e.g. `--sandbox full`). "
-                    "RAPTOR will not silently downgrade for you.",
-                )
-            from .probes import ENGAGE_FAIL_INSTRUCTIONS
+        from .errors import SandboxSetupError
+        if not use_sandbox and sys.platform == "darwin":
             msg = (
-                "sandbox profile 'strict' requires namespace isolation, "
-                "but user namespaces are unavailable on this host"
+                "sandbox profile 'strict' requires the seatbelt "
+                "backend, but sandbox-exec is unavailable or failed "
+                "its smoke test on this host"
             )
             raise SandboxSetupError(
                 msg,
+                "verify /usr/bin/sandbox-exec exists and can run a "
+                "minimal profile; or explicitly choose a profile "
+                "that degrades gracefully (e.g. `--sandbox full`). "
+                "RAPTOR will not silently downgrade for you.",
+            )
+        # Linux: collect EVERY unmet strict requirement before
+        # raising. Constrained hosts frequently miss several at once
+        # (no userns implies no mount-ns; minimal runners lack
+        # libseccomp too), and raising on the first check hid the
+        # rest — the operator fixed one gate only to hit the next
+        # run-through, and the later gates' diagnostics were
+        # unobservable wherever an earlier gate also fired. One
+        # abort names everything missing.
+        unmet: list[tuple[str, str]] = []
+        if not use_sandbox:
+            from .probes import ENGAGE_FAIL_INSTRUCTIONS
+            unmet.append((
+                "namespace isolation, but user namespaces are "
+                "unavailable on this host",
                 ENGAGE_FAIL_INSTRUCTIONS + " For profile 'strict' "
                 "specifically, `--sandbox full` is the explicit "
                 "step-down: it degrades to Landlock + seccomp with "
                 "warnings instead of aborting.",
-            )
+            ))
         if sys.platform != "darwin" and (target or output) and not use_mount:
-            from .errors import SandboxSetupError
             from .probes import mount_unavailable_reason
             condition, fix = mount_unavailable_reason()
-            msg = (
-                "sandbox profile 'strict' requires mount-namespace "
-                f"isolation for target/output, but {condition}"
-            )
-            raise SandboxSetupError(
-                msg,
+            unmet.append((
+                "mount-namespace isolation for target/output, "
+                f"but {condition}",
                 fix + " Or explicitly choose a profile that degrades "
                 "gracefully (e.g. `--sandbox full`). RAPTOR will not "
                 "silently downgrade for you.",
-            )
+            ))
         # strict's resolved profile requests a seccomp filter; when
         # libseccomp is absent/broken the filter builder returns None
         # and both spawn paths silently run FILTERLESS — the AF_UNIX
@@ -1733,16 +1735,29 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # above.
         if (sys.platform != "darwin" and seccomp_profile
                 and not _seccomp.check_seccomp_available()):
-            from .errors import SandboxSetupError
-            raise SandboxSetupError(
-                "sandbox profile 'strict' requires a seccomp filter, "
-                "but libseccomp is unavailable or non-functional on "
-                "this host — the syscall blocklist would silently not "
-                "engage",
+            unmet.append((
+                "a seccomp filter, but libseccomp is unavailable or "
+                "non-functional on this host — the syscall blocklist "
+                "would silently not engage",
                 "install libseccomp (libseccomp2 package) so the "
                 "filter can load, or explicitly choose a profile that "
                 "degrades gracefully (e.g. `--sandbox full`). RAPTOR "
                 "will not silently downgrade for you.",
+            ))
+        if len(unmet) == 1:
+            raise SandboxSetupError(
+                f"sandbox profile 'strict' requires {unmet[0][0]}",
+                unmet[0][1],
+            )
+        if unmet:
+            missing = "; ".join(
+                f"({i}) {m}" for i, (m, _f) in enumerate(unmet, 1))
+            fixes = " ".join(
+                f"({i}) {f}" for i, (_m, f) in enumerate(unmet, 1))
+            raise SandboxSetupError(
+                f"sandbox profile 'strict' has {len(unmet)} unmet "
+                f"requirements on this host — it requires {missing}",
+                fixes,
             )
 
     if effectively_disabled and not state._cli_sandbox_disabled:

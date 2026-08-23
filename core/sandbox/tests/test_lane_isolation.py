@@ -80,16 +80,22 @@ sys.stdin.buffer.read(1)
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
 s.connect(sys.argv[1])
-s.sendall(b"CONNECT denied.invalid:443 HTTP/1.1\r\n"
-          b"Host: denied.invalid\r\n\r\n")
 buf = b""
 try:
+    # The send sits inside the tolerant block: when the peer gate
+    # rejects this process, the proxy may close the socket before the
+    # bytes are written, so under load sendall itself raises
+    # BrokenPipeError/ConnectionResetError. A refusal during send is
+    # the same (stronger) outcome as EOF during recv — either way the
+    # child saw no protocol response.
+    s.sendall(b"CONNECT denied.invalid:443 HTTP/1.1\r\n"
+              b"Host: denied.invalid\r\n\r\n")
     while b"\r\n" not in buf:
         chunk = s.recv(4096)
         if not chunk:
             break
         buf += chunk
-except (ConnectionResetError, TimeoutError):
+except (BrokenPipeError, ConnectionResetError, TimeoutError):
     pass
 sys.stdout.buffer.write(buf or b"NO-RESPONSE")
 """

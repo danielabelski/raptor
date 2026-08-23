@@ -371,6 +371,10 @@ Web application security scanner (alpha).
 | `--ffuf-mode <mode>` | Multi-wordlist mode: `clusterbomb` or `pitchfork` |
 | `--ffuf-vhost` | Virtual-host discovery (fuzzes `Host: FUZZ.<target>`) |
 | `--ffuf-vhost-host-template <t>` | Custom vhost Host template (must end with `.<target-host>`) |
+| `--ffuf-request <file>` | Raw HTTP request file to fuzz (`-request`); Host must name the target |
+| `--ffuf-calibration-strategy <s>` | Auto-calibration strategy `basic`/`advanced` (`-acs`) |
+| `--ffuf-per-host-calibration` | Calibrate filters per host (`-ach`) |
+| `--ffuf-encoder <spec>` | Keyword encoder chain, e.g. `'FUZZ:urlencode'` (`-enc`, repeatable) |
 | `--ffuf-stop-on-403` | Stop when >95% of responses are 403 (`-sf`) |
 | `--ffuf-stop-on-spurious-errors` | Stop on spurious errors (`-se`) |
 | `--ffuf-stop-on-all-errors` | Stop on all error cases (`-sa`) |

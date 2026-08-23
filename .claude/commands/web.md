@@ -70,6 +70,15 @@ python3 raptor.py web --url https://target \
   --ffuf-wordlist params.txt --ffuf-wordlist 'values.txt:W2' \
   --ffuf-path 'search?FUZZ=W2'
 
+# API fuzzing from a raw request (e.g. generated from an OpenAPI spec)
+python3 raptor.py web --url https://target --ffuf-wordlist payloads.txt \
+  --ffuf-request request.txt
+
+# Blind-timing probe: sleep-payload wordlist + response-time matcher
+python3 raptor.py web --url https://target --ffuf-wordlist sleep-payloads.txt \
+  --ffuf-path 'search?q=FUZZ' --ffuf-match-time '>3000' --ffuf-rate 5
+# (verify every timing hit with the replay oracle before believing it)
+
 # Secret hunting in response bodies
 python3 raptor.py web --url https://target --ffuf-wordlist dirs.txt \
   --ffuf-match-regex 'AKIA[0-9A-Z]{16}'

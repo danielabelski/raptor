@@ -332,20 +332,42 @@ Web application security scanner (alpha).
 
 | Flag | Description |
 |------|-------------|
-| `--ffuf-wordlist <path>` | Wordlist for directory brute-forcing |
-| `--ffuf-path <path>` | Path pattern for ffuf |
+| `--ffuf-wordlist <path>` | Wordlist for content discovery (repeatable; extras take `path:KEYWORD`) |
+| `--ffuf-path <path>` | URL path/template containing FUZZ |
 | `--ffuf-bin <path>` | Path to ffuf binary |
 | `--ffuf-threads <n>` | ffuf thread count |
 | `--ffuf-rate <n>` | ffuf request rate limit |
 | `--ffuf-timeout <secs>` | ffuf per-request timeout |
 | `--ffuf-report-limit <n>` | Maximum ffuf results to report |
-| `--ffuf-max-runtime <secs>` | Maximum ffuf runtime |
+| `--ffuf-max-runtime <secs>` | Maximum ffuf runtime (`-maxtime`) |
+| `--ffuf-maxtime-job <secs>` | Per-job runtime cap (`-maxtime-job`) |
 | `--ffuf-no-auto-calibration` | Disable ffuf auto-calibration |
 | `--ffuf-match-status <codes>` | HTTP status codes to match |
 | `--ffuf-filter-status <codes>` | HTTP status codes to filter |
-| `--ffuf-filter-size <sizes>` | Response sizes to filter |
+| `--ffuf-filter-size <n>` | Response size to filter (`-fs`) |
+| `--ffuf-filter-words <n>` | Response word count to filter (`-fw`) |
+| `--ffuf-filter-lines <n>` | Response line count to filter (`-fl`) |
+| `--ffuf-match-regex <re>` | Response content match regex (`-mr`) |
+| `--ffuf-filter-regex <re>` | Response content filter regex (`-fr`) |
+| `--ffuf-match-time <spec>` | Response time matcher, e.g. `'>500'` ms (`-mt`) |
+| `--ffuf-filter-time <spec>` | Response time filter, e.g. `'<100'` ms (`-ft`) |
+| `--ffuf-extensions <exts>` | File extensions, e.g. `.php,.bak` (`-e`) |
+| `--ffuf-recursion` | Recursive directory discovery (template must end with FUZZ) |
+| `--ffuf-recursion-depth <n>` | Recursion depth (default 2) |
+| `--ffuf-recursion-strategy <s>` | `default` or `greedy` |
+| `--ffuf-method <verb>` | HTTP method (`-X`) |
+| `--ffuf-data <body>` | Request body, may carry FUZZ (`-d`) |
+| `--ffuf-mode <mode>` | Multi-wordlist mode: `clusterbomb` or `pitchfork` |
+| `--ffuf-vhost` | Virtual-host discovery (fuzzes `Host: FUZZ.<target>`) |
+| `--ffuf-vhost-host-template <t>` | Custom vhost Host template (must end with `.<target-host>`) |
+| `--ffuf-stop-on-403` | Stop when >95% of responses are 403 (`-sf`) |
+| `--ffuf-stop-on-spurious-errors` | Stop on spurious errors (`-se`) |
+| `--ffuf-stop-on-all-errors` | Stop on all error cases (`-sa`) |
 | `--ffuf-header <header>` | Custom HTTP header (repeatable) |
-| `--ffuf-cookie <cookie>` | Cookie to include in requests |
+| `--ffuf-cookie <cookie>` | Cookie to include in requests (repeatable) |
+
+Recursion and clusterbomb apply a default `-rate 50` unless `--ffuf-rate`
+is set. See `.claude/commands/web.md` for recipes.
 
 ---
 

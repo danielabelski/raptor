@@ -83,6 +83,9 @@ def parse_wordlist_args(
                 f"(got {entry!r}); keywords look like W2 or PARAM"
             )
             raise ValueError(msg)
+        if not path:
+            msg = f"ffuf wordlist entry has an empty path: {entry!r}"
+            raise ValueError(msg)
         extras.append((Path(path), keyword))
     return Path(primary_path), tuple(extras)
 
@@ -387,6 +390,20 @@ class FfufRunner:
     @staticmethod
     def _validate_config(config: FfufConfig) -> None:
         """Reject configurations that cannot form a safe ffuf argv."""
+        for wordlist_path in (
+            config.wordlist,
+            *(path for path, _keyword in config.extra_wordlists),
+        ):
+            # ffuf splits -w values on ':' (keyword suffix) and ','
+            # (multi-value); a path containing either validates locally
+            # but is misparsed inside ffuf.
+            path_text = str(wordlist_path)
+            if ":" in path_text or "," in path_text:
+                msg = (
+                    "ffuf wordlist paths must not contain ':' or ',' "
+                    f"(ffuf splits -w on them): {path_text}"
+                )
+                raise ValueError(msg)
         if not config.wordlist.is_file():
             msg = f"ffuf wordlist not found: {config.wordlist}"
             raise FileNotFoundError(msg)
@@ -481,9 +498,9 @@ class FfufRunner:
             for header in config.headers:
                 if ":" not in header:
                     continue
-                name, value = header.split(":", 1)
-                if name.strip().lower() == "host" and any(
-                    kw in value for kw in keywords
+                header_name, header_value = header.split(":", 1)
+                if header_name.strip().lower() == "host" and any(
+                    kw in header_value for kw in keywords
                 ):
                     msg = (
                         "fuzzing the Host header requires vhost mode, which "

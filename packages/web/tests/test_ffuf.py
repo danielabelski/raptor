@@ -765,6 +765,58 @@ def test_parse_wordlist_args_rejects_bad_shapes(raw: list[str], message: str):
         parse_wordlist_args(raw)
 
 
+def test_build_command_rejects_wordlist_paths_ffuf_would_misparse(tmp_path: Path):
+    """ffuf splits -w on ':' (first occurrence) and ',': a path containing
+    either validates locally but is misparsed inside ffuf."""
+    weird_dir = tmp_path / "we:ird"
+    weird_dir.mkdir()
+    colon_list = weird_dir / "l.txt"
+    colon_list.write_text("admin\n", encoding="utf-8")
+    comma_list = tmp_path / "my,list.txt"
+    comma_list.write_text("admin\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    for bad in (colon_list, comma_list):
+        with pytest.raises(ValueError, match="must not contain"):
+            runner.build_command(
+                FfufConfig(wordlist=bad), tmp_path / "out.json"
+            )
+
+
+def test_scanner_cli_preflights_ffuf_config_before_scanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A bad ffuf flag combination must die at argument-parse time, not
+    in Phase 2b after the crawl/fuzz budget has been spent."""
+    import sys as _sys
+
+    from packages.web import scanner
+
+    wordlist = tmp_path / "words.txt"
+    wordlist.write_text("admin\n", encoding="utf-8")
+    monkeypatch.setattr(
+        _sys,
+        "argv",
+        [
+            "scanner.py",
+            "--url",
+            "https://example.test",
+            "--ffuf-wordlist",
+            str(wordlist),
+            "--ffuf-mode",
+            "pitchfork",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        scanner.main()
+
+    assert excinfo.value.code == 2
+    assert "mode requires additional wordlists" in capsys.readouterr().err
+
+
 def test_scanner_cli_wires_multi_wordlists(tmp_path: Path):
     from packages.web.scanner import build_arg_parser, build_ffuf_config
 

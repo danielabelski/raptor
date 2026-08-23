@@ -579,7 +579,19 @@ def main():
 
     parser = build_arg_parser()
     args = parser.parse_args()
-    ffuf_config = build_ffuf_config(args)
+    try:
+        ffuf_config = build_ffuf_config(args)
+        if ffuf_config is not None:
+            # Preflight the full ffuf argv now: ffuf runs AFTER the
+            # crawl/fuzz phases, and a config error surfacing there
+            # aborts the scan and discards everything those phases
+            # produced. build_command exercises every validation rule
+            # without spawning anything.
+            FfufRunner(
+                args.url, Path("."), reveal_secrets=bool(args.reveal_secrets)
+            ).build_command(ffuf_config, Path("ffuf-preflight.json"))
+    except (ValueError, FileNotFoundError) as exc:
+        parser.error(f"ffuf: {exc}")
 
     # Determine output directory
     if args.out:

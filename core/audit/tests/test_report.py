@@ -100,6 +100,7 @@ class TestComputeStats:
             return SimpleNamespace(
                 file="a.c", function=func, verdict="suspicious",
                 source_hash="h", strategies=list(strategies), body=body,
+                line_start=1, ts="2026-01-01T00:00:00Z",
             )
 
         entries = {
@@ -111,7 +112,8 @@ class TestComputeStats:
             ),
         }
         monkeypatch.setattr(
-            journal_mod, "latest_entries", lambda out_dir: entries,
+            journal_mod, "load_entries",
+            lambda out_dir: list(entries.values()),
         )
         state = _load_review_state(Path("/nonexistent"))
         by_name = {
@@ -576,3 +578,60 @@ class TestDarkSurfacing:
         dark = report.get("dark_findings", [])
         assert len(dark) == 1
         assert dark[0]["title"] == "idor in order lookup"
+
+
+class TestRemainingGapsSetDifference:
+    """gaps_remaining is a SET difference over gap items, never an
+    arithmetic subtraction — a 46-hour run reported '0 gaps left'
+    over ~2,300 untouched priority-0 functions because journal
+    reviews outside the gap list outnumbered the gap count."""
+
+    def test_unreviewed_gap_counts_despite_review_surplus(self):
+        from core.audit.report import _count_remaining_gaps
+        gaps_data = {
+            "count": 2,
+            "gaps": [
+                {"file": "a.c", "name": "reviewed_fn", "line_start": 10},
+                {"file": "b.c", "name": "selected", "line_start": 234},
+            ],
+        }
+        audit_data = {"functions_analysed": [
+            {"file": "a.c", "function": "reviewed_fn",
+             "line_start": 10, "status": "clean"},
+            # Surplus reviews NOT in the gap list — pre-fix these
+            # subtracted the remainder to zero.
+            {"file": "z.c", "function": "extra1",
+             "line_start": 1, "status": "clean"},
+            {"file": "z.c", "function": "extra2",
+             "line_start": 2, "status": "clean"},
+        ]}
+        assert _count_remaining_gaps(gaps_data, audit_data) == 1
+
+    def test_same_named_prototype_does_not_cover_body(self):
+        from core.audit.report import _count_remaining_gaps
+        gaps_data = {"count": 1, "gaps": [
+            {"file": "r.c", "name": "fn", "line_start": 57},
+        ]}
+        audit_data = {"functions_analysed": [
+            {"file": "r.c", "function": "fn",
+             "line_start": 48, "status": "clean"},
+        ]}
+        assert _count_remaining_gaps(gaps_data, audit_data) == 1
+
+    def test_spanless_record_covers_coarsely(self):
+        from core.audit.report import _count_remaining_gaps
+        gaps_data = {"count": 1, "gaps": [
+            {"file": "a.c", "name": "f", "line_start": 3},
+        ]}
+        audit_data = {"functions_analysed": [
+            {"file": "a.c", "function": "f", "status": "clean"},
+        ]}
+        assert _count_remaining_gaps(gaps_data, audit_data) == 0
+
+    def test_legacy_gapless_shape_keeps_arithmetic(self):
+        from core.audit.report import _count_remaining_gaps
+        assert _count_remaining_gaps(
+            {"count": 5},
+            {"functions_analysed": [
+                {"file": "a.c", "function": "f", "status": "clean"}]},
+        ) == 4

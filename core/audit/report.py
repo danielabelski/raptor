@@ -585,11 +585,23 @@ def _load_review_state(out_dir: Path) -> dict[str, Any]:
     ``hash`` fields — matches the pre-migration record schema.
     """
     try:
-        from .journal import latest_entries
+        from .journal import load_entries
     except Exception:  # noqa: BLE001
         return {"functions_analysed": []}
     try:
-        entries = latest_entries(out_dir)
+        # Latest per SITE — (file, function, line_start) — not per
+        # coarse (file, function): same-named checklist items
+        # (function + prototype, macro redefinitions) are distinct
+        # review subjects, and the coarse collapse made a reviewed
+        # prototype stand in for its unreviewed body in every
+        # report-side count.
+        best: dict[tuple, Any] = {}
+        for e in load_entries(out_dir):
+            k = (e.file, e.function, e.line_start or 0)
+            prev = best.get(k)
+            if prev is None or e.ts > prev.ts:
+                best[k] = e
+        entries = best
     except Exception:  # noqa: BLE001
         return {"functions_analysed": []}
     if not entries:
@@ -601,6 +613,7 @@ def _load_review_state(out_dir: Path) -> dict[str, Any]:
         functions.append({
             "file": entry.file,
             "function": entry.function,
+            "line_start": entry.line_start or 0,
             "status": entry.verdict,
             "hash": entry.source_hash or None,
             # Post-loop mechanical entries (taint-spec / negative-space
@@ -915,20 +928,59 @@ def _count_remaining_gaps(
     ``gaps_remaining`` by one while the reviewed count excluded it,
     so the two headline numbers disagreed about the same journal.
     """
-    total_gaps = gaps_data.get("count", 0)
-    if "files" in audit_data:
-        reviewed = sum(
-            len(fd.get("functions", {}))
-            for fd in audit_data["files"].values()
-        )
-    elif "functions_analysed" in audit_data:
-        reviewed = sum(
-            1 for func_data in audit_data["functions_analysed"]
-            if not func_data.get("mechanical")
-        )
-    else:
-        reviewed = 0
-    return max(0, total_gaps - reviewed)
+    gaps = gaps_data.get("gaps") or []
+    if not gaps:
+        # Legacy gaps.json without the item list: arithmetic fallback.
+        # Set-blind subtraction is UNSAFE when the list exists — the
+        # journal contains reviews that are not gap items (batch
+        # members, re-reviews, deepen passes), so ``reviewed`` can
+        # exceed ``total_gaps`` while real gap items sit unreviewed;
+        # a 46-hour run reported "0 gaps left" over ~2,300 untouched
+        # priority-0 functions (two of which carried real
+        # vulnerabilities a comparison harness later confirmed).
+        total_gaps = gaps_data.get("count", 0)
+        if "files" in audit_data:
+            reviewed = sum(
+                len(fd.get("functions", {}))
+                for fd in audit_data["files"].values()
+            )
+        elif "functions_analysed" in audit_data:
+            reviewed = sum(
+                1 for func_data in audit_data["functions_analysed"]
+                if not func_data.get("mechanical")
+            )
+        else:
+            reviewed = 0
+        return max(0, total_gaps - reviewed)
+
+    # Set difference, per SITE: a gap counts as remaining unless a
+    # non-mechanical journal record covers its (file, name) — and,
+    # when both sides carry spans, its line_start. Same-named items
+    # (function + prototype, macro redefinitions) must not cover each
+    # other.
+    sites: set = set()
+    spanless: set = set()
+    for rec in audit_data.get("functions_analysed", []):
+        if rec.get("mechanical") or rec.get("status") == "error":
+            continue
+        key = (rec.get("file"), rec.get("function"))
+        ls = rec.get("line_start") or 0
+        if ls:
+            sites.add((key[0], key[1], ls))
+        else:
+            spanless.add(key)
+    if "files" in audit_data:  # pre-migration record shape
+        for fp, fd in audit_data["files"].items():
+            for fn in fd.get("functions", {}):
+                spanless.add((fp, fn))
+    remaining = 0
+    for g in gaps:
+        key = (g.get("file"), g.get("name"))
+        ls = g.get("line_start") or 0
+        if key in spanless or (ls and (key[0], key[1], ls) in sites):
+            continue
+        remaining += 1
+    return remaining
 
 
 def _find_unrecorded_reads(

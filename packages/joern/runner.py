@@ -1234,10 +1234,8 @@ def _read_cpg_manifest(cpg_dir: Path) -> dict | None:
     manifest_path = cpg_dir / "manifest.json"
     if not manifest_path.exists():
         return None
-    try:
-        return json.loads(manifest_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+    from core.json import load_json
+    return load_json(manifest_path, max_bytes=8 * 1024 * 1024)
 
 
 def load_cached_cpg(

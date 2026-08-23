@@ -104,10 +104,8 @@ def _read_state(_lock_fd: int) -> dict[str, Any] | None:
     # files that predate the 0600 write path.
     with contextlib.suppress(OSError):
         _STATE_FILE.chmod(0o600)
-    try:
-        return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    from core.json import load_json
+    return load_json(_STATE_FILE, max_bytes=1024 * 1024)
 
 
 def _write_state(_lock_fd: int, state: dict[str, Any]) -> None:

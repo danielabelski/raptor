@@ -2,6 +2,7 @@
 
 import os
 import platform
+import shutil
 import tempfile
 import unittest
 
@@ -11,6 +12,20 @@ from unittest.mock import patch
 
 from packages.fuzzing.capability import CapabilityReport
 from packages.fuzzing.orchestrator import FuzzingOrchestrator
+
+
+def _tmpdir(case: unittest.TestCase) -> Path:
+    """mkdtemp with addCleanup-driven teardown.
+
+    Pre-fix these suites called ``tempfile.mkdtemp`` bare — every
+    source-repo / out-dir fixture leaked a ``$TMPDIR/tmpXXXXXXXX``
+    (observed piling up on shared hosts as anonymous dirs holding
+    ``main.c`` or ``capability_report.json``/``fuzzing_plan.json``).
+    ``addCleanup`` removes the dir even when the test fails or raises.
+    """
+    d = tempfile.mkdtemp()
+    case.addCleanup(shutil.rmtree, d, ignore_errors=True)
+    return Path(d)
 
 
 def _full_caps_linux():
@@ -198,13 +213,13 @@ if __name__ == "__main__":
 
 
 class TestEnvBuildPlanning(unittest.TestCase):
-    """S5.5: source-tree targets route to AFL env build-on-demand when
+    """Source-tree targets route to AFL env build-on-demand when
     (and only when) the operator authorised the build."""
 
     def _source_repo(self):
-        d = tempfile.mkdtemp()
-        Path(d, "main.c").write_text("int main(void){return 0;}\n")
-        return Path(d)
+        d = _tmpdir(self)
+        (d / "main.c").write_text("int main(void){return 0;}\n")
+        return d
 
     def test_authorised_source_dir_plans_env_build(self):
         repo = self._source_repo()
@@ -274,17 +289,17 @@ class TestEnvBuildExecution(unittest.TestCase):
 
     def test_failed_env_build_aborts_execute(self):
         from types import SimpleNamespace
-        repo = tempfile.mkdtemp()
-        Path(repo, "main.c").write_text("int main(void){return 0;}\n")
+        repo = _tmpdir(self)
+        (repo / "main.c").write_text("int main(void){return 0;}\n")
         with patch("packages.fuzzing.orchestrator.probe_capabilities",
                    return_value=_full_caps_linux()), \
              patch("packages.fuzzing.env_build.env_build_candidate",
                    return_value=(True, "")):
             orch = FuzzingOrchestrator()
-            plan = orch.plan(Path(repo))
+            plan = orch.plan(repo)
         failed = SimpleNamespace(ok=False, reason="build_failed",
                                  detail="boom")
-        out = Path(tempfile.mkdtemp())
+        out = _tmpdir(self)
         with patch("packages.fuzzing.env_build.env_build_for_fuzzing",
                    return_value=failed):
             with self.assertRaises(RuntimeError) as ctx:
@@ -295,9 +310,9 @@ class TestEnvBuildExecution(unittest.TestCase):
 class TestEnvRootfsLifetime(unittest.TestCase):
     def test_corpus_prep_failure_discards_rootfs(self):
         from types import SimpleNamespace
-        repo = Path(tempfile.mkdtemp())
+        repo = _tmpdir(self)
         (repo / "main.c").write_text("int main(void){return 0;}\n")
-        out = Path(tempfile.mkdtemp())
+        out = _tmpdir(self)
         rootfs = out / "afl-rootfs"
         rootfs.mkdir()
         (rootfs / "big").write_bytes(b"x")
@@ -321,9 +336,9 @@ class TestEnvRootfsLifetime(unittest.TestCase):
 
     def test_keep_env_rootfs_survives_corpus_prep_failure(self):
         from types import SimpleNamespace
-        repo = Path(tempfile.mkdtemp())
+        repo = _tmpdir(self)
         (repo / "main.c").write_text("int main(void){return 0;}\n")
-        out = Path(tempfile.mkdtemp())
+        out = _tmpdir(self)
         rootfs = out / "afl-rootfs"
         rootfs.mkdir()
         good = SimpleNamespace(
@@ -346,7 +361,7 @@ class TestEnvRootfsLifetime(unittest.TestCase):
         self.assertTrue(rootfs.exists())
 
     def test_env_build_plan_drops_harness_hints(self):
-        repo = Path(tempfile.mkdtemp())
+        repo = _tmpdir(self)
         (repo / "main.c").write_text("int main(void){return 0;}\n")
         with patch("packages.fuzzing.orchestrator.probe_capabilities",
                    return_value=_full_caps_linux()), \

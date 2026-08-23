@@ -143,6 +143,24 @@ class Layer0Finding:
             d["dwarf_enhanced"] = True
         return d
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Layer0Finding":
+        """Inverse of :meth:`to_dict` (whose omitted keys are exactly
+        the dataclass defaults) — the prep cache reloads findings
+        through it."""
+        return cls(
+            pattern_id=d.get("pattern_id", ""),
+            function=d.get("function", ""),
+            file=d.get("file", ""),
+            line=int(d.get("line", 0)),
+            evidence_tier=d.get("evidence_tier", EvidenceTier.XREF_BACKED),
+            description=d.get("description", ""),
+            detail=d.get("detail", ""),
+            confidence=d.get("confidence", "high"),
+            vuln_type=d.get("vuln_type", ""),
+            dwarf_enhanced=bool(d.get("dwarf_enhanced", False)),
+        )
+
 
 @dataclass
 class BinaryMetadata:
@@ -779,3 +797,193 @@ def format_layer0_summary(result: Layer0Result) -> str:
         f"Layer 0: {result.finding_count} findings across "
         f"{len(groups)} patterns ({', '.join(parts[:5])})"
     )
+
+
+# ── Source-pattern pre-sweep over the evidence index ────────────────
+
+_PRESWEEP_CACHE_FILENAME = "layer0-presweep-cache.json"
+
+_SOURCE_LANG_BY_EXT = {
+    "": "c", ".c": "c", ".h": "c", ".cc": "cpp",
+    ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+    ".m": "objc",
+}
+
+
+def _gated_presweep_records(
+    evidence_index: dict[str, Any],
+) -> list[tuple[str, Any]]:
+    """Function/method records with a usable line span — the records
+    the pre-sweep scans. The gate reasons stay loud at debug."""
+    gated: list[tuple[str, Any]] = []
+    for key, rec in evidence_index.items():
+        # Function/method records only, sliced to the item's span.
+        # Pre-fix this read the WHOLE FILE for EVERY record: a
+        # pattern match anywhere in the file was attributed to
+        # every item of that file — including bare declarations
+        # and globals, whose "findings" were pure misattribution.
+        if rec.kind not in ("", "function", "method"):
+            logger.debug(
+                "layer0 pre-sweep: skipping %s (kind=%s, not a "
+                "function)", key, rec.kind,
+            )
+            continue
+        line_start = rec.line_start or 0
+        line_end = rec.line_end or 0
+        if line_start <= 0 or line_end < line_start:
+            logger.debug(
+                "layer0 pre-sweep: skipping %s (no usable line "
+                "span — a whole-file scan would misattribute "
+                "matches from other functions)", key,
+            )
+            continue
+        gated.append((key, rec))
+    return gated
+
+
+def _presweep_fingerprint(
+    gated: list[tuple[str, Any]],
+    target_path: Any,
+) -> str:
+    """Deterministic fingerprint of the pre-sweep inputs: every gated
+    record's identity + span (from the pinned checklist, via the
+    evidence index) and the contents of the files those records read.
+    One read per distinct file — a small fraction of the per-record
+    whole-file reads + pattern batteries the sweep itself pays."""
+    from pathlib import Path
+
+    from .prep_cache import content_fingerprint
+
+    root = Path(target_path)
+
+    def _items():
+        seen: set[str] = set()
+        for key, rec in sorted(gated, key=lambda kr: kr[0]):
+            meta = "|".join((
+                rec.kind, rec.file, rec.function,
+                str(rec.line_start or 0), str(rec.line_end or 0),
+            ))
+            yield f"record:{key}", meta.encode("utf-8", "replace")
+            if rec.file in seen:
+                continue
+            seen.add(rec.file)
+            try:
+                data = (root / rec.file).read_bytes()
+            except (OSError, ValueError):
+                data = b"<unreadable>"
+            yield f"file:{rec.file}", data
+
+    return content_fingerprint(_items())
+
+
+def run_source_presweep(
+    evidence_index: dict[str, Any],
+    target_path: Any,
+    *,
+    out_dir: Any | None = None,
+) -> Layer0Result:
+    """Layer 0 source-pattern pre-sweep over the evidence index.
+
+    Per-function findings land on ``rec.binary_layer0_findings``; the
+    returned :class:`Layer0Result` aggregates them for the summary
+    line. The sweep is a pure function of resume-stable inputs (the
+    pinned checklist's spans + the target sources), so it rides the
+    prep-cache reload seam: a resumed segment reloads the per-function
+    findings on a fingerprint match instead of re-reading and
+    re-scanning every function.
+    """
+    import os as _os
+
+    from .diagnostics import read_function_source
+
+    gated = _gated_presweep_records(evidence_index)
+
+    fingerprint: str | None = None
+    if out_dir is not None:
+        # A cache-seam failure must degrade to the re-scan, never
+        # cost the sweep itself.
+        try:
+            from .prep_cache import load_prep_cache
+
+            fingerprint = _presweep_fingerprint(gated, target_path)
+            cached = load_prep_cache(
+                out_dir, _PRESWEEP_CACHE_FILENAME, fingerprint,
+                label="layer0 pre-sweep",
+            )
+            if isinstance(cached, dict) and isinstance(
+                cached.get("findings_by_key"), dict,
+            ):
+                result = Layer0Result()
+                result.functions_scanned = int(
+                    cached.get("functions_scanned", 0),
+                )
+                by_key = cached["findings_by_key"]
+                reloaded: list[tuple[Any, list[Layer0Finding]]] = []
+                for key, rec in gated:
+                    rows = by_key.get(key)
+                    if not isinstance(rows, list):
+                        continue
+                    findings = [
+                        Layer0Finding.from_dict(r)
+                        for r in rows
+                        if isinstance(r, dict)
+                    ]
+                    if findings:
+                        reloaded.append((rec, findings))
+                        result.findings.extend(findings)
+                # Attach only after the whole payload reconstructed —
+                # a half-reloaded cache must not leave partial
+                # findings on the records.
+                for rec, findings in reloaded:
+                    rec.binary_layer0_findings = findings
+                logger.info(
+                    "layer0 pre-sweep: reloaded %d findings for %d "
+                    "scanned functions from the prep cache (input "
+                    "fingerprint match) — source re-scan skipped",
+                    len(result.findings), result.functions_scanned,
+                )
+                return result
+        except Exception:
+            logger.debug(
+                "layer0 pre-sweep prep cache reload failed — "
+                "re-scanning", exc_info=True,
+            )
+
+    result = Layer0Result()
+    findings_by_key: dict[str, list[dict[str, Any]]] = {}
+    for key, rec in gated:
+        src = read_function_source(
+            target_path, rec.file, rec.function,
+            line_start=rec.line_start or 0, line_end=rec.line_end or 0,
+        )
+        if not src:
+            continue
+        # Derive a coarse callee list from the source in hand —
+        # calls=[] silently disabled all six calls-based Layer-0
+        # checks (format string, buffer mismatch, unchecked
+        # return, TOCTOU, lock imbalance, missing clear) on this
+        # path, leaving only the source/instruction checks live.
+        ext = _os.path.splitext(rec.file)[1].lower()
+        language = _SOURCE_LANG_BY_EXT.get(ext, "other")
+        l0_findings = scan_function(
+            rec.function, callees_from_source(src),
+            source=src, file=rec.file, language=language,
+        )
+        if l0_findings:
+            rec.binary_layer0_findings = l0_findings
+            result.findings.extend(l0_findings)
+            findings_by_key[key] = [f.to_dict() for f in l0_findings]
+        result.functions_scanned += 1
+
+    if out_dir is not None and fingerprint is not None:
+        from .prep_cache import write_prep_cache
+
+        write_prep_cache(
+            out_dir, _PRESWEEP_CACHE_FILENAME, fingerprint,
+            {
+                "functions_scanned": result.functions_scanned,
+                "findings_by_key": findings_by_key,
+            },
+            label="layer0 pre-sweep",
+        )
+    return result

@@ -85,9 +85,6 @@ from .diagnostics import (
 from .diagnostics import (
     iris_candidate_to_spec as _iris_candidate_to_spec,
 )
-from .diagnostics import (
-    read_function_source as _read_function_source,
-)
 from .exploit_feedback import (
     FeedbackState,
     format_feedback_for_context,
@@ -3663,58 +3660,13 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
     try:
         from .binary_layer0 import (
-            Layer0Result,
             format_layer0_summary,
-        )
-        from .binary_layer0 import (
-            callees_from_source as layer0_callees,
-            scan_function as layer0_scan,
+            run_source_presweep,
         )
 
-        l0_result = Layer0Result()
-        for key, rec in evidence_index.items():
-            # Function/method records only, sliced to the item's span.
-            # Pre-fix this read the WHOLE FILE for EVERY record: a
-            # pattern match anywhere in the file was attributed to
-            # every item of that file — including bare declarations
-            # and globals, whose "findings" were pure misattribution.
-            if rec.kind not in ("", "function", "method"):
-                logger.debug(
-                    "layer0 pre-sweep: skipping %s (kind=%s, not a "
-                    "function)", key, rec.kind,
-                )
-                continue
-            line_start = rec.line_start or 0
-            line_end = rec.line_end or 0
-            if line_start <= 0 or line_end < line_start:
-                logger.debug(
-                    "layer0 pre-sweep: skipping %s (no usable line "
-                    "span — a whole-file scan would misattribute "
-                    "matches from other functions)", key,
-                )
-                continue
-            src = _read_function_source(
-                config.target_path, rec.file, rec.function,
-                line_start=line_start, line_end=line_end,
-            )
-            if not src:
-                continue
-            # Derive a coarse callee list from the source in hand —
-            # calls=[] silently disabled all six calls-based Layer-0
-            # checks (format string, buffer mismatch, unchecked
-            # return, TOCTOU, lock imbalance, missing clear) on this
-            # path, leaving only the source/instruction checks live.
-            _l0_ext = os.path.splitext(rec.file)[1].lower()
-            _l0_lang = {"": "c", ".c": "c", ".h": "c", ".cc": "cpp",
-                        ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
-                        ".m": "objc"}.get(_l0_ext, "other")
-            l0_findings = layer0_scan(rec.function, layer0_callees(src),
-                                      source=src, file=rec.file,
-                                      language=_l0_lang)
-            if l0_findings:
-                rec.binary_layer0_findings = l0_findings
-                l0_result.findings.extend(l0_findings)
-            l0_result.functions_scanned += 1
+        l0_result = run_source_presweep(
+            evidence_index, config.target_path, out_dir=config.out_dir,
+        )
         if l0_result.findings:
             # Name the producer and the destination: this counter is
             # the source-pattern pre-sweep attached to the evidence

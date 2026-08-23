@@ -19,7 +19,17 @@ from pathlib import Path
 from typing import Any
 
 from core.coverage.journal import is_mechanical_echo as _is_mechanical_echo
+from core.json import load_json
 from core.security.prompt_output_sanitise import sanitise_string
+
+# Byte budgets for the report's artifact reads: 1 MiB for run
+# metadata, 8 MiB for small state files, 64 MiB for findings-class
+# documents, 256 MiB for the checklist (largest measured artifact
+# class — mirrors the coverage-store budget).
+_MAX_RUN_META_BYTES = 1024 * 1024
+_MAX_STATE_BYTES = 8 * 1024 * 1024
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +185,9 @@ def generate_report(
 
     eval_path = out_dir / "evaluation.json"
     if eval_path.is_file():
-        try:
-            eval_data = json.loads(eval_path.read_text())
+        eval_data = load_json(eval_path, max_bytes=_MAX_STATE_BYTES)
+        if eval_data is not None:
             report["evaluation"] = eval_data
-        except Exception as e:  # noqa: BLE001 — reporting must not fail the run
-            logger.warning("failed to load evaluation results from %s: %s", eval_path, e)
 
     # Interrupted Joern pre-sweep window (server restart mid-query):
     # whether the window was re-queued and recovered or lost outright
@@ -213,11 +221,7 @@ def load_phase_aborts(out_dir: Path) -> list[dict[str, Any]]:
     path = Path(out_dir) / "phase-aborts.json"
     if not path.is_file():
         return []
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — reporting must not fail the run
-        logger.debug("phase-aborts load failed", exc_info=True)
-        return []
+    loaded = load_json(path, max_bytes=_MAX_STATE_BYTES)
     if not isinstance(loaded, list):
         return []
     return [r for r in loaded if isinstance(r, dict)]
@@ -236,11 +240,9 @@ def _load_edge_obligations(out_dir: Path) -> dict[str, Any] | None:
     surfaced in full count with a bounded sample — never silently
     truncated without the count saying so.
     """
-    try:
-        raw = json.loads(
-            (out_dir / "edge-obligations.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    raw = load_json(
+        out_dir / "edge-obligations.json", max_bytes=_MAX_FINDINGS_BYTES,
+    )
     if not isinstance(raw, dict):
         return None
     tier1 = raw.get("tier1") or []
@@ -713,7 +715,7 @@ def _study_starvation_label(out_dir: Path) -> str | None:
         stats_path = out_dir / "study-stats.json"
         if not stats_path.is_file():
             return None
-        stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        stats = load_json(stats_path, max_bytes=_MAX_STATE_BYTES)
         if not isinstance(stats, dict) or stats.get("re_reviews"):
             return None
         from core.concepts.reading_list import ReadingList
@@ -743,15 +745,11 @@ def _assess_completeness(out_dir: Path) -> dict[str, Any]:
     from the journal regardless — completeness only *names* the gaps.
     """
     status: str | None = None
-    try:
-        meta_path = out_dir / ".raptor-run.json"
-        if meta_path.is_file():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if isinstance(meta, dict):
-                status = meta.get("status")
-    except (OSError, json.JSONDecodeError):
-        logger.debug("run metadata unreadable for completeness",
-                     exc_info=True)
+    meta_path = out_dir / ".raptor-run.json"
+    if meta_path.is_file():
+        meta = load_json(meta_path, max_bytes=_MAX_RUN_META_BYTES)
+        if isinstance(meta, dict):
+            status = meta.get("status")
 
     missing = [
         label for name, label in _EXPECTED_ARTIFACTS
@@ -777,13 +775,13 @@ def _assess_completeness(out_dir: Path) -> dict[str, Any]:
 
 def _load_segments(out_dir: Path) -> dict[str, Any] | None:
     """Segment provenance for resumed runs, from ``extra.resumes``."""
+    meta_path = out_dir / ".raptor-run.json"
+    if not meta_path.is_file():
+        return None
+    meta = load_json(meta_path, max_bytes=_MAX_RUN_META_BYTES)
     try:
-        meta_path = out_dir / ".raptor-run.json"
-        if not meta_path.is_file():
-            return None
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         resumes = ((meta or {}).get("extra") or {}).get("resumes")
-    except (OSError, json.JSONDecodeError, AttributeError):
+    except AttributeError:
         return None
     if not isinstance(resumes, list) or not resumes:
         return None
@@ -799,11 +797,7 @@ def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
     path = out_dir / "findings-graded.json"
     if not path.exists():
         return []
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+    data = load_json(path, max_bytes=_MAX_FINDINGS_BYTES)
     findings = data.get("findings", []) if isinstance(data, dict) else []
     return [
         f for f in findings
@@ -848,23 +842,18 @@ def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     path = out_dir / "findings.json"
     if not path.exists():
         return []
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-    return data if isinstance(data, list) else data.get("findings", [])
+    data = load_json(path, max_bytes=_MAX_FINDINGS_BYTES)
+    if isinstance(data, list):
+        return data
+    return data.get("findings", []) if isinstance(data, dict) else []
 
 
 def _load_gaps(out_dir: Path) -> dict[str, Any]:
     path = out_dir / "gaps.json"
     if not path.exists():
         return {}
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    data = load_json(path, max_bytes=_MAX_FINDINGS_BYTES)
+    return data if data is not None else {}
 
 
 def _load_not_attempted(out_dir: Path) -> dict[str, Any]:
@@ -872,12 +861,8 @@ def _load_not_attempted(out_dir: Path) -> dict[str, Any]:
     path = out_dir / "not-attempted.json"
     if not path.exists():
         return {}
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+    data = load_json(path, max_bytes=_MAX_STATE_BYTES)
+    return data if isinstance(data, dict) else {}
 
 
 def _compute_stats(audit_data: dict[str, Any]) -> dict[str, int]:
@@ -1009,10 +994,8 @@ def _find_unrecorded_reads(
     except OSError:
         return []
 
-    try:
-        with Path(checklist_path).open(encoding="utf-8") as f:
-            checklist = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    checklist = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
+    if checklist is None:
         return []
 
     recorded_funcs: set[str] = set()

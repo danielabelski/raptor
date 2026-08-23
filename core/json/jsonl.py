@@ -32,6 +32,8 @@ import logging
 import os
 from typing import Any, TYPE_CHECKING
 
+from core.json.utils import _loads, _reject_non_finite
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -56,13 +58,21 @@ def append_jsonl(
     separators (``json.dumps(separators=(",", ":"))``).
 
     Raises ``OSError`` on I/O failure — notably ELOOP when *path* is a
-    symlink (O_NOFOLLOW) — and ``TypeError`` when *record* is not JSON
-    serialisable. Callers with a best-effort contract catch ``OSError``
+    symlink (O_NOFOLLOW) — ``TypeError`` when *record* is not JSON
+    serialisable, and ``ValueError`` when it contains a non-finite
+    float (``allow_nan=False``): the read side skips NaN/Infinity
+    lines as malformed on both backends, so letting a writer emit
+    them would silently lose the record on the NEXT read. Failing
+    loudly at write time is the same parity rule ``save_json``
+    applies. Callers with a best-effort contract catch ``OSError``
     themselves, preserving their own logging conventions.
     """
     separators = (",", ":") if compact else None
     line = (
-        json.dumps(record, sort_keys=sort_keys, separators=separators) + "\n"
+        json.dumps(
+            record, sort_keys=sort_keys, separators=separators,
+            allow_nan=False,
+        ) + "\n"
     ).encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW | _O_CLOEXEC
     fd = os.open(str(path), flags, mode)
@@ -94,6 +104,15 @@ def load_jsonl(
     - ``max_line_bytes``: an over-long line is skipped like a
       malformed one. The check runs after the line is materialised,
       so pair it with ``max_total_bytes`` for a hard memory bound.
+
+    Lines parse through the shared ``core.json`` backend (orjson when
+    installed — trail loops are its best-measured win). Non-finite
+    constants (``NaN``/``Infinity``) make a line malformed on BOTH
+    backends: orjson rejects them natively, and the stdlib branch is
+    pinned to the same behaviour via ``_reject_non_finite`` so which
+    records survive never depends on which backend is installed.
+    (``append_jsonl`` refuses to emit them — ``allow_nan=False`` —
+    so only a foreign writer can put one in a trail.)
     """
     flags = os.O_RDONLY | _O_NOFOLLOW | _O_CLOEXEC
     try:
@@ -143,8 +162,11 @@ def load_jsonl(
                 if not line:
                     continue
                 try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
+                    records.append(
+                        _loads(line, parse_constant=_reject_non_finite))
+                except ValueError:
+                    # json.JSONDecodeError (both backends) and the
+                    # non-finite rejection are ValueError subclasses.
                     continue
         except OSError:
             logger.debug("load_jsonl: read failed for %s", path, exc_info=True)

@@ -85,6 +85,44 @@ class TestLoadJsonl:
         assert load_jsonl(link) == []
 
 
+class TestLoadJsonlBackends:
+    """Line parsing must behave identically on both JSON backends."""
+
+    def _both_backends(self):
+        import core.json.utils as u
+        backends = [("stdlib", None)]
+        if u._orjson is not None:
+            backends.append(("orjson", u._orjson))
+        return u, backends
+
+    def test_round_trip_both_backends(self, tmp_path: Path):
+        u, backends = self._both_backends()
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"a": 1})
+        append_jsonl(p, [1, "two", 3.5])
+        for name, override in backends:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                assert load_jsonl(p) == [{"a": 1}, [1, "two", 3.5]], name
+            finally:
+                u._orjson = saved
+
+    def test_non_finite_line_skipped_both_backends(self, tmp_path: Path):
+        """A NaN/Infinity line is malformed on BOTH backends — which
+        records survive must not depend on which library is installed."""
+        u, backends = self._both_backends()
+        p = tmp_path / "trail.jsonl"
+        p.write_text('{"ok": 1}\n{"bad": NaN}\n{"v": Infinity}\n{"ok": 2}\n')
+        for name, override in backends:
+            saved = u._orjson
+            try:
+                u._orjson = override
+                assert load_jsonl(p) == [{"ok": 1}, {"ok": 2}], name
+            finally:
+                u._orjson = saved
+
+
 class TestCallSiteHardeningConsistency:
     """The three previously-divergent trail writers all refuse symlinks."""
 
@@ -208,3 +246,23 @@ def test_o_nofollow_available():
     # The hardening this module exists for requires O_NOFOLLOW on the
     # platforms RAPTOR supports (Linux/macOS).
     assert getattr(os, "O_NOFOLLOW", 0) != 0
+
+
+class TestAppendNonFiniteParity:
+    """Write/read parity: the reader skips NaN/Infinity lines as
+    malformed, so the writer must refuse to emit them (allow_nan=False)
+    instead of silently losing the record on the NEXT read."""
+
+    def test_append_rejects_non_finite(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"ok": 1})
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError):
+                append_jsonl(p, {"score": bad})
+        # Nothing was appended for the rejected records.
+        assert load_jsonl(p) == [{"ok": 1}]
+
+    def test_finite_floats_still_append(self, tmp_path: Path):
+        p = tmp_path / "trail.jsonl"
+        append_jsonl(p, {"score": 0.5})
+        assert load_jsonl(p) == [{"score": 0.5}]

@@ -5154,8 +5154,11 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     TypeError because they would relax the untrusted-execution contract
     this helper exists to enforce. Also forbidden via TypeError:
     `block_network` and `allowed_tcp_ports` — run_untrusted's contract
-    is namespace-level network block, no TCP allowlist; callers
-    needing varied network policy use sandbox() directly.
+    is namespace-level network block, no TCP allowlist — and
+    `start_new_session` — setsid is part of the same contract (no
+    controlling tty, so /dev/tty cannot read the operator's
+    keystrokes); callers needing varied network/session policy use
+    sandbox() directly.
     """
     # Truthy check — `target=""` and `output=""` must also be rejected,
     # otherwise the caller thinks they engaged Landlock but got no
@@ -5175,10 +5178,18 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     _degraded_no_pidns = _require_userns_or_optin(
         "run_untrusted", restrict_reads,
     )
+    # start_new_session is deliberately NOT accepted: the setsid
+    # detachment below is part of the untrusted-execution contract
+    # (without it /dev/tty resolves to the operator's controlling
+    # terminal and a sandboxed target polls their keystrokes), so a
+    # caller-supplied False would silently reopen that channel.
+    # Callers that genuinely need a controlling tty (interactive gdb
+    # under /crash-analysis) use sandbox() directly, per the setsid
+    # rationale comment below.
     _UNTRUSTED_ALLOWED_KWARGS = frozenset({
         "env", "cwd", "timeout", "capture_output", "text",
         "encoding", "errors",
-        "stdin", "input", "start_new_session", "pass_fds",
+        "stdin", "input", "pass_fds",
         "caller_label",
         "audit", "audit_verbose", "audit_run_dir", "audit_required",
         "observe", "exclude_tmp_baseline",
@@ -5231,9 +5242,9 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     # a new session leader with no controlling tty, so /dev/tty returns
     # ENXIO. Callers who actually want a controlling tty (interactive
     # gdb under /crash-analysis) must use sandbox() directly and can
-    # pass start_new_session=False explicitly.
-    if "start_new_session" not in kwargs:
-        kwargs["start_new_session"] = True
+    # pass start_new_session=False explicitly — this helper refuses
+    # the kwarg outright (allowlist above), so setsid is unconditional.
+    kwargs["start_new_session"] = True
     # macOS has no private mount view: unless excluded, Seatbelt seeds
     # host-shared /private/tmp into the write exceptions (and, under
     # restrict_reads, the read allowlist), so same-UID cross-run temp
@@ -5458,10 +5469,13 @@ def run_untrusted_networked(
     _degraded_no_pidns = _require_userns_or_optin(
         "run_untrusted_networked", restrict_reads,
     )
+    # start_new_session refused for the same reason as run_untrusted:
+    # setsid detachment is contract, not preference (see the rationale
+    # there).
     _NETWORKED_ALLOWED_KWARGS = frozenset({
         "env", "cwd", "timeout", "capture_output", "text",
         "encoding", "errors",
-        "stdin", "input", "start_new_session", "pass_fds",
+        "stdin", "input", "pass_fds",
         "caller_label",
         "audit", "audit_verbose", "audit_run_dir", "audit_required",
         "observe", "exclude_tmp_baseline",
@@ -5477,8 +5491,7 @@ def run_untrusted_networked(
         raise TypeError(msg)
     if "stdin" not in kwargs and "input" not in kwargs:
         kwargs["stdin"] = subprocess.DEVNULL
-    if "start_new_session" not in kwargs:
-        kwargs["start_new_session"] = True
+    kwargs["start_new_session"] = True
     if keep_trust_markers:
         # The unshare fallback routes the env through the pid1 shim,
         # which strips both markers unconditionally before exec'ing

@@ -13,6 +13,7 @@ run the real shim chain against a pass-through fake sandbox-exec.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -20,6 +21,14 @@ from core.sandbox import evidence as evidence_mod
 from core.sandbox import seatbelt_audit
 
 ROOT = 5_000_001  # fake workload root (the shim pid)
+
+# Trivial real workload for the spawn-level tests. NOT a hardcoded
+# "/bin/true": macOS ships true(1) at /usr/bin/true and has no
+# /bin/true at all, so the Linux path made the real shim chain
+# exec-fail (exit 126) on macOS hosts. /usr/bin/true exists on both
+# macOS and usr-merged Linux; the fallback covers pre-merge layouts.
+_TRUE = next(p for p in ("/usr/bin/true", "/bin/true")
+             if os.path.exists(p))
 
 
 def _no_pgid(pid):
@@ -301,7 +310,7 @@ def test_spawn_registers_child_pid_with_streamer(
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     result = _macos_spawn.run_sandboxed(
-        ["/bin/true"],
+        [_TRUE],
         output=str(out_dir),
         audit_mode=True,
         audit_run_dir=str(out_dir),
@@ -334,7 +343,7 @@ def test_spawn_fails_closed_when_scoping_cannot_be_established(
     out_dir.mkdir()
     with pytest.raises(SandboxSetupError):
         _macos_spawn.run_sandboxed(
-            ["/bin/true"],
+            [_TRUE],
             output=str(out_dir),
             audit_mode=True,
             audit_run_dir=str(out_dir),
@@ -358,7 +367,7 @@ def test_spawn_proceeds_with_warning_when_scoping_optional(
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     result = _macos_spawn.run_sandboxed(
-        ["/bin/true"],
+        [_TRUE],
         output=str(out_dir),
         audit_mode=True,
         audit_run_dir=str(out_dir),

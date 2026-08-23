@@ -45,6 +45,7 @@ the CLI tests and test_symlink_hop_bound.py).
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -838,6 +839,52 @@ class RuffImmunityTests(unittest.TestCase):
 
     def test_ruff_format_leaves_protected_blocks_intact(self):
         self._run_and_compare(["format", "--no-cache"])
+
+
+class ExecutableModeBitTests(unittest.TestCase):
+    """Every dispatch script is exec'd by path. A script whose exec
+    bit is lost — in a patch application, an archive/copy step, or a
+    checkout on a filter that drops modes — fails at spawn time with
+    exit 126 on whatever host runs it first, far from the change that
+    dropped the bit. Pin BOTH the committed git mode and the on-disk
+    bit for the whole libexec/ + bin/ surface."""
+
+    def _tracked_entries(self) -> list[tuple[str, str]]:
+        proc = subprocess.run(
+            ["git", "ls-files", "--stage", "--", "libexec", "bin"],
+            cwd=REPO, capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            self.skipTest("not a git checkout (or git unavailable)")
+        entries: list[tuple[str, str]] = []
+        for line in proc.stdout.splitlines():
+            meta, _tab, path = line.partition("\t")
+            if not path:
+                continue
+            entries.append((meta.split()[0], path))
+        return entries
+
+    def test_every_dispatch_script_is_committed_executable(self):
+        bad = [f"{path} (mode {mode})"
+               for mode, path in self._tracked_entries()
+               if mode != "100755"]
+        self.assertEqual(
+            bad, [],
+            msg=("dispatch scripts committed without the exec bit "
+                 "(expected git mode 100755): " + ", ".join(bad)),
+        )
+
+    def test_every_dispatch_script_is_executable_on_disk(self):
+        missing = []
+        for _mode, path in self._tracked_entries():
+            f = REPO / path
+            if f.is_file() and not os.access(f, os.X_OK):
+                missing.append(path)
+        self.assertEqual(
+            missing, [],
+            msg=("dispatch scripts present but not executable on "
+                 "disk: " + ", ".join(missing)),
+        )
 
 
 if __name__ == "__main__":

@@ -57,10 +57,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Sequence
 
+from core.json import load_json
+
 from .label import FunctionLabel, compute_span_sha, load_label
 from .sources import FIXTURES_DIR
 
 LABELS_DIR = Path(__file__).parent / "labels"
+
+# One .label.json is a small hand-written record.
+_MAX_LABEL_BYTES = 8 * 1024 * 1024
 
 # Default sparse-fetch cache for pin verification (repo@ref-keyed
 # subdirectories) — separate from the full fixture trees so a lint
@@ -693,7 +698,11 @@ def stamp_labels(checks: Sequence[PinCheck]) -> list[Path]:
             continue
         if check.label.source.span_sha == check.current_span_sha:
             continue  # already stamped
-        raw = json.loads(check.path.read_text())
+        raw = load_json(check.path, strict=True, max_bytes=_MAX_LABEL_BYTES)
+        if raw is None:
+            # Strict load_json still soft-returns None for a missing
+            # file — a label that vanished mid-lint cannot be stamped.
+            raise FileNotFoundError(check.path)
         source = raw.get("source", {})
         new_source = {}
         for key, val in source.items():

@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json, loads
+
 # Ensemble constants and algorithms imported from pipeline.py (single source
 # of truth — W8 unification).
 from core.audit.pipeline import (
@@ -51,6 +53,13 @@ EXIT_GATE_FAIL = 2
 
 CORPUS_DIR = Path(__file__).parent
 LABELS_DIR = CORPUS_DIR / "labels"
+
+# Byte budgets for the runner's artifact reads: checklists and
+# results files track corpus size (256 MiB, the checklist budget
+# class); cost-breakdown sidecars are small summaries.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
+_MAX_RESULTS_BYTES = 256 * 1024 * 1024
+_MAX_SIDECAR_BYTES = 8 * 1024 * 1024
 
 # Per-group audit budget: scales with the group's label weight
 # instead of the old flat $150 cap that gave a 2-label group the same
@@ -642,11 +651,8 @@ def _load_inventoried_functions(audit_dir: Path | None) -> set:
     if audit_dir is None:
         return set()
     ck_path = audit_dir / "checklist.json"
-    if not ck_path.exists():
-        return set()
-    try:
-        ck = json.loads(ck_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    ck = load_json(ck_path, max_bytes=_MAX_CHECKLIST_BYTES)
+    if not isinstance(ck, dict):
         return set()
     result = set()
     for f in ck.get("files", []):
@@ -1240,8 +1246,8 @@ def _parse_audit_log_outcomes(
                 if not raw:
                     continue
                 try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
+                    entry = loads(raw)
+                except ValueError:
                     continue
                 if entry.get("action") not in ("orchestrator_review", "sweep_promotion"):
                     continue
@@ -1271,8 +1277,8 @@ def _parse_audit_log_outcomes(
                 if not raw:
                     continue
                 try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
+                    entry = loads(raw)
+                except ValueError:
                     continue
                 if (
                     entry.get("action") == "refutation_gate"
@@ -1714,8 +1720,8 @@ def _aggregate_spend(run_dirs: list[Path]) -> dict[str, Any] | None:
                         if not raw:
                             continue
                         try:
-                            rec = json.loads(raw)
-                        except json.JSONDecodeError:
+                            rec = loads(raw)
+                        except ValueError:
                             continue
                         c = float(rec.get("cost_usd") or 0.0)
                         cls = str(rec.get("call_class") or "unclassified")
@@ -1734,16 +1740,15 @@ def _aggregate_spend(run_dirs: list[Path]) -> dict[str, Any] | None:
             ledger_total = None
             bd_path = gdir / "cost-breakdown.json"
             if bd_path.is_file():
+                bd = load_json(bd_path, max_bytes=_MAX_SIDECAR_BYTES)
+                totals = bd.get("totals", {}) if isinstance(bd, dict) else {}
                 try:
-                    totals = json.loads(bd_path.read_text()).get(
-                        "totals", {},
-                    )
                     ledger_total = float(
                         totals.get(
                             "total_spend_usd", totals.get("cost_usd", 0.0),
                         ) or 0.0,
                     )
-                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                except (TypeError, ValueError):
                     ledger_total = None
             name = "/".join(Path(gdir).parts[-2:])
             groups.append({
@@ -2154,8 +2159,8 @@ def _save_debug(
                 if not raw:
                     continue
                 try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
+                    entry = loads(raw)
+                except ValueError:
                     continue
                 fid = entry.get("file", "") + ":" + entry.get("function", "")
                 if fid != ":":
@@ -2196,7 +2201,12 @@ def _splice_results(
     if not splice_path.is_file():
         msg = f"--splice file not found: {splice_path}"
         raise FileNotFoundError(msg)
-    raw = json.loads(splice_path.read_text())
+    raw = load_json(splice_path, strict=True, max_bytes=_MAX_RESULTS_BYTES)
+    if raw is None:
+        # is_file()/load race — strict load_json still soft-returns
+        # None for a file missing at read time.
+        msg = f"--splice file not found: {splice_path}"
+        raise FileNotFoundError(msg)
     base = raw["results"] if isinstance(raw, dict) and "results" in raw else raw
     partial_ids = {r["function_id"] for r in results}
     spliced = [r for r in base if r["function_id"] not in partial_ids]
@@ -2216,13 +2226,7 @@ def _checkpoint_write(path: Path, data: Any) -> None:
 
 def _checkpoint_read(path: Path) -> Any | None:
     """Read a checkpoint if it exists, else None."""
-    if not path.exists():
-        return None
-    try:
-        with Path(path).open() as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
+    return load_json(path, max_bytes=_MAX_RESULTS_BYTES)
 
 
 def _run_ensemble_audit(

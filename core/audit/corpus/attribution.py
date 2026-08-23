@@ -46,13 +46,14 @@ to add receipts, not a licence to infer.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
+
+from core.json import load_json, loads
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +130,8 @@ def _iter_jsonl(path: Path) -> Iterable[dict]:
                 if not raw:
                     continue
                 try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
+                    entry = loads(raw)
+                except ValueError:
                     continue
                 if isinstance(entry, dict):
                     yield entry
@@ -206,13 +207,7 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
                             index.add(index.tools, k, f"study:{tier}")
 
         for mpath in sorted(run_dir.rglob("mechanical-findings.json")):
-            try:
-                mf = json.loads(mpath.read_text())
-            except (OSError, json.JSONDecodeError):
-                logger.debug(
-                    "attribution: cannot read %s", mpath, exc_info=True,
-                )
-                continue
+            mf = load_json(mpath, max_bytes=_MAX_ARTIFACT_BYTES)
             if not isinstance(mf, dict):
                 continue
             for key, hits in mf.items():
@@ -231,6 +226,10 @@ def build_signal_index(run_dirs: Iterable[Path]) -> SignalIndex:
 # hypothesis>``); tokens longer than this carry no matchable mechanism
 # identity, so only their channel prefix is kept.
 _MAX_TOKEN_LEN = 64
+
+# mechanical-findings.json is RAPTOR-written run output — the
+# audit-artifact budget class.
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
 def _tool_tokens(raw: str) -> set[str]:

@@ -9,10 +9,11 @@ lives in ``sources.json`` (see ``core.audit.corpus.sources``).
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 
 SCHEMA_VERSION = 1
@@ -48,6 +49,9 @@ VALID_REVIEW_MODES = frozenset({
 # metadata.  One convention means a pin hash and an annotation hash of
 # the same span are directly comparable.
 SPAN_SHA_LEN = 12
+
+# One .label.json is a small hand-written record.
+_MAX_LABEL_BYTES = 8 * 1024 * 1024
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
@@ -179,7 +183,10 @@ class FunctionLabel:
 
 def load_label(path: Path) -> FunctionLabel:
     """Load a label from a .label.json file."""
-    raw = json.loads(path.read_text())
+    raw = load_json(path, strict=True, max_bytes=_MAX_LABEL_BYTES)
+    if raw is None:
+        # Strict load_json still soft-returns None for a missing file.
+        raise FileNotFoundError(path)
     return FunctionLabel(
         schema_version=raw.get("schema_version", 1),
         function_id=raw["function_id"],

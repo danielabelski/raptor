@@ -14,7 +14,6 @@ fallback on failure with the real stderr surfaced.
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import subprocess
@@ -22,12 +21,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.json import load_json
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
+
+# The registry is a small RAPTOR-committed file.
+_MAX_REGISTRY_BYTES = 8 * 1024 * 1024
 
 # Where pinned source trees live, relative to the RAPTOR repo root
 # (the corpus tools run from there).  Shared by the runner, the label
@@ -93,7 +97,10 @@ class SourceEntry:
 def load_sources(path: Path | None = None) -> dict[str, SourceEntry]:
     """Load the source registry.  Raises on a malformed registry."""
     path = path or SOURCES_PATH
-    raw = json.loads(path.read_text())
+    raw = load_json(path, strict=True, max_bytes=_MAX_REGISTRY_BYTES)
+    if raw is None:
+        # Strict load_json still soft-returns None for a missing file.
+        raise FileNotFoundError(path)
     repos = raw.get("repos")
     if not isinstance(repos, dict):
         msg = f"{path}: expected a top-level 'repos' mapping"

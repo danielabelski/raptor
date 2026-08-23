@@ -29,12 +29,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 
 @dataclass
@@ -85,6 +86,9 @@ class ClassMetrics:
 # the same row counts as FN (and a suspicious alarm on a clean label
 # counted as TN, flattering precision).
 CLAIM_STATUSES = frozenset({"finding", "suspicious"})
+
+# results files track corpus size — the checklist budget class.
+_MAX_RESULTS_BYTES = 256 * 1024 * 1024
 
 
 def _classify(expected: str, actual: str) -> str:
@@ -527,7 +531,10 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() == ".csv":
         with Path(path).open() as f:
             return list(csv.DictReader(f))
-    raw = json.loads(path.read_text())
+    raw = load_json(path, strict=True, max_bytes=_MAX_RESULTS_BYTES)
+    if raw is None:
+        # Strict load_json still soft-returns None for a missing file.
+        raise FileNotFoundError(path)
     if isinstance(raw, dict) and "results" in raw:
         return raw["results"]
     if isinstance(raw, list):

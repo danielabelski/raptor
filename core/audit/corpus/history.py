@@ -36,12 +36,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json, loads
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
 HISTORY_ENV = "RAPTOR_CORPUS_HISTORY"
+
+# results.json files track corpus size — the checklist budget class.
+_MAX_RESULTS_BYTES = 256 * 1024 * 1024
 
 # Output filenames that identify the run only through their directory
 # (out/corpus-full-v3/results.json -> run id "corpus-full-v3").
@@ -362,8 +367,8 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
             if not raw:
                 continue
             try:
-                rec = json.loads(raw)
-            except json.JSONDecodeError:
+                rec = loads(raw)
+            except ValueError:
                 _warn(f"{path}:{lineno}: malformed history line skipped")
                 continue
             if (
@@ -888,7 +893,10 @@ def import_results(results_path: Path, store: Path) -> str:
     and the pipeline tree sha and label-set hash are left empty (they
     were not recorded at run time and cannot be reconstructed).
     """
-    raw = json.loads(results_path.read_text(encoding="utf-8"))
+    raw = load_json(results_path, strict=True, max_bytes=_MAX_RESULTS_BYTES)
+    if raw is None:
+        # Strict load_json still soft-returns None for a missing file.
+        raise FileNotFoundError(results_path)
     if isinstance(raw, dict) and "results" in raw:
         meta = raw.get("meta") or {}
         rows = raw["results"]

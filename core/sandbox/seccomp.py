@@ -1064,8 +1064,32 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     try:
                         import array as _array
                         import socket as _socket
+                        # Pin the private-tmpfs device ids NOW — after
+                        # setup_mount_ns (step 9) and before the target
+                        # ever runs — and ship them with the notify fd.
+                        # The supervisor treats this pinned set as the
+                        # ONLY private-tmpfs identity evidence: a
+                        # live re-resolution of the child's /tmp would
+                        # follow whatever the target later bind-mounts
+                        # there (mount(2) is deliberately unblocked at
+                        # the seccomp layer and pre-6.15 Landlock does
+                        # not freeze mount topology), letting the
+                        # shared rw output bind classify as private.
+                        # Payload: b"F2" + 1-byte count + count
+                        # little-endian u64 device ids. os.stat only —
+                        # fork-safe (see the module contract).
+                        _devs = bytearray()
+                        _ndev = 0
+                        for _tp in (b"/tmp", b"/run", b"/dev/shm"):
+                            try:
+                                _sd = os.stat(_tp).st_dev
+                            except OSError:
+                                continue
+                            _devs += _sd.to_bytes(8, "little")
+                            _ndev += 1
                         unix_scope_export_sock.sendmsg(
-                            [b"F"],
+                            [b"F2" + _ndev.to_bytes(1, "little")
+                             + bytes(_devs)],
                             [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS,
                               _array.array("i", [_nfd]))],
                         )

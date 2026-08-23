@@ -75,6 +75,23 @@ def _render_gap(gap: Any) -> str:
     ])
 
 
+def _restamp_scores(ranked_items: list[dict[str, Any]]) -> None:
+    """Reassign the segment's own priority_score multiset (sorted
+    descending) along the LLM order, in place. No-op when the segment
+    carries no scores (plain compute_gaps output)."""
+    scores = [
+        g.get("priority_score") for g in ranked_items
+        if isinstance(g, dict) and g.get("priority_score") is not None
+    ]
+    if not scores:
+        return
+    ordered = sorted((float(s) for s in scores), reverse=True)
+    it = iter(ordered)
+    for gap in ranked_items:
+        if isinstance(gap, dict) and gap.get("priority_score") is not None:
+            gap["priority_score"] = next(it)
+
+
 def rank_gap_queue(
     gaps: list[dict[str, Any]],
     *,
@@ -84,6 +101,7 @@ def rank_gap_queue(
     query: str = _GAP_QUERY,
     seed: int | None = None,
     max_workers: int | None = None,
+    stamp_scores: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Re-rank the gap queue within priority tiers, head-capped.
 
@@ -93,6 +111,14 @@ def rank_gap_queue(
     beyond keeps its mechanical order. Returns ``(gaps, note)`` where
     ``note`` is a one-line human summary. Best-effort throughout: any
     failure returns the input order unchanged.
+
+    ``stamp_scores``: reassign each ranked segment's existing
+    ``priority_score`` values (its own multiset, sorted descending)
+    along the LLM order. Consumers whose downstream scheduling keys
+    on ``priority_score`` rather than list order (the audit
+    orchestrator's topological tiebreaks, subsystem grouping) need
+    this or the re-rank only decides budget-cut membership. Scores
+    never leave the segment, so tiers cannot cross.
     """
     if head is None:
         head = DEFAULT_RANK_HEAD
@@ -137,7 +163,10 @@ def rank_gap_queue(
                 out.extend(run)
                 continue
             budget -= len(head_slice)
-            out.extend(r.item for r in result.ranked)
+            ranked_items = [r.item for r in result.ranked]
+            if stamp_scores:
+                _restamp_scores(ranked_items)
+            out.extend(ranked_items)
             out.extend(rest)
             ranked_n += len(head_slice)
             tiers_ranked += 1

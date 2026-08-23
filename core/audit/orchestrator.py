@@ -400,6 +400,9 @@ class OrchestratorConfig:
     models: list[str] = field(default_factory=lambda: ["default"])
     multi_model: bool = False
     adversarial: bool = False
+    # Opt-in LLM re-rank of the gap-queue head within priority tiers
+    # (core.audit.gap_ranking) before pins/budget. Ordering only.
+    rank_gaps: bool = False
     critique_interval: int = 10
     max_cost_usd: float | None = None
     max_seconds: float | None = None
@@ -4053,6 +4056,36 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             )
     except Exception:
         logger.debug("SCA advisory enrichment failed", exc_info=True)
+
+    # Opt-in LLM re-rank of the queue head, strictly within priority
+    # tiers (core.audit.gap_ranking). Placed after every mechanical
+    # re-sort above, and before hoist_pins + the budget cut so
+    # operator pins still outrank it and the cut drops the least
+    # promising within-tier tail. Two wiring details matter here:
+    # stamp_scores makes the LLM order visible to everything
+    # downstream that keys on priority_score instead of list order
+    # (the workqueue topological tiebreak, subsystem grouping) —
+    # without it the re-rank would only decide budget-cut membership;
+    # and the seed is derived from the run directory so resume
+    # segments recompute the SAME order instead of churning the cut
+    # between segments. Dispatches through the run's budget-governed
+    # client (the _run_llm_client doctrine) so spend lands on the
+    # --max-cost ledger.
+    if getattr(config, "rank_gaps", False):
+        try:
+            import zlib
+
+            from core.audit.gap_ranking import rank_gap_queue
+
+            gaps, _rank_note = rank_gap_queue(
+                gaps,
+                client=_run_llm_client(config),
+                seed=zlib.crc32(str(config.out_dir).encode()) & 0x7FFFFFFF,
+                stamp_scores=True,
+            )
+            logger.info("gap ranking: %s", _rank_note)
+        except Exception:
+            logger.debug("gap ranking failed", exc_info=True)
 
     # Operator pins (``--pin file:function``): guaranteed review slots,
     # hoisted ahead of the budget cut. See gaps.hoist_pins. The

@@ -135,6 +135,71 @@ def test_client_failure_keeps_mechanical_order():
     assert "no signal" in note or "failed" in note
 
 
+def test_orchestrator_config_carries_rank_gaps_flag():
+    # The orchestrator adoption keys on this field; default must stay
+    # off (ranking is a measured variable, not ambient behaviour).
+    from pathlib import Path
+
+    from core.audit.orchestrator import OrchestratorConfig
+
+    cfg = OrchestratorConfig(target_path=Path("/t"), out_dir=Path("/o"))
+    assert cfg.rank_gaps is False
+    on = OrchestratorConfig(
+        target_path=Path("/t"), out_dir=Path("/o"), rank_gaps=True,
+    )
+    assert on.rank_gaps is True
+
+
+def test_pipeline_opts_forward_rank_gaps_end_to_end():
+    # The libexec CLI builds AuditPipelineOpts, which builds
+    # OrchestratorConfig — a break anywhere in that chain bricked
+    # every `raptor-audit run` in review, so pin the whole chain.
+    from pathlib import Path
+
+    from core.audit.pipeline import (
+        AuditPipelineOpts,
+        ReviewMode,
+        _build_orchestrator_config,
+    )
+
+    def build(**kwargs):
+        opts = AuditPipelineOpts(
+            target_path=Path("/t"), out_dir=Path("/o"), **kwargs,
+        )
+        return _build_orchestrator_config(
+            opts, client=None, models=["default"],
+            mode=ReviewMode.SECURITY,
+        )
+
+    assert build(rank_gaps=True).rank_gaps is True
+    assert build().rank_gaps is False
+
+
+def test_stamp_scores_follows_llm_order_within_tier():
+    gaps = [_gap(0, v) for v in (5, 20, 15, 10)]
+    for score, g in zip((9.0, 7.0, 5.0, 3.0), gaps, strict=True):
+        g["priority_score"] = score
+    out, _note = rank_gap_queue(
+        gaps, client=FakeRankClient(), seed=1, max_workers=1,
+        stamp_scores=True,
+    )
+    # LLM order (by value desc) now carries the tier's own score
+    # multiset, descending — downstream priority_score sorts agree
+    # with the list order.
+    assert _values(out) == [20, 15, 10, 5]
+    assert [g["priority_score"] for g in out] == [9.0, 7.0, 5.0, 3.0]
+
+
+def test_stamp_scores_noop_without_scores():
+    gaps = [_gap(0, v) for v in (5, 20, 15, 10)]
+    out, _note = rank_gap_queue(
+        gaps, client=FakeRankClient(), seed=1, max_workers=1,
+        stamp_scores=True,
+    )
+    assert _values(out) == [20, 15, 10, 5]
+    assert all("priority_score" not in g for g in out)
+
+
 def test_never_adds_or_drops_gaps_and_rest_stays_mechanical():
     gaps = ([_gap(-1, v) for v in range(1, 6)]
             + [_gap(0, v) for v in range(10, 30)]

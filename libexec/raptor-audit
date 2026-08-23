@@ -1326,6 +1326,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             if args.include_kinds else None
         ),
         adversarial=args.adversarial,
+        rank_gaps=getattr(args, "rank_gaps", False),
         edges=args.edges,
         max_propagation_depth=args.max_propagation_depth,
         subsystem_depth=args.subsystem_depth,
@@ -1856,6 +1857,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             if include_kinds_raw else None
         ),
         adversarial=bool(run_cfg.get("adversarial")),
+        rank_gaps=bool(run_cfg.get("rank_gaps")),
         max_propagation_depth=run_cfg.get("max_propagation_depth"),
         subsystem_depth=int(run_cfg.get("subsystem_depth") or 0),
         validate=bool(run_cfg.get("validate", True)),
@@ -1982,6 +1984,7 @@ def _run_config_from_args(
         "batch_sloc_threshold": args.batch_sloc_threshold,
         "include_kinds": args.include_kinds,
         "adversarial": args.adversarial,
+        "rank_gaps": getattr(args, "rank_gaps", False),
         "edges": args.edges,
         "max_propagation_depth": args.max_propagation_depth,
         "subsystem_depth": args.subsystem_depth,
@@ -2228,6 +2231,10 @@ def main() -> int:
                        help="Model ID (repeatable for multi-model consensus)")
     p_run.add_argument("--adversarial", action="store_true",
                        help="Enable adversarial reviewer for positive verdicts")
+    p_run.add_argument("--rank-gaps", action="store_true",
+                       help="LLM re-rank of the gap-queue head within "
+                            "priority tiers before pins/budget "
+                            "(ordering only; spend on the run ledger)")
     p_run.add_argument("--edges", action="store_true",
                        help="Review cross-function edge obligations: "
                             "tier-1 boundary edges as dedicated "

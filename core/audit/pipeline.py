@@ -78,6 +78,9 @@ class AuditPipelineOpts:
     batch_sloc_threshold: int | None = None
     include_kinds: set | None = None
     adversarial: bool = False
+    # Opt-in LLM re-rank of the gap-queue head within priority tiers
+    # (core.audit.gap_ranking) — forwarded to OrchestratorConfig.
+    rank_gaps: bool = False
     max_propagation_depth: int | None = None
     subsystem_depth: int = 0
     validate: bool = True
@@ -306,6 +309,7 @@ def _build_orchestrator_config(
         models=models,
         multi_model=len(models) > 1,
         adversarial=opts.adversarial,
+        rank_gaps=opts.rank_gaps,
         max_cost_usd=opts.max_cost_usd,
         max_seconds=opts.max_seconds,
         review_passes=opts.review_passes,

@@ -318,6 +318,7 @@ class TestDirectionAttribution:
 
 
 class TestAnchoredOverflow:
+    @pytest.mark.slow
     def test_real_oversize_anchored_stream_verifies_end_to_end(
         self, tmp_path,
     ):
@@ -327,7 +328,12 @@ class TestAnchoredOverflow:
         multi-batch run: the writer side must leave an empty flag set
         (the recount overflow is anchored), and strict triage must
         stream-verify every event instead of refusing the file and
-        misreading the refusal as truncation."""
+        misreading the refusal as truncation.
+
+        slow: writing + stream-verifying >64 MiB of real events takes
+        tens of seconds by construction (the whole point is that no
+        cap is mocked down) — nightly tier, per the default-tier
+        slow-test guard's doctrine."""
         run = _run_dir(tmp_path)
         n_batches, per_batch = 4, 100_000
         batch_hosts = [

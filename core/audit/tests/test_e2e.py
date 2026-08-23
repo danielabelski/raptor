@@ -389,10 +389,15 @@ class TestAuditE2E:
         # MECHANICAL disqualifier — an LLM-stage ruling (D-*) caps at
         # suspicious (covered in test_feedback.py). Record the disproof
         # the way /validate does when the dark-verify witness executed
-        # and refuted the prediction.
+        # and refuted the prediction: the mechanical stage stamps the
+        # witness_execution record with the provenance key, and the
+        # feedback referee verifies the stamp before granting the
+        # disqualifier mechanical authority (an unstamped record is
+        # indistinguishable from a forgery and demotes).
+        from core.witness.provenance import stamp_witness_execution
         validate_report = out_dir / "validate-findings.json"
         import json as _json
-        validate_report.write_text(_json.dumps([{
+        finding = {
             "file": "vuln.c",
             "function": "vuln_fn",
             "ruling": {
@@ -402,7 +407,10 @@ class TestAuditE2E:
             },
             "witness_execution": {"verdict": "refuted"},
             "is_true_positive": False,
-        }]))
+        }
+        stamp_witness_execution(
+            finding, finding["witness_execution"], out_dir)
+        validate_report.write_text(_json.dumps([finding]))
 
         ann_dir = out_dir / "annotations"
         r = _run([_AUDIT_CLI, "feedback",

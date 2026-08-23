@@ -671,6 +671,27 @@ def _cmd_visible_in_mount_tree(cmd, target, output, extra_paths) -> bool:
 
 _UNSET = object()
 
+#: Per-file /etc grants substituted for the wholesale "/etc" read grant
+#: under ``omit_etc_reads=True``: what the dynamic loader and TLS stacks
+#: need to run a tool, and nothing that names the host or its users.
+#: Missing entries are skipped at grant time (Landlock rules bind to
+#: existing inodes).
+_ETC_MINIMAL_READS: tuple[str, ...] = (
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/alternatives",
+    # CA trust only — deliberately NOT the whole /etc/ssl, which would
+    # include /etc/ssl/private (DAC-protected, but no business being
+    # in the grant set at all).
+    "/etc/ssl/certs",
+    "/etc/ssl/openssl.cnf",
+    "/etc/ca-certificates",
+    "/etc/pki",
+    "/etc/crypto-policies",
+    "/etc/localtime",
+)
+
 
 @contextmanager
 def sandbox(block_network=_UNSET, target: str | None = None, output: str | None = None,
@@ -696,6 +717,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             degraded_net_deny: bool = True,
             loopback_unix_bridges: dict | None = None,
             omit_proc_reads: bool = False,
+            omit_etc_reads: bool = False,
             require_proxy_netns: bool = False,
             rootfs: str | None = None):
     """Context manager for sandboxed subprocess execution.
@@ -902,6 +924,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                  with EACCES; extend `readable_paths=` for specific
                  needs. Inert when `restrict_reads` is off (no read
                  allowlist exists).
+        omit_etc_reads: (default False) Swap the wholesale `/etc` grant
+                 in the `restrict_reads=True` read allowlist for the
+                 minimal per-file set the loader and TLS stacks need
+                 (`_ETC_MINIMAL_READS`: ld.so cache/conf, alternatives,
+                 CA material, localtime). For callers whose payload has
+                 no business enumerating host identity files
+                 (`/etc/passwd`, `/etc/hosts`, `/etc/machine-id`, ...)
+                 this holds on the Landlock-only tier too, where no
+                 private mount view exists. Cost: anything else under
+                 /etc reads as EACCES — extend `readable_paths=` for
+                 specific needs. Inert when `restrict_reads` is off.
         sanitise_host_fingerprint: If True, build a host-fingerprint
                  persona once per context (synthetic cpuinfo etc.
                  bind-mounted over the real files, plus UTS/identity
@@ -2007,6 +2040,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         ]
         if omit_proc_reads:
             effective_read_paths.remove("/proc")
+        if omit_etc_reads:
+            # Swap the wholesale /etc grant for the loader/TLS minimum.
+            # Host-identity files (/etc/passwd, /etc/hosts,
+            # /etc/machine-id, ...) stay denied — this matters most on
+            # the Landlock-only tier, where no private mount view
+            # narrows /etc for the child. Existing paths only:
+            # Landlock rules bind to inodes and the preexec treats a
+            # missing grant path as a setup failure.
+            effective_read_paths.remove("/etc")
+            effective_read_paths.extend(
+                p for p in _ETC_MINIMAL_READS if os.path.exists(p))
         # The pid-1 shim file ONLY (not the whole libexec/ dir).
         # Without this, execvp of the shim fails with EACCES (rc=126)
         # and every run_untrusted() call under restrict_reads=True
@@ -4688,6 +4732,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
         degraded_net_deny: bool = True,
         loopback_unix_bridges: dict | None = None,
         omit_proc_reads: bool = False,
+        omit_etc_reads: bool = False,
         rootfs: str | None = None,
         **kwargs) -> subprocess.CompletedProcess:
     """Run a single command in a sandbox. Convenience wrapper.
@@ -4724,6 +4769,7 @@ def run(cmd: list[str], block_network: bool = True, target: str | None = None,
                  degraded_net_deny=degraded_net_deny,
                  loopback_unix_bridges=loopback_unix_bridges,
                  omit_proc_reads=omit_proc_reads,
+                 omit_etc_reads=omit_etc_reads,
                  rootfs=rootfs) as _run:
         return _run(cmd, **kwargs)
 

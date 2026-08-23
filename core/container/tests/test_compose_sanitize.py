@@ -580,6 +580,75 @@ def test_resolver_failure_never_retried_unconfined(tmp_path: Path) -> None:
     assert len(calls) == 1
 
 
+def test_primary_compose_file_size_capped(tmp_path: Path) -> None:
+    """The primary document gets the same 5MiB budget as gated
+    extends/env_file targets — an oversized hostile compose file must
+    refuse before parsing, not memory-DoS the sanitizer."""
+    compose = tmp_path / "docker-compose.yml"
+    body = yaml.safe_dump({"services": {"web": {"image": "x"}}})
+    compose.write_text(
+        body + "# " + "x" * cco._PRE_GATE_MAX_FILE_BYTES + "\n")
+    with pytest.raises(cco.ComposeError, match="budget"), \
+            patch.object(cco, "_resolve_effective_model",
+                         _identity_resolver):
+        cco._rewrite_ports_in_place(compose)
+
+
+def test_resolver_narrows_etc_reads(tmp_path: Path) -> None:
+    """The resolver sandbox must swap the wholesale /etc read grant for
+    the loader/TLS minimum (omit_etc_reads) — it has no business reading
+    host-identity files, and on the Landlock-only tier no private mount
+    view narrows /etc for it."""
+    seen: dict[str, Any] = {}
+
+    def fake_sandbox_run(argv: list[str], **kw: Any):
+        seen.update(kw)
+
+        class _P:
+            returncode = 0
+            stdout = "services: {}\n"
+            stderr = ""
+            sandbox_info: dict[str, Any] = {}
+
+        return _P()
+
+    import core.sandbox as sb
+    with patch.object(sb, "run", fake_sandbox_run):
+        cco._run_resolver(["docker", "compose", "config"], tmp_path,
+                          cco._resolver_env(tmp_path))
+    assert seen.get("restrict_reads") is True
+    assert seen.get("omit_etc_reads") is True
+
+
+def test_resolver_surfaces_mount_ns_degradation(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A sandbox that ENGAGED but fell back from mount-ns to the
+    Landlock-only tier mid-setup used to stay silent toward compose —
+    the degraded read boundary must be surfaced in the log."""
+
+    def fake_sandbox_run(argv: list[str], **_kw: Any):
+        class _P:
+            returncode = 0
+            stdout = "services: {}\n"
+            stderr = ""
+            sandbox_info = {
+                "mount_ns_degraded": "spawn setup failed: uid mapping",
+            }
+
+        return _P()
+
+    import core.sandbox as sb
+    with caplog.at_level("WARNING", logger=cco.logger.name), \
+            patch.object(sb, "run", fake_sandbox_run):
+        out = cco._run_resolver(["docker", "compose", "config"], tmp_path,
+                                cco._resolver_env(tmp_path))
+    assert out == "services: {}\n"
+    degraded_warnings = [r for r in caplog.records
+                         if "Landlock-only" in r.getMessage()]
+    assert degraded_warnings, (
+        "mount-ns degradation must be surfaced to the compose log")
+
+
 def test_ulimits_and_stop_grace_dropped(tmp_path: Path) -> None:
     doc = _sanitize(tmp_path, {
         "services": {"web": {"image": "x",

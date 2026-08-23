@@ -575,6 +575,11 @@ def _run_resolver(argv: list[str], staging: Path, env: dict[str, str]) -> str:
                 block_network=True,
                 target=str(staging),
                 restrict_reads=True,
+                # The resolver has no business reading host-identity
+                # files: swap the wholesale /etc read grant for the
+                # loader/TLS minimum. This holds on the Landlock-only
+                # tier too, where no private mount view narrows /etc.
+                omit_etc_reads=True,
                 cwd=str(staging),
                 env=env,
                 # The env is CONSTRUCTED minimal (static PATH + throwaway
@@ -597,6 +602,22 @@ def _run_resolver(argv: list[str], staging: Path, env: dict[str, str]) -> str:
                 stderr=str(exc),
             ) from exc
         else:
+            # The sandbox ENGAGED but may have fallen back from the
+            # mount-ns tier to Landlock-only mid-setup (uid-mapping
+            # failure, missing helpers). The read boundary then loses
+            # the private mount view — surface the degraded tier
+            # instead of letting the fallback stay silent. Not a
+            # refusal: the recursive pre-gate stays the primary
+            # defense and Landlock still confines reads.
+            degraded = getattr(proc, "sandbox_info", {}).get(
+                "mount_ns_degraded")
+            if degraded:
+                logger.warning(
+                    "compose resolver sandbox degraded from mount-ns to "
+                    "the Landlock-only tier (%s) — read confinement is "
+                    "kernel-enforced but has no private mount view for "
+                    "this resolution", degraded,
+                )
             if proc.returncode != 0:
                 stderr = (proc.stderr or "").strip()
                 raise ComposeError(
@@ -1106,9 +1127,12 @@ def _rewrite_ports_in_place(
        ports become ``127.0.0.1:0:<target>``, bind sources and build
        contexts are confined to staging, resource limits are injected.
     """
+    # The primary document gets the same size budget as every gated
+    # extends/env_file target — without it, a multi-GiB compose file in
+    # a hostile repo is a memory DoS on the sanitizer process.
     try:
-        raw = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+        raw = _load_gated_document(compose_file, what="file")
+    except ComposeError as exc:
         msg = f"cannot parse compose file {compose_file} for security rewrite: {exc}"
         raise ComposeError(
             msg,

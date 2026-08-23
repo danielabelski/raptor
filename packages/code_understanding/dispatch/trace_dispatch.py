@@ -15,6 +15,7 @@ import logging
 import re
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.llm.providers import create_provider
 from core.llm.tool_use import (
     CacheControl,
@@ -235,7 +236,7 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
                 },
                 "required": ["verdicts"],
             },
-            handler=lambda _args: json.dumps({"received": True}),
+            handler=lambda _args: dumps_display({"received": True}, indent=None),
         ),
     ]
 
@@ -269,6 +270,12 @@ def _format_user_message(
         "or refute each path. Submit one verdict per trace via "
         "submit_verdicts.\n\n"
         "<traces>\n"
+        # Deliberately raw json.dumps, NOT core.json.dumps_display:
+        # strict serialization doubles as the validation gate for
+        # caller-supplied trace dicts — a non-JSON-native value (e.g.
+        # Path) must raise TypeError here so the wrapper surfaces a
+        # clean per-trace "serialize" error instead of silently
+        # stringifying bad input into the prompt.
         f"{json.dumps(traces, indent=2)}\n"
         "</traces>"
     )

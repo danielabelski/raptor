@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import difflib
 import io
-import json
 import logging
 import zipfile
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.llm.task_types import TaskType
 from core.tar import extract_files_from_tar
 
@@ -128,7 +128,7 @@ def review_version_diff(
             content=(
                 "Mechanical sink analysis of this version diff "
                 "(added/removed dangerous calls and guard changes):\n"
-                + json.dumps(sink_evidence, indent=2)
+                + dumps_display(sink_evidence, indent=2)
             ),
             kind="SINK_DIFF",
             origin=f"{new_dep.ecosystem}/{new_dep.name} "

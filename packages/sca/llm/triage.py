@@ -19,10 +19,10 @@ change finding severity — only the ``priority_bucket`` and
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from typing import Any
 
+from core.json import dumps_display
 from core.llm.task_types import TaskType
 from . import (
     StageResult,
@@ -65,10 +65,10 @@ def triage_findings(
         cross_trimmed = _trim_for_llm(cross_tool_findings, limit=20)
         cross_text = (
             "\n\n--- Cross-tool context (from /scan, /codeql) ---\n"
-            + _json.dumps(cross_trimmed, indent=1, default=str)
+            + dumps_display(cross_trimmed, indent=1)
         )
 
-    findings_json = _json.dumps(trimmed, indent=1, default=str)
+    findings_json = dumps_display(trimmed, indent=1)
     if len(findings_json) > _MAX_FINDING_JSON_CHARS:
         findings_json = findings_json[:_MAX_FINDING_JSON_CHARS] + "\n... truncated ..."
 

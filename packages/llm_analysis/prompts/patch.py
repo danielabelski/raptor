@@ -4,9 +4,9 @@ Builds the secure patch prompt from a finding/vulnerability context as a
 ``PromptBundle`` with envelope-quarantined untrusted content.
 """
 
-import json
 from typing import Any
 
+from core.json import dumps_display
 from core.security.prompt_defense_profiles import CONSERVATIVE
 from core.security.prompt_envelope import (
     ModelDefenseProfile,
@@ -102,7 +102,7 @@ def build_patch_prompt_bundle(
 
     if analysis:
         blocks.append(UntrustedBlock(
-            content=json.dumps(analysis, indent=2)[:10000],
+            content=dumps_display(analysis, indent=2)[:10000],
             kind="prior-analysis",
             origin=f"{rule_id}:{file_path}",
         ))

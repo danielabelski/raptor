@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 
+from core.json import dumps_display
 from core.json import save_json
 from core.llm.client import LLMClient, _is_auth_error
 from core.llm.config import LLMConfig
@@ -332,14 +333,14 @@ def _build_crash_exploit_bundle(crash_context: CrashContext) -> PromptBundle:
     feasibility = _crash_feasibility_summary(crash_context)
     if feasibility:
         blocks.append(UntrustedBlock(
-            content=json.dumps(feasibility, indent=2),
+            content=dumps_display(feasibility, indent=2),
             kind="binary-feasibility",
             origin=f"crash:{crash_context.crash_id}",
         ))
 
     if crash_context.analysis:
         blocks.append(UntrustedBlock(
-            content=json.dumps(crash_context.analysis, indent=2),
+            content=dumps_display(crash_context.analysis, indent=2),
             kind="prior-crash-analysis",
             origin=f"crash:{crash_context.crash_id}",
         ))

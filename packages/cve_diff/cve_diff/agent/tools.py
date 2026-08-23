@@ -18,7 +18,6 @@ Design notes:
 from __future__ import annotations
 
 import functools
-import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from urllib.parse import quote
 from cve_diff.discovery.nvd import NvdDiscoverer
 from cve_diff.infra import github_client
 
+from core.json import dumps_display
 from core.config.hosts_override import load_hosts_override
 from core.http import HttpError
 from core.http.egress_backend import EgressClient
@@ -204,15 +204,15 @@ class Tool:
 
 
 def _err(msg: str) -> str:
-    return json.dumps({"error": msg[:300]})
+    return dumps_display({"error": msg[:300]}, indent=None)
 
 
 def _safe_json(data: Any, max_bytes: int = _MAX_BYTES) -> str:
     """Serialize to valid JSON within ``max_bytes``."""
-    raw = json.dumps(data)
+    raw = dumps_display(data, indent=None)
     if len(raw) <= max_bytes:
         return raw
-    return json.dumps({"truncated": True, "original_bytes": len(raw)})
+    return dumps_display({"truncated": True, "original_bytes": len(raw)}, indent=None)
 
 
 def _gh_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | list | None:
@@ -243,7 +243,7 @@ def _osv_raw_impl(cve_id: str) -> str:
         )
     except HttpError as exc:
         if exc.status == 404:
-            return json.dumps({"not_found": True, "cve_id": cve_id})
+            return dumps_display({"not_found": True, "cve_id": cve_id}, indent=None)
         return _err(f"http {exc.status or 'error'}: {str(exc)[:120]}")
     return _safe_json(data)
 
@@ -253,7 +253,7 @@ def _nvd_raw_impl(cve_id: str) -> str:
         return _err("cve_id required")
     payload = _nvd.get_payload(cve_id)
     if payload is None:
-        return json.dumps({"not_found": True, "cve_id": cve_id})
+        return dumps_display({"not_found": True, "cve_id": cve_id}, indent=None)
     return _safe_json(payload)
 
 
@@ -267,11 +267,11 @@ def _osv_expand_aliases_impl(identifier: str) -> str:
             f"{_OSV_BASE}/vulns/{identifier}", timeout=int(_TIMEOUT_S), retries=0,
         )
     except HttpError:
-        return json.dumps({"aliases": []})
+        return dumps_display({"aliases": []}, indent=None)
     if not isinstance(data, dict):
-        return json.dumps({"aliases": []})
+        return dumps_display({"aliases": []}, indent=None)
     aliases = list(data.get("aliases") or [])
-    return json.dumps({"aliases": aliases, "primary_id": data.get("id")})
+    return dumps_display({"aliases": aliases, "primary_id": data.get("id")}, indent=None)
 
 
 def _deterministic_hints_impl(cve_id: str) -> str:
@@ -346,7 +346,7 @@ def _deterministic_hints_impl(cve_id: str) -> str:
         if key not in seen:
             seen.add(key)
             unique.append(h)
-    return json.dumps({"hints": unique[:20]})
+    return dumps_display({"hints": unique[:20]}, indent=None)
 
 
 # ---------------------------------------------------------------- GitHub search / commits
@@ -378,7 +378,7 @@ def _gh_search_impl(kind: str, query: str) -> str:
                 "sha": it.get("sha", ""),
                 "message": msg,
             })
-    return json.dumps({"items": slim})
+    return dumps_display({"items": slim}, indent=None)
 
 
 def _gh_search_repos_impl(query: str) -> str:
@@ -397,14 +397,14 @@ def _gh_commit_detail_impl(slug: str, sha: str) -> str:
         return _err("not found / rate limited")
     commit = data.get("commit") or {}
     files = github_client.get_commit_files(slug, sha) or []
-    return json.dumps({
+    return dumps_display({
         "slug": slug,
         "sha": sha,
         "message": (commit.get("message") or "")[:1000],
         "files": files[:20],
         "files_total": len(files),
         "parents": [p.get("sha", "") for p in (data.get("parents") or []) if isinstance(p, dict)],
-    })
+    }, indent=None)
 
 
 def _gh_list_commits_by_path_impl(slug: str, path: str, since: str = "", until: str = "") -> str:
@@ -426,7 +426,7 @@ def _gh_list_commits_by_path_impl(slug: str, path: str, since: str = "", until: 
         }
         for c in data[:20]
     ]
-    return json.dumps({"commits": commits})
+    return dumps_display({"commits": commits}, indent=None)
 
 
 def _gh_compare_impl(slug: str, base: str, head: str) -> str:
@@ -436,12 +436,12 @@ def _gh_compare_impl(slug: str, base: str, head: str) -> str:
     if data is None or not isinstance(data, dict):
         return _err("rate_limited or http error")
     files = [f.get("filename", "") for f in (data.get("files") or [])][:20]
-    return json.dumps({
+    return dumps_display({
         "status": data.get("status", ""),
         "ahead_by": data.get("ahead_by", 0),
         "behind_by": data.get("behind_by", 0),
         "files": files,
-    })
+    }, indent=None)
 
 
 # ---------------------------------------------------------------- Non-GitHub forges
@@ -467,9 +467,9 @@ def _git_ls_remote_impl(url: str) -> str:
         return _err("timeout")
     except (RuntimeError, OSError) as exc:
         return _err(f"git ls-remote failed: {str(exc)[:200]}")
-    return json.dumps({
+    return dumps_display({
         "refs": [{"sha": sha, "ref": ref} for sha, ref in refs[:50]],
-    })
+    }, indent=None)
 
 
 def _gitlab_commit_impl(host: str, slug: str, sha: str) -> str:
@@ -494,14 +494,14 @@ def _gitlab_commit_impl(host: str, slug: str, sha: str) -> str:
         return _err(f"http {exc.status or 'error'}: {str(exc)[:120]}")
     if not isinstance(data, dict):
         return _err("non-json")
-    return json.dumps({
+    return dumps_display({
         "id": data.get("id", ""),
         "short_id": data.get("short_id", ""),
         "title": (data.get("title") or "")[:200],
         "message": (data.get("message") or "")[:1000],
         "parent_ids": data.get("parent_ids") or [],
         "created_at": data.get("created_at", ""),
-    })
+    }, indent=None)
 
 
 def _cgit_fetch_impl(host: str, slug: str, sha: str) -> str:
@@ -524,7 +524,7 @@ def _cgit_fetch_impl(host: str, slug: str, sha: str) -> str:
     except HttpError as exc:
         return _err(f"http {exc.status or 'error'}: {str(exc)[:120]}")
     body = body_bytes.decode("utf-8", errors="replace")
-    return json.dumps({"url": url, "body": body[:_MAX_BYTES]})
+    return dumps_display({"url": url, "body": body[:_MAX_BYTES]}, indent=None)
 
 
 @functools.lru_cache(maxsize=1)
@@ -595,7 +595,7 @@ def _oracle_check_impl(cve_id: str = "", slug: str = "", sha: str = "") -> str:
         verdict = _verify_one(cve_id, slug, sha)
     except Exception as exc:  # noqa: BLE001
         return _err(f"{type(exc).__name__}: {exc}"[:200])
-    return json.dumps(verdict.to_dict())
+    return dumps_display(verdict.to_dict(), indent=None)
 
 
 def _check_diff_shape_impl(slug: str, sha: str) -> str:
@@ -619,18 +619,18 @@ def _check_diff_shape_impl(slug: str, sha: str) -> str:
         return _err("not found / rate limited")
     files = github_client.get_commit_files(slug, sha) or []
     if not files:
-        return json.dumps({
+        return dumps_display({
             "shape": "empty_diff",
             "files_total": 0,
             "note": "0 file changes — likely a tag / merge / re-tag commit",
-        })
+        }, indent=None)
     from cve_diff.diffing import shape_dynamic
     shape = shape_dynamic.classify(files, slug=slug, fetch=github_client.get_languages)
-    return json.dumps({
+    return dumps_display({
         "shape": shape,
         "files_total": len(files),
         "files_sample": files[:10],
-    })
+    }, indent=None)
 
 
 def _http_fetch_impl(url: str) -> str:
@@ -658,7 +658,7 @@ def _http_fetch_impl(url: str) -> str:
     except HttpError as exc:
         return _err(f"http {exc.status or 'error'}: {str(exc)[:120]}")
     body = body_bytes.decode("utf-8", errors="replace")
-    return json.dumps({"url": url, "status": 200, "body": body[:_MAX_BYTES]})
+    return dumps_display({"url": url, "status": 200, "body": body[:_MAX_BYTES]}, indent=None)
 
 
 # ---------------------------------------------------------------- Tool catalog

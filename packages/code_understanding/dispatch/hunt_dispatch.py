@@ -14,11 +14,11 @@ without any wrapping.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.llm.providers import create_provider
 from core.llm.tool_use import (
     CacheControl,
@@ -285,7 +285,7 @@ def _build_tools(sandbox: SandboxedTools) -> list[ToolDef]:
             # Handler returns success — actual variant collection happens
             # via terminal_tool_input on the loop result. This handler
             # is just the "ack" the loop dispatches before terminating.
-            handler=lambda _args: json.dumps({"received": True}),
+            handler=lambda _args: dumps_display({"received": True}, indent=None),
         ),
     ]
 

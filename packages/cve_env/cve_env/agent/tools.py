@@ -18,11 +18,11 @@ Tool taxonomy:
 
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_display
 from core.llm.tool_use.types import ToolDef
 
 from cve_env.tools import arch as _arch
@@ -63,7 +63,7 @@ internally by ``nvd_lookup`` and ``github_fetch`` for the actual HTTP GETs."""
 
 def _json(payload: dict[str, Any]) -> str:
     """Serialize a tool payload to the loop's wire format (JSON text)."""
-    return json.dumps(payload, sort_keys=True)
+    return dumps_display(payload, sort_keys=True, indent=None)
 
 
 # -- nvd_lookup -----------------------------------------------------------

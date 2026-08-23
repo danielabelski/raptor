@@ -26,6 +26,7 @@ from cve_diff.agent.types import AgentContext, AgentOutput, AgentResult, AgentSu
 from cve_diff.infra import github_client
 from cve_diff.llm.client import MODEL_PRICES
 
+from core.json import dumps_display
 from core.config import env_flag
 from core.llm import telemetry
 from core.llm.config import ModelConfig
@@ -160,14 +161,14 @@ class AgentLoop:
                     unverified_submits += 1
                     if unverified_submits > _MAX_UNVERIFIED_SUBMITS:
                         gate_hard_stop_reason[0] = "submit_unverified_sha"
-                        raise ValueError(json.dumps({
+                        raise ValueError(dumps_display({
                             "submit_rejected": True,
                             "reason": "too many unverified submits",
-                        }))
+                        }, indent=None))
                     verified_brief = ", ".join(
                         f"{vs}@{vh[:SHA_DISPLAY_LEN]}" for vs, vh in verified[:5]
                     ) or "(none)"
-                    raise ValueError(json.dumps({
+                    raise ValueError(dumps_display({
                         "submit_rejected": True,
                         "reason": (
                             "the (slug, sha) you submitted was not "
@@ -182,18 +183,18 @@ class AgentLoop:
                             f"{_MAX_UNVERIFIED_SUBMITS - unverified_submits + 1} "
                             "attempt(s) left."
                         ),
-                    }))
+                    }, indent=None))
 
                 # SHA-existence gate
                 if slug and sha and github_client.commit_exists(slug, sha) is False:
                     not_found_submits += 1
                     if not_found_submits > _MAX_NOT_FOUND_SUBMITS:
                         gate_hard_stop_reason[0] = "sha_not_found_in_repo"
-                        raise ValueError(json.dumps({
+                        raise ValueError(dumps_display({
                             "submit_rejected": True,
                             "reason": "too many sha-not-found submits",
-                        }))
-                    raise ValueError(json.dumps({
+                        }, indent=None))
+                    raise ValueError(dumps_display({
                         "submit_rejected": True,
                         "reason": (
                             "sha_not_found: GitHub returned 404. "
@@ -206,11 +207,11 @@ class AgentLoop:
                             f"have {_MAX_NOT_FOUND_SUBMITS - not_found_submits + 1} "
                             "attempt(s) left."
                         ),
-                    }))
+                    }, indent=None))
 
             # Accept the submission
             submit_payload[0] = args
-            return json.dumps({"accepted": True})
+            return dumps_display({"accepted": True}, indent=None)
 
         # ---- Build ToolDef list from cve-diff Tools + submit handler ----
         tool_defs: list[ToolDef] = [t.to_tool_def() for t in config.tools]

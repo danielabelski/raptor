@@ -29,6 +29,7 @@ if __name__ == "__main__":
     # fallback path (see CLAUDE.md: Python path safety).
     sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
+from core.json import dumps_display
 from core.config import RaptorConfig
 from core.inventory.lookup import lookup_function as _lookup_function
 from core.json import load_json, save_json
@@ -2146,7 +2147,7 @@ class AutonomousSecurityAgentV2:
 **Severity:** {vuln.level}
 {gate_block}
 ## Vulnerability Analysis
-{json.dumps(vuln.analysis, indent=2)}
+{dumps_display(vuln.analysis, indent=2)}
 
 ## Patch
 

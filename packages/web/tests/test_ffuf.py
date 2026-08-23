@@ -892,6 +892,13 @@ def test_scan_survives_late_ffuf_failure(tmp_path: Path):
 
     wordlist = tmp_path / "words.txt"
     wordlist.write_text("admin\n", encoding="utf-8")
+    # Hermetic stand-in for the ffuf binary: the parse-time preflight
+    # checks the BINARY before the wordlist, so on hosts without ffuf
+    # this test would die early with "binary not found" instead of
+    # reaching the late wordlist failure it exists to pin.
+    stub_ffuf = tmp_path / "ffuf-stub"
+    stub_ffuf.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub_ffuf.chmod(0o755)
 
     with patch("packages.web.scanner.WebClient"), patch(
         "packages.web.scanner.WebCrawler"
@@ -900,7 +907,7 @@ def test_scan_survives_late_ffuf_failure(tmp_path: Path):
             "http://example.com",
             None,
             tmp_path,
-            ffuf_config=FfufConfig(wordlist=wordlist),
+            ffuf_config=FfufConfig(wordlist=wordlist, binary=str(stub_ffuf)),
         )
         scanner.crawler.crawl.return_value = {
             "stats": {"total_pages": 1, "total_parameters": 0},

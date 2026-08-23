@@ -180,7 +180,8 @@ class TestBaselineSemantics:
 
 class TestRealTreeContract:
     """The two behaviours that make the gate trustworthy on this repo."""
-
+    
+    @pytest.mark.slow
     def test_real_tree_is_clean(self, det) -> None:
         """Every canonical site in the real repo is migrated or
         baselined — the checker exits clean on the tree it ships in."""

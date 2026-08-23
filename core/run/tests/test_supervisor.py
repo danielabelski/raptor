@@ -52,9 +52,20 @@ class TestSubagentDetection(unittest.TestCase):
 
 class TestCapAndBound(unittest.TestCase):
 
-    def test_default_cap_and_documented_3300s_bound(self):
+    def test_markers_without_declared_cap_do_not_bound(self):
+        # Incident regression: the subagent-shell markers are
+        # launcher-bridged into every shell on some deployments —
+        # assuming the harness default cap when the knob is UNSET
+        # truncated an uncapped long-running main-session run at the
+        # derived bound. Markers alone must not bound; the knob being
+        # set is the harness declaring an armed timer.
         with _env(CLAUDECODE="1", CLAUDE_CODE_CHILD_SESSION="1"):
             self.assertEqual(subagent_shell_cap_s(), DEFAULT_SUBAGENT_CAP_S)
+            self.assertIsNone(supervisor_wall_bound())
+
+    def test_declared_default_cap_gives_documented_3300s_bound(self):
+        with _env(CLAUDECODE="1", CLAUDE_CODE_CHILD_SESSION="1",
+                  CLAUDE_SUBAGENT_BG_SHELL_MAX_MS="3600000"):
             bound = supervisor_wall_bound()
             self.assertIsNotNone(bound)
             self.assertEqual(bound.cap_s, 3600.0)
@@ -62,6 +73,11 @@ class TestCapAndBound(unittest.TestCase):
             self.assertEqual(
                 bound.bound_s, DEFAULT_SUBAGENT_CAP_S - DRAIN_MARGIN_S,
             )
+
+    def test_non_numeric_declared_cap_does_not_bound(self):
+        with _env(CLAUDECODE="1", CLAUDE_CODE_CHILD_SESSION="1",
+                  CLAUDE_SUBAGENT_BG_SHELL_MAX_MS="soon"):
+            self.assertIsNone(supervisor_wall_bound())
 
     def test_env_cap_override(self):
         with _env(CLAUDECODE="1", CLAUDE_CODE_CHILD_SESSION="1",

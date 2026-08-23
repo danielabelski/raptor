@@ -106,11 +106,30 @@ def supervisor_wall_bound() -> SupervisorBound | None:
     """The wall bound a long run should default to, or ``None``.
 
     ``None`` in main-thread / interactive / non-Claude contexts —
-    those are unaffected. Under a subagent shell: the cap minus the
-    drain margin, floored at :data:`MIN_BOUND_S` (3300s under the
-    harness default).
+    those are unaffected. Under a subagent shell WITH an explicitly
+    declared cap: the cap minus the drain margin, floored at
+    :data:`MIN_BOUND_S`.
+
+    The cap knob must be SET: the subagent-shell markers alone
+    (``AI_AGENT``/``CLAUDE_CODE_CHILD_SESSION``) are launcher-bridged
+    into every shell on some deployments, and assuming the harness
+    default cap on such a host self-bounded an uncapped long-running
+    main-session run to the derived bound (observed live). An explicitly set
+    positive ``CLAUDE_SUBAGENT_BG_SHELL_MAX_MS`` is the harness
+    declaring an armed timer; without it the false-negative direction
+    is the recoverable one (the documented kill + ``raptor-audit
+    resume`` path), while the false-positive direction silently
+    truncates legitimate long runs.
     """
     if not is_subagent_shell():
+        return None
+    raw = os.environ.get(SUBAGENT_BG_SHELL_CAP_ENV)
+    if not raw:
+        return None
+    try:
+        if float(raw) <= 0:
+            return None
+    except ValueError:
         return None
     cap = subagent_shell_cap_s()
     return SupervisorBound(

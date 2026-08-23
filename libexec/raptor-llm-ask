@@ -211,6 +211,24 @@ def main() -> int:
         print(f"error: LLM call failed: {exc}", file=sys.stderr)
         return 1
 
+    # An explicitly pinned --model that fails can be silently answered
+    # by a fallback model — the reply text then "proves" the wrong
+    # model works (the reply obeys the prompt regardless of who wrote
+    # it). Make the switch impossible to miss.
+    if args.model:
+        from core.llm.config import CLAUDECODE_SESSION_MODEL
+        from core.security.llm_family import bare_model_id
+        pinned = model_config.model_name
+        answered = getattr(response, "model", "") or ""
+        if (pinned != CLAUDECODE_SESSION_MODEL
+                and answered
+                and bare_model_id(answered) != bare_model_id(pinned)):
+            print(
+                f"warning: --model {args.model} did not answer — this "
+                f"response came from fallback model {answered}",
+                file=sys.stderr,
+            )
+
     return 0
 
 

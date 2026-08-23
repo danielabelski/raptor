@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from core.config import RaptorConfig
-from core.json import load_json
+from core.json import load_json, loads
 from core.logging import get_logger
 from core.security.log_sanitisation import escape_nonprintable
 
@@ -494,15 +494,29 @@ def load_sarif(sarif_path: Path) -> dict[str, Any] | None:
         return None
 
     try:
-        data = json.loads(content or "{}")
-    except (json.JSONDecodeError, RecursionError) as e:
-        # RecursionError: json.loads recurses per nesting level, so a
-        # deeply-nested (~>1000 levels) hostile SARIF blows the Python
-        # recursion limit. That must land on the same reject-with-None
-        # path as malformed JSON — load_sarif is the safe-load
-        # boundary; letting RecursionError escape crashed the caller.
-        logger.error("SARIF: invalid JSON in %s: %s", sarif_path, e)
-        return None
+        # core.json.loads: shared backend (orjson when installed) —
+        # SARIF documents are the hottest single parse in the repo.
+        data = loads(content or "{}")
+    except (ValueError, RecursionError):
+        try:
+            # Tolerant retry, stdlib-only: a document rejected solely
+            # for a bare NaN/Infinity literal (json.dumps with the
+            # default allow_nan=True emits them; _coerce_line handles
+            # them per-field downstream) must keep importing — that
+            # tolerance is pinned by the crafted-SARIF tests. The
+            # retry costs one extra parse on the rare non-finite or
+            # malformed document; the well-formed common case stays
+            # on the fast path above.
+            data = loads(content or "{}", allow_non_finite=True)
+        except (ValueError, RecursionError) as e:
+            # RecursionError: json parsing recurses per nesting
+            # level, so a deeply-nested (~>1000 levels) hostile SARIF
+            # blows the Python recursion limit. That must land on the
+            # same reject-with-None path as malformed JSON —
+            # load_sarif is the safe-load boundary; letting
+            # RecursionError escape crashed the caller.
+            logger.error("SARIF: invalid JSON in %s: %s", sarif_path, e)
+            return None
 
     if not isinstance(data, dict):
         logger.error("SARIF: root must be an object in %s", sarif_path)

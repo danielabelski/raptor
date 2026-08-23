@@ -103,6 +103,10 @@ def volatile_target_reason(target: str | None) -> str | None:
     """
     if not target:
         return None
+    if _URL_SCHEME_RE.match(target):
+        # A URL project target is fine for /web but is not a
+        # filesystem default for code-scanning commands.
+        return "is a URL — filesystem commands need a path (use /web for URL targets)"
     try:
         resolved = Path(target).resolve()
     except (OSError, ValueError):
@@ -260,6 +264,16 @@ def _check_target_mismatch(target_path: str, project_name: str,
     harnesses); an out-of-tree binary warns instead of raising.
     """
     if _URL_SCHEME_RE.match(target_path):
+        if _URL_SCHEME_RE.match(project_target):
+            # Both sides are URLs: compare them (trailing-slash
+            # tolerant) instead of skipping — /web --url https://B
+            # must not silently land its run in project A.
+            if target_path.rstrip("/") != project_target.rstrip("/"):
+                raise TargetMismatchError(
+                    f"Run target {target_path!r} does not match the active "
+                    f"project's target {project_target!r}. Use --out to "
+                    "direct the run elsewhere, or switch projects."
+                )
         return
 
     resolved = Path(target_path).resolve()

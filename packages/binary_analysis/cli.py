@@ -120,6 +120,11 @@ def _build_parser() -> argparse.ArgumentParser:
     harness_p = sub.add_parser("harness", help="Plan or generate a candidate harness for one recovered ingress")
     harness_p.add_argument("run_dir", help="Existing /binary investigate or map output directory")
     harness_p.add_argument("--ingress", help="Ingress id to target; defaults to the highest-ranked ingress")
+    harness_p.add_argument(
+        "--llm-rank", action="store_true",
+        help="LLM re-rank of the ingress candidates before the default "
+             "selection cascade (ordering only; explicit --ingress wins)",
+    )
     harness_p.add_argument("--abi", choices=["buffer-size", "cstring"], help="Operator-supplied ABI shape for exported APIs")
     harness_p.add_argument("--device", help="Operator-supplied device path for ioctl harnesses")
     harness_p.add_argument("--ioctl-code", help="Operator-supplied ioctl/control code, for example 0x222003")
@@ -665,6 +670,7 @@ def _run_harness(args: argparse.Namespace) -> int:
             abi=args.abi,
             device=args.device,
             ioctl_code=args.ioctl_code,
+            llm_rank=getattr(args, "llm_rank", False),
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"raptor-binary: harness failed: {exc}", file=sys.stderr)

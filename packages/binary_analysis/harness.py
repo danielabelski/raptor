@@ -21,6 +21,7 @@ identifies the narrow parser/protocol boundary behind them.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 import re
 import shlex
@@ -30,6 +31,93 @@ from typing import Any
 from core.json import load_json, save_json
 
 from .graph_store import BinaryGraphStore, graph_path_for_run, stable_node_id
+
+logger = logging.getLogger(__name__)
+
+_INGRESS_RANK_QUERY = (
+    "Rank these binary ingress candidates by fuzz-worthiness as a "
+    "harness boundary. Prefer candidates that parse "
+    "attacker-controlled bytes (network payloads, file formats, "
+    "device requests), have a bound function and linked "
+    "candidate flows toward dangerous sinks, and accept structured "
+    "input a fuzzer can mutate meaningfully. Rank lower: bare "
+    "entry stubs, logging or teardown paths, and candidates with "
+    "no evidence of external reachability."
+)
+_MAX_INGRESS_FIELD_CHARS = 200
+
+
+def _render_ingress(item: Any) -> str:
+    if not isinstance(item, dict):
+        return str(item)[:_MAX_INGRESS_FIELD_CHARS]
+
+    def field(key: str) -> str:
+        text = str(item.get(key) or "?")
+        return text.replace("\n", " ")[:_MAX_INGRESS_FIELD_CHARS]
+
+    return "\n".join([
+        f"kind: {field('kind')}",
+        f"name: {field('name')}",
+        f"mechanical_score: {field('score')}",
+        f"bound_function: {field('bound_function_name')}",
+        f"linked_flows: {field('linked_candidate_flows')}",
+        f"linked_sinks: {field('linked_sinks')}",
+        f"evidence_tier: {field('evidence_tier')}",
+        f"claim: {field('claim')}",
+    ])
+
+
+def _llm_rank_ingress(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Opt-in LLM re-rank of the mechanically-ranked ingress list.
+
+    Ordering only — the selection cascade in _select_ingress still
+    applies its parser-boundary and actionable-kind filters on top.
+    Best-effort: no client (claude-code-only install without an
+    external model resolves one via the session transport; a stub
+    provider or any failure) keeps the mechanical order.
+    """
+    if len(ranked) < 3:
+        logger.info(
+            "ingress ranking skipped: fewer than 3 candidates",
+        )
+        return ranked
+    try:
+        from core.llm.factory import get_client
+        from core.llm.ranking import rank_items
+
+        client = get_client()
+        if client is None:
+            logger.info("ingress ranking skipped: no LLM client available")
+            return ranked
+        # Ordering pass, not analysis: cap the spend well below the
+        # client default (the persisted ingress list is <= 10 items,
+        # so the call count is small regardless).
+        cfg = getattr(client, "config", None)
+        if cfg is not None:
+            current_cap = float(getattr(cfg, "max_cost_per_scan", 0) or 0)
+            cfg.max_cost_per_scan = (
+                min(current_cap, 1.0) if current_cap > 0 else 1.0
+            )
+        result = rank_items(
+            ranked, _INGRESS_RANK_QUERY, client=client,
+            render=_render_ingress,
+        )
+        if result.stats.ranked_batches == 0:
+            logger.info(
+                "ingress ranking produced no signal — mechanical "
+                "order kept",
+            )
+            return ranked
+        logger.info(
+            "ingress ranking: %d candidates reordered (%d LLM calls, "
+            "$%.2f)", len(ranked), result.stats.llm_calls,
+            result.stats.cost,
+        )
+        return [r.item for r in result.ranked]
+    except Exception as e:  # noqa: BLE001 — ordering refinement must
+        # never break harness generation.
+        logger.warning("ingress ranking failed (%s); mechanical order kept", e)
+        return ranked
 
 _ABI_CHOICES = {"buffer-size", "cstring"}
 _APP_INGRESS_KINDS = {
@@ -106,6 +194,7 @@ def _select_ingress(
     context: dict[str, Any],
     investigation: dict[str, Any],
     ingress_id: str | None,
+    llm_rank: bool = False,
 ) -> dict[str, Any]:
     ingress = [
         item for item in context.get("external_ingress_candidates", [])
@@ -121,6 +210,8 @@ def _select_ingress(
         item for item in investigation.get("ranked_ingress", [])
         if isinstance(item, dict)
     ]
+    if llm_rank:
+        ranked = _llm_rank_ingress(ranked)
     parser_boundary_ingress_ids = {
         str(item.get("ingress_id") or "")
         for item in context.get("parser_boundary_candidates", [])
@@ -346,11 +437,12 @@ def generate_binary_harness(
     abi: str | None = None,
     device: str | None = None,
     ioctl_code: str | None = None,
+    llm_rank: bool = False,
 ) -> dict[str, Any]:
     """Write a binary harness plan and optional candidate source."""
     run_dir = Path(run_dir).resolve()
     manifest_data, context, investigation = _load_run(run_dir)
-    ingress = _select_ingress(context, investigation, ingress_id)
+    ingress = _select_ingress(context, investigation, ingress_id, llm_rank=llm_rank)
     kind = str(ingress.get("kind") or "")
     platform = str(ingress.get("platform") or "generic")
     target_path = str(manifest_data.get("binary_path") or context.get("target_path") or "")

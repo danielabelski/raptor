@@ -10362,12 +10362,19 @@ def _multi_pass_review(
     )
 
 
-# ``timeout`` is deliberately NOT in the recoverable set: a timed-out
-# review already got its single reduced-context retry inline (see
-# ``_timeout_reduced_retry``), and the end-of-run pass re-dispatching
-# the same oversized prompt at full context would mostly re-buy the
-# same timeout — the timeout retry policy caps retries at one.
-_RECOVERABLE_ERROR_CLASSES = frozenset({"json_parse", "truncation", "api_error"})
+# ``timeout`` is recoverable, with a twist: a timed-out review already
+# got its single reduced-context retry inline (see
+# ``_timeout_reduced_retry``), so by the time a timeout-class outcome
+# reaches the end-of-run pass both the full-context call and the
+# immediate reduced retry have failed. The end-of-run pass still
+# re-queues it — at reduced context AND a capped per-call timeout
+# (honoured by the claudecode transport; SDK providers keep their own
+# class ceiling) — because by end of run a transport brownout has
+# usually cleared, and without the re-queue a single timeout
+# permanently errors the function's review.
+_RECOVERABLE_ERROR_CLASSES = frozenset(
+    {"json_parse", "truncation", "api_error", "timeout"},
+)
 
 
 def _classify_error(exc: Exception) -> str:
@@ -10448,9 +10455,8 @@ def _timeout_reduced_retry(
     ``_TIMEOUT_RETRY_TIMEOUT_S``. A successful retry is tagged
     ``context_reduced=True`` so deepen re-reviews the function at
     full context later in the run; a failed retry degrades to the
-    original timeout error outcome. This is the ONE permitted
-    timeout retry at the orchestrator layer — the end-of-run error
-    retry pass deliberately skips timeout-class outcomes.
+    original timeout error outcome, which the end-of-run error retry
+    pass re-queues once more (reduced context, capped timeout).
     """
     logger.warning(
         "review timed out for %s:%s — retrying once with reduced "
@@ -10476,8 +10482,9 @@ def _timeout_reduced_retry(
             gap["name"],
             retry_exc,
         )
-        # Report the ORIGINAL timeout: its classification drives the
-        # (deliberate) exclusion from the end-of-run retry pass.
+        # Report the ORIGINAL timeout: its classification routes the
+        # outcome into the end-of-run retry pass's timeout handling
+        # (reduced context + capped per-call timeout).
         return _error_outcome(gap, exc)
     outcome.context_reduced = True
     if outcome.review_result is not None:
@@ -10495,7 +10502,13 @@ def _retry_error_outcomes(
     start_time: float,
     _sarif_cache: Any,
 ) -> OrchestratorResult:
-    """Retry recoverable error outcomes (json_parse, truncation, api_error)."""
+    """Retry recoverable error outcomes (json_parse, truncation,
+    api_error, timeout). Truncation and timeout retries strip the
+    bulkiest optional context blocks; timeout retries additionally cap
+    the per-call timeout (honoured by the claudecode transport; SDK
+    providers keep their own class ceiling) and tag any recovered
+    verdict ``context_reduced`` so it is re-reviewed rather than
+    reused cross-run."""
     error_outcomes = [
         o
         for o in result.outcomes
@@ -10520,9 +10533,16 @@ def _retry_error_outcomes(
         except Exception:  # noqa: BLE001, S112
             continue
 
-        if outcome.error_class == "truncation":
+        if outcome.error_class in ("truncation", "timeout"):
             for key in _TRUNCATION_STRIP_KEYS:
                 ctx.pop(key, None)
+        if outcome.error_class == "timeout":
+            # The full-context call and the inline reduced retry both
+            # timed out — cap the re-queue's per-call timeout so it
+            # doesn't re-buy the transport's full timeout on top
+            # (per-call caps are honoured by the claudecode
+            # transport; SDK providers keep their own class ceiling).
+            ctx["timeout_s"] = _TIMEOUT_RETRY_TIMEOUT_S
         ctx["error_retry"] = True
 
         try:
@@ -10537,6 +10557,19 @@ def _retry_error_outcomes(
                 result.terminated_by = "llm_budget_exceeded"
                 break
             continue
+
+        if outcome.error_class == "timeout" and new_outcome.status != "error":
+            # Mirror the inline reduced retry's provenance tag: this
+            # verdict came from stripped context, so it must not
+            # become durable full-confidence coverage evidence —
+            # cross-run reuse (gaps._reuse_ineligibility) refuses to
+            # import context_reduced verdicts and the next run
+            # re-reviews the function at full context. (Deepen has
+            # already run by this point in the pipeline, so the tag's
+            # effect is purely cross-run.)
+            new_outcome.context_reduced = True
+            if new_outcome.review_result is not None:
+                new_outcome.review_result["context_reduced"] = True
 
         result.error_retries += 1
         if new_outcome.status != "error":

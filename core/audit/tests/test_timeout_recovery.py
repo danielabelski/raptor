@@ -3,8 +3,10 @@
 A timed-out review call gets ONE immediate retry with reduced context
 (the truncation strip set) and a capped per-call timeout. The result
 is tagged ``context_reduced`` so deepen re-reviews it at full context.
-Timeout-class error outcomes are excluded from the end-of-run error
-retry pass — the inline retry is the single permitted one.
+A timeout-class error outcome (both the full-context call and the
+inline reduced retry failed) is re-queued once more by the end-of-run
+error retry pass — at reduced context and a capped per-call timeout,
+so a single transport brownout cannot permanently error the review.
 """
 
 from __future__ import annotations
@@ -54,20 +56,42 @@ class TestTimeoutClassification:
         exc = RuntimeError("rate limit exceeded, retry after 30s")
         assert _classify_error(exc) == "api_error"
 
-    def test_timeout_not_in_recoverable_classes(self):
-        # The end-of-run error retry pass must skip timeout outcomes:
-        # the inline reduced-context retry is the one permitted retry.
-        assert "timeout" not in _RECOVERABLE_ERROR_CLASSES
+    def test_timeout_in_recoverable_classes(self):
+        # A timeout-class outcome (inline reduced retry already spent)
+        # must reach the end-of-run error retry pass — without the
+        # re-queue a single transport brownout permanently errors the
+        # function's review.
+        assert "timeout" in _RECOVERABLE_ERROR_CLASSES
 
-    def test_end_of_run_pass_skips_timeout_outcomes(self, tmp_path):
+    def test_end_of_run_pass_requeues_timeout_reduced_and_capped(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.orchestrator as _orch
+
+        monkeypatch.setattr(
+            _orch, "_build_context",
+            lambda cfg, gap, *a, **kw: {
+                "file": "a.c", "function": "f",
+                "source": "int f(void) {}",
+                "block_analysis": {"data": "big"},
+                "sibling_ns": ["x"],
+                "type_constraints": {"x": "int"},
+            },
+        )
         result = OrchestratorResult()
         _tally_outcome(result, ReviewOutcome(
             file="a.c", function="f", status="error",
             body="timed out", error_class="timeout",
         ))
 
+        captured: dict = {}
+
         def review_fn(ctx, cfg):
-            raise AssertionError("timeout outcomes must not be retried")
+            captured.update(ctx)
+            return ReviewOutcome(
+                file="a.c", function="f", status="clean", body="ok",
+                review_result={"status": "clean", "body": "ok"},
+            )
 
         result = _retry_error_outcomes(
             result, _config(tmp_path), review_fn,
@@ -76,8 +100,42 @@ class TestTimeoutClassification:
             ]}]},
             None, None, time.monotonic(), None,
         )
-        assert result.error_retries == 0
-        assert result.errors == 1
+        assert result.error_retries == 1
+        assert result.error_retry_recovered == 1
+        assert result.errors == 0
+        # Reduced context: the bulky optional blocks are stripped.
+        for key in _TRUNCATION_STRIP_KEYS:
+            assert key not in captured
+        # Capped per-call timeout: the re-queue must never re-buy the
+        # transport's full timeout (cap honoured by the claudecode
+        # transport).
+        assert captured["timeout_s"] == _TIMEOUT_RETRY_TIMEOUT_S
+        assert captured["error_retry"] is True
+        # Provenance: the recovered verdict came from stripped
+        # context — same tag the inline reduced retry stamps, so the
+        # journaled entry is refused by cross-run verdict reuse and
+        # re-reviewed at full context next run instead of becoming
+        # durable coverage evidence.
+        recovered = result.outcomes[0]
+        assert recovered.context_reduced is True
+        assert recovered.review_result["context_reduced"] is True
+
+    def test_timeout_requeue_verdict_is_reuse_ineligible(self):
+        # The journal records ``context_reduced`` from the outcome
+        # (collector passes it through); the reuse screen must refuse
+        # such an entry.
+        from types import SimpleNamespace
+
+        from core.audit.gaps import _reuse_ineligibility
+
+        entry = SimpleNamespace(
+            verdict="clean", context_reduced=True, model=None,
+        )
+        reason = _reuse_ineligibility(
+            entry, "a.c::f",
+            current_strategies_fn=None, current_model=None,
+        )
+        assert reason == "context_reduced verdict"
 
 
 class TestTimeoutReducedRetry:
@@ -131,8 +189,8 @@ class TestTimeoutReducedRetry:
             review_fn, _config(tmp_path),
         )
         assert outcome.status == "error"
-        # Classified from the ORIGINAL timeout — keeps the outcome
-        # excluded from the end-of-run retry pass.
+        # Classified from the ORIGINAL timeout — routes the outcome
+        # into the end-of-run retry pass's timeout handling.
         assert outcome.error_class == "timeout"
         assert outcome.context_reduced is False
 

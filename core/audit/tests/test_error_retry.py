@@ -48,8 +48,8 @@ class TestClassifyError:
 
     def test_timeout_is_distinct_class(self):
         # Timeouts classify as their own class (single reduced-context
-        # retry inline; excluded from the end-of-run retry pass) —
-        # see test_timeout_recovery.py.
+        # retry inline; re-queued at reduced context + capped timeout
+        # by the end-of-run retry pass) — see test_timeout_recovery.py.
         exc = TimeoutError("connection timeout after 30s")
         assert _classify_error(exc) == "timeout"
 

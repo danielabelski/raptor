@@ -35,6 +35,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 from ._util import extract_context_map_set
 from .parser_shape import (
     ERROR_PATH_DENSITY_FLOOR,
@@ -44,6 +46,12 @@ from .parser_shape import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Byte budgets: coverage/diff sidecars are findings-class documents;
+# the checklist is the largest artifact class (measured up to ~36 MB
+# on big targets — 256 MiB mirrors the coverage-store budget).
+_MAX_COVERAGE_BYTES = 64 * 1024 * 1024
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 SCORE_ENTRY_POINT = 10
 SCORE_SINK = 8
@@ -364,13 +372,11 @@ def load_tool_failures(run_dirs: list[Path]) -> set[str]:
     failures: set[str] = set()
     for run_dir in run_dirs:
         for cov_file in run_dir.glob("coverage-*.json"):
-            try:
-                with Path(cov_file).open(encoding="utf-8") as f:
-                    data = json.load(f)
-                for fp in data.get("files_failed", []):
-                    failures.add(fp)
-            except (json.JSONDecodeError, OSError):
+            data = load_json(cov_file, max_bytes=_MAX_COVERAGE_BYTES)
+            if not isinstance(data, dict):
                 continue
+            for fp in data.get("files_failed", []):
+                failures.add(fp)
     return failures
 
 
@@ -383,13 +389,11 @@ def load_fuzz_coverage(run_dirs: list[Path]) -> set[str] | None:
         if not fuzz_path.exists():
             continue
         found = True
-        try:
-            with open(fuzz_path, encoding="utf-8") as f:
-                data = json.load(f)
-            for fp in data.get("files_examined", []):
-                fuzzed.add(fp)
-        except (json.JSONDecodeError, OSError):
+        data = load_json(fuzz_path, max_bytes=_MAX_COVERAGE_BYTES)
+        if not isinstance(data, dict):
             continue
+        for fp in data.get("files_examined", []):
+            fuzzed.add(fp)
     return fuzzed if found else None
 
 
@@ -409,10 +413,8 @@ def load_new_functions(
     diff_path = out_dir / "inventory-diff.json"
     if not diff_path.exists():
         return set()
-    try:
-        with Path(diff_path).open(encoding="utf-8") as f:
-            diff = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    diff = load_json(diff_path, max_bytes=_MAX_COVERAGE_BYTES)
+    if not isinstance(diff, dict):
         return set()
 
     if "functions_added" in diff or "functions_changed" in diff:
@@ -458,11 +460,7 @@ def _latest_sibling_checklist(
             best, best_mtime = p, mtime
     if best is None:
         return None
-    try:
-        with Path(best).open(encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
+    return load_json(best, max_bytes=_MAX_CHECKLIST_BYTES)
 
 
 def ensure_inventory_diff(

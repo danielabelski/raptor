@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.json.utils import load_json
+
 logger = logging.getLogger(__name__)
 
 RUN_CONFIG_FILENAME = "audit-run-config.json"
@@ -88,8 +90,6 @@ def load_run_config(out_dir: Path) -> dict[str, Any] | None:
     config from being buffered — it degrades to ``None`` like a
     corrupt one. Real run configs are a few KiB.
     """
-    from core.json.utils import load_json
-
     path = Path(out_dir) / RUN_CONFIG_FILENAME
     if not path.is_file():
         return None
@@ -249,11 +249,7 @@ def load_prior_cost_breakdown(out_dir: Path) -> dict[str, Any] | None:
     path = Path(out_dir) / "cost-breakdown.json"
     if not path.is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("could not read %s", path, exc_info=True)
-        return None
+    data = load_json(path, max_bytes=_RUN_CONFIG_MAX_BYTES)
     return data if isinstance(data, dict) else None
 
 
@@ -350,11 +346,7 @@ def spend_floor_usd(out_dir: Path) -> float:
     path = Path(out_dir) / SPEND_FLOOR_FILENAME
     if not path.is_file():
         return 0.0
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.debug("could not read %s", path, exc_info=True)
-        return 0.0
+    data = load_json(path, max_bytes=_RUN_CONFIG_MAX_BYTES)
     if not isinstance(data, dict):
         return 0.0
     spend = data.get("spend_usd")
@@ -485,10 +477,7 @@ def pipeline_tail_hint(out_dir: Path, findings_count: int) -> str | None:
     validate). Best-effort — never raises.
     """
     marker = Path(out_dir) / PIPELINE_TAIL_FILENAME
-    try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    data = load_json(marker, max_bytes=_RUN_CONFIG_MAX_BYTES)
     if not isinstance(data, dict) or findings_count <= 0:
         return None
     deferred = data.get("deferred") or []

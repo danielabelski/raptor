@@ -7,7 +7,6 @@ by the orchestrator but doesn't reference its mutable state.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from collections import deque
@@ -24,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 _C_EXTENSIONS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"})
 _JOERN_STALL_FLOOR_S = 30
+
+# Byte budget for .raptor-run.json / pre-sweep status metadata reads.
+_MAX_RUN_META_BYTES = 1024 * 1024
 
 # Byte budget for a sibling run's joern-flows.json. The file is a
 # RAPTOR-written artifact but its size tracks the analysed target —
@@ -424,10 +426,7 @@ def load_presweep_status(out_dir) -> dict | None:
     path = Path(out_dir) / PRESWEEP_STATUS_FILENAME
     if not path.is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = load_json(path, max_bytes=_MAX_RUN_META_BYTES)
     return data if isinstance(data, dict) else None
 
 
@@ -680,15 +679,11 @@ def _current_content_hash(out_dir, target_path) -> str | None:
     """
     manifest_path = Path(out_dir) / ".raptor-run.json"
     if manifest_path.exists():
-        try:
-            with Path(manifest_path).open(encoding="utf-8") as f:
-                own = json.load(f)
-            if isinstance(own, dict):
-                own_hash = own.get("content_hash", "")
-                if own_hash:
-                    return own_hash
-        except (json.JSONDecodeError, OSError):
-            pass
+        own = load_json(manifest_path, max_bytes=_MAX_RUN_META_BYTES)
+        if isinstance(own, dict):
+            own_hash = own.get("content_hash", "")
+            if own_hash:
+                return own_hash
     if target_path is None or not Path(target_path).is_dir():
         return None
     try:
@@ -726,15 +721,11 @@ def import_sibling_joern_flows(
         sibling_hash = ""
         manifest_path = sibling_dir / ".raptor-run.json"
         if manifest_path.exists():
-            try:
-                with open(manifest_path, encoding="utf-8") as f:
-                    manifest = json.load(f)
-                sibling_hash = (
-                    manifest.get("content_hash", "")
-                    if isinstance(manifest, dict) else ""
-                )
-            except (json.JSONDecodeError, OSError):
-                sibling_hash = ""
+            manifest = load_json(manifest_path, max_bytes=_MAX_RUN_META_BYTES)
+            sibling_hash = (
+                manifest.get("content_hash", "")
+                if isinstance(manifest, dict) else ""
+            )
         if not current_hash_resolved:
             current_hash = _current_content_hash(
                 out_dir, target_path,
@@ -791,17 +782,16 @@ def sibling_run_dirs(
         if target_path is not None:
             manifest = child / ".raptor-run.json"
             if manifest.exists():
+                m = load_json(manifest, max_bytes=_MAX_RUN_META_BYTES)
+                # Malformed metadata (valid JSON, wrong shape) is
+                # as disqualifying as unparseable JSON.
+                if not isinstance(m, dict):
+                    continue
                 try:
-                    with Path(manifest).open(encoding="utf-8") as f:
-                        m = json.load(f)
-                    # Malformed metadata (valid JSON, wrong shape) is
-                    # as disqualifying as unparseable JSON.
-                    if not isinstance(m, dict):
-                        continue
                     sibling_target = m.get("target_path") or m.get("target", "")
                     if sibling_target and Path(sibling_target).resolve() != Path(target_path).resolve():
                         continue
-                except (json.JSONDecodeError, OSError):
+                except OSError:
                     continue
             else:
                 continue

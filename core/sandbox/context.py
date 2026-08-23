@@ -1501,9 +1501,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # Dedicated per-context lane: attribution for the audit
             # decision, and the Landlock/SBPL pin keeps this context's
             # children off the shared main listener entirely. On bind
-            # failure fall back to the shared port — connections there
-            # carry no lane, so gate 1 stays ENFORCING for them (audit
-            # leniency degrades, the posture does not).
+            # failure FAIL THE CONTEXT: the shared listener's gate 1
+            # enforces the process-global UNION of every registered
+            # context's hosts, so falling back there silently widens a
+            # lane-failed context from its own allowlist to whatever
+            # its concurrent siblings declared — and lane-bind failure
+            # is plausibly forceable (fd/port exhaustion by a sibling
+            # child). Mirrors the loopback_unix_bridges fail-closed
+            # shape below; the caller decides whether to retry.
             try:
                 _proxy_tcp_lane_port = proxy_instance.bind_tcp_lane(
                     label=caller_label or "sandbox",
@@ -1511,17 +1516,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     allowed_hosts=proxy_hosts,
                     allowed_ports=proxy_allowed_ports,
                 )
-            except Exception as _lane_exc:  # noqa: BLE001 — fail closed to enforcing
-                _proxy_tcp_lane_port = None
-                logger.warning(
-                    "Sandbox: proxy tcp lane bind failed (%s); "
-                    "children use the shared listener — audit "
-                    "leniency unavailable for this context.",
-                    _lane_exc,
+            except Exception as _lane_exc:  # noqa: BLE001 — any bind failure is fail-closed
+                from .errors import SandboxSetupError
+                msg = (
+                    "egress-proxy TCP lane bind failed for this "
+                    "context — refusing to fall back to the shared "
+                    "listener, whose connect gate enforces the union "
+                    "of ALL registered contexts' allowlists rather "
+                    "than this context's own. Free up local "
+                    "ports/file descriptors and retry."
                 )
-            allowed_tcp_ports = [
-                _proxy_tcp_lane_port or proxy_instance.port
-            ]
+                raise SandboxSetupError(msg) from _lane_exc
+            allowed_tcp_ports = [_proxy_tcp_lane_port]
             # Operator-visible engagement notice for tier 2, once per
             # process (mirrors the tier-3 advisory warning above).
             # Pre-fix this tier engaged with only DEBUG lines, yet it

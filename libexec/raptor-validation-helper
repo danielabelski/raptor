@@ -1087,10 +1087,28 @@ def prepare_D(workdir, target=None):
         elif not all(k in sc["checks"] for k in REQUIRED_CHECKS):
             print(f"  WARN: {finding['id']} stage_c_summary.checks incomplete", file=sys.stderr)
 
-    passed = sum(1 for f in data["findings"]
-                 if f.get("sanity_check", {}).get("passed"))
-    failed = sum(1 for f in data["findings"]
-                 if f.get("sanity_check", {}).get("passed") is False)
+    # Count the Stage C verdict from stage_c_summary.passed — that is
+    # where the stage-c.json contract (STAGE_SCHEMA_HINTS["C"]) puts
+    # it; the sanity_check object carries the raw checks
+    # (code_verified / flow_confirmed / reachable / notes) and, on the
+    # helper pipeline, no 'passed' key. Pre-fix this counted
+    # sanity_check.passed only, printing "0 passed, 0 failed" even
+    # when every just-merged stage-c update carried
+    # stage_c_summary.passed=true. sanity_check.passed stays as the
+    # fallback for producers (e.g. the Python orchestrator) that set
+    # the verdict there instead.
+    def _c_verdict(f):
+        summary = f.get("stage_c_summary") or {}
+        if isinstance(summary.get("passed"), bool):
+            return summary["passed"]
+        sanity = f.get("sanity_check") or {}
+        if isinstance(sanity.get("passed"), bool):
+            return sanity["passed"]
+        return None
+
+    verdicts = [_c_verdict(f) for f in data["findings"]]
+    passed = sum(1 for v in verdicts if v is True)
+    failed = sum(1 for v in verdicts if v is False)
     print(f"Sanity check: {passed} passed, {failed} failed")
 
     # --- Test/mock path filter (D-1) ---

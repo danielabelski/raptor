@@ -98,6 +98,16 @@ packaging==25.0
 # Optional: For SMT-based constraint analysis (one-gadget feasibility, etc.)
 # z3-solver==4.15.4.0  # see requirements-dev.txt for bookworm/aarch64 cap
 
+# Optional: For the binary understanding substrate (core/binary:
+# /understand --map on binary targets, fingerprinting, capability
+# diff). Needs the radare2 binary on PATH as well — r2pipe is only
+# the Python binding, and having one without the other fails
+# confusingly: the tool-availability banner reports r2 present while
+# the binary map pipeline aborts on the missing import. (The
+# --binary-edges extractor is unaffected — it drives r2 by
+# subprocess, no binding needed.)
+# r2pipe==1.9.8
+
 # Optional: For web scanning package (uncomment to install)
 # beautifulsoup4==4.15.0
 # playwright==1.60.0

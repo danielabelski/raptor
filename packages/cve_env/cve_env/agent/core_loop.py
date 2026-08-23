@@ -352,6 +352,13 @@ def build_core(
         events=_on_event,
         terminate_on_handler_error=False,
         max_tokens_per_turn=4096,
+        # A single over-long model turn is recoverable: the loop
+        # nudges the model to continue concisely instead of
+        # terminating the whole build with a terminal max_tokens
+        # error (observed: a build died mid-plan at turn 6 with real
+        # progress and budget left). Bounded at 2 so a model that
+        # keeps overflowing still terminates honestly.
+        max_tokens_nudges=2,
         should_continue=lambda: not _budget_stop["flag"],
     )
 

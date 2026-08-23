@@ -208,6 +208,84 @@ def test_max_tokens_no_tool_calls_terminates_distinctly() -> None:
     assert out.final_text == "partial..."
 
 
+def _nudge_loop(fp: Any, nudges: int) -> ToolUseLoop:
+    """Typed construction helper for the max_tokens-nudge tests."""
+    return ToolUseLoop(fp, [_echo_tool()], max_tokens_nudges=nudges)
+
+
+def test_max_tokens_nudge_recovers_truncated_turn() -> None:
+    """With ``max_tokens_nudges > 0``, a mid-turn MAX_TOKENS stop
+    injects a be-concise user nudge and continues instead of
+    terminating the run."""
+    fp = _FakeProvider([
+        TurnResponse(
+            content=[TextBlock(text="partial...")],
+            stop_reason=StopReason.MAX_TOKENS,
+            input_tokens=100, output_tokens=4096,
+        ),
+        _text_response("done after nudge"),
+    ])
+    out = _nudge_loop(fp, 2).run("go")
+    assert out.terminated_by == "complete"
+    assert out.final_text == "done after nudge"
+    assert len(fp.calls) == 2
+    # Second call carries the truncated assistant turn plus the nudge.
+    second_msgs = fp.calls[1]["messages"]
+    assert second_msgs[-1].role == "user"
+    assert "cut off" in second_msgs[-1].content[0].text
+    assert second_msgs[-2].role == "assistant"
+
+
+def test_max_tokens_nudge_budget_exhausts_to_terminal() -> None:
+    """The nudge budget is bounded: a model that keeps overflowing
+    still terminates with the honest ``max_tokens`` reason."""
+    truncated = TurnResponse(
+        content=[TextBlock(text="partial...")],
+        stop_reason=StopReason.MAX_TOKENS,
+        input_tokens=100, output_tokens=4096,
+    )
+    fp = _FakeProvider([truncated, truncated])
+    out = _nudge_loop(fp, 1).run("go")
+    assert out.terminated_by == "max_tokens"
+    assert len(fp.calls) == 2
+
+
+def test_max_tokens_nudge_drops_empty_truncated_assistant_turn() -> None:
+    """A truncated turn with no complete content blocks must not leave
+    an empty assistant message in history (providers reject those on
+    the next call)."""
+    fp = _FakeProvider([
+        TurnResponse(
+            content=[],
+            stop_reason=StopReason.MAX_TOKENS,
+            input_tokens=100, output_tokens=4096,
+        ),
+        _text_response("recovered"),
+    ])
+    out = _nudge_loop(fp, 1).run("go")
+    assert out.terminated_by == "complete"
+    second_msgs = fp.calls[1]["messages"]
+    assert all(m.content for m in second_msgs)
+    assert not any(
+        m.role == "assistant" and not m.content for m in second_msgs
+    )
+    # Token-accounting mirror stays zipped with assistant turns.
+    assert len(out.per_turn_tokens) == 1
+
+
+def test_max_tokens_default_stays_terminal() -> None:
+    """Default (``max_tokens_nudges=0``) keeps the pre-existing
+    terminal behaviour — no consumer is opted in silently."""
+    fp = _FakeProvider([TurnResponse(
+        content=[TextBlock(text="partial...")],
+        stop_reason=StopReason.MAX_TOKENS,
+        input_tokens=100, output_tokens=4096,
+    )])
+    out = _nudge_loop(fp, 0).run("go")
+    assert out.terminated_by == "max_tokens"
+    assert len(fp.calls) == 1
+
+
 def test_refused_no_tool_calls_terminates_distinctly() -> None:
     """``StopReason.REFUSED`` (content filter / safety) terminates
     with the ``refused`` label — caller can choose to surface the

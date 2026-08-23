@@ -18,7 +18,10 @@ Multi-turn loop, in order per iteration:
    pause; conversation resumes by re-sending the same messages).
 7. If response carries no tool calls and is none of the above, the
    model gave up mid-turn — terminate with ``max_tokens``, ``refused``,
-   or ``provider_error`` per the response's stop reason.
+   or ``provider_error`` per the response's stop reason. Exception:
+   with ``max_tokens_nudges > 0``, a ``max_tokens`` stop instead
+   injects a be-concise user nudge and continues, up to that many
+   times per run.
 8. Otherwise, dispatch each :class:`ToolCall` block. Handler exception
    or :class:`ToolHandlerTimeout` either becomes an ``is_error=True``
    :class:`ToolResult` (default) or terminates the loop with reason
@@ -78,6 +81,15 @@ from .types import (
     TurnCompleted,
     TurnResponse,
     TurnStarted,
+)
+
+# User message injected when a turn is cut off by the per-turn output
+# token limit and the loop still has ``max_tokens_nudges`` budget —
+# see the constructor docstring.
+_MAX_TOKENS_NUDGE = (
+    "Your previous response was cut off by the per-turn output token "
+    "limit. Continue from where you stopped. Be concise, and split "
+    "long output across multiple smaller tool calls."
 )
 
 
@@ -209,6 +221,7 @@ class ToolUseLoop:
         submission_warning: Callable[[SubmissionState], str | None] | None = None,
         in_fire_mutator: Callable[[InFireMutatorContext], str | None] | None = None,
         nudge_on_no_tool_call: str | None = None,
+        max_tokens_nudges: int = 0,
         stream: bool = False,
         **provider_specific: Any,
     ) -> None:
@@ -327,6 +340,17 @@ class ToolUseLoop:
         # None → no injection, byte-identical to pre-hook behaviour.
         self._in_fire_mutator = in_fire_mutator
         self._nudge_on_no_tool_call = nudge_on_no_tool_call
+        # ``max_tokens_nudges``: how many times per run a mid-turn
+        # ``max_tokens`` stop (the model's turn was cut off by
+        # ``max_tokens_per_turn`` before it produced a complete tool
+        # call) recovers by injecting a be-concise user nudge and
+        # continuing, instead of terminating the whole run. A single
+        # over-long turn is a per-turn output overflow, not a terminal
+        # condition — the conversation state is intact and the model
+        # can resume. Bounded (never unlimited) so a model that keeps
+        # overflowing still terminates with the honest ``max_tokens``
+        # reason. Default 0 → existing terminal behaviour.
+        self._max_tokens_nudges = max(0, int(max_tokens_nudges))
         self._stream = stream and self._provider.supports_streaming()
         self._provider_specific = provider_specific
 
@@ -366,6 +390,9 @@ class ToolUseLoop:
         # append order so downstream consumers (trajectory bridge) can
         # zip messages+tokens by assistant-turn index.
         per_turn_tokens: list[tuple[int, int]] = []
+        # Remaining budget for mid-turn max_tokens recovery — see the
+        # ``max_tokens_nudges`` constructor docstring.
+        mt_nudges_left = self._max_tokens_nudges
         wall_start = time.monotonic()
 
         # x-source: seed known_values from prompt + history
@@ -638,11 +665,42 @@ class ToolUseLoop:
                 # No tool calls AND not COMPLETE/PAUSE_TURN — model gave
                 # up mid-turn under a hard stop (max_tokens / refused /
                 # provider_error). The ``nudge_on_no_tool_call`` hook
-                # deliberately does NOT fire here: the model literally
-                # can't continue (token budget hit, content filter
-                # tripped, provider returned error), and a nudge would
-                # be wasted budget. Soft-stop nudging is handled in the
-                # COMPLETE branch above.
+                # deliberately does NOT fire here: for refused /
+                # provider_error the model literally can't continue
+                # (content filter tripped, provider returned error),
+                # and a nudge would be wasted budget. Soft-stop nudging
+                # is handled in the COMPLETE branch above.
+                #
+                # max_tokens is the one recoverable hard stop: the turn
+                # was cut off by ``max_tokens_per_turn``, but the
+                # conversation state is intact and the model can
+                # resume. With nudge budget remaining, inject a
+                # be-concise user message and continue instead of
+                # terminating the whole run.
+                if (
+                    response.stop_reason is StopReason.MAX_TOKENS
+                    and mt_nudges_left > 0
+                ):
+                    mt_nudges_left -= 1
+                    if not response.content:
+                        # A truncated turn may carry no complete
+                        # content blocks; providers reject an empty
+                        # assistant message on the next call — drop it
+                        # (and its token-accounting mirror entry;
+                        # totals above already counted the spend).
+                        messages.pop()
+                        per_turn_tokens.pop()
+                    messages.append(Message(
+                        role="user",
+                        content=[TextBlock(text=_MAX_TOKENS_NUDGE)],
+                    ))
+                    logger.warning(
+                        "turn cut off by max_tokens_per_turn — "
+                        "nudging the model to continue concisely "
+                        "(%d nudge(s) left, iteration=%d)",
+                        mt_nudges_left, iteration,
+                    )
+                    continue
                 term_reason = _stop_reason_to_term(response.stop_reason)
                 # Forward error_message from the provider's TurnResponse
                 # so callers can present the actual error rather than

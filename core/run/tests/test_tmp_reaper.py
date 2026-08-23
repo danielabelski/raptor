@@ -54,6 +54,17 @@ class TestDirReaping:
         for d in dirs:
             assert not d.exists()
 
+    def test_stale_pytest_session_dir_reaped(self, tmp_root):
+        # The root conftest's session-tmp containment leaks exactly one
+        # ``raptor-pytest-*`` dir when a test session is SIGKILLed; the
+        # static prefix entry is the cross-process reclamation contract
+        # (runtime registration would die with the killed session).
+        d = _make_old_dir(
+            tmp_root, "raptor-pytest-abc123", ["tmpxyz", "litter.txt"],
+        )
+        assert reap_stale_tmp() == [d]
+        assert not d.exists()
+
     def test_fresh_dir_kept(self, tmp_root):
         d = tmp_root / "raptor-llm-raptor-cafe0002-fresh1"
         d.mkdir()

@@ -163,6 +163,67 @@ def _ambient_git_config_escape(request):
 
 
 # ---------------------------------------------------------------------------
+# System-tmp containment
+# ---------------------------------------------------------------------------
+#
+# Test suites (and the production code they exercise) create scratch
+# via raw ``tempfile.mkdtemp`` / ``TemporaryDirectory`` in hundreds of
+# call sites. Context-managed sites clean up on normal exit, but a
+# SIGKILLed / OOM-killed session leaks every dir live at that moment
+# as an anonymous ``$TMP/tmpXXXXXXXX`` nobody can attribute or safely
+# sweep (shared multi-session hosts forbid a generic /tmp/tmp* sweep).
+#
+# Containment instead of per-site chasing: point the session's TMPDIR
+# and ``tempfile.tempdir`` at ONE ``core.run.scratch`` dir with the
+# reaper-listed ``raptor-pytest-`` prefix. Everything raw tempfile
+# creates in-process lands inside it, as does the litter of
+# subprocesses that inherit this environment (the mount-ns sandbox
+# re-creates ``$TMPDIR`` inside its private tmpfs, step 7b). Children
+# spawned through ``get_safe_env()`` are NOT contained — that scrubber
+# strips TMPDIR by design (DANGEROUS_ENV_VARS) — which is the status
+# quo those tools already handle with their own reaper-listed
+# prefixes. Normal exit removes the whole dir; a killed session leaks
+# one ``raptor-pytest-*`` dir per pytest process (one per xdist
+# worker under ``-n N``), each reclaimed by ``core.run.tmp_reaper``
+# past the age floor (swept at every raptor ``start_run`` and once at
+# the start of every later test session, below).
+#
+# pytest's own ``tmp_path`` basetemp is pinned under the REAL system
+# tmp first (``getbasetemp()`` before the redirect), so pytest's
+# keep-last-3-runs retention for post-mortem debugging is preserved.
+#
+# Sites that must NOT be contained (AF_UNIX 108-char path cap) already
+# pass ``dir="/tmp"`` explicitly and are unaffected.
+
+@pytest.fixture(autouse=True, scope="session")
+def _contained_system_tmp(tmp_path_factory: pytest.TempPathFactory):
+    import tempfile
+
+    from core.run import tmp_reaper
+    from core.run.scratch import scratch_dir
+
+    # Resolve pytest's basetemp against the real system tmp before the
+    # redirect below can capture it.
+    tmp_path_factory.getbasetemp()
+    # Reclaim orphans of earlier killed sessions (age-gated, liveness-
+    # probed, own-prefixes-only, never raises).
+    tmp_reaper.reap_stale_tmp()
+
+    prior_env = os.environ.get("TMPDIR")
+    prior_cached = tempfile.tempdir
+    with scratch_dir("raptor-pytest-", env=os.environ) as session_tmp:
+        tempfile.tempdir = str(session_tmp)
+        try:
+            yield
+        finally:
+            tempfile.tempdir = prior_cached
+            if prior_env is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = prior_env
+
+
+# ---------------------------------------------------------------------------
 # Build-ID binary cache isolation
 # ---------------------------------------------------------------------------
 #

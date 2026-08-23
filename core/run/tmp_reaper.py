@@ -103,6 +103,12 @@ _DIR_PREFIXES = (
     # and the bench harness's cve-diff-bench- mkdtemp — both match
     # this prefix); cleaned on exit, leaked on SIGKILL/OOM.
     "cve-diff-",
+    # Per-session pytest temp containment (root conftest.py): the test
+    # session points TMPDIR/tempfile.tempdir at one scratch dir so raw
+    # tempfile call sites in tests and code under test land inside it.
+    # Removed on normal session exit; a killed test session leaks
+    # exactly one dir, reclaimed here by any later process's sweep.
+    "raptor-pytest-",
 )
 
 # Prefixes registered at runtime by core.run.scratch.scratch_dir for

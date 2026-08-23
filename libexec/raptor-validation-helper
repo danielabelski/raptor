@@ -1998,9 +1998,95 @@ def _bridge_audit_output(out_dir, target=None):
         print(f"  Audit bridge: enriched {enriched_steps} attack-path steps with callee contracts")
 
 
+_PRIORITY_TARGET_QUERY = (
+    "Rank these unchecked source-to-sink flows by how likely "
+    "exploitability validation will confirm a real, reachable "
+    "vulnerability. Prefer flows whose entry point takes "
+    "attacker-controlled input, whose sink is memory- or "
+    "command-dangerous, and whose missing boundary is a concrete "
+    "absent check rather than a vague concern."
+)
+
+
+def _rank_priority_targets(checklist: dict, out_dir) -> None:
+    """Opt-in LLM re-rank of the bridge's priority_targets list.
+
+    Stage A tells the in-session reviewer to assess these first, in
+    order — this makes that order most-promising-first. Ordering
+    only: nothing is added or removed, and any failure keeps the
+    bridge order. Target fields are LLM-derived from the scanned
+    repo (untrusted): rendered fields are flattened and capped; the
+    ranking module nonce-envelopes them.
+    """
+    targets = checklist.get("priority_targets") or []
+    if len(targets) < 3:
+        print("  Rank: skipped (fewer than 3 priority targets)")
+        return
+    # Head cap: one target per unchecked flow can mean hundreds;
+    # stage A's attention only reaches the front of the list anyway.
+    head_cap = 100
+    head, rest = targets[:head_cap], targets[head_cap:]
+    try:
+        from core.llm.client import LLMClient
+        from core.llm.ranking import rank_items
+
+        def _field(value, cap=200):
+            text = str(value) if value not in (None, "") else "?"
+            return text.replace("\n", " ").replace("\r", " ")[:cap] or "?"
+
+        def _resolved(entries):
+            names = [
+                _field(e.get("name") or e.get("file"), cap=80)
+                for e in (entries or [])[:4] if isinstance(e, dict)
+            ]
+            return ", ".join(names) or "?"
+
+        def _render(t):
+            if not isinstance(t, dict):
+                return _field(t)
+            return "\n".join([
+                f"entry_point: {_field(t.get('entry_point'))}",
+                f"sink: {_field(t.get('sink'))}",
+                f"missing_boundary: {_field(t.get('missing_boundary'))}",
+                f"entry_points_resolved: {_resolved(t.get('entry_points_resolved'))}",
+                f"sinks_resolved: {_resolved(t.get('sinks_resolved'))}",
+            ])
+
+        client = LLMClient()
+        # Ordering is an opening move, not the run: cap its budget
+        # well below the client default (inert on the claude-code
+        # transport, which reports $0 — the head cap bounds that
+        # path's call count instead).
+        cfg = getattr(client, "config", None)
+        if cfg is not None:
+            current_cap = float(getattr(cfg, "max_cost_per_scan", 0) or 0)
+            cfg.max_cost_per_scan = (
+                min(current_cap, 2.0) if current_cap > 0 else 2.0
+            )
+        result = rank_items(
+            head, _PRIORITY_TARGET_QUERY, client=client, render=_render,
+        )
+        if result.stats.ranked_batches == 0:
+            print("  Rank: no signal — bridge order kept")
+            return
+        checklist["priority_targets"] = (
+            [r.item for r in result.ranked] + rest
+        )
+        from core.inventory import save_checklist
+        save_checklist(str(out_dir), checklist)
+        print(
+            f"  Rank: {len(head)}/{len(targets)} priority targets "
+            f"reordered ({result.stats.llm_calls} calls, "
+            f"${result.stats.cost:.2f})",
+        )
+    except Exception as e:  # noqa: BLE001 — ordering refinement must
+        # never break stage 0; the bridge order is a valid fallback.
+        print(f"  Rank: failed ({e}); bridge order kept")
+
+
 def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
               sanitizer_cut_mode=None, sanitizer_cut_parity_log=None,
-              findings_path=None):
+              findings_path=None, rank=False):
     """Stage 0: start lifecycle, build checklist, bridge understand output."""
     if not target:
         print("ERROR: --target is required for stage 0", file=sys.stderr)
@@ -2111,6 +2197,12 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
             _bridge_understand_output(out_dir, checklist, target,
                                       pre_rebuild_checklist=pre_rebuild_checklist)
             _bridge_audit_output(out_dir, target)
+
+        if rank:
+            # Re-rank AFTER the bridge populated priority_targets;
+            # re-saves the checklist so every later stage re-run
+            # reads the ranked order without re-spending.
+            _rank_priority_targets(checklist, out_dir)
 
         print(f"Checklist: {checklist['total_files']} files, {checklist['total_items']} items")
         print(f"OUTPUT_DIR={out_dir}")
@@ -2288,7 +2380,7 @@ def _flag_value(args, flag):
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in STAGES:
-        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--dynamic|--no-dynamic] [--build|--no-build] [--mitigation-matrix] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--rank] [--dynamic|--no-dynamic] [--build|--no-build] [--mitigation-matrix] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
         sys.exit(1)
 
     stage = args[0]
@@ -2298,6 +2390,7 @@ def main():
     # records it into models[]. Omitted when absent.
     model = _flag_value(args, "--model")
     no_bridge = "--no-bridge" in args
+    rank = "--rank" in args
     # Witness-execution gate (stage E): tri-state. None = no explicit
     # choice (project 'dynamic' trust marker decides); --no-dynamic
     # wins over --dynamic.
@@ -2330,7 +2423,7 @@ def main():
         prepare_0(None, target, explicit_out=explicit_out, no_bridge=no_bridge,
                   sanitizer_cut_mode=sanitizer_cut_mode,
                   sanitizer_cut_parity_log=sanitizer_cut_parity_log,
-                  findings_path=findings_path)
+                  findings_path=findings_path, rank=rank)
         return
 
     # All other stages need a workdir

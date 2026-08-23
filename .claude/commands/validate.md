@@ -28,6 +28,14 @@ Stage E only applies to memory corruption vulnerabilities. All others are mandat
 libexec/raptor-validation-helper 0 --target "$TARGET_PATH"
 ```
 
+Optional: add `--rank` to LLM re-rank the bridge's `priority_targets`
+most-promising-first before they are persisted — Stage A assesses
+them in list order, so the ranked order steers review attention.
+Ordering only; head-capped (first 100 targets) and budget-capped. On
+claude-code-only installs the ranking runs through the session
+transport inline in stage 0 — expect extra minutes on large lists;
+any failure keeps the bridge order.
+
 This starts the run lifecycle, builds the checklist, and imports any /understand output. The last line of output is `OUTPUT_DIR=<path>` — use that path for all subsequent stages.
 
 ### Threat Model Context (before any LLM stage)

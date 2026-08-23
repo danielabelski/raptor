@@ -88,11 +88,24 @@ class TestRecordDenial:
         # Must not propagate the OSError
         summary_mod.record_denial("cmd", 1, "network")
 
+    def test_denial_lines_are_ascii_safe(self, tmp_path):
+        """Sandbox telemetry pins ASCII-safe output by intent: denial
+        detail strings are attacker-influenced, so non-ASCII must be
+        escaped in the written line regardless of which JSON encoder is
+        installed."""
+        summary_mod.set_active_run_dir(tmp_path)
+        summary_mod.record_denial("curl café.example — ☕", 1, "network",
+                                  host="café.example")
+        raw = _denials_path(tmp_path).read_text(encoding="utf-8")
+        assert raw.isascii()
+        records = [json.loads(line) for line in raw.splitlines() if line]
+        assert records[0]["host"] == "café.example"  # round-trips intact
+
     def test_serialises_non_jsonable_details_via_default_str(self, tmp_path):
         # Regression for 2R4 / 1R2 fix: future callers passing Path objects
         # (or other non-JSON-native values) must not crash record_denial.
-        # `default=str` in json.dumps coerces them; the broad except catches
-        # anything else.
+        # The artifact encoder's stringify fallback coerces them; the broad
+        # except catches anything else.
         summary_mod.set_active_run_dir(tmp_path)
         non_jsonable = Path("/tmp/some/path")  # Path is not JSON-serializable
         # Must not raise

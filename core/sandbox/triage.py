@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from core.atomic_fs import write_text_atomically
+from core.json import dumps_artifact
 from core.sandbox import telemetry_mac
 from core.sandbox.escalation_signatures import (
     DEFAULT_HOST_RECON_THRESHOLD,
@@ -1018,7 +1019,7 @@ def _write(path: Path, report: dict) -> None:
         report["mac"] = token
     write_text_atomically(
         path,
-        json.dumps(report, indent=2, ensure_ascii=True) + "\n",
+        dumps_artifact(report, ensure_ascii=True) + "\n",
         tmp_prefix=".~triage-",
     )
 
@@ -1088,7 +1089,7 @@ def _cli_main(argv: list | None = None) -> int:
         return 0
 
     if args.json:
-        print(json.dumps(result, indent=2, ensure_ascii=True))
+        print(dumps_artifact(result, ensure_ascii=True))
     else:
         print(f"Verdict: {result['verdict'].title()}  "
               f"({len(result['signals'])} signal(s)) -> "

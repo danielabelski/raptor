@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any
 
 from core.atomic_fs import write_text_atomically
+from core.json import dumps_artifact
 from core.logging import log_security_event as _log_security_event
 from core.security.redaction import redact_secrets
 
@@ -313,14 +314,14 @@ def record_denial(cmd_display: str, returncode: int,
     # redirect later records (and IS detected at finalisation via the
     # inode check).
     #
-    # `default=str` defends against future callers passing non-serializable
-    # detail values (Path, datetime, etc.) — without it, json.dumps would
-    # raise TypeError before any I/O, breaking the "sandbox calls must
-    # succeed regardless of summary I/O" promise. We also wrap the whole
+    # The artifact encoder stringifies non-serialisable detail values
+    # (Path, datetime, etc.) — a raw encoder would raise TypeError
+    # before any I/O, breaking the "sandbox calls must succeed
+    # regardless of summary I/O" promise. We also wrap the whole
     # block in a broad except to honour that promise even if a future
     # change introduces a different exception path.
     try:
-        line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
+        line = dumps_artifact(record, indent=None, ensure_ascii=True) + "\n"
         with _lock:
             handle = _get_evidence_handle_locked(run_dir)
             if handle is None:
@@ -533,7 +534,7 @@ def record_audit_degraded(run_dir: Path, *, reason: str,
     try:
         write_text_atomically(
             out,
-            json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
+            dumps_artifact(payload, ensure_ascii=True) + "\n",
             tmp_prefix=".~audit-degraded-",
         )
     except (OSError, ValueError, TypeError):
@@ -627,7 +628,7 @@ def reassert_audit_degraded(run_dir: Path) -> bool:
     if entry is None:
         return False
     expected = (
-        json.dumps(entry["payload"], indent=2, ensure_ascii=True) + "\n"
+        dumps_artifact(entry["payload"], ensure_ascii=True) + "\n"
     ).encode("utf-8")
     current = _read_marker_bytes(Path(run_dir) / AUDIT_DEGRADED_FILE)
     if current == expected:
@@ -991,7 +992,7 @@ def summarize_and_write(run_dir: Path) -> dict[str, Any] | None:
     try:
         write_text_atomically(
             summary_path,
-            json.dumps(summary, indent=2, ensure_ascii=True) + "\n",
+            dumps_artifact(summary, ensure_ascii=True) + "\n",
             tmp_prefix=".~summary-",
         )
     except OSError:

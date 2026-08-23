@@ -53,7 +53,7 @@ runs (kept for one release).
 from __future__ import annotations
 
 import contextlib
-import json
+from core.json import dumps_artifact
 import logging
 import os
 import stat as _stat
@@ -263,7 +263,7 @@ class EvidenceFile:
     def write_record(self, record: dict) -> bool:
         """JSON-encode ``record`` and append it as one line."""
         try:
-            line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
+            line = dumps_artifact(record, indent=None, ensure_ascii=True) + "\n"
         except (TypeError, ValueError):
             logger.warning("evidence record not serialisable", exc_info=True)
             return False

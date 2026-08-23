@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.atomic_fs import write_text_atomically
+from core.json import dumps_artifact
 from core.sandbox import telemetry_mac
 from core.sandbox.triage import TRIAGE_FILE, verify_triage_report
 from core.security.log_sanitisation import escape_nonprintable
@@ -97,10 +98,10 @@ def _build_prompt(report: dict, denial_lines: list,
     from core.security.prompt_envelope import UntrustedBlock, build_prompt
 
     blocks = [UntrustedBlock(
-        content=json.dumps(
+        content=dumps_artifact(
             {k: report.get(k) for k in
              ("verdict", "signals", "inputs", "caveats")},
-            indent=2, ensure_ascii=True),
+            ensure_ascii=True),
         kind="sandbox-triage-report",
         origin=str(report.get("run_dir", "")),
     )]
@@ -326,7 +327,7 @@ def deep_analyse(run_dir: Path, *, client=None,
         deep["mac"] = token
     write_text_atomically(
         run_dir / DEEP_FILE,
-        json.dumps(deep, indent=2, ensure_ascii=True) + "\n",
+        dumps_artifact(deep, ensure_ascii=True) + "\n",
         tmp_prefix=".~triage-deep-",
     )
     return deep

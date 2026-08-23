@@ -124,6 +124,8 @@ import contextlib
 import ctypes
 import ctypes.util
 import json
+
+from core.json import dumps_artifact
 import logging
 import os
 import platform
@@ -1326,7 +1328,7 @@ def _write_record(run_dir: Path, syscall_name: str, syscall_nr: int,
     if note:
         record["note"] = note
     try:
-        line = json.dumps(record, ensure_ascii=True) + "\n"
+        line = dumps_artifact(record, indent=None, ensure_ascii=True) + "\n"
     except (TypeError, ValueError) as e:
         logger.debug("tracer: write_record encode failed: %s", e)
         return False
@@ -1346,7 +1348,7 @@ def _write_record_dict(run_dir: Path, record: dict,
     `.sandbox-observe.jsonl`). Default preserves audit-mode behaviour.
     """
     try:
-        line = json.dumps(record, ensure_ascii=True, default=str) + "\n"
+        line = dumps_artifact(record, indent=None, ensure_ascii=True) + "\n"
     except (TypeError, ValueError) as e:
         logger.debug("tracer: write_record_dict encode failed: %s", e)
         return False

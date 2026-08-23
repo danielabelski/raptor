@@ -62,29 +62,14 @@
   "raw_dumps_in_canonical_module:core/sandbox/_spawn.py:run_sandboxed": {
    "note": "inline twin of _landlock_audit._write_audit_config's serialization — the two must stay byte-identical — frozen"
   },
-  "raw_dumps_in_canonical_module:core/sandbox/summary.py:reassert_audit_degraded": {
-   "note": "ASCII-safe sandbox telemetry writer (ensure_ascii=True by intent); future dumps_artifact candidate"
-  },
-  "raw_dumps_in_canonical_module:core/sandbox/summary.py:record_audit_degraded": {
-   "note": "ASCII-safe sandbox telemetry writer (ensure_ascii=True by intent); future dumps_artifact candidate"
-  },
-  "raw_dumps_in_canonical_module:core/sandbox/summary.py:record_denial": {
-   "note": "ASCII-safe sandbox telemetry writer (ensure_ascii=True by intent); future dumps_artifact(ensure_ascii=True) candidate"
-  },
   "raw_dumps_in_canonical_module:core/sandbox/summary.py:summarize_and_write": {
    "note": "same site as its dumps_flows_to_hash twin — frozen telemetry MAC form"
-  },
-  "raw_dumps_in_canonical_module:core/sandbox/triage.py:_cli_main": {
-   "note": "operator CLI print in a MAC module; dumps_display candidate; sandbox tree deliberately left untouched here"
   },
   "raw_dumps_in_canonical_module:core/sandbox/triage.py:_denials_sha256": {
    "note": "same site as its dumps_flows_to_hash twin — frozen MAC canonical form"
   },
   "raw_dumps_in_canonical_module:core/sandbox/triage.py:_report_sha256": {
    "note": "same site as its dumps_flows_to_hash twin — frozen MAC canonical form"
-  },
-  "raw_dumps_in_canonical_module:core/sandbox/triage.py:_write": {
-   "note": "triage artifact writer in a MAC module; bytes covered by the report sha computed from the SAME dict, not from the file — future dumps_artifact candidate"
   },
   "raw_dumps_in_canonical_module:core/sarif/parser.py:parse_sarif_findings": {
    "note": "same site as its dumps_flows_to_hash twin — pinned default-separator identity form"

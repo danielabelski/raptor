@@ -38,7 +38,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
+from core.json import dumps_artifact
 import subprocess
 import sys
 import tempfile
@@ -247,7 +247,7 @@ def _profile_to_json(profile, *, run_dir: Path, kept: bool,
         # audit) — downstream consumers must demote such profiles.
         "nonce_trusted": bool(getattr(profile, "nonce_trusted", True)),
     }
-    return json.dumps(payload, indent=2)
+    return dumps_artifact(payload, ensure_ascii=True)
 
 
 def _cli_main(argv: Sequence[str] | None = None) -> int:

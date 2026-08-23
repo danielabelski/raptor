@@ -59,6 +59,7 @@ from pathlib import Path
 
 from core.atomic_fs import write_text_atomically
 from core.hash import sha256_file as _sha256_file
+from core.json import dumps_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ class SandboxProfile:
         normalised at construction time so two probes of the same
         binary produce identical JSON modulo timestamp)."""
         d = asdict(self)
-        return json.dumps(d, indent=2)
+        return dumps_artifact(d)
 
     @classmethod
     def from_json(cls, raw: str) -> SandboxProfile:

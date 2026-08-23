@@ -65,6 +65,15 @@ class TestDirReaping:
         assert reap_stale_tmp() == [d]
         assert not d.exists()
 
+    def test_stale_coord_isolation_probe_dir_reaped(self, tmp_root):
+        # Coordinator-isolation probe dirs are atexit-cleaned, but the
+        # first ones are minted at collection time — before the
+        # conftest TMPDIR containment exists — so a SIGKILLed run
+        # strands them directly under the system tmp.
+        d = _make_old_dir(tmp_root, "raptor-coord-isolation-abc123")
+        assert reap_stale_tmp() == [d]
+        assert not d.exists()
+
     def test_fresh_dir_kept(self, tmp_root):
         d = tmp_root / "raptor-llm-raptor-cafe0002-fresh1"
         d.mkdir()

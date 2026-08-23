@@ -47,8 +47,18 @@ def _probe_output_dir() -> str:
     """Filesystem boundary for probe specs. The coordinator fail-closes
     on hostile-code profiles (target_run) that carry neither target=
     nor output=, so every probe spec names a scratch run directory as
-    its writable surface."""
-    return tempfile.mkdtemp(prefix="raptor-coord-isolation-")
+    its writable surface.
+
+    Removed at interpreter exit rather than per-test: the first caller
+    is the module-level ``_coordinator_works`` availability probe,
+    which runs during collection (skipif), before any fixture teardown
+    exists to hook — pre-fix every collection of this module leaked a
+    raptor-coord-isolation- dir per call site."""
+    import atexit
+    import shutil
+    d = tempfile.mkdtemp(prefix="raptor-coord-isolation-")
+    atexit.register(shutil.rmtree, d, ignore_errors=True)
+    return d
 
 
 # ----------------------------------------------------------------------

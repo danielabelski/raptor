@@ -106,9 +106,16 @@ _DIR_PREFIXES = (
     # Per-session pytest temp containment (root conftest.py): the test
     # session points TMPDIR/tempfile.tempdir at one scratch dir so raw
     # tempfile call sites in tests and code under test land inside it.
-    # Removed on normal session exit; a killed test session leaks
-    # exactly one dir, reclaimed here by any later process's sweep.
+    # Removed on normal session exit; a killed test session leaks one
+    # dir per pytest process (one per xdist worker), reclaimed here by
+    # any later process's sweep.
     "raptor-pytest-",
+    # Coordinator-isolation probe output dirs (core/sandbox/tests/
+    # test_coordinator_isolation.py): removed via atexit, but the first
+    # ones are minted at collection time — before the conftest TMPDIR
+    # containment exists — so a killed collection/run leaks them
+    # directly under the system tmp (one per collecting worker).
+    "raptor-coord-isolation-",
 )
 
 # Prefixes registered at runtime by core.run.scratch.scratch_dir for

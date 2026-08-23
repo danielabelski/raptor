@@ -193,7 +193,9 @@ boundary even when the static call graph cannot join the two.
 
 `/binary harness` turns a recovered ingress into a harness plan. By
 default it selects the highest-ranked external ingress; use `--ingress`
-to pin one.
+to pin one, or `--llm-rank` to LLM re-rank the candidates before the
+selection cascade (ordering only; the cascade's filters still apply
+and an explicit `--ingress` always wins).
 
 RAPTOR only emits source code when the boundary is explicit enough:
 

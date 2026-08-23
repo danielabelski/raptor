@@ -25,6 +25,7 @@ assessment work.
 | `--findings <file>` | Validate pre-existing findings from a SARIF or JSON file instead of scanning first |
 | `--binary <path>` | Provide a compiled binary for Stage E feasibility analysis |
 | `--skip-feasibility` | Skip Stage E entirely (useful when no binary is available) |
+| `--rank` | Stage 0: LLM re-rank of the bridge's priority targets most-promising-first before persistence (ordering only; head- and budget-capped) |
 | `--out <dir>` | Write output to a specific directory instead of the default |
 
 The canonical entry point is the `/validate` slash command, which

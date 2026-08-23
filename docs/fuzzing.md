@@ -131,6 +131,7 @@ python3 raptor.py fuzz --binary <path> [flags]
 | `--duration <secs>` | 3600 | Fuzzing duration in seconds |
 | `--parallel <N>` | 1 | Number of parallel AFL++ instances (clamped to the `tuning.json` `max_fuzz_parallel` ceiling) |
 | `--max-crashes <N>` | 10 | Maximum crashes to analyse |
+| `--rank-crashes` | off | LLM re-rank of collected crashes before the analysis cap (ordering only; runs the campaign to a 3× pool and backfills past stack-hash duplicates; needs an external analysis model) |
 | `--timeout <ms>` | 1000 | Per-execution timeout in milliseconds |
 | `--out <dir>` | auto | Output directory |
 | `--input-mode <mode>` | stdin | `stdin` or `file` (uses `@@`) |

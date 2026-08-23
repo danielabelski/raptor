@@ -1447,6 +1447,13 @@ class OpenAICompatibleProvider(LLMProvider):
                 api_key=config.api_key or "unused",
                 base_url=config.api_base,
                 timeout=config.timeout,
+                # RAPTOR's own retry loops (LLMClient.generate /
+                # generate_structured, the provider turn() loops) are
+                # the single retry authority. The SDK default
+                # (max_retries=2) stacks multiplicatively under them —
+                # up to 3x the attempts per logical call, each burning
+                # a full read timeout during an upstream brownout.
+                max_retries=0,
                 http_client=sdk_http_client(
                     config.timeout, trust_env=not _loopback,
                 ),
@@ -2456,6 +2463,13 @@ class AnthropicProvider(LLMProvider):
             self.client = anthropic.Anthropic(
                 api_key=config.api_key,
                 timeout=config.timeout,
+                # RAPTOR's own retry loops (LLMClient.generate /
+                # generate_structured, turn()'s transient-error loop)
+                # are the single retry authority. The SDK default
+                # (max_retries=2) stacks multiplicatively under them —
+                # up to 3x the attempts per logical call, each burning
+                # a full read timeout during an upstream brownout.
+                max_retries=0,
                 # Pooled transport whose idle keepalive outlives the
                 # inter-call gap — the SDK default expires idle
                 # connections after 5s, forcing a reconnect (and,

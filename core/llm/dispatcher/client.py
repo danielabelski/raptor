@@ -361,6 +361,12 @@ def make_anthropic_client(
     client — workers call ``client.messages.create(...)`` etc. and
     receive responses (including streamed ones). The credential
     isolation is invisible at the call site.
+
+    ``max_retries=0``: the callers' own retry loops (the provider
+    turn() loops, ``LLMClient``'s generate loops) are the single
+    retry authority — the SDK default (max_retries=2) stacks
+    multiplicatively under them, and each stacked attempt rides the
+    dispatcher's full upstream read timeout.
     """
     import anthropic  # imported lazily so the module loads without the SDK
 
@@ -376,6 +382,7 @@ def make_anthropic_client(
     return anthropic.Anthropic(
         api_key="dummy-not-used",
         base_url="http://_/anthropic",
+        max_retries=0,
         http_client=http,
     )
 
@@ -409,7 +416,8 @@ def make_bedrock_client(
     rule attaches the parent's bearer token (``AWS_BEARER_TOKEN_BEDROCK``)
     or SigV4-signs with the parent's AWS credentials, and forwards to
     the selected Bedrock surface.  The response is standard Anthropic
-    Messages JSON regardless of which API was used."""
+    Messages JSON regardless of which API was used.  Same
+    ``max_retries=0`` contract as :func:`make_anthropic_client`."""
     import anthropic
 
     if api not in ("mantle", "runtime"):
@@ -423,6 +431,7 @@ def make_bedrock_client(
     return anthropic.Anthropic(
         api_key="dummy-not-used",
         base_url=f"http://_/bedrock/{api}",
+        max_retries=0,
         http_client=http,
     )
 
@@ -434,7 +443,8 @@ def make_openai_client(
     timeout: float | None = None,
 ):
     """Return a stock ``openai.OpenAI`` client routed through the
-    dispatcher. Same shape as :func:`make_anthropic_client`."""
+    dispatcher. Same shape (and ``max_retries=0`` contract) as
+    :func:`make_anthropic_client`."""
     import openai
 
     socket_path, token = _resolve_socket_and_token(socket_path, token)
@@ -442,6 +452,7 @@ def make_openai_client(
     return openai.OpenAI(
         api_key="dummy-not-used",
         base_url="http://_/openai/v1",
+        max_retries=0,
         http_client=http,
     )
 

@@ -695,14 +695,6 @@ class FfufRunner:
         :meth:`build_config_file_content`).
         """
         self._validate_config(config)
-        if config.threads > 200:
-            # Not an error — operator opt-in — but almost always a typo'd
-            # value or a DoS-against-self against a live target.
-            logger.warning(
-                "ffuf threads=%d is unusually high for a live target; "
-                "consider --ffuf-rate to bound request pressure",
-                config.threads,
-            )
 
         # In vhost mode the URL is fixed and the Host header carries the
         # keyword; the dataclass default path template of "FUZZ" would
@@ -894,6 +886,17 @@ class FfufRunner:
         if not target_host:
             msg = "ffuf base URL must include a hostname"
             raise ValueError(msg)
+
+        if config.threads > 200:
+            # Not an error — operator opt-in — but almost always a typo'd
+            # value or a DoS-against-self against a live target. Emitted
+            # here rather than in build_command so the CLI preflight's
+            # validation pass doesn't duplicate it.
+            logger.warning(
+                "ffuf threads=%d is unusually high for a live target; "
+                "consider --ffuf-rate to bound request pressure",
+                config.threads,
+            )
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
         output_file = self.out_dir / "ffuf_results.json"

@@ -98,17 +98,27 @@ def fixture_server():
 
 @pytest.fixture()
 def direct_ffuf(monkeypatch: pytest.MonkeyPatch):
-    """Route run() through a direct subprocess with a proxy-scrubbed env."""
+    """Route run() through a direct subprocess with a minimal env."""
+    import shutil as _shutil
+    import tempfile
+
     captured: dict[str, Any] = {}
+    # ffuf needs a WRITABLE home (it creates ~/.config/ffuf at startup —
+    # the same reason the production path runs with fake_home=True). A
+    # randomized mkdtemp dir avoids collisions across concurrent or
+    # repeated runs, and an empty home guarantees no ffufrc autoload.
+    home = tempfile.mkdtemp(prefix="raptor-ffuf-live-home-")
 
     def _run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
+        # Built UP from nothing, not filtered down from os.environ: the
+        # child gets no API keys or tokens and no proxy vars. PATH is
+        # irrelevant (cmd[0] is the resolved binary path) but harmless.
         env = {
-            key: value
-            for key, value in os.environ.items()
-            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": home,
+            "NO_PROXY": "127.0.0.1,localhost",
         }
-        env["NO_PROXY"] = "127.0.0.1,localhost"
         return subprocess.run(
             cmd,
             capture_output=True,
@@ -118,7 +128,10 @@ def direct_ffuf(monkeypatch: pytest.MonkeyPatch):
         )
 
     monkeypatch.setattr("packages.web.ffuf.run_untrusted_networked", _run)
-    return captured
+    try:
+        yield captured
+    finally:
+        _shutil.rmtree(home, ignore_errors=True)
 
 
 def _wordlist(tmp_path: Path, name: str, words: list[str]) -> Path:
@@ -134,6 +147,10 @@ def test_live_basic_discovery_finds_planted_paths(
     wordlist = _wordlist(tmp_path, "dirs.txt", ["admin", "backup", "nosuchpath"])
 
     runner = FfufRunner(base_url, tmp_path)
+    # Deliberately the one live test that leaves -ac (the dataclass
+    # default) enabled: its assertions are calibration-proof on this
+    # fixture (planted bodies differ from the 404 baseline in size,
+    # words, and lines), and it smokes the -ac code path.
     result = runner.run(
         FfufConfig(wordlist=wordlist, threads=2, timeout=5, max_runtime=30)
     )

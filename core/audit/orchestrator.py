@@ -2751,6 +2751,25 @@ def review_one_function(
                     outcome.evidence_tool = "dynamic:sanitizer"
                 elif dyn_result and dyn_result.evidence_strength == "crash":
                     outcome.evidence_tool = "dynamic:crash"
+                elif dyn_result and dyn_result.evidence_strength == "exception":
+                    # Exception-grade dynamic evidence (in-harness
+                    # Python exception, bare nonzero exit, sanitizer
+                    # text without a signal-grade death): a review
+                    # hint, never confirmation. Idiomatic targets
+                    # raise on garbage input and hostile targets mint
+                    # this shape at will — it used to stamp
+                    # dynamic:crash → CONFIRMED. Route to suspicious
+                    # with the reason on the record; the stamp is NOT
+                    # in _CONFIRMED_EVIDENCE.
+                    outcome.evidence_tool = "dynamic:exception"
+                    if outcome.status == "finding":
+                        outcome.status = "suspicious"
+                        outcome.body = (
+                            "[dynamic: exception-grade evidence only — "
+                            "harness observed an exception/nonzero "
+                            "exit, not a signal-grade crash; routed "
+                            "finding → suspicious] " + (outcome.body or "")
+                        )
                 elif dyn_result and dyn_result.evidence_strength == "refuted":
                     outcome = _demote_outcome(outcome, "[dynamic: refuted]")
         except Exception:

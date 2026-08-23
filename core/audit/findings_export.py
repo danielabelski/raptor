@@ -26,6 +26,13 @@ from .evidence_grade import (
 
 logger = logging.getLogger(__name__)
 
+# Confirming receipts that are not tool namespaces: the /validate
+# runtime bridge stamps (ReviewOutcome._CONFIRMED_EVIDENCE members).
+# Kept in sync with core.audit.orchestrator.ReviewOutcome.
+_RUNTIME_CONFIRMING_STAMPS = frozenset({
+    "validate:observed_runtime", "validate:replayed_crash",
+})
+
 
 def build_graded_finding(
     outcome: Any,
@@ -94,7 +101,18 @@ def build_graded_finding(
     if not _confirmed_by:
         for part in (evidence_tool or "").split("+"):
             part = part.strip()
-            if part and is_tool_evidence(part) and part not in _confirmed_by:
+            if not part or part in _confirmed_by:
+                continue
+            # The validate-bridge runtime stamps and witness stamps are
+            # confirming receipts in compute_tier's vocabulary but not
+            # tool namespaces — count them here so the receipt gate
+            # below (which now covers the confirmed tier too) never
+            # demotes a genuinely runtime-confirmed finding.
+            if (
+                is_tool_evidence(part)
+                or part in _RUNTIME_CONFIRMING_STAMPS
+                or part.endswith(":witness")
+            ):
                 _confirmed_by.append(part)
         for sec in review_result.get("secondary_confirmations") or []:
             sec_tool = sec.get("evidence_tool") if isinstance(sec, dict) else ""
@@ -108,9 +126,13 @@ def build_graded_finding(
     # On the instrumented corpus 136 of 137 tool_backed findings were
     # disproven in validation — the stamps confirmed lexical shape,
     # not vulnerability. Cap confidence at medium and tier at llm_only
-    # until a confirming receipt exists; the CONFIRMED tier (dynamic
-    # crash/sanitizer, solver witnesses) is above this gate.
-    if not _confirmed_by and tier == "tool_backed":
+    # until a confirming receipt exists. The CONFIRMED tier is no
+    # longer exempt: a live compute_tier() 'confirmed' always carries
+    # its confirming stamp in evidence_tool (counted above, including
+    # the validate-bridge runtime stamps), so the only 'confirmed'
+    # values without a receipt are journaled attributes / bypass
+    # paths — exactly what this gate exists to catch.
+    if not _confirmed_by and tier in ("tool_backed", "confirmed"):
         tier = "llm_only"
         if confidence is Confidence.HIGH:
             confidence = Confidence.MEDIUM

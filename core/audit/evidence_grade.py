@@ -285,8 +285,21 @@ def sanitize_llm_evidence_tool(raw: str) -> str:
 
 
 _RECEIPT_MAP: dict[str, tuple] = {
-    "dynamic:sanitizer": (EvidenceSource.DYNAMIC_SANITIZER, "confirmed by dynamic sanitizer"),
-    "dynamic:crash": (EvidenceSource.DYNAMIC_CRASH, "non-zero exit without sanitizer confirmation"),
+    "dynamic:sanitizer": (
+        EvidenceSource.DYNAMIC_SANITIZER,
+        "confirmed by dynamic sanitizer (signal-anchored report)",
+    ),
+    "dynamic:crash": (
+        EvidenceSource.DYNAMIC_CRASH,
+        "harness died by a real signal (waitstatus-provenance crash)",
+    ),
+    "dynamic:exception": (
+        EvidenceSource.DYNAMIC_CRASH,
+        (
+            "harness observed an exception/nonzero exit — "
+            "exception-grade hint, not a confirmed crash"
+        ),
+    ),
     "frida": (EvidenceSource.DYNAMIC_FRIDA, "confirmed by Frida runtime observation"),
     "joern": (EvidenceSource.JOERN, "confirmed by Joern CPG analysis"),
     "joern:guard-dominance": (

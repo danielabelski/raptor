@@ -33,7 +33,30 @@ _SANITIZER_FLAGS = "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
 
 @dataclass
 class DynamicSweepResult:
-    """Result of running a dynamic test harness."""
+    """Result of running a dynamic test harness.
+
+    ``evidence_strength`` vocabulary (verdict-integrity contract):
+
+    * ``"sanitizer"`` — a sanitizer report on STDERR anchored by a
+      signal-grade death (``abort_on_error=1`` makes genuine reports
+      abort). Confirms.
+    * ``"crash"`` — the harness died by a REAL signal: the parent's own
+      waitpid saw WIFSIGNALED (``signal_provenance == "waitstatus"``,
+      see core/sandbox/observe.py). Confirms.
+    * ``"exception"`` — the harness observed an in-process exception or
+      a plain nonzero exit. Idiomatic target code raises RuntimeError
+      on garbage input, and hostile target code (the harness IMPORTS
+      AND CALLS the target's own function) mints this shape at will —
+      it is a review hint, never mechanical confirmation.
+    * ``"inconclusive"`` — nothing ran / nothing observed.
+
+    Known residual (documented judgment): the harness executes target
+    code in-process, so a deliberately hostile function can still
+    self-deliver a genuine crash signal (``kill(getpid(), SIGSEGV)``).
+    The signal-grade bar removes the exception-grade FP-amplifier and
+    the exit-code/stdout forgery lanes; in-process self-signaling is
+    inherent to this harness shape.
+    """
 
     compiled: bool
     ran: bool
@@ -321,12 +344,25 @@ def _run_c_harness(
 
         combined_output = run_result.stdout + run_result.stderr
         crashed = run_result.returncode != 0
-        sanitizer_hit = _has_sanitizer_output(combined_output)
+        # Sanitizer scan reads STDERR ONLY: sanitizers write their
+        # reports to stderr, while target stdout is fully attacker-
+        # controlled prose (a puts("...use-after-free...") used to mint
+        # sanitizer-grade evidence).
+        sanitizer_hit = _has_sanitizer_output(run_result.stderr)
+        signal_grade = _signal_grade_death(run_result)
 
-        if sanitizer_hit:
+        # Confirming strengths require a signal-grade death: the env
+        # sets abort_on_error=1 for BOTH sanitizer families (see
+        # _get_safe_env — halt_on_error alone merely exits 1), so a
+        # GENUINE report is followed by SIGABRT; a printed fake from
+        # a cleanly-exiting (or exit(1)-ing) process is not. Bare
+        # nonzero exits — previously "crash" — are exception-grade.
+        if sanitizer_hit and signal_grade:
             strength = "sanitizer"
-        elif crashed:
+        elif signal_grade:
             strength = "crash"
+        elif crashed or sanitizer_hit:
+            strength = "exception"
         else:
             strength = "inconclusive"
 
@@ -412,7 +448,19 @@ def _run_python_harness(
 
         has_unexpected = "UNEXPECTED_EXCEPTION" in combined_output
 
-        strength = "crash" if has_unexpected or crashed else "inconclusive"
+        # Python lane, verdict-integrity contract: only an interpreter-
+        # fatal termination — a real signal the parent's waitpid saw
+        # (SIGSEGV in a C extension, faulthandler-visible aborts) — is
+        # crash evidence. An in-harness Python exception is what
+        # idiomatic code does on garbage input AND what a hostile
+        # target function (the harness imports and calls it) raises at
+        # will; both used to mint "crash" → dynamic:crash → CONFIRMED.
+        if _signal_grade_death(run_result):
+            strength = "crash"
+        elif has_unexpected or crashed:
+            strength = "exception"
+        else:
+            strength = "inconclusive"
 
         return DynamicSweepResult(
             compiled=True,
@@ -438,6 +486,41 @@ def _is_valid_identifier(name: str) -> bool:
 def _is_compilable_language(file_path: str) -> bool:
     """Check if the file is in a language we can compile/run."""
     return file_path.endswith((".c", ".h", ".cpp", ".cc", ".cxx", ".py"))
+
+
+def _signal_grade_death(run_result: Any) -> bool:
+    """True when the harness died by a REAL signal.
+
+    Reads the sandbox layer's evidence tiering
+    (``sandbox_info["signal_provenance"] == "waitstatus"`` — the
+    parent's own waitpid saw WIFSIGNALED; see
+    core/sandbox/observe.py). Exit-code shapes (128+sig) are
+    deliberately NOT accepted: target code forges them with a single
+    ``exit(139)`` / ``sys.exit(139)``. Falls back to the raw
+    ``returncode < 0`` check when sandbox_info is absent (same kernel
+    truth, unwrapped runners).
+
+    Tier visibility, so operators are not surprised: spawn tiers that
+    LAUNDER the target's signal into a 128+sig exit code before the
+    parent's waitpid — the in-namespace pid-1 waiter on mount-ns runs
+    and the no-namespace trampoline — can never satisfy this check,
+    so the dynamic ``crash``/``sanitizer`` confirmed lanes are dark
+    on those tiers (everything routes to exception-grade →
+    suspicious). That is the fail-safe direction by design: an
+    exit-code shape is exactly what a hostile target can mint, and
+    the launder point sits where forged and genuine shapes are
+    indistinguishable. Signal-grade evidence flows on tiers where the
+    kernel's WIFSIGNALED reaches the parent unre-encoded.
+    """
+    info = getattr(run_result, "sandbox_info", None) or {}
+    if info.get("signal_provenance") == "waitstatus" and info.get("crashed"):
+        return True
+    if info:
+        return False
+    try:
+        return int(run_result.returncode) < 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _has_sanitizer_output(output: str) -> bool:
@@ -593,5 +676,11 @@ def _get_safe_env() -> dict[str, str]:
         for key in ("TERMINAL", "EDITOR", "VISUAL", "BROWSER", "PAGER"):
             env.pop(key, None)
     env["ASAN_OPTIONS"] = "detect_leaks=1:abort_on_error=1"
-    env["UBSAN_OPTIONS"] = "print_stacktrace=1:halt_on_error=1"
+    # abort_on_error=1 is load-bearing for the signal-grade sanitizer
+    # classification: halt_on_error alone makes UBSan STOP (exit 1,
+    # unsignaled) — only abort_on_error raises the SIGABRT that
+    # _signal_grade_death accepts. Without it a genuine UBSan-only hit
+    # (the CWE-190 class this sweep targets) would demote to
+    # exception-grade.
+    env["UBSAN_OPTIONS"] = "print_stacktrace=1:halt_on_error=1:abort_on_error=1"
     return env

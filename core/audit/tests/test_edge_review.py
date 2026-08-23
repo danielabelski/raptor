@@ -281,6 +281,36 @@ class TestRunEdgePass:
         assert summary2["reviewed"] == 0
         assert summary2["unreviewed_tier1"] == 0
 
+    def test_domain_knowledge_reaches_tier1_prompt(self, tmp_path):
+        """Tier-1 edge prompts inject domain-model knowledge scored
+        against BOTH endpoint bodies — before this, the dedicated edge
+        review carried no knowledge at all while the tier-2 fold
+        (inside the function review) did."""
+        import json as _json
+        target = _target(tmp_path)
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "domain-model.json").write_text(_json.dumps({
+            "concepts": [], "contracts": [],
+            "invariants": [{
+                "id": "tf_query-never-raw",
+                "statement": "Strings passed to run_query must never "
+                             "carry raw user input.",
+                "negation": "Injection through the query edge.",
+                "description": "[threat-frame derived]",
+                "confidence": "derived",
+                "provenance": "llm_prior",
+            }],
+        }))
+        llm = _StubLLM({"status": "clean", "body": "checked"})
+        run_edge_pass(
+            self._config(target, run, llm),
+            _checklist(target), self._context_map(),
+            commit_fn=lambda *a, **k: None,
+        )
+        assert llm.prompts, "edge pass made no LLM calls"
+        assert "never carry raw user input" in llm.prompts[0]
+
     def test_no_llm_client_degrades_named(self, tmp_path):
         target = _target(tmp_path)
         run = tmp_path / "run"

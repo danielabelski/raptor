@@ -234,10 +234,48 @@ def _read_span(
     return body
 
 
+def _edge_knowledge_block(
+    out_dir: Path | None,
+    rec: dict[str, Any],
+    caller_src: str,
+    callee_src: str,
+) -> str:
+    """Domain-model knowledge scoped to this edge, or "".
+
+    Keyed on the CALLEE (a contract audit reviews the callee's
+    contract) but scored against BOTH endpoint bodies, so knowledge
+    anchored to either side routes in — including derived
+    (threat-frame) invariants, whose only anchor is the identifiers
+    they name. Without this the tier-1 prompt carried no knowledge at
+    all while the tier-2 fold (inside the function review) did.
+    """
+    if out_dir is None:
+        return ""
+    try:
+        from core.concepts.audit_bridge import domain_model_context
+        from core.security.prompt_envelope import wrap_untrusted
+        block = domain_model_context(
+            Path(out_dir), rec["callee_file"], rec["callee"],
+            caller_src + "\n" + callee_src,
+        )
+        if not block:
+            return ""
+        return wrap_untrusted(
+            block, kind="domain-model",
+            # Same label as the function-review injection: the block
+            # includes the SAGE cross-session recall section.
+            origin="understand-study domain-model + SAGE recall",
+        )
+    except Exception:  # noqa: BLE001 — knowledge is enrichment, never fatal
+        logger.debug("edge knowledge block failed", exc_info=True)
+        return ""
+
+
 def build_edge_prompt(
     rec: dict[str, Any],
     caller_src: str,
     callee_src: str,
+    knowledge: str = "",
 ) -> str:
     """Contract-audit prompt with both endpoint bodies. Plaintext;
     target-derived strings pass the shared prompt defences."""
@@ -257,6 +295,14 @@ def build_edge_prompt(
         "```",
         sanitise_for_prompt(callee_src, "source", rec["callee_file"]),
         "```",
+    ]
+    if knowledge:
+        # Already enveloped by wrap_untrusted at build time — study
+        # output is target-derived paraphrase, same provenance rule as
+        # the function-review injection.
+        parts.append("")
+        parts.append(knowledge)
+    parts += [
         "\n### Questions",
         ("1. What does the caller assume about the callee's return "
          "value, side effects, error behaviour, and locking?"),
@@ -391,10 +437,16 @@ def run_edge_pass(
         if not caller_span or not callee_span:
             summary["errors"] += 1
             continue
+        caller_src = _read_span(
+            Path(config.target_path), rec["caller_file"], caller_span)
+        callee_src = _read_span(
+            Path(config.target_path), rec["callee_file"], callee_span)
         prompt = build_edge_prompt(
-            rec,
-            _read_span(Path(config.target_path), rec["caller_file"], caller_span),
-            _read_span(Path(config.target_path), rec["callee_file"], callee_span),
+            rec, caller_src, callee_src,
+            knowledge=_edge_knowledge_block(
+                getattr(config, "out_dir", None), rec,
+                caller_src, callee_src,
+            ),
         )
         t0 = time.monotonic()
         try:

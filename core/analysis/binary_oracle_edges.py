@@ -39,6 +39,7 @@ from pathlib import Path
 
 from core.atomic_fs import write_text_atomically
 from core.hash import sha256_file as _sha256_file
+from core.json import JsonBudgetExceededError, load_json_bounded
 
 from .binary_oracle import read_build_id
 
@@ -50,6 +51,11 @@ logger = logging.getLogger(__name__)
 # shape). Old cache entries with a stale version are ignored and the
 # extractor re-runs from scratch.
 _EDGE_CACHE_VERSION = 1
+
+# One cached edge index. Indexes are per-build-id and grow with
+# the binary's call graph; the cache dir is shared, so a planted
+# oversize file must be refused before the read.
+_MAX_EDGE_CACHE_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -129,8 +135,17 @@ def _load_cached_index(
     if not cache_file.is_file():
         return None
     try:
-        payload = json.loads(cache_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        # Bounded helper (capped read + growth re-check), not plain
+        # load_json: the cache dir is shared, so the stat-then-
+        # uncapped-read window would let a racing writer balloon the
+        # read past the gate.
+        payload = load_json_bounded(
+            cache_file, max_bytes=_MAX_EDGE_CACHE_BYTES,
+        )
+    except JsonBudgetExceededError as e:
+        logger.warning("edge cache refused: %s", e)
+        return None
+    except (OSError, ValueError):
         return None
     if not isinstance(payload, dict):
         return None

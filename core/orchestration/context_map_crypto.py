@@ -24,13 +24,17 @@ precise).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
+
+# Crypto API packs are small RAPTOR-bundled data files.
+_MAX_PACK_BYTES = 8 * 1024 * 1024
 
 # core/orchestration/context_map_crypto.py → repo root (parents[2]).
 # Anchored to __file__ so the packs resolve regardless of the audit's
@@ -62,10 +66,9 @@ def _load_packs() -> list[dict[str, Any]]:
     except OSError:
         return packs
     for path in pack_files:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            logger.warning("crypto pack %s unreadable (%s) — skipped", path, e)
+        raw = load_json(path, max_bytes=_MAX_PACK_BYTES)
+        if raw is None:
+            logger.warning("crypto pack %s unreadable — skipped", path)
             continue
         api = raw.get("api", "")
         kinds = raw.get("kinds", {})

@@ -54,6 +54,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# checklist.json tracks target size — the checklist budget class.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
+
 
 MAX_NAMES_PER_LIST = 10
 DEFAULT_MAX_DEPTH = 10
@@ -180,10 +183,9 @@ def enrich_with_call_edges(
     if checklist is None:
         if checklist_path is None or not checklist_path.exists():
             return 0
-        import json
-        try:
-            checklist = json.loads(checklist_path.read_text())
-        except Exception:
+        from core.json import load_json
+        checklist = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
+        if not isinstance(checklist, dict):
             return 0
 
     func_to_file: dict[str, str] = {}

@@ -37,7 +37,6 @@ Idempotent — safe to re-run.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
@@ -46,11 +45,16 @@ from core.inventory.sink_discovery import (
     SinkDiscoveryResult,
     discover_sinks_for_target,
 )
+from core.json import load_json
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# discovered-sinks.json is RAPTOR-written run output — the
+# audit-artifact budget class.
+_MAX_SINKS_BYTES = 64 * 1024 * 1024
 
 DEFAULT_MAX_DEPTH = 10
 DEFAULT_FRAMEWORK_THRESHOLD = 5
@@ -702,10 +706,10 @@ def _find_discovered_sinks(run_dir: Path) -> dict[str, Any] | None:
         try:
             if not path.is_file():
                 continue
-            data = json.loads(path.read_text())
+            data = load_json(path, max_bytes=_MAX_SINKS_BYTES)
             if isinstance(data, dict) and data.get("discovered_sinks"):
                 return data
-        except (OSError, ValueError):
+        except OSError:
             continue
     return None
 

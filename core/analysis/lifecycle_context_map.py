@@ -14,9 +14,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 from .lifecycle_model import StateField
 
 logger = logging.getLogger(__name__)
+
+# context-map.json is RAPTOR-written run output (multi-MiB on big
+# targets) — the audit-artifact budget class.
+_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
 
 
 def load_state_fields(out_dir: Path) -> list[StateField]:
@@ -25,11 +31,7 @@ def load_state_fields(out_dir: Path) -> list[StateField]:
     if not cm_path.exists():
         return []
 
-    try:
-        data = json.loads(cm_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
-
+    data = load_json(cm_path, max_bytes=_MAX_CONTEXT_MAP_BYTES)
     if not isinstance(data, dict):
         return []
 
@@ -56,12 +58,9 @@ def save_state_fields(
 
     data: dict[str, Any] = {}
     if cm_path.exists():
-        try:
-            loaded = json.loads(cm_path.read_text())
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, OSError):
-            pass
+        loaded = load_json(cm_path, max_bytes=_MAX_CONTEXT_MAP_BYTES)
+        if isinstance(loaded, dict):
+            data = loaded
 
     data["state_fields"] = [f.to_dict() for f in fields]
 

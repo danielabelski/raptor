@@ -2377,6 +2377,55 @@ def _stream_transport_enabled() -> bool:
     )
 
 
+# Per-call streaming opt-in (``generate_structured(..., stream=True)``).
+# The env knob above is deliberately topology-neutral; this is the
+# complementary CALLER-side justification — the caller knows its
+# response is long (study batches, contract audits), which no amount
+# of network sniffing can. Thread-local because the instructor path
+# reaches the SDK through the rebound ``messages.create`` several
+# frames below the call that opted in, and reviews run in parallel
+# worker threads. Set/cleared around one synchronous provider call.
+_STREAM_OVERRIDE = threading.local()
+
+
+def _stream_override_active() -> bool:
+    return bool(getattr(_STREAM_OVERRIDE, "on", False))
+
+
+def _streamify_messages_create(client) -> None:
+    """Extend the opt-in streaming transport to ``messages.create``
+    callers on this client instance.
+
+    ``generate()``/``turn()`` check ``_stream_transport_enabled()``
+    themselves, but instructor's structured generation calls
+    ``messages.create`` directly on the wrapped SDK client — the one
+    call class large enough to hit upstream's non-streaming
+    long-request abort (structured study batches on a thinking model
+    generate for longer than the ~10-minute ceiling). Rebinding
+    ``create`` here, BEFORE ``instructor.from_anthropic`` wraps it,
+    carries that leg over ``messages.stream`` +
+    ``get_final_message()`` — the identical ``Message`` object, so
+    instructor's parsing/validation is unchanged.
+
+    The env gate is evaluated per call, not at patch time, so the
+    rebind is inert while the knob is off and long-lived clients
+    honour knob changes. Never applied to SSE-incapable surfaces
+    (Bedrock runtime/InvokeModel — see the construction-time warning).
+    """
+    messages = client.messages
+    real_create = messages.create
+    real_stream = messages.stream
+
+    def _create_via_stream_transport(**kw):
+        kw.pop("stream", None)
+        if not (_stream_override_active() or _stream_transport_enabled()):
+            return real_create(**kw)
+        with real_stream(**kw) as _stream:
+            return _stream.get_final_message()
+
+    messages.create = _create_via_stream_transport
+
+
 class AnthropicProvider(LLMProvider):
     """
     LLM provider using the Anthropic SDK.
@@ -2421,7 +2470,16 @@ class AnthropicProvider(LLMProvider):
         # core.llm.instructor_reask).
         from core.llm.instructor_reask import ensure_anthropic_reask_pairing
         ensure_anthropic_reask_pairing()
+        # Must precede from_anthropic so instructor wraps the
+        # transport-aware ``create``.
+        _streamify_messages_create(self.client)
         self._init_instructor(lambda: instructor.from_anthropic(self.client))
+
+        # SSE capability for the per-call streaming opt-in. True for
+        # the Anthropic API and the dispatcher's mantle route; the
+        # Bedrock builder clears it on the runtime (InvokeModel)
+        # surface, which has no SSE.
+        self._stream_sse_ok = True
 
         # Per-instance flag: have we warned about silent cache-failure
         # for this model? Warns once per provider instance to avoid
@@ -2466,9 +2524,19 @@ class AnthropicProvider(LLMProvider):
                 "cache_control": {"type": "ephemeral"},
             }]
 
+        # Per-call opt-in (``stream=True`` kwarg or the structured
+        # path's thread-local) is gated on SSE capability — pipeline
+        # callers opt in blind to the deployment's surface. The env
+        # knob stays ungated: an operator who set it on a
+        # non-streaming surface gets the documented loud 400, not a
+        # silent transport downgrade.
+        _call_stream = (
+            (kwargs.get("stream") or _stream_override_active())
+            and getattr(self, "_stream_sse_ok", True)
+        )
         try:
             t_start = time.monotonic()
-            if _stream_transport_enabled():
+            if _call_stream or _stream_transport_enabled():
                 with self.client.messages.stream(**create_kwargs) as _stream:
                     response = _stream.get_final_message()
             else:
@@ -2595,7 +2663,38 @@ class AnthropicProvider(LLMProvider):
     def generate_structured(self, prompt: str, schema: dict[str, Any],
                            system_prompt: str | None = None,
                            **kwargs) -> StructuredResponse:
-        """Generate structured output using Instructor (or JSON fallback)."""
+        """Generate structured output using Instructor (or JSON fallback).
+
+        ``stream=True`` opts this one call onto the streaming
+        transport (SSE-capable surfaces only): the caller knows its
+        response is long — study batches on a thinking model exceed
+        upstream's ~10-minute non-streaming abort — a justification
+        the topology-neutral env knob cannot express. Scoped via a
+        thread-local so both the instructor leg (which reaches the
+        SDK through the rebound ``messages.create``) and the
+        JSON-in-prompt fallback (which rides ``generate``) honour it.
+        """
+        _call_stream = (
+            bool(kwargs.get("stream"))
+            and getattr(self, "_stream_sse_ok", True)
+        )
+        if not _call_stream:
+            return self._generate_structured_impl(
+                prompt, schema, system_prompt=system_prompt, **kwargs)
+        # Restore (not clear) on exit so a nested opted-in call cannot
+        # switch the remainder of its outer call back to non-streaming.
+        _prev = getattr(_STREAM_OVERRIDE, "on", False)
+        _STREAM_OVERRIDE.on = True
+        try:
+            return self._generate_structured_impl(
+                prompt, schema, system_prompt=system_prompt, **kwargs)
+        finally:
+            _STREAM_OVERRIDE.on = _prev
+
+    def _generate_structured_impl(
+            self, prompt: str, schema: dict[str, Any],
+            system_prompt: str | None = None,
+            **kwargs) -> StructuredResponse:
         pydantic_model = _dict_schema_to_pydantic(schema)
         # See OpenAI provider — caller-supplied temperature must
         # reach the API for DispatchTask's per-task temperatures
@@ -4800,6 +4899,11 @@ def create_provider(config: ModelConfig) -> LLMProvider:
         provider_instance.client = make_bedrock_client(
             api=api, timeout=config.timeout,
         )
+        if api == "mantle":
+            # Mantle streams natively; runtime (InvokeModel) has no
+            # SSE surface, so its instructor leg stays on plain
+            # ``create`` (matching the construction-time warning).
+            _streamify_messages_create(provider_instance.client)
         if INSTRUCTOR_AVAILABLE:
             provider_instance.instructor_client = instructor.from_anthropic(
                 provider_instance.client,
@@ -4808,7 +4912,10 @@ def create_provider(config: ModelConfig) -> LLMProvider:
             # InvokeModel has no SSE surface; the dispatcher rejects
             # ``stream`` with a 400 mid-run. Surface the capability
             # limit at construction time so a streaming consumer's
-            # failure isn't the first hint.
+            # failure isn't the first hint. Per-call stream opt-ins
+            # (pipeline callers, blind to the surface) degrade to
+            # plain create here rather than 400ing every study batch.
+            provider_instance._stream_sse_ok = False
             logger.warning(
                 "Bedrock runtime surface is non-streaming (InvokeModel)"
                 " — streaming consumers will get a 400; use "

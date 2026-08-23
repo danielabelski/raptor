@@ -27,7 +27,16 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
+
+# Byte budgets for the bridge's reads. Run metadata is a tiny
+# descriptor; the audit-run artifacts (constraints, graded findings,
+# chains, summaries, attack-surface, attack-paths) are findings-class
+# documents — 64 MiB matches the validate-bridge precedent.
+_MAX_RUN_META_BYTES = 1024 * 1024
+_MAX_AUDIT_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 CONSTRAINTS_FILENAME = "constraints.json"
 
@@ -51,11 +60,15 @@ def find_audit_output(
     def _target_matches(d: Path) -> bool:
         if not target_path:
             return True
+        meta = load_json(
+            d / ".raptor-run.json", max_bytes=_MAX_RUN_META_BYTES,
+        )
+        if not isinstance(meta, dict):
+            return False
         try:
-            meta = json.loads((d / ".raptor-run.json").read_text())
             stored = meta.get("target_path", "")
             return Path(stored).resolve() == Path(target_path).resolve()
-        except Exception:  # noqa: BLE001 — unreadable metadata = no match
+        except Exception:  # noqa: BLE001 — unresolvable metadata = no match
             return False
 
     best = find_sibling_run(
@@ -78,12 +91,7 @@ def load_audit_constraints(audit_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.debug("audit_bridge: failed to read %s", path, exc_info=True)
-        return []
-
+    data = load_json(path, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     if not isinstance(data, list):
         return []
 
@@ -110,11 +118,7 @@ def enrich_attack_paths(
     if not attack_paths_file.exists():
         return 0
 
-    try:
-        data = json.loads(attack_paths_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0
-
+    data = load_json(attack_paths_file, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     if not isinstance(data, list):
         return 0
 
@@ -279,12 +283,7 @@ def load_dark_findings(audit_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.debug("audit_bridge: failed to read %s", path, exc_info=True)
-        return []
-
+    data = load_json(path, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     findings = data.get("findings", []) if isinstance(data, dict) else []
     return [
         f for f in findings
@@ -312,11 +311,9 @@ def inject_dark_as_hypotheses(
     if not attack_surface_file.exists():
         return 0
 
-    try:
-        surface = json.loads(attack_surface_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0
-
+    surface = load_json(
+        attack_surface_file, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES,
+    )
     if not isinstance(surface, dict):
         return 0
 
@@ -386,12 +383,7 @@ def load_attack_chains(audit_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.debug("audit_bridge: failed to read %s", path, exc_info=True)
-        return []
-
+    data = load_json(path, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     if not isinstance(data, list):
         return []
 
@@ -412,12 +404,7 @@ def load_summaries(audit_dir: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        logger.debug("audit_bridge: failed to read %s", path, exc_info=True)
-        return {}
-
+    data = load_json(path, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     if isinstance(data, list):
         return {
             f"{s.get('file', '')}:{s.get('function', '')}": s
@@ -448,11 +435,9 @@ def inject_chains_as_hypotheses(
     if not attack_surface_file.exists():
         return 0
 
-    try:
-        surface = json.loads(attack_surface_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0
-
+    surface = load_json(
+        attack_surface_file, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES,
+    )
     if not isinstance(surface, dict):
         return 0
 
@@ -526,11 +511,7 @@ def enrich_with_summaries(
     if not attack_paths_file.exists():
         return 0
 
-    try:
-        data = json.loads(attack_paths_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0
-
+    data = load_json(attack_paths_file, max_bytes=_MAX_AUDIT_ARTIFACT_BYTES)
     if not isinstance(data, list):
         return 0
 

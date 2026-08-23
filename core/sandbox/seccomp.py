@@ -225,6 +225,17 @@ _SECCOMP_BLOCK_UNLESS_DEBUG = (
 # which stay trace-allow so the tracer can report what the workload
 # wanted.
 #
+# INVARIANT (pinned by test_seccomp_audit): every _SECCOMP_BLOCK_ALWAYS
+# entry appears here. That set is by definition "no legitimate use in a
+# target build or a debugger" — converting any of it to allow-and-log
+# hands the audited child the primitive for the run's duration. The
+# omission this closes: perf_event_open (side channels / kernel attack
+# surface), pidfd_getfd (descriptor theft from same-UID host processes
+# on a Landlock-only, no-pid-ns audit run), kcmp (cross-process
+# side-channel probe), open_by_handle_at / name_to_handle_at
+# (path-check bypass by filesystem handle) were TRACE under audit while
+# being classified "DEFINITELY blocked in every filter mode".
+#
 # The blocked tty ioctls (TIOCSTI et al) get the same treatment via
 # an unconditional ERRNO action on the ioctl rules — TIOCSTI injects
 # keystrokes into the operator's shell, which is not observable-then-
@@ -250,9 +261,7 @@ _SECCOMP_BLOCK_UNLESS_DEBUG = (
 # not worth the complexity for syscalls that are pure attack signal.
 _AUDIT_HARD_DENY_SYSCALLS = frozenset({
     "ptrace", "process_vm_readv", "process_vm_writev",
-    "keyctl", "add_key", "request_key",
-    "bpf", "userfaultfd",
-    "io_uring_setup", "io_uring_enter", "io_uring_register",
+    *_SECCOMP_BLOCK_ALWAYS,
 })
 
 # socket() family / type values we reject (via argument filter on arg 0 / 1).
@@ -474,8 +483,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     attached ptrace tracer (core/sandbox/tracer.py) instead of erroring
     the syscall. Also adds open/openat/connect to the trace set for b3
     filesystem + network audit coverage. EXCEPTION: the escape-primitive
-    subset (_AUDIT_HARD_DENY_SYSCALLS — ptrace/process_vm_*, keyring,
-    bpf/userfaultfd, io_uring_*), the blocked tty ioctls, AND the
+    subset (_AUDIT_HARD_DENY_SYSCALLS — ptrace/process_vm_* plus the
+    whole _SECCOMP_BLOCK_ALWAYS set), the blocked tty ioctls, AND the
     socket()-argument rules (blocked families, SOCK_RAW, the
     SCTP/DCCP/MPTCP kernel-bypass transports, the UDP block)
     keep the ERRNO action under audit too; converting THOSE denials

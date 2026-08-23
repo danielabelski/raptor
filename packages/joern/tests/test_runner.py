@@ -698,6 +698,63 @@ class TestCPGCaching:
     def test_manifest_missing_returns_none(self, tmp_path):
         assert _read_cpg_manifest(tmp_path) is None
 
+    def test_load_cached_cpg_reproduces_recorded_exclusions(self, tmp_path):
+        # Read-only consumers (guard-dominance's warm-server probe)
+        # pass neither a precomputed hash nor exclude_dirs. A cache
+        # built under caller-declared exclusions must not read as
+        # permanently stale for them: the freshness walk reproduces
+        # the manifest's recorded exclusion contract.
+        target = tmp_path / "src"
+        target.mkdir()
+        (target / "a.c").write_text("int main() {}")
+        run_dir = target / "out" / "audit_1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "artifact.py").write_text("x = 1\n")
+
+        cache = tmp_path / "cache"
+        cpg_dir = cache / "joern-cpg"
+        cpg_dir.mkdir(parents=True)
+        (cpg_dir / "cpg.bin").write_bytes(b"\x00")
+
+        content_hash = _target_content_hash(
+            target, exclude_dirs=(run_dir,))
+        _write_cpg_manifest(
+            cpg_dir, target, content_hash, {"c"}, 100,
+            exclude_dirs=(str(run_dir),),
+        )
+        # Run artifacts churn after the build — exactly the noise the
+        # declared exclusion exists to keep out of the key.
+        (run_dir / "artifact.py").write_text("x = 2\n")
+
+        assert load_cached_cpg(target, cache) is not None
+
+    def test_run_output_exclude_dirs_in_target(self, tmp_path):
+        from packages.joern.runner import run_output_exclude_dirs
+        out_dir = tmp_path / "out" / "audit_1"
+        out_dir.mkdir(parents=True)
+        assert run_output_exclude_dirs(out_dir, tmp_path) == (
+            str(out_dir.resolve()),
+        )
+
+    def test_run_output_exclude_dirs_outside_target(self, tmp_path):
+        from packages.joern.runner import run_output_exclude_dirs
+        target = tmp_path / "src"
+        target.mkdir()
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        assert run_output_exclude_dirs(out_dir, target) == ()
+
+    def test_run_output_exclude_dirs_target_itself(self, tmp_path):
+        # out_dir == target must never be declared: excluding the
+        # whole tree would empty the key and the graph.
+        from packages.joern.runner import run_output_exclude_dirs
+        assert run_output_exclude_dirs(tmp_path, tmp_path) == ()
+
+    def test_run_output_exclude_dirs_absent_inputs(self, tmp_path):
+        from packages.joern.runner import run_output_exclude_dirs
+        assert run_output_exclude_dirs(None, tmp_path) == ()
+        assert run_output_exclude_dirs(tmp_path / "out", None) == ()
+
     def test_load_cached_cpg_miss(self, tmp_path):
         target = tmp_path / "src"
         target.mkdir()

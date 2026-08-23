@@ -54,6 +54,7 @@ def joern_session(
     cache_dir: Path | None = None,
     tunables: JoernTunables | None = None,
     register_reach_audit: bool = True,
+    exclude_dirs: tuple[str, ...] = (),
 ) -> Iterator[JoernServer | None]:
     """Context manager for a cross-tool Joern session.
 
@@ -97,12 +98,14 @@ def joern_session(
                 target_path, cache_dir,
                 languages=parse_langs,
                 timeout=tunables.cpg_timeout_s,
+                exclude_dirs=exclude_dirs,
             )
         else:
             cpg = build_cpg(
                 target_path,
                 languages=parse_langs,
                 timeout=tunables.cpg_timeout_s,
+                exclude_dirs=exclude_dirs,
             )
         if cpg.exists():
             srv.import_cpg(cpg.path, timeout=tunables.import_timeout_s)

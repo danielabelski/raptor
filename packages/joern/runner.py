@@ -1067,6 +1067,35 @@ def _resolved_exclude_dirs(exclude_dirs) -> set:
     return resolved
 
 
+def run_output_exclude_dirs(
+    out_dir: str | Path | None,
+    target: str | Path | None,
+) -> tuple[str, ...]:
+    """Caller-declared exclusion roots for a run writing into *out_dir*.
+
+    Returns the resolved run-output directory when it lives strictly
+    inside *target* (e.g. a self-analysis run with ``out/`` under the
+    analysed repo), else ``()``. Run artifacts change while the run
+    executes, so an in-target output dir left in the content key flaps
+    the key at every resumed segment and re-buys a full CPG rebuild —
+    churn, never staleness. Only the run's OWN output dir is declared:
+    a broader ancestor could swallow real source when the operator
+    points the output somewhere unusual inside the tree, and exclusions
+    silently remove code from every joern-backed check (key/analysis
+    parity cuts both ways).
+    """
+    if not out_dir or not target:
+        return ()
+    try:
+        out = Path(out_dir).resolve()
+        root = Path(target).resolve()
+    except OSError:
+        return ()
+    if root not in out.parents:
+        return ()
+    return (str(out),)
+
+
 def _target_content_hash(target: Path, *, exclude_dirs=()) -> str:
     """Content-only cache key for the target tree.
 
@@ -1258,6 +1287,13 @@ def load_cached_cpg(
     ``exclude_dirs``). Callers that go on to rebuild pass it so the
     freshness check and the rebuilt cache's manifest describe the
     SAME tree state.
+
+    Read-only consumers that pass neither hash nor ``exclude_dirs``
+    reproduce the manifest's recorded exclusion contract: a graph
+    built under caller-declared exclusions would otherwise hash the
+    excluded run artifacts back into the key and read as permanently
+    stale. Trusting the recorded list adds nothing an attacker did not
+    already have — the manifest carries ``content_hash`` itself.
     """
     cpg_dir = cache_dir / "joern-cpg"
     cpg_path = cpg_dir / "cpg.bin"
@@ -1290,8 +1326,14 @@ def load_cached_cpg(
             )
             return None
 
-    current_hash = current_content_hash or _target_content_hash(
-        target, exclude_dirs=exclude_dirs)
+    if current_content_hash:
+        current_hash = current_content_hash
+    else:
+        effective_exclude = (
+            exclude_dirs or manifest.get("exclude_dirs") or ()
+        )
+        current_hash = _target_content_hash(
+            target, exclude_dirs=effective_exclude)
     if manifest.get("content_hash") != current_hash:
         # Name the cache path: several consumers keep separate CPG
         # caches, and a bare "will rebuild" printed next to another

@@ -2765,6 +2765,7 @@ def run_joern_pre_sweep(
     heap_mb: int | None = None,
     server=None,
     status_out: dict | None = None,
+    exclude_dirs: tuple[str, ...] = (),
 ) -> dict[str, list]:
     """Run standard taint queries before the LLM loop.
 
@@ -2772,6 +2773,9 @@ def run_joern_pre_sweep(
     Returns per-function flows keyed by "file:function".
     When cache_dir is set, reuses a cached CPG if fresh.
     When server is provided, uses the already-running JoernServer.
+    ``exclude_dirs`` are caller-declared exclusion roots (a run's
+    output dir inside the target) forwarded to the CPG build so run
+    artifacts stay out of both the content key and the graph.
 
     Server mode shares the single-threaded REPL with the review loop's
     verification queries: a stuck query ANYWHERE restarts the server,
@@ -2886,9 +2890,13 @@ def run_joern_pre_sweep(
                 flows_by_key.setdefault(key, []).append(flow)
         return flows_by_key
 
-    build_kwargs = {"timeout": stall_timeout, "on_progress": on_progress}
+    build_kwargs: dict[str, Any] = {
+        "timeout": stall_timeout, "on_progress": on_progress,
+    }
     if heap_mb is not None:
         build_kwargs["heap_mb"] = heap_mb
+    if exclude_dirs:
+        build_kwargs["exclude_dirs"] = exclude_dirs
     # Pin the joern-parse frontend to the detected dominant language
     # (curated per-profile joern_parse_language) instead of trusting
     # parse-side guessing on mixed-language repos.

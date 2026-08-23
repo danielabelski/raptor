@@ -130,7 +130,7 @@ def joern_tunables(overrides: dict[str, Any] | None = None):
 
 
 def start_joern_server(target_path, joern_overrides=None, tunables=None,
-                       out_dir=None):
+                       out_dir=None, exclude_dirs: tuple[str, ...] = ()):
     """Start or reuse a persistent Joern server if Joern is available.
 
     Returns the server instance or None.  When reusing a lifecycle-managed
@@ -143,6 +143,15 @@ def start_joern_server(target_path, joern_overrides=None, tunables=None,
     confirmed. ``out_dir`` (a run output dir) pins the store lookup;
     without it the store resolves via the active project. Callers that
     pass their own server through config own its semantics.
+
+    ``exclude_dirs``: caller-declared exclusion roots (the run's output
+    dir when it lives inside the target — see
+    :func:`packages.joern.runner.run_output_exclude_dirs`) forwarded to
+    the CPG build so run artifacts stay out of both the content key and
+    the graph. Kept separate from ``out_dir`` on purpose: ``out_dir``
+    also pins the IRIS store lookup, and the exclusion channel must not
+    change store-resolution semantics for callers that only want the
+    key stabilised.
     """
     if not joern_available(overrides=joern_overrides):
         return None
@@ -172,7 +181,8 @@ def start_joern_server(target_path, joern_overrides=None, tunables=None,
                          exc_info=True)
             return None
 
-    if not _ensure_cpg_loaded(srv, target_path, tunables):
+    if not _ensure_cpg_loaded(srv, target_path, tunables,
+                              exclude_dirs=exclude_dirs):
         logger.warning("Joern CPG failed to load for %s — disabling Joern", target_path)
         try:
             srv.stop()
@@ -225,10 +235,13 @@ def install_flow_semantics(srv, target_path, out_dir=None) -> int:
     return installed
 
 
-def _ensure_cpg_loaded(srv, target_path, tunables=None) -> bool | None:
+def _ensure_cpg_loaded(srv, target_path, tunables=None,
+                       exclude_dirs: tuple[str, ...] = ()) -> bool | None:
     """Build and import the CPG for *target_path* into *srv*.
 
     Returns True if the CPG was loaded (or already was), False on failure.
+    ``exclude_dirs`` joins the CPG build's content key and ``--exclude``
+    set (key/analysis parity).
     """
     if getattr(srv, "_cpg_loaded", False):
         return True
@@ -245,7 +258,9 @@ def _ensure_cpg_loaded(srv, target_path, tunables=None) -> bool | None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        cpg = build_cpg_cached(Path(target_path), cache_dir, timeout=cpg_timeout)
+        cpg = build_cpg_cached(Path(target_path), cache_dir,
+                               timeout=cpg_timeout,
+                               exclude_dirs=exclude_dirs)
         if cpg.exists():
             srv.import_cpg(cpg.path, timeout=import_timeout)
             return True
@@ -461,6 +476,10 @@ def build_joern_evidence(
         heap_mb=tunables.heap_mb,
         server=joern_server,
         status_out=status,
+        # An in-target run output dir must not feed the CPG content
+        # key: its artifacts change every segment, flapping the key
+        # and re-buying a full rebuild per resume.
+        exclude_dirs=run_exclude_dirs(out_dir, target_path),
     )
     if status.get("interrupted"):
         status["flows_recovered"] = sum(
@@ -669,6 +688,15 @@ def resolve_cpg_cache_dir(out_dir) -> Path | None:
     if project_dir and project_dir != Path(out_dir):
         return project_dir
     return None
+
+
+def run_exclude_dirs(out_dir, target_path) -> tuple[str, ...]:
+    """Import-guarded :func:`packages.joern.runner.run_output_exclude_dirs`."""
+    try:
+        from packages.joern.runner import run_output_exclude_dirs
+    except ImportError:
+        return ()
+    return run_output_exclude_dirs(out_dir, target_path)
 
 
 def _current_content_hash(out_dir, target_path) -> str | None:

@@ -145,6 +145,9 @@ from .joern_backend import (
     sibling_run_dirs as _sibling_run_dirs,
 )
 from .joern_backend import (
+    run_exclude_dirs as _run_exclude_dirs,
+)
+from .joern_backend import (
     start_joern_server as _start_joern_server_raw,
 )
 from .joern_backend import (
@@ -1238,6 +1241,12 @@ def run_orchestrator(
         _joern_path = _joern_target(config)
         joern_server = _start_joern_server_raw(
             _joern_path, config.joern_overrides, _jt,
+            # Keep an in-target run output dir out of the CPG content
+            # key and graph — its artifacts change every segment, and
+            # a flapping key re-buys a full CPG rebuild per resume.
+            exclude_dirs=_run_exclude_dirs(
+                config.out_dir, _joern_path,
+            ),
         )
         _joern_lifecycle = (
             joern_server is not None

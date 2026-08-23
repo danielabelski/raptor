@@ -336,3 +336,99 @@ class TestErrorVerdictsStayGapEligible:
         store = CoverageStore(tmp_path / "coverage.json")
         marks = import_journal(store, project_dir, checklist)
         assert marks == 1  # the clean entry only
+
+
+class _FlippableBudgetClient:
+    """Fake client whose exhaustion flips after N is_budget_exhausted
+    consultations-worth of reviews — flipped externally by the test's
+    review_fn once the first batch has been paid for."""
+
+    def __init__(self) -> None:
+        self.exhausted = False
+
+    def is_budget_exhausted(self, estimated_cost: float = 0.1) -> bool:
+        return self.exhausted
+
+
+def _setup_trivial_target(tmp_path: Path, n_files: int, fns_per_file: int):
+    """Target of trivial (batchable) functions spread across files."""
+    target = tmp_path / "target"
+    (target / "src").mkdir(parents=True)
+    files = []
+    names = []
+    for f in range(n_files):
+        items = []
+        src_lines: list[str] = []
+        line = 1
+        for i in range(fns_per_file):
+            name = f"tiny_{f}_{i}"
+            names.append(name)
+            body = f"int {name}(int x) {{\n  return x + {i};\n}}"
+            n = body.count("\n") + 1
+            items.append(
+                {"name": name, "line_start": line, "line_end": line + n - 1},
+            )
+            src_lines.append(body)
+            line += n
+        rel = f"src/f{f}.c"
+        (target / rel).write_text("\n".join(src_lines) + "\n")
+        files.append({"path": rel, "items": items})
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "checklist.json").write_text(json.dumps({"files": files}))
+    return target, out, names
+
+
+class TestBatchedPassBudgetTerminal:
+    """Incident regression: the batched (trivial-function) pass
+    submitted EVERY batch to its thread pool up front and checked the
+    rails only in the result-consumption loop. On exhaustion the loop
+    broke — but queued batches were never cancelled, the pool join
+    executed the entire pre-submitted backlog (observed live: many
+    hours of post-exhaustion reviews), and the outcomes the
+    workers completed after the break were never tallied, freezing
+    result.total_cost_usd and blinding the cost-cap rail itself."""
+
+    def test_queued_batches_not_dispatched_after_exhaustion(
+        self, tmp_path: Path,
+    ):
+        target, out, names = _setup_trivial_target(
+            tmp_path, n_files=6, fns_per_file=4,
+        )
+        client = _FlippableBudgetClient()
+        calls: list[str] = []
+
+        def review_fn(ctx, config):
+            calls.append(ctx["function"])
+            if len(calls) >= 4:
+                # First batch paid for — the cap is now exhausted.
+                client.exhausted = True
+            return ReviewOutcome(
+                file=ctx["file"], function=ctx["function"],
+                status="clean", body="ok", cost_usd=0.5,
+            )
+
+        cfg = _config(
+            target, out,
+            batch_sloc_threshold=15,
+            llm_budget_client=client,
+        )
+        result = run_orchestrator(cfg, review_fn)
+
+        # The first batch (4 functions in one file) was reviewed; the
+        # five queued batches were cancelled or worker-gated — never
+        # dispatched. Pre-fix every one of the 24 functions was
+        # reviewed after exhaustion.
+        assert len(calls) <= 8, (
+            f"{len(calls)} reviews dispatched — queued batches ran "
+            f"after budget exhaustion"
+        )
+        # Every dispatched review's outcome is tallied — pre-fix the
+        # consumption loop broke and completed outcomes vanished from
+        # the result (journal had them; the ledger froze).
+        assert result.reviewed == len(calls)
+        assert result.total_cost_usd == pytest.approx(0.5 * len(calls))
+        assert result.terminated_by == "llm_budget_exceeded"
+        # Journal agrees with the tally.
+        assert len(_journal_functions(out)) == len(calls)

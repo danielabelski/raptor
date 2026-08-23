@@ -6569,6 +6569,14 @@ def _run_audit_body(
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _review_batch(batch):
+            # Pre-execution rail check: every batch is submitted to the
+            # pool up front, so a QUEUED batch must re-check the budget
+            # when a worker picks it up. Pre-fix, nothing gated queued
+            # batches: after the rails tripped, the pool kept executing
+            # the entire pre-submitted backlog (observed live: many
+            # hours of post-exhaustion reviews on one run).
+            if _check_budget(config, start_time, result):
+                return None, batch
             return _review_items(
                 batch,
                 config,
@@ -6582,12 +6590,22 @@ def _run_audit_body(
             ), batch
 
         review_idx = 0
+        batch_stop = False
         with ThreadPoolExecutor(max_workers=resolved_workers) as pool:
             futures = [pool.submit(_review_batch, b) for b in batched]
             for fut in as_completed(futures):
-                if _check_budget(config, start_time, result):
-                    break
+                if fut.cancelled():
+                    continue
                 batch_outcomes, batch = fut.result()
+                if batch_outcomes is None:
+                    # Worker-side rail refusal — nothing was dispatched.
+                    continue
+                # Tally BEFORE the stop decision: these outcomes are
+                # paid work. Pre-fix the consumption loop broke on the
+                # rail check and every outcome the workers completed
+                # after that vanished from the result (journal had
+                # them; result.total_cost_usd froze, blinding the
+                # cost-cap rail itself).
                 for outcome, gap in zip(batch_outcomes, batch):
                     outcome.line = gap.get("line_start", 0)
                     # Phase-book batched reviews like the single-review
@@ -6611,6 +6629,20 @@ def _run_audit_body(
                     if on_progress:
                         on_progress(review_idx, total, outcome)
                     review_idx += 1
+                if not batch_stop and _check_budget(
+                    config, start_time, result,
+                ):
+                    # Cancel every not-yet-started batch; keep
+                    # harvesting in-flight completions in this loop so
+                    # their outcomes are tallied. The context-manager
+                    # join then has nothing unstarted left to block on.
+                    batch_stop = True
+                    pool.shutdown(wait=False, cancel_futures=True)
+        if batch_stop:
+            logger.info(
+                "batched review pass stopped on budget/deadline "
+                "exhaustion — pending batches cancelled",
+            )
 
     # --- Joern tick: drain future between dispatches ---
     joern_state = {"future": joern_future, "submit_time": joern_submit_time}

@@ -1818,6 +1818,16 @@ Examples:
     )
     parser.add_argument("--sequential", action="store_true",
                        help="Sequential analysis in Phase 3 instead of parallel Phase 4 orchestration")
+    parser.add_argument(
+        "--rank", action="store_true",
+        help=(
+            "Reorder findings most-promising-first (listwise LLM "
+            "ranking) before Phase 4 analysis, so --max-findings / "
+            "--max-cost caps cut the least promising tail. Needs an "
+            "external analysis model (--model). Ordering only — no "
+            "finding is dropped."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true",
                        help="Drop console log level from INFO to DEBUG. "
                             "Surfaces per-LLM-call detail (cache hits, retries, "
@@ -3429,6 +3439,12 @@ Examples:
     except ImportError:
         pass
     orchestration_result = None
+    if getattr(args, "rank", False) and args.sequential:
+        print(
+            "⚠️  --rank has no effect with --sequential "
+            "(Phase 4 orchestration is skipped)",
+            file=sys.stderr,
+        )
     if (llm_env.claude_code or llm_env.external_llm) and not args.sequential:
         print("\n" + "=" * 70)
         print("ANALYSING", flush=True)
@@ -3471,6 +3487,7 @@ Examples:
                 deep_validate_budget=getattr(args, "deep_validate_budget", 0.60),
                 allow_unreachable=getattr(args, "allow_unreachable", False),
                 checklist=scan_inventory,
+                rank_findings=getattr(args, "rank", False),
             )
 
             # Journal the orchestrated per-finding analyses. The

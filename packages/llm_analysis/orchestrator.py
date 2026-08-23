@@ -546,6 +546,7 @@ def orchestrate(
     deep_validate_budget: float = 0.60,
     allow_unreachable: bool = False,
     checklist: dict[str, Any] | None = None,
+    rank_findings: bool = False,
 ) -> dict[str, Any] | None:
     """Orchestrate vulnerability analysis via external LLM or Claude Code.
 
@@ -598,6 +599,13 @@ def orchestrate(
         checklist: Optional checklist dict; passed to the source_intel
             and flow-context pre-seed steps for per-finding prompt
             context. None ⇒ pre-seeding runs without checklist context.
+        rank_findings: If True, reorder findings most-promising-first
+            (listwise LLM ranking) before the max_findings cap and the
+            budgeted analysis loop, so caps cut the least promising
+            tail. The stage itself only reorders — but note that when
+            a cap then truncates, ordering decides what the cap cuts,
+            which is why the ranking prompt envelope treats finding
+            text as untrusted (see core/llm/ranking.py).
 
     Returns:
         Orchestrated report dict, or None if orchestration was skipped.
@@ -667,6 +675,19 @@ def orchestrate(
     except Exception as e:  # noqa: BLE001
         logger.debug("flow-context pre-seed failed (%s); continuing", e)
 
+    # Optional rank-then-spend: reorder BEFORE the cap below so a
+    # max_findings / max_cost truncation drops the least promising
+    # tail rather than an arbitrary suffix of scan order.
+    rank_cost = 0.0
+    rank_model = ""
+    if rank_findings:
+        from packages.llm_analysis.rank_stage import (
+            rank_findings_for_analysis,
+        )
+        findings, rank_cost, rank_model = rank_findings_for_analysis(
+            findings, llm_config,
+        )
+
     if max_findings > 0 and len(findings) > max_findings:
         logger.info("Capping at %d findings (of %d)", max_findings, len(findings))
         findings = findings[:max_findings]
@@ -686,6 +707,8 @@ def orchestrate(
     # Cost tracking
     max_cost = getattr(llm_config, 'max_cost_per_scan', 0) if llm_config else 0
     cost_tracker = CostTracker(max_cost=max_cost or 0)
+    if rank_cost:
+        cost_tracker.add_cost(rank_model or "ranking", rank_cost)
 
     # Print dispatch info
     n_consensus = len(role_resolution.get("consensus_models", []))
@@ -767,6 +790,12 @@ def orchestrate(
         # External LLM: dispatch via generate_structured/generate
         from core.llm.client import LLMClient
         client = LLMClient(llm_config)
+        if rank_cost:
+            # Pre-charge the rank spend against this client's budget:
+            # the LLMClient budget gate is instance-local, and without
+            # this the operator's --max-cost would bound the ranking
+            # client and the analysis client independently.
+            client.total_cost += rank_cost
 
         # Multi-model duplicate guard: when a primary model fails and
         # the client silently falls back, the fallback target may

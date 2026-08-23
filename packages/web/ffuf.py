@@ -353,7 +353,16 @@ class FfufRunner:
         """Every keyword needs a substitution point; a dead wordlist is a
         config error, not a silent no-op."""
         keywords = cls._fuzz_keywords(config)
-        haystacks = [url_template, config.data or "", *config.headers, *extra_haystacks]
+        # Cookies count: ffuf folds -b values into the effective Cookie
+        # header before its own keyword check, so session-token fuzzing
+        # via -b 'session=FUZZ' is legitimate.
+        haystacks = [
+            url_template,
+            config.data or "",
+            *config.headers,
+            *config.cookies,
+            *extra_haystacks,
+        ]
         missing = [
             kw for kw in keywords
             if not any(kw in haystack for haystack in haystacks)
@@ -361,14 +370,14 @@ class FfufRunner:
         if len(missing) == len(keywords):
             msg = (
                 "ffuf configuration has no substitution point: put FUZZ in "
-                "the URL template, request body, or a header value"
+                "the URL template, request body, a header, or a cookie value"
             )
             raise ValueError(msg)
         if missing:
             msg = (
                 f"ffuf wordlist keyword(s) never used: {', '.join(missing)}; "
-                "place each keyword in the URL template, request body, or a "
-                "header value"
+                "place each keyword in the URL template, request body, a "
+                "header, or a cookie value"
             )
             raise ValueError(msg)
 
@@ -408,6 +417,19 @@ class FfufRunner:
             msg = (
                 "ffuf vhost mode fuzzes the Host header against a fixed URL "
                 "and cannot be combined with recursion"
+            )
+            raise ValueError(msg)
+        if config.vhost and config.extensions:
+            # -e extends every substituted keyword value; in vhost mode
+            # that appends '.php' to Host values — junk requests.
+            msg = "ffuf extensions cannot be combined with vhost mode"
+            raise ValueError(msg)
+        if config.recursion and config.extra_wordlists:
+            # Upstream documents recursion as FUZZ-only; the multi-keyword
+            # interaction is unsupported territory.
+            msg = (
+                "ffuf recursion supports only the FUZZ keyword and cannot "
+                "be combined with additional wordlists"
             )
             raise ValueError(msg)
         if config.vhost and any(
@@ -536,6 +558,16 @@ class FfufRunner:
         url_template = self.build_url_template(
             path_template, self._fuzz_keywords(config)
         )
+        if config.recursion and not url_template.endswith("FUZZ"):
+            # ffuf constraint (optionsparser HasSuffix check): recursion
+            # re-queues discovered directories by substituting FUZZ at the
+            # very end of the URL — a trailing slash is a hard config
+            # error upstream, so reject it here instead of at runtime.
+            msg = (
+                "ffuf recursion requires the URL template to end with FUZZ "
+                f"(got {self._redact(url_template)})"
+            )
+            raise ValueError(msg)
         vhost_header = self._build_vhost_header(config)
         if config.vhost and any(
             kw in url_template for kw in self._fuzz_keywords(config)
@@ -550,14 +582,6 @@ class FfufRunner:
             url_template,
             extra_haystacks=(vhost_header,) if vhost_header else (),
         )
-        if config.recursion and not url_template.rstrip("/").endswith("FUZZ"):
-            # ffuf constraint: recursion re-queues discovered directories
-            # by substituting the FUZZ keyword at the end of the URL path.
-            msg = (
-                "ffuf recursion requires the URL template to end with FUZZ "
-                f"(got {self._redact(url_template)})"
-            )
-            raise ValueError(msg)
         cmd = [
             config.binary,
             "-u",

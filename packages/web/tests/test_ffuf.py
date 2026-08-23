@@ -95,6 +95,56 @@ def test_build_command_requires_a_fuzz_keyword_somewhere(tmp_path: Path):
     assert header_cmd[header_cmd.index("-H") + 1] == "X-Forwarded-For: FUZZ"
 
 
+def test_build_command_accepts_cookie_only_fuzz_keyword(tmp_path: Path):
+    """ffuf folds -b into the effective Cookie header before its keyword
+    check, so session-token fuzzing via cookies is legitimate."""
+    wordlist = tmp_path / "tokens.txt"
+    wordlist.write_text("aaaa\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    cmd = runner.build_command(
+        FfufConfig(
+            wordlist=wordlist,
+            path_template="account",
+            cookies=("session=FUZZ",),
+        ),
+        tmp_path / "out.json",
+    )
+
+    assert cmd[cmd.index("-b") + 1] == "session=FUZZ"
+
+
+def test_build_command_rejects_recursion_with_extra_wordlists(tmp_path: Path):
+    words = tmp_path / "words.txt"
+    words.write_text("admin\n", encoding="utf-8")
+    params = tmp_path / "params.txt"
+    params.write_text("id\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="recursion supports only the FUZZ keyword"):
+        runner.build_command(
+            FfufConfig(
+                wordlist=words,
+                path_template="FUZZ?W2=1",
+                extra_wordlists=((params, "W2"),),
+                recursion=True,
+            ),
+            tmp_path / "out.json",
+        )
+
+
+def test_build_command_rejects_extensions_in_vhost_mode(tmp_path: Path):
+    wordlist = tmp_path / "subdomains.txt"
+    wordlist.write_text("dev\n", encoding="utf-8")
+    runner = FfufRunner("https://example.test", tmp_path)
+
+    with pytest.raises(ValueError, match="extensions cannot be combined with vhost"):
+        runner.build_command(
+            FfufConfig(wordlist=wordlist, vhost=True, extensions=(".php",)),
+            tmp_path / "out.json",
+        )
+
+
 def test_build_command_emits_method_and_body(tmp_path: Path):
     wordlist = tmp_path / "words.txt"
     wordlist.write_text("admin\n", encoding="utf-8")
@@ -479,15 +529,19 @@ def test_build_command_recursion_requires_fuzz_terminated_template(tmp_path: Pat
     wordlist.write_text("admin\n", encoding="utf-8")
     runner = FfufRunner("https://example.test", tmp_path)
 
-    with pytest.raises(ValueError, match="recursion requires the URL template to end with FUZZ"):
-        runner.build_command(
-            FfufConfig(wordlist=wordlist, path_template="FUZZ.php", recursion=True),
-            tmp_path / "out.json",
-        )
+    # ffuf hard-errors on anything but a FUZZ-terminated URL (strict
+    # HasSuffix upstream) — a trailing slash included.
+    for template in ("FUZZ.php", "api/FUZZ/"):
+        with pytest.raises(
+            ValueError, match="recursion requires the URL template to end with FUZZ"
+        ):
+            runner.build_command(
+                FfufConfig(wordlist=wordlist, path_template=template, recursion=True),
+                tmp_path / "out.json",
+            )
 
-    # A trailing slash after FUZZ is fine.
     cmd = runner.build_command(
-        FfufConfig(wordlist=wordlist, path_template="api/FUZZ/", recursion=True),
+        FfufConfig(wordlist=wordlist, path_template="api/FUZZ", recursion=True),
         tmp_path / "out.json",
     )
     assert "-recursion" in cmd

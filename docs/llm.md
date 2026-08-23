@@ -250,11 +250,53 @@ contradicts the configured region.
   next run; network problems never warn or block.
 - **Streaming:** Mantle streams natively; the runtime surface is
   non-streaming (InvokeModel) — selecting it logs the capability
-  limit at construction time.
+  limit at construction time. `RAPTOR_LLM_STREAM_TRANSPORT=1` carries
+  otherwise-non-streaming calls (plain generation AND instructor
+  structured generation) over SSE — see Long Structured Calls below.
 - **Multi-model panels:** two entries that peel to the same
   underlying model (e.g. a Bedrock id and its direct-API name) log a
   same-weights warning — their agreement is transport consistency,
   not independent consensus.
+
+### Long Structured Calls
+
+SDK structured generation is non-streaming, and upstream providers
+abort non-streaming requests whose generation runs long (Anthropic
+documents roughly a ten-minute ceiling). A structured call that asks a
+thinking model for a large response — study batches are the canonical
+case — can therefore die in transport no matter how generous the local
+timeouts are. Symptoms: `InstructorRetryException: Request timed out
+or interrupted`, paired with dispatcher `ReadError`/`BrokenPipeError`
+noise.
+
+Two fixes, layered:
+
+- **Per-call opt-in:** callers that know their response is long pass
+  `stream=True` to `generate_structured` (or `generate`) — that one
+  call rides `messages.stream` + `get_final_message()`, so the
+  upstream ceiling no longer applies. Study Phase 2 batches and the
+  threat-frame derivation opt in automatically. On SSE-incapable
+  surfaces (Bedrock runtime) the opt-in degrades silently to plain
+  `create` — pipeline callers are blind to the deployment's surface
+  and must not 400 it.
+- **Deployment-wide:** `RAPTOR_LLM_STREAM_TRANSPORT=1` (see the
+  streaming bullet under Operational Guards) carries every
+  otherwise-non-streaming call over SSE, including instructor's
+  structured leg. Deliberately loud on a non-streaming surface — the
+  operator opted in explicitly.
+
+Complementary bounds, useful with or without the streaming transport:
+
+1. **Bound the response.** Callers may pass a per-call `max_tokens` to
+   `generate_structured` (the config ceiling is a default, not a
+   floor). The study pipeline caps its batches via
+   `RAPTOR_STUDY_MAX_OUTPUT_TOKENS` (default 16384).
+2. **Bound the request.** Smaller batches produce smaller responses —
+   the study pipeline's `--batch-target` controls items per LLM call,
+   and oversized single-file groups are split to honour it.
+3. **Switch transport.** The Claude Code provider (`--model
+   claudecode`) streams internally via the CLI, so the non-streaming
+   ceiling does not apply regardless of the env knob.
 
 ### Standalone CLIs
 

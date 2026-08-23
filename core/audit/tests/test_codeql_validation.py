@@ -598,3 +598,44 @@ class TestSarifBudget:
         result = validate_dataflow_claim(_claim(), db_path=db)
         assert result.confirmed is None
         assert "size cap" in result.error
+
+
+class TestSourceLineLoadBound:
+    """_load_source_lines reads files from the scanned tree at
+    SARIF-influenced paths — an oversize (planted) file must be
+    refused by the size gate, never buffered."""
+
+    def test_oversize_source_file_refused(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+        import os
+
+        from core.audit.codeql_validation import (
+            _MAX_SOURCE_FILE_BYTES,
+            _load_source_lines,
+        )
+
+        blob = tmp_path / "planted.c"
+        with blob.open("wb") as fh:
+            os.truncate(fh.fileno(), _MAX_SOURCE_FILE_BYTES + 1)
+
+        cache: dict = {}
+        with caplog.at_level(
+            logging.WARNING, logger="core.audit.codeql_validation",
+        ):
+            lines = _load_source_lines("planted.c", tmp_path, cache)
+        assert lines is None
+        assert cache["planted.c"] is None
+        # The gate's refusal, not a post-read failure, must produce
+        # the None — red before the bound existed.
+        assert "refusing oversize source file" in caplog.text
+
+    def test_small_source_file_still_loads(self, tmp_path: Path) -> None:
+        from core.audit.codeql_validation import _load_source_lines
+
+        src = tmp_path / "ok.c"
+        src.write_text("int main(void) {\n  return 0;\n}\n")
+        lines = _load_source_lines("ok.c", tmp_path, {})
+        assert lines is not None
+        assert lines[1] == "  return 0;"

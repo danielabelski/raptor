@@ -291,6 +291,12 @@ def _count_sarif_results(sarif: dict[str, Any]) -> int:
 _MAX_SMT_PATHS_PER_RESULT = 3
 _MAX_SMT_PATH_STEPS = 20
 _MAX_SMT_CONDITIONS = 16
+
+# Hard cap on a single target-source read in the guard-condition
+# harvester. Matches core/audit/context._MAX_SOURCE_FILE_BYTES: real
+# source files sit far below this; anything past it is a planted
+# blob whose only effect is memory exhaustion.
+_MAX_SOURCE_FILE_BYTES = 64 * 1024 * 1024
 _SMT_PRUNE_TIMEOUT_MS = 2000
 _GUARD_LOOKBACK_LINES = 3
 
@@ -375,7 +381,28 @@ def _load_source_lines(
         # ``/repo-evil`` for target ``/repo``.
         candidate = confine(target_path, uri.lstrip("/"))
         if candidate is not None and candidate.is_file():
-            lines = candidate.read_text(errors="replace").splitlines()
+            # Size-gate BEFORE the read: the file lives in the
+            # scanned — attacker-controlled — tree, and this loop
+            # runs per SARIF path step. A planted blob must be
+            # refused, not buffered. Capped read + re-check closes
+            # the stat/read growth race (house pattern, see
+            # core/audit/context._read_source_span).
+            if candidate.stat().st_size > _MAX_SOURCE_FILE_BYTES:
+                logger.warning(
+                    "codeql_validation: refusing oversize source file "
+                    "%s (> %d bytes)", candidate, _MAX_SOURCE_FILE_BYTES,
+                )
+            else:
+                with candidate.open("rb") as fh:
+                    raw = fh.read(_MAX_SOURCE_FILE_BYTES + 1)
+                if len(raw) > _MAX_SOURCE_FILE_BYTES:
+                    logger.warning(
+                        "codeql_validation: source file %s grew past "
+                        "%d bytes during read; refusing",
+                        candidate, _MAX_SOURCE_FILE_BYTES,
+                    )
+                else:
+                    lines = raw.decode(errors="replace").splitlines()
     except (OSError, ValueError):
         lines = None
     cache[uri] = lines

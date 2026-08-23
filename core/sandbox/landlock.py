@@ -26,6 +26,7 @@ import errno
 import logging
 import os
 import platform
+import stat
 
 from . import state
 from .exit_codes import SANDBOX_EXIT_LANDLOCK_DOWNGRADE
@@ -542,9 +543,32 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
     _os_open = os.open
     _os_close = os.close
     _os_write = os.write
+    _os_fstat = os.fstat
     _O_PATH = os.O_PATH
     _O_DIRECTORY = os.O_DIRECTORY
     _ENOTDIR = errno.ENOTDIR
+    # Grant-open pinning: writable/readable rule paths are the same
+    # attacker-adjacent names as the mount-ns bind sources (a shared
+    # output tree, readable paths inside the scanned repo). A pathname
+    # open here could be symlink-swapped by a concurrent sibling
+    # between the caller's validation and the add_rule — granting
+    # WRITE beneath an arbitrary host directory. realpath-then-pinned-
+    # walk (core/sandbox/_pathpin.open_pinned) refuses mid-walk
+    # symlinks; the fd names exactly the walked inode. References
+    # captured in the parent for fork-safety.
+    from ._pathpin import open_pinned as _open_pinned
+    _realpath = os.path.realpath
+    _s_isdir = stat.S_ISDIR
+
+    def _open_grant(path: str) -> tuple:
+        """(fd, is_dir) for a rule path, symlink-swap refusing."""
+        fd = _open_pinned(_realpath(path))
+        try:
+            is_dir = _s_isdir(_os_fstat(fd).st_mode)
+        except OSError:
+            _os_close(fd)
+            raise
+        return fd, is_dir
 
     # Same rationale for libc: `ctypes.util.find_library("c")` on Linux
     # can shell out to `/sbin/ldconfig`, spawning a subprocess from the
@@ -586,8 +610,14 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                 writable_access = _write_access | _read_access
                 for path in paths:
                     try:
-                        dir_fd = _os_open(path, _O_PATH | _O_DIRECTORY)
+                        # Pinned open (symlink-swap refusing) — see
+                        # _open_grant above. Non-directories keep the
+                        # historical ENOTDIR refusal: a writable rule
+                        # is a subtree grant.
+                        dir_fd, _is_dir = _open_grant(path)
                         try:
+                            if not _is_dir:
+                                raise OSError(_ENOTDIR, path)
                             rule = PathBeneathAttr(allowed_access=writable_access,
                                                    parent_fd=dir_fd)
                             ret = libc.syscall(SYS_add_rule, fd, RULE_PATH_BENEATH,
@@ -596,7 +626,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                                 _os_write(2, b"RAPTOR: Landlock add_rule failed for a writable path\n")
                         finally:
                             _os_close(dir_fd)
-                    except OSError:
+                    except (OSError, ValueError):
                         _os_write(2, b"RAPTOR: Landlock writable path could not be opened\n")
 
                 # Writable device files — /dev/null is the bit-bucket that
@@ -704,16 +734,14 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                     _read_file_access = _read_access & READ_FILE
                     for path in read_paths:
                         try:
-                            try:
-                                path_fd = _os_open(path, _O_PATH | _O_DIRECTORY)
-                                access = _read_access
-                            except OSError as e:
-                                if e.errno != _ENOTDIR:
-                                    raise
-                                # Not a directory — retry as a file. File-only
-                                # access mask (READ_FILE), no READ_DIR.
-                                path_fd = _os_open(path, _O_PATH)
-                                access = _read_file_access
+                            # Pinned open (symlink-swap refusing) — see
+                            # _open_grant above. Directory rules keep
+                            # the full read mask; files get the
+                            # file-only mask (READ_FILE, no READ_DIR),
+                            # matching the historical two-step open.
+                            path_fd, _is_dir = _open_grant(path)
+                            access = _read_access if _is_dir \
+                                else _read_file_access
                             try:
                                 rule = PathBeneathAttr(allowed_access=access,
                                                        parent_fd=path_fd)
@@ -723,7 +751,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                                     _os_write(2, b"RAPTOR: Landlock add_rule failed for a readable path\n")
                             finally:
                                 _os_close(path_fd)
-                        except OSError:
+                        except (OSError, ValueError):
                             # Read path may not exist on all hosts (e.g.
                             # /sbin on usrmerge systems) — non-fatal.
                             _os_write(2, b"RAPTOR: Landlock readable path could not be opened (skipped)\n")

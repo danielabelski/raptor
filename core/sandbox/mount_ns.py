@@ -165,6 +165,42 @@ def _mount(source: str | None, target: str,
         )
 
 
+def _bind_pinned_source(source: str, inside: str, flags: int) -> None:
+    """Bind-mount *source* onto *inside* with the SOURCE inode pinned.
+
+    Generalises the ``.audit`` dirfd pin to the bind
+    sources themselves: ``target=`` / ``output=`` / readable-path bind
+    sources were pathname-resolved at mount(2), so a concurrent
+    sibling sandbox sharing a writable tree could rmdir+symlink-swap a
+    component between the parent's validation and the mount — steering
+    a bind (the OUTPUT one writable) onto an arbitrary host directory.
+
+    ``os.path.realpath`` runs immediately before the pinned walk so
+    benign pre-existing symlinks in operator paths still resolve; a
+    symlink encountered DURING the walk appeared after
+    canonicalisation — the swap — and fails the setup loudly (OSError
+    ELOOP out of ``open_pinned``). The mount source is
+    ``/proc/self/fd/<fd>``: the magic-link resolves to exactly the
+    pinned inode with no re-resolution window. The bind lands at the
+    caller's original ``inside`` path, so the child-visible layout is
+    unchanged.
+
+    Scope: window-narrowing only — a symlink PRE-PLANTED before this
+    function's realpath resolves like any operator symlink and still
+    steers the bind (unchanged from the pathname-mount behaviour this
+    replaces). See core/sandbox/_pathpin.py for the full scope
+    statement and the validation-time inode-pinning follow-up that
+    would close the pre-planted class.
+    """
+    from ._pathpin import open_pinned
+
+    src_fd = open_pinned(os.path.realpath(source))
+    try:
+        _mount(f"/proc/self/fd/{src_fd}", inside, None, flags)
+    finally:
+        os.close(src_fd)
+
+
 def _pivot_root(new_root: str, put_old: str) -> None:
     """pivot_root(2) wrapper. Raises OSError on failure,
     NotImplementedError on unknown arch."""
@@ -606,7 +642,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         if rootfs:
             _refuse_image_symlink_components(root, target)
         os.makedirs(inside, exist_ok=True)
-        _mount(target, inside, None, MS_BIND)
+        _bind_pinned_source(target, inside, MS_BIND)
         _step8_bound_dirs.add(target)
         # Remount-bind-ro is best-effort. Skip when output == target
         # since output must remain writable. Landlock enforces
@@ -636,7 +672,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         if rootfs:
             _refuse_image_symlink_components(root, output)
         os.makedirs(inside, exist_ok=True)
-        _mount(output, inside, None, MS_BIND)
+        _bind_pinned_source(output, inside, MS_BIND)
         _step8_bound_dirs.add(output)
 
     # 8a. Shadow the evidence directory (<dir>/.audit — see
@@ -817,7 +853,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                     os.close(fd)
                 _step = b"bind"
                 try:
-                    _mount(path, inside, None, MS_BIND)
+                    _bind_pinned_source(path, inside, MS_BIND)
                 except OSError as bind_exc:
                     # EINVAL: a NON-recursive bind of a tree containing
                     # locked submounts (mounts created by a more-
@@ -838,7 +874,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                     # worse than a loud setup failure.
                     if bind_exc.errno != _EINVAL or not rw_submounts_ok:
                         raise
-                    _mount(path, inside, None, MS_BIND | MS_REC)
+                    _bind_pinned_source(path, inside, MS_BIND | MS_REC)
                     try:
                         _path_b = path.encode("utf-8", errors="replace")
                     except Exception:  # noqa: BLE001
@@ -976,7 +1012,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                     )
                     continue
             try:
-                _mount(host_source, inside, None, MS_BIND)
+                _bind_pinned_source(host_source, inside, MS_BIND)
             except OSError:
                 # Accurate in BOTH /etc branches: on the plain-bind
                 # path the target sees the host file at this path; on

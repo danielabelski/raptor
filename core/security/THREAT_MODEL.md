@@ -87,6 +87,21 @@ unavailable, and is bounded by the host firewall. Landlock ≤ ABI 8
 offers no inbound/accept right that could close it without
 restricting bind.
 
+**Accepted residual — pre-planted symlink bind steering.** Bind-mount
+sources and Landlock grant paths are pinned against
+post-canonicalisation symlink swaps (realpath, then a
+symlink-refusing component walk, then a `/proc/self/fd` mount — see
+`core/sandbox/_pathpin.py`). This narrows the classic
+validate-then-mount race window; it does NOT close the pre-planted
+class: a symlink already in place before canonicalisation resolves
+like a benign operator symlink and steers the bind exactly as the
+pathname mounts it replaced did. Operators sharing a writable
+output ancestor with concurrently-running hostile code should treat
+that sharing itself as the boundary violation; full closure needs
+validation-time inode pinning (carrying the O_PATH fd from the
+caller's original validation through to the mount), tracked as
+follow-up work.
+
 #### I2-(b). Downstream consumers treat LLM-derived artefacts as adversarial.
 
 A prompt-injected LLM can produce a structurally-valid JSON output that

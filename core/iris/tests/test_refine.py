@@ -1,6 +1,8 @@
 """Tests for core.iris.refine — iterative spec refinement loop."""
 
 import json
+import logging
+from dataclasses import asdict
 
 from core.evidence import EvidenceTier
 from core.iris.assumptions import (
@@ -332,6 +334,197 @@ class TestToolCrashDoesNotConverge:
             max_rounds=2, convergence_threshold=0.5,
         )
         assert len(round_count) == 2
+
+
+class TestZeroSignalProperty:
+    """RefinementFeedback.zero_signal — 'evaluated and found nothing'
+    must stay distinguishable from 'could not evaluate anything'."""
+
+    def test_bare_feedback_is_not_zero_signal(self):
+        # No attempts, no errors: nothing to evaluate — legitimate.
+        assert RefinementFeedback().zero_signal is False
+
+    def test_errors_without_verdicts_is_zero_signal(self):
+        fb = RefinementFeedback(tool_errors=["tool_runner_crashed"])
+        assert fb.zero_signal is True
+
+    def test_all_attempts_failed_is_zero_signal(self):
+        fb = RefinementFeedback(
+            tool_errors=["401", "401"], n_attempts=2, n_successes=0,
+        )
+        assert fb.zero_signal is True
+
+    def test_some_successes_zero_confirmations_is_not_zero_signal(self):
+        # Evaluated fine, found 0 true positives — a real verdict.
+        fb = RefinementFeedback(
+            tool_errors=["timeout"], n_attempts=3, n_successes=2,
+        )
+        assert fb.zero_signal is False
+
+    def test_verdicts_always_count_as_signal(self):
+        fb = RefinementFeedback(confirmed_keys=["k"])
+        assert fb.zero_signal is False
+        fb = RefinementFeedback(refuted_keys=["k"])
+        assert fb.zero_signal is False
+
+
+class TestZeroSignalRound:
+    """A round in which zero evaluation calls succeeded (dead LLM
+    transport, dead tool server) must not read as a converged fixpoint
+    and must not overwrite the shared spec store."""
+
+    @staticmethod
+    def _dead_transport_runner(round_count):
+        def runner(specs):
+            round_count.append(1)
+            return RefinementFeedback(
+                tool_errors=["HTTP 401 unauthorized"] * 3,
+                n_attempts=3,
+                n_successes=0,
+            )
+        return runner
+
+    def test_all_calls_failed_aborts_loudly(self, caplog):
+        round_count: list = []
+        cands = [_cand(fn="sanitize_html"), _cand(fn="exec_cmd")]
+
+        with caplog.at_level(logging.INFO, logger="core.iris.refine"):
+            specs, history, *_ = refine_loop(
+                cands, None, self._dead_transport_runner(round_count),
+                max_rounds=5, convergence_threshold=0.99,
+            )
+
+        # Aborted after the first zero-signal round — no retry against
+        # a dead transport, and no fixpoint claim.
+        assert len(round_count) == 1
+        assert len(history) == 1
+        assert history[0].aborted is True
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "refinement aborted, store unchanged" in m for m in messages
+        )
+        warning = next(
+            r for r in caplog.records
+            if "refinement aborted" in r.message
+        )
+        assert warning.levelno == logging.WARNING
+        assert "all 3 evaluation call(s) failed" in warning.message
+        assert not any("fixpoint" in m for m in messages)
+
+    def test_all_calls_failed_store_untouched(self, tmp_path):
+        from core.iris.store import persist_refined_specs, save_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        prior = _spec(fn="known_sink", role="sink",
+                      evidence_tier=EvidenceTier.XREF_BACKED)
+        store_path = save_specs(run_dir, [prior], cl_sha="seed")
+        before = store_path.read_text(encoding="utf-8")
+
+        refined, history, assumptions, _bp = refine_loop(
+            [_cand(fn="sanitize_html")], None,
+            self._dead_transport_runner([]),
+            prior_specs=[prior], max_rounds=2,
+        )
+
+        dest = persist_refined_specs(
+            run_dir, refined,
+            history=[asdict(r) for r in history],
+            assumptions=assumptions or None,
+        )
+        assert dest is None
+        assert store_path.read_text(encoding="utf-8") == before
+
+    def test_some_successes_zero_confirmations_still_legitimate(self):
+        """Evaluated calls that confirm nothing keep the current
+        semantics: no abort, fixpoint detection stops the loop."""
+        round_count: list = []
+
+        def runner(specs):
+            round_count.append(1)
+            return RefinementFeedback(n_attempts=4, n_successes=4)
+
+        cands = [_cand(fn="sanitize_html")]
+        specs, history, *_ = refine_loop(
+            cands, None, runner,
+            max_rounds=5, convergence_threshold=0.99,
+        )
+        # Same shape as TestRefineLoop.test_fixpoint_stops: round 1
+        # sees unchanged specs and stops at the fixpoint.
+        assert len(round_count) == 2
+        assert all(r.aborted is False for r in history)
+
+    def test_zero_confirmation_history_persists(self, tmp_path):
+        """A zero-TP but successfully-evaluated run still reaches the
+        store (current behavior preserved)."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+
+        def runner(specs):
+            return RefinementFeedback(n_attempts=2, n_successes=2)
+
+        refined, history, *_ = refine_loop(
+            [_cand(fn="sanitize_html")], None, runner, max_rounds=2,
+        )
+        dest = persist_refined_specs(
+            run_dir, refined, history=[asdict(r) for r in history],
+        )
+        assert dest is not None
+        assert dest.is_file()
+
+    def test_healthy_round_persists_as_before(self, tmp_path):
+        from core.iris.store import load_specs, persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+
+        def runner(specs):
+            return RefinementFeedback(
+                confirmed_keys=[_spec_key(s) for s in specs],
+                n_attempts=len(specs),
+                n_successes=len(specs),
+            )
+
+        refined, history, *_ = refine_loop(
+            [_cand(fn="sanitize_html")], None, runner, max_rounds=1,
+        )
+        assert history[0].aborted is False
+
+        dest = persist_refined_specs(
+            run_dir, refined, history=[asdict(r) for r in history],
+        )
+        assert dest is not None
+        stored = load_specs(run_dir)
+        assert stored
+        assert all(
+            s.evidence_tier == EvidenceTier.XREF_BACKED for s in stored
+        )
+
+    def test_crash_round_marked_aborted_but_retries(self):
+        """An uncounted tool crash keeps its H1 retry-next-round
+        semantics, but the crashed round is recorded as zero-signal."""
+        round_count: list = []
+
+        def crashing_then_ok(specs):
+            round_count.append(1)
+            if len(round_count) == 1:
+                raise RuntimeError("first round crash")
+            return RefinementFeedback(
+                confirmed_keys=[_spec_key(s) for s in specs],
+                n_attempts=len(specs),
+                n_successes=len(specs),
+            )
+
+        cands = [_cand(fn="exec_cmd")]
+        specs, history, *_ = refine_loop(
+            cands, None, crashing_then_ok,
+            max_rounds=2, convergence_threshold=0.5,
+        )
+        assert len(round_count) == 2
+        assert history[0].aborted is True
+        assert history[1].aborted is False
 
 
 class TestFixpointDetection:

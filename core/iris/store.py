@@ -48,6 +48,12 @@ class RoundRecord:
     keys (``_spec_key`` format) so the store's merge step can drop
     refuted specs instead of resurrecting them from the add/upgrade-
     only merge on the next run.
+
+    ``aborted`` marks a zero-signal round — evaluation was attempted
+    but nothing succeeded (dead transport, tool crash).  The persist
+    gate refuses to touch the shared store when every round of a run
+    is aborted: "could not evaluate anything" must never overwrite
+    real signal.
     """
 
     round: int
@@ -58,6 +64,7 @@ class RoundRecord:
     n_bypass: int = 0
     confirmed_keys: list[str] = field(default_factory=list)
     refuted_keys: list[str] = field(default_factory=list)
+    aborted: bool = False
 
 
 def _spec_key(spec: TaintSpec) -> str:
@@ -330,6 +337,23 @@ def persist_refined_specs(
     context only and cannot flow into suppression.
     """
     if not refined:
+        return None
+    # Zero-signal gate: when every refinement round of this run was
+    # aborted (evaluation attempted, nothing succeeded — dead LLM
+    # transport, dead tool), the run produced no evidence.  Merging it
+    # would overwrite the shared store's envelope (history, round
+    # counter, staleness eviction) with zero-signal output.  A run
+    # whose rounds evaluated successfully but confirmed nothing is NOT
+    # gated — "0 true positives" is a legitimate result; synthesis-only
+    # runs (empty history) persist as before.
+    round_dicts = [h for h in (history or []) if isinstance(h, dict)]
+    if round_dicts and all(h.get("aborted") for h in round_dicts):
+        logger.warning(
+            "iris.store: refusing to persist — all %d refinement "
+            "round(s) were zero-signal (no evaluation call succeeded); "
+            "store unchanged",
+            len(round_dicts),
+        )
         return None
     meta = load_store_metadata(out_dir)
     stored_target = meta.get("target_path", "")

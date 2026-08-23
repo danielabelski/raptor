@@ -33,11 +33,21 @@ class RefinementFeedback:
     and refuted specs, plus tool errors.  Bypass findings are tracked
     separately in the refinement loop (they come from the bypass runner,
     not the tool runner).
+
+    ``n_attempts`` / ``n_successes`` count the individual evaluation
+    calls the runner made (Joern pair queries, CodeQL query runs, …).
+    They exist so "evaluated everything and confirmed nothing" stays
+    distinguishable from "could not evaluate anything" — a dead
+    transport turns every call into an error and must not read as a
+    legitimately empty round.  Runners that don't count calls leave
+    both at 0; ``zero_signal`` then falls back to the error surface.
     """
 
     confirmed_keys: list[str] = field(default_factory=list)
     refuted_keys: list[str] = field(default_factory=list)
     tool_errors: list[str] = field(default_factory=list)
+    n_attempts: int = 0
+    n_successes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +70,22 @@ class RefinementFeedback:
         if total == 0:
             return 0.0
         return self.n_confirmed / total
+
+    @property
+    def zero_signal(self) -> bool:
+        """True when the round's evaluation produced no signal at all.
+
+        A round carries signal when it confirmed or refuted anything,
+        or when at least one evaluation call succeeded (a successful
+        call that found no flow is a real "no true positive" verdict).
+        Without explicit call counts, errors with zero verdicts mean
+        nothing was evaluated.
+        """
+        if self.confirmed_keys or self.refuted_keys:
+            return False
+        if self.n_attempts > 0:
+            return self.n_successes == 0
+        return bool(self.tool_errors)
 
 
 ToolRunner = Callable[[list[TaintSpec]], RefinementFeedback]
@@ -193,6 +219,10 @@ def refine_loop(
             # them from the add/upgrade-only merge next run.
             confirmed_keys=list(feedback.confirmed_keys),
             refuted_keys=list(feedback.refuted_keys),
+            # A zero-signal round (nothing evaluated) is recorded as
+            # aborted so the store's persist gate can refuse to
+            # overwrite the shared spec store with a no-evidence run.
+            aborted=feedback.zero_signal,
         )
         history.append(record)
 
@@ -221,19 +251,42 @@ def refine_loop(
             feedback.n_refuted, feedback.tp_rate * 100,
         )
 
-        if feedback.tp_rate >= convergence_threshold and not feedback.tool_errors:
-            logger.info(
-                "iris.refine: converged at round %d (TP rate %.1f%% >= %.1f%%)",
-                round_num, feedback.tp_rate * 100,
-                convergence_threshold * 100,
+        if feedback.zero_signal:
+            # Nothing was evaluated this round — there is no signal to
+            # converge on, so the round earns neither convergence nor
+            # fixpoint credit.  When the runner counted its calls and
+            # ALL of them failed the transport is dead: continuing
+            # would only re-synthesise against the same dead transport,
+            # so abort the loop loudly.  An uncounted single crash
+            # (``tool_runner_crashed``) keeps its retry-next-round
+            # semantics — a transient tool crash may recover.
+            cause = "; ".join(feedback.tool_errors[:3]) or "no error detail"
+            if feedback.n_attempts > 0:
+                logger.warning(
+                    "iris.refine: round %d — all %d evaluation call(s) "
+                    "failed (%s) — refinement aborted, store unchanged",
+                    round_num, feedback.n_attempts, cause,
+                )
+                break
+            logger.warning(
+                "iris.refine: round %d evaluated nothing (%s) — "
+                "no fixpoint credit for this round",
+                round_num, cause,
             )
-            break
+        else:
+            if feedback.tp_rate >= convergence_threshold and not feedback.tool_errors:
+                logger.info(
+                    "iris.refine: converged at round %d (TP rate %.1f%% >= %.1f%%)",
+                    round_num, feedback.tp_rate * 100,
+                    convergence_threshold * 100,
+                )
+                break
 
-        current_keys = frozenset(_spec_key(s) for s in specs)
-        if prev_keys is not None and current_keys == prev_keys:
-            logger.info("iris.refine: fixpoint at round %d", round_num)
-            break
-        prev_keys = current_keys
+            current_keys = frozenset(_spec_key(s) for s in specs)
+            if prev_keys is not None and current_keys == prev_keys:
+                logger.info("iris.refine: fixpoint at round %d", round_num)
+                break
+            prev_keys = current_keys
 
         if round_num < max_rounds - 1 and llm_client is not None:
             fb_dict = feedback.to_dict()

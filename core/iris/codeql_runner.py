@@ -134,6 +134,7 @@ def make_codeql_tool_runner(
                 if not result.success or not result.sarif_path:
                     return RefinementFeedback(
                         tool_errors=result.errors or ["codeql_analysis_failed"],
+                        n_attempts=1,
                     )
 
                 matches = _parse_sarif_matches(result.sarif_path)
@@ -147,9 +148,13 @@ def make_codeql_tool_runner(
 
                 return RefinementFeedback(
                     confirmed_keys=confirmed_keys,
+                    n_attempts=1,
+                    n_successes=1,
                 )
             except Exception as exc:
                 logger.debug("IRIS CodeQL runner failed: %s", exc, exc_info=True)
-                return RefinementFeedback(tool_errors=[str(exc)])
+                return RefinementFeedback(
+                    tool_errors=[str(exc)], n_attempts=1,
+                )
 
     return _run

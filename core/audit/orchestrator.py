@@ -4899,8 +4899,11 @@ def _make_iris_joern_tool_runner(joern_server) -> Callable:
         if not sources or not sinks:
             return RefinementFeedback()
         confirmed: list[str] = []
+        errors: list[str] = []
         seen: set[str] = set()
         budget = _IRIS_JOERN_PAIR_BUDGET
+        attempts = 0
+        successes = 0
         for src in sources:
             if budget <= 0:
                 break
@@ -4908,12 +4911,25 @@ def _make_iris_joern_tool_runner(joern_server) -> Callable:
                 if budget <= 0:
                     break
                 budget -= 1
+                attempts += 1
+                # Per-pair error accounting: an empty flow list with a
+                # populated errors_out is "unanswered", not "no flow".
+                # The refine loop needs the distinction — a round in
+                # which every query degraded carries zero signal and
+                # must not converge or persist (RefinementFeedback.
+                # zero_signal).
+                pair_errors: list = []
                 flows = _joern_live_query(
                     joern_server,
                     src.function,
                     [snk.function],
                     label="iris-refine",
+                    errors_out=pair_errors,
                 )
+                if flows or not pair_errors:
+                    successes += 1
+                if pair_errors:
+                    errors.extend(str(e) for e in pair_errors)
                 if not flows:
                     continue
                 for spec in (src, snk):
@@ -4921,7 +4937,12 @@ def _make_iris_joern_tool_runner(joern_server) -> Callable:
                     if key not in seen:
                         seen.add(key)
                         confirmed.append(key)
-        return RefinementFeedback(confirmed_keys=confirmed)
+        return RefinementFeedback(
+            confirmed_keys=confirmed,
+            tool_errors=errors,
+            n_attempts=attempts,
+            n_successes=successes,
+        )
 
     return joern_tool_runner
 
@@ -8205,6 +8226,8 @@ def _composite_tool_runner(joern_runner, codeql_runner):
             confirmed_keys=confirmed,
             refuted_keys=j_fb.refuted_keys + c_fb.refuted_keys,
             tool_errors=j_fb.tool_errors + c_fb.tool_errors,
+            n_attempts=j_fb.n_attempts + c_fb.n_attempts,
+            n_successes=j_fb.n_successes + c_fb.n_successes,
         )
 
     return _composite

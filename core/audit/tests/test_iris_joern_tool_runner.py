@@ -91,6 +91,72 @@ class TestIrisJoernToolRunner:
 
         assert len(server.calls) == _IRIS_JOERN_PAIR_BUDGET
 
+    def test_successful_queries_counted(self):
+        """Clean pair queries count as successful evaluations even
+        when no flow is found — 'no flow' is a real verdict."""
+        server = _FakeServer()
+        runner = _make_iris_joern_tool_runner(server)
+
+        feedback = runner([
+            _spec("read_input", "source"),
+            _spec("run_query", "sink"),
+            _spec("exec_cmd", "sink"),
+        ])
+
+        assert feedback.n_attempts == 2
+        assert feedback.n_successes == 2
+        assert feedback.zero_signal is False
+
+    def test_all_queries_degraded_is_zero_signal(self):
+        """A dead server turns every pair query into an error: the
+        feedback must read as zero-signal, not as an empty round."""
+
+        class _DeadServer:
+            def run_taint_query(self, source_method, sink_call, **kwargs):
+                raise RuntimeError("connection refused")
+
+        runner = _make_iris_joern_tool_runner(_DeadServer())
+
+        feedback = runner([
+            _spec("read_input", "source"),
+            _spec("run_query", "sink"),
+        ])
+
+        assert feedback.confirmed_keys == []
+        assert feedback.n_attempts == 1
+        assert feedback.n_successes == 0
+        assert feedback.tool_errors
+        assert feedback.zero_signal is True
+
+    def test_degraded_query_reported_not_success(self):
+        """errors_out entries surface in tool_errors; a degraded query
+        with no flow is not counted as a success."""
+
+        class _FlakyServer(_FakeServer):
+            def run_taint_query(self, source_method, sink_call, **kwargs):
+                if sink_call == "exec_cmd":
+                    errors = kwargs.get("errors_out")
+                    if errors is not None:
+                        errors.append("server restarting")
+                    return []
+                return super().run_taint_query(
+                    source_method, sink_call, **kwargs,
+                )
+
+        server = _FlakyServer(flows_for={("read_input", "run_query")})
+        runner = _make_iris_joern_tool_runner(server)
+
+        feedback = runner([
+            _spec("read_input", "source"),
+            _spec("run_query", "sink"),
+            _spec("exec_cmd", "sink"),
+        ])
+
+        assert feedback.n_attempts == 2
+        assert feedback.n_successes == 1
+        assert any("server restarting" in e for e in feedback.tool_errors)
+        assert feedback.zero_signal is False
+
     def test_confirmed_keys_deduplicated(self):
         """A source flowing into two sinks is confirmed once."""
         source = _spec("read_input", "source")

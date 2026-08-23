@@ -465,6 +465,96 @@ class TestPersistRefinedSpecs:
         assert load_specs(run_dir) == []
 
 
+class TestPersistZeroSignalGate:
+    """A run whose every refinement round was zero-signal (aborted:
+    evaluation attempted, nothing succeeded) must leave the shared
+    store exactly as it was."""
+
+    @staticmethod
+    def _aborted_round(n=0):
+        return {
+            "round": n, "n_specs": 3, "n_confirmed": 0, "n_refuted": 0,
+            "n_errors": 3, "aborted": True,
+        }
+
+    def test_all_aborted_rounds_refuse_persist(self, tmp_path, caplog):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        store_path = save_specs(
+            run_dir, [_make_spec(fn="prior", role="sink")], cl_sha="seed",
+        )
+        before = store_path.read_text(encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="core.iris.store"):
+            dest = persist_refined_specs(
+                run_dir,
+                [_make_spec(fn="zero_signal_junk", role="sink")],
+                history=[self._aborted_round(0), self._aborted_round(1)],
+            )
+
+        assert dest is None
+        assert store_path.read_text(encoding="utf-8") == before
+        assert any(
+            "zero-signal" in r.message and "store" in r.message
+            for r in caplog.records
+        )
+
+    def test_one_healthy_round_persists(self, tmp_path):
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        dest = persist_refined_specs(
+            run_dir, [_make_spec(fn="real", role="sink")],
+            history=[
+                {"round": 0, "n_specs": 1, "n_confirmed": 1,
+                 "aborted": False},
+                self._aborted_round(1),
+            ],
+        )
+        assert dest is not None
+        assert {s.function for s in load_specs(run_dir)} == {"real"}
+
+    def test_empty_history_persists(self, tmp_path):
+        """Synthesis-only runs (no refinement rounds) keep persisting."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        dest = persist_refined_specs(
+            run_dir, [_make_spec(fn="synth_only")], history=[],
+        )
+        assert dest is not None
+
+    def test_legacy_history_without_aborted_key_persists(self, tmp_path):
+        """Round dicts from before the flag existed persist as before."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        dest = persist_refined_specs(
+            run_dir, [_make_spec(fn="legacy")],
+            history=[{"round": 0, "n_specs": 1, "n_confirmed": 0}],
+        )
+        assert dest is not None
+
+    def test_zero_confirmations_evaluated_round_persists(self, tmp_path):
+        """'Evaluated and found 0 true positives' is a legitimate
+        result — only 'could not evaluate anything' is gated."""
+        from core.iris.store import persist_refined_specs
+
+        run_dir = tmp_path / "project" / "run_001"
+        run_dir.mkdir(parents=True)
+        dest = persist_refined_specs(
+            run_dir, [_make_spec(fn="no_tp")],
+            history=[{"round": 0, "n_specs": 1, "n_confirmed": 0,
+                      "n_refuted": 0, "aborted": False}],
+        )
+        assert dest is not None
+
+
 class TestRefutedDropAtMerge:
     """Refuted specs must not resurrect from the add/upgrade-only
     store merge on the next run."""

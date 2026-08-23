@@ -290,7 +290,7 @@ def test_owned_workdir_keepalive_live_then_released_on_fail(
     monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
     monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
     monkeypatch.setattr(
-        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+        pv, "create_internal_network", lambda name, labels=None, **kw: (True, ""))
 
     def _launch_asserting_registered(**kw: Any) -> "LaunchResult":
         # Registration must hold while the provision is in flight.
@@ -315,7 +315,7 @@ def test_caller_workdir_not_keepalive_registered(tmp_path,
     monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
     monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
     monkeypatch.setattr(
-        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+        pv, "create_internal_network", lambda name, labels=None, **kw: (True, ""))
     monkeypatch.setattr(
         pv, "launch_container",
         lambda **kw: LaunchResult(ok=False, reason="run_failed",

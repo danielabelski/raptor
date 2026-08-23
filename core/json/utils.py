@@ -23,8 +23,30 @@ except ImportError:
 
 
 def _loads(text: str, *, parse_constant=None, allow_non_finite: bool = False) -> Any:
-    """Parse JSON text, using orjson when available for speed."""
+    """Parse JSON text, using orjson when available for speed.
+
+    KNOWN DIVERGENCE — big integers become floats on the orjson path.
+    orjson parses integer literals outside ``[-2**63, 2**64 - 1]`` as
+    lossy IEEE-754 floats where stdlib ``json`` returns exact
+    arbitrary-precision ints (probed on orjson 3.11:
+    ``18446744073709551619`` → ``1.8446744073709552e+19``). orjson
+    raises nothing for these, so there is no rejection to intercept,
+    and detecting the loss would need a digit pre-scan of every input
+    or a post-parse tree walk — a tax on every call to guard a value
+    class no RAPTOR artifact carries as identity (ids here are string
+    hashes/UUIDs; numeric fields are line numbers, counts, scores,
+    epoch-second timestamps — all far inside 64 bits). The divergence
+    is therefore documented and pinned by regression test
+    (``test_utils.TestOrjsonBigIntDivergence``) instead of guarded.
+
+    Callers that DO need exact >64-bit integers must not go through
+    this fast path — use stdlib ``json`` directly or the stdlib-only
+    ``core.json.bounded`` helpers.
+    """
     if _orjson is not None and not allow_non_finite:
+        # Fast path. NOTE: silently coerces ints outside the 64-bit
+        # range to float — see the docstring before routing any
+        # big-int-identity data through here.
         return _orjson.loads(text)
     return json.loads(text, parse_constant=parse_constant)
 
@@ -97,6 +119,12 @@ def load_json(
     ``None`` (the default) keeps the historical unbounded behaviour.
     Use a budget whenever the file lives somewhere another principal
     can influence (target repos, importable archives, shared tmp).
+
+    Backend note: parsing prefers orjson when installed; integer
+    literals outside ``[-2**63, 2**64 - 1]`` then come back as lossy
+    floats instead of exact ints (see :func:`_loads`). Callers that
+    consume >64-bit integers as identity must use the stdlib-only
+    ``core.json.bounded`` helpers instead.
     """
     p = Path(path)
     if not p.exists():

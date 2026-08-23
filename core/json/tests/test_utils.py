@@ -360,6 +360,82 @@ class TestOrjsonBackend(unittest.TestCase):
                 u._orjson = saved
 
 
+class TestOrjsonBigIntDivergence(unittest.TestCase):
+    """Pin the documented big-int divergence between the two backends.
+
+    orjson parses integer literals outside ``[-2**63, 2**64 - 1]`` as
+    lossy floats; stdlib json returns exact arbitrary-precision ints.
+    There is no cheap guard (orjson raises nothing — see the
+    ``_loads`` docstring), so the divergence is pinned here: if a
+    future orjson release changes this behaviour, or someone tightens
+    ``_loads``, these assertions flag it for a deliberate decision.
+    """
+
+    U64_MAX = 2**64 - 1
+    I64_MIN = -(2**63)
+
+    def _load(self, d: str, literal: str):
+        # Resolve load_json through the module object at call time —
+        # the module-level import would go stale when a sibling test
+        # (test_f046_lazy_reexports) resets sys.modules, making the
+        # _orjson override in these tests a no-op on the old module.
+        import core.json.utils as u
+        p = Path(d) / "n.json"
+        p.write_text(f'{{"n": {literal}}}')
+        data = u.load_json(p)
+        assert data is not None
+        return data["n"]
+
+    def test_orjson_coerces_out_of_range_ints_to_float(self):
+        import core.json.utils as u
+        if u._orjson is None:
+            self.skipTest("orjson not installed")
+        with TemporaryDirectory() as d:
+            for literal in (
+                str(self.U64_MAX + 1),
+                str(self.I64_MIN - 1),
+                str(2**100),
+            ):
+                val = self._load(d, literal)
+                self.assertIsInstance(val, float, literal)
+                self.assertEqual(val, float(int(literal)), literal)
+
+    def test_orjson_exact_inside_64_bit_range(self):
+        import core.json.utils as u
+        if u._orjson is None:
+            self.skipTest("orjson not installed")
+        with TemporaryDirectory() as d:
+            for n in (self.U64_MAX, self.I64_MIN, 0, 2**63 - 1):
+                val = self._load(d, str(n))
+                self.assertIsInstance(val, int, str(n))
+                self.assertEqual(val, n)
+
+    def test_stdlib_exact_at_any_width(self):
+        import core.json.utils as u
+        saved = u._orjson
+        try:
+            u._orjson = None
+            with TemporaryDirectory() as d:
+                for n in (self.U64_MAX + 1, self.I64_MIN - 1, 2**100):
+                    val = self._load(d, str(n))
+                    self.assertIsInstance(val, int, str(n))
+                    self.assertEqual(val, n)
+        finally:
+            u._orjson = saved
+
+    def test_bounded_helpers_stay_stdlib_exact(self):
+        """core.json.bounded is the documented escape hatch for
+        big-int-identity callers — it must never grow the fast path."""
+        from core.json.bounded import load_json_bounded, loads_bounded
+        n = 2**100
+        self.assertEqual(loads_bounded(f'{{"n": {n}}}', max_bytes=64)["n"], n)
+        with TemporaryDirectory() as d:
+            p = Path(d) / "n.json"
+            p.write_text(f'{{"n": {n}}}')
+            self.assertEqual(
+                load_json_bounded(p, max_bytes=64)["n"], n)
+
+
 class TestLoadJsonMaxBytes(unittest.TestCase):
     """Byte budget: st_size gate BEFORE any read."""
 

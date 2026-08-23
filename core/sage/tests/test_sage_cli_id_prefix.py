@@ -82,6 +82,27 @@ class StubClient:
         self.calls.append(("link", source, target))
 
 
+class GrowingTotalClient(StubClient):
+    """Reports a lower-bound total that grows between pages.
+
+    Mirrors the live server, whose per-page ``total`` counts only the
+    rows its visibility scan has cleared so far — page 1 reports a
+    smaller total than page 2 (observed live: 201 -> 380).
+    """
+
+    def list_memories(self, limit=200, offset=0):
+        memories = [
+            types.SimpleNamespace(memory_id=i) for i in self._ids
+        ][offset:offset + limit]
+        seen_so_far = min(offset + limit + 1, len(self._ids))
+        return types.SimpleNamespace(memories=memories,
+                                     total=seen_so_far)
+
+
+def _synth_id(i):
+    return f"{i:08d}-0000-4000-8000-000000000000"
+
+
 class TestResolveMemoryId(unittest.TestCase):
     def test_full_id_skips_the_walk(self):
         client = StubClient([], fail_on_list=True)
@@ -100,6 +121,41 @@ class TestResolveMemoryId(unittest.TestCase):
 
     def test_unknown_prefix_fails_loudly(self):
         client = StubClient([FULL_A])
+        with self.assertRaisesRegex(ValueError, "no memory id"):
+            cli._resolve_memory_id(client, "deadbeef")
+
+
+class TestResolveMemoryIdOnBusyStore(unittest.TestCase):
+    """Resolution must survive the live server's growing totals.
+
+    The server's per-page ``total`` is a lower bound that grows as its
+    visibility scan advances; the resolver walk previously treated any
+    change as a protocol error and reproducibly failed on multi-page
+    stores.
+    """
+
+    def _ids(self, n):
+        # FULL_A lands on the second page; the rest are synthetic.
+        return [_synth_id(i) for i in range(n - 1)] + [FULL_A]
+
+    def test_unique_prefix_resolves_when_total_grows(self):
+        client = GrowingTotalClient(self._ids(380))
+        self.assertEqual(
+            cli._resolve_memory_id(client, FULL_A[:12]), FULL_A)
+
+    def test_unique_prefix_resolves_single_page(self):
+        client = GrowingTotalClient(self._ids(2))
+        self.assertEqual(
+            cli._resolve_memory_id(client, FULL_A[:12]), FULL_A)
+
+    def test_ambiguous_prefix_still_fails_when_total_grows(self):
+        ids = self._ids(379) + [FULL_B]
+        client = GrowingTotalClient(ids)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            cli._resolve_memory_id(client, "05cbeb35")
+
+    def test_unknown_prefix_still_fails_when_total_grows(self):
+        client = GrowingTotalClient(self._ids(380))
         with self.assertRaisesRegex(ValueError, "no memory id"):
             cli._resolve_memory_id(client, "deadbeef")
 

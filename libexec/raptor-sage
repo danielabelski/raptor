@@ -198,24 +198,47 @@ def _print_table(headers, rows, col_gap=2):
 # surface; the page cap bounds iteration even when every page is tiny.
 _FETCH_MAX_ROWS = 50_000
 _FETCH_MAX_PAGES = 1_000
+# Consecutive non-empty pages contributing zero previously-unseen rows
+# before the walk is declared stuck. The offset advances every page, so
+# a store re-serving the same rows a few times (front-insert churn) is
+# tolerable, but a server that ignores the offset entirely never makes
+# progress and must abort rather than spin to the page cap.
+_FETCH_MAX_STALLED_PAGES = 3
 
 
 def _fetch_all_memories(client, batch=200):
     """Fetch all memories from SAGE, paginating if needed.
 
-    Bounded (see the caps above). A ``total`` that exceeds the row cap
-    or changes between pages is treated as a protocol error and aborts
-    the fetch with a clear message; hitting the row/page cap ends the
-    walk with a truncation notice instead of looping forever.
+    Bounded (see the caps above). The server's per-page ``total`` is an
+    authorization-safe LOWER BOUND that grows as its visibility scan
+    advances (it is exact only on the final page, when ``has_more`` is
+    false) — so a total that changes between pages is normal, not a
+    protocol error. The walk dedupes rows by memory_id and keeps going
+    until the server says stop (``has_more`` false, an empty page, or a
+    short page on servers that predate ``has_more``). A ``total`` above
+    the row cap or pagination that stops advancing (consecutive pages
+    of only already-seen rows) aborts the fetch with a clear message;
+    hitting the row/page cap ends the walk with a truncation notice
+    instead of looping forever.
     """
     all_mems = []
+    seen_ids = set()
     offset = 0
     total = None
     truncated = False
+    stalled_pages = 0
     for _ in range(_FETCH_MAX_PAGES):
         resp = client.list_memories(limit=batch, offset=offset)
         memories = resp.memories if hasattr(resp, "memories") else []
-        all_mems.extend(memories)
+        new_rows = 0
+        for m in memories:
+            mid = getattr(m, "memory_id", None)
+            if mid is not None:
+                if mid in seen_ids:
+                    continue
+                seen_ids.add(mid)
+            all_mems.append(m)
+            new_rows += 1
         page_total = getattr(resp, "total", None)
         if page_total is not None:
             page_total = int(page_total)
@@ -225,19 +248,24 @@ def _fetch_all_memories(client, batch=200):
                     f"memories (cap {_FETCH_MAX_ROWS}) — refusing "
                     "unbounded fetch"
                 )
-            if total is not None and page_total != total:
+            total = page_total if total is None else max(total, page_total)
+        if memories and not new_rows:
+            stalled_pages += 1
+            if stalled_pages >= _FETCH_MAX_STALLED_PAGES:
                 raise RuntimeError(
-                    "SAGE protocol error: reported total changed "
-                    f"between pages ({total} -> {page_total}) — "
-                    "aborting fetch"
+                    "SAGE protocol error: pagination is not advancing "
+                    f"({stalled_pages} consecutive pages of already-seen "
+                    "rows) — aborting fetch"
                 )
-            total = page_total
+        else:
+            stalled_pages = 0
         if len(all_mems) >= _FETCH_MAX_ROWS:
             truncated = True
             break
-        if not memories or len(all_mems) >= (
-            total if total is not None else len(all_mems)
-        ):
+        has_more = getattr(resp, "has_more", None)
+        if has_more is False or not memories:
+            break
+        if has_more is None and len(memories) < batch:
             break
         offset += len(memories)
     else:
@@ -248,7 +276,9 @@ def _fetch_all_memories(client, batch=200):
             f"  (truncated: fetch capped at {len(all_mems)} rows)",
             file=sys.stderr,
         )
-    return all_mems, (total if total is not None else len(all_mems))
+    if total is None:
+        return all_mems, len(all_mems)
+    return all_mems, max(total, len(all_mems))
 
 
 def _resolve_memory_id(client, id_or_prefix):

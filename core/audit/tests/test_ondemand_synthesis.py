@@ -356,3 +356,51 @@ class TestOnDemandHookInPromoteSuspicious:
 
         assert len(calls) == 1
         assert calls[0]["synthesis_count"] == 7
+
+
+class TestSynthesisHypothesisForCwe:
+    """Re-pair the synthesis hypothesis with the text that carries the
+    inferred CWE — the long instrumented run synthesized a CWE-778
+    checker whose promotion logged the no-harm sibling hypothesis."""
+
+    def _outcome(self, primary, mechanisms, *, inferred=None, declared=None):
+        o = _outcome(hypothesis=primary)
+        o.hypotheses = [{"mechanism": m} for m in mechanisms]
+        o.review_result = {}
+        if inferred:
+            o.review_result["cwe_inferred"] = inferred
+        if declared:
+            o.review_result["cwe"] = declared
+        return o
+
+    def test_inferred_cwe_repairs_to_carrying_sibling(self):
+        from core.audit.cwe_dispatch import infer_cwe_from_hypothesis
+        from core.audit.orchestrator import _synthesis_hypothesis_for_cwe
+        no_harm = "Empty function body performs no dereference — cannot cause memory unsafety"
+        harm = "use after free: the context is freed in the error path and dereferenced by the cleanup handler"
+        cwe = infer_cwe_from_hypothesis(harm)
+        assert cwe, "fixture must use an inferable mechanism"
+        assert infer_cwe_from_hypothesis(no_harm) != cwe
+        o = self._outcome(no_harm, [no_harm, harm], inferred=cwe)
+        assert _synthesis_hypothesis_for_cwe(o, cwe, no_harm) == harm
+
+    def test_declared_cwe_keeps_primary(self):
+        from core.audit.orchestrator import _synthesis_hypothesis_for_cwe
+        o = self._outcome("primary text", ["primary text", "sibling"],
+                          declared="CWE-120")
+        assert _synthesis_hypothesis_for_cwe(o, "CWE-120", "primary text") \
+            == "primary text"
+
+    def test_primary_carrying_inferred_cwe_kept(self):
+        from core.audit.cwe_dispatch import infer_cwe_from_hypothesis
+        from core.audit.orchestrator import _synthesis_hypothesis_for_cwe
+        harm = "buffer overflow: unchecked memcpy into fixed stack buffer"
+        cwe = infer_cwe_from_hypothesis(harm)
+        assert cwe
+        o = self._outcome(harm, [harm, "unrelated"], inferred=cwe)
+        assert _synthesis_hypothesis_for_cwe(o, cwe, harm) == harm
+
+    def test_no_match_falls_back_to_primary(self):
+        from core.audit.orchestrator import _synthesis_hypothesis_for_cwe
+        o = self._outcome("p", ["p", "q"], inferred="CWE-416")
+        assert _synthesis_hypothesis_for_cwe(o, "CWE-416", "p") == "p"

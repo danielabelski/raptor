@@ -18352,7 +18352,9 @@ def _promote_suspicious(
             # inside). Route the family to on-demand synthesis instead
             # of letting it die unverified.
             _synthesize_unmapped_suspicious(
-                result, config, i, outcome, hypothesis, cwe, source,
+                result, config, i, outcome,
+                _synthesis_hypothesis_for_cwe(outcome, cwe, hypothesis),
+                cwe, source,
                 joern_server=joern_server,
             )
             continue
@@ -18452,7 +18454,9 @@ def _promote_suspicious(
             # one-off, negatively-controlled rule instead of letting
             # the hypothesis die untested.
             _synthesize_unmapped_suspicious(
-                result, config, i, outcome, hypothesis, cwe, source,
+                result, config, i, outcome,
+                _synthesis_hypothesis_for_cwe(outcome, cwe, hypothesis),
+                cwe, source,
                 joern_server=joern_server,
             )
             continue
@@ -18609,6 +18613,40 @@ def _record_synthesis_refusal(
             "status": outcome.status,
         },
     )
+
+
+def _synthesis_hypothesis_for_cwe(
+    outcome: ReviewOutcome,
+    cwe: str,
+    primary: str,
+) -> str:
+    """The hypothesis text that actually carries *cwe*, for synthesis.
+
+    ``_effective_cwe`` may INFER the class from a non-primary
+    hypothesis (first inferable mechanism wins), while the synthesis
+    call sites pass the PRIMARY hypothesis string — pairing a checker
+    seed CWE with prose that states a different (or no) mechanism.
+    The long instrumented run synthesized a CWE-778 checker whose
+    promotion logged the no-harm sibling's text, reading as an
+    inverted promotion. Re-pair only when the class was inferred; a
+    review-DECLARED CWE belongs to the review's primary hypothesis.
+    """
+    review = outcome.review_result or {}
+    if not cwe or review.get("cwe_inferred") != cwe:
+        return primary
+    try:
+        from .cwe_dispatch import infer_cwe_from_hypothesis
+    except ImportError:
+        return primary
+    if primary and infer_cwe_from_hypothesis(primary) == cwe:
+        return primary
+    for h in outcome.hypotheses or review.get("hypotheses") or []:
+        if not isinstance(h, dict):
+            continue
+        mechanism = h.get("mechanism") or ""
+        if mechanism and infer_cwe_from_hypothesis(mechanism) == cwe:
+            return mechanism
+    return primary
 
 
 def _synthesize_unmapped_suspicious(

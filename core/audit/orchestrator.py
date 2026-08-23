@@ -46,6 +46,7 @@ from core.evidence import (
     format_evidence_prose,
     format_evidence_structured,
 )
+from core.json import load_json
 from core.smt_solver.availability import Z3_ERRORS
 from packages.checker_synthesis.library import RuleLibrary
 
@@ -209,6 +210,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+# Byte budgets for the orchestrator's own artifact reads: 8 MiB for
+# small state sidecars, 64 MiB for findings/chains/study documents
+# (findings-class budget, matching the validate bridge).
+_MAX_STATE_BYTES = 8 * 1024 * 1024
+_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 # ── Narrowed exception sets for best-effort blocks ──────────────────
 # suppress(Exception) narrowing sweep: miswiring-class exceptions
@@ -5616,7 +5623,7 @@ def _record_phase_abort(config: Any, result: Any, exc: Exception) -> None:
         path = Path(out_dir) / _PHASE_ABORTS_FILENAME
         records: list = []
         if path.is_file():
-            loaded = json.loads(path.read_text(encoding="utf-8"))
+            loaded = load_json(path, max_bytes=_MAX_STATE_BYTES)
             if isinstance(loaded, list):
                 records = loaded
         if any(
@@ -5657,7 +5664,7 @@ def _clear_phase_abort(config: Any, *phases: str) -> None:
     if not path.is_file():
         return
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = load_json(path, max_bytes=_MAX_STATE_BYTES)
         if not isinstance(loaded, list):
             return
         keep = [
@@ -8014,9 +8021,7 @@ def _run_audit_body(
         chains = None
         chains_path = config.out_dir / "attack-chains.json"
         if chains_path.exists():
-            import json as _json
-
-            chains = _json.loads(chains_path.read_text())
+            chains = load_json(chains_path, max_bytes=_MAX_ARTIFACT_BYTES)
         export_outcomes = list(result.outcomes)
         try:
             export_outcomes.extend(
@@ -8094,9 +8099,12 @@ def _run_audit_body(
                 matrix = build_matrix(planted)
                 graded_path = config.out_dir / "findings-graded.json"
                 if graded_path.is_file():
-                    import json as _at_json
-
-                    graded_data = _at_json.loads(graded_path.read_text())
+                    graded_data = load_json(
+                        graded_path, max_bytes=_MAX_ARTIFACT_BYTES,
+                    )
+                    graded_data = (
+                        graded_data if isinstance(graded_data, dict) else {}
+                    )
                     graded_findings = graded_data.get("findings", [])
                     detections = match_findings_to_bugs(graded_findings, planted)
                     for det in detections:
@@ -11604,28 +11612,25 @@ def _mark_batch_reading_list(
     study_items: list[dict] = []
     corpus_loaded = False
     if study_list_path is not None and Path(study_list_path).is_file():
-        try:
-            import json as _json
-            raw = _json.loads(Path(study_list_path).read_text(
-                encoding="utf-8"))
+        raw = load_json(
+            Path(study_list_path), max_bytes=_MAX_ARTIFACT_BYTES,
+        )
+        if raw is not None:
             study_items = raw.get("items", []) if isinstance(raw, dict) else []
             corpus_loaded = True
-        except (OSError, ValueError):
-            study_items = []
 
     # Receipt-verification discards from run_study
     discard_names: set[str] = set()
     discards_path = out_dir / "study-discards.json"
     if discards_path.is_file():
-        try:
-            import json as _json
-            for d in _json.loads(discards_path.read_text(
-                    encoding="utf-8")).get("discarded", []):
-                for n in [d.get("id"), *(d.get("names") or [])]:
-                    if n:
-                        discard_names.add(str(n).lower())
-        except (OSError, ValueError):
-            pass
+        discards = load_json(discards_path, max_bytes=_MAX_STATE_BYTES)
+        discards = discards if isinstance(discards, dict) else {}
+        for d in discards.get("discarded", []):
+            if not isinstance(d, dict):
+                continue
+            for n in [d.get("id"), *(d.get("names") or [])]:
+                if n:
+                    discard_names.add(str(n).lower())
 
     import re as _re
     eligible: set[str] = set()
@@ -12883,13 +12888,12 @@ def _build_concept_index_from_prep(
 ) -> None:
     """Build ConceptIndex after study-prep, using its type data."""
     try:
-        import json
-
         study_list_path = out_dir / "study-list.json"
         if not study_list_path.is_file():
             return
-        with Path(study_list_path).open() as f:
-            study_list = json.load(f)
+        study_list = load_json(
+            study_list_path, max_bytes=_MAX_ARTIFACT_BYTES,
+        )
         type_names: set[str] = set()
         if isinstance(study_list, dict):
             idents = study_list.get("identifiers", "")
@@ -13408,12 +13412,7 @@ def _write_unresolved_synthesis_hits(
     try:
         existing: list[dict[str, Any]] = []
         if path.is_file():
-            try:
-                prior = json.loads(
-                    path.read_text(encoding="utf-8", errors="replace"),
-                )
-            except json.JSONDecodeError:
-                prior = None
+            prior = load_json(path, max_bytes=_MAX_STATE_BYTES)
             # Tolerate any prior shape — a truncated write, a hand-edit,
             # a bare list — and replace what can't be understood.
             if isinstance(prior, dict) and isinstance(prior.get("hits"), list):
@@ -22066,16 +22065,13 @@ def _review_flow_traces(
         f"{o.file}:{o.function}" for o in result.outcomes if o.status == "clean"
     }
 
-    import json as _json
-
     traces_reviewed = 0
     for trace_file in trace_files[:10]:
         if start_time and _check_budget(config, start_time, result):
             break
 
-        try:
-            trace = _json.loads(trace_file.read_text())
-        except (OSError, _json.JSONDecodeError):
+        trace = load_json(trace_file, max_bytes=_MAX_ARTIFACT_BYTES)
+        if not isinstance(trace, dict):
             continue
 
         hops = trace.get("hops", [])

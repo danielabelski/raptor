@@ -226,6 +226,52 @@ def test_deeply_nested_tags_json_raises_registry_error() -> None:
         client.list_tags(ref)
 
 
+# The 100k-deep bombs above historically failed via RecursionError
+# inside json.loads — but whether that error fires at all is an
+# interpreter property (CPython 3.14 grew its C-stack headroom and
+# parses them cleanly), and on such interpreters the bomb sailed past
+# the parse guard entirely. These variants stay WITHIN every supported
+# interpreter's parser limits, so the client's own _MAX_JSON_NESTING
+# gate is the only thing that can refuse them: the RegistryError
+# contract is pinned independent of the interpreter's stack behaviour.
+
+def test_moderately_nested_manifest_bomb_refused_without_recursionerror(
+) -> None:
+    depth = 500  # parses fine on every supported CPython
+    bomb = b"[" * depth + b"]" * depth
+    assert isinstance(json.loads(bomb), list)  # parser really survives
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = _client(headers={}, body=bomb)
+    with pytest.raises(RegistryError, match="parse failed"):
+        client.fetch_manifest(ref)
+
+
+def test_moderately_nested_tags_bomb_refused_without_recursionerror(
+) -> None:
+    depth = 500
+    bomb = b"[" * depth + b"]" * depth
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = OciRegistryClient(_StubHttp({
+        "/v2/acme/app/tags/list?n=100": _StubResponse(200, bomb),
+        "https://ghcr.io/v2/acme/app/tags/list?n=100":
+            _StubResponse(200, bomb),
+    }))
+    with pytest.raises(RegistryError, match="parse failed"):
+        client.list_tags(ref)
+
+
+def test_realistic_manifest_nesting_untouched_by_depth_gate() -> None:
+    """A plausibly-deep real manifest (well under the cap) must parse
+    exactly as before — the gate refuses bombs, not registries."""
+    nested: dict = {"schemaVersion": 2, "layers": [],
+                    "annotations": {"a": {"b": {"c": [{"d": "e"}]}}}}
+    body = json.dumps(nested).encode()
+    ref = parse_image_ref("ghcr.io/acme/app:latest")
+    client = _client(headers={}, body=body)
+    resp = client.fetch_manifest(ref)
+    assert resp.parsed["schemaVersion"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Credential redaction in error snippets
 # ---------------------------------------------------------------------------

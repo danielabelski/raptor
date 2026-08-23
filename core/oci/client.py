@@ -89,6 +89,42 @@ _MAX_TAGS_TOTAL_COUNT = 50_000
 _MAX_TAG_LENGTH = 128
 _MAX_TOKEN_BYTES = 256 * 1024  # token-exchange responses are tiny
 
+# Depth cap on registry-returned JSON, enforced right after every
+# json.loads of registry bytes. The RecursionError mapping at those
+# sites only fires on interpreters whose C parser still exhausts its
+# stack inside the byte caps — CPython 3.14 grew the C-stack headroom,
+# so a 100k-deep bracket bomb parses cleanly there and a nested bomb
+# would otherwise flow onward as a "legitimate" value (or surface as
+# the wrong RegistryError). Real OCI payloads nest ~10 levels; 100 is
+# generous, and the explicit bound makes nested-bomb refusal a
+# contract of THIS client rather than of the interpreter's stack.
+_MAX_JSON_NESTING = 100
+
+
+def _reject_deep_nesting(
+    obj: object, *, max_depth: int = _MAX_JSON_NESTING,
+) -> None:
+    """Raise ValueError when *obj* nests containers deeper than
+    *max_depth*. Iterative walk — measuring the depth must not itself
+    be able to blow the recursion limit."""
+    stack: list[tuple[object, int]] = [(obj, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children: "list[object]" = list(node.values())
+        elif isinstance(node, list):
+            children = node
+        else:
+            continue
+        if children and depth >= max_depth:
+            msg = (
+                f"nesting depth exceeds {max_depth} — refusing "
+                f"attacker-shaped deeply nested JSON"
+            )
+            raise ValueError(msg)
+        for child in children:
+            stack.append((child, depth + 1))
+
 
 # Token-service realm allowlist per registry. Realm hosts beyond
 # the registry's own host or its documented auth subdomain are
@@ -412,9 +448,12 @@ class OciRegistryClient:
         # RecursionError: registry JSON is attacker-shaped; deeply
         # nested arrays/objects within the size cap blow the parser's
         # recursion limit. Convert to the module's error type instead
-        # of letting it escape as an unhandled crash.
+        # of letting it escape as an unhandled crash. The explicit
+        # depth gate covers interpreters that parse the same nesting
+        # without ever raising RecursionError (CPython 3.14+).
         try:
             parsed = json.loads(resp.content)
+            _reject_deep_nesting(parsed)
         except (ValueError, TypeError, RecursionError) as e:
             raise RegistryError(
                 resp.status_code,
@@ -494,8 +533,11 @@ class OciRegistryClient:
                 )
             try:
                 data = json.loads(resp.content)
+                _reject_deep_nesting(data)
             except (ValueError, TypeError, RecursionError) as e:
                 # RecursionError: deep nesting within the byte cap.
+                # The depth gate covers interpreters that parse the
+                # same nesting without raising (CPython 3.14+).
                 raise RegistryError(
                     resp.status_code,
                     f"tags/list JSON parse failed for "
@@ -780,8 +822,11 @@ class OciRegistryClient:
             )
         try:
             payload = json.loads(resp.content)
+            _reject_deep_nesting(payload)
         except (ValueError, TypeError, RecursionError) as e:
             # RecursionError: deep nesting within the byte cap.
+            # The depth gate covers interpreters that parse the
+            # same nesting without raising (CPython 3.14+).
             raise RegistryError(
                 resp.status_code,
                 f"token exchange at {realm} returned non-JSON: "

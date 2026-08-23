@@ -1236,9 +1236,16 @@ def gap_for_site(
         #
         # Strict: smallest containing span wins, so a nested function or
         # closure is attributed to the innermost match rather than to the
-        # enclosing definition.
+        # enclosing definition. Function/method items are preferred over
+        # non-function kinds: a single-line global/macro item sitting ON
+        # the match line has a smaller span than the enclosing function,
+        # and binding to it pinned findings to bare symbols instead of
+        # the code that contains the match. A non-function item wins
+        # only when NO function/method encloses the line (a hit inside a
+        # macro body or a global initializer is still evidence in hand).
         best: dict[str, Any] | None = None
         best_span = None
+        best_is_func = False
         for item in items:
             line_start = item["line_start"]
             line_end = item.get("line_end")
@@ -1246,15 +1253,26 @@ def gap_for_site(
                 continue
             if not (line_start <= line <= line_end):
                 continue
+            is_func = item.get("kind", "") in _REVIEWABLE_KINDS
+            if best_is_func and not is_func:
+                continue
             span = line_end - line_start
-            if best_span is None or span < best_span or (
-                span == best_span and line_start > best["line_start"]
+            if (
+                (is_func and not best_is_func)
+                or best_span is None
+                or span < best_span
+                or (span == best_span and line_start > best["line_start"])
             ):
                 best = dict(item)
                 best_span = span
+                best_is_func = is_func
 
         # Fallback for inventories that record only the definition line:
         # closest preceding line_start, bounded by the NEXT definition.
+        # Function/method items only — inferring a span for a
+        # declaration-line symbol would claim every line down to the
+        # next definition for an item that has no body, binding sites
+        # to the nearest preceding non-function symbol.
         #
         # A trailing definition with no next start has no derivable upper
         # bound here — inventing one either truncates the function (so
@@ -1263,18 +1281,30 @@ def gap_for_site(
         # in the unresolved-hits artifact, which is honest rather than
         # quietly wrong.
         if best is None:
-            starts = sorted({it["line_start"] for it in items})
+            func_items = [
+                it for it in items
+                if it.get("kind", "") in _REVIEWABLE_KINDS
+            ]
+            starts = sorted({it["line_start"] for it in func_items})
             preceding = [s for s in starts if s <= line]
             if not preceding:
+                logger.debug(
+                    "gap_for_site: dropping %s:%d — no enclosing "
+                    "function/method item", file_path, line,
+                )
                 continue
             chosen_start = preceding[-1]
             candidates = [
-                it for it in items
+                it for it in func_items
                 if it["line_start"] == chosen_start
                 and it.get("line_end") is None
             ]
             later = [s for s in starts if s > chosen_start]
             if not candidates or not later:
+                logger.debug(
+                    "gap_for_site: dropping %s:%d — no enclosing "
+                    "function/method item", file_path, line,
+                )
                 continue
             best = dict(candidates[0])
             best["line_end"] = later[0] - 1

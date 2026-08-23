@@ -227,6 +227,11 @@ class EvidenceRecord:
     line_start: int = 0
     line_end: int = 0
 
+    # Checklist item kind ("function", "method", "global", ...).
+    # Empty for legacy checklists that predate item kinds — treated
+    # as function-like by consumers, matching the gap layer's rule.
+    kind: str = ""
+
     sink_unreachable: bool = False
     sink_narrowed_classes: list[str] = field(default_factory=list)
 
@@ -713,6 +718,7 @@ def build_evidence_index(
             index[key] = EvidenceRecord(
                 file=file_path, function=func_name,
                 line_start=ls, line_end=le,
+                kind=item.get("kind", "") or "",
             )
 
     if sink_results is not None:

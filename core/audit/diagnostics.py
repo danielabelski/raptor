@@ -21,8 +21,16 @@ _MAX_DISCOVERED_PER_FUNCTION = 20
 
 def read_function_source(
     target_path: Path, file_path: str, _function_name: str,
+    line_start: int = 0, line_end: int = 0,
 ) -> str:
-    """Best-effort read of a function's source from the target."""
+    """Best-effort read of a function's source from the target.
+
+    With a valid ``line_start``/``line_end`` span the read is sliced
+    to those lines (1-based, inclusive). Without one the whole file
+    is returned — callers that attribute pattern matches to a
+    specific function MUST pass the span, or a match anywhere in the
+    file binds to whatever symbol the caller happens to hold.
+    """
     full = target_path / file_path
     if not full.is_file():
         return ""
@@ -32,6 +40,8 @@ def read_function_source(
         return ""
     if len(text) > 500_000:
         return ""
+    if line_start > 0 and line_end >= line_start:
+        return "\n".join(text.splitlines()[line_start - 1:line_end])
     return text
 
 

@@ -77,6 +77,66 @@ class TestGapForSite:
         assert gap is not None
         assert gap["name"] == "MAX_LEN"
 
+    def test_same_line_symbol_does_not_steal_from_enclosing_function(self):
+        # A single-line global item ON the match line has a smaller
+        # span than the enclosing function; the finding must still bind
+        # to the FUNCTION containing the match, never to the same-line
+        # non-function symbol.
+        checklist = {
+            "files": [{
+                "path": "src/f.c",
+                "items": [
+                    {"name": "sink", "kind": "function",
+                     "line_start": 10, "line_end": 90},
+                    {"name": "buffer", "kind": "global",
+                     "line_start": 30, "line_end": 30},
+                ],
+            }],
+        }
+        gap = gap_for_site(checklist, "src/f.c", 30)
+        assert gap is not None
+        assert gap["name"] == "sink"
+
+    def test_declaration_line_with_no_enclosing_function_is_dropped(self):
+        # A match on a bare declaration line outside every function has
+        # no reviewable context — the attribution is dropped, not bound
+        # to the declaration symbol.
+        checklist = {
+            "files": [{
+                "path": "src/f.c",
+                "items": [
+                    {"name": "tty_flag", "kind": "declaration",
+                     "line_start": 5, "line_end": 5},
+                    {"name": "handler", "kind": "function",
+                     "line_start": 10, "line_end": 40},
+                ],
+            }],
+        }
+        assert gap_for_site(checklist, "src/f.c", 5) is None
+
+    def test_span_fallback_never_binds_to_non_function_symbol(self):
+        # Definition-line-only inventories: the inferred-span fallback
+        # must resolve to the closest preceding FUNCTION, skipping any
+        # nearer non-function symbol.
+        checklist = {
+            "files": [{
+                "path": "src/f.c",
+                "items": [
+                    {"name": "handler", "kind": "function",
+                     "line_start": 10, "line_end": None},
+                    {"name": "g_state", "kind": "global",
+                     "line_start": 20, "line_end": None},
+                    {"name": "next_fn", "kind": "function",
+                     "line_start": 60, "line_end": None},
+                ],
+            }],
+        }
+        gap = gap_for_site(checklist, "src/f.c", 25)
+        assert gap is not None
+        assert gap["name"] == "handler"
+        assert gap["line_end"] == 59
+        assert gap["span_inferred"] is True
+
     def test_truly_non_reviewable_kind_is_skipped(self):
         checklist = {
             "files": [{

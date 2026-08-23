@@ -3638,7 +3638,30 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
 
         l0_result = Layer0Result()
         for key, rec in evidence_index.items():
-            src = _read_function_source(config.target_path, rec.file, rec.function)
+            # Function/method records only, sliced to the item's span.
+            # Pre-fix this read the WHOLE FILE for EVERY record: a
+            # pattern match anywhere in the file was attributed to
+            # every item of that file — including bare declarations
+            # and globals, whose "findings" were pure misattribution.
+            if rec.kind not in ("", "function", "method"):
+                logger.debug(
+                    "layer0 pre-sweep: skipping %s (kind=%s, not a "
+                    "function)", key, rec.kind,
+                )
+                continue
+            line_start = rec.line_start or 0
+            line_end = rec.line_end or 0
+            if line_start <= 0 or line_end < line_start:
+                logger.debug(
+                    "layer0 pre-sweep: skipping %s (no usable line "
+                    "span — a whole-file scan would misattribute "
+                    "matches from other functions)", key,
+                )
+                continue
+            src = _read_function_source(
+                config.target_path, rec.file, rec.function,
+                line_start=line_start, line_end=line_end,
+            )
             if not src:
                 continue
             # Derive a coarse callee list from the source in hand —

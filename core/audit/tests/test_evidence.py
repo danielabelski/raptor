@@ -287,6 +287,28 @@ class TestBuildEvidenceIndex:
         index = build_evidence_index(checklist={})
         assert index == {}
 
+    def test_item_kind_carried_onto_record(self):
+        # The layer0 source pre-sweep gates on kind: only function/
+        # method records are scanned, so a file-wide pattern match can
+        # never be attributed to a bare declaration or global symbol.
+        checklist = {
+            "files": [{
+                "path": "src/a.c",
+                "items": [
+                    {"name": "parse", "kind": "function",
+                     "line_start": 10, "line_end": 40},
+                    {"name": "tty_flag", "kind": "declaration",
+                     "line_start": 5, "line_end": 5},
+                    {"name": "legacy_no_kind", "line_start": 50,
+                     "line_end": 60},
+                ],
+            }],
+        }
+        index = build_evidence_index(checklist=checklist)
+        assert index["src/a.c:parse"].kind == "function"
+        assert index["src/a.c:tty_flag"].kind == "declaration"
+        assert index["src/a.c:legacy_no_kind"].kind == ""
+
 
 class TestTransitiveTaintEvidence:
     def test_transitive_taint_renders_in_prose(self):

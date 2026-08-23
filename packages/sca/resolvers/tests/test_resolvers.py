@@ -1,8 +1,11 @@
 """Tests for the per-ecosystem native-resolver wrappers.
 
-We never call real ``npm`` / ``pip`` / ``go`` in CI; subprocess.run is
-monkeypatched to return canned ``CompletedProcess`` objects. The
-behaviour we exercise:
+We never call real ``npm`` / ``pip`` / ``go`` in CI; both exec seams —
+bare ``subprocess.run`` (the unsandboxed ``_check_tool`` availability
+probes) and ``core.sandbox.context.run`` (the resolver's sandboxed
+tool invocations, see ``_run``) — are monkeypatched via ``_patch_exec``
+to return canned ``CompletedProcess`` objects. The behaviour we
+exercise:
 
   - ``is_available()`` reflects the toolchain probe result.
   - ``dry_run()`` returns the right ``ResolverResult`` shape on
@@ -14,6 +17,7 @@ behaviour we exercise:
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -108,6 +112,33 @@ def _is_pip_compile(cmd: list[str]) -> bool:
     return bool(stripped) and stripped[0] == "pip-compile"
 
 
+def _patch_exec(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_run: Callable[..., subprocess.CompletedProcess],
+) -> None:
+    """Install ``fake_run`` at BOTH exec seams a resolver can reach:
+
+    * bare ``subprocess.run`` — the unsandboxed ``_check_tool``
+      availability probes;
+    * ``core.sandbox.context.run`` — the resolver's documented seam
+      for the actual tool invocation (``_run`` routes every resolver
+      subprocess through :func:`core.sandbox.run`).
+
+    Stubbing only ``subprocess.run`` (the pre-2026-08 shape) reached
+    the tool call by accident: the real sandbox pipeline executed and
+    its *fallback* exec happened to be ``subprocess.run``. When the
+    no-pid-namespace timeout path moved to a ``Popen``-based
+    teardown-first wrapper, the stub was bypassed and the REAL
+    npm/go/sh ran in CI — real network attempts, real /tmp writes
+    under sandbox constraints. Patching the sandbox seam keeps these
+    unit tests hermetic regardless of how the sandbox executes
+    internally.
+    """
+    from core.sandbox import context as _ctx
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(_ctx, "run", fake_run)
+
+
 def _patch_run(monkeypatch, plan: list):
     """``plan`` is a list of (matcher_fn, _FakeProc) — first match wins.
 
@@ -123,7 +154,7 @@ def _patch_run(monkeypatch, plan: list):
         # Default: pretend exit 1 with no output.
         return _FakeProc(returncode=1)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_exec(monkeypatch, fake_run)
     return calls
 
 
@@ -179,7 +210,7 @@ def test_npm_dry_run_success(monkeypatch, tmp_path: Path) -> None:
                 return result
         return _FakeProc(returncode=1)
 
-    monkeypatch.setattr(subprocess, "run", smart_run)
+    _patch_exec(monkeypatch, smart_run)
     r = NpmResolver()
     res = r.dry_run(tmp_path)
     assert res.success is True
@@ -436,7 +467,7 @@ def _patch_run_with_callable(monkeypatch, plan):
                     return result(cmd)
                 return result
         return _FakeProc(returncode=1)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_exec(monkeypatch, fake_run)
     return calls
 
 
@@ -522,8 +553,8 @@ def test_go_tidy_success(monkeypatch, tmp_path: Path) -> None:
 
     fake_sum = b"github.com/foo/bar v1.0.0 h1:abc\n"
 
-    # We monkey-patch ``subprocess.run`` directly (rather than via
-    # the shared ``_patch_run`` helper) because the simulated
+    # We install a bespoke fake via ``_patch_exec`` (rather than the
+    # shared ``_patch_run`` helper) because the simulated
     # ``go mod tidy`` needs to write ``go.sum`` into the resolver's
     # cwd, and that path needs access to the ``cwd=`` kwarg —
     # which the simpler matcher-only helper doesn't expose.
@@ -541,7 +572,7 @@ def test_go_tidy_success(monkeypatch, tmp_path: Path) -> None:
                 return result
         return _FakeProc(returncode=1)
 
-    monkeypatch.setattr(subprocess, "run", smart_run)
+    _patch_exec(monkeypatch, smart_run)
 
     res = GoResolver().dry_run(tmp_path)
     assert res.success is True

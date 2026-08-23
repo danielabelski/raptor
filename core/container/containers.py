@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 #: ``docker inspect`` Go template below injection-proof).
 _NETWORK_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
+#: Host bridge-interface grammar for ``com.docker.network.bridge.name``:
+#: a Linux interface name — IFNAMSIZ bounds it to 15 usable chars, and
+#: the conservative charset keeps it shell/iptables-literal safe.
+_BRIDGE_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,14}$")
+
 HARDENED_CAP_DROP: tuple[str, ...] = ("ALL",)
 HARDENED_CAP_ADD: tuple[str, ...] = (
     "CHOWN",
@@ -153,6 +158,7 @@ def create_internal_network(
     name: str,
     *,
     labels: dict[str, str] | None = None,
+    bridge_name: str | None = None,
     timeout_s: float = 30.0,
 ) -> tuple[bool, str]:
     """Create a ``--internal`` bridge network. Returns ``(ok, diagnostic)``.
@@ -168,10 +174,22 @@ def create_internal_network(
     loopback-bound ones are not (see NetworkPolicy). ``labels`` stamp
     ownership for exact-scope cleanup via
     :func:`core.container.lifecycle.remove_labeled_networks`.
+
+    ``bridge_name`` names the host-side bridge interface
+    (``com.docker.network.bridge.name``) instead of the daemon's
+    unpredictable ``br-<id>``. A caller-stable prefix makes the
+    interface addressable by one static, operator-installed firewall
+    rule — the only authority that can close the gateway residual
+    (see docs/cve-env.md, "Closing the host-gateway residual").
+    Must be a valid Linux interface name (<= 15 chars).
     """
     if not _NETWORK_NAME_RE.fullmatch(name or ""):
         return False, f"invalid network name {name!r}"
+    if bridge_name is not None and not _BRIDGE_NAME_RE.fullmatch(bridge_name):
+        return False, f"invalid bridge interface name {bridge_name!r}"
     cmd = ["docker", "network", "create", "--internal"]
+    if bridge_name is not None:
+        cmd.extend(["-o", f"com.docker.network.bridge.name={bridge_name}"])
     for k, v in (labels or {}).items():
         cmd.extend(["--label", f"{k}={v}"])
     cmd.append(name)

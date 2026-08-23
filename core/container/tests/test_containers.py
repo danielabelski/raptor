@@ -263,6 +263,34 @@ def test_create_internal_network_builds_labeled_command() -> None:
     assert cc.create_internal_network('x"; rm -rf /')[0] is False
 
 
+def test_create_internal_network_names_host_bridge() -> None:
+    """A caller-supplied bridge_name must reach the daemon as the
+    com.docker.network.bridge.name option — the stable interface name
+    is what makes the host-gateway residual closable by one static
+    operator firewall rule (docs/cve-env.md)."""
+    captured: list[list[str]] = []
+    with patch.object(cc, "run_cli", side_effect=_fake_run(captured)):
+        ok, err = cc.create_internal_network(
+            "raptor-env-net-abc123", labels={"raptor-env.id": "abc123"},
+            bridge_name="rpenv-abc123def")
+    assert ok and err == ""
+    assert captured == [[
+        "docker", "network", "create", "--internal",
+        "-o", "com.docker.network.bridge.name=rpenv-abc123def",
+        "--label", "raptor-env.id=abc123", "raptor-env-net-abc123",
+    ]]
+
+
+def test_create_internal_network_refuses_invalid_bridge_name() -> None:
+    # IFNAMSIZ bounds a Linux interface name to 15 usable chars, and
+    # the option value must stay shell/iptables-literal safe.
+    for bad in ("rpenv-0123456789a",  # 16 chars
+                "evil name", "a/b", ""):
+        ok, err = cc.create_internal_network(
+            "raptor-env-net-x", bridge_name=bad)
+        assert not ok and "bridge" in err, (bad, ok, err)
+
+
 def test_read_container_ip_polls_and_validates() -> None:
     with patch.object(cc, "run_cli", side_effect=_fake_run_ip()):
         ip, diag = cc.read_container_ip(_CID, network="netname")

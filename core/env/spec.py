@@ -133,10 +133,15 @@ class NetworkPolicy:
     so host services bound on ``0.0.0.0`` (including docker-proxy
     listeners other tools published on ``0.0.0.0``) are reachable from
     inside; loopback-bound host services are not. Closing that
-    requires host-level firewall authority (a DOCKER-USER rule) RAPTOR
-    does not own — docker's ``gateway_mode=isolated`` removes
-    host<->container connectivity entirely, which would break the
-    verify endpoint. The sandbox runtime blocks network outright.
+    requires host-level firewall authority RAPTOR does not own —
+    docker's ``gateway_mode=isolated`` removes host<->container
+    connectivity entirely, which would break the verify endpoint. The
+    per-provision bridge interface carries the stable ``rpenv-``
+    prefix so an operator WITH that authority can close the lane with
+    one static INPUT rule (DOCKER-USER hooks FORWARD and never sees
+    container->host-local traffic); see docs/cve-env.md, "Closing the
+    host-gateway residual". The sandbox runtime blocks network
+    outright.
 
     ``mode="unrestricted"`` opts into the daemon's default bridge
     (full egress — the original cve-env product behaviour) on the

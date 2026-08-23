@@ -64,6 +64,15 @@ def test_provision_image_docker_runtime(tmp_path) -> None:
     assert load_run_spec(tmp_path) == spec
     net_creates = [c for c in seen if c[:3] == ["docker", "network", "create"]]
     assert len(net_creates) == 1 and "--internal" in net_creates[0]
+    # Stable host-side bridge interface name: rpenv-<id>, IFNAMSIZ-
+    # bounded — the addressable prefix that lets an operator-installed
+    # static INPUT rule close the container->host-gateway residual
+    # (docs/cve-env.md, "Closing the host-gateway residual").
+    bridge_opts = [a for a in net_creates[0]
+                   if a.startswith("com.docker.network.bridge.name=")]
+    assert len(bridge_opts) == 1, net_creates[0]
+    bridge = bridge_opts[0].split("=", 1)[1]
+    assert bridge.startswith("rpenv-") and len(bridge) <= 15
     run_cmd = next(c for c in seen if c[:3] == ["docker", "run", "-d"])
     assert "--network" in run_cmd
     assert "-p" not in run_cmd  # isolated: no published loopback port
@@ -197,7 +206,8 @@ def test_launch_failure_removes_labeled_artifacts_and_workdir(
         pv, "remove_labeled_images",
         lambda label, value: removed.append(("images", label, value)))
     monkeypatch.setattr(
-        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+        pv, "create_internal_network",
+        lambda name, labels=None, bridge_name=None: (True, ""))
     monkeypatch.setattr(
         pv, "launch_container",
         lambda **kw: LaunchResult(
@@ -222,7 +232,8 @@ def test_caller_workdir_survives_launch_failure(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(pv, "remove_labeled_networks", lambda *a: 0)
     monkeypatch.setattr(pv, "remove_labeled_images", lambda *a: 0)
     monkeypatch.setattr(
-        pv, "create_internal_network", lambda name, labels=None: (True, ""))
+        pv, "create_internal_network",
+        lambda name, labels=None, bridge_name=None: (True, ""))
     monkeypatch.setattr(
         pv, "launch_container",
         lambda **kw: LaunchResult(ok=False, reason="run_failed",

@@ -227,8 +227,15 @@ def provision(
         network_name: str | None = None
         if net_mode == "isolated":
             network_name = f"raptor-env-net-{provision_id}"
+            # Predictable host-side bridge name (rpenv-<id>, IFNAMSIZ-
+            # bounded): one static operator-installed INPUT rule on the
+            # rpenv-+ interface prefix then closes the container->
+            # host-gateway residual for every provision, past and
+            # future — no per-provision firewall authority needed (see
+            # docs/cve-env.md, "Closing the host-gateway residual").
             net_ok, net_err = create_internal_network(
-                network_name, labels=labels)
+                network_name, labels=labels,
+                bridge_name=f"rpenv-{provision_id[:9]}")
             if not net_ok:
                 return _fail(
                     reason="network_failed", reason_class="unknown",

@@ -97,6 +97,14 @@ libexec/raptor-understand --hunt "<pattern>" --target <resolved_target> \
     --out "$OUTPUT_DIR" --model <name> [--model <name> ...]
 ```
 
+Optional: add `--rank` to reorder the merged hunt items
+most-promising-first (listwise LLM ranking) before
+`hunt-result.json` is written. Ordering only — never filters an
+item; head-capped (first 200 items) and budget-capped; not
+available with `--hunt-tool slopsquat`. On claude-code-only
+installs the ranking runs through the session transport — expect
+extra minutes on large lists.
+
 For `--trace`, point at a JSON file containing the trace list:
 ```bash
 libexec/raptor-understand --trace <traces.json> --target <resolved_target> \

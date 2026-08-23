@@ -148,6 +148,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max concurrent model dispatches (default: 3, must be >= 1).",
     )
     p.add_argument(
+        "--rank", action="store_true",
+        help=(
+            "For --hunt: reorder the merged items most-promising-first "
+            "via listwise LLM ranking before writing hunt-result.json. "
+            "Ordering only — never filters an item; not available with "
+            "--hunt-tool slopsquat (no LLM in that path)."
+        ),
+    )
+    p.add_argument(
         "--verbose", action="store_true",
         help=(
             "Emit per-turn activity to stderr (tool calls and text "
@@ -345,6 +354,76 @@ def _do_map(args: argparse.Namespace) -> dict:
     return map_result_payload(result, Path(args.out).resolve())
 
 
+_HUNT_RANK_QUERY = (
+    "Rank these vulnerability-variant candidates by how likely a "
+    "focused review will confirm a real, reachable instance of the "
+    "hunted pattern. Prefer variants with attacker-influenced input, "
+    "clear source-to-sink structure in the snippet, and agreement "
+    "across models. Rank lower: test code, dead or generated code, "
+    "and matches with too little context to judge."
+)
+
+
+def _rank_hunt_items(items: list, args: argparse.Namespace) -> tuple[list, float]:
+    """Opt-in LLM re-rank of the merged hunt items (ordering only).
+
+    Best-effort: any failure — including the slopsquat sentinel model
+    path, where no real client exists — keeps the merge order. The
+    ranking client is capped at a fraction of --max-cost.
+    """
+    if len(items) < 3 or getattr(args, "hunt_tool", "") == "slopsquat":
+        return items, 0.0
+    # Head cap: hunts can return unbounded variant lists; rank the
+    # front the operator will actually read, keep the tail's merge
+    # order.
+    head_cap = 200
+    head, rest = items[:head_cap], items[head_cap:]
+    try:
+        from core.llm.client import LLMClient
+        from core.llm.ranking import rank_items
+
+        def _field(value, cap=200):
+            text = str(value) if value not in (None, "") else "?"
+            return text.replace("\n", " ").replace("\r", " ")[:cap] or "?"
+
+        def _render(item):
+            if not isinstance(item, dict):
+                return _field(item)
+            get = item.get
+            found_by = get("found_by_models") or []
+            if isinstance(found_by, list):
+                found_by = ", ".join(str(m) for m in found_by[:6])
+            return "\n".join([
+                f"location: {_field(get('file'))}:{_field(get('line'), cap=12)}",
+                f"function: {_field(get('function'))}",
+                f"confidence: {_field(get('confidence'), cap=24)}",
+                f"found_by: {_field(found_by)}",
+                f"snippet: {_field(get('snippet'), cap=400)}",
+            ])
+
+        client = LLMClient()
+        max_cost = float(getattr(args, "max_cost", 0) or 0)
+        cfg = getattr(client, "config", None)
+        if max_cost > 0 and cfg is not None:
+            cfg.max_cost_per_scan = max(0.5, 0.10 * max_cost)
+        result = rank_items(
+            head, _HUNT_RANK_QUERY, client=client, render=_render,
+        )
+        if result.stats.ranked_batches == 0:
+            print("  Rank: no signal — merge order kept", file=sys.stderr)
+            return items, result.stats.cost
+        print(
+            f"  Rank: {len(head)}/{len(items)} hunt items reordered "
+            f"({result.stats.llm_calls} calls, ${result.stats.cost:.2f})",
+            file=sys.stderr,
+        )
+        return [r.item for r in result.ranked] + rest, result.stats.cost
+    except Exception as e:  # noqa: BLE001 — ordering refinement must
+        # never break the hunt pipeline.
+        print(f"  Rank: failed ({e}); merge order kept", file=sys.stderr)
+        return items, 0.0
+
+
 def _do_hunt(args: argparse.Namespace) -> dict:
     from packages.code_understanding import hunt
     from packages.code_understanding.dispatch import default_hunt_dispatch
@@ -431,13 +510,24 @@ def _do_hunt(args: argparse.Namespace) -> dict:
         max_parallel=args.max_parallel,
     )
 
+    items = result.items
+    if getattr(args, "rank", False):
+        # Opt-in re-rank of the merged union before persistence.
+        # Correlation is keyed by item id, not list position, so
+        # reordering is safe; ranking cost joins the cost summary.
+        items, rank_cost = _rank_hunt_items(items, args)
+        if rank_cost:
+            cost_by_model["ranking"] = (
+                cost_by_model.get("ranking", 0.0) + rank_cost
+            )
+
     return {
         "mode": "hunt",
         "backend": backend_label,
         "pattern": args.hunt,
         "target": str(target),
         "models": [m.model_name for m in models],
-        "items": result.items,
+        "items": items,
         "correlation": result.correlation,
         "failed_models": result.failed_models,
         "model_errors": _extract_model_errors(result),

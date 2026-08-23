@@ -404,6 +404,23 @@ def test_seed_determinism():
     assert first.stats.llm_calls == second.stats.llm_calls
 
 
+def test_threaded_batches_match_serial_result():
+    # Worker count must not change the outcome: batch composition
+    # comes from the main-thread rng, each batch result embeds its
+    # own corpus indices, and aggregation happens on the main thread.
+    # Pins: workers never consume the shuffle rng, no batch result is
+    # lost or duplicated under concurrency, stats counters are
+    # lock-consistent.
+    values = [1000, 900, 800] + list(range(1, 28))
+    serial = rank_items(_items(values), "largest",
+                        client=FakeRankClient(), seed=42, max_workers=1)
+    threaded = rank_items(_items(values), "largest",
+                          client=FakeRankClient(), seed=42, max_workers=4)
+    assert _ranked_values(threaded) == _ranked_values(serial)
+    assert threaded.stats.llm_calls == serial.stats.llm_calls
+    assert threaded.stats.cost == pytest.approx(serial.stats.cost)
+
+
 def test_custom_render_and_cost_accumulation():
     items = [{"name": "a", "weight": 3}, {"name": "b", "weight": 9},
              {"name": "c", "weight": 1}, {"name": "d", "weight": 7}]

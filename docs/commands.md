@@ -419,6 +419,7 @@ code as vulnerable -- tool output is the verdict.
 | `--binary <path>` / `--binary-auto` / `--no-binary-oracle` | Binary-oracle reachability enrichment |
 | `--model <name>` | Model ID (repeatable for multi-model consensus) |
 | `--adversarial` | Adversarial reviewer that challenges positive verdicts |
+| `--rank-gaps` | LLM re-rank of the gap-queue head within priority tiers before pins/budget (ordering only; spend on the run ledger) |
 | `--no-validate` | Skip the /validate post-pass |
 
 See [audit](audit.md) for the full pipeline, gates, strategies, and tool
@@ -1087,8 +1088,14 @@ Discover, acquire, and diff the fix commit for a CVE.  See the
 
 ```
 /cve-diff run <CVE-ID> [--output-dir <dir>]
+/cve-diff localize --candidates <json> --edges <json> --advisory-file <txt> --out <json>
 /cve-diff health
 ```
+
+`localize` covers the case `run` cannot: no published fix commit, but
+a patch in hand — it ranks the changed functions against the advisory
+and clusters them on the call graph into a review queue (most
+suspicious first; ordering, not a verdict).
 
 | Flag | Description |
 |------|-------------|

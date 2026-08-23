@@ -15,6 +15,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import load_json
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -22,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _C_EXTENSIONS = frozenset({".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh"})
 _JOERN_STALL_FLOOR_S = 30
+
+# Byte budget for a sibling run's joern-flows.json. The file is a
+# RAPTOR-written artifact but its size tracks the analysed target —
+# large-artifact class budget (matches the 256 MiB coverage/journal
+# precedent); real flow files run well under this.
+_MAX_JOERN_FLOWS_BYTES = 256 * 1024 * 1024
 
 # Recognised source languages Joern has NO curated profile for.
 # lang_config.detect_language() would classify such a target as its
@@ -743,19 +751,21 @@ def import_sibling_joern_flows(
                 current_hash[:8] if current_hash else "unknown",
             )
             continue
-        try:
-            with open(flows_path, encoding="utf-8") as f:
-                flows_data = json.load(f)
-            if not isinstance(flows_data, dict):
-                logger.debug(
-                    "malformed joern-flows in %s — skipped",
-                    sibling_dir.name,
-                )
-                continue
-            for key, flows in flows_data.items():
-                imported.setdefault(key, []).extend(flows)
-        except (json.JSONDecodeError, OSError):
-            logger.debug("failed to import joern-flows from %s", sibling_dir.name)
+        # Bounded load: joern-flows.json is derived from an untrusted
+        # target, so a hostile or runaway run can inflate it — the
+        # previous raw json.load buffered the whole file before any
+        # size check. load_json stat-gates BEFORE the read and
+        # warn-and-Nones on oversize/malformed, which the isinstance
+        # check below turns into the existing skip-this-sibling path.
+        flows_data = load_json(flows_path, max_bytes=_MAX_JOERN_FLOWS_BYTES)
+        if not isinstance(flows_data, dict):
+            logger.debug(
+                "malformed, oversize, or unreadable joern-flows in %s "
+                "— skipped", sibling_dir.name,
+            )
+            continue
+        for key, flows in flows_data.items():
+            imported.setdefault(key, []).extend(flows)
     if skipped_stale:
         logger.info(
             "sibling joern-flow import: %d stale run(s) skipped",

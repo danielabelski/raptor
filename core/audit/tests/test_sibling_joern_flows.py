@@ -140,3 +140,35 @@ class TestMalformedSiblingArtifacts:
             _json.dumps([1, 2, 3]), encoding="utf-8",
         )
         assert import_sibling_joern_flows(out_dir) is None
+
+    def test_oversize_flows_file_skipped(
+        self, tmp_path: Path, caplog,
+    ) -> None:
+        """A joern-flows.json past the byte budget must be skipped via
+        the loader's stat-gate refusal — not by reading the file and
+        failing to parse it — while fresh siblings under the budget
+        still import."""
+        import logging
+        import os
+
+        project = tmp_path / "proj"
+        out_dir = _mk_run(project, "current", content_hash="aaaa1111")
+        oversize = _mk_run(project, "older", content_hash="aaaa1111")
+        # Sparse file: st_size past the cap without materialising it.
+        flows_path = oversize / "joern-flows.json"
+        with flows_path.open("wb") as fh:
+            os.truncate(fh.fileno(), 256 * 1024 * 1024 + 1)
+        with caplog.at_level(logging.WARNING, logger="core.json.utils"):
+            assert import_sibling_joern_flows(out_dir) is None
+        # The skip must come from the size gate, not a failed parse of
+        # a fully-buffered file.
+        assert "refusing oversize" in caplog.text
+
+        good = _mk_run(
+            project, "newer",
+            flows={"a.c:f": [{"sink": "system"}]},
+            content_hash="aaaa1111",
+        )
+        assert good.is_dir()
+        imported = import_sibling_joern_flows(out_dir)
+        assert imported == {"a.c:f": [{"sink": "system"}]}

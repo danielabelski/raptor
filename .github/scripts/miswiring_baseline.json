@@ -157,9 +157,6 @@
   "artifacts:write_only_artifact::baseline-delta.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
-  "artifacts:write_only_artifact::bench-meta.json": {
-   "note": "operator-facing run-provenance sidecar written by packages/cve_env/scripts/raptor-cve-env-bench next to results.jsonl (CVE count, backends, caps, start time); consumed by humans/jq when reading a bench dir, same class as suppressions.jsonl"
-  },
   "artifacts:write_only_artifact::bench_report.md": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -343,12 +340,6 @@
   "artifacts:write_only_artifact::rules.yaml": {
    "note": "generated source-wrapper semgrep rules under the run output dir (scanner.run_source_wrapper_stage); consumed by the external semgrep process via the path handed to run_rule, not read back by repo python"
   },
-  "artifacts:write_only_artifact::run1-envelope.json": {
-   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg A/D): the CLI's exit envelope, written for human re-verification; the proof asserts on the parsed stdout directly."
-  },
-  "artifacts:write_only_artifact::run2-output.txt": {
-   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg C): combined output of the refused child run, written for human re-verification; the proof asserts on the in-memory strings."
-  },
   "artifacts:write_only_artifact::sarif_merge.stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
   },
@@ -360,9 +351,6 @@
   },
   "artifacts:write_only_artifact::source-binary-map.json": {
    "note": "operator/LLM-facing output: Stage A source-to-binary map summary written by raptor-validation-helper for the validation skill stages"
-  },
-  "artifacts:write_only_artifact::spend.json": {
-   "note": "live-proof evidence dump (raptor-cred-proxy-proof leg D): the token's dispatcher spend snapshot, written for human re-verification; the proof asserts on the snapshot dict."
   },
   "artifacts:write_only_artifact::stderr.log": {
    "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
@@ -444,12 +432,6 @@
   },
   "artifacts:write_only_artifact::wrappers.json": {
    "note": "provenance sidecar of the source-wrapper stage: records the mechanically-derived wrapper vocabulary for the run; the in-run consumer receives the same names in-process via the stage's return value (extra_source_patterns), same class as suppressions.jsonl"
-  },
-  "dead:dead_class:core/logging/tests/test_security_event.py:MethodEmissionTest": {
-   "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"
-  },
-  "dead:dead_class:core/logging/tests/test_security_event.py:ModuleFunctionTest": {
-   "note": "unittest.TestCase collected by the pytest unittest plugin regardless of python_classes naming; not dead"
   },
   "dead:dead_class:packages/exploit_feasibility/constants.py:AddressSpace": {
    "note": "kept: public API surface (operator decision 2026-08-16); zero in-repo consumers \u2014 revisit"

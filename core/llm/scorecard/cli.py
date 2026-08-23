@@ -929,17 +929,26 @@ def cmd_tool_evidence(args: argparse.Namespace) -> int:
     Operator-driven back-propagation: run after a /validate completes
     to update the scorecard with downstream-validation truth signal.
     """
-    import json as _json
+    from core.json import load_json
+
     from .tool_evidence import record_tool_evidence_outcomes
 
+    def _read_report(path: Path):
+        data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+        if data is None:
+            # strict load_json returns None for a missing file.
+            msg = f"{path}: file not found"
+            raise OSError(msg)
+        return data
+
     try:
-        analysis = _json.loads(Path(args.analysis).read_text(encoding="utf-8"))
+        analysis = _read_report(Path(args.analysis))
     except (OSError, ValueError) as e:
         print(f"✗ Cannot read analysis report {args.analysis!r}: {e}",
               file=sys.stderr)
         return 2
     try:
-        validation = _json.loads(Path(args.validation).read_text(encoding="utf-8"))
+        validation = _read_report(Path(args.validation))
     except (OSError, ValueError) as e:
         print(f"✗ Cannot read validation report {args.validation!r}: {e}",
               file=sys.stderr)

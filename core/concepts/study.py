@@ -3360,12 +3360,10 @@ def _record_discards(output_dir: Path, discards: list[dict]) -> None:
     path = output_dir / "study-discards.json"
     existing: list[dict] = []
     if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                existing = raw.get("discarded", [])
-        except (OSError, json.JSONDecodeError):
-            existing = []
+        from core.json import load_json
+        raw = load_json(path, max_bytes=8 * 1024 * 1024)
+        if isinstance(raw, dict):
+            existing = raw.get("discarded", [])
     seen = {(d.get("kind"), d.get("id")) for d in existing}
     for d in discards:
         if (d.get("kind"), d.get("id")) not in seen:
@@ -3587,7 +3585,12 @@ def run_study(
     Returns:
         The assembled DomainModel.
     """
-    raw = json.loads(study_list_path.read_text(encoding="utf-8"))
+    from core.json import load_json
+    raw = load_json(study_list_path, strict=True, max_bytes=64 * 1024 * 1024)
+    if raw is None:
+        # strict load_json returns None (no raise) for a missing file.
+        msg = f"study list not found: {study_list_path}"
+        raise FileNotFoundError(msg)
     target = raw.get("target", "")
     source_root = raw.get("source_root", "")
     if correlate is None:

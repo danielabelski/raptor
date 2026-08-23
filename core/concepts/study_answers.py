@@ -64,10 +64,8 @@ def load_answers(out_dir: Path) -> list[dict]:
     p = _path(out_dir)
     if not p.is_file():
         return []
-    try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    from core.json import load_json
+    raw = load_json(p, max_bytes=8 * 1024 * 1024)
     if isinstance(raw, dict):
         answers = raw.get("answers", [])
         return answers if isinstance(answers, list) else []

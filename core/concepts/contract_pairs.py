@@ -585,15 +585,15 @@ def _load_verbs_from_file(
     vf: Any,
 ) -> list[tuple[frozenset[str], frozenset[str], ContractKind]]:
     """Parse verb-contracts.json into a list of verb specs."""
-    import json
     from pathlib import Path
+
+    from core.json import load_json
 
     vf = Path(vf)
     if not vf.is_file():
         return []
-    try:
-        data = json.loads(vf.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    data = load_json(vf, max_bytes=8 * 1024 * 1024)
+    if not isinstance(data, dict):
         return []
 
     results: list[tuple[frozenset[str], frozenset[str], ContractKind]] = []

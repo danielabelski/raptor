@@ -859,15 +859,14 @@ def merge_into_study_list(
     import tempfile
     from dataclasses import asdict
 
+    from core.json import load_json
+
     path = Path(study_list_path)
     data: dict = {"target": "", "source_root": "", "items": []}
     if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, json.JSONDecodeError):
-            pass
+        loaded = load_json(path, max_bytes=64 * 1024 * 1024)
+        if isinstance(loaded, dict):
+            data = loaded
     existing = data.setdefault("items", [])
     seen_ids = {i.get("id") for i in existing if isinstance(i, dict)}
     seen_keys = {

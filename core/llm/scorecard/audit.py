@@ -108,10 +108,10 @@ def _load_raw(path: Path) -> dict | None:
     a malformed file. Returns ``None`` when the file is missing."""
     if not path.is_file():
         return None
+    from core.json import load_json
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
+        return load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as exc:
         msg = f"scorecard-audit: cannot read {path}: {exc}"
         raise SystemExit(msg) from exc
 

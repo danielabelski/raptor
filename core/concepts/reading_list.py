@@ -185,9 +185,13 @@ class ReadingList:
     def load(cls, path: Path) -> ReadingList:
         if not path.exists():
             return cls(_path=path)
+        from core.json import load_json
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            # strict=True keeps the historical contract: read errors
+            # (OSError) propagate; malformed/oversize degrades to an
+            # empty list via the ValueError catch below.
+            raw = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+        except ValueError:
             return cls(_path=path)
         if not isinstance(raw, dict):
             return cls(_path=path)

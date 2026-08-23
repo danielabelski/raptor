@@ -15,7 +15,6 @@ Usage in audit context assembly:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from functools import lru_cache
@@ -23,6 +22,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Byte budget for domain-model / study-list documents.
+_MAX_MODEL_BYTES = 64 * 1024 * 1024
 
 _STOPWORDS = frozenset((
     "causes", "which", "would", "could", "should", "their",
@@ -59,11 +61,8 @@ def _load_cached(path: str) -> dict[str, Any] | None:
     p = Path(path)
     if not p.is_file():
         return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.debug("domain model load failed: %s", exc)
-        return None
+    from core.json import load_json
+    return load_json(p, max_bytes=_MAX_MODEL_BYTES)
 
 
 _per_run_warned: set[str] = set()
@@ -596,15 +595,15 @@ def _infer_repo_path(out_dir: Path) -> str | None:
         out_dir / "study-list.json",
         out_dir.parent / "study-list.json",
     ]
+    from core.json import load_json
     for c in candidates:
         if c.is_file():
-            try:
-                data = json.loads(c.read_text(encoding="utf-8"))
-                target = data.get("target", "")
-                if target:
-                    return target
-            except (OSError, json.JSONDecodeError):
+            data = load_json(c, max_bytes=_MAX_MODEL_BYTES)
+            if not isinstance(data, dict):
                 continue
+            target = data.get("target", "")
+            if target:
+                return target
     return None
 
 

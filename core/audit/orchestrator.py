@@ -3911,6 +3911,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         if ann_dir is not None:
             gaps = _merge_stale(gaps, ann_dir, config.target_path)
 
+    _edge_pass_summary: dict[str, Any] = {}
     if config.edges:
         # Cross-function edge obligations (--edges): scope the tiered
         # obligation set, review unreviewed tier-1 (boundary) edges as
@@ -3926,6 +3927,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 commit_fn=_commit_outcome,
                 on_progress=on_progress,
             )
+            _edge_pass_summary = edge_summary
             logger.info(
                 "edge pass: %d/%d tier-1 reviewed (%d finding(s), "
                 "%d budget-skipped); %d tier-2 folded; %d blind spot(s)",
@@ -4849,6 +4851,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "prior_constraints": prior_constraints,
         "open_keys": open_keys,
         "strat_weights": strat_weights,
+        "edge_pass_summary": _edge_pass_summary,
         "gaps": gaps,
         "entry_points": entry_points,
         "sinks_set": sinks_set,
@@ -5977,6 +5980,17 @@ def _run_audit_body(
     joern_future = _prep["joern_future"]
     _joern_last_activity = _prep["joern_last_activity"]
     reuse_candidates = _prep.get("reuse_candidates") or {}
+    _edge_summary = _prep.get("edge_pass_summary") or {}
+    if _edge_summary.get("cost_usd"):
+        # Book the prep-phase edge reviews into the ledger — the pass
+        # runs before AuditResult exists. One aggregate booking (the
+        # per-call telemetry keeps the true call count); popped so a
+        # prep-cache reuse pass can never book the same spend twice.
+        result.cost_tracker.record_call(
+            "edge_review",
+            cost_usd=_edge_summary.pop("cost_usd"),
+            wall_time_s=_edge_summary.pop("wall_time_s", 0.0),
+        )
     # Collapse the fold's per-function refusal map (key → reason
     # class, unique per function) into per-class counts for the
     # summary line.

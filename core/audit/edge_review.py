@@ -415,6 +415,14 @@ def run_edge_pass(
             summary["errors"] += 1
             continue
 
+        # Accumulated for the caller to book into the phase cost
+        # ledger (the pass runs during prep, before the AuditResult
+        # exists) — otherwise every edge review lands "unattributed"
+        # in cost-breakdown.json.
+        summary["cost_usd"] = summary.get("cost_usd", 0.0) + (cost or 0.0)
+        summary["wall_time_s"] = (
+            summary.get("wall_time_s", 0.0) + (time.monotonic() - t0))
+
         status = str(result.get("status") or "error")
         if status not in ("clean", "suspicious", "finding", "error"):
             status = "error"

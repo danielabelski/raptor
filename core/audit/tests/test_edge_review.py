@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from core.audit.edge_review import (
     EDGE_STRATEGY,
     build_edge_prompt,
@@ -244,6 +246,11 @@ class TestRunEdgePass:
             commit_fn=commit_fn,
         )
         assert summary["reviewed"] == 1
+        # Spend accumulates for the caller to book into the phase
+        # ledger — the pass runs during prep, before the AuditResult
+        # exists; without this every edge review lands "unattributed".
+        assert summary["cost_usd"] == pytest.approx(0.01)
+        assert summary["wall_time_s"] > 0
         # The journal-write chokepoint enforces the tool-gated
         # promotion invariant: an LLM-only contract "finding" is
         # demoted to suspicious (edge findings need tool evidence

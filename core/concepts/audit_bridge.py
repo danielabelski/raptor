@@ -141,7 +141,15 @@ def _relevance_score(
     fn_lower = function_name.lower()
     source_lower = source.lower() if source else ""
 
-    desc = (item.get("description") or item.get("statement") or "").lower()
+    # Statement and negation join the text: derived invariants keep
+    # their identifiers in the statement while the description is a
+    # provenance note — description-only scoring made them invisible.
+    desc = " ".join(
+        s for s in (
+            item.get("description"), item.get("statement"),
+            item.get("negation"),
+        ) if s
+    ).lower()
     item_id = (item.get("id") or item.get("concept") or item.get("name") or "").lower()
 
     # Direct naming match (case-insensitive, no double-count)
@@ -176,6 +184,21 @@ def _relevance_score(
         if len(part) > 4 and part in source_lower:
             score += 0.5
 
+    # Code identifiers named in the item's text that appear in the
+    # reviewed function's body. This is the ONLY routing signal
+    # available to derived invariants (threat-frame class): they carry
+    # no receipts, evidence anchors, or file field — an invariant
+    # whose statement names af_alg_pull_tsgl must reach the review of
+    # every function whose body calls it. Underscore required so the
+    # match means a code identifier, not prose; capped so a laundry
+    # list of identifiers cannot outrank an exact-function anchor.
+    if source_lower and desc:
+        named = set(re.findall(r"[a-z_][a-z0-9_]{5,}", desc))
+        hits = sum(
+            1 for tok in named if "_" in tok and tok in source_lower
+        )
+        score += min(3.0, 1.5 * hits)
+
     # Confidence acts as a tiebreaker, not a promotion — scale it down
     conf = item.get("confidence", "inferred")
     conf_bonus = {
@@ -185,6 +208,32 @@ def _relevance_score(
     score += conf_bonus.get(conf, 0.0)
 
     return score
+
+
+def _add_derived_slots(
+    selected: list[dict[str, Any]],
+    scored: list[tuple[dict[str, Any], float]],
+    *,
+    max_extra: int = 2,
+) -> list[dict[str, Any]]:
+    """Reserve up to ``max_extra`` slots for derived (llm_prior)
+    invariants that anchored to the function but missed the top-N cut.
+
+    The threat-frame class carries no receipts, evidence anchors, or
+    file fields, so extracted invariants systematically outscore it in
+    a large model even when it names the exact functions under review
+    — and it is precisely the knowledge aliasing-class detection needs
+    (the CVE-2026-31431 A/B: extraction alone missed; the derived
+    frame is the difference). Score > 1.0 still required: the anchor
+    must be real, an unanchored derived invariant stays out.
+    """
+    chosen = {id(i) for i in selected}
+    extra = [
+        i for i, s in scored
+        if s > 1.0 and id(i) not in chosen
+        and str(i.get("provenance") or "") == "llm_prior"
+    ]
+    return list(selected) + extra[:max_extra]
 
 
 def _security_context_lines(model: dict[str, Any]) -> list[str]:
@@ -406,6 +455,9 @@ def domain_model_context(
     relevant_concepts = [c for c, s in scored_concepts[:max_concepts] if s > 1.0]
     relevant_invariants = [i for i, s in scored_invariants[:max_invariants] if s > 1.0]
     relevant_contracts = [c for c, s in scored_contracts[:max_contracts] if s > 1.0]
+
+    relevant_invariants = _add_derived_slots(
+        relevant_invariants, scored_invariants)
 
     if (
         not relevant_concepts
@@ -638,17 +690,35 @@ def primers_from_domain_model(
             reverse=True,
         )
         relevant_invs = [(inv, s) for inv, s in scored[:5] if s > 1.0]
+        # Same derived-slot reserve as domain_model_context — this
+        # primers path is what the review prompt actually uses when
+        # primers exist, so the routing fix must live here too.
+        _selected = _add_derived_slots(
+            [inv for inv, _ in relevant_invs], scored)
+        _score_by_id = {id(inv): s for inv, s in scored}
+        relevant_invs = [
+            (inv, _score_by_id.get(id(inv), 0.0)) for inv in _selected
+        ]
         if relevant_invs:
             avg_score = sum(s for _, s in relevant_invs) / len(relevant_invs)
             lines = ["DOMAIN-SPECIFIC: INVARIANTS FROM STUDY"]
             lines.append(
-                "These invariants were extracted from this codebase by "
-                "/understand --study. A violation is a real bug."
+                "These invariants come from /understand --study. "
+                "Receipt-backed tiers ([verbatim]/[mechanical]) quote "
+                "this codebase — a violation is a real bug. "
+                "[unverified] entries are LLM inference (derived "
+                "threat frames included): hints to check against the "
+                "source, never established facts."
             )
             lines.append("")
             for inv, _ in relevant_invs:
                 stmt = inv.get("statement") or inv.get("description", "")
-                lines.append(f"- {stmt}")
+                # Same fail-closed tier rendering as the
+                # domain_model_context block: everything without a
+                # verified receipt reads as a hint, on THIS path too —
+                # the one review prompts actually use when primers
+                # exist.
+                lines.append(f"- {_tier_tag(inv)} {stmt}")
                 neg = inv.get("negation")
                 if neg:
                     lines.append(f"  Violation consequence: {neg}")

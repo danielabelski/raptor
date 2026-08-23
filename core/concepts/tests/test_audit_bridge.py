@@ -144,6 +144,138 @@ class TestRelevanceScore:
             "struct scatterlist *sg = sg_page_ownership_check();")
         assert score_with > score_without
 
+    def test_statement_identifiers_route_derived_invariants(self):
+        # Derived (threat-frame) invariants have no receipts, evidence
+        # anchors, or file field — their statement's code identifiers
+        # matched against the function body are their only routing
+        # signal. Description-only scoring left them at 0.0 (observed:
+        # the CVE-critical invariant ranked 58/61 and never injected).
+        derived = {
+            "id": "tf_no-writeback",
+            "statement": "Pages pulled by af_alg_pull_tsgl must never "
+                         "be used as a writable destination.",
+            "negation": "Writing corrupts foreign pages.",
+            "description": "[threat-frame derived]",
+            "provenance": "llm_prior",
+            "confidence": "derived",
+        }
+        body = "err = af_alg_pull_tsgl(sk, processed, areq->tsgl, 0);"
+        score = _relevance_score(derived, "crypto/algif_aead.c",
+                                 "_aead_recvmsg", body)
+        assert score > 1.0
+        assert _relevance_score(
+            derived, "crypto/algif_aead.c", "_aead_recvmsg", "") == 0.0
+
+    def test_identifier_signal_is_capped(self):
+        item = {
+            "id": "x",
+            "statement": " ".join(
+                f"name_{i}_token" for i in range(10)),
+            "provenance": "llm_prior",
+        }
+        body = " ".join(f"name_{i}_token" for i in range(10))
+        score = _relevance_score(item, "a.c", "f", body)
+        # 10 identifier hits must not outrank an exact-function anchor
+        # (+5.0/+6.0/+8.0 signals).
+        assert score <= 4.0
+
+
+class TestDerivedInvariantReservedSlots:
+    def test_derived_invariant_injected_past_topn_cut(self, tmp_path):
+        """A derived (llm_prior) invariant that anchors to the function
+        but is outscored by >max_invariants extracted invariants still
+        enters the block via the reserved slots."""
+        import json as _json
+        extracted = [
+            {
+                "id": f"ext_{i}",
+                "concept": "",
+                "statement": f"guard {i} on target_func",
+                "negation": "n",
+                "description": f"target_func guard {i}",
+                "evidence": [{"file": "a.c", "item": "target_func"}],
+                "confidence": "documented",
+                "provenance": "verbatim",
+            }
+            for i in range(8)
+        ]
+        derived = {
+            "id": "tf_never-writable",
+            "concept": "",
+            "statement": "Pages pulled by helper_pull_pages must "
+                         "never be a writable destination.",
+            "negation": "Writes corrupt foreign pages.",
+            "description": "[threat-frame derived]",
+            "confidence": "derived",
+            "provenance": "llm_prior",
+        }
+        (tmp_path / "concepts").mkdir()
+        (tmp_path / "concepts" / "domain-model.json").write_text(
+            _json.dumps({
+                "concepts": [], "contracts": [],
+                "invariants": extracted + [derived],
+            }))
+        out_dir = tmp_path / "run1"
+        out_dir.mkdir()
+        block = domain_model_context(
+            out_dir, "a.c", "target_func",
+            "err = helper_pull_pages(sk, n, dst_sgl);")
+        assert block is not None
+        assert "never-writable" in block
+        assert "[unverified]" in block
+
+
+    def test_primers_path_gets_derived_slots_too(self, tmp_path):
+        """primers_from_domain_model is what the review prompt
+        actually uses when primers exist — the derived-slot reserve
+        must apply there, not only in domain_model_context (observed
+        live: the fix landed in the dead path first and the CVE-frame
+        invariant still never reached the prompt)."""
+        import json as _json
+
+        from core.concepts.audit_bridge import primers_from_domain_model
+        extracted = [
+            {
+                "id": f"ext_{i}",
+                "statement": f"guard {i} on target_func",
+                "negation": "n",
+                "description": f"target_func guard {i}",
+                "evidence": [{"file": "a.c", "item": "target_func"}],
+                "confidence": "documented",
+                "provenance": "verbatim",
+            }
+            for i in range(8)
+        ]
+        derived = {
+            "id": "tf_never-writable",
+            "statement": "Pages pulled by helper_pull_pages must "
+                         "never be a writable destination.",
+            "negation": "Writes corrupt foreign pages.",
+            "description": "[threat-frame derived]",
+            "confidence": "derived",
+            "provenance": "llm_prior",
+        }
+        (tmp_path / "concepts").mkdir()
+        (tmp_path / "concepts" / "domain-model.json").write_text(
+            _json.dumps({
+                "concepts": [], "contracts": [],
+                "invariants": extracted + [derived],
+            }))
+        out_dir = tmp_path / "run1"
+        out_dir.mkdir()
+        primers = primers_from_domain_model(
+            out_dir, "a.c", "target_func",
+            "err = helper_pull_pages(sk, n, dst_sgl);")
+        joined = "\n".join(primers)
+        assert "never be a writable destination" in joined
+        # Fail-closed tier rendering on THIS path too: a receipt-less
+        # derived invariant must read as a hint, never as an extracted
+        # fact (pre-fix the primers block branded every entry "a
+        # violation is a real bug" with no tier tag).
+        line = next(ln for ln in joined.splitlines()
+                    if "never be a writable destination" in ln)
+        assert "[unverified]" in line
+
 
 class TestDomainModelContext:
     def test_returns_relevant_block(self, dm_dir):

@@ -116,9 +116,18 @@ def _parse_catalogs(path: Path) -> dict[str, dict[str, str]]:
     absent. The default catalog is keyed under ``""`` in the
     returned dict; named catalogs use their declared name.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    from . import _safe_read
+
+    # Missing file stays a silent empty result (documented contract
+    # of get_catalogs); everything else goes through the bound.
+    if not path.is_file():
+        return {}
+    # pnpm-workspace.yaml comes from the scanned — attacker-
+    # controlled — repository: bound the read (stat gate BEFORE any
+    # buffering) and refuse symlinked paths, like every other
+    # target-manifest read in this package.
+    text = _safe_read.read_bounded(path, follow_symlinks=False)
+    if text is None:
         return {}
 
     try:

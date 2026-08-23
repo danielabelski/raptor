@@ -195,6 +195,22 @@ class TestBuildFindingDetail(unittest.TestCase):
         self.assertIn("**Remediation:**", section.content)
         self.assertIn("strncpy", section.content)
 
+    def test_source_id_rendered_for_imported_finding(self):
+        """Imported findings keep their foreign id as ``source_id``
+        after normalisation to FIND-<n>; the detail table surfaces it
+        so the finding traces back to the producing pipeline."""
+        finding = {**SAMPLE_FINDINGS[0],
+                   "source_id": "src/auth.c:check_token:88"}
+        section = build_finding_detail(finding, 1)
+        self.assertIn(
+            "| Source ID | `src/auth.c:check_token:88` |",
+            section.content,
+        )
+
+    def test_no_source_id_row_when_absent(self):
+        section = build_finding_detail(SAMPLE_FINDINGS[0], 1)
+        self.assertNotIn("| Source ID |", section.content)
+
     def test_function_slot_labeled_function_for_code_finding(self):
         """Code findings (semgrep / codeql / agentic) put a real
         function name in the ``function`` slot — labelled as

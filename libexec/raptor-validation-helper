@@ -170,10 +170,64 @@ def _validate_file(workdir, filename, validator_func):
         return False, ["missing"]
     valid, errors = validator_func(data)
     if not valid:
-        print(f"  {filename}: ERRORS {errors}", file=sys.stderr)
+        # Non-blocking: every caller proceeds regardless of the
+        # verdict, so a schema problem here is advisory. Pre-fix this
+        # dumped the FULL error list — with a container of imported
+        # findings that all shared one defect, the same per-finding
+        # ERRORS block re-printed at every stage prep. One summarised
+        # WARNING line (count + first example) keeps the signal; the
+        # complete list still returns to callers that want it.
+        print(
+            f"  {filename}: WARNING {len(errors)} validation "
+            f"problem(s) — first: {errors[0]}",
+            file=sys.stderr,
+        )
     else:
         print(f"  {filename}: OK")
     return valid, errors
+
+
+# findings.json's id contract (FINDING_SCHEMA) — anything else is a
+# foreign id from another pipeline's export.
+_FINDING_ID_RE = re.compile(r"^(FIND|SARIF)-([0-9]+)$")
+
+
+def _normalise_finding_ids(container):
+    """Rewrite foreign finding ids to the findings.json contract.
+
+    ``--findings`` imports arrive from other pipelines with their own
+    id shapes (audit-style ``file:function:line``, ``EXT-*``) that
+    violate the schema's ``^(FIND|SARIF)-[0-9]+$`` pattern. Pre-fix
+    the foreign ids were kept verbatim, so every stage prep's schema
+    validation re-reported the same per-finding errors and the
+    pipeline proceeded through the noise anyway. Foreign ids are
+    renamed to sequential ``FIND-<n>`` — numbered above any conforming
+    FIND id already present, assigned in list order so the mapping is
+    stable — and the original id is preserved as ``source_id`` for
+    provenance (reports surface it). Idempotent: conforming ids,
+    including ones assigned by a previous run, are left untouched and
+    an existing ``source_id`` is never overwritten.
+
+    Returns the number of ids rewritten.
+    """
+    findings = (container or {}).get("findings", [])
+    taken = []
+    for f in findings:
+        fid = f.get("id")
+        m = _FINDING_ID_RE.match(fid) if isinstance(fid, str) else None
+        if m and m.group(1) == "FIND":
+            taken.append(int(m.group(2)))
+    next_n = max(taken, default=0) + 1
+    renamed = 0
+    for f in findings:
+        fid = f.get("id")
+        if isinstance(fid, str) and _FINDING_ID_RE.match(fid):
+            continue
+        f.setdefault("source_id", "" if fid is None else str(fid))
+        f["id"] = f"FIND-{next_n}"
+        next_n += 1
+        renamed += 1
+    return renamed
 
 
 def _findings(workdir):
@@ -2021,9 +2075,18 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
             import shutil
             dest = out_dir / "findings.json"
             shutil.copy2(findings_path, dest)
-            from core.json import load_json
             pre_findings = load_json(dest)
             n = len(pre_findings.get("findings", [])) if pre_findings else 0
+            if pre_findings:
+                # Normalise foreign ids at the import chokepoint so
+                # the container satisfies its own schema before any
+                # stage prep validates it.
+                renamed = _normalise_finding_ids(pre_findings)
+                if renamed:
+                    _save_artifact(dest, pre_findings)
+                    print(f"  Normalised {renamed} foreign finding "
+                          f"id(s) to FIND-<n> (originals kept as "
+                          f"source_id)")
             print(f"Pre-existing findings: {n} from {Path(findings_path).name}")
 
         if not no_bridge:

@@ -257,6 +257,14 @@ def build_finding_detail(finding: dict[str, Any], index: int) -> ReportSection:
         slot_label = "Dependency" if finding.get("tool") == "sca" else "Function"
         lines.append(f"| {slot_label} | `{_md_table_cell(func)}` |")
 
+    # Imported findings carry their original foreign id (audit-style
+    # file:function:line, EXT-*) as source_id after normalisation to
+    # FIND-<n> — surface it so operators can trace the finding back
+    # to the producing pipeline.
+    source_id = finding.get("source_id")
+    if source_id:
+        lines.append(f"| Source ID | `{_md_table_cell(str(source_id))}` |")
+
     code = finding.get("proof", {}).get("vulnerable_code") if isinstance(finding.get("proof"), dict) else None
     code = code or finding.get("code") or ""
     if code:

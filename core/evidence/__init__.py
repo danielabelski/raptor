@@ -21,12 +21,13 @@ analysis) into a single record per function.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from core.json.utils import dumps_canonical
 
 # ---------------------------------------------------------------------------
 # Evidence tier vocabulary
@@ -101,16 +102,13 @@ class BinaryEvidenceRecord:
 
 def evidence_id(binary_sha256: str, kind: str, source: str, data: Any) -> str:
     """Stable evidence id bound to the binary bytes and observation."""
-    payload = json.dumps(
+    payload = dumps_canonical(
         {
             "binary_sha256": binary_sha256,
             "kind": kind,
             "source": source,
             "data": data,
         },
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
     ).encode("utf-8", "surrogateescape")
     return f"evidence:{hashlib.sha256(payload).hexdigest()[:20]}"
 

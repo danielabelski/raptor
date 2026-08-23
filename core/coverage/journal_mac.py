@@ -49,13 +49,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import secrets
 import stat
 import time
 from pathlib import Path
 
+from core.json.utils import dumps_canonical
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -206,16 +206,16 @@ def key_usable() -> bool:
 def row_sha256(row: dict) -> str:
     """sha256 over the row's canonical JSON (token key excluded).
 
-    Canonical form: ``json.dumps(..., sort_keys=True,
-    separators=(",", ":"))`` — key order and whitespace don't matter,
+    Canonical form: :func:`core.json.utils.dumps_canonical` (stdlib
+    ``sort_keys=True, separators=(",", ":"), default=str`` — the
+    repo-wide frozen canonical byte form; its tests pin byte-identity
+    against this function) — key order and whitespace don't matter,
     values do. The token covers the WHOLE row (verdict, source_hash,
     spans, producer, model, strategies, body, ...): partial coverage
     would let an attacker rewrite the unauthenticated remainder of a
     validly-stamped row."""
     scrubbed = {k: v for k, v in row.items() if k != TOKEN_KEY}
-    canonical = json.dumps(
-        scrubbed, sort_keys=True, separators=(",", ":"), default=str,
-    )
+    canonical = dumps_canonical(scrubbed)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

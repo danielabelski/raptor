@@ -65,6 +65,7 @@ import stat
 import time
 from pathlib import Path
 
+from core.json.utils import dumps_canonical
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -217,16 +218,15 @@ def key_usable() -> bool:
 def payload_sha256(data: dict) -> str:
     """sha256 over the sidecar's canonical JSON (token key excluded).
 
-    Canonical form: ``json.dumps(..., sort_keys=True,
-    separators=(",", ":"))`` — key order and whitespace on disk don't
-    matter, values do. The token covers the WHOLE document: partial
-    coverage would let an attacker rewrite the unauthenticated
-    remainder of a validly-stamped file.
+    Canonical form: :func:`core.json.utils.dumps_canonical` (stdlib
+    ``sort_keys=True, separators=(",", ":"), default=str`` — the
+    repo-wide frozen canonical byte form) — key order and whitespace
+    on disk don't matter, values do. The token covers the WHOLE
+    document: partial coverage would let an attacker rewrite the
+    unauthenticated remainder of a validly-stamped file.
     """
     scrubbed = {k: v for k, v in data.items() if k != TOKEN_KEY}
-    canonical = json.dumps(
-        scrubbed, sort_keys=True, separators=(",", ":"), default=str,
-    )
+    canonical = dumps_canonical(scrubbed)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

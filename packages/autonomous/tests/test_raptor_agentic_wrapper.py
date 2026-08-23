@@ -52,6 +52,16 @@ class RaptorAgenticWrapperTests(unittest.TestCase):
         # project directory. Pin --repo to an empty temp dir and
         # RAPTOR_OUT_DIR to a temp out dir so the run touches nothing
         # outside the test and reaches argparse immediately.
+        #
+        # HOME is redirected to the temp dir as well: even with an
+        # explicit --repo, the dispatcher resolves the host's active
+        # project (~/.raptor/projects/.active) and rejects a target
+        # outside the project's bounds ("target X is outside project
+        # Y") BEFORE argparse sees the bogus flag — so on an
+        # operator host with any active project this test failed
+        # while passing in CI. A fresh HOME means an empty projects
+        # tree (same isolation pattern as
+        # test_validate_checklist_handoff_e2e's autouse fixture).
         with TemporaryDirectory() as tmp:
             repo = Path(tmp) / "empty-repo"
             repo.mkdir()
@@ -59,6 +69,7 @@ class RaptorAgenticWrapperTests(unittest.TestCase):
             out.mkdir()
             env = dict(os.environ)
             env["RAPTOR_OUT_DIR"] = str(out)
+            env["HOME"] = tmp
             env.pop("RAPTOR_CALLER_DIR", None)
             proc = subprocess.run(
                 [str(WRAPPER), "--repo", str(repo),

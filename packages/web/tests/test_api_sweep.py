@@ -35,6 +35,34 @@ class TestSweepMatchRegex(unittest.TestCase):
         self.assertTrue(pattern.search("uid=33(www-data) gid=33(www-data)"))
         self.assertFalse(pattern.search("Welcome to our SQL tutorial page"))
 
+    def test_patterns_stay_re2_compatible(self):
+        """The sweep regex executes inside ffuf's Go engine (RE2),
+        which has no lookaround, backreferences, conditionals, or
+        atomic groups. The live ffuf test proves compatibility on
+        machines that have ffuf; this static guard keeps CI runners
+        WITHOUT ffuf from waving through a Python-only construct."""
+        from packages.web.markers import (
+            MARKER_RES,
+            STATIC_SIGNATURE_CLASSES,
+        )
+
+        forbidden = ("(?=", "(?!", "(?<", "(?P=", "(?(", "(?>")
+        texts = {"<sweep>": sweep_match_regex()}
+        texts.update({
+            name: MARKER_RES[name].pattern
+            for name in STATIC_SIGNATURE_CLASSES
+        })
+        for name, pattern in texts.items():
+            for construct in forbidden:
+                self.assertNotIn(
+                    construct, pattern,
+                    f"{name} uses RE2-incompatible {construct!r}",
+                )
+            self.assertNotRegex(
+                pattern, r"\\[1-9]",
+                f"{name} uses a backreference",
+            )
+
     def test_baseline_dependent_classes_stay_out(self):
         # ssti's "49" marker without a baseline leg would match half the
         # web; the sweep regex must not carry it.

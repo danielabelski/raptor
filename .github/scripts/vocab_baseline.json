@@ -463,6 +463,11 @@
     "kind": "literal",
     "note": "English stopword list for hypothesis-text parsing (not API vocabulary)"
   },
+  "core/audit/findings_export.py::_MECHANISM_STOPWORDS": {
+    "count": 23,
+    "kind": "literal",
+    "note": "English/prose stopwords for the mechanism-text overlap match in the validate:confirmed-history receipt (generic filler words, not target API names; a token in this set can never count toward mechanism identity)"
+  },
   "core/audit/findings_export.py::finding": {
     "count": 12,
     "kind": "literal"

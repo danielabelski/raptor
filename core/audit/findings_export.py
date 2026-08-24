@@ -9,6 +9,7 @@ report generation.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,92 @@ logger = logging.getLogger(__name__)
 _RUNTIME_CONFIRMING_STAMPS = frozenset({
     "validate:observed_runtime", "validate:replayed_crash",
 })
+
+# Receipt stamped when the reviewed outcome matches a fresh CONFIRMED
+# entry in the function's /validate verdict history.
+_HISTORY_RECEIPT = "validate:confirmed-history"
+
+# Line slack when matching an outcome to a confirmed history entry —
+# reviews anchor on the hypothesis line, /validate on the sink line;
+# the same mechanism routinely lands a few lines apart.
+_HISTORY_LINE_SLACK = 10
+
+
+def _coerce_line(value: Any) -> int:
+    """Tolerant coercion — history records are built from LLM-written
+    findings files; '~242'-style values degrade to 0, never raise."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mechanism_tokens(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9_]{3,}", str(text).lower()))
+    return tokens - _MECHANISM_STOPWORDS
+
+
+_MECHANISM_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "are", "can",
+    "not", "has", "was", "when", "into", "which", "here", "its",
+    "function", "code", "line", "bug", "finding", "vulnerability",
+})
+
+
+def _validate_history_receipt(
+    history: Any,
+    *,
+    line: int,
+    cwe: str,
+    hypothesis: str = "",
+) -> str:
+    """Confirming receipt from prior /validate history, or ''.
+
+    A fresh (source-unchanged) CONFIRMED verdict for the same function
+    counts as a confirming receipt only when it plausibly names the
+    SAME mechanism as this outcome. The history record must itself
+    carry evidence (strong receipts or runtime tiers) — a bare
+    status-flip ruling never mints a receipt. Matching: when both
+    sides carry line numbers they must agree within
+    ``_HISTORY_LINE_SLACK`` (disagreeing lines veto — a same-CWE
+    defect hundreds of lines away is a different mechanism); with line
+    agreement, an equal CWE class (or a missing one) convicts, while a
+    conflicting CWE additionally needs mechanism-text overlap with the
+    outcome hypothesis (CWE labels are noisy across pipelines — the
+    same dead-branch defect classifies as CWE-570 in one and CWE-697
+    in the other). Without line numbers, CWE equality alone is too
+    weak and also needs mechanism overlap. Stale confirms and
+    function-level-only overlap never convict — the prompt hint covers
+    those.
+    """
+    if not isinstance(history, dict):
+        return ""
+    hyp_tokens = _mechanism_tokens(hypothesis)
+    for rec in history.get("confirmed") or []:
+        if not isinstance(rec, dict) or not rec.get("fresh"):
+            continue
+        if not (rec.get("strong_receipts") or rec.get("runtime_tiers")):
+            continue
+        rec_line = _coerce_line(rec.get("line"))
+        out_line = _coerce_line(line)
+        rec_cwe = str(rec.get("cwe") or "").strip().lower()
+        out_cwe = str(cwe or "").strip().lower()
+        both_lines = bool(rec_line and out_line)
+        both_cwes = bool(rec_cwe and out_cwe)
+        line_match = (
+            both_lines and abs(rec_line - out_line) <= _HISTORY_LINE_SLACK
+        )
+        if both_lines and not line_match:
+            continue
+        cwe_match = both_cwes and rec_cwe == out_cwe
+        mech_overlap = (
+            len(hyp_tokens & _mechanism_tokens(rec.get("mechanism", ""))) >= 2
+        )
+        if line_match and (cwe_match or not both_cwes or mech_overlap):
+            return _HISTORY_RECEIPT
+        if not both_lines and cwe_match and mech_overlap:
+            return _HISTORY_RECEIPT
+    return ""
 
 
 def build_graded_finding(
@@ -118,6 +205,25 @@ def build_graded_finding(
             if sec_tool and not sec.get("premise_blocked") \
                     and sec_tool not in _confirmed_by:
                 _confirmed_by.append(sec_tool)
+
+    # A fresh CONFIRMED /validate history entry matching this outcome
+    # is a real confirming receipt — the mechanism was already
+    # tool/runtime-confirmed by the validation pipeline. Without it, a
+    # re-found validate-confirmed defect exported with
+    # confirmed_by=[] and was demoted to llm_only by the gate below.
+    if (
+        evidence_record is not None
+        and _HISTORY_RECEIPT not in _confirmed_by
+        and status_val in ("finding", "suspicious", "dark")
+    ):
+        history_receipt = _validate_history_receipt(
+            getattr(evidence_record, "validate_history", None),
+            line=_coerce_line(line_val),
+            cwe=str(review_result.get("cwe_class") or ""),
+            hypothesis=str(hypothesis_val or ""),
+        )
+        if history_receipt:
+            _confirmed_by.append(history_receipt)
 
     # Discrimination gate (measured, not theoretical): tool_backed
     # with no confirming receipt means the tier came from a journaled

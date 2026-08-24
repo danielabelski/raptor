@@ -355,3 +355,123 @@ class TestConfirmedByDiscrimination:
         finding = build_graded_finding(outcome)
         assert finding["verification_tier"] == "tool_backed"
         assert finding["discovery"]["confirmed_by"] == ["semgrep:rule-1"]
+
+
+class TestConfirmedHistoryReceipt:
+    """A reviewed outcome matching a fresh CONFIRMED /validate history
+    entry gains validate:confirmed-history — incident: selected()'s
+    validate-confirmed dead branch exported speculative with
+    confirmed_by=[]."""
+
+    def _record(self, confirmed):
+        rec = FakeEvidenceRecord()
+        for c in confirmed:
+            c.setdefault("strong_receipts", True)
+        rec.validate_history = {"confirmed": confirmed, "ruled_out": []}
+        return rec
+
+    def _outcome(self, **kw):
+        kw.setdefault("line", 234)
+        kw.setdefault("status", "finding")
+        kw.setdefault(
+            "hypothesis",
+            "uid < 0 comparison on unsigned uid_t is a dead branch",
+        )
+        kw.setdefault(
+            "review_result", {"hypothesis": "dead branch", "cwe_class": "CWE-697"},
+        )
+        return FakeOutcome(**kw)
+
+    def test_line_and_cwe_match_stamps_receipt(self):
+        rec = self._record([{
+            "fresh": True, "line": 242, "cwe": "cwe-697",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" in finding["discovery"]["confirmed_by"]
+
+    def test_line_match_cwe_conflict_needs_mechanism_overlap(self):
+        # The incident shape: /validate said CWE-570, the review said
+        # CWE-697 — same dead-branch mechanism, noisy CWE labels.
+        rec = self._record([{
+            "fresh": True, "line": 242, "cwe": "CWE-570",
+            "mechanism": "unsigned uid < 0 is provably always false",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" in finding["discovery"]["confirmed_by"]
+
+    def test_line_match_cwe_conflict_no_overlap_never_convicts(self):
+        rec = self._record([{
+            "fresh": True, "line": 242, "cwe": "CWE-120",
+            "mechanism": "memcpy destination smaller than source length",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_receipt_survives_tool_backed_gate(self):
+        outcome = self._outcome()
+        outcome.verification_tier = "tool_backed"
+        rec = self._record([{"fresh": True, "line": 242, "cwe": "cwe-697"}])
+        finding = build_graded_finding(outcome, rec)
+        # Pre-fix: confirmed_by=[] demoted this to llm_only.
+        assert finding["verification_tier"] == "tool_backed"
+
+    def test_same_cwe_far_line_never_convicts(self):
+        # A confirmed defect of the same CWE hundreds of lines away is
+        # a different mechanism — disagreeing lines veto.
+        rec = self._record([{
+            "fresh": True, "line": 900, "cwe": "cwe-697",
+            "mechanism": "uid < 0 unsigned comparison dead branch",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_cwe_match_without_lines_needs_mechanism_overlap(self):
+        rec = self._record([{
+            "fresh": True, "line": 0, "cwe": "cwe-697",
+            "mechanism": "uid < 0 unsigned comparison dead branch",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" in finding["discovery"]["confirmed_by"]
+
+    def test_cwe_match_without_lines_no_overlap_never_convicts(self):
+        rec = self._record([{
+            "fresh": True, "line": 0, "cwe": "cwe-697",
+            "mechanism": "pointer comparison against freed sentinel",
+        }])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_stale_confirm_never_convicts(self):
+        rec = self._record([{"fresh": False, "line": 242, "cwe": "cwe-697"}])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_bare_status_flip_never_convicts(self):
+        # A ruling with no strong receipts and no runtime tiers is a
+        # bare opinion — it must not defeat the discrimination gate.
+        rec = self._record([])
+        rec.validate_history = {"confirmed": [{
+            "fresh": True, "line": 242, "cwe": "cwe-697",
+            "strong_receipts": False, "runtime_tiers": [],
+        }], "ruled_out": []}
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_function_level_overlap_alone_never_convicts(self):
+        rec = self._record([{"fresh": True, "line": 900, "cwe": "CWE-120"}])
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_non_finding_status_never_convicts(self):
+        rec = self._record([{"fresh": True, "line": 242, "cwe": "cwe-697"}])
+        finding = build_graded_finding(self._outcome(status="ruled_out"), rec)
+        assert "validate:confirmed-history" not in finding["discovery"]["confirmed_by"]
+
+    def test_malformed_line_tolerated(self):
+        rec = self._record([{
+            "fresh": True, "line": "~242", "cwe": "cwe-697",
+            "mechanism": "uid < 0 unsigned comparison dead branch",
+        }])
+        # Treated as line-unknown: falls to the CWE+mechanism rule.
+        finding = build_graded_finding(self._outcome(), rec)
+        assert "validate:confirmed-history" in finding["discovery"]["confirmed_by"]

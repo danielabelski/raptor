@@ -400,16 +400,6 @@ def _entry_content(project: str, fields: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _fresh_identity() -> dict[str, str]:
-    start = proc_starttime(os.getpid()) if sys.platform == "linux" else None
-    fields: dict[str, str] = {}
-    # NOTE: identity describes the SESSION pid, not this process — the
-    # caller supplies/refreshes per-pid values via _identity_for.
-    if start is not None:
-        fields["starttime"] = start
-    return fields
-
-
 def _identity_for(pid: int) -> dict[str, str] | None:
     """The identity stamp for *pid*, with off-Linux sentinels.
 

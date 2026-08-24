@@ -20,10 +20,15 @@ def scrub_identity_env(env: dict) -> dict:
     RAPTOR-internal markers. HOME gets a neutral value — ``/tmp`` is a
     fresh per-sandbox tmpfs in every sandboxed mode.
     """
-    for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
-                  "RAPTOR_DIR", "RAPTOR_OUT_DIR", "_RAPTOR_TRUSTED",
-                  "CLAUDECODE", "RAPTOR_SESSION_PID",
-                  "RAPTOR_SESSION_TOKEN"):
+    idents = {"USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
+              "RAPTOR_DIR", "RAPTOR_OUT_DIR"}
+    try:
+        from core.config import RaptorConfig
+        idents |= set(RaptorConfig.TARGET_ENV_STRIP_SET)
+    except Exception:  # noqa: BLE001 — config unavailable: legacy set
+        idents |= {"_RAPTOR_TRUSTED", "CLAUDECODE",
+                   "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN"}
+    for ident in idents:
         env.pop(ident, None)
     for key in [k for k in env if k.startswith("XDG_")]:
         env.pop(key, None)

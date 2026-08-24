@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,8 +157,26 @@ def project_op_lock(project_dir: Path, operation: str,
     try:
         acquired = False
         if wait:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            acquired = True
+            # Try quietly first; if the lock doesn't come promptly,
+            # NAME the holder on stderr before blocking — an
+            # unbounded silent wait (a wedged mutation holding the
+            # lock hangs every run start on the project) is
+            # undiagnosable without this line.
+            deadline = time.monotonic() + max(grace, 0.0)
+            while not acquired and time.monotonic() < deadline:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except OSError:
+                    time.sleep(_POLL_INTERVAL_S)
+            if not acquired:
+                holder = read_holder(lock_path)
+                print(
+                    f"waiting for the project lock on {project_dir} "
+                    f"(held by {describe_holder(holder)}) ...",
+                    file=sys.stderr)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                acquired = True
         else:
             deadline = time.monotonic() + max(grace, 0.0)
             while True:

@@ -34,7 +34,10 @@ PROJECTS_DIR = Path.home() / ".raptor" / "projects"
 # purge containment in delete() resolved against that same moving
 # target, and is_project_output_dir() misclassified real project
 # dirs whenever cwd != repo root.
-DEFAULT_OUTPUT_BASE = RaptorConfig.BASE_OUT_DIR / "projects"
+# Derived through get_out_dir() so RAPTOR_OUT_DIR redirects the
+# projects base too (hermetic harnesses; the env is set by the
+# launcher before python starts).
+DEFAULT_OUTPUT_BASE = RaptorConfig.get_out_dir() / "projects"
 
 
 _PROJECT_SCHEMA_VERSION = 4
@@ -829,10 +832,16 @@ class ProjectManager:
         # and orphans the live run's pin ("pinned to missing project"),
         # so its completion-time journal/coverage merges are silently
         # suppressed. force=True overrides, as documented.
-        if not force and project.output_path.exists():
+        if not force:
             from core.project.clean import split_live_runs
-            run_dirs = [d for d in project.output_path.iterdir()
-                        if d.is_dir() and not d.name.startswith((".", "_"))]
+            run_dirs = []
+            if project.output_path.exists():
+                run_dirs = [d for d in project.output_path.iterdir()
+                            if d.is_dir()
+                            and not d.name.startswith((".", "_"))]
+            # External pinned runs are checked even when the output
+            # dir is missing (half-purged, unmounted) — they are the
+            # runs a registry-only delete would orphan.
             try:
                 from core.project.sessions import ledger_runs_pinned_to
                 known = {str(d.resolve()) for d in run_dirs}
@@ -937,8 +946,12 @@ class ProjectManager:
         except Exception:  # noqa: BLE001 — hygiene, never blocks mutation
             logger.debug("binding rewrite failed", exc_info=True)
 
-    def rename(self, old_name: str, new_name: str) -> Project:
-        """Rename a project."""
+    def rename(self, old_name: str, new_name: str,
+               force: bool = False) -> Project:
+        """Rename a project. ``force`` overrides the live-run refusal
+        (needed for runs whose foreign-stamped metadata reads as
+        unverifiable-alive forever — e.g. dirs restored from another
+        machine with ``status=running``)."""
         self._validate_name(new_name)
         project = self.load(old_name)
         if not project:
@@ -969,11 +982,12 @@ class ProjectManager:
             _rest, live = split_live_runs(candidates)
         except Exception:  # noqa: BLE001 — liveness probe best-effort
             live = []
-        if live:
+        if live and not force:
             names = ", ".join(d.name for d in live[:3])
             msg = (f"Project '{old_name}' has {len(live)} live run(s) "
                    f"({names}...) — wait for them to finish before "
-                   "renaming")
+                   "renaming, or pass --force (unverifiable "
+                   "foreign-stamped runs read as live forever)")
             raise ValueError(msg)
 
         # Update project
@@ -1234,6 +1248,26 @@ class ProjectManager:
             try:
                 dest.mkdir()
             except FileExistsError:
+                # Already in the project — but if its pin records a
+                # DIFFERENT project (a rename crashed between the
+                # registry move and the pin rewrite), re-point it:
+                # `project add` is the natural repair an operator
+                # reaches for, and skipping silently left the run's
+                # projections suppressed with no discoverable remedy.
+                try:
+                    from core.json import load_json as _lj
+                    _m = _lj(dest / ".raptor-run.json",
+                             max_bytes=1024 * 1024)
+                    if (isinstance(_m, dict)
+                            and _m.get("project") != project.name):
+                        from core.run.metadata import write_run_pin
+                        write_run_pin(dest, project.name, "adopted")
+                        logger.info(
+                            "adopt: re-pointed the stale pin on "
+                            "already-present run %s", dest.name)
+                except Exception:  # noqa: BLE001 — repair best-effort
+                    logger.debug("adopt: stale-pin repair failed",
+                                 exc_info=True)
                 return False
             dest.rmdir()
             try:
@@ -1371,10 +1405,14 @@ class ProjectManager:
         for dest in adopted:
             project_run_projections(dest, project_dir=project.output_path)
 
-    def remove_run(self, name: str, run_name: str, to_path: str | None = None) -> None:
+    def remove_run(self, name: str, run_name: str,
+                   to_path: str | None = None,
+                   force: bool = False) -> None:
         """Remove a run from the project directory.
 
-        Moves the run to to_path. Does not delete.
+        Moves the run to to_path. Does not delete. ``force`` overrides
+        the live-run refusal (foreign-stamped metadata reads as
+        unverifiable-alive forever).
         """
         project = self.load(name)
         if not project:
@@ -1404,12 +1442,13 @@ class ProjectManager:
             load_run_metadata,
         )
         meta = load_run_metadata(run_dir) or {}
-        if (meta.get("status") == STATUS_RUNNING
+        if (not force and meta.get("status") == STATUS_RUNNING
                 and _session_alive_for_meta(meta)):
             # Same session-liveness rule the other live-run guards use
             # — a crashed run stuck at 'running' stays removable.
             msg = (f"Run '{run_name}' is still running — wait for it "
-                   "to finish (or fail it) before removing")
+                   "to finish (or fail it) before removing, or pass "
+                   "--force")
             raise ValueError(msg)
 
         dest = Path(to_path)

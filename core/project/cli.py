@@ -478,6 +478,10 @@ def main() -> None:
                               usage="raptor project rename <old> <new>", **_F)
     p_rename.add_argument("old", help="Current name")
     p_rename.add_argument("new", help="New name")
+    p_rename.add_argument(
+        "--force", action="store_true",
+        help="Override the live-run refusal (unverifiable "
+             "foreign-stamped runs read as live forever)")
 
     # notes
     p_notes = sub.add_parser("notes", help="View or update project notes",
@@ -520,6 +524,10 @@ def main() -> None:
     p_remove.add_argument("name", help="Project name")
     p_remove.add_argument("run", help="Run directory name")
     p_remove.add_argument("--to", required=True, metavar="<path>", help="Destination path")
+    p_remove.add_argument(
+        "--force", action="store_true",
+        help="Override the live-run refusal (unverifiable "
+             "foreign-stamped runs read as live forever)")
 
     # report
     p_report = sub.add_parser("report", help="Generate merged report across all runs",
@@ -1013,8 +1021,15 @@ def main() -> None:
                       f"Last-activated default updated — new sessions "
                       f"will start on '{p.name}'.")
             else:
-                print("(no session — acting on the last-activated "
-                      "default; live sessions keep their bindings)")
+                try:
+                    from .sessions import read_sessions
+                    _n = len(read_sessions(prune=False))
+                except Exception:  # noqa: BLE001 — count is decorative
+                    _n = 0
+                print(f"(no session — acting on the last-activated "
+                      f"default; {_n} live session(s) keep their "
+                      f"bindings — switch inside a session with "
+                      f"/project use)")
                 print(f"Last-activated default: {p.name} ({p.target})")
             print(f"  Output dir: {p.output_dir}")
             # Session-awareness (advisory, never lock-based): project
@@ -1062,7 +1077,8 @@ def main() -> None:
                 print(f"Deleted project '{args.name}' (output retained at {output_dir})")
 
         elif args.subcommand == "rename":
-            mgr.rename(args.old, args.new)
+            mgr.rename(args.old, args.new,
+                       force=getattr(args, "force", False))
             print(f"Renamed '{args.old}' → '{args.new}'")
 
         elif args.subcommand == "notes":
@@ -1233,7 +1249,8 @@ def main() -> None:
                       "or no run directories found)")
 
         elif args.subcommand == "remove":
-            mgr.remove_run(args.name, args.run, to_path=args.to)
+            mgr.remove_run(args.name, args.run, to_path=args.to,
+                           force=getattr(args, "force", False))
             print(f"Removed '{args.run}' from project '{args.name}'")
 
         elif args.subcommand == "correlate":
@@ -1488,21 +1505,21 @@ def _print_sessions(mgr) -> None:
         print("No registered sessions.")
         return
     from core.security.log_sanitisation import sanitise_for_terminal
-    print(f"{'PID':>9}  {'STATE':<9} {'PROJECT':<24} SINCE")
+    print(f"{'PID':>9}  {'STATE':<22} {'PROJECT':<24} SINCE")
     for pid in sorted(entries):
         fields = entries[pid]
         state = fields.get("_state", "live")
         project = fields.get("project") or "?"
         if project == "-":
             project = "(none — explicitly cleared)"
-        label = {"advisory": "advisory",
-                 "foreign": "foreign",
+        label = {"advisory": "advisory (v1)",
+                 "foreign": "foreign (other boot/ns)",
                  "stale": "stale",
                  "live": "live"}.get(state, state)
         since = sanitise_for_terminal(
             str(fields.get("since") or "unknown"), max_len=32)
         project = sanitise_for_terminal(str(project), max_len=40)
-        print(f"{pid:>9}  {label:<9} {project:<24} {since}")
+        print(f"{pid:>9}  {label:<22} {project:<24} {since}")
     bookmark = _read_bookmark(mgr)
     print(f"Last-activated default: {bookmark or '(none)'}")
 

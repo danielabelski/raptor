@@ -504,3 +504,70 @@ class RenameExternalRunsTest(unittest.TestCase):
             os.chdir(cwd)
         self.assertTrue(recorded_target_matches(
             d, "https://evil-unrelated.example/api"))
+
+
+class ForceAndRepairTest(unittest.TestCase):
+    """rename/remove_run --force overrides for unverifiable-alive
+    runs; `project add` re-points a stale pin on an already-present
+    run (the rename-crash repair)."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+
+    def _foreign_running_run(self, name: str) -> Path:
+        from core.json import save_json
+        d = Path(self.output_dir) / name
+        d.mkdir(parents=True)
+        save_json(d / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "running",
+            "project": "myapp", "project_source": "session",
+            "target_path": self.target_code,
+            "session_pid": 12345,
+            "session_start": "42",
+            "session_boot_id": "00000000-dead-beef-0000-000000000000",
+            "session_pidns": "1",
+        })
+        return d
+
+    def test_rename_force_overrides_unverifiable_live(self):
+        self._foreign_running_run("scan_foreign")
+        with self.assertRaises(ValueError):
+            self.mgr.rename("myapp", "renamed")
+        self.mgr.rename("myapp", "renamed", force=True)
+        self.assertIsNotNone(self.mgr.load("renamed"))
+
+    def test_remove_run_force_overrides_unverifiable_live(self):
+        self._foreign_running_run("scan_foreign2")
+        dest = Path(self.tmpdir.name) / "evicted"
+        with self.assertRaises(ValueError):
+            self.mgr.remove_run("myapp", "scan_foreign2",
+                                to_path=str(dest))
+        self.mgr.remove_run("myapp", "scan_foreign2",
+                            to_path=str(dest), force=True)
+        self.assertTrue((dest / "scan_foreign2").is_dir())
+
+    def test_add_repoints_stale_pin_on_present_run(self):
+        from core.json import load_json, save_json
+        d = Path(self.output_dir) / "scan_stale"
+        d.mkdir(parents=True)
+        save_json(d / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+            "project": "old-ghost", "project_source": "session",
+            "target_path": self.target_code,
+        })
+        # Already present → skipped as an add, but the stale pin
+        # (rename crashed between registry move and pin rewrite)
+        # must be repaired.
+        added = self.mgr.add_directory("myapp", str(d))
+        self.assertEqual(added, 0)
+        meta = load_json(d / ".raptor-run.json")
+        self.assertEqual(meta["project"], "myapp")
+        self.assertEqual(meta["project_source"], "adopted")

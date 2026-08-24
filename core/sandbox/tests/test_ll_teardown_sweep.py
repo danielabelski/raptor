@@ -208,6 +208,114 @@ class TestLandlockOnlyTeardownSweep(unittest.TestCase):
         self.assertIn("payload-output", r.stdout)
 
 
+class TestSweeperSignalScopeStamp(unittest.TestCase):
+    """Per-run visibility of the killable-sweeper arm: on kernels
+    without Landlock signal scoping (ABI < 6) — or when no Landlock
+    ruleset engages for the payload at all — a hostile same-UID
+    payload can SIGKILL the sweeper before spawning daemons, leaving
+    only the env-scrub-able marker backstop. That arm is a kernel
+    limitation; what the sandbox CAN do is stamp the degraded
+    envelope per run (``teardown_sweep_signal_unscoped``) instead of
+    letting ``teardown_sweep=True`` read as full coverage."""
+
+    def _build_cell(self, *, abi: int, available: bool = True,
+                    writable: bool = True) -> dict:
+        from core.sandbox import preexec as preexec_mod
+        cell: dict = {"death_fd": None}
+        with patch.object(preexec_mod, "check_landlock_available",
+                          return_value=available), \
+             patch.object(preexec_mod, "_get_landlock_abi",
+                          return_value=abi):
+            preexec_mod._make_preexec_fn(
+                {}, writable_paths=["/tmp"] if writable else None,
+                reaper_cell=cell)
+        return cell
+
+    def test_scoped_on_abi6_with_ruleset(self):
+        cell = self._build_cell(abi=6)
+        self.assertIs(cell.get("signal_scoped"), True)
+
+    def test_unscoped_below_abi6(self):
+        cell = self._build_cell(abi=5)
+        self.assertIs(cell.get("signal_scoped"), False)
+
+    def test_unscoped_without_landlock(self):
+        cell = self._build_cell(abi=0, available=False)
+        self.assertIs(cell.get("signal_scoped"), False)
+
+    def test_unscoped_without_any_ruleset(self):
+        # ABI is modern but nothing engages Landlock for the payload
+        # (no writable paths, no ports, no read restriction, no
+        # connect deny): the payload never enters a Landlock domain,
+        # so scoping cannot protect the sweeper either.
+        cell = self._build_cell(abi=8, writable=False)
+        self.assertIs(cell.get("signal_scoped"), False)
+
+    def test_cell_always_stamped_none_cell_safe(self):
+        # Every cell-carrying build must record the posture key
+        # (a bool, never absent), so the stamp site can trust
+        # `.get("signal_scoped")` to mean "unscoped" only for
+        # genuinely unscoped builds; reaper_cell=None (namespace
+        # paths) must build without touching cell state.
+        cell = self._build_cell(abi=8)
+        self.assertIsInstance(cell.get("signal_scoped"), bool)
+        from core.sandbox import preexec as preexec_mod
+        fn = preexec_mod._make_preexec_fn({}, writable_paths=["/tmp"],
+                                          reaper_cell=None)
+        self.assertTrue(callable(fn))
+
+    def _run_true(self):
+        from core.sandbox import sandbox
+        out = tempfile.mkdtemp(prefix="raptor-sweep-stamp-")
+        self.addCleanup(__import__("shutil").rmtree, out,
+                        ignore_errors=True)
+        with patch("core.sandbox.context.check_net_available",
+                   return_value=False), \
+             patch("core.sandbox.context.check_mount_available",
+                   return_value=False):
+            with sandbox(target=out, output=out,
+                         block_network=False,
+                         restrict_reads=True) as run:
+                return run([_SYS_PY, "-c", "pass"],
+                           capture_output=True, text=True, timeout=30)
+
+    def test_stamp_matches_host_scoping(self):
+        """Hermetic across hosts: the stamp must be present exactly
+        when this host cannot scope signals for the sweeper."""
+        if not os.path.exists(_SYS_PY):
+            self.skipTest("system python3 not present")
+        from core.sandbox.landlock import (
+            _get_landlock_abi,
+            check_landlock_available,
+        )
+        r = self._run_true()
+        if not r.sandbox_info.get("teardown_sweep"):
+            self.skipTest("run did not take the no-namespace posture")
+        host_scoped = (check_landlock_available()
+                       and _get_landlock_abi() >= 6)
+        if host_scoped:
+            self.assertNotIn("teardown_sweep_signal_unscoped",
+                             r.sandbox_info)
+        else:
+            self.assertIs(
+                r.sandbox_info.get("teardown_sweep_signal_unscoped"),
+                True)
+
+    def test_stamp_present_when_scoping_forced_off(self):
+        """Force the ABI<6 view at the preexec seam: the run must
+        carry the degraded-envelope stamp."""
+        if not os.path.exists(_SYS_PY):
+            self.skipTest("system python3 not present")
+        with patch("core.sandbox.preexec._get_landlock_abi",
+                   return_value=5):
+            r = self._run_true()
+        if not r.sandbox_info.get("teardown_sweep"):
+            self.skipTest("run did not take the no-namespace posture")
+        self.assertIs(
+            r.sandbox_info.get("teardown_sweep_signal_unscoped"),
+            True)
+
+
 class TestSweepBackstopUnit(unittest.TestCase):
     def test_sweep_marked_processes_kills_only_marked(self):
         from core.sandbox.context import _sweep_marked_processes

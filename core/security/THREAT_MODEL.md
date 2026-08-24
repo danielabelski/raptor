@@ -115,8 +115,14 @@ environment is invisible to the marker backstop — pid tracking by the
 live sweeper is the only in-band cover; (2) on Landlock ABI < 6 there
 is no signal scoping, so a hostile target can SIGKILL the same-UID
 sweeper before spawning daemons, leaving only the (scrub-able) marker
-backstop. Every namespace-capable host uses the pid-ns cascade and is
-unaffected.
+backstop. Runs on that killable-sweeper posture are stamped
+`teardown_sweep_signal_unscoped` in `sandbox_info` (next to the
+`teardown_sweep` posture stamp) so forensic readers can tell a
+scoping-protected sweeper from a killable one per run. Neither sweep
+stamp is applied when the Landlock-only AUDIT tracer engaged for the
+call: that path spawns the payload without the sweeper and relies on
+the tracer's `PTRACE_O_EXITKILL` for teardown instead. Every
+namespace-capable host uses the pid-ns cascade and is unaffected.
 
 #### I2-(b). Downstream consumers treat LLM-derived artefacts as adversarial.
 

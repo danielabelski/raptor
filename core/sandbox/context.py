@@ -284,7 +284,9 @@ def _run_teardown_first_timeout(
     * sweeper killability — on Landlock ABI < 6 there is no signal
       scoping, so a hostile target can SIGKILL the same-UID sweeper
       before spawning daemons (the marker backstop then applies, with
-      the scrub caveat above).
+      the scrub caveat above). Such runs are stamped
+      ``teardown_sweep_signal_unscoped`` in ``sandbox_info`` — see
+      the stamp block in run().
     """
     timeout = pk.pop("timeout", None)
     capture = pk.pop("capture_output", False)
@@ -4561,11 +4563,33 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # (TMPDIR-steered) — per-context, or per-call when this
             # run was demoted from the mount-ns backend.
             result.sandbox_info["private_scratch"] = True
-        if _reaper_cell is not None:
+        if _reaper_cell is not None and not _audit_landlock_engaged:
             # No-namespace posture: teardown containment came from the
             # subreaper sweeper + marked-process backstop rather than
-            # a pid-namespace cascade.
-            result.sandbox_info["teardown_sweep"] = True
+            # a pid-namespace cascade. The audit-engaged exclusion
+            # keeps the stamp honest: run_landlock_audit spawns the
+            # payload with a reaper-less rlimit preexec (no
+            # _reaper_split, no sweeper, no marker backstop) —
+            # teardown containment there is the tracer's
+            # PTRACE_O_EXITKILL, so neither sweep stamp applies.
+            _sweep_info = result.sandbox_info
+            _sweep_info["teardown_sweep"] = True
+            # Sweeper-killability gap (kernel limitation, stamped
+            # honestly like the Landlock metadata/TRUNCATE gaps
+            # below): the sweeper forks BEFORE Landlock restrict_self,
+            # so on scoping kernels (ABI >= 6, kernel 6.12) it sits
+            # outside the payload's Landlock domain and the payload
+            # cannot signal it. Without scoping (ABI < 6, or no
+            # Landlock ruleset engaged for the payload) a hostile
+            # same-UID payload can SIGKILL the sweeper before
+            # spawning daemons, leaving only the (env-scrub-able)
+            # marker backstop. landlock.py warns once per process at
+            # ruleset build time; this stamp gives forensic readers
+            # the per-run posture. ``signal_scoped`` is recorded by
+            # _make_preexec_fn next to the ruleset-engagement
+            # predicate so the stamp cannot drift from it.
+            if not _reaper_cell.get("signal_scoped"):
+                _sweep_info["teardown_sweep_signal_unscoped"] = True
         # Landlock metadata gap (kernel limitation, stamped honestly):
         # Landlock has no access right for metadata-only operations —
         # chmod/chown/utimensat/setxattr on any same-UID file OUTSIDE

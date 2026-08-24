@@ -27,7 +27,11 @@ from pathlib import Path
 from . import state
 from ._fork_safe_warn import warn_post_fork
 from .exit_codes import SANDBOX_EXIT_RLIMIT_CORE_FAIL
-from .landlock import _make_landlock_preexec, check_landlock_available
+from .landlock import (
+    _get_landlock_abi,
+    _make_landlock_preexec,
+    check_landlock_available,
+)
 from .seccomp import _make_seccomp_preexec
 
 logger = logging.getLogger(__name__)
@@ -228,6 +232,10 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
     (ABI >= 6) the payload cannot signal it. The payload re-arms
     PR_SET_PDEATHSIG against the sweeper, so a kill aimed at the
     direct child (subprocess timeout) still takes the payload down.
+    The cell is also stamped ``signal_scoped`` (bool) at build time —
+    True only when a Landlock ruleset engages for the payload AND the
+    kernel has signal scoping — which context.run() surfaces as the
+    per-run ``teardown_sweep_signal_unscoped`` posture stamp.
 
     `host_nproc_cap` is the no-user-namespace substitute for the
     prlimit/unshare NPROC containment: on the Landlock-only path the
@@ -252,6 +260,23 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
         landlock_fn = _make_landlock_preexec(effective_paths, allowed_tcp_ports,
                                              readable_paths=readable_paths,
                                              deny_all_tcp_connect=deny_all_tcp_connect)
+
+    if reaper_cell is not None:
+        # Parent-side posture record for the per-run sandbox_info
+        # stamp (context.run() reads it as
+        # ``teardown_sweep_signal_unscoped``): the sweeper is
+        # protected from payload signals only when the payload
+        # actually enters a Landlock domain WITH signal scoping
+        # (ABI >= 6, kernel 6.12) — the sweeper forks before
+        # restrict_self and stays outside the domain. Below ABI 6,
+        # or when no Landlock ruleset engages for this preexec at
+        # all, a hostile same-UID payload can SIGKILL the sweeper
+        # before spawning daemons, leaving only the (env-scrub-able)
+        # marker backstop. Computed HERE — the one place that knows
+        # whether a ruleset engages — so the stamp can never drift
+        # from the engagement predicate above.
+        reaper_cell["signal_scoped"] = bool(
+            landlock_fn is not None and _get_landlock_abi() >= 6)
 
     seccomp_fn = (
         _make_seccomp_preexec(seccomp_profile, block_udp=seccomp_block_udp)

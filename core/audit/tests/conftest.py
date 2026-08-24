@@ -21,3 +21,17 @@ def _isolated_mac_keys(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "XDG_DATA_HOME", str(tmp_path_factory.mktemp("xdg-data")),
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_egress_state(monkeypatch):
+    """Audit tests construct real LLMClients (llm_review, synthesis,
+    budget suites), whose enable_llm_egress side effect swaps the
+    HTTPS_PROXY family to a loopback in-process proxy. Without this
+    reset the dead pointer outlives the suite and later packages in
+    the same session (observed: core/sandbox proxy tests tunnelling
+    via a long-gone 127.0.0.1 upstream). Same shared body the
+    core/llm and core/dataflow conftests wrap."""
+    from core.testing import reset_llm_egress_state
+
+    yield from reset_llm_egress_state(monkeypatch)

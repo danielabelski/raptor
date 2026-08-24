@@ -41,6 +41,20 @@ class TestProxyEventsTargetPollution(unittest.TestCase):
             self.skipTest("curl not installed")
         from core.sandbox.proxy import _reset_for_tests
         _reset_for_tests()
+        # Hermetic against leaked proxy env from earlier suites: a
+        # dead 127.0.0.1 upstream pointer makes the proxy tunnel
+        # instead of screening locally, and denied_host / the local
+        # jsonl paths this class asserts on never happen. Same guard
+        # the attack-scenario is_global test carries.
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"):
+            for name in (var, var.lower()):
+                if name in os.environ:
+                    # addCleanup at the pop site: restoration survives
+                    # future insertions after these lines and skip
+                    # paths, structurally.
+                    value = os.environ.pop(name)
+                    self.addCleanup(os.environ.__setitem__, name, value)
+
 
     def tearDown(self):
         from core.sandbox.proxy import _reset_for_tests

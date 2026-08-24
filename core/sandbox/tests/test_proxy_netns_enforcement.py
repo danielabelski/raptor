@@ -33,7 +33,58 @@ class TestProxyUnixSocket:
     @pytest.fixture(autouse=True)
     def _proxy(self, tmp_path):
         from core.sandbox.proxy import EgressProxy
-        self.proxy = EgressProxy(["example.com"])
+
+        # Loopback upstream stub: CONNECTs to the allowlisted host
+        # tunnel here and get a deterministic 200 instead of a REAL
+        # dial to example.com (which hangs to its connect timeout on
+        # egress-restricted hosts — these tests spent 20s each on the
+        # wire before this existed). The tests exercise the unix-socket
+        # protocol path; the upstream leg is not what's under test.
+        import threading
+
+        self._upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._upstream.bind(("127.0.0.1", 0))
+        self._upstream.listen(8)
+        # Bounded accept wait: close() alone does not wake a thread
+        # blocked in accept(), which would park one daemon thread per
+        # test on a stale fd.
+        self._upstream.settimeout(0.5)
+        upstream_port = self._upstream.getsockname()[1]
+
+        def _serve_upstream():
+            while True:
+                try:
+                    conn, _addr = self._upstream.accept()
+                except TimeoutError:
+                    if self._upstream.fileno() == -1:
+                        return
+                    continue
+                except OSError:
+                    return
+                try:
+                    conn.settimeout(5)
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(1024)
+                        if not chunk:
+                            break
+                        data += chunk
+                    conn.sendall(
+                        b"HTTP/1.1 200 Connection established\r\n\r\n",
+                    )
+                except OSError:
+                    pass
+                finally:
+                    conn.close()
+
+        self._upstream_thread = threading.Thread(
+            target=_serve_upstream, daemon=True,
+        )
+        self._upstream_thread.start()
+        self.proxy = EgressProxy(
+            ["example.com"],
+            upstream_proxy=f"http://127.0.0.1:{upstream_port}",
+        )
         # macOS AF_UNIX sun_path limit is 104 bytes; pytest tmp_path
         # under /private/var/folders/… can exceed that. Use a short
         # name under /tmp when the default path would be too long.
@@ -48,6 +99,7 @@ class TestProxyUnixSocket:
             self._short_dir = None
         yield
         self.proxy.stop(drain_timeout=0)
+        self._upstream.close()
         if self._short_dir:
             import shutil
             shutil.rmtree(self._short_dir, ignore_errors=True)
@@ -81,10 +133,10 @@ class TestProxyUnixSocket:
                 b"Host: example.com:443\r\n\r\n"
             )
             resp = s.recv(4096)
-            # Proxy may return 200 (if DNS resolves) or 502 (if not).
-            # Either is a valid protocol response proving the unix
-            # socket path works end-to-end.
-            assert resp.startswith(b"HTTP/1.1 ")
+            # Deterministic via the loopback upstream stub: the tunnel
+            # establishes and the unix-socket path is proven
+            # end-to-end without touching the real network.
+            assert resp.startswith(b"HTTP/1.1 200"), resp
         finally:
             s.close()
 

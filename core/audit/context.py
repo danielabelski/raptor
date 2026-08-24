@@ -206,6 +206,21 @@ def assemble_context(
         trust_surface: list of trust questions (pre-computed checklist)
         prior_attempts: dict with exemplars and failure summary (from labeled_attempts)
     """
+    from core.inventory.binary_builder import BINARY_PATH_PREFIX
+    if file_path.startswith(BINARY_PATH_PREFIX):
+        # Binary targets: source is decompilation from the REDatabase,
+        # callers/callees from xrefs — same return shape.
+        from .binary_context import assemble_binary_context
+        return assemble_binary_context(
+            target_path=target_path,
+            file_path=file_path,
+            function_name=function_name,
+            checklist=checklist,
+            context_map=context_map,
+            annotations_dir=annotations_dir,
+            out_dir=out_dir,
+        )
+
     ctx: dict[str, Any] = {
         "file": file_path,
         "function": function_name,
@@ -778,6 +793,16 @@ def render_pattern_library() -> str:
 
 
 
+def _source_heading(ctx: dict[str, Any]) -> str:
+    """Source-section heading: line span for source, address for binary."""
+    if ctx.get("is_binary"):
+        addr = ctx.get("address")
+        rep = ctx.get("representation", "decompilation")
+        loc = f" at {addr:#x}" if isinstance(addr, int) else ""
+        return f"\n### Source ({rep}{loc})"
+    return f"\n### Source (lines {ctx['line_start']}-{ctx.get('line_end', '?')})"
+
+
 def format_context_for_prompt(
     ctx: dict[str, Any],
     budget_limit: int = 0,
@@ -838,8 +863,7 @@ def format_context_for_prompt(
             )
             header_parts.append(f"**Attributes:** {attrs}")
 
-    header_parts.append(
-        f"\n### Source (lines {ctx['line_start']}-{ctx.get('line_end', '?')})")
+    header_parts.append(_source_heading(ctx))
     header_parts.append(_fenced(ctx.get("source", "(not available)")))
     sections.append(PromptSection("source", "\n".join(header_parts), 0))
 
@@ -2071,7 +2095,7 @@ def _format_glance_prompt(ctx: dict[str, Any]) -> str:
     parts = [
         f"## {_defend_identifier(ctx.get('file', ''), max_length=512)}:"
         f"{_defend_identifier(ctx.get('function', ''), max_length=256)}",
-        f"\n### Source (lines {ctx['line_start']}-{ctx.get('line_end', '?')})",
+        _source_heading(ctx),
         _fenced(ctx.get("source", "(not available)")),
         question,
     ]

@@ -37,6 +37,21 @@ def binary_path_key(binary_path: "Path | str") -> str:
     return BINARY_PATH_PREFIX + Path(binary_path).stem
 
 
+def is_binary_item(item: Dict[str, Any]) -> bool:
+    """True when a checklist/journal/gap item refers to a binary function.
+
+    Routing predicate for consumers (audit context assembly, sweep
+    substitution, coverage grouping): binary items carry the
+    ``binary:`` file sentinel or an ``address`` instead of line
+    numbers.
+    """
+    file_val = item.get("file") or ""
+    return (
+        file_val.startswith(BINARY_PATH_PREFIX)
+        or item.get("address") is not None
+    )
+
+
 _DANGEROUS_SINKS: Optional[frozenset] = None
 
 
@@ -96,6 +111,16 @@ def build_binary_checklist(
     bp = binary_path or Path(db.binary_path or "unknown")
     path_key = binary_path_key(bp)
 
+    binary_sha = ""
+    try:
+        if Path(bp).is_file():
+            import hashlib
+            binary_sha = hashlib.sha256(
+                Path(bp).read_bytes()
+            ).hexdigest()
+    except OSError:
+        logger.debug("could not hash %s", bp, exc_info=True)
+
     dangerous = _get_dangerous_sinks()
     import_names = {
         (imp.get("name") or "").split("@")[0]
@@ -135,6 +160,11 @@ def build_binary_checklist(
         )
 
         metadata = _build_metadata(func, export_names)
+        # The gap loop copies only known keys off checklist items —
+        # address/size must ride inside metadata to survive into
+        # context assembly and the journal.
+        metadata["address"] = func.address
+        metadata["size"] = func.size
 
         item: Dict[str, Any] = {
             "name": func.name,
@@ -175,7 +205,7 @@ def build_binary_checklist(
                 "language": "binary",
                 "lines": 0,
                 "sloc": 0,
-                "sha256": "",
+                "sha256": binary_sha,
                 "items": items,
             },
         ],

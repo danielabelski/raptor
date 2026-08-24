@@ -66,6 +66,17 @@ def main():
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    if _is_binary_target(Path(target)):
+        checklist = _build_binary_checklist(Path(target), Path(output_dir))
+        items = checklist.get("total_items", 0)
+        stats = checklist.get("binary_stats", {})
+        print(
+            f"Binary checklist: {items} functions "
+            f"({stats.get('named_functions', 0)} named, "
+            f"source: {stats.get('source_tool', '?')})"
+        )
+        return
+
     from packages.exploitability_validation import build_checklist
     checklist = build_checklist(target, output_dir, scope=parsed.scope)
 
@@ -73,6 +84,75 @@ def main():
     items = checklist.get("total_items", 0)
     sloc = checklist.get("total_sloc", 0)
     print(f"Checklist: {total} files, {items} items, {sloc} SLOC")
+
+
+def _is_binary_target(target: Path) -> bool:
+    """A compiled artifact (ELF/PE/Mach-O) or a Ghidra project."""
+    if target.is_dir():
+        return False
+    if target.suffix == ".gpr":
+        return True
+    try:
+        with open(target, "rb") as f:
+            magic = f.read(4)
+    except OSError:
+        return False
+    return magic in (
+        b"\x7fELF",
+        b"MZ\x90\x00",
+        b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+    ) or magic[:2] == b"MZ"
+
+
+def _build_binary_checklist(target: Path, output_dir: Path) -> dict:
+    """Binary route: REDatabase → build_binary_checklist.
+
+    Reuses an re-database.json already in the output directory (a
+    prior /ghidra import with --decompile-all is the recommended
+    prep); otherwise imports fresh — Ghidra project targets through
+    the sandboxed bridge, raw binaries through the r2/objdump
+    fallback chain (reduced fidelity, no decompilation).
+    """
+    import json
+
+    from core.audit.binary_context import find_redb, load_redb
+    from core.inventory.binary_builder import build_binary_checklist
+
+    db = None
+    binary_path = target if target.suffix != ".gpr" else None
+    redb_path = find_redb(output_dir, target)
+    if redb_path is not None:
+        print(f"using cached binary database: {redb_path}")
+        db = load_redb(redb_path)
+    elif target.suffix == ".gpr":
+        from packages.ghidra.bridge import GhidraBridge
+        bridge = GhidraBridge(target)
+        db = bridge.import_project(output_dir, decompile=True)
+        bridge.close()
+    else:
+        from packages.ghidra.r2_import import r2_available
+        if r2_available():
+            print("importing via r2 (degraded: no decompiler types)",
+                  file=sys.stderr)
+            from packages.ghidra.r2_import import import_binary_r2
+            db = import_binary_r2(target)
+        else:
+            print("importing via objdump/nm (degraded: symbols only)",
+                  file=sys.stderr)
+            from packages.ghidra.objdump_import import import_binary_objdump
+            db = import_binary_objdump(target)
+        with open(output_dir / "re-database.json", "w") as f:
+            json.dump(db.to_dict(), f, indent=1)
+
+    checklist = build_binary_checklist(
+        db,
+        binary_path=binary_path,
+        include_auto_named=True,
+    )
+    with open(output_dir / "checklist.json", "w") as f:
+        json.dump(checklist, f, indent=2)
+    return checklist
 
 
 if __name__ == "__main__":

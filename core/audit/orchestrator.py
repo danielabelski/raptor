@@ -205,6 +205,8 @@ from .sweep import (
 from .topo_order import topological_sort as _topological_sort
 from .triage import TriageBucket, classify_all, format_triage_summary
 
+from core.inventory.binary_builder import BINARY_PATH_PREFIX
+
 if TYPE_CHECKING:
     from concurrent.futures import Future
     from collections.abc import Callable
@@ -16255,7 +16257,7 @@ def _sweep_validate(
     # (Joern, CodeQL dataflow) still ground it.
     premise_h = _primary_hypothesis_entry(outcome, hypothesis)
 
-    is_binary = is_binary or outcome.file.startswith("binary:")
+    is_binary = is_binary or outcome.file.startswith(BINARY_PATH_PREFIX)
     if source_override is not None:
         source = source_override
     else:

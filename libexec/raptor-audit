@@ -100,8 +100,15 @@ def cmd_gaps(args: argparse.Namespace) -> int:
     context_map = load_context_map(out_dir)
 
     if not context_map:
-        print("warning: no context-map.json — gap prioritization will lack "
-              "entry-point and sink data. Run /understand --map first.",
+        from core.audit.gaps import load_checklist as _lc
+        _cl = _lc(out_dir)
+        if _cl and _cl.get("target_kind") == "binary":
+            hint = ("Run 'libexec/raptor-understand --map --target "
+                    "<binary>' for a binary context map.")
+        else:
+            hint = "Run /understand --map first."
+        print("warning: no context-map.json — gap prioritization will "
+              f"lack entry-point and sink data. {hint}",
               file=sys.stderr)
 
     annotations_dir = Path(args.annotations_dir) if args.annotations_dir else None
@@ -665,10 +672,53 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                                 break
                         break
 
+        # Binary items: the "file" is a sentinel, not a path — sweep
+        # the decompilation instead (same substitution the
+        # orchestrator's binary branch makes).
+        sweep_target = target_path
+        sweep_file = args.file
+        _bin_tmp = None
+        from core.inventory.binary_builder import BINARY_PATH_PREFIX
+        if args.file.startswith(BINARY_PATH_PREFIX):
+            if tool != "semgrep":
+                print(
+                    f"error: {tool} needs source; only semgrep runs "
+                    "on decompiled bodies for binary targets",
+                    file=sys.stderr,
+                )
+                return 1
+            from core.audit.binary_context import find_redb, load_redb
+            redb_path = find_redb(out_dir, target_path)
+            db = load_redb(redb_path) if redb_path else None
+            func_obj = None
+            if db is not None:
+                func_obj = next(
+                    (f for f in db.functions
+                     if f.name == args.function), None,
+                )
+            if func_obj is None or not func_obj.decompilation:
+                print(
+                    "error: no decompilation available for "
+                    f"{args.function} — cannot sweep",
+                    file=sys.stderr,
+                )
+                return 1
+            import tempfile as _tempfile
+            _bin_tmp = _tempfile.NamedTemporaryFile(
+                mode="w", suffix=f"-{args.function}.c",
+                prefix="raptor-binsweep-", delete=False,
+            )
+            _bin_tmp.write(func_obj.decompilation)
+            _bin_tmp.close()
+            sweep_target = Path(_bin_tmp.name).parent
+            sweep_file = Path(_bin_tmp.name).name
+            fn_line_start = 0
+            fn_line_end = 0
+
         if tool == "semgrep":
             result = run_semgrep_sweep(
-                target_path=target_path,
-                file_path=args.file,
+                target_path=sweep_target,
+                file_path=sweep_file,
                 function_name=args.function,
                 rule_config=str(rule_path),
                 line_start=fn_line_start or 0,
@@ -692,8 +742,18 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 line_end=fn_line_end,
             )
 
+        if _bin_tmp is not None:
+            try:
+                Path(_bin_tmp.name).unlink()
+            except OSError:
+                pass
+
         entry = result.to_log_entry()
         entry["rule_source"] = str(rule_path)
+        if _bin_tmp is not None:
+            # Log the REAL item key, not the tmpfile.
+            entry["file"] = args.file
+            entry["representation"] = "decompilation"
         if args.rule and not args.rule_file:
             entry["rule_inline"] = args.rule
         append_audit_log(out_dir, entry)

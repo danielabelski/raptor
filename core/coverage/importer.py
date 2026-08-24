@@ -528,8 +528,19 @@ def _function_ranges(
             continue
         for it in fe.get("items", fe.get("functions", [])) or []:
             name = it.get("name")
+            if not name:
+                continue
+            address = it.get("address")
+            if address is not None:
+                # Binary items have no line numbers — project onto the
+                # function's address range instead. Coherent within
+                # the store: binary:<stem> file entries never mix with
+                # line-numbered intervals.
+                size = it.get("size") or 0
+                out[(path, name)] = (address, address + max(size - 1, 0))
+                continue
             lo = it.get("line_start")
-            if name and lo is not None:
+            if lo is not None:
                 hi = it.get("line_end")
                 if normalise_hi and hi is None:
                     hi = lo

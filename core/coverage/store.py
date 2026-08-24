@@ -213,6 +213,20 @@ def iter_inventory_functions(
         if not path:
             continue
         for fn in fe.get("items", fe.get("functions", [])) or []:
+            address = fn.get("address")
+            if address is not None:
+                # Binary items: the store's intervals for binary:<stem>
+                # files live in address space (importer._function_ranges
+                # marks the same ranges) — line numbers don't exist.
+                size = fn.get("size") or 0
+                yield (
+                    path,
+                    fn.get("name"),
+                    address,
+                    address + max(size - 1, 0),
+                    fn.get("kind", "function"),
+                )
+                continue
             yield (
                 path,
                 fn.get("name"),

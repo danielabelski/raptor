@@ -1,0 +1,366 @@
+"""Binary context assembler — the ``binary:`` branch of assemble_context.
+
+Builds context dicts for binary functions from an
+:class:`~packages.ghidra.model.REDatabase` (Ghidra, r2, or objdump
+provenance). Returns the same dict shape :func:`assemble_context`
+produces so downstream consumers (prompt formatting, strategy
+selection, the review loop, the sweep) work unchanged.
+
+Key differences: ``source`` holds decompiled C or a stub (never
+source lines), ``representation`` says which, ``is_binary`` is True,
+and everything derived (names, comments, decompilation) is
+attacker-controlled — consumers must envelope it exactly like source
+from a scanned repo.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from core.inventory.binary_builder import BINARY_PATH_PREFIX
+
+logger = logging.getLogger(__name__)
+
+#: Cached (path, mtime) → REDatabase so a gap loop over hundreds of
+#: functions parses the JSON once.
+_REDB_CACHE: Dict[str, Any] = {}
+
+
+def find_redb(out_dir: Optional[Path], target_path: Optional[Path]) -> Optional[Path]:
+    """Locate the run's re-database.json.
+
+    Search order: the run output directory, its parent (shared
+    pipeline dirs), then the import cache convention for the target
+    binary. Only RAPTOR-owned locations — never the scanned target's
+    own directory.
+    """
+    candidates: List[Path] = []
+    if out_dir:
+        candidates.append(Path(out_dir) / "re-database.json")
+        candidates.append(Path(out_dir).parent / "re-database.json")
+    if target_path:
+        candidates.append(
+            Path(f"out/ghidra-import-{Path(target_path).stem}")
+            / "re-database.json"
+        )
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
+
+
+def load_redb(redb_path: Path):
+    """Load an REDatabase from disk, cached on (path, mtime)."""
+    from packages.ghidra.model import REDatabase
+
+    key = str(Path(redb_path).resolve())
+    mtime = Path(redb_path).stat().st_mtime_ns
+    cached = _REDB_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    with open(redb_path) as f:
+        db = REDatabase.from_dict(json.load(f))
+    _REDB_CACHE[key] = (mtime, db)
+    return db
+
+
+def assemble_binary_context(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    checklist: Optional[Dict[str, Any]] = None,
+    context_map: Optional[Dict[str, Any]] = None,
+    annotations_dir: Optional[Path] = None,
+    out_dir: Optional[Path] = None,
+    db=None,
+) -> Dict[str, Any]:
+    """Assemble a context slice for one binary function.
+
+    Mirrors :func:`core.audit.context.assemble_context`'s return
+    shape; ``db`` may be passed directly (tests, callers holding one)
+    or is located via :func:`find_redb`.
+    """
+    if db is None:
+        redb_path = find_redb(out_dir, target_path)
+        if redb_path is not None:
+            try:
+                db = load_redb(redb_path)
+            except (OSError, ValueError, KeyError):
+                logger.warning(
+                    "could not load %s", redb_path, exc_info=True,
+                )
+
+    item = _find_item(checklist, file_path, function_name)
+    address = (item or {}).get("address")
+    if address is None:
+        address = ((item or {}).get("metadata") or {}).get("address")
+
+    func = None
+    if db is not None:
+        if address is not None:
+            func = db.function_by_address(address)
+        if func is None:
+            func = next(
+                (f for f in db.functions if f.name == function_name),
+                None,
+            )
+            if func is not None:
+                address = func.address
+
+    ctx: Dict[str, Any] = {
+        "file": file_path,
+        "function": function_name,
+        "line_start": 0,
+        "line_end": None,
+        "address": address,
+        "is_binary": True,
+        "target_path": str(target_path),
+    }
+
+    source, representation = _read_binary_source(func)
+    ctx["source"] = source
+    ctx["representation"] = representation
+
+    metadata = dict((item or {}).get("metadata") or {})
+    metadata.setdefault("name", function_name)
+    if func is not None:
+        metadata.setdefault("address", func.address)
+        metadata.setdefault("size", func.size)
+        if func.signature:
+            metadata.setdefault("signature", func.signature)
+    ctx["metadata"] = metadata
+
+    ctx["callers"] = _binary_callers(db, func)
+    ctx["callees"] = _binary_callees(db, func)
+    ctx["existing_annotation"] = _load_annotation(
+        annotations_dir, file_path, function_name, out_dir,
+    )
+    ctx["is_prior_audit_annotation"] = False
+    ctx["sinks"] = _binary_sinks(context_map, function_name, address)
+    ctx["threat_model"] = _load_threat_model(target_path)
+    ctx["trust_surface"] = []
+    ctx["prior_attempts"] = {}
+    ctx["shared_state"] = {}
+    ctx["crypto_inventory"] = {}
+    ctx["ownership_model"] = {}
+    ctx["role_context"] = ""
+    ctx["type_definitions"] = _related_types(func, db)
+    ctx["macro_definitions"] = ""
+    ctx["flow_traces"] = []
+    ctx["project_context"] = ""
+    ctx["framework_guarantees"] = []
+
+    strategies = None
+    if item:
+        try:
+            from .strategy import learned_vocab, strategies_from_item
+            strategies = strategies_from_item(
+                item, file_path,
+                reachable_sinks=ctx["sinks"],
+                source=source,
+                target_path=target_path,
+                domain_vocab=learned_vocab(out_dir, target_path),
+            )
+        except Exception:
+            logger.debug(
+                "strategy selection failed for %s:%s",
+                file_path, function_name, exc_info=True,
+            )
+    ctx["strategy_exemplars"] = _strategy_exemplars(strategies)
+    ctx["strategy_primers"] = _strategy_primers(strategies)
+
+    comments = _function_comments(db, func)
+    parts = []
+    if func is not None and func.signature:
+        parts.append(f"Signature: {func.signature}")
+    for c in comments[:5]:
+        parts.append(f"[{c['kind']}] {c['text']}")
+    if parts:
+        ctx["ghidra_context"] = "\n".join(parts)
+
+    return ctx
+
+
+def _find_item(checklist, file_path, function_name):
+    for file_entry in (checklist or {}).get("files", []):
+        if file_entry.get("path") != file_path:
+            continue
+        for item in file_entry.get("items", []):
+            if item.get("name") == function_name:
+                return item
+    return None
+
+
+def _read_binary_source(func):
+    """Return (source_text, representation)."""
+    if func is None:
+        return "(function not found in the binary database)", "unknown"
+    if func.decompilation:
+        return func.decompilation, "decompilation"
+    return (
+        "(no decompilation available for %s at 0x%x, size %d bytes — "
+        "re-import with --decompile-all or use "
+        "'raptor-ghidra decompile' on demand)"
+        % (func.name, func.address, func.size),
+        "stub",
+    )
+
+
+def _binary_callers(db, func) -> List[Dict[str, Any]]:
+    if db is None or func is None:
+        return []
+    callers = []
+    seen = set()
+    for xref in db.xrefs:
+        if xref.to_addr != func.address or xref.kind != "call":
+            continue
+        caller = db.function_containing_address(xref.from_addr)
+        if caller and caller.address not in seen:
+            seen.add(caller.address)
+            entry: Dict[str, Any] = {
+                "name": caller.name,
+                "file": BINARY_PATH_PREFIX + Path(
+                    db.binary_path or "unknown").stem,
+                "line_start": 0,
+                "address": caller.address,
+            }
+            if caller.signature:
+                entry["signature"] = caller.signature
+            callers.append(entry)
+    return callers[:15]
+
+
+def _binary_callees(db, func) -> List[Dict[str, Any]]:
+    if db is None or func is None:
+        return []
+    callees = []
+    seen = set()
+    for xref in db.xrefs:
+        if xref.kind != "call":
+            continue
+        caller = db.function_containing_address(xref.from_addr)
+        if caller is None or caller.address != func.address:
+            continue
+        callee = db.function_by_address(xref.to_addr)
+        if callee and callee.address not in seen:
+            seen.add(callee.address)
+            entry: Dict[str, Any] = {
+                "name": callee.name,
+                "file": BINARY_PATH_PREFIX + Path(
+                    db.binary_path or "unknown").stem,
+                "line_start": 0,
+                "address": callee.address,
+            }
+            if callee.signature:
+                entry["signature"] = callee.signature
+            if callee.decompilation:
+                entry["source_snippet"] = "\n".join(
+                    callee.decompilation.splitlines()[:20]
+                )
+            callees.append(entry)
+    return callees[:15]
+
+
+def _binary_sinks(context_map, function_name, address) -> List[Dict[str, Any]]:
+    if not context_map:
+        return []
+    sinks = []
+    for sink in context_map.get(
+            "sinks", context_map.get("dangerous_sinks", [])):
+        sinks.append({
+            "location": sink.get("location", sink.get("name", "")),
+            "type": sink.get("type", ""),
+            "address": sink.get("address"),
+        })
+    return sinks[:20]
+
+
+def _load_threat_model(target_path):
+    try:
+        from .context import _load_threat_model as _source_ltm
+        return _source_ltm(Path(target_path))
+    except Exception:
+        logger.debug("threat model load failed", exc_info=True)
+        return None
+
+
+def _load_annotation(annotations_dir, file_path, function_name, out_dir):
+    try:
+        from .context import _load_existing_annotation
+        return _load_existing_annotation(
+            annotations_dir, file_path, function_name, out_dir=out_dir,
+        )
+    except Exception:
+        logger.debug(
+            "annotation load failed for %s:%s",
+            file_path, function_name, exc_info=True,
+        )
+        return None
+
+
+def _related_types(func, db) -> List[Dict[str, Any]]:
+    """Types referenced by the function, in the formatter's shape.
+
+    ``format_context_for_prompt`` renders type_definitions entries as
+    ``{name, file, line, source}`` dicts — file/line have no source
+    meaning here, so they carry the recovered-type provenance.
+    """
+    if func is None or db is None or not db.types:
+        return []
+    text = (func.signature or "") + " " + (func.decompilation or "")
+    for ch in "*(),;[]{}":
+        text = text.replace(ch, " ")
+    words = set(text.split())
+    matched = [t for t in db.types if t.name in words]
+    out = []
+    for t in matched[:5]:
+        body = f"{t.kind} {t.name}"
+        if t.size is not None:
+            body += f" /* size: {t.size} */"
+        for fld in (t.fields or []):
+            offset = fld.get("offset")
+            line = (
+                f"  /* {offset:#x} */ " if isinstance(offset, int)
+                else "  "
+            )
+            line += f"{fld.get('type', '?')} {fld.get('name', '?')};"
+            if fld.get("size"):
+                line += f" /* {fld['size']} bytes */"
+            body += "\n" + line
+        out.append({
+            "name": t.name,
+            "file": "ghidra-types",
+            "line": 0,
+            "source": body,
+        })
+    return out
+
+
+def _function_comments(db, func) -> List[Dict[str, str]]:
+    if db is None or func is None:
+        return []
+    return [
+        {"kind": c.kind, "text": c.text}
+        for c in db.comments
+        if c.function == func.name
+    ][:10]
+
+
+def _strategy_exemplars(strategies):
+    try:
+        from .context import _load_strategy_exemplars
+        return _load_strategy_exemplars(strategies)
+    except Exception:
+        return []
+
+
+def _strategy_primers(strategies):
+    try:
+        from .context import _load_strategy_primers
+        return _load_strategy_primers(strategies)
+    except Exception:
+        return []

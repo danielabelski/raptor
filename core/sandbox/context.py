@@ -22,6 +22,8 @@ from pathlib import Path
 
 from . import landlock as _landlock
 from . import probes as _probes
+from ._env_quarantine import ENV_RESTORE_KEY as _ENV_RESTORE_KEY
+from ._env_quarantine import quarantine_loader_env as _quarantine_loader_env
 from . import seccomp as _seccomp
 from . import state
 
@@ -2679,6 +2681,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 k: v for k, v in _env_for_target.items()
                 if k != "_RAPTOR_KEEP_TRUST_MARKERS"
             }
+        if _ENV_RESTORE_KEY in _env_for_target:
+            # RAPTOR-minted quarantine payload key (see
+            # _env_quarantine) — only ever set by run() itself on the
+            # launcher-bound view; a caller-supplied copy must not
+            # reach direct-exec children either.
+            _env_for_target = {
+                k: v for k, v in _env_for_target.items()
+                if k != _ENV_RESTORE_KEY
+            }
 
         # Force FD close at fork. Python defaults close_fds=True on POSIX
         # but we reject explicit overrides — inheriting FDs from RAPTOR
@@ -4178,10 +4189,16 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     # when need_unshare — the shim
                                     # needs the trust marker and
                                     # strips it before the target
-                                    # exec. Without the shim the env
-                                    # goes straight to the target, so
-                                    # hand it the stripped view.
-                                    env=(kwargs.get("env")
+                                    # exec. Loader vars (LD_*/DYLD_*)
+                                    # are quarantined so they load
+                                    # into the TARGET, never into the
+                                    # unshare/prlimit/shim bootstrap
+                                    # (see _env_quarantine). Without
+                                    # the shim the env goes straight
+                                    # to the target, so hand it the
+                                    # stripped view.
+                                    env=(_quarantine_loader_env(
+                                            kwargs["env"])
                                          if need_unshare
                                          else _env_for_target),
                                     # Orphan-teardown parity with the
@@ -4361,7 +4378,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "os.environ for a sandboxed child."
                                 )
                                 raise RuntimeError(msg_0)
-                            _denv = dict(_denv_base)
+                            # Launcher-bound env: quarantine loader
+                            # vars so LD_*/DYLD_* apply to the target
+                            # (the shim re-injects them at exec), not
+                            # to the unshare/prlimit/shim bootstrap.
+                            _denv = _quarantine_loader_env(_denv_base)
                             _denv["_RAPTOR_DEATH_FD"] = str(_death_r)
                             _dk["env"] = _denv
                             try:

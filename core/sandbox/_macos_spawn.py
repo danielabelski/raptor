@@ -878,6 +878,15 @@ def run_sandboxed(cmd: list[str], *,
         msg = "stdin and input arguments may not both be used."
         raise ValueError(msg)
     _popen_stdin = subprocess.PIPE if input is not None else stdin
+    # Loader-variable quarantine: the seatbelt shim is an UNSANDBOXED
+    # trusted dispatcher carrying _RAPTOR_TRUSTED — DYLD_*/LD_* from a
+    # caller-supplied env dict must not inject code into it. The shim
+    # re-applies the quarantined pairs before exec'ing sandbox-exec so
+    # the target-side semantics are unchanged (SIP may still strip
+    # DYLD_* across the protected sandbox-exec binary, exactly as it
+    # did pre-quarantine).
+    from ._env_quarantine import quarantine_loader_env
+    child_env = quarantine_loader_env(child_env)
     try:
         with subprocess.Popen(
             sandbox_cmd,

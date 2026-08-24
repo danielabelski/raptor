@@ -357,6 +357,27 @@ def main() -> int:
             )
             for _m in _strip:
                 os.environ.pop(_m, None)
+            # Re-apply quarantined loader variables (LD_*/DYLD_*) for
+            # the TARGET only. context.run() moved them out of the
+            # launcher chain's live env into this JSON payload so they
+            # could not inject code into unshare/prlimit/this shim
+            # (which run with the trust marker and, on the map-root
+            # path, with not-yet-dropped ns capabilities); the target
+            # exec below is where the caller intended them to apply.
+            _restore_raw = os.environ.pop("_RAPTOR_ENV_RESTORE", None)
+            if _restore_raw:
+                import json as _json
+                try:
+                    _restore = _json.loads(_restore_raw)
+                except ValueError:
+                    _restore = None
+                if isinstance(_restore, dict):
+                    for _rk, _rv in _restore.items():
+                        if isinstance(_rk, str) and isinstance(_rv, str) \
+                                and (_rk.startswith(("LD_", "DYLD_"))
+                                     or _rk in ("GCONV_PATH",
+                                                "GLIBC_TUNABLES")):
+                            os.environ[_rk] = _rv
             try:
                 os.execvp(target_argv[0], target_argv)
             except FileNotFoundError:

@@ -205,3 +205,44 @@ class TestSeatbeltShim:
                     os.close(fd)
                 except OSError:
                     pass
+
+    def test_env_restore_reapplied_at_target_exec(self):
+        """Quarantined loader vars re-apply at the target exec (loader
+        names only, key never visible) — mirrors the pid1 shim's
+        restore contract on the seatbelt path."""
+        import json as _json
+        from core.sandbox._env_quarantine import _LOADER_EXACT
+        names = sorted(_LOADER_EXACT) + ["LD_PRELOAD_X", "DYLD_X"]
+        payload = _json.dumps(
+            {**{n: f"/pv/{n}" for n in names}, "PATH": "/evil"},
+        )
+        sr, sw = os.pipe()
+        prints = ";".join(
+            f"print({n!r} + '=' + os.environ.get({n!r}, '<unset>'))"
+            for n in (*names, "_RAPTOR_ENV_RESTORE")
+        )
+        probe = (
+            "import os;"
+            f"{prints};"
+            "print('EVILPATH=' + str(os.environ.get('PATH') == '/evil'))"
+        )
+        p = subprocess.Popen(
+            _outer([sys.executable, "-c", probe]),
+            pass_fds=(sw,),
+            env=_env(_RAPTOR_STATUS_FD=str(sw),
+                     _RAPTOR_ENV_RESTORE=payload),
+            stdout=subprocess.PIPE, text=True,
+        )
+        os.close(sw)
+        out, _ = p.communicate(timeout=10)
+        byte = os.read(sr, 8)
+        os.close(sr)
+        assert byte == _READY_BYTE
+        for n in names:
+            assert f"{n}=/pv/{n}" in out, (
+                f"{n} quarantined but not restored by the seatbelt shim"
+            )
+        assert "_RAPTOR_ENV_RESTORE=<unset>" in out
+        assert "EVILPATH=False" in out, (
+            "restore payload must not overwrite non-loader variables"
+        )

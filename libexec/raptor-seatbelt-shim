@@ -359,6 +359,26 @@ def main() -> int:
         for _m in ("_RAPTOR_TRUSTED", "_RAPTOR_STATUS_FD", "_RAPTOR_DEATH_FD",
                    "CLAUDECODE"):
             os.environ.pop(_m, None)
+        # Re-apply quarantined loader variables (LD_*/DYLD_*) for the
+        # sandboxed target only. The spawn side moved them out of this
+        # shim's live env (an unsandboxed trusted dispatcher) into the
+        # JSON payload; the exec below is where the caller intended
+        # them to apply. SIP behaviour across sandbox-exec is
+        # unchanged either way.
+        _restore_raw = os.environ.pop("_RAPTOR_ENV_RESTORE", None)
+        if _restore_raw:
+            import json as _json
+            try:
+                _restore = _json.loads(_restore_raw)
+            except ValueError:
+                _restore = None
+            if isinstance(_restore, dict):
+                for _rk, _rv in _restore.items():
+                    if isinstance(_rk, str) and isinstance(_rv, str) \
+                            and (_rk.startswith(("LD_", "DYLD_"))
+                                 or _rk in ("GCONV_PATH",
+                                            "GLIBC_TUNABLES")):
+                        os.environ[_rk] = _rv
         try:
             os.execvp(argv[0], argv)
         except FileNotFoundError:

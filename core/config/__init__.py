@@ -637,6 +637,7 @@ class RaptorConfig:
         "DYLD_FRAMEWORK_PATH",        # macOS framework injection
         # glibc data-module hijack (survives AT_SECURE on setuid binaries)
         "GCONV_PATH",      # iconv gconv-modules path — loads attacker .so on iconv use
+        "GLIBC_TUNABLES",  # parsed by ld.so at startup (CVE-2023-4911 surface)
         "LOCPATH",         # Locale data path — loads attacker locale modules
         "NLSPATH",         # Message catalog path — reads attacker-controlled data
         "HOSTALIASES",     # Static hostname→IP file — redirects DNS resolution

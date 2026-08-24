@@ -74,6 +74,12 @@ python3 raptor.py web --url https://target \
 python3 raptor.py web --url https://target --ffuf-wordlist payloads.txt \
   --ffuf-request request.txt
 
+# Automatic OpenAPI body sweep: the scan generates a raw request per
+# documented JSON operation, ffuf sweeps the payload wordlist through
+# each string field matching static error signatures, and every hit is
+# re-verified first-party through the three-gate oracle
+python3 raptor.py web --url https://target --ffuf-api-sweep payloads.txt
+
 # Blind-timing probe: sleep-payload wordlist + response-time matcher
 python3 raptor.py web --url https://target --ffuf-wordlist sleep-payloads.txt \
   --ffuf-path 'search?q=FUZZ' --ffuf-match-time '>3000' --ffuf-rate 5
@@ -82,13 +88,40 @@ python3 raptor.py web --url https://target --ffuf-wordlist sleep-payloads.txt \
 # Secret hunting in response bodies
 python3 raptor.py web --url https://target --ffuf-wordlist dirs.txt \
   --ffuf-match-regex 'AKIA[0-9A-Z]{16}'
+
+# Headless-browser phases (needs `python3 -m playwright install
+# chromium`; on distros newer than the pinned playwright recognizes,
+# prefix PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64). Rendered
+# crawl sees the post-JS DOM (SPA routes, dynamic forms); XSS is graded
+# by actual JavaScript execution, not reflection; fragment probes catch
+# DOM sinks the server never sees. Page requests are origin-gated.
+python3 raptor.py web --url https://target --browser
+
+# Blind SSRF via out-of-band callbacks: the listener runs INSIDE the
+# scanner process (trusted code, never sandboxed — callbacks are
+# inbound from the target). One callback proves nothing; findings are
+# confirmed only when a replay with a FRESH token calls back too.
+python3 raptor.py web --url https://target --oob-listen 8880 \
+  --oob-callback-host scanner.reachable.example:8880
 ```
 
 Operational notes:
 
+- When the SAGE sidecar is running, the scan recalls per-target priors
+  at discovery (fingerprint, previously confirmed classes, wordlist
+  effectiveness) and stores fresh observations at report time. Priors
+  are hint tier only: they reorder vulnerability classes and bias
+  payload prompts, and never suppress a check or demote a finding —
+  only the current run's oracle concludes.
 - Recursion and clusterbomb apply a default `-rate 50` unless
   `--ffuf-rate` is set; recursion also caps each sub-job with
   `-maxtime-job`.
+- Soft-404 calibration derives `-fs`/`-fw` from wildcard probes when
+  you set no filters. Inherent `-fs` semantics: a real resource whose
+  body happens to be exactly the soft-404's size is filtered with it.
+  When the wildcard redirects, no filter is derived (ffuf sees the
+  redirect layer; the scan client sees the destination) — tune
+  matchers manually on redirect-to-login targets.
 - Every run is capped by ffuf's own `-maxtime` (`--ffuf-max-runtime`,
   default 300s) so partial results are always flushed; `timed_out` in
   the report marks a run the backstop had to kill.

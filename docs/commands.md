@@ -372,6 +372,7 @@ Web application security scanner (alpha).
 | `--ffuf-vhost` | Virtual-host discovery (fuzzes `Host: FUZZ.<target>`) |
 | `--ffuf-vhost-host-template <t>` | Custom vhost Host template (must end with `.<target-host>`) |
 | `--ffuf-request <file>` | Raw HTTP request file to fuzz (`-request`); Host must name the target |
+| `--ffuf-api-sweep <wordlist>` | Payload sweep over documented OpenAPI JSON body fields; hits re-verified first-party |
 | `--ffuf-calibration-strategy <s>` | Auto-calibration strategy `basic`/`advanced` (`-acs`) |
 | `--ffuf-per-host-calibration` | Calibrate filters per host (`-ach`) |
 | `--ffuf-encoder <spec>` | Keyword encoder chain, e.g. `'FUZZ:urlencode'` (`-enc`, repeatable) |
@@ -380,6 +381,10 @@ Web application security scanner (alpha).
 | `--ffuf-stop-on-all-errors` | Stop on all error cases (`-sa`) |
 | `--ffuf-header <header>` | Custom HTTP header (repeatable) |
 | `--ffuf-cookie <cookie>` | Cookie to include in requests (repeatable) |
+| `--browser` | Headless-browser phases: rendered crawl (post-JS DOM), execution-proof XSS, fragment DOM-XSS probes |
+| `--oob-listen <[host:]port>` | In-process out-of-band callback listener; injects blind-SSRF canaries (0 = ephemeral port) |
+| `--oob-callback-host <host[:port]>` | Externally reachable callback address when it differs from the bind (NAT/container) |
+| `--oob-grace <seconds>` | Wait for out-of-band callbacks after fuzzing (default 10) |
 
 Recursion and clusterbomb apply a default `-rate 50` unless `--ffuf-rate`
 is set. See `.claude/commands/web.md` for recipes.

@@ -72,6 +72,30 @@ _VALID_PROFILE_NAMES = frozenset({
 # ---------------------------------------------------------------------------
 
 
+def _is_url_target(target: str | None) -> bool:
+    """Web targets are URLs, not paths — no resolve(), no disk hashing."""
+    return bool(target) and "://" in str(target)
+
+
+def _normalize_url_target(target: str) -> str:
+    """Comparison form of a URL target: scheme and host case-folded,
+    scheme-default port dropped, trailing slash stripped — so
+    https://X:443/ and https://x match the way a filesystem
+    Path.resolve() comparison would have."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(target.strip())
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    default_port = {"http": ":80", "https": ":443"}.get(scheme)
+    if default_port and netloc.endswith(default_port):
+        netloc = netloc[: -len(default_port)]
+    normalized = f"{scheme}://{netloc}{parts.path}".rstrip("/")
+    if parts.query:
+        normalized += f"?{parts.query}"
+    return normalized
+
+
 def find_understand_output(
     validate_dir: Path,
     target_path: str | None = None,
@@ -199,8 +223,11 @@ def _rank_candidates(
             )
             return 0
 
-    if not target_path:
-        # No target — can't hash on disk, just pick newest.
+    if not target_path or _is_url_target(target_path):
+        # No target, or a URL target (web scan) — file-hash freshness is
+        # unknowable (nothing on disk to hash; a live site has no
+        # checklist SHA), so just pick newest rather than marking every
+        # web candidate maximally stale.
         # Use mtime_ns for sub-second resolution; directory name breaks ties.
         candidates.sort(key=lambda d: (_safe_mtime_ns(d), d.name), reverse=True)
         return candidates[0], set()
@@ -338,9 +365,16 @@ def _search_understand_dirs(
     if not parent_dir.is_dir():
         return []
 
-    target_resolved = (
-        str(Path(require_target).resolve()) if require_target else None
-    )
+    # URL targets (web scans) compare as normalized strings —
+    # Path.resolve() on a URL yields "$CWD/https:/host", which can
+    # never match and silently disabled cross-run matching for web.
+    target_resolved: str | None
+    if require_target and _is_url_target(require_target):
+        target_resolved = _normalize_url_target(require_target)
+    else:
+        target_resolved = (
+            str(Path(require_target).resolve()) if require_target else None
+        )
 
     results = []
     try:
@@ -386,8 +420,13 @@ def _search_understand_dirs(
             checklist = load_json(d / "checklist.json")
             if not checklist:
                 continue
-            d_target = checklist.get("target_path", "")
-            if not d_target or str(Path(d_target).resolve()) != target_resolved:
+            d_target = str(checklist.get("target_path", "") or "")
+            if not d_target:
+                continue
+            if _is_url_target(d_target) or _is_url_target(target_resolved):
+                if _normalize_url_target(d_target) != target_resolved:
+                    continue
+            elif str(Path(d_target).resolve()) != target_resolved:
                 continue
 
         results.append(d)
@@ -558,7 +597,7 @@ def normalize_context_map(context_map: dict[str, Any], checklist: dict[str, Any]
         return context_map
 
     files_by_path = {
-        fi.get("path"): fi
+        str(fi.get("path")): fi
         for fi in _list_at(checklist, "files")
         if isinstance(fi, dict) and fi.get("path")
     }
@@ -649,7 +688,7 @@ def _augment_library_surface(context_map: dict[str, Any],
     for fi in _list_at(checklist, "files"):
         if not isinstance(fi, dict):
             continue
-        lang = fi.get("language")
+        lang = str(fi.get("language") or "")
         path = fi.get("path")
         if not isinstance(path, str):
             continue

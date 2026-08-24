@@ -286,24 +286,17 @@ class RequestSmugglingCheck(Check):
     ) -> tuple:
         """One raw request/response exchange; (None, 0.0) on error."""
         import socket
-        import ssl
         import time
+
+        from packages.web._probe_tls import probe_tls_context
 
         try:
             sock = socket.create_connection((host, port), timeout=5)
             if use_tls:
-                ctx = ssl.create_default_context()
-                # Scanner semantics, not client semantics: this raw
-                # probe exists to elicit a parsing differential from
-                # whatever stack the TARGET runs, legacy included —
-                # transport privacy is not a goal and there is nothing
-                # of ours to protect. Pin the floor explicitly instead
-                # of inheriting build defaults; TLS 1.0 is deliberate
-                # (distro OpenSSL policy may still refuse below 1.2 at
-                # handshake time, which only narrows reach).
-                ctx.minimum_version = ssl.TLSVersion.TLSv1
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+                # Scanner semantics, not client semantics — see
+                # packages/web/_probe_tls.py for why validation is off
+                # and the version floor is pinned.
+                ctx = probe_tls_context()
                 sock = ctx.wrap_socket(sock, server_hostname=host)
 
             sock.sendall(request_text.encode())

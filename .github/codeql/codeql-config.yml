@@ -53,3 +53,12 @@ paths-ignore:
   # Git worktree mirrors — duplicates of in-tree source that would cause
   # double-counted alerts if scanned.
   - .claude/worktrees/**
+  # The web scanner's raw-probe TLS shim disables certificate and
+  # hostname validation and floors the version at TLS 1.0 BY DESIGN —
+  # it builds attack traffic for authorized scan targets (self-signed
+  # staging included), not a client channel with anything to protect.
+  # CodeQL correctly flags that construction in client code; here the
+  # insecurity is the feature. The shim is quarantined to this one
+  # module (with a never-use-for-real-egress warning) precisely so the
+  # checks consuming it stay fully scanned.
+  - packages/web/_probe_tls.py

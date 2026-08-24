@@ -224,17 +224,19 @@ def _find_overflow_reaching_input_impl(
             )
             tried_unconstrained = len(simgr.unconstrained)
             if solved is not None:
+                data, snapshot = solved
                 return SymbolicResult(
                     succeeded=True,
                     reason="found reaching input via unconstrained-PC solve",
                     wall_seconds=time.monotonic() - t0,
-                    concrete_input=solved,
+                    concrete_input=data,
                     states_explored=_count_states(simgr),
                     metadata={
                         "target_address": target_address,
-                        "input_length": len(solved),
+                        "input_length": len(data),
                         "steps": steps,
                         "stash": "unconstrained",
+                        "register_snapshot": snapshot,
                     },
                 )
             # Defensive cap: some pathological targets branch every
@@ -279,17 +281,19 @@ def _find_overflow_reaching_input_impl(
         register_constraints=register_constraints,
     )
     if solved is not None:
+        data, snapshot = solved
         return SymbolicResult(
             succeeded=True,
             reason="found reaching input via post-loop unconstrained solve",
             wall_seconds=wall,
-            concrete_input=solved,
+            concrete_input=data,
             states_explored=states,
             metadata={
                 "target_address": target_address,
-                "input_length": len(solved),
+                "input_length": len(data),
                 "steps": steps,
                 "stash": "unconstrained",
+                "register_snapshot": snapshot,
             },
         )
 
@@ -320,13 +324,16 @@ def _try_solve_pc(
     *,
     register_constraints: Optional[dict] = None,
     overcap_lengths: list | None = None,
-) -> Optional[bytes]:
+) -> Optional[tuple]:
     """Try each unconstrained state: constrain PC to target_address
     (plus any register_constraints), check satisfiability, extract
     stdin bytes on success.
 
-    Returns the first satisfying state's stdin bytes, or None when
-    no state can be constrained to the target under all constraints.
+    Returns ``(stdin_bytes, register_snapshot)`` for the first
+    satisfying state, or None when no state can be constrained to
+    the target under all constraints. The snapshot captures each
+    general-purpose register AT the hijacked-PC state — the
+    "crash state" one-gadget constraint checking needs.
     """
     for state in unconstrained_states:
         # Copy so failed attempts don't pollute state constraints —
@@ -369,8 +376,45 @@ def _try_solve_pc(
             if overcap_lengths is not None:
                 overcap_lengths.append(len(data))
             continue
-        return bytes(data)
+        return bytes(data), _register_snapshot(candidate)
     return None
+
+
+def _register_snapshot(state) -> dict:
+    """General-purpose registers at the hijacked-PC state.
+
+    Per register: ``{"value": int}`` when the state pins it to one
+    concretion, else ``{"symbolic": True, "attacker_influenced":
+    bool}`` (influenced = its expression involves stdin bytes, so
+    the attacker can steer it). The concrete subset is exactly the
+    crash-state dict one-gadget SMT checking conditions on; symbolic
+    registers stay absent there — free for the solver, which matches
+    reality. The register name list comes from archinfo, not a
+    hardcoded per-arch table.
+    """
+    snap: dict = {}
+    try:
+        names = list(state.arch.default_symbolic_registers)
+    except Exception:  # noqa: BLE001 — exotic arch: no snapshot
+        return snap
+    pc_names = {"rip", "eip", "pc", "ip"}
+    for name in names:
+        if name in pc_names:
+            continue  # constrained to the target by construction
+        try:
+            v = getattr(state.regs, name)
+            if state.solver.unique(v):
+                snap[name] = {"value": int(state.solver.eval(v))}
+            else:
+                snap[name] = {
+                    "symbolic": True,
+                    "attacker_influenced": any(
+                        "stdin" in var for var in v.variables
+                    ),
+                }
+        except Exception:  # noqa: BLE001 — unreadable register: omit
+            continue
+    return snap
 
 
 def _is_mapped(project, addr: int) -> bool:

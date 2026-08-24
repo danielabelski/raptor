@@ -320,3 +320,31 @@ def test_cache_invalidates_on_mtime_change(tmp_path: Path):
     )
     # Contents match (same binary), only load path differs.
     assert first.entry_point == second.entry_point
+
+
+def test_register_snapshot_on_hijack_solve(tmp_path: Path):
+    """A successful hijack solve carries the register state at the
+    redirected PC: rsp is concrete (the frame is fixed once the
+    overflow layout is chosen); the snapshot marks attacker-steerable
+    registers symbolic rather than inventing values for them."""
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import (
+        OVERFLOW_MARKER_SOURCE, compile_fixture,
+    )
+
+    binary = compile_fixture(tmp_path, OVERFLOW_MARKER_SOURCE)
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["win"], timeout=60.0,
+    )
+    assert solve.succeeded, solve.reason
+
+    snap = solve.metadata.get("register_snapshot")
+    assert snap, "hijack solve must carry a register snapshot"
+    assert "rip" not in snap  # PC is constrained by construction
+    for name, entry in snap.items():
+        assert ("value" in entry) ^ entry.get("symbolic", False), (
+            f"{name}: exactly one of concrete/symbolic — got {entry}"
+        )
+    assert "value" in snap["rsp"], "stack pointer should be concrete"
+    assert isinstance(snap["rsp"]["value"], int)

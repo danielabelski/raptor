@@ -62,11 +62,13 @@ from core.sandbox.summary import (
 TRIAGE_FILE = "sandbox-triage.json"
 
 # Control-plane record types written into the same denials stream by
-# core/sandbox/audit_budget.py — not enforcement denials, must be excluded
+# core/sandbox/audit_budget.py and the tracer's credential-path
+# guaranteed-keep lane — not enforcement denials, must be excluded
 # from the enforcement-oriented signal checks below.
 _BUDGET_MARKER_TYPES = frozenset({
     "pid_budget_exceeded", "category_budget_exceeded",
     "category_budget_exceeded_sampling", "audit_summary",
+    "credential_keep_cap_exceeded",
 })
 
 VERDICT_CLEAN = "clean"

@@ -136,6 +136,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.security.log_sanitisation import sanitise_for_terminal
+
 from . import audit_budget, escalation_signatures
 from .evidence import AUDIT_SUBDIR, parse_fd_path
 
@@ -244,6 +246,71 @@ def _announce_escape_primitive(name: str, pid: int) -> None:
             f"RAPTOR sandbox ALERT: escape-primitive syscall "
             f"'{name}' denied (pid={pid}). This is consistent with a "
             f"sandbox-escape ATTEMPT, not ordinary tool denial noise. "
+            f"See sandbox-triage.json at run end for full context.\n"
+        ).encode("ascii", errors="replace"))
+    except OSError:
+        pass
+
+
+# Credential-path pre-budget lane: distinct-path ceiling for the
+# guaranteed-keep records below. is_credential_path matches a bounded
+# name family, so legitimate workloads touch a handful of distinct
+# paths; the cap exists because the MATCH input is attacker-chosen —
+# a target minting credential-lookalike names (".env.0001",
+# ".env.0002", ...) must not turn the budget-bypass lane itself into
+# an unbounded flood channel (JSONL volume and the dedup set's parent
+# memory both stay bounded). Keep-lane exhaustion is announced with
+# one in-band marker (credential_keep_cap_exceeded); banner-lane
+# exhaustion with a one-shot stderr notice — never silently.
+#
+# Accepted residual (shared with the macOS backend and triage's
+# post-hoc signal, all name-based): the dedup key is the LEXICALLY
+# normalised path — a symlink whose own name is inconspicuous
+# (<writable>/x -> ~/.ssh/id_rsa) does not match, so a
+# symlink-spelled credential open evades this lane. The allowlist
+# filter's symlink-aware suppression check
+# (_suppress_allowlisted_path) still keeps such records when they
+# fall inside an allowlisted prefix; closing the lane's half needs
+# per-event realpath resolution, deliberately not paid on this hot
+# path.
+_CRED_KEEP_MAX_PATHS = 200
+
+
+def _announce_credential_banner_capped() -> None:
+    """One-shot stderr notice that the credential-path banner lane
+    reached its distinct-path cap — further credential-looking paths
+    get no live banner. Mirrors the in-band keep marker so neither
+    half of the lane degrades silently. Never raises."""
+    try:
+        os.write(2, (
+            f"RAPTOR sandbox NOTICE: credential-path banner lane "
+            f"reached its distinct-path cap ({_CRED_KEEP_MAX_PATHS}); "
+            f"further credential-looking paths will not be announced "
+            f"live (durable JSONL keeps continue up to the keep "
+            f"lane's own cap).\n"
+        ).encode("ascii", errors="replace"))
+    except OSError:
+        pass
+
+
+def _announce_credential_path_touch(path: str, pid: int) -> None:
+    """Best-effort immediate stderr banner for a credential-looking
+    path touch — Linux parity with macOS
+    seatbelt_audit._announce_credential_path_touch (same wording).
+
+    Evaluated BEFORE the audit budget, so a flooded file-open bucket
+    cannot silence it. The path is attacker-controlled (the sandboxed
+    target chose what to touch); sanitise + bound it before it reaches
+    the operator's terminal — ascii/replace alone keeps ESC/CR/BEL,
+    which are ASCII, so a crafted filename could otherwise inject
+    terminal control sequences into the banner. Raw os.write(2, ...)
+    mirrors _announce_escape_primitive above (survives redirected/odd
+    stdio state); never raises.
+    """
+    try:
+        os.write(2, (
+            f"RAPTOR sandbox ALERT: credential-looking path touched: "
+            f"'{sanitise_for_terminal(path)}' (pid={pid}). "
             f"See sandbox-triage.json at run end for full context.\n"
         ).encode("ascii", errors="replace"))
     except OSError:
@@ -1544,6 +1611,19 @@ def trace(target_pid: int, run_dir: Path,
     # escape-primitive syscall per run.
     _escalated_syscalls: set = set()
 
+    # Credential-path pre-budget lane state (see the module-level
+    # _CRED_KEEP_MAX_PATHS comment): "announced" dedups the stderr
+    # banner per first sighting; "kept" dedups the guaranteed JSONL
+    # keep per first FILTER-SURVIVING touch; "overflowed" counts the
+    # keep refusals after the keep-lane cap (per refused EVENT — a
+    # refused path never enters "kept", so its repeats re-count),
+    # with the one-shot in-band marker emitted on the first refusal;
+    # "banner_capped" latches the one-shot banner-exhaustion notice.
+    _credential_state: dict = {
+        "announced": set(), "kept": set(), "overflowed": 0,
+        "banner_capped": False,
+    }
+
     # Set of currently-traced PIDs. Starts with the original target;
     # grows when fork/vfork/clone events fire (kernel auto-attaches
     # the new child); shrinks when each tracee exits. Loop terminates
@@ -1625,6 +1705,7 @@ def trace(target_pid: int, run_dir: Path,
                 mode_field=_mode_field,
                 observe_nonce=_observe_nonce,
                 escalated_syscalls=_escalated_syscalls,
+                credential_state=_credential_state,
             )
     finally:
         # Restore the caller's signal mask — trace() is also invoked
@@ -1669,6 +1750,7 @@ def _handle_waitpid_event(
     mode_field: str = "audit",
     observe_nonce: str | None = None,
     escalated_syscalls: set | None = None,
+    credential_state: dict | None = None,
     # Injection points so tests can substitute synthetic helpers
     # without forking real children. Defaults are the production
     # implementations; tests pass mocks.
@@ -1841,6 +1923,58 @@ def _handle_waitpid_event(
                     family, port, ip = sock
                     path = f"{ip}:{port} ({family})"
 
+            # CREDENTIAL-PATH PRE-BUDGET LANE — evaluated BEFORE the
+            # allowlist filter and BEFORE budget.evaluate, macOS
+            # parity (seatbelt_audit._maybe_escalate_credential_path
+            # fires ahead of its budget too). Without this, a target
+            # that flooded the file-open bucket (cap 500, no post-cap
+            # sampling) could then open ~/.ssh/id_rsa with no live
+            # AND no durable record on Linux. Two independent
+            # per-path dedups, both bounded at _CRED_KEEP_MAX_PATHS
+            # distinct paths (attacker-minted credential-lookalike
+            # names must not make the lane itself a flood channel):
+            #
+            #   * "announced" — the immediate stderr banner fires on
+            #     the first SIGHTING of each path, filter outcome
+            #     irrespective (live-signal parity with macOS, which
+            #     banners on allow-verdict records too);
+            #   * "kept" — the guaranteed JSONL keep at the budget
+            #     site below is consumed only by the first touch
+            #     that actually SURVIVES the filter. A filter-
+            #     suppressed sighting (e.g. an in-allowlist read)
+            #     must not burn the path's durable-record guarantee
+            #     for a later out-of-policy touch.
+            #
+            # Keep-lane exhaustion emits one in-band marker
+            # (credential_keep_cap_exceeded), never silent. Matching
+            # is shared with triage's credential_path_touch signal
+            # via escalation_signatures.is_credential_path, so live
+            # banner and post-hoc signal agree by construction.
+            _is_cred = False
+            if (credential_state is not None
+                    and abs_path is not None
+                    # Short-circuit the string match once BOTH dedups
+                    # have seen the path — the common repeat case.
+                    and (abs_path not in credential_state["announced"]
+                         or abs_path not in credential_state["kept"])
+                    and escalation_signatures.is_credential_path(
+                        abs_path)):
+                _is_cred = True
+                if abs_path not in credential_state["announced"]:
+                    if (len(credential_state["announced"])
+                            < _CRED_KEEP_MAX_PATHS):
+                        credential_state["announced"].add(abs_path)
+                        if not audit_budget.live_escalation_disabled():
+                            _announce_credential_path_touch(
+                                abs_path, wpid)
+                    elif not credential_state["banner_capped"]:
+                        # Banner-lane exhaustion is announced once —
+                        # the live-signal half of the lane must not
+                        # degrade silently either.
+                        credential_state["banner_capped"] = True
+                        if not audit_budget.live_escalation_disabled():
+                            _announce_credential_banner_capped()
+
             # `isinstance` guard before `audit_filter.get(...)`.
             # Pre-fix the `audit_filter is not None` test accepted
             # any truthy value — a caller (or a stale config-load
@@ -1937,7 +2071,50 @@ def _handle_waitpid_event(
                     escalated_syscalls.add(_esc_name)
                     _announce_escape_primitive(_esc_name, wpid)
 
-                decision, marker = budget.evaluate(name, wpid)
+                _cred_keep = False
+                # `credential_state is not None` is implied by
+                # _is_cred; repeated here so the narrowing is
+                # type-checkable rather than an invariant comment.
+                if (_is_cred and credential_state is not None
+                        and abs_path not in credential_state["kept"]):
+                    if (len(credential_state["kept"])
+                            < _CRED_KEEP_MAX_PATHS):
+                        credential_state["kept"].add(abs_path)
+                        _cred_keep = True
+                    else:
+                        credential_state["overflowed"] += 1
+                        if credential_state["overflowed"] == 1:
+                            _cred_marker = {
+                                "ts": datetime.now(timezone.utc)
+                                              .isoformat(),
+                                "type":
+                                    "credential_keep_cap_exceeded",
+                                "audit": True,
+                                "cap": _CRED_KEEP_MAX_PATHS,
+                                "note": (
+                                    f"Credential-path guaranteed-"
+                                    f"keep lane reached its "
+                                    f"distinct-path cap "
+                                    f"({_CRED_KEEP_MAX_PATHS}); "
+                                    f"further credential-looking "
+                                    f"paths flow through the normal "
+                                    f"audit budget (keep no longer "
+                                    f"guaranteed)."),
+                            }
+                            if observe_nonce is not None:
+                                _cred_marker["nonce"] = observe_nonce
+                            _write_record_dict(
+                                run_dir, _cred_marker,
+                                filename=output_filename)
+                if _cred_keep:
+                    # Guaranteed keep, decided BEFORE the budget: the
+                    # first logged touch of each distinct credential-
+                    # looking path is never refused by a flooded
+                    # bucket, and never consumes budget the target
+                    # could exhaust first. Bounded by the lane cap.
+                    decision, marker = audit_budget.KEEP, None
+                else:
+                    decision, marker = budget.evaluate(name, wpid)
                 if marker is not None:
                     # Stamp the per-run nonce like the data records
                     # and end-of-run summary — a nonce-validating

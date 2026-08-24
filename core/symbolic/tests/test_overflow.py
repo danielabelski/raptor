@@ -348,3 +348,88 @@ def test_register_snapshot_on_hijack_solve(tmp_path: Path):
         )
     assert "value" in snap["rsp"], "stack pointer should be concrete"
     assert isinstance(snap["rsp"]["value"], int)
+
+
+def test_memory_snapshot_on_hijack_solve(tmp_path: Path):
+    """The hijacked state carries an rsp-relative stack window:
+    concrete slots only (attacker-steerable slots stay absent),
+    JSON-safe, keys in the [rsp+K] shape one-gadget constraints use."""
+    import json as _json
+    import re as _re
+
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import (
+        OVERFLOW_MARKER_SOURCE, compile_fixture,
+    )
+
+    binary = compile_fixture(tmp_path, OVERFLOW_MARKER_SOURCE)
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["win"], timeout=60.0,
+    )
+    assert solve.succeeded, solve.reason
+    mem = solve.metadata.get("memory_snapshot")
+    if mem is None:
+        # every slot attacker-influenced on this fixture — legal,
+        # but the register snapshot must still be present
+        assert solve.metadata["register_snapshot"]
+        return
+    key_re = _re.compile(r"\Arsp\+0x[0-9a-f]+\Z")
+    for slot, value in mem.items():
+        assert key_re.match(slot), slot
+        assert isinstance(value, int)
+    _json.dumps(mem)  # JSON-safe end to end
+
+
+def test_memory_snapshot_semantics(tmp_path: Path):
+    """Two fixtures pin the memory-capture semantics.
+
+    Smashing fixture (256-byte overflow): every program-written slot
+    in the window is attacker-clobbered (symbolic) and the loader
+    model's layout zeros above the entry stack pointer are excluded —
+    the snapshot honestly reports NOTHING rather than model artifacts.
+
+    Surviving fixture (40-byte overflow, stops at the return
+    address): main's zeroed locals survive above the smashed frame
+    and are captured as genuine concrete slots — the values one-
+    gadget memory constraints ([rsp+K] == NULL) can be judged on.
+    """
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import (
+        OVERFLOW_MARKER_SOURCE, compile_fixture,
+    )
+
+    smash_src = OVERFLOW_MARKER_SOURCE.replace(
+        "int main(void) {",
+        "int main(void) {\n"
+        "    volatile long zeroed[8];\n"
+        "    for (int i = 0; i < 8; i++) zeroed[i] = 0;\n",
+        1,
+    )
+    smash_dir = tmp_path / "smash"
+    smash_dir.mkdir()
+    binary = compile_fixture(smash_dir, smash_src)
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["win"], timeout=60.0,
+    )
+    assert solve.succeeded, solve.reason
+    assert solve.metadata.get("memory_snapshot") is None
+
+    surviving_src = smash_src.replace("read(0, buf, 256)",
+                                      "read(0, buf, 40)")
+    assert "read(0, buf, 40)" in surviving_src
+    surv_dir = tmp_path / "surv"
+    surv_dir.mkdir()
+    binary2 = compile_fixture(surv_dir, surviving_src)
+    info2 = load_binary(binary2)
+    solve2 = find_overflow_reaching_input(
+        binary2, target_address=info2.symbols["win"], timeout=60.0,
+    )
+    assert solve2.succeeded, solve2.reason
+    mem = solve2.metadata.get("memory_snapshot") or {}
+    assert mem, "surviving zeroed locals should be captured"
+    assert any(v == 0 for v in mem.values())
+    for slot, value in mem.items():
+        assert slot.startswith("rsp+0x")
+        assert isinstance(value, int)

@@ -164,6 +164,15 @@ def _find_overflow_reaching_input_impl(
         },
     )
 
+    # Entry stack pointer: the boundary between program-written stack
+    # (below) and the loader model's argv/env layout (above). The
+    # memory snapshot must not report layout artifacts as concrete
+    # facts — a real process's environment differs from the model's.
+    try:
+        entry_sp = int(state.solver.eval(state.regs.sp))
+    except Exception:  # noqa: BLE001 — exotic arch: no memory capture
+        entry_sp = None
+
     # save_unconstrained=True is the key: without it, angr silently
     # drops states with symbolic PC (which is precisely the condition
     # the hypothesis predicts). With it, those states land in a
@@ -221,6 +230,7 @@ def _find_overflow_reaching_input_impl(
                 simgr.unconstrained, target_address, max_input_bytes,
                 register_constraints=register_constraints,
                 overcap_lengths=overcap_lengths,
+                entry_sp=entry_sp,
             )
             tried_unconstrained = len(simgr.unconstrained)
             if solved is not None:
@@ -236,7 +246,11 @@ def _find_overflow_reaching_input_impl(
                         "input_length": len(data),
                         "steps": steps,
                         "stash": "unconstrained",
-                        "register_snapshot": snapshot,
+                        "register_snapshot": snapshot["registers"],
+                        **(
+                            {"memory_snapshot": snapshot["memory"]}
+                            if "memory" in snapshot else {}
+                        ),
                     },
                 )
             # Defensive cap: some pathological targets branch every
@@ -279,6 +293,7 @@ def _find_overflow_reaching_input_impl(
     solved = _try_solve_pc(
         simgr.unconstrained, target_address, max_input_bytes,
         register_constraints=register_constraints,
+        entry_sp=entry_sp,
     )
     if solved is not None:
         data, snapshot = solved
@@ -293,7 +308,11 @@ def _find_overflow_reaching_input_impl(
                 "input_length": len(data),
                 "steps": steps,
                 "stash": "unconstrained",
-                "register_snapshot": snapshot,
+                "register_snapshot": snapshot["registers"],
+                **(
+                    {"memory_snapshot": snapshot["memory"]}
+                    if "memory" in snapshot else {}
+                ),
             },
         )
 
@@ -324,6 +343,7 @@ def _try_solve_pc(
     *,
     register_constraints: Optional[dict] = None,
     overcap_lengths: list | None = None,
+    entry_sp: Optional[int] = None,
 ) -> Optional[tuple]:
     """Try each unconstrained state: constrain PC to target_address
     (plus any register_constraints), check satisfiability, extract
@@ -376,8 +396,51 @@ def _try_solve_pc(
             if overcap_lengths is not None:
                 overcap_lengths.append(len(data))
             continue
-        return bytes(data), _register_snapshot(candidate)
+        return bytes(data), _state_snapshot(candidate, entry_sp=entry_sp)
     return None
+
+
+#: rsp-relative memory window captured at the hijacked state — one-
+#: gadget constraints are dominated by [rsp+K] slots; 32 qwords covers
+#: the offsets real gadget constraint sets reference.
+_MEM_WINDOW_BYTES = 0x100
+
+
+def _state_snapshot(state, *, entry_sp: Optional[int] = None) -> dict:
+    """Registers plus the rsp-relative memory window, JSON-safe.
+
+    Shape: ``{"registers": {...}, "memory": {"rsp+0x30": int, ...}}``.
+    Memory capture needs a concrete stack pointer; each 8-byte slot is
+    recorded only when the state pins it to one concretion — a
+    symbolic slot stays absent (free for the one-gadget solver, which
+    matches what the attacker may control). Slots at or above the
+    ENTRY stack pointer are skipped even when concrete: that region
+    holds the loader model's argv/env layout, whose values a real
+    process would not reproduce — reporting them would condition
+    verdicts on model artifacts.
+    """
+    registers = _register_snapshot(state)
+    snap = {"registers": registers}
+    rsp = registers.get("rsp") or registers.get("esp") or {}
+    rsp_val = rsp.get("value")
+    if rsp_val is None or entry_sp is None:
+        return snap
+    memory: dict = {}
+    for off in range(0, _MEM_WINDOW_BYTES, 8):
+        addr = rsp_val + off
+        if addr >= entry_sp:
+            break  # loader-layout territory — model, not program
+        try:
+            v = state.memory.load(
+                addr, 8, endness=state.arch.memory_endness,
+            )
+            if state.solver.unique(v):
+                memory[f"rsp+{off:#x}"] = int(state.solver.eval(v))
+        except Exception:  # noqa: BLE001 — unmapped slot: omit
+            continue
+    if memory:
+        snap["memory"] = memory
+    return snap
 
 
 def _register_snapshot(state) -> dict:

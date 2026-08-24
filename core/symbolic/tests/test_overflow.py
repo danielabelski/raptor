@@ -433,3 +433,123 @@ def test_memory_snapshot_semantics(tmp_path: Path):
     for slot, value in mem.items():
         assert slot.startswith("rsp+0x")
         assert isinstance(value, int)
+
+
+@pytest.mark.slow
+def test_declared_length_overflow_solves(tmp_path: Path):
+    """The classic declared-length shape (attacker length byte drives
+    fread + memcpy) previously wedged z3 at ASSERT time — the solver
+    timeout only bounds check-sat — and burned the whole budget for
+    an honest-but-empty inconclusive. Adversarial size concretization
+    pins symbolic sizes to their max satisfiable value at the
+    SimProcedure boundary; the witness must solve fast AND replay to
+    a real crash."""
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import (
+        DECLARED_LENGTH_SOURCE, compile_fixture,
+    )
+
+    binary = compile_fixture(tmp_path, DECLARED_LENGTH_SOURCE)
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["handle_frame"], timeout=60.0,
+    )
+    assert solve.succeeded, solve.reason
+    assert solve.wall_seconds < 30.0
+
+    replay = subprocess.run(
+        [str(binary)], input=solve.concrete_input,
+        capture_output=True, timeout=5,
+    )
+    assert replay.returncode < 0 or replay.returncode > 128, (
+        f"witness did not crash the target: rc={replay.returncode}"
+    )
+
+
+def test_size_pin_helper():
+    """_pin_size constrains a symbolic size to max-under-cap and
+    leaves concrete or over-cap-forced sizes alone."""
+    pytest.importorskip("angr")
+    import claripy
+
+    from core.symbolic._concretize import _pin_size
+
+    class _Solver:
+        def __init__(self):
+            self._extra = []
+
+        def max(self, v):
+            import claripy as c
+            s = c.Solver()
+            for e in self._extra:
+                s.add(e)
+            return s.max(v)
+
+        def satisfiable(self, extra_constraints=()):
+            import claripy as c
+            s = c.Solver()
+            for e in list(self._extra) + list(extra_constraints):
+                s.add(e)
+            return s.satisfiable()
+
+        def add(self, e):
+            self._extra.append(e)
+
+    class _State:
+        solver = None
+
+    st = _State()
+    st.solver = _Solver()
+    v = claripy.BVS("n", 64)
+    st.solver.add(v <= 0x50)
+    _pin_size(st, v, 0x1000)
+    assert st.solver.max(v) == 0x50  # pinned to its own max
+    s2 = _State()
+    s2.solver = _Solver()
+    w = claripy.BVS("m", 64)
+    s2.solver.add(w >= 0x100000)  # forced above cap: left alone
+    before = len(s2.solver._extra)
+    _pin_size(s2, w, 0x1000)
+    assert len(s2.solver._extra) == before
+
+
+def test_canary_presence_flagged(tmp_path: Path):
+    """A hijack solve on a stack-protected binary carries
+    canary_present=True — the model guard is solver-chosen, so the
+    witness is model-optimistic and consumers must weight it."""
+    import subprocess as _sp
+
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import OVERFLOW_MARKER_SOURCE
+
+    src = tmp_path / "t.c"
+    src.write_text(OVERFLOW_MARKER_SOURCE)
+    binary = tmp_path / "t"
+    r = _sp.run(
+        ["gcc", "-O0", "-g", "-fstack-protector-strong", "-no-pie",
+         str(src), "-o", str(binary)],
+        capture_output=True, text=True, timeout=15,
+    )
+    if r.returncode != 0:
+        pytest.skip(f"gcc: {r.stderr[:120]}")
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["win"], timeout=60.0,
+    )
+    if not solve.succeeded:
+        pytest.skip(f"no model witness on this toolchain: {solve.reason[:80]}")
+    assert solve.metadata["canary_present"] is True
+
+
+def test_no_canary_not_flagged(tmp_path: Path):
+    from core.symbolic import find_overflow_reaching_input, load_binary
+    from core.symbolic.tests.conftest import (
+        OVERFLOW_MARKER_SOURCE, compile_fixture,
+    )
+    binary = compile_fixture(tmp_path, OVERFLOW_MARKER_SOURCE)
+    info = load_binary(binary)
+    solve = find_overflow_reaching_input(
+        binary, target_address=info.symbols["win"], timeout=60.0,
+    )
+    assert solve.succeeded
+    assert solve.metadata["canary_present"] is False

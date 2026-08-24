@@ -107,6 +107,13 @@ def _find_reaching_input_impl(
     t0 = time.monotonic()
     try:
         project = _open_project(binary_path)
+        # Declared-length copies (symbolic size args) otherwise build
+        # per-byte conditional ASTs that wedge z3 at assert time —
+        # concretize adversarially (max satisfiable length) instead.
+        # Installed here, inside the isolated child: the per-process
+        # project cache never leaks hooks to other consumers.
+        from core.symbolic._concretize import install_adversarial_size_hooks
+        install_adversarial_size_hooks(project)
     except Exception as exc:  # noqa: BLE001
         return SymbolicResult(
             succeeded=False,

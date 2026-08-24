@@ -137,3 +137,36 @@ int main(void) {
     return 0;
 }
 """
+
+
+#: The classic declared-length overflow: the frame header's length
+#: byte drives both the payload read and an unchecked copy into a
+#: fixed stack buffer. Symbolic-size fread/memcpy previously wedged
+#: z3 at assert time; adversarial size concretization makes this
+#: solve in seconds.
+DECLARED_LENGTH_SOURCE = r"""
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+int validate_type(unsigned char t) { return t == 1 || t == 2; }
+
+void handle_frame(const unsigned char *payload, unsigned char len) {
+    char scratch[32];
+    memcpy(scratch, payload, len);
+    scratch[sizeof(scratch) - 1] = '\0';
+    if (scratch[0] == 'Q') exit(0);
+}
+
+int read_frames(FILE *in) {
+    unsigned char hdr[2];
+    unsigned char payload[256];
+    if (fread(hdr, 1, 2, in) != 2) return -1;
+    if (!validate_type(hdr[0])) return -1;
+    size_t got = fread(payload, 1, hdr[1], in);
+    handle_frame(payload, (unsigned char)got);
+    return 0;
+}
+
+int main(void) { return read_frames(stdin); }
+"""

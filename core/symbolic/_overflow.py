@@ -137,6 +137,13 @@ def _find_overflow_reaching_input_impl(
     t0 = time.monotonic()
     try:
         project = _open_project(binary_path)
+        # Declared-length copies (symbolic size args) otherwise build
+        # per-byte conditional ASTs that wedge z3 at assert time —
+        # concretize adversarially (max satisfiable length) instead.
+        # Installed here, inside the isolated child: the per-process
+        # project cache never leaks hooks to other consumers.
+        from core.symbolic._concretize import install_adversarial_size_hooks
+        install_adversarial_size_hooks(project)
     except Exception as exc:  # noqa: BLE001
         return SymbolicResult(
             succeeded=False,
@@ -246,6 +253,7 @@ def _find_overflow_reaching_input_impl(
                         "input_length": len(data),
                         "steps": steps,
                         "stash": "unconstrained",
+                        "canary_present": _has_canary(project),
                         "register_snapshot": snapshot["registers"],
                         **(
                             {"memory_snapshot": snapshot["memory"]}
@@ -308,6 +316,7 @@ def _find_overflow_reaching_input_impl(
                 "input_length": len(data),
                 "steps": steps,
                 "stash": "unconstrained",
+                "canary_present": _has_canary(project),
                 "register_snapshot": snapshot["registers"],
                 **(
                     {"memory_snapshot": snapshot["memory"]}
@@ -515,6 +524,21 @@ def _register_snapshot(state) -> dict:
         except Exception:  # noqa: BLE001 — unreadable register: omit
             continue
     return snap
+
+
+def _has_canary(project) -> bool:
+    """Stack-protector present in the target.
+
+    The model's stack guard is a free symbolic value — the solver
+    "defeats" it by choosing it, which no real attacker can do. A
+    hijack witness on a canary'd binary is therefore model-optimistic
+    and consumers must weight it accordingly; the flag makes that
+    judgement mechanical.
+    """
+    try:
+        return project.loader.find_symbol("__stack_chk_fail") is not None
+    except Exception:  # noqa: BLE001 — unknown loader state: no claim
+        return False
 
 
 def _is_mapped(project, addr: int) -> bool:

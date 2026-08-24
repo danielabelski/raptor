@@ -718,9 +718,38 @@ class JoernServer:
             return False
 
         elapsed = time.monotonic() - t0
-        if not resp.get("success", True):
+        # Strict: a missing "success" key is a malformed response, not
+        # a success — pre-fix it defaulted to True.
+        if resp.get("success") is not True:
             logger.error("importCpg failed: %s",
-                         resp.get("stderr", "")[:500])
+                         (resp.get("stderr") or str(resp))[:500])
+            return False
+
+        # VERIFY the binding: the ReplBridge can answer the importCpg
+        # round-trip affirmatively while ``cpg`` never binds in the
+        # session (observed live after a stuck-query restart: a 0.1s
+        # "imported" line, then every taint query for the rest of the
+        # run failed to compile with "Not found: cpg" — the tier was
+        # dead with nothing but per-query warnings). A cheap metaData
+        # probe proves the binding exists before we report success.
+        probe = self._post_sync("cpg.metaData.size.toString", timeout=30)
+        probe_out = (
+            "" if probe is None
+            else str(probe.get("stdout", "")) + str(probe.get("stderr", ""))
+        )
+        if (
+            probe is None
+            or probe.get("success") is not True
+            or "Not found: cpg" in probe_out
+        ):
+            logger.error(
+                "importCpg reported success but the `cpg` binding is "
+                "absent (probe: %s) — reporting import failure so the "
+                "caller retries or degrades loudly instead of running "
+                "every later query against an empty session",
+                (self._last_post_error or probe_out or "no response")[:300],
+            )
+            self._cpg_loaded = False
             return False
 
         # "imported into the server", not "loaded": this is the REPL

@@ -163,6 +163,65 @@ class TestJoernServerImportCpg:
         ok = srv.import_cpg(tmp_path / "nonexistent.bin")
         assert ok is False
 
+    def _cpg_file(self, tmp_path):
+        p = tmp_path / "cpg.bin"
+        p.write_bytes(b"stub")
+        return p
+
+    def test_success_requires_verified_cpg_binding(self, tmp_path):
+        # Incident regression: after a stuck-query restart the REPL
+        # answered importCpg affirmatively in a fraction of a second
+        # while `cpg` never bound — every later taint query failed to
+        # compile with "Not found: cpg" for the rest of the run, with
+        # nothing but per-query warnings. importCpg success must be
+        # backed by a binding probe.
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        responses = [
+            {"success": True, "stdout": "workspace..."},   # importCpg
+            {"success": True,
+             "stdout": "-- [E006] Not Found Error: Not found: cpg"},
+        ]
+        with patch.object(JoernServer, "_post_sync",
+                          side_effect=responses):
+            ok = srv.import_cpg(self._cpg_file(tmp_path))
+        assert ok is False
+        assert srv._cpg_loaded is False
+
+    def test_probe_transport_failure_fails_import(self, tmp_path):
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        responses = [{"success": True, "stdout": "ok"}, None]
+        with patch.object(JoernServer, "_post_sync",
+                          side_effect=responses):
+            ok = srv.import_cpg(self._cpg_file(tmp_path))
+        assert ok is False
+
+    def test_missing_success_key_is_failure(self, tmp_path):
+        # Pre-fix `resp.get("success", True)` counted a malformed
+        # response as success.
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        with patch.object(JoernServer, "_post_sync",
+                          return_value={"stdout": "??"}):
+            ok = srv.import_cpg(self._cpg_file(tmp_path))
+        assert ok is False
+
+    def test_verified_import_succeeds(self, tmp_path):
+        srv = JoernServer()
+        srv._base_url = "http://127.0.0.1:9999"
+        responses = [
+            {"success": True, "stdout": "workspace..."},   # importCpg
+            {"success": True, "stdout": 'val res0: String = "42"'},
+            {"success": True, "stdout": "warmup"},          # dataflow warmup
+            {"success": True, "stdout": "warmup"},
+        ]
+        with patch.object(JoernServer, "_post_sync",
+                          side_effect=responses):
+            ok = srv.import_cpg(self._cpg_file(tmp_path))
+        assert ok is True
+        assert srv._cpg_loaded is True
+
 
 class TestJoernServerImportCode:
     def test_target_not_directory(self, tmp_path):

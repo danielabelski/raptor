@@ -122,6 +122,7 @@ def classify_function(
     is_callback_target: bool = False,
     binary_absent: bool = False,
     sink_unreachable: bool = False,
+    validate_confirmed: bool = False,
     prefilter: PrefilterResult | None = None,
     branch_count: int = 0,
     caller_count: int = 0,
@@ -144,6 +145,22 @@ def classify_function(
         )
 
     stack_buffer_writer = writes_fixed_stack_buffer(source)
+
+    # A prior /validate run CONFIRMED a defect in this function: the
+    # strongest possible review signal. The mechanical skip evidence
+    # ("no sink path", binary-absent) is precisely what a confirmed
+    # detection-evasion defect looks like from the outside (observed
+    # live: an audit-mask selection function with a validated audit
+    # evasion bug was skipped as "no sink path, no dangerous callees,
+    # small"). Never skip or glance it — full review.
+    if validate_confirmed:
+        reasons.append("validate-confirmed defect — full review forced")
+        return TriageResult(
+            bucket=TriageBucket.INVESTIGATE,
+            reasons=tuple(reasons),
+            token_budget=TOKEN_BUDGETS[TriageBucket.INVESTIGATE],
+            priority_score=priority_score,
+        )
 
     # A function registered as a callback / dispatch-table handler is
     # never "callerless": its callers are invisible to the static call
@@ -323,6 +340,7 @@ def classify_all(
     joern_flow_keys: frozenset[str] = frozenset(),
     binary_absent_keys: frozenset[str] = frozenset(),
     sink_unreachable_keys: frozenset[str] = frozenset(),
+    validate_confirmed_keys: frozenset[str] = frozenset(),
     dangerous_callee_keys: frozenset[str] = frozenset(),
     callback_target_names: frozenset[str] = frozenset(),
     priority_scores: dict[str, float] | None = None,
@@ -396,6 +414,7 @@ def classify_all(
             is_callback_target=gap["name"] in callback_target_names,
             binary_absent=bare_key in binary_absent_keys,
             sink_unreachable=bare_key in sink_unreachable_keys,
+            validate_confirmed=bare_key in validate_confirmed_keys,
             prefilter=prefilters.get(bare_key),
             branch_count=gap.get("branch_count", 0),
             caller_count=caller_count,

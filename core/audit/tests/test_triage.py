@@ -387,3 +387,37 @@ class TestStackBufferSkipVeto:
         )
         (only,) = results.values()
         assert only.bucket == TriageBucket.SKIP
+
+
+class TestValidateConfirmedNeverSkipped:
+    """Incident regression: a function a prior /validate run had
+    CONFIRMED a defect in was triage-skipped as "no sink path, no
+    dangerous callees, small" — the mechanical skip evidence is
+    exactly what a confirmed detection-evasion defect looks like from
+    the outside, and no LLM ever saw the function."""
+
+    def test_confirmed_function_forces_investigate(self):
+        from core.audit.triage import TriageBucket, classify_function
+        tr = classify_function(
+            file="audit-x.c", function="selected", sloc=19,
+            sink_unreachable=True, validate_confirmed=True,
+        )
+        assert tr.bucket == TriageBucket.INVESTIGATE
+        assert any("validate-confirmed" in r for r in tr.reasons)
+
+    def test_confirmed_key_threads_through_classify_all(self):
+        from core.audit.triage import TriageBucket, classify_all
+        gaps = [
+            {"file": "audit-x.c", "name": "selected",
+             "line_start": 234, "line_end": 252, "sloc": 19},
+            {"file": "audit-x.c", "name": "neighbour",
+             "line_start": 300, "line_end": 310, "sloc": 10},
+        ]
+        res = classify_all(
+            gaps,
+            sink_unreachable_keys=frozenset(
+                {"audit-x.c:selected", "audit-x.c:neighbour"}),
+            validate_confirmed_keys=frozenset({"audit-x.c:selected"}),
+        )
+        assert res["audit-x.c:selected:234"].bucket == TriageBucket.INVESTIGATE
+        assert res["audit-x.c:neighbour:300"].bucket == TriageBucket.SKIP

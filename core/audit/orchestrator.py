@@ -4242,6 +4242,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         joern_flow_keys=joern_flow_keys,
         binary_absent_keys=frozenset(binary_absent_keys),
         sink_unreachable_keys=sink_unreachable_keys,
+        validate_confirmed_keys=frozenset(validate_confirmed_keys or ()),
         dangerous_callee_keys=dangerous_callee_keys,
         callback_target_names=callback_target_names,
         priority_scores=priority_scores,

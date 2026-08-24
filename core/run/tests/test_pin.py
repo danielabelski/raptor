@@ -509,3 +509,102 @@ class WriteRunPinTest(_PinCase):
         save_json(d / RUN_METADATA_FILE, {"status": "completed"})
         write_run_pin(d, "pinned", "adopted")
         self.assertEqual(resolve_run_pin(d).project, "pinned")
+
+
+class WitnessAndTamperTest(_PinCase):
+    """Second review round: the out-of-grant ledger witness, tampered
+    markers failing closed, and the out-root capture stop."""
+
+    def _sessioned(self):
+        sessions.record_session("pinned", pid=os.getpid())
+        # The conftest neutralises ambient session resolution for
+        # hermeticity; the witness reader resolves ambiently like the
+        # real completion path, so give it this test's session.
+        patcher = patch.object(sessions, "resolve_session_pid",
+                               return_value=os.getpid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_forged_marker_loses_to_ledger_witness(self):
+        from core.project.sessions import ledger_record_start
+        from core.run.metadata import _journal_project_dir, _pin_witness_ok
+        from core.run.pin import resolve_run_pin
+        self._sessioned()
+        d = self.root / "out" / "standalone" / "scan_1"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": None,
+            "project_source": "none",
+        })
+        ledger_record_start(d, pid=os.getpid(),
+                            pin_project=None, record_pin=True)
+        # Hostile child re-pins the standalone run to the victim.
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "argv",
+            "target_path": str(self.root / "code"),
+        })
+        pin = resolve_run_pin(d)
+        self.assertFalse(_pin_witness_ok(d, pin))
+        self.assertIsNone(_journal_project_dir(d))
+
+    def test_agreeing_witness_passes(self):
+        from core.project.sessions import ledger_record_start
+        from core.run.metadata import _pin_witness_ok
+        from core.run.pin import resolve_run_pin
+        self._sessioned()
+        d = self.root / "out" / "pinned" / "scan_2"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "session",
+        })
+        ledger_record_start(d, pid=os.getpid(),
+                            pin_project="pinned", record_pin=True)
+        self.assertTrue(_pin_witness_ok(d, resolve_run_pin(d)))
+
+    def test_corrupt_marker_fails_closed_for_writers(self):
+        from core.run.metadata import _journal_project_dir
+        from core.run.pin import legacy_probe_allowed, resolve_run_pin
+        d = self.root / "out" / "pinned" / "scan_3"
+        d.mkdir(parents=True)
+        (d / RUN_METADATA_FILE).write_text("{garbage", encoding="utf-8")
+        pin = resolve_run_pin(d)
+        self.assertFalse(pin.authoritative)
+        self.assertFalse(legacy_probe_allowed(pin))
+        self.assertIsNone(_journal_project_dir(d))
+
+    def test_preseries_marker_still_allows_legacy_probe(self):
+        from core.run.pin import legacy_probe_allowed, resolve_run_pin
+        d = self.root / "out" / "pinned" / "scan_4"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {"status": "completed"})
+        pin = resolve_run_pin(d)
+        self.assertTrue(legacy_probe_allowed(pin))
+
+    def test_out_root_marker_cannot_capture_runs(self):
+        from core.run.pin import resolve_run_pin
+        out_root = self.root / "out"
+        save_json(out_root / RUN_METADATA_FILE, {
+            "status": "running", "project": "pinned",
+            "project_source": "argv",
+        })
+        d = out_root / "scan_5"
+        d.mkdir()
+        with patch("core.config.RaptorConfig.get_out_dir",
+                   return_value=out_root):
+            pin = resolve_run_pin(d)
+        self.assertNotEqual(pin.project, "pinned")
+
+    def test_write_run_pin_refuses_live_runs_and_odd_sources(self):
+        from core.run.metadata import write_run_pin
+        d = self.root / "out" / "loose" / "scan_6"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "session_pid": os.getpid(),
+        })
+        with self.assertRaises(ValueError):
+            write_run_pin(d, "pinned", "argv")  # not a rewrite source
+        with patch("core.run.metadata._session_alive_for_meta",
+                   return_value=True), self.assertRaises(ValueError):
+            write_run_pin(d, "pinned", "adopted")  # live run

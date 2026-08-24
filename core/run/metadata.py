@@ -676,8 +676,34 @@ def start_run(output_dir: Path, command: str,
             prior_pin = (frozen.project, frozen.source)
         elif isinstance(prior, dict) and "project" in prior:
             _pp = prior.get("project")
-            prior_pin = (_pp if isinstance(_pp, str) else None,
+            if _pp is not None and not isinstance(_pp, str):
+                # A pin is a string or null by construction — anything
+                # else is corruption or tampering, and silently
+                # coercing it would strip the pin cross-process.
+                logger.warning(
+                    "run pin in %s has non-string project %r — "
+                    "treating as pinned-projectless; the marker may "
+                    "have been tampered with", output_dir, _pp)
+                _pp = None
+            prior_pin = (_pp,
                          str(prior.get("project_source") or "none"))
+            # Out-of-grant witness check: the disk marker sits inside
+            # the sandbox write grant; the session ledger's pin record
+            # (written at the FIRST start, outside the grant) is the
+            # arbiter for cross-process re-entrant flows. A mismatch
+            # means the marker was rewritten under us.
+            try:
+                from core.project.sessions import ledger_pin_witness
+                found, witnessed = ledger_pin_witness(output_dir)
+                if found and witnessed != prior_pin[0]:
+                    logger.warning(
+                        "run pin in %s (%r) disagrees with the session "
+                        "ledger witness (%r) — using the witness; the "
+                        "marker may have been tampered with",
+                        output_dir, prior_pin[0], witnessed)
+                    prior_pin = (witnessed, prior_pin[1])
+            except Exception:  # noqa: BLE001 — witness is best-effort
+                logger.debug("pin witness check failed", exc_info=True)
         if prior_pin is not None:
             pin_project, pin_source = prior_pin
             override = get_process_project()
@@ -724,7 +750,8 @@ def start_run(output_dir: Path, command: str,
     # Best-effort by contract — never lifecycle-critical.
     if session_pid is not None:
         from core.project.sessions import ledger_record_start
-        ledger_record_start(output_dir, pid=session_pid)
+        ledger_record_start(output_dir, pid=session_pid,
+                            pin_project=pin_project, record_pin=True)
     return output_dir
 
 
@@ -844,19 +871,17 @@ def _setup_checklist_symlink(run_dir: Path) -> None:
     checklist from sibling run dirs.
     """
 
-    # Determine project output dir from .active symlink only
+    # THE RUN PIN decides which project this is (start_run sealed it
+    # just before calling here). Pre-fix this read the AMBIENT layers
+    # (get_active_name), which never see a --project override: a run
+    # pinned to X in a session bound to Y got no symlink — or worse,
+    # triggered _promote_checklist (a durable write) in Y.
     project_dir = None
     try:
-        from core.startup import PROJECTS_DIR, get_active_name
-        name = get_active_name()
-        if name:
-            from core.json import load_json as _load
-            data = _load(PROJECTS_DIR / f"{name}.json")
-            if isinstance(data, dict):
-                candidate_str = data.get("output_dir") or ""
-                candidate = Path(candidate_str) if candidate_str else None
-                if candidate and candidate.is_dir():
-                    project_dir = candidate
+        from core.run.pin import pin_project_dir
+        candidate = pin_project_dir(run_dir)
+        if candidate is not None and candidate.is_dir():
+            project_dir = candidate
     except (FileNotFoundError, ImportError, json.JSONDecodeError, KeyError, PermissionError) as exc:
         # Narrowed from bare Exception. Pre-fix a corrupt project
         # JSON, a renamed field, or a PermissionError on PROJECTS_DIR
@@ -1226,24 +1251,62 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
         return None
     try:
         from core.run.pin import (
+            legacy_probe_allowed,
             pin_project_dir,
             pinned_write_target_ok,
             resolve_run_pin,
         )
         pin = resolve_run_pin(out_res)
+        if not _pin_witness_ok(out_res, pin):
+            return None
         if pin.authoritative:
             proj_dir = pin_project_dir(out_res, for_write=True)
             if proj_dir is not None and not pinned_write_target_ok(out_res):
                 return None
             return proj_dir.resolve() if proj_dir is not None else None
-    except Exception:  # noqa: BLE001 — fall through to the marker probe
-        pass
+        if not legacy_probe_allowed(pin):
+            # Corrupt or deleted marker: tamper evidence, not a legacy
+            # dir — never fall through to topology inference.
+            return None
+    except Exception:  # noqa: BLE001 — resolver failure: no fallthrough
+        return None
     parent = out_res.parent
     if (parent / "checklist.json").exists() or (
         parent / "coverage.json"
     ).exists():
         return parent
     return None
+
+
+def _pin_witness_ok(run_dir, pin) -> bool:
+    """Verify a resolved pin against the session ledger's out-of-grant
+    witness before a privileged project-store write. True when no
+    witness exists (unverifiable — pre-witness runs, sessionless
+    contexts keep their existing posture) or when it AGREES with the
+    resolved pin; False on disagreement (the disk marker sits inside
+    the sandbox write grant and was rewritten or deleted under us).
+    A frozen pin needs no witness — it was sealed by the owner.
+    """
+    try:
+        from core.run.pin import _frozen_pins
+        if str(Path(run_dir).resolve()) in _frozen_pins:
+            return True
+        from core.project.sessions import ledger_pin_witness
+        found, witnessed = ledger_pin_witness(run_dir)
+        if not found:
+            return True
+        resolved = pin.project if pin.authoritative else None
+        if witnessed != resolved:
+            logger.warning(
+                "pin: SUPPRESSED project-store write for %s — the run "
+                "marker resolves %r but the session ledger witnessed "
+                "%r at start. The marker may have been tampered with.",
+                run_dir, resolved, witnessed)
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — witness is an aid, never a crash
+        logger.debug("pin witness check failed", exc_info=True)
+        return True
 
 
 def project_run_projections(output_dir: Path,
@@ -1359,19 +1422,25 @@ def _snapshot_run_coverage(output_dir: Path,
         if proj is None:
             try:
                 from core.run.pin import (
+                    legacy_probe_allowed,
                     pin_project_dir,
                     pinned_write_target_ok,
                     resolve_run_pin,
                 )
                 pin = resolve_run_pin(run_dir)
+                from core.run.metadata import _pin_witness_ok
+                if not _pin_witness_ok(run_dir, pin):
+                    return               # marker disagrees with witness
                 if pin.authoritative:
                     proj = pin_project_dir(run_dir, for_write=True)
                     if proj is None:
                         return           # standalone by pin — no store
                     if not pinned_write_target_ok(run_dir):
                         return           # one-target gate: foreign target
-            except Exception:  # noqa: BLE001 — fall to the legacy probe
-                pin = None
+                elif not legacy_probe_allowed(pin):
+                    return               # corrupt/deleted marker: tamper
+            except Exception:  # noqa: BLE001 — no privileged fallthrough
+                return
         if proj is None:
             proj = run_dir.parent
         checklist_path = proj / "checklist.json"
@@ -1608,6 +1677,16 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     # and the original owner's line is CAS-marked interrupted so its
     # session's hook stops attributing to a run it no longer owns.
     if session_pid is not None:
+        # Seal the (possibly witness-corrected) pin for THIS process —
+        # segment 2+ must enjoy the same marker-rewrite immunity as the
+        # original owner.
+        try:
+            from core.run.pin import freeze_run_pin, resolve_run_pin
+            _pin = resolve_run_pin(output_dir)
+            if _pin.authoritative:
+                freeze_run_pin(output_dir, _pin.project, _pin.source)
+        except Exception:  # noqa: BLE001 — seal is best-effort
+            logger.debug("resume pin seal failed", exc_info=True)
         from core.project.sessions import ledger_record_resume
         prior = (prior_session_pid
                  if isinstance(prior_session_pid, int)
@@ -1846,17 +1925,30 @@ def write_run_pin(run_dir: Path, project: str | None, source: str) -> None:
     the projections that fire right after adoption — see the rewrite
     rather than the pre-move resolution.
     """
-    from core.run.pin import PIN_SOURCES, freeze_run_pin
-    if source not in PIN_SOURCES:
-        msg = f"invalid pin source {source!r} (one of {PIN_SOURCES})"
+    from core.run.pin import freeze_run_pin
+    rewrite_sources = ("adopted", "none", "merged")
+    if source not in rewrite_sources:
+        msg = (f"invalid pin rewrite source {source!r} "
+               f"(one of {rewrite_sources})")
         raise ValueError(msg)
     path = Path(run_dir) / RUN_METADATA_FILE
-    meta = load_json(path)
-    if not isinstance(meta, dict):
-        meta = {}
-    meta["project"] = project
-    meta["project_source"] = source
-    save_json(path, meta)
+    # Same lock every other read-modify-write on this file takes:
+    # racing a completing run's _update_status must not lose either
+    # write (a resurrected status=running reads as abandoned and gets
+    # sweep-failed; a dropped pin orphans the run).
+    with _metadata_lock(path):
+        meta = load_json(path)
+        if not isinstance(meta, dict):
+            meta = {}
+        if (meta.get("status") == STATUS_RUNNING
+                and _session_alive_for_meta(meta)):
+            msg = (f"refusing to re-pin {run_dir}: the run is live "
+                   f"(owned by session {meta.get('session_pid')}) — "
+                   "a run in flight is never re-pinned")
+            raise ValueError(msg)
+        meta["project"] = project
+        meta["project_source"] = source
+        save_json(path, meta)
     freeze_run_pin(run_dir, project, source)
 
 

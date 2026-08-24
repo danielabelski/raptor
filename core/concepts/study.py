@@ -240,19 +240,25 @@ def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
     project_dir = None
     try:
         from core.run.pin import (
+            legacy_probe_allowed,
             pin_project_dir,
             pinned_write_target_ok,
             resolve_run_pin,
         )
         pin = resolve_run_pin(output_dir)
+        from core.run.metadata import _pin_witness_ok
+        if not _pin_witness_ok(output_dir, pin):
+            return  # marker disagrees with the out-of-grant witness
         if pin.authoritative:
             project_dir = pin_project_dir(output_dir, for_write=True)
             if project_dir is None:
                 return  # standalone by pin — run-local only
             if not pinned_write_target_ok(output_dir):
                 return  # one-target gate: foreign target
-    except Exception:  # noqa: BLE001 — shape fallback below
-        project_dir = None
+        elif not legacy_probe_allowed(pin):
+            return  # corrupt/deleted marker: tamper, no shape fallback
+    except Exception:  # noqa: BLE001 — no privileged fallthrough
+        return
     if project_dir is None:
         project_dir = output_dir.parent
         if not (

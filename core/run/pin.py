@@ -220,7 +220,10 @@ def _marker_trustworthy(directory: Path) -> bool:
     user-private-group systems (umask 002) every dir we create is
     0775 with a group containing just us — rejecting those would
     disable pinning wholesale. A shared group is a real second writer
-    and stays rejected.
+    and stays rejected. Known residuals: on shared-primary-group
+    systems (e.g. a common ``users`` gid) other members' dirs pass
+    this check, and POSIX ACLs granting write are invisible to the
+    mode bits — the ledger pin witness is the backstop for both.
     """
     try:
         st = directory.stat()
@@ -251,8 +254,11 @@ def _walk_boundary(directory: Path, start_dev: int | None) -> bool:
             return True
     try:
         from core.config import RaptorConfig
-        if directory == Path(RaptorConfig.get_out_dir()).resolve().parent:
-            return True  # never walk above the configured out-root
+        if directory == Path(RaptorConfig.get_out_dir()).resolve():
+            # Stop AT the out-root: runs live under it, never at it, so
+            # a marker planted at out/ itself must not become the
+            # outermost pin of every standalone run beneath it.
+            return True
     except Exception:  # noqa: BLE001 — out-root unknown: other stops apply
         pass
     return False
@@ -384,6 +390,24 @@ def _pin_from_marker(run_dir: Path) -> RunPin:
     return RunPin(project, source, run_dir, True, True)
 
 
+def legacy_probe_allowed(pin: RunPin) -> bool:
+    """May a consumer fall through to its pre-series topology probe
+    (parent checklist.json / project.json shape checks)?
+
+    ONLY for genuine pre-series shapes: a marker without a
+    ``project`` key, or no marker at all (metadata-less legacy dirs
+    the adoption path admits). An UNPARSEABLE marker is refused —
+    every series run writes a valid pin at start, so garbage there is
+    tamper evidence from a child inside the sandbox write grant, and
+    degrading it to topology inference would route privileged writes
+    to whatever project physically contains the run. Marker DELETION
+    is indistinguishable from never-had-one here; the session run
+    ledger's pin witness (written at start, outside the sandbox
+    write grant) closes that hole where a session exists.
+    """
+    return not pin.authoritative and pin.source == "containment"
+
+
 def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
     """Child-process pin bootstrap: a run's
     child process (scan/codeql/analysis workers spawned with an
@@ -416,6 +440,13 @@ def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
                     "lifetime"
                 )
                 raise ProjectArgvError(msg)
+            # Agreement: STILL seal the freeze cache. The children
+            # that receive the pin threaded as --project + --out are
+            # exactly the processes most exposed to sandboxed marker
+            # rewrites; skipping the seal left their whole lifetime
+            # re-reading the disk marker.
+            if pin.run_dir is not None:
+                _frozen_pins.setdefault(str(pin.run_dir), pin)
         return
     if not pin.authoritative:
         return
@@ -457,9 +488,12 @@ def pinned_write_target_ok(out_dir: str | os.PathLike[str],
     try:
         from core.project.trust import run_target_matches_project
         ok = run_target_matches_project(str(target), str(out_dir))
-    except Exception:  # noqa: BLE001 — resolver unavailable: don't block
-        logger.debug("pin: one-target gate resolver failed", exc_info=True)
-        return True
+    except Exception:  # noqa: BLE001 — gate guards privileged writes
+        logger.warning(
+            "pin: one-target gate resolver failed for %s — suppressing "
+            "the project-store write (fail closed)", out_dir,
+            exc_info=True)
+        return False
     if not ok:
         logger.warning(
             "pin: SUPPRESSED project-store write for %s — the run's "

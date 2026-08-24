@@ -2333,7 +2333,10 @@ Examples:
         # the gate skips those, so reaching here means a DIRECT
         # raptor_agentic.py invocation raced a live run.)
         from core.project.oplock import OpLockContention
-        if isinstance(e, OpLockContention):
+        from core.run.pin import ProjectArgvError
+        if isinstance(e, (OpLockContention, ProjectArgvError)):
+            # ProjectArgvError is a hard error by contract: an invalid
+            # --project must never fall back to an ambient layer.
             print(f"✗ {e}", file=sys.stderr)
             sys.exit(1)
         logger.debug("Run metadata: %s", e)  # Optional — don't fail the pipeline

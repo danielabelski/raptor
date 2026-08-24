@@ -89,7 +89,8 @@ def _resolve_active_project() -> tuple[str, str, str] | None:
         if override is not None:
             if override == ARGV_NONE:
                 return None
-            from core.run.pin import ProjectArgvError
+            from core.run.pin import ProjectArgvError, _validate_argv_project
+            _validate_argv_project(override)
             project = mgr.load(override)
             if project is None:
                 msg = f"--project: project {override!r} does not exist"

@@ -188,3 +188,42 @@ class TestRunWithLifecycleOut:
         assert h.started_dirs == []
         # --out passes through untouched on the help path.
         assert "--out" in (h.child_args or [])
+
+
+class TestExtractAndStripProject:
+    """The wrapper's --project extraction mirrors --out: stripped for
+    the lifecycle, re-injected for the child."""
+
+    def test_space_form(self):
+        raptor = _import_raptor()
+        val, rest = raptor._extract_and_strip_project(
+            ["--repo", "/x", "--project", "appx"])
+        assert val == "appx"
+        assert rest == ["--repo", "/x"]
+
+    def test_equals_form(self):
+        raptor = _import_raptor()
+        val, rest = raptor._extract_and_strip_project(
+            ["--repo", "/x", "--project=appx"])
+        assert val == "appx"
+        assert rest == ["--repo", "/x"]
+
+    def test_projectless_sentinel(self):
+        raptor = _import_raptor()
+        val, rest = raptor._extract_and_strip_project(
+            ["--project", "-", "--repo", "/x"])
+        assert val == "-"
+        assert rest == ["--repo", "/x"]
+
+    def test_absent(self):
+        raptor = _import_raptor()
+        val, rest = raptor._extract_and_strip_project(["--repo", "/x"])
+        assert val is None
+        assert rest == ["--repo", "/x"]
+
+    def test_dangling_left_for_child_argparse(self):
+        raptor = _import_raptor()
+        val, rest = raptor._extract_and_strip_project(
+            ["--repo", "/x", "--project"])
+        assert val is None
+        assert rest == ["--repo", "/x", "--project"]

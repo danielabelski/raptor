@@ -2747,6 +2747,13 @@ Examples:
 
     parser.add_argument("--url", required=True, help="Target web application URL")
     parser.add_argument("--out", help="Output directory for results")
+    parser.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default). '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.",
+    )
     parser.add_argument("--max-depth", type=int, default=3, help="Maximum crawl depth (default: 3)")
     parser.add_argument("--max-pages", type=int, default=100, help="Maximum pages to crawl (default: 100)")
     parser.add_argument("--insecure", action="store_true", help="Skip SSL/TLS certificate verification (INSECURE but you know what you are doing, right?)")
@@ -3222,6 +3229,9 @@ def main():
 
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.project is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
     try:
         ffuf_config = build_ffuf_config(args)
         if ffuf_config is not None:
@@ -3301,6 +3311,10 @@ def main():
 
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     safe_run_mkdir(out_dir)
+    # Pin bootstrap — see raptor_codeql.py: freeze ambient project
+    # resolution to the run's pin (no-op when --project set it).
+    from core.run.pin import bootstrap_process_pin
+    bootstrap_process_pin(out_dir)
 
     print("\n" + "=" * 70)
     print("RAPTOR WEB APPLICATION SECURITY SCANNER")

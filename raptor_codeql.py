@@ -135,6 +135,12 @@ def run_autonomous_workflow(args: argparse.Namespace) -> None:
         out_dir=Path(args.out) if args.out else None,
         codeql_cli=args.codeql_cli
     )
+    # Pin bootstrap: freeze this process's ambient project resolution
+    # to the run's recorded pin (no-op when --project already set the
+    # override) — a mid-session /project switch must not move trust
+    # markers or persisted binaries under an in-flight run.
+    from core.run.pin import bootstrap_process_pin
+    bootstrap_process_pin(agent.out_dir)
 
     scan_result = agent.run_autonomous_analysis(
         languages=languages,
@@ -369,6 +375,13 @@ Examples:
     )
     parser.add_argument("--out", help="Output directory")
     parser.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default). '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.",
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="Delete and recreate the CodeQL database from scratch. Slow — "
              "5-30min on real repos. Default is to reuse a cached database "
@@ -478,6 +491,9 @@ Examples:
     from core.sandbox import add_cli_args, apply_cli_args
     add_cli_args(parser)
     args = parser.parse_args()
+    if args.project is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
     # Apply --phase-timeout to the framework-wide RaptorConfig.CODEQL_TIMEOUT
     # so package-internal subprocess calls in
     # ``packages/codeql/database_manager.py`` pick up the override

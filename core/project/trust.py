@@ -45,12 +45,24 @@ def _context_project_name(run_dir: str | Path | None = None) -> str | None:
         from core.run.pin import resolve_run_pin
         return resolve_run_pin(run_dir).project
     try:
-        from core.run.pin import ARGV_NONE, get_process_project
+        from core.run.pin import (
+            ARGV_NONE,
+            _validate_argv_project,
+            get_process_project,
+        )
+    except Exception:  # noqa: BLE001 — pin module unavailable: ambient
+        get_process_project = None  # type: ignore[assignment]
+    if get_process_project is not None:
         override = get_process_project()
         if override is not None:
-            return None if override == ARGV_NONE else override
-    except Exception:  # noqa: BLE001 — pin module unavailable: ambient
-        pass
+            if override == ARGV_NONE:
+                return None
+            # Same hard-error contract as start-time resolution: a
+            # bogus/deleted --project must never silently degrade to
+            # "no trust" — the operator asked for a specific project
+            # and gets told when that ask cannot be honoured.
+            _validate_argv_project(override)
+            return override
     from core.project.project import ProjectManager
     return ProjectManager().get_active()
 

@@ -181,6 +181,40 @@ def _extract_and_strip_out(args: list) -> tuple[str | None, list]:
     return (out_str, out)
 
 
+def _extract_and_strip_project(args: list) -> tuple[str | None, list]:
+    """Extract ``--project <name>`` (or ``--project=<name>``) from
+    ``args``.
+
+    Returns ``(project, args_without_flag)``. The wrapper records the
+    value as the process-scoped project override BEFORE the lifecycle
+    resolves the output directory and pins the run, then re-injects
+    the flag for children that parse it — the run dir placement, the
+    pin in ``.raptor-run.json``, and the child's own override all name
+    one project. ``-`` = explicitly projectless. A dangling
+    ``--project`` with no value is left for the child's argparse.
+    """
+    flag = "--project"
+    prefix = f"{flag}="
+    value: str | None = None
+    out: list = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == flag and i + 1 < len(args):
+            value = args[i + 1]
+            i += 2
+            continue
+        if a.startswith(prefix):
+            value = a[len(prefix):]
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    if value is None:
+        return (None, args)
+    return (value, out)
+
+
 def _preflight_cost_gate(
     target: str | None,
     max_cost_usd: float,
@@ -449,6 +483,15 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # sentinel.
     explicit_out, args = _extract_and_strip_out(args)
 
+    # Operator-supplied --project pins the run before the output dir
+    # is resolved: get_output_dir routes placement through the process
+    # override and start_run seals the pin argv-first. Revalidation is
+    # a hard error (never a fallback) — surfaced below at start_run.
+    project_arg, args = _extract_and_strip_project(args)
+    if project_arg is not None:
+        from core.run.pin import set_process_project
+        set_process_project(project_arg)
+
     # Per-mode default-target handling: back-fill --repo for the modes
     # whose child parses it; fail fast (no run dir) when fuzz/web lack
     # their mode-specific required flag. See _resolve_target_for_command.
@@ -497,10 +540,11 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # pre-created (still empty) run dir is removed so a refused start
     # leaves nothing behind.
     from core.project.oplock import OpLockContention
+    from core.run.pin import ProjectArgvError
     try:
         start_run(out_dir, command, target=target,
                   target_identity=target_identity)
-    except OpLockContention as e:
+    except (OpLockContention, ProjectArgvError) as e:
         with contextlib.suppress(OSError):
             out_dir.rmdir()
         print(f"✗ {e}", file=sys.stderr)
@@ -592,6 +636,12 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # defensive (nothing should carry --out here after the strip).
     if not any(a == "--out" or a.startswith("--out=") for a in args):
         args = args + ["--out", str(out_dir)]
+    # Re-inject --project so the child's own override agrees with the
+    # pin the parent just sealed (children also bootstrap from the run
+    # marker; the argv keeps direct-invocation and wrapper flows on
+    # one code path).
+    if project_arg is not None:
+        args = args + ["--project", project_arg]
 
     # ``flush=True``: when stdout is piped (e.g. operator's ``| tee
     # run.log``) Python switches to block-buffering, so the banner

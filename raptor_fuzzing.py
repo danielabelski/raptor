@@ -169,6 +169,13 @@ Examples:
     )
     ap.add_argument("--timeout", type=int, default=1000, help="Timeout per execution in ms (default: 1000)")
     ap.add_argument("--out", help="Output directory (default: fuzz_<binary>_<timestamp>_pid<N>_<tail> under the configured output root)")
+    ap.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default). '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.",
+    )
     ap.add_argument("--dict", help="Path to AFL dictionary file for structured input fuzzing")
     ap.add_argument(
         "--from-smt-witness",
@@ -310,6 +317,9 @@ Examples:
     from core.sandbox import add_cli_args, apply_cli_args
     add_cli_args(ap)
     args = ap.parse_args()
+    if args.project is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
     apply_cli_args(args, parser=ap)
 
     if args.export_seed_corpus:
@@ -396,6 +406,10 @@ Examples:
         out_dir = RaptorConfig.get_out_dir() / f"fuzz_{binary_path.stem}_{unique_run_suffix()}"
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     safe_run_mkdir(out_dir)
+    # Pin bootstrap — see raptor_codeql.py: freeze ambient project
+    # resolution to the run's pin (no-op when --project set it).
+    from core.run.pin import bootstrap_process_pin
+    bootstrap_process_pin(out_dir)
 
     if args.from_smt_witness:
         from packages.fuzzing.smt_seed import (

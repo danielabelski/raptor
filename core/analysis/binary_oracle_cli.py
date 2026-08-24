@@ -462,7 +462,9 @@ def resolve_binary_paths(args, repo: Path, target_kind: str,
                 repo, target_kind, explicit=explicit_auto):
             seen.setdefault(str(p), True)
 
-    proj_paths, proj_name = _project_binaries(repo=repo)
+    _out = getattr(args, "out", None)
+    proj_paths, proj_name = _project_binaries(
+        repo=repo, run_dir=Path(_out) if _out else None)
     added = 0
     for p in proj_paths:
         if not Path(p).is_file():

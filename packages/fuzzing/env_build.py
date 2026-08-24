@@ -135,11 +135,12 @@ def env_build_for_fuzzing(
     if sanitizer not in ("", "asan"):
         return FuzzEnvBuild(ok=False, reason="unsupported_sanitizer",
                             detail=f"sanitizer {sanitizer!r} not supported")
-    if not resolve_build_execution(build, target_path=repo):
+    if not resolve_build_execution(build, target_path=repo,
+                                   run_dir=out_dir):
         return FuzzEnvBuild(
             ok=False, reason="not_authorized",
             detail="build trust marker absent and no explicit flag")
-    resolved = resolve_build_command(repo)
+    resolved = resolve_build_command(repo, run_dir=out_dir)
     if resolved is None:
         return FuzzEnvBuild(
             ok=False, reason="no_build_command",

@@ -552,7 +552,8 @@ def _run_in_flight(candidate: Path) -> bool:
     gate alone admitted it)."""
     try:
         from core.json import load_json
-        meta = load_json(candidate / ".raptor-run.json")
+        meta = load_json(candidate / ".raptor-run.json",
+                         max_bytes=1024 * 1024)
         return bool(isinstance(meta, dict)
                     and meta.get("status") == "running")
     except Exception:  # noqa: BLE001 — unreadable metadata: not in flight

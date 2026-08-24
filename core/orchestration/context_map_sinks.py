@@ -701,7 +701,8 @@ def _find_discovered_sinks(run_dir: Path) -> dict[str, Any] | None:
     parent = run_dir.parent
     own_target = None
     try:
-        meta = load_json(run_dir / ".raptor-run.json")
+        meta = load_json(run_dir / ".raptor-run.json",
+                         max_bytes=1024 * 1024)
         own_target = ((meta or {}).get("target_path")
                       if isinstance(meta, dict) else None)
     except Exception:  # noqa: BLE001 — gate degrades to legacy

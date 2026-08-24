@@ -89,8 +89,21 @@ def checklist_sha(checklist: dict[str, Any]) -> str:
 def _project_dir(out_dir: Path) -> Path:
     """Resolve the project output dir from a run's output dir.
 
-    Convention: run dirs are timestamped subdirs of the project dir.
+    THE RUN PIN decides when the run carries one: an --out run pinned
+    to project P persists/reads specs in P's store wherever the dir
+    physically sits, and a pin-null standalone run keeps its specs
+    run-adjacent instead of leaking them into whatever directory
+    contains it. Pin-less legacy dirs keep the parent convention
+    (run dirs are timestamped subdirs of the project dir).
     """
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_dir)
+        if pin.authoritative:
+            proj = pin_project_dir(out_dir)
+            return proj if proj is not None else out_dir
+    except Exception:  # noqa: BLE001 — legacy convention below
+        pass
     return out_dir.parent
 
 

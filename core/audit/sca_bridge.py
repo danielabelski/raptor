@@ -107,8 +107,10 @@ def _find_sca_findings(out_dir: Path) -> Path | None:
             own_target = None
             try:
                 from core.json import load_json
-                meta = load_json(out_dir / ".raptor-run.json")
-                own_target = (meta or {}).get("target_path")                     if isinstance(meta, dict) else None
+                meta = load_json(out_dir / ".raptor-run.json",
+                                 max_bytes=1024 * 1024)
+                own_target = ((meta or {}).get("target_path")
+                              if isinstance(meta, dict) else None)
             except Exception:  # noqa: BLE001 — gate degrades to legacy
                 own_target = None
             for sibling in parent.iterdir():

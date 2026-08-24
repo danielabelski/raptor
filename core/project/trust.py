@@ -124,6 +124,19 @@ def run_target_matches_project(target_path: str | Path | None,
     project_target = active_project_target(run_dir)
     if not project_target or not target_path:
         return False
+    # URL targets are OPAQUE strings (/web runs): never Path-resolve
+    # them — "https://x" resolved against the cwd becomes
+    # "<cwd>/https:/x" and can fail OPEN inside a project tree. URL vs
+    # filesystem is never the same target; URL vs URL compares
+    # trailing-slash-tolerant, like _check_target_mismatch.
+    from core.run.output import _URL_SCHEME_RE
+    run_is_url = bool(_URL_SCHEME_RE.match(str(target_path)))
+    proj_is_url = bool(_URL_SCHEME_RE.match(str(project_target)))
+    if run_is_url or proj_is_url:
+        if run_is_url and proj_is_url:
+            return (str(target_path).rstrip("/")
+                    == str(project_target).rstrip("/"))
+        return False
     try:
         run_res = Path(target_path).resolve()
         proj_res = Path(project_target).resolve()

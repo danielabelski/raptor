@@ -152,10 +152,23 @@ def recorded_target_matches(run_dir: Path,
     either way). Metadata-less dirs are admitted — legacy tolerance."""
     try:
         from core.json import load_json
-        meta = load_json(Path(run_dir) / ".raptor-run.json")
+        meta = load_json(Path(run_dir) / ".raptor-run.json",
+                         max_bytes=1024 * 1024)
         recorded = (meta or {}).get("target_path") if isinstance(meta, dict) else None
-        if not recorded:
+        if recorded is None or recorded == "":
             return True
+        if not isinstance(recorded, str):
+            return False  # typed corruption is tamper, not legacy
+        from core.run.output import _URL_SCHEME_RE
+        rec_url = bool(_URL_SCHEME_RE.match(recorded))
+        qry_url = bool(_URL_SCHEME_RE.match(str(target_path)))
+        if rec_url or qry_url:
+            # URLs are opaque: never Path-resolve (a URL resolved
+            # against a cwd inside the queried target read as a
+            # same-target sibling). URL vs filesystem never matches.
+            return (rec_url and qry_url
+                    and recorded.rstrip("/")
+                    == str(target_path).rstrip("/"))
         a = Path(recorded).resolve()
         b = Path(target_path).resolve()
         return a == b or a in b.parents or b in a.parents

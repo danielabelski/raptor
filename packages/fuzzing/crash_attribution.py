@@ -26,12 +26,12 @@ producing finding with no schema change.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.json import load_json_bounded
 from packages.fuzzing.smt_seed import MANIFEST_NAME, SEED_DIR_NAME
 from typing import TYPE_CHECKING
 
@@ -158,8 +158,10 @@ def _root_orig_seeds(crash_name: str, queue_index: dict[str, str]) -> set[str] |
 def load_seed_provenance(manifest_path: Path) -> dict[str, dict]:
     """Seed filename -> provenance entry from ``smt-seeds-manifest.json``."""
     try:
-        data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # RAPTOR-written run artifact; ValueError covers malformed
+        # JSON and the byte-budget refusal.
+        data = load_json_bounded(Path(manifest_path), max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as exc:
         logger.warning("SMT seed manifest unreadable (%s): %s", manifest_path, exc)
         return {}
     out: dict[str, dict] = {}

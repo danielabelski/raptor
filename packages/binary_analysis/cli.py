@@ -20,7 +20,6 @@ The CLI does not silently execute an unknown target during ``map``.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -721,8 +720,9 @@ def _print_file(run_dir: str, filename: str, *, json_output: bool = False) -> in
         print(path.read_text(encoding="utf-8"), end="")
         return 0
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        # Run artifact written by this package's own pipeline.
+        payload = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+    except ValueError as exc:
         print(f"raptor-binary: invalid JSON in {path}: {exc}", file=sys.stderr)
         return 1
     print(dumps_display(payload, indent=None, sort_keys=True))

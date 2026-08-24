@@ -246,7 +246,7 @@ def _modal_report(
     ``{op, ecosystem, name, version?}`` entries dispatched into the
     same handlers.
     """
-    import json as _json
+    from core.json import load_json_bounded
     spec_adds: list[tuple[str, str, str]] = []     # (eco, name, version)
     spec_removes: list[tuple[str, str]] = []        # (eco, name)
     for raw in adds:
@@ -260,8 +260,12 @@ def _modal_report(
 
     if from_file:
         try:
-            entries = _json.loads(Path(from_file).read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError) as e:
+            # Operator-supplied spec file; ValueError also covers the
+            # byte-budget refusal.
+            entries = load_json_bounded(
+                Path(from_file), max_bytes=64 * 1024 * 1024,
+            )
+        except (OSError, ValueError) as e:
             return f"raptor-sca upgrade --from: cannot read {from_file}: {e}\n", 2
         if isinstance(entries, list):
             for entry in entries:
@@ -366,12 +370,14 @@ def _findings_clearing(
     """Map ``(eco, name) → [advisory_id, ...]`` for every advisory that
     would clear if the dep were removed (i.e., it's the only dep in
     findings.json mentioning that advisory)."""
-    import json as _json
+    from core.json import load_json_bounded
     if not findings_path:
         return {}
     try:
-        rows = _json.loads(Path(findings_path).read_text(encoding="utf-8"))
-    except (OSError, _json.JSONDecodeError):
+        # Operator-supplied findings file; ValueError also covers the
+        # byte-budget refusal.
+        rows = load_json_bounded(Path(findings_path), max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError):
         return {}
     remove_set = {r[:2] for r in removes}
     adv_to_deps: dict = {}

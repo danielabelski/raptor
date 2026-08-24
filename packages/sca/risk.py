@@ -553,8 +553,9 @@ def _load_latest_validation_verdict() -> str:
     """Pick the most-recent ``validation/<date>.json`` and return
     its ``verdict`` field. Defensive against every plausible
     failure — never raises."""
-    import json
     from pathlib import Path
+
+    from core.json import load_json
     try:
         validation_dir = (
             Path(__file__).resolve().parent
@@ -571,10 +572,9 @@ def _load_latest_validation_verdict() -> str:
             key=lambda p: p.name, reverse=True,
         )
         for path in candidates:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                continue
+            # Repo-bundled validation report; corrupt / oversize come
+            # back as None and fall into the isinstance guard.
+            data = load_json(path, max_bytes=8 * 1024 * 1024)
             if not isinstance(data, dict):
                 continue
             verdict = data.get("verdict")

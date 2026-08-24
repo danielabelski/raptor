@@ -12,10 +12,11 @@ sentinel entry carries specific versions, only those versions match;
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+from core.json import load_json_bounded
 
 from ..models import Confidence, Dependency
 from typing import TYPE_CHECKING
@@ -54,8 +55,10 @@ def _load_sentinels() -> dict[_SentinelKey, list[dict]]:
     if _CACHE is not None:
         return _CACHE
     try:
-        data = _json.loads(_DATA_FILE.read_text(encoding="utf-8"))
-    except (OSError, _json.JSONDecodeError) as e:
+        # Repo-bundled data file; ValueError also covers the
+        # byte-budget refusal.
+        data = load_json_bounded(_DATA_FILE, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         logger.warning("sca.supply_chain.sentinel: cannot load %s: %s",
                        _DATA_FILE, e)
         return {}

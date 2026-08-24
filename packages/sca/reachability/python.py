@@ -23,11 +23,12 @@ into ``node_modules``, ``.venv``, etc.
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import warnings
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+
+from core.json import load_json_bounded
 
 from ..models import Confidence, Reachability
 
@@ -71,7 +72,9 @@ _MODULE_MAP_FILE = (
 
 def _load_dist_to_modules() -> dict[str, tuple[str, ...]]:
     try:
-        raw = json.loads(_MODULE_MAP_FILE.read_text(encoding="utf-8"))
+        # Repo-bundled data file; OSError on missing, ValueError on
+        # malformed / over-budget.
+        raw = load_json_bounded(_MODULE_MAP_FILE, max_bytes=8 * 1024 * 1024)
     except (OSError, ValueError) as e:
         logger.warning(
             "sca.reachability.python: cannot load %s (%s); "

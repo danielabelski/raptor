@@ -10,12 +10,12 @@ sibling links) are preserved.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
+from core.json import load_json
 from core.sarif.parser import load_sarif
 
 if TYPE_CHECKING:
@@ -73,13 +73,10 @@ def link_related_findings(
 
 
 def _load_findings(path: Path) -> list[dict[str, Any]]:
-    try:
-        with Path(path).open(encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        logger.debug("sca.cross_tool: cannot read %s: %s", path, exc)
-        return []
+    # SCA-written findings artifact; missing / corrupt / oversize come
+    # back as None and fall into the isinstance guard.
+    data = load_json(Path(path), max_bytes=64 * 1024 * 1024)
+    return data if isinstance(data, list) else []
 
 
 def _write_findings(path: Path, findings: list[dict[str, Any]]) -> None:

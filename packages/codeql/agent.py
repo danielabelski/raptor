@@ -24,7 +24,7 @@ sys.path.insert(0, os.environ["RAPTOR_DIR"])
 
 from core.build.build_detector import BuildDetector, BuildSystem
 from core.config import RaptorConfig
-from core.json import save_json
+from core.json import load_json_bounded, save_json
 from core.logging import get_logger
 from core.run.output import unique_run_suffix as _unique_run_suffix
 from core.run.safe_io import safe_run_mkdir
@@ -83,13 +83,13 @@ def _write_candidates_sarif(augmented_sarif, new_ids, out_path):
     a string, or None on any failure — candidates are additive signal,
     never worth failing the pass over.
     """
-    import json as _json
-
     try:
         from core.dataflow.adapters.codeql import from_sarif_result
 
-        with open(augmented_sarif, encoding="utf-8") as f:
-            sarif = _json.load(f)
+        # SARIF from this run's augmented CodeQL pass; any refusal
+        # (missing, malformed, over budget) lands in the additive-
+        # signal except below.
+        sarif = load_json_bounded(augmented_sarif, max_bytes=256 * 1024 * 1024)
         kept_any = False
         for run in sarif.get("runs", []) or []:
             kept = []

@@ -28,7 +28,6 @@ Notes:
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import time
@@ -37,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from core.http import HttpError
+from core.json import load_json
 
 _TIMEOUT_S = 10.0
 _DOCKER_TIMEOUT_S = 30.0  # docker manifest inspect is slow even cache-warm
@@ -227,10 +227,9 @@ def _docker_authed() -> bool:
     cfg = Path.home() / ".docker" / "config.json"
     if not cfg.is_file():
         return False
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
+    # Local docker CLI config — warn-and-None on missing/corrupt/
+    # oversize; the isinstance guard below turns None into False.
+    data = load_json(cfg, max_bytes=8 * 1024 * 1024)
     auths = data.get("auths") if isinstance(data, dict) else None
     if not isinstance(auths, dict):
         return False

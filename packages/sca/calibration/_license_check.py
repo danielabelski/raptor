@@ -23,10 +23,11 @@ corpus, so cheap to run on every commit.
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
+
+from core.json import load_json
 
 # Field names that would indicate raw exploit content. Any
 # calibration JSON containing a key that matches (case-insensitive)
@@ -76,8 +77,10 @@ def check(corpus_dir: Path, attribution_md: Path) -> list[str]:
             # First-party generated report — not an attributed source.
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+            # Local calibration corpus; ValueError also covers the
+            # byte-budget refusal.
+            data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+        except (OSError, ValueError) as e:
             violations.append(
                 f"{rel}: failed to read/parse JSON ({e})"
             )

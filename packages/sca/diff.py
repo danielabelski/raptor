@@ -25,7 +25,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import dumps_artifact
+from core.json import dumps_artifact, load_json
 from core.security.log_sanitisation import escape_nonprintable
 
 from .findings import severity_rank
@@ -273,8 +272,10 @@ def _load_rows(path_str: str) -> list[dict[str, Any]] | None:
         print(f"raptor-sca diff: file not found: {path}", file=sys.stderr)
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        # Operator-supplied findings file; ValueError covers malformed
+        # JSON, bad encoding, and the byte-budget refusal.
+        data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         print(f"raptor-sca diff: cannot read {path}: {e}", file=sys.stderr)
         return None
     if not isinstance(data, list):

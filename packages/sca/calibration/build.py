@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -590,8 +592,12 @@ def _build_osv_evidence(out_dir: Path, http: Any) -> BuildResult:
     if samples_dir.is_dir():
         for sample_path in samples_dir.rglob("*.json"):
             try:
-                data = json.loads(sample_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                # Locally-built corpus sample; ValueError also covers
+                # the byte-budget refusal.
+                data = load_json(
+                    sample_path, strict=True, max_bytes=64 * 1024 * 1024,
+                )
+            except (OSError, ValueError):
                 continue
             for finding in data.get("findings", []):
                 if not isinstance(finding, dict):

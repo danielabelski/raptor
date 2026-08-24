@@ -70,6 +70,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable, Sequence
 
+from core.json import load_json_bounded
+
 from ..discovery import EXCLUDED_DIR_NAMES
 from ..models import Confidence, Dependency, Manifest
 from ..parsers import _safe_read
@@ -159,8 +161,10 @@ def _load_allowlist() -> dict:
         return _ALLOWLIST
     path = _allowlist_path()
     try:
-        _ALLOWLIST = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        # Repo-bundled data file; ValueError also covers the
+        # byte-budget refusal.
+        _ALLOWLIST = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         logger.warning(
             "sca.supply_chain.binary_in_package: allowlist load failed (%s); "
             "every binary will report — extend %s",

@@ -12,14 +12,11 @@ don't change during a run).
 
 from __future__ import annotations
 
-import json
-import logging
 from functools import lru_cache
 from pathlib import Path
 
+from core.json import load_json
 from core.security.prompt_envelope import UntrustedBlock
-
-logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).resolve().parents[1] / "data"  # packages/sca/data
 
@@ -33,11 +30,9 @@ def popular_names_block(ecosystem: str) -> UntrustedBlock | None:
     path = _DATA_DIR / "popular" / f"{ecosystem}.json"
     if not path.is_file():
         return None
-    try:
-        names = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        logger.debug("exemplars: failed to load %s", path)
-        return None
+    # Repo-bundled data file; corrupt / oversize warn-and-None inside
+    # load_json, and the emptiness guard below covers None.
+    names = load_json(path, max_bytes=8 * 1024 * 1024)
     if not names:
         return None
     text = (
@@ -58,12 +53,10 @@ def exfil_destinations_block() -> UntrustedBlock | None:
     path = _DATA_DIR / "exfil_destinations.json"
     if not path.is_file():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        entries = data.get("entries", [])
-    except Exception:  # noqa: BLE001
-        logger.debug("exemplars: failed to load %s", path)
-        return None
+    # Repo-bundled data file; corrupt / oversize / non-dict shapes all
+    # degrade to "no entries".
+    data = load_json(path, max_bytes=8 * 1024 * 1024)
+    entries = data.get("entries", []) if isinstance(data, dict) else []
     if not entries:
         return None
 

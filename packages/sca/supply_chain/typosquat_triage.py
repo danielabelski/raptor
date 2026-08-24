@@ -31,14 +31,13 @@ from __future__ import annotations
 
 import datetime
 import enum
-import json as _json
 import logging
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 
-from core.json import save_json
+from core.json import load_json_bounded, save_json
 
 from .typosquat_audit import Candidate, _load_name_set
 
@@ -215,8 +214,10 @@ def apply_auto_legit(
     if not auto:
         return []
     try:
-        raw = _json.loads(reviewed_legit_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, _json.JSONDecodeError):
+        # Curation file this function also rewrites; ValueError covers
+        # malformed JSON and the byte-budget refusal.
+        raw = load_json_bounded(reviewed_legit_path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError):
         raw = {}
     if not isinstance(raw, dict):
         raw = {}

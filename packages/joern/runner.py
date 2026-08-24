@@ -346,13 +346,14 @@ def discover_frontend_args(target: Path) -> FrontendArgs:
     db = find_compile_commands(target)
     if db is None:
         return _EMPTY_FRONTEND_ARGS
+    from core.json import load_json_bounded
     try:
-        if db.stat().st_size > _CC_MAX_BYTES:
-            logger.warning("%s exceeds %d bytes — ignored for frontend args",
-                           db, _CC_MAX_BYTES)
-            return _EMPTY_FRONTEND_ARGS
-        entries = json.loads(db.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        # Target-repo file: stat-gated before any read, decoded with
+        # errors="replace" so byte-weird but parseable databases still
+        # yield flags. Oversize raises JsonBudgetExceededError
+        # (a ValueError) after the substrate logs the refusal.
+        entries = load_json_bounded(db, max_bytes=_CC_MAX_BYTES)
+    except (OSError, ValueError) as exc:
         logger.debug("compile_commands parse failed at %s: %s", db, exc)
         return _EMPTY_FRONTEND_ARGS
     if not isinstance(entries, list):

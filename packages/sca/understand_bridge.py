@@ -24,6 +24,8 @@ import json
 import logging
 from dataclasses import dataclass
 
+from core.json import load_json_bounded
+
 from .models import Confidence, Reachability
 from typing import TYPE_CHECKING
 
@@ -64,7 +66,7 @@ def load_context_map(
         if c.is_file():
             try:
                 return _parse(c)
-            except (OSError, json.JSONDecodeError) as e:
+            except (OSError, ValueError) as e:
                 logger.warning("sca.understand_bridge: cannot read %s: %s",
                                 c, e)
                 continue
@@ -149,7 +151,9 @@ def annotate_all(
 # ---------------------------------------------------------------------------
 
 def _parse(path: Path) -> ContextMap:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # /understand run artifact; raises OSError / ValueError (incl. the
+    # byte-budget refusal) — the caller's except handles all of them.
+    raw = load_json_bounded(path, max_bytes=64 * 1024 * 1024)
     if not isinstance(raw, dict):
         msg = "expected dict at top level"
         raise json.JSONDecodeError(msg, "", 0)

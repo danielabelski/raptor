@@ -20,7 +20,6 @@ provenance must not become a shipped rule.
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import re
 import sys
@@ -28,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.json import dumps_display
+from core.json import dumps_display, load_json_bounded
 
 from .languages import detect_engine
 from .library import RuleLibrary
@@ -136,8 +135,10 @@ def load_cve_run(output_dir: Path | str) -> CveFixRecord:
         raise ProvenanceError(msg)
     osv_path = osv_files[0]
     try:
-        osv = json.loads(osv_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        # /cve-diff run artifact; ValueError also covers the byte-budget
+        # refusal (JsonBudgetExceededError subclasses it).
+        osv = load_json_bounded(osv_path, max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as exc:
         msg = f"unreadable OSV record {osv_path}: {exc}"
         raise ProvenanceError(msg) from exc
 

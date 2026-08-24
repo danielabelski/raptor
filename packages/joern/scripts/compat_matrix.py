@@ -74,7 +74,7 @@ sys.path.insert(0, str(REPO))
 # checkout (see core.config.pin_raptor_dir). Import must follow the
 # sys.path insert above.
 from core.config import pin_raptor_dir_in_environ  # noqa: E402
-from core.json import save_json  # noqa: E402
+from core.json import load_json, save_json  # noqa: E402
 from core.run.scratch import scratch_dir  # noqa: E402
 
 pin_raptor_dir_in_environ()
@@ -147,10 +147,9 @@ def _newest_tags(count: int) -> list[str]:
 def _load_pins(path: Path = _PINS_FILE) -> dict[str, str]:
     """The pins mapping, without documentation keys. Missing or
     unparseable file means "no pins" (every download warns)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    # Repo-bundled pins file; missing / corrupt / oversize all come
+    # back as None and fall into the isinstance guard.
+    data = load_json(path, max_bytes=8 * 1024 * 1024)
     if not isinstance(data, dict):
         return {}
     return {

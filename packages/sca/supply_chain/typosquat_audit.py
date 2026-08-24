@@ -32,7 +32,6 @@ operator-side where an LLM is available, never in CI.
 from __future__ import annotations
 
 import argparse
-import json as _json
 import logging
 import sys
 from collections.abc import Sequence
@@ -40,6 +39,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from core.http import HttpClient
+from core.json import load_json_bounded
 from core.http.urllib_backend import UrllibClient
 
 from ..refresh_typosquat_lists import (
@@ -138,8 +138,10 @@ def _load_name_set(path: Path, ecosystem: str) -> set:
     both the bare ``{eco: [name, ...]}`` and enriched ``{eco: {name: {...}}}``
     shapes; a missing/malformed file (or absent ecosystem) → empty set."""
     try:
-        raw = _json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, _json.JSONDecodeError):
+        # Repo-bundled curation file; ValueError also covers the
+        # byte-budget refusal.
+        raw = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError):
         return set()
     if not isinstance(raw, dict):
         return set()
@@ -156,8 +158,9 @@ def _load_name_meta(path: Path, ecosystem: str) -> dict[str, dict]:
     keeps the per-name provenance (e.g. ``near_twin``). Bare-list entries map to
     ``{}``."""
     try:
-        raw = _json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, _json.JSONDecodeError):
+        # Same curation-file contract as _load_name_set.
+        raw = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}

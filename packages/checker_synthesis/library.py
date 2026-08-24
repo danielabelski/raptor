@@ -25,7 +25,6 @@ is the local source of truth either way.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
-from core.json import save_json
+from core.json import load_json, save_json
 
 from .cwe_families import cwe_siblings
 
@@ -208,9 +207,14 @@ class RuleLibrary:
             self._entries = []
             return self._entries
         try:
-            data = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+            # ValueError covers malformed JSON and the byte-budget
+            # refusal; the manifest is written by _save via save_json.
+            data = load_json(
+                self._manifest_path, strict=True,
+                max_bytes=64 * 1024 * 1024,
+            )
             self._entries = [LibraryEntry.from_dict(e) for e in data.get("rules", [])]
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
             logger.warning("rule library manifest corrupt, starting fresh: %s", exc)
             self._entries = []
         return self._entries

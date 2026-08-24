@@ -53,11 +53,12 @@ actual import statements in the commit message).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
+
+from core.json import load_json_bounded
 
 from ..models import Confidence, Reachability
 
@@ -92,7 +93,9 @@ _PACKAGE_MAP_FILE = (
 
 def _load_package_overrides() -> dict[str, str]:
     try:
-        raw = json.loads(_PACKAGE_MAP_FILE.read_text(encoding="utf-8"))
+        # Repo-bundled data file; OSError on missing, ValueError on
+        # malformed / over-budget.
+        raw = load_json_bounded(_PACKAGE_MAP_FILE, max_bytes=8 * 1024 * 1024)
     except (OSError, ValueError) as e:
         logger.warning(
             "sca.reachability.maven: cannot load %s (%s); "

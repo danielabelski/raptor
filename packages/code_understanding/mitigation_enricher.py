@@ -34,10 +34,11 @@ absent.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
+
+from core.json import load_json
 
 if TYPE_CHECKING:  # type-only — no runtime dep
     from pathlib import Path
@@ -415,8 +416,10 @@ def enrich_context_map_file(
         _LOG.warning("mitigation_enricher: context-map at %s missing", path)
         return
     try:
-        cm = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        # context-map.json is a RAPTOR-written run artifact; ValueError
+        # also covers the byte-budget refusal.
+        cm = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         _LOG.warning("mitigation_enricher: reading %s failed: %s", path, e)
         return
     if not isinstance(cm, dict):

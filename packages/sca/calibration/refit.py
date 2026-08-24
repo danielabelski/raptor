@@ -55,14 +55,13 @@ the corpus needs to grow before a refit is meaningful.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -878,8 +877,12 @@ def _load_findings_with_labels(
     out: list[tuple[dict[str, Any], int]] = []
     for sample_path in sorted(samples_dir.rglob("*.json")):
         try:
-            data = json.loads(sample_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # Locally-built corpus sample; ValueError covers malformed
+            # JSON, bad encoding, and the byte-budget refusal.
+            data = load_json(
+                sample_path, strict=True, max_bytes=64 * 1024 * 1024,
+            )
+        except (OSError, ValueError):
             continue
         findings = data.get("findings") if isinstance(data, dict) else None
         if not isinstance(findings, list):
@@ -923,10 +926,9 @@ def _load_ground_truth(corpus_dir: Path) -> set:
         path = corpus_dir / fname
         if not path.is_file():
             continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue
+        # Ground-truth signal snapshot; missing / corrupt / oversize
+        # come back as None and fall into the isinstance guard.
+        data = load_json(path, max_bytes=64 * 1024 * 1024)
         if not isinstance(data, dict):
             continue
         sig_dict = data.get("signals")

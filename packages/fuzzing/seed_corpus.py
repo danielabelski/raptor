@@ -9,7 +9,6 @@ can be shared with fuzzing runs and CI artifacts more safely.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, load_json_bounded, save_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -387,8 +386,12 @@ def prepare_builtin_seed_corpus(out_dir: Path, profile: str = "default") -> dict
         raise FileNotFoundError(msg)
 
     try:
-        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        # Repo-bundled data file; ValueError covers malformed JSON
+        # and the byte-budget refusal.
+        source_manifest = load_json_bounded(
+            manifest_path, max_bytes=8 * 1024 * 1024,
+        )
+    except (ValueError, OSError) as exc:
         msg = f"malformed seed corpus manifest: {exc}"
         raise ValueError(msg) from exc
     seeds_config = source_manifest.get("seeds") or []
@@ -472,9 +475,10 @@ def _reset_builtin_output(out_dir: Path, seed_names: set[str]) -> None:
     generated_names = set(seed_names)
     existing_manifest = out_dir / "manifest.json"
     if existing_manifest.is_file():
-        try:
-            previous = json.loads(existing_manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        # Manifest from a previous run of this generator; missing /
+        # corrupt / oversize degrade to "no previous manifest".
+        previous = load_json(existing_manifest, max_bytes=64 * 1024 * 1024)
+        if previous is None:
             previous = {}
         if previous.get("source") == "raptor_builtin_seed_corpus":
             for seed in previous.get("seeds") or []:

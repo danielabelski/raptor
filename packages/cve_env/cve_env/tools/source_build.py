@@ -45,6 +45,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
+from core.json.jsonc import load_jsonc
+
 if TYPE_CHECKING:
     from types import TracebackType
 
@@ -96,9 +98,6 @@ _DOCKERFILE_GLOB_NAMES: tuple[str, ...] = ("Dockerfile", "Containerfile")
 _SKIP_DOCKERFILE_SUBSTRINGS: tuple[str, ...] = ("test", "example", "sample", "demo")
 _DEVCONTAINER_JSON = ".devcontainer/devcontainer.json"
 _DEVCONTAINER_ROOT_JSON = ".devcontainer.json"
-_JSONC_LINE_COMMENT = re.compile(r"^\s*//[^\n]*", re.MULTILINE)
-_JSONC_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-_JSONC_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 
 _BUILD_CONFIG_TO_TYPE: dict[str, str] = {
     "pom.xml": "maven",
@@ -737,11 +736,11 @@ class SourceBuilder:
                 raw = path.read_text(encoding="utf-8")
             except OSError:
                 continue
-            stripped = _JSONC_BLOCK_COMMENT.sub("", raw)
-            stripped = _JSONC_LINE_COMMENT.sub("", stripped)
-            stripped = _JSONC_TRAILING_COMMA.sub(r"\1", stripped)
+            # devcontainer.json is JSONC (// and /* */ comments,
+            # trailing commas); load_jsonc strips comment markers
+            # string-aware so a "https://..." image value survives.
             try:
-                data = json.loads(stripped)
+                data = load_jsonc(raw)
             except json.JSONDecodeError:
                 continue
             image = data.get("image") if isinstance(data, dict) else None

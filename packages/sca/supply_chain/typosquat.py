@@ -23,10 +23,11 @@ Limits & honesty:
 
 from __future__ import annotations
 
-import json as _json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from core.json import load_json_bounded
 
 from ..models import Confidence, Dependency
 from typing import TYPE_CHECKING
@@ -258,8 +259,10 @@ def _load_popular(ecosystem: str) -> list[str]:
         _POPULAR_BY_ECO[ecosystem] = []
         return []
     try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, _json.JSONDecodeError) as e:
+        # Repo-bundled data file; ValueError also covers the
+        # byte-budget refusal.
+        data = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         logger.warning("sca.supply_chain.typosquat: failed to load %s: %s",
                        path, e)
         _POPULAR_BY_ECO[ecosystem] = []
@@ -286,10 +289,10 @@ def _load_denylist(ecosystem: str) -> set:
     if _DENYLIST_RAW is None:
         _DENYLIST_RAW = {}
         try:
-            raw = _json.loads(_DENYLIST_PATH.read_text(encoding="utf-8"))
+            raw = load_json_bounded(_DENYLIST_PATH, max_bytes=8 * 1024 * 1024)
         except FileNotFoundError:
             raw = {}
-        except (OSError, _json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             logger.warning("sca.supply_chain.typosquat: failed to load "
                            "denylist %s: %s", _DENYLIST_PATH, e)
             raw = {}
@@ -323,10 +326,10 @@ def _load_allowlist(ecosystem: str) -> set:
     if _ALLOWLIST_RAW is None:
         _ALLOWLIST_RAW = {}
         try:
-            raw = _json.loads(_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+            raw = load_json_bounded(_ALLOWLIST_PATH, max_bytes=8 * 1024 * 1024)
         except FileNotFoundError:
             raw = {}
-        except (OSError, _json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             logger.warning("sca.supply_chain.typosquat: failed to load "
                            "allowlist %s: %s", _ALLOWLIST_PATH, e)
             raw = {}

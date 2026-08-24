@@ -27,13 +27,12 @@ provenance (which snapshot dates of which sources were consulted).
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -187,8 +186,10 @@ def _load_ground_truth(corpus_dir: Path) -> set[str]:
         if not path.is_file():
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
+            # Ground-truth signal snapshot; ValueError also covers
+            # the byte-budget refusal.
+            data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+        except (OSError, ValueError) as e:
             logger.warning(
                 "sca.calibration.validate: skip %s (%s)", fname, e,
             )
@@ -207,10 +208,9 @@ def _load_project_samples(samples_dir: Path) -> list[dict[str, Any]]:
     if not samples_dir.is_dir():
         return out
     for path in sorted(samples_dir.rglob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+        # Corpus sample; missing / corrupt / oversize come back as
+        # None and fall into the isinstance guard.
+        data = load_json(path, max_bytes=64 * 1024 * 1024)
         if not isinstance(data, dict):
             continue
         if "findings" not in data or not isinstance(data["findings"], list):
@@ -367,8 +367,10 @@ def _provenance_summary(corpus_dir: Path) -> dict[str, str]:
         if not path.is_file():
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            # Signal snapshot; ValueError also covers the byte-budget
+            # refusal.
+            data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+        except (OSError, ValueError):
             continue
         src = data.get("_source") or {}
         out[fname] = src.get("fetched_at", "unknown")

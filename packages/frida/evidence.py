@@ -11,10 +11,10 @@ consuming it. The gate chain:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.json import load_json
 from core.logging import get_logger
 
 log = get_logger("frida.evidence")
@@ -39,20 +39,12 @@ def _load_metadata(run_dir: Path) -> dict | None:
     meta_path = run_dir / "metadata.json"
     if not meta_path.is_file():
         return None
-    try:
-        size = meta_path.stat().st_size
-        if size > _MAX_METADATA_SIZE:
-            log.warning("metadata.json too large (%d bytes), skipping: %s",
-                        size, meta_path)
-            return None
-        with meta_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return None
-        return data
-    except (json.JSONDecodeError, OSError) as exc:
-        log.debug("failed to load metadata from %s: %s", meta_path, exc)
+    # Missing / corrupt / oversize all warn-and-None inside load_json;
+    # the size gate runs on stat() before any read.
+    data = load_json(meta_path, max_bytes=_MAX_METADATA_SIZE)
+    if not isinstance(data, dict):
         return None
+    return data
 
 
 def match_target(metadata: dict, target_path: str) -> bool:

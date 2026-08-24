@@ -97,6 +97,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.json import load_json_bounded
+
 from .._yaml_fast import safe_load
 from ..models import Confidence, Dependency, Manifest, PinStyle
 
@@ -130,8 +132,10 @@ def _trusted_consumers() -> set[str]:
         / "data" / "gha_trusted_secret_consumers.json"
     )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        # Repo-bundled data file; ValueError also covers the
+        # byte-budget refusal.
+        data = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError):
         _TRUSTED = set()
         return _TRUSTED
     _TRUSTED = set(data.get("trusted", []))

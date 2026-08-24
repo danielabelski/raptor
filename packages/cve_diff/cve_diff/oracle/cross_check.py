@@ -31,6 +31,7 @@ from collections import Counter
 from pathlib import Path
 
 from core.http.urllib_backend import UrllibClient
+from core.json import load_json_bounded
 from packages.nvd import NvdClient
 from packages.nvd.verify import verify as _nvd_verify
 from packages.osv import OsvClient
@@ -57,7 +58,9 @@ def _load_pick_from_osv_file(summary_dir: Path, cve_id: str) -> tuple[str, str]:
     """Return (slug, sha) from the per-CVE OSV JSON, or ('', '')."""
     path = summary_dir / f"{cve_id}.osv.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # /cve-diff run artifact; ValueError also covers the
+        # byte-budget refusal.
+        data = load_json_bounded(path, max_bytes=64 * 1024 * 1024)
     except (OSError, ValueError):
         return "", ""
     # Pre-fix `for ref in data.get("references") or []` then
@@ -166,8 +169,8 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        summary = load_json_bounded(summary_path, max_bytes=64 * 1024 * 1024)
+    except (ValueError, OSError) as exc:
         print(f"cross-check: cannot read {summary_path}: {exc}",
               file=sys.stderr)
         sys.exit(1)

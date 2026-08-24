@@ -36,11 +36,12 @@ What the substrate must defend against:
 
 from __future__ import annotations
 
-import json as _json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from core.json import load_json_bounded
 
 from typing import TYPE_CHECKING
 
@@ -193,9 +194,10 @@ def load_publish_helpers() -> tuple[frozenset, frozenset]:
     exact: set = set()
     scopes: set = set()
     try:
-        with path.open(encoding="utf-8") as fh:
-            blob = _json.load(fh)
-    except (OSError, _json.JSONDecodeError) as e:
+        # Repo-bundled data file; ValueError also covers the
+        # byte-budget refusal.
+        blob = load_json_bounded(path, max_bytes=8 * 1024 * 1024)
+    except (OSError, ValueError) as e:
         logger.debug(
             "sca.supply_chain._hook_patterns: publish_helpers.json "
             "load failed: %s (proceeding with empty allowlist)",

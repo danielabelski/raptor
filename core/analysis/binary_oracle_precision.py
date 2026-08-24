@@ -39,13 +39,14 @@ Drivers own the cache layout under this dir.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, TYPE_CHECKING
+
+from core.json import save_json
 
 from .binary_oracle import Classification, classify_binary_evidence
 
@@ -441,7 +442,7 @@ def write_report(reports: Sequence[CorpusReport], out_dir: Path) -> Path:
         # ONE source of truth.
         "aggregate": _aggregate(reports),
     }
-    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    save_json(json_path, payload)
     md_path.write_text(_format_markdown(reports), encoding="utf-8")
     return json_path
 

@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json, loads
+from core.json import load_json, loads, save_json
 
 # Ensemble constants and algorithms imported from pipeline.py (single source
 # of truth — W8 unification).
@@ -1979,9 +1979,7 @@ def _write_results(
         data: Any = {"meta": meta, "results": results}
     else:
         data = results
-    with Path(output).open("w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    save_json(output, data)
 
 
 def _format_detail_table(results: list[dict[str, Any]]) -> str:
@@ -2236,11 +2234,7 @@ def _splice_results(
 
 def _checkpoint_write(path: Path, data: Any) -> None:
     """Atomically write a JSON checkpoint."""
-    tmp = path.with_suffix(".tmp")
-    with Path(tmp).open("w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    tmp.rename(path)
+    save_json(path, data)
 
 
 def _checkpoint_read(path: Path) -> Any | None:

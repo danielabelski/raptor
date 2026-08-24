@@ -20,6 +20,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from core.json import save_json
+
 from .strategy_stats import _safe_mtime
 
 logger = logging.getLogger(__name__)
@@ -171,8 +173,7 @@ def save_corrections(
     }
     # Atomic write — prompt corrections feed future runs; a torn write
     # dropped the accumulated FP lessons on the floor.
-    from core.atomic_fs import write_text_atomically
-    write_text_atomically(corrections_path, json.dumps(data, indent=2))
+    save_json(corrections_path, data)
     logger.info(
         "saved %d prompt corrections to %s",
         len(patterns), corrections_path,

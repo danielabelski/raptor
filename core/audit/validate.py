@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
 from core.orchestration.skill_dispatch import (
     MAX_VALIDATE_FINDINGS,
     run_skill_dispatch,
@@ -171,7 +172,6 @@ def _dispatch_validate_unsafe(
 
         audit_checklist = audit_out_dir / "checklist.json"
         if audit_checklist.is_file():
-            from core.json import save_json
             save_json(
                 validate_dir / "parent-checklist-pointer.json",
                 {
@@ -246,8 +246,7 @@ def _copy_findings_for_validate(
             # positional cap rather than crash the best-effort copy.
             entries = entries[:_MAX_VALIDATE_FINDINGS]
         container["findings"] = entries
-    with Path(dest).open("w", encoding="utf-8") as f:
-        json.dump(container, f, indent=2)
+    save_json(dest, container)
 
 
 def _build_audit_validate_prompt(
@@ -374,8 +373,7 @@ def _emit_findings_json(
     payload["findings"] = findings
 
     path = out_dir / "findings.json"
-    with Path(path).open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    save_json(path, payload)
 
     logger.info("emitted %d findings to %s", len(findings), path)
     return path

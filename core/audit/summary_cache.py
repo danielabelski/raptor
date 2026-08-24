@@ -18,12 +18,11 @@ import json
 import logging
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -118,22 +117,10 @@ class SummaryCache:
             msg = f"unsafe cache key: {library!r}/{version!r}"
             raise ValueError(msg)
         lib_dir = self.cache_dir / library / version
-        lib_dir.mkdir(parents=True, exist_ok=True)
 
         data = [s.to_dict() for s in summaries]
         path = lib_dir / "summaries.json"
-
-        fd, tmp = tempfile.mkstemp(dir=str(lib_dir), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp, str(path))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        save_json(path, data)
 
         key = f"{library}/{version}"
         self._index[key] = {s.function: s for s in summaries}

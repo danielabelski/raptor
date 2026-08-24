@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
+
+from core.json import save_json
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -408,17 +408,5 @@ def write_matrix(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "adversarial-matrix.json"
-
-    fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(matrix.to_dict(), f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
+    save_json(path, matrix.to_dict())
     return path

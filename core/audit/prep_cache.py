@@ -105,6 +105,10 @@ def write_prep_cache(
     try:
         cache_dir = Path(out_dir) / PREP_CACHE_DIRNAME
         cache_dir.mkdir(parents=True, exist_ok=True)
+        # Raw json.dumps is deliberate: an unserialisable payload must
+        # make the write fail (TypeError → best-effort skip) rather
+        # than be stringified and later served back from the cache as
+        # a corrupted payload shape.
         blob = json.dumps({"fingerprint": fingerprint, "payload": payload})
         fd, tmp = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:

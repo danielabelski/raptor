@@ -46,6 +46,8 @@ import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+
+from core.json import dumps_artifact
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -1339,7 +1341,7 @@ def run_resource_bounds_prepass(
     if out_dir is not None and (findings or leads):
         try:
             path = Path(out_dir) / "resource-bounds.json"
-            path.write_text(json.dumps(
+            path.write_text(dumps_artifact(
                 {"findings": findings, "leads": leads,
                  "telemetry": telemetry}, indent=1,
             ))

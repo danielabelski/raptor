@@ -30,15 +30,12 @@ via assemble_context(). The store is append-only with dedup by text hash.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import os
-import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -191,19 +188,7 @@ def save_project_context(ctx: ProjectContext, out_dir: Path) -> Path:
 
 
 def _atomic_write(ctx: ProjectContext, target: Path) -> Path:
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), suffix=".tmp", prefix=".project-context-",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(ctx.to_dict(), f, indent=2)
-        os.replace(tmp_name, str(target))
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    save_json(target, ctx.to_dict())
     return target
 
 

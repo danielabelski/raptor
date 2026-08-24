@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
+
+from core.json import save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -239,15 +239,4 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
 
 def _save_manifest(out_dir: Path, manifest: dict[str, Any]) -> None:
     manifest_path = out_dir / RULES_DIR / RULES_MANIFEST
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(manifest_path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-        os.replace(tmp, str(manifest_path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(manifest_path, manifest)

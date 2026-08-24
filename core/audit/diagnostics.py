@@ -6,12 +6,11 @@ and function-source reading.  No orchestrator state mutation.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -163,8 +162,7 @@ def write_tier_diagnostics(
         if sc is not None:
             data["scope_coverage"] = sc
     path = out_dir / "tier-diagnostics.json"
-    with Path(path).open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    save_json(path, data)
 
 
 def iris_candidate_to_spec(candidate):

@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -247,7 +249,7 @@ def write_evaluation(
 ) -> Path:
     """Write evaluation.json to the run directory."""
     path = out_dir / "evaluation.json"
-    path.write_text(json.dumps(result.to_dict(), indent=2) + "\n")
+    save_json(path, result.to_dict())
     return path
 
 

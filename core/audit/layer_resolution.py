@@ -22,12 +22,11 @@ Three failure modes handled:
 from __future__ import annotations
 
 import enum
-import json
 import logging
-import os
-import tempfile
 from dataclasses import asdict, dataclass
 from typing import Any, TYPE_CHECKING
+
+from core.json import save_json
 
 from .evidence_grade import Confidence
 
@@ -397,18 +396,7 @@ def write_disagreements(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "disagreements.json"
     data = [d.to_dict() for d in disagreements]
-
-    fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, data)
 
     logger.info("wrote %d disagreements to %s", len(disagreements), path)
     return path
@@ -424,18 +412,7 @@ def write_observation_records(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "observation-status.json"
     data = [r.to_dict() for r in records]
-
-    fd, tmp = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, data)
 
     logger.info("wrote %d observation records to %s", len(records), path)
     return path

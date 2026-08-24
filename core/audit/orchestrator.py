@@ -46,7 +46,7 @@ from core.evidence import (
     format_evidence_prose,
     format_evidence_structured,
 )
-from core.json import load_json
+from core.json import load_json, save_json
 from core.smt_solver.availability import Z3_ERRORS
 from packages.checker_synthesis.library import RuleLibrary
 
@@ -4853,7 +4853,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     if mechanical_findings and config.out_dir:
         try:
             mech_path = config.out_dir / "mechanical-findings.json"
-            mech_path.write_text(json.dumps(mechanical_findings, indent=2))
+            save_json(mech_path, mechanical_findings)
             logger.info(
                 "wrote %d mechanical-detector findings to %s "
                 "(separate from the Layer 0 source-pattern pre-sweep)",
@@ -5099,15 +5099,13 @@ def _write_iris_bypass_findings(
     """
     try:
         path = out_dir / "iris-bypass-findings.json"
-        path.write_text(
-            json.dumps(
-                [
-                    bf.to_dict()
-                    for bf in bypass_findings
-                    if hasattr(bf, "to_dict") and hasattr(bf, "caller_file")
-                ],
-                indent=2,
-            )
+        save_json(
+            path,
+            [
+                bf.to_dict()
+                for bf in bypass_findings
+                if hasattr(bf, "to_dict") and hasattr(bf, "caller_file")
+            ],
         )
     except Exception:
         logger.debug("iris bypass findings write failed", exc_info=True)
@@ -5647,9 +5645,7 @@ def _record_phase_abort(config: Any, result: Any, exc: Exception) -> None:
             "error": str(exc),
             "ts": time.time(),
         })
-        path.write_text(
-            json.dumps(records, indent=2), encoding="utf-8",
-        )
+        save_json(path, records)
     except Exception:  # noqa: BLE001 — recording must not mask the abort
         logger.warning(
             "phase-abort sidecar write failed for %s", phase,
@@ -5712,7 +5708,7 @@ def _clear_phase_abort(
         if len(keep) == len(loaded):
             return
         if keep:
-            path.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+            save_json(path, keep)
         else:
             path.unlink()
         logger.info(
@@ -6129,7 +6125,7 @@ def _run_audit_body(
     if mechanical_findings and config.out_dir:
         try:
             mech_path = config.out_dir / "mechanical-findings.json"
-            mech_path.write_text(json.dumps(mechanical_findings, indent=2))
+            save_json(mech_path, mechanical_findings)
         except Exception:
             logger.debug("failed to persist mechanical findings", exc_info=True)
 
@@ -6507,9 +6503,7 @@ def _run_audit_body(
             if config.out_dir:
                 with contextlib.suppress(OSError, ValueError):
                     mech_path = config.out_dir / "mechanical-findings.json"
-                    mech_path.write_text(
-                        json.dumps(mechanical_findings, indent=2),
-                    )
+                    save_json(mech_path, mechanical_findings)
     except Exception:
         logger.debug("invariant prescreening failed", exc_info=True)
 
@@ -7747,15 +7741,13 @@ def _run_audit_body(
     if config.out_dir and (post_loop_findings or generated):
         try:
             pl_path = config.out_dir / "post-loop-findings.json"
-            pl_path.write_text(
-                json.dumps(
-                    {
-                        "findings": post_loop_findings,
-                        "generated_files": generated,
-                        "finding_count": len(post_loop_findings),
-                    },
-                    indent=2,
-                )
+            save_json(
+                pl_path,
+                {
+                    "findings": post_loop_findings,
+                    "generated_files": generated,
+                    "finding_count": len(post_loop_findings),
+                },
             )
         except Exception:
             logger.debug("post-loop findings write failed", exc_info=True)
@@ -8186,8 +8178,6 @@ def _run_audit_body(
 
     if taint_summary_results and config.out_dir:
         try:
-            import json as _json
-
             summaries_out = {}
             for key, summary in taint_summary_results.items():
                 if hasattr(summary, "to_dict"):
@@ -8195,7 +8185,7 @@ def _run_audit_body(
                 else:
                     summaries_out[key] = summary
             sp = config.out_dir / "summaries.json"
-            sp.write_text(_json.dumps(summaries_out, indent=2) + "\n")
+            save_json(sp, summaries_out)
             logger.info(
                 "summaries: wrote %d entries to summaries.json", len(summaries_out)
             )
@@ -8599,12 +8589,8 @@ def _run_concept_discovery(
 
     if config.out_dir:
         try:
-            import json as _json
-
             dm_path = config.out_dir / "domain-model.json"
-            dm_path.write_text(
-                _json.dumps(dm, indent=2) + "\n", encoding="utf-8",
-            )
+            save_json(dm_path, dm)
         except Exception:
             logger.debug("concept discovery: domain model write failed", exc_info=True)
 
@@ -13510,7 +13496,6 @@ def _write_unresolved_synthesis_hits(
 ) -> None:
     """Persist synthesis sites that have no enclosing reviewable function."""
     path = out_dir / "unresolved-synthesis-hits.json"
-    tmp = None
     # One non-fatal boundary around read, normalise, serialise and write.
     # This is a diagnostic artifact: a malformed, mis-encoded or
     # unserialisable one must never take the run down with it.
@@ -13528,22 +13513,8 @@ def _write_unresolved_synthesis_hits(
                 logger.debug("replacing malformed %s", path.name)
 
         existing = list(existing) + list(hits)
-        payload = json.dumps(
-            {"hits": existing, "count": len(existing)},
-            indent=2,
-            default=str,
-        )
-
-        fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(payload)
-        os.replace(tmp, str(path))
+        save_json(path, {"hits": existing, "count": len(existing)})
     except (OSError, UnicodeError, TypeError, ValueError):
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
         logger.debug("could not persist unresolved synthesis hits", exc_info=True)
 
 
@@ -18208,10 +18179,7 @@ def _run_phase2(result, config) -> None:
                 len(classifications),
             )
             p2_path = config.out_dir / "phase2-classifications.json"
-            p2_path.write_text(
-                json.dumps(classifications, indent=2),
-                encoding="utf-8",
-            )
+            save_json(p2_path, classifications)
     except Exception:
         logger.debug("Phase 2 classification failed", exc_info=True)
 
@@ -18230,10 +18198,7 @@ def _run_phase2(result, config) -> None:
             )
             if chains:
                 chains_path = config.out_dir / "bug-chains.json"
-                chains_path.write_text(
-                    json.dumps(chains, indent=2),
-                    encoding="utf-8",
-                )
+                save_json(chains_path, chains)
                 for chain in chains:
                     bug_a_func = chain["bug_a"].rsplit(":", 1)[-1]
                     chain_outcome = ReviewOutcome(
@@ -23801,7 +23766,4 @@ def _run_dark_verification(
 
     if records:
         results_path = config.out_dir / "dark-verify-results.json"
-        results_path.write_text(
-            json.dumps(records, indent=2),
-            encoding="utf-8",
-        )
+        save_json(results_path, records)

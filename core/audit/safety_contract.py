@@ -76,11 +76,12 @@ Each tool has known blind spots that adversarial tests must cover:
 from __future__ import annotations
 
 import enum
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.json import append_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -248,8 +249,7 @@ def record_boost(
     """
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        with (out_dir / "boost-evidence.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(evidence.to_dict()) + "\n")
+        append_jsonl(out_dir / "boost-evidence.jsonl", evidence.to_dict())
     except OSError as e:
         logger.debug("safety_contract: failed to write boost record: %s", e)
 

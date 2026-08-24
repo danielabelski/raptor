@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.json import save_json
+
 logger = logging.getLogger(__name__)
 
 DICT_JSON_FILENAME = "fuzz-dict.json"
@@ -241,9 +243,7 @@ def emit_fuzz_dict(target_path: Path, out_dir: Path) -> Path | None:
             "seed_hints": seed_hints,
         }
         json_path = Path(out_dir) / DICT_JSON_FILENAME
-        json_path.write_text(
-            json.dumps(doc, indent=2) + "\n", encoding="utf-8",
-        )
+        save_json(json_path, doc)
 
         if not unique_tokens:
             return None

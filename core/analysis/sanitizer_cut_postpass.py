@@ -777,6 +777,8 @@ def filter_enforced_from_sarif(
         return 0
     import json as _json
 
+    from core.json import save_json
+
     def _norm(s: str) -> str:
         return str(s or "").replace("\\", "/").lstrip("./")
 
@@ -817,8 +819,7 @@ def filter_enforced_from_sarif(
                     kept.append(res)
             run["results"] = kept
         if removed:
-            Path(sarif_path).write_text(
-                _json.dumps(data, indent=2), encoding="utf-8")
+            save_json(sarif_path, data)
         return removed
     except Exception as exc:  # noqa: BLE001 — never corrupt the SARIF
         logger.warning(

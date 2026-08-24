@@ -12,20 +12,19 @@ staleness mechanism can invalidate constraints whose source changed
 between audit runs.
 
 Storage: one ``constraints.json`` per audit output directory.  File
-is a JSON array of constraint dicts.  Atomic writes via tempfile +
-os.replace (same pattern as project_context.py).
+is a JSON array of constraint dicts.  Atomic writes via
+``core.json.save_json``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from ._util import find_function_lines, safe_join
+from core.json import save_json
 from pathlib import Path
 
 if TYPE_CHECKING:
@@ -118,20 +117,9 @@ def save_constraints(
     constraints: list[Constraint], out_dir: Path,
 ) -> None:
     """Atomically write constraints to constraints.json."""
-    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "constraints.json"
     data = [c.to_dict() for c in constraints]
-    fd, tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, data)
 
 
 def merge_constraint(

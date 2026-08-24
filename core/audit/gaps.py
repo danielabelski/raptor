@@ -14,15 +14,12 @@ Gaps are sorted by priority:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from core.coverage.journal import make_function_key
-from core.json import load_json
+from core.json import load_json, save_json
 
 from ._util import extract_context_map_set, safe_join
 from .strategy import strategies_from_item
@@ -888,10 +885,7 @@ def _write_scope_coverage(
         "overflow": overflow,
     }
     try:
-        fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, str(out_dir / "scope-coverage.json"))
+        save_json(out_dir / "scope-coverage.json", payload)
     except Exception:
         logger.warning("could not write scope-coverage.json", exc_info=True)
 
@@ -918,17 +912,7 @@ def write_not_attempted(
             for g in dropped
         ],
     }
-    fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, payload)
     return path
 
 
@@ -1374,17 +1358,7 @@ def load_context_map(out_dir: Path) -> dict[str, Any] | None:
 def write_gaps(gaps: list[dict[str, Any]], out_dir: Path) -> Path:
     """Write gaps.json to the output directory."""
     path = out_dir / "gaps.json"
-    fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"gaps": gaps, "count": len(gaps)}, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, {"gaps": gaps, "count": len(gaps)})
     return path
 
 

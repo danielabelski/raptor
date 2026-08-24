@@ -8,13 +8,11 @@ and /validate Stage B.
 
 from __future__ import annotations
 
-import json
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 from .lifecycle_model import StateField
 
@@ -64,19 +62,7 @@ def save_state_fields(
 
     data["state_fields"] = [f.to_dict() for f in fields]
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(cm_path.parent), suffix=".tmp")
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        import os
-        os.replace(tmp_path, str(cm_path))
-    except BaseException:
-        try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    save_json(cm_path, data)
     return cm_path
 
 

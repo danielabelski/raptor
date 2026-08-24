@@ -21,6 +21,8 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from core.json import save_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -402,19 +404,9 @@ def _filter_patterns(
 
 def save_fp_patterns(patterns: list[FPPattern], out_dir: Path) -> None:
     """Save patterns to ``fp-patterns.json`` (atomic write)."""
-    out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / "fp-patterns.json"
     data = [asdict(p) for p in patterns]
-    tmp = dest.with_suffix(".tmp")
-    try:
-        tmp.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(dest)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    save_json(dest, data)
 
 
 def load_fp_patterns(out_dir: Path) -> list[FPPattern]:

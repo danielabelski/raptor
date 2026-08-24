@@ -29,13 +29,12 @@ call score_functions() to order work.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 from ._util import extract_context_map_set
 from .parser_shape import (
@@ -506,8 +505,7 @@ def ensure_inventory_diff(
                 for k in ("added", "removed", "modified"):
                     payload[k] = list(file_diff.get(k) or [])
                 payload.update(function_level_diff(previous, checklist))
-            diff_path.write_text(json.dumps(payload, indent=2),
-                                 encoding="utf-8")
+            save_json(diff_path, payload)
         except Exception:
             logger.debug("inventory-diff materialisation failed",
                          exc_info=True)

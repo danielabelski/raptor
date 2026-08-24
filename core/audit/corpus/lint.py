@@ -57,7 +57,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Sequence
 
-from core.json import load_json
+from core.json import dumps_artifact, load_json
 
 from .label import FunctionLabel, compute_span_sha, load_label
 from .sources import FIXTURES_DIR
@@ -720,10 +720,10 @@ def stamp_labels(checks: Sequence[PinCheck]) -> list[Path]:
         )
         try:
             with os.fdopen(fd, "w") as f:
-                # ensure_ascii=False: labels are UTF-8 on disk; the
-                # stamp must not rewrite prose into \uXXXX escapes.
-                json.dump(raw, f, indent=4, ensure_ascii=False)
-                f.write("\n")
+                # indent=4 matches the hand-edited label format;
+                # dumps_artifact keeps prose as raw UTF-8 rather than
+                # rewriting it into \uXXXX escapes.
+                f.write(dumps_artifact(raw, indent=4) + "\n")
             os.replace(tmp_name, check.path)
         except BaseException:
             try:

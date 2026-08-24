@@ -8,12 +8,11 @@ report generation.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from core.json import save_json
 
 from .evidence_grade import (
     Confidence,
@@ -341,19 +340,8 @@ def write_graded_findings(
     out_dir: Path,
 ) -> Path:
     """Write findings-graded.json to the run directory."""
-    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "findings-graded.json"
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(export, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, export)
     return path
 
 

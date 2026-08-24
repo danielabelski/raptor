@@ -27,16 +27,13 @@ re-enter that run AS THE SAME RUN:
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.json.utils import load_json
+from core.json.jsonl import append_jsonl
+from core.json.utils import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -66,19 +63,8 @@ def save_run_config(out_dir: Path, config: dict[str, Any]) -> Path:
     it never re-derives options from fresh CLI flags.
     """
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / RUN_CONFIG_FILENAME
-    fd, tmp = tempfile.mkstemp(
-        dir=str(out_dir), prefix=".audit-run-config-", suffix=".json",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, default=str)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    save_json(path, config)
     return path
 
 
@@ -328,17 +314,7 @@ def persist_spend_floor(
     if segment is not None:
         payload["segment"] = segment
     path = out_dir / SPEND_FLOOR_FILENAME
-    fd, tmp = tempfile.mkstemp(
-        dir=str(out_dir), prefix=".spend-floor-", suffix=".json",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    save_json(path, payload)
 
 
 def spend_floor_usd(out_dir: Path) -> float:
@@ -463,8 +439,7 @@ def append_resume_markers(out_dir: Path, segment: int) -> None:
             "ts": ts,
         }
         path = Path(out_dir) / TELEMETRY_FILENAME
-        with Path(path).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, separators=(",", ":")) + "\n")
+        append_jsonl(path, row, compact=True)
     except Exception:
         logger.debug("telemetry resume marker failed", exc_info=True)
 

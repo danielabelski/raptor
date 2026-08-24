@@ -270,11 +270,9 @@ def build_sink_results(
                 heuristic.side_effect_count,
             )
             if out_dir:
-                import json as _json
+                from core.json import save_json
                 hp = Path(out_dir) / "discovered-sinks.json"
-                hp.write_text(
-                    _json.dumps(heuristic.to_dict(), indent=2) + "\n",
-                )
+                save_json(hp, heuristic.to_dict())
     except Exception:
         logger.debug("sink heuristics failed", exc_info=True)
 

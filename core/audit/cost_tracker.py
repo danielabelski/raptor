@@ -23,10 +23,11 @@ money, all "true" for different ledgers):
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
+
+from core.json import save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -312,7 +313,7 @@ class PhaseCostLedger:
         """Write cost-breakdown.json to the run directory."""
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "cost-breakdown.json"
-        path.write_text(json.dumps(self.to_dict(), indent=2) + "\n")
+        save_json(path, self.to_dict())
         return path
 
     def summary(self) -> str:

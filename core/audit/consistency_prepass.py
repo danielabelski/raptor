@@ -27,11 +27,12 @@ skipped and the telemetry says so — the census never blocks prep.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
 from typing import Any
+
+from core.json import dumps_artifact
 
 from .callsite_consistency import (
     CalleeCensus,
@@ -1237,7 +1238,7 @@ def run_consistency_prepass(
     if out_dir is not None and census:
         try:
             path = Path(out_dir) / "return-census.json"
-            path.write_text(json.dumps(
+            path.write_text(dumps_artifact(
                 census_to_dict(census), indent=1,
             ))
             logger.info(

@@ -73,16 +73,14 @@ treated as cache misses (a newer producer wrote them).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json_bounded
+from core.json import load_json_bounded, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -270,17 +268,7 @@ class BuildIDCache:
         if binary_sha256:
             wrapped["binary_sha256"] = binary_sha256
 
-        fd, tmp = tempfile.mkstemp(dir=str(entry_dir), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(wrapped, f, indent=2)
-            os.replace(tmp, str(path))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        save_json(path, wrapped)
 
         return path
 
@@ -296,10 +284,7 @@ class BuildIDCache:
         if marker.exists():
             return
         try:
-            fd, tmp = tempfile.mkstemp(dir=str(self.cache_dir), suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"format_version": _FORMAT_VERSION}, f)
-            os.replace(tmp, str(marker))
+            save_json(marker, {"format_version": _FORMAT_VERSION})
         except OSError:
             logger.debug("could not write cache format marker", exc_info=True)
 

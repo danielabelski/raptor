@@ -24,10 +24,11 @@ metadata carries ``external/cwe/cwe-N`` tags for the shared parser.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import Counter
 from pathlib import Path
+
+from core.json import save_json
 
 from core.analysis.config_resolve_java import (
     ConfigResolver,
@@ -289,9 +290,7 @@ def run_config_resolved_stage(
         return None, dict(stats)
     sarif_path = out_dir / "config-resolved.sarif"
     try:
-        sarif_path.write_text(
-            json.dumps(to_sarif(findings, str(repo_path)), indent=2),
-            encoding="utf-8")
+        save_json(sarif_path, to_sarif(findings, str(repo_path)))
     except OSError as e:
         logger.warning("config-resolved stage: SARIF write failed: %s", e)
         return None, dict(stats)

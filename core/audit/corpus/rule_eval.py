@@ -51,7 +51,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import shutil
@@ -61,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
+
+from core.json import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -1188,9 +1189,7 @@ def format_summary(report: dict[str, Any]) -> str:
 def _write_report(report: dict[str, Any], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "rule-eval-results.json"
-    with Path(results_path).open("w") as f:
-        json.dump(report, f, indent=2)
-        f.write("\n")
+    save_json(results_path, report)
     summary_path = out_dir / "rule-eval-summary.txt"
     summary_path.write_text(format_summary(report) + "\n")
     return results_path

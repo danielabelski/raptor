@@ -10,16 +10,14 @@ store.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from core.coverage.journal import is_mechanical_echo as _is_mechanical_echo
-from core.json import load_json
+from core.json import load_json, save_json
 from core.security.prompt_output_sanitise import sanitise_string
 
 # Byte budgets for the report's artifact reads: 1 MiB for run
@@ -301,17 +299,7 @@ def write_report(report: dict[str, Any], out_dir: Path) -> Path:
     """Write the report to audit-report.json."""
     path = out_dir / "audit-report.json"
     serializable = {k: v for k, v in report.items() if k != "summary"}
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=out_dir, prefix=".audit-report-", suffix=".json",
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(serializable, f, indent=2)
-        os.replace(tmp_path, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    save_json(path, serializable)
     return path
 
 

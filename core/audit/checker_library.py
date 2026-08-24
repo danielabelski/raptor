@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.json import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -136,21 +136,8 @@ class CheckerLibrary:
     def _write_entry(self, entry: CheckerEntry) -> None:
         if not self.library_dir:
             return
-        self.library_dir.mkdir(parents=True, exist_ok=True)
         path = self.library_dir / f"{entry.rule_id}.json"
-        fd, tmp = tempfile.mkstemp(
-            dir=str(self.library_dir), suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(entry.to_dict(), f, indent=2)
-            os.replace(tmp, str(path))
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        save_json(path, entry.to_dict())
 
 
 def load_library(library_dir: Path) -> CheckerLibrary:

@@ -34,12 +34,13 @@ regression gaps.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from core.json import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -645,44 +646,42 @@ def apply_fix_history(
         injected = variant + regression
         if out_dir is not None:
             try:
-                (Path(out_dir) / "fix-history.json").write_text(
-                    json.dumps(
-                        {
-                            "fixes": [
-                                {
-                                    "sha": f.sha,
-                                    "subject": f.subject,
-                                    "category": f.category,
-                                    "files": f.files,
-                                }
-                                for f in fixes
-                            ],
-                            "variant_gaps": [
-                                {
-                                    "file": g["file"],
-                                    "name": g["name"],
-                                    "hypothesis": g[
-                                        "injected_hypotheses"
-                                    ][0]["mechanism"],
-                                }
-                                for g in variant
-                            ],
-                            "regression_gaps": [
-                                {
-                                    "file": g["file"],
-                                    "name": g["name"],
-                                    "hypothesis": g[
-                                        "injected_hypotheses"
-                                    ][0]["mechanism"],
-                                }
-                                for g in regression
-                            ],
-                            "variant_sites": _variant_site_records(
-                                variant, fixes, target_path,
-                            ),
-                        },
-                        indent=2,
-                    )
+                save_json(
+                    Path(out_dir) / "fix-history.json",
+                    {
+                        "fixes": [
+                            {
+                                "sha": f.sha,
+                                "subject": f.subject,
+                                "category": f.category,
+                                "files": f.files,
+                            }
+                            for f in fixes
+                        ],
+                        "variant_gaps": [
+                            {
+                                "file": g["file"],
+                                "name": g["name"],
+                                "hypothesis": g[
+                                    "injected_hypotheses"
+                                ][0]["mechanism"],
+                            }
+                            for g in variant
+                        ],
+                        "regression_gaps": [
+                            {
+                                "file": g["file"],
+                                "name": g["name"],
+                                "hypothesis": g[
+                                    "injected_hypotheses"
+                                ][0]["mechanism"],
+                            }
+                            for g in regression
+                        ],
+                        "variant_sites": _variant_site_records(
+                            variant, fixes, target_path,
+                        ),
+                    },
                 )
             except OSError:
                 logger.debug("fix-history artifact write failed", exc_info=True)

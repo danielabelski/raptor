@@ -49,6 +49,8 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
 
+from core.json import dumps_artifact
+
 from .struct_accessor_index import _MIN_FIELD_LEN, _NOISE_FIELDS, _detect_lock
 
 logger = logging.getLogger(__name__)
@@ -1051,7 +1053,7 @@ def write_census_artifact(census: FieldCensus,
     """Persist ``field-census.json`` (mirrors ``return-census.json``)."""
     try:
         path = Path(out_dir) / ARTIFACT_NAME
-        path.write_text(json.dumps(census.to_dict(), indent=1))
+        path.write_text(dumps_artifact(census.to_dict(), indent=1))
         return path
     except OSError:
         logger.debug("field-census.json write failed", exc_info=True)

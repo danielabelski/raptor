@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.evidence import EvidenceTier
+from core.json import dumps_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ def _escape_scala(name: str) -> str:
 
 def specs_to_json(specs: list[TaintSpec]) -> str:
     """Serialise specs to JSON for caching."""
-    return json.dumps([s.to_dict() for s in specs], indent=2)
+    return dumps_artifact([s.to_dict() for s in specs], indent=2)
 
 
 def specs_from_json(raw: str) -> list[TaintSpec]:

@@ -15,10 +15,11 @@ next-step inputs and that all chain members share an attack surface.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
+
+from core.json import save_json
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -357,7 +358,7 @@ def write_attack_chains(
             "high": sum(1 for c in chains if c.severity == "high"),
         },
     }
-    out_path.write_text(json.dumps(data, indent=2))
+    save_json(out_path, data)
     logger.info("wrote %d attack chains to %s", len(chains), out_path)
     return out_path
 

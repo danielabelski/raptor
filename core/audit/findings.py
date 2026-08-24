@@ -6,14 +6,11 @@ and /agentic, so they flow unchanged into /validate.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -104,17 +101,7 @@ def load_findings(out_dir: Path) -> list[dict[str, Any]]:
 def write_findings(findings: list[dict[str, Any]], out_dir: Path) -> Path:
     """Write findings.json to the output directory."""
     path = out_dir / "findings.json"
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(findings, f, indent=2)
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, findings)
     return path
 
 

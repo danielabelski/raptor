@@ -35,7 +35,6 @@ Run via ``libexec/raptor-sanitizer-cut-precision``.
 from __future__ import annotations
 
 import argparse
-import json
 import platform
 import sys
 import tempfile
@@ -44,7 +43,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.json import dumps_display
+from core.json import dumps_display, save_json
 
 LABEL_MUST_NOT_SUPPRESS = "must_not_suppress"
 LABEL_MAY_SUPPRESS = "may_suppress"
@@ -2565,9 +2564,7 @@ def main(argv: list[str] | None = None) -> int:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = Path("out") / "sanitizer-cut-precision" / "runs" / ts
     out.mkdir(parents=True, exist_ok=True)
-    (out / "report.json").write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8")
+    save_json(out / "report.json", report.to_dict(), sort_keys=True)
     md = _format_markdown(report)
     (out / "report.md").write_text(md, encoding="utf-8")
     sys.stdout.write(md)

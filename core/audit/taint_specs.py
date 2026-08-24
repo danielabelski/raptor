@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
@@ -189,9 +191,7 @@ def load_taint_specs(path: Path) -> TaintSpecSet:
 def save_taint_specs(spec_set: TaintSpecSet, path: Path) -> None:
     """Atomic write — the spec set is a cross-run artifact; a torn
     write left load_taint_specs silently starting from empty."""
-    from core.atomic_fs import write_text_atomically
-    path.parent.mkdir(parents=True, exist_ok=True)
-    write_text_atomically(path, json.dumps(spec_set.to_dict(), indent=2))
+    save_json(path, spec_set.to_dict())
 
 
 _SOURCE_PATTERNS = frozenset({

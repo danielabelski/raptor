@@ -39,7 +39,7 @@ from pathlib import Path
 
 from core.atomic_fs import write_text_atomically
 from core.hash import sha256_file as _sha256_file
-from core.json import JsonBudgetExceededError, load_json_bounded
+from core.json import JsonBudgetExceededError, dumps_artifact, load_json_bounded
 
 from .binary_oracle import read_build_id
 
@@ -214,7 +214,11 @@ def _save_cached_index(cache_file: Path, idx: BinaryEdgeIndex) -> None:
         # JSON that fails to parse and drops the cached edges — the
         # next run re-extracts from scratch (slow, ~10-30s per binary).
         write_text_atomically(
-            cache_file, json.dumps(payload), tmp_prefix=".edge-cache-",
+            cache_file,
+            # indent=None: edge lists can be large; keep the cache
+            # entry dense.
+            dumps_artifact(payload, indent=None),
+            tmp_prefix=".edge-cache-",
         )
     except OSError as e:
         logger.debug("binary_oracle_edges: cache write failed: %s", e)

@@ -1309,3 +1309,28 @@ class OwnRepairContinuityTest(_RegistryCase):
         self.assertEqual(project, "myapp")
         self.assertEqual(
             sessions._parse_entry(entry).get("token"), "cd" * 16)
+
+    def test_foreign_token_still_wipes(self):
+        # A recycled pid whose env credential does NOT match the old
+        # entry's token (a dead predecessor's entry) gets the wipe —
+        # the token match is the discriminator.
+        sessions.record_session("myapp", pid=os.getpid(),
+                                token="ab" * 16)
+        d = Path(self._tmp.name) / "runs" / "scan_wipe"
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        from unittest.mock import patch as _patch
+        with _patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: str(os.getpid()),
+            sessions.ENV_SESSION_TOKEN: "ef" * 16,  # different token
+        }):
+            sessions.record_session("myapp", pid=os.getpid())
+        self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])

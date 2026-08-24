@@ -240,9 +240,10 @@ def _run_map(args: argparse.Namespace) -> int:
     target, out_dir = resolved
 
     from core.project.oplock import OpLockContention
+    from core.run.pin import ProjectArgvError
     try:
         start_run(out_dir, "understand", target=str(target))
-    except OpLockContention as e:
+    except (OpLockContention, ProjectArgvError) as e:
         print(f"raptor-binary: {e}", file=sys.stderr)
         return 1
     try:
@@ -389,9 +390,10 @@ def _run_investigate(args: argparse.Namespace) -> int:
         return 2
 
     from core.project.oplock import OpLockContention
+    from core.run.pin import ProjectArgvError
     try:
         start_run(out_dir, "understand", target=str(target))
-    except OpLockContention as e:
+    except (OpLockContention, ProjectArgvError) as e:
         print(f"raptor-binary: {e}", file=sys.stderr)
         return 1
     active_phases: list[dict[str, Any]] = []

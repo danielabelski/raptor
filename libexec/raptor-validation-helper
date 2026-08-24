@@ -2163,11 +2163,18 @@ def prepare_0(workdir_unused, target=None, explicit_out=None, no_bridge=False,
     except TargetMismatchError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
+    except Exception as e:
+        from core.run.pin import ProjectArgvError as _PAE
+        if isinstance(e, _PAE):
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        raise
 
     from core.project.oplock import OpLockContention
+    from core.run.pin import ProjectArgvError
     try:
         start_run(out_dir, "validate", target=target)
-    except OpLockContention as e:
+    except (OpLockContention, ProjectArgvError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 

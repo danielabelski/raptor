@@ -535,12 +535,20 @@ def _record_session_locked(project: str, pid: int,
         # dead session's credentials and must not be re-minted onto
         # this one — a propagated stale token would keep validating
         # the env credential for whoever held it.
-        fields.pop("token", None)
-        fields.pop("seeded_by", None)
         env_pid = os.environ.get(ENV_SESSION_PID, "")
         env_tok = os.environ.get(ENV_SESSION_TOKEN, "")
+        # Computed BEFORE the pops below — the token comparison needs
+        # the old entry's value.
         _own_repair = (env_tok and env_pid.isascii() and env_pid.isdigit()
-                       and int(env_pid) == pid)
+                       and int(env_pid) == pid
+                       and fields.get("token") == env_tok)
+        fields.pop("token", None)
+        fields.pop("seeded_by", None)
+        # The token match is the discriminator: a dead predecessor's
+        # entry carries a DIFFERENT token than this session's env
+        # credential, so a recycled pid can never keep the
+        # predecessor's ledger; own-corruption that destroyed the
+        # token field falls back to the safe wipe.
         if _own_repair:
             # The caller IS this session (its own env credential names
             # this pid): restore credential continuity — the drop is
@@ -1503,6 +1511,8 @@ def ledger_runs_pinned_to(project: str) -> list[dict]:
         stem = f.name[:-len(".run")]
         if not stem.isdigit() or stem != str(int(stem)):
             continue
+        if not (SESSIONS_DIR / stem).exists():
+            continue  # orphan ledger — never steers discovery
         try:
             records, pins, _unknown = _read_ledger_full(int(stem))
         except Exception:  # noqa: BLE001

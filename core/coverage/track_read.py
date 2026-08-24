@@ -73,7 +73,10 @@ def _find_session_run(session_pid):
     except OSError:
         return None, None
     candidates = []
-    for line in text.splitlines():
+    # Split on "\n" ONLY: str.splitlines() eats "\r" as a separator,
+    # which made the CRLF guard below unreachable — the bash twin
+    # (while read) keeps the "\r" in the field and drops the line.
+    for line in text.split("\n"):
         if "\r" in line:
             continue  # CRLF lines: the bash twin drops them too
         parts = line.split(" ", 3)

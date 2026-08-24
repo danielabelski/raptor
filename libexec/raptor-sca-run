@@ -190,7 +190,14 @@ def _run_analyse(argv):
         print(f"raptor-sca: cannot resolve output dir: {e}", file=sys.stderr)
         return 2
 
-    start_run(output_dir, "sca", target=str(target))
+    try:
+        start_run(output_dir, "sca", target=str(target))
+    except Exception as e:
+        from core.run.pin import ProjectArgvError
+        if isinstance(e, ProjectArgvError):
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        raise
 
     # ``options_from_args`` resolves the repo-trust umbrella
     # (``--no-trust-repo`` > ``--trust-repo`` > project ``config``

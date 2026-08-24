@@ -359,6 +359,12 @@ class TestJoernServerZGCFlags:
         with (
             patch("packages.joern.server._server_auth_supported",
                   return_value=True),
+            # Pin the TCP fallback tier: these tests assert the direct
+            # joern argv; the netns-wrapped shape has its own tests in
+            # test_server_uds.py (and the real probe must not run
+            # under a mocked subprocess).
+            patch("packages.joern.server._netns_isolation_available",
+                  return_value=False),
             patch("packages.joern.server.os.killpg",
                   side_effect=ProcessLookupError),
             patch("packages.joern.server.subprocess.Popen",
@@ -419,6 +425,12 @@ class TestJoernServerZGCFlags:
             patch("packages.joern.prereqs._java_version", return_value=25),
             patch("packages.joern.server._server_auth_supported",
                   return_value=True),
+            # Pin the TCP fallback tier: these tests assert the direct
+            # joern argv; the netns-wrapped shape has its own tests in
+            # test_server_uds.py (and the real probe must not run
+            # under a mocked subprocess).
+            patch("packages.joern.server._netns_isolation_available",
+                  return_value=False),
             patch("packages.joern.server.os.killpg",
                   side_effect=ProcessLookupError),
             patch("packages.joern.server.subprocess.Popen",
@@ -691,6 +703,12 @@ class TestJoernServerIsolatedWorkspace:
             patch("packages.joern.prereqs._java_version", return_value=25),
             patch("packages.joern.server._server_auth_supported",
                   return_value=True),
+            # Pin the TCP fallback tier: these tests assert the direct
+            # joern argv; the netns-wrapped shape has its own tests in
+            # test_server_uds.py (and the real probe must not run
+            # under a mocked subprocess).
+            patch("packages.joern.server._netns_isolation_available",
+                  return_value=False),
             patch("packages.joern.server.subprocess.Popen",
                   side_effect=fake_popen),
             patch.object(srv, "_wait_for_ready", return_value=True),
@@ -765,6 +783,12 @@ class TestJoernServerAuth:
             patch("packages.joern.prereqs._java_version", return_value=25),
             patch("packages.joern.server._server_auth_supported",
                   return_value=True),
+            # Pin the TCP fallback tier: these tests assert the direct
+            # joern argv; the netns-wrapped shape has its own tests in
+            # test_server_uds.py (and the real probe must not run
+            # under a mocked subprocess).
+            patch("packages.joern.server._netns_isolation_available",
+                  return_value=False),
             patch("packages.joern.server.subprocess.Popen",
                   side_effect=fake_popen),
             patch.object(srv, "_wait_for_ready", return_value=True),

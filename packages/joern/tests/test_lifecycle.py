@@ -10,13 +10,14 @@ from unittest.mock import MagicMock, patch
 from packages.joern import lifecycle
 
 
-def _mock_server(pid=12345, port=8888):
+def _mock_server(pid=12345, port=8888, uds_path=None):
     """MagicMock server with the attributes joern_acquire persists."""
     srv = MagicMock()
     srv.pid = pid
     srv.port = port
     srv._auth_user = "raptor"
     srv._auth_password = "test-credential"
+    srv._uds_path = uds_path
     return srv
 
 
@@ -108,6 +109,30 @@ class TestConnectExisting(unittest.TestCase):
         srv = lifecycle._connect_existing(state)
         self.assertIsNotNone(srv)
         self.assertEqual(srv.port, 8888)
+
+    @patch.object(lifecycle, "_pid_alive", return_value=True)
+    def test_socket_gone_returns_none(self, _pa):
+        """A strong-tier server whose unix socket vanished is
+        unreachable regardless of process liveness — recycle."""
+        state = {"pid": 12345, "port": 8888,
+                 "socket_path": "/nonexistent/raptor/joern.sock",
+                 **_AUTH_STATE}
+        self.assertIsNone(lifecycle._connect_existing(state))
+
+    @patch.object(lifecycle, "_pid_alive", return_value=True)
+    def test_socket_path_carried_into_handle_and_health_check(self, _pa):
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "joern.sock")
+            Path(sock).touch()
+            state = {"pid": 12345, "port": 8888, "socket_path": sock,
+                     **_AUTH_STATE}
+            with patch.object(lifecycle, "_health_check",
+                              return_value=True) as hc:
+                srv = lifecycle._connect_existing(state)
+            self.assertIsNotNone(srv)
+            self.assertEqual(srv._uds_path, sock)
+            self.assertIsNone(srv._uds_dir)  # reuse handles never own it
+            self.assertEqual(hc.call_args[0][2], sock)
 
     @patch.object(lifecycle, "_pid_alive", return_value=True)
     @patch.object(lifecycle, "_health_check", return_value=False)
@@ -429,6 +454,47 @@ class TestAuthCredentialPersistence(unittest.TestCase):
         self.assertEqual(state["auth_password"], "test-credential")
         mode = self._ts.state_file.stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
+
+    @patch.object(lifecycle, "_start_fresh")
+    def test_acquire_persists_socket_path(self, mock_start):
+        """Strong-tier servers are reachable only via their unix
+        socket — the state file must carry it or reuse is impossible."""
+        mock_start.return_value = _mock_server(
+            uds_path="/tmp/raptor-joern-uds-x/joern.sock")
+
+        lifecycle.joern_acquire()
+
+        with lifecycle._locked() as fd:
+            state = lifecycle._read_state(fd)
+        self.assertEqual(state["socket_path"],
+                         "/tmp/raptor-joern-uds-x/joern.sock")
+
+    def test_kill_server_removes_socket_dir(self):
+        """A group SIGKILL skips the supervisor's own unlink — the
+        killer must reap the socket dir from the state's path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "raptor-joern-uds-abc123"
+            d.mkdir()
+            (d / "joern.sock").touch()
+            state = {"pid": 12345, "socket_path": str(d / "joern.sock")}
+            with patch.object(lifecycle, "_pid_is_our_server",
+                              return_value=True), \
+                    patch.object(lifecycle, "_pid_alive",
+                                 return_value=False), \
+                    patch.object(lifecycle, "_signal_server"):
+                lifecycle._kill_server(state)
+            self.assertFalse(d.exists())
+
+    def test_socket_dir_reaper_is_prefix_gated(self):
+        """A corrupt state file must never aim the rmtree at an
+        arbitrary directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "important-data"
+            d.mkdir()
+            (d / "joern.sock").touch()
+            lifecycle._remove_socket_dir(
+                {"socket_path": str(d / "joern.sock")})
+            self.assertTrue(d.exists())
 
     def test_acquire_returns_none_when_auth_unsupported(self):
         # start() raises when the launcher lacks --server-auth-* —

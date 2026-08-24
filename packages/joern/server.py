@@ -23,9 +23,11 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import Any, Self, TYPE_CHECKING
 from urllib.error import URLError
@@ -62,6 +64,20 @@ _AUTH_USERNAME = "raptor"
 # Per-binary cache for the --server-auth-* capability probe: the probe
 # boots a JVM (a few seconds), so pay it once per process per binary.
 _AUTH_SUPPORT_CACHE: dict[str, bool] = {}
+
+# Supervisor script that runs the server inside a private network
+# namespace behind a unix-domain socket (see netns_forwarder module
+# docstring). Stdlib-only, run via sys.executable.
+_FORWARDER_SCRIPT = Path(__file__).resolve().parent / "netns_forwarder.py"
+_UDS_SOCKET_NAME = "joern.sock"
+_NETNS_PROBE_TIMEOUT_S = 30
+# Conservative ceiling for the socket path: sun_path is 108 bytes on
+# Linux (including the NUL); leave headroom.
+_SUN_PATH_MAX_SAFE = 100
+
+# Per-process cache for the netns-tier probe (one python spawn).
+_NETNS_PROBE_CACHE: bool | None = None
+_NETNS_PROBE_LOCK = threading.Lock()
 
 # The Joern server only ever listens on 127.0.0.1.  Loopback traffic
 # must never route through an HTTP proxy — hosts with HTTP_PROXY set
@@ -186,6 +202,92 @@ def _repl_bridge_path() -> str | None:
     return shutil.which(_REPL_BRIDGE_NAME)
 
 
+def _netns_isolation_available() -> bool:
+    """Probe whether the private-netns tier can engage on this host.
+
+    Runs the forwarder's ``--self-probe`` (unshare into user+net
+    namespaces, identity uid map, loopback up, TCP round-trip,
+    unix-socket bind) in a subprocess — the exact mechanism a real
+    boot uses, mirroring the sandbox's probe-the-actual-flag-set
+    doctrine (``core.sandbox.probes.check_unshare_engages``). Cached
+    per process; the probe costs one interpreter spawn.
+    """
+    global _NETNS_PROBE_CACHE
+    with _NETNS_PROBE_LOCK:
+        if _NETNS_PROBE_CACHE is not None:
+            return _NETNS_PROBE_CACHE
+        from core.config import RaptorConfig
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(_FORWARDER_SCRIPT), "--self-probe"],
+                capture_output=True,
+                text=True,
+                timeout=_NETNS_PROBE_TIMEOUT_S,
+                env=RaptorConfig.get_safe_env(),
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+            # Probe INFRASTRUCTURE failure (timeout under load, or a
+            # test double on subprocess) — not a kernel verdict. Fall
+            # back for this boot but do NOT cache, mirroring
+            # core.sandbox.probes.check_unshare_engages.
+            logger.debug("joern netns self-probe could not run: %s", e)
+            return False
+        ok = proc.returncode == 0
+        if not ok:
+            logger.debug(
+                "joern netns self-probe failed: %s",
+                (proc.stderr or "").strip()[:500],
+            )
+        _NETNS_PROBE_CACHE = ok
+        return ok
+
+
+def _make_uds_dir() -> str:
+    """0700 directory for the forwarder socket, sun_path-safe.
+
+    Honours TMPDIR like every other RAPTOR temp dir, but AF_UNIX
+    pathname sockets cap sun_path at ~108 bytes: a long TMPDIR would
+    pass the self-probe (which runs under the scrubbed environment,
+    where TMPDIR is dropped) and then fail every real bind. When the
+    TMPDIR-based path would not fit, fall back to /tmp — matching
+    where the probe proved the mechanism works.
+    """
+    d = tempfile.mkdtemp(prefix="raptor-joern-uds-")
+    if len(os.path.join(d, _UDS_SOCKET_NAME)) <= _SUN_PATH_MAX_SAFE:
+        return d
+    shutil.rmtree(d, ignore_errors=True)
+    logger.debug(
+        "joern uds dir under TMPDIR exceeds sun_path; using /tmp",
+    )
+    return tempfile.mkdtemp(prefix="raptor-joern-uds-", dir="/tmp")
+
+
+class _UnixHTTPConnection(HTTPConnection):
+    """``http.client`` connection that dials a unix-domain socket.
+
+    Used on the private-netns tier: the Joern server's TCP port only
+    exists inside the namespace, so clients reach it through the
+    forwarder's unix socket. Everything above the transport —
+    request/response framing, the Authorization header, timeouts — is
+    stock ``http.client``.
+    """
+
+    def __init__(self, socket_path: str, timeout: float) -> None:
+        super().__init__("127.0.0.1", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        try:
+            sock.connect(self._socket_path)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+
+
 def _server_auth_supported(binary: str) -> bool:
     """Probe whether the launcher accepts ``--server-auth-*`` flags.
 
@@ -227,15 +329,37 @@ class JoernServer:
     (``joern-parse``) that processes untrusted target code runs
     sandboxed via ``core.sandbox.run``.  The server only receives
     RAPTOR-authored CPGQL queries validated by ``_validate_query``,
-    not raw target input.  ``POST /query-sync`` executes arbitrary
-    Scala, so listening on loopback alone is not enough: every boot
-    generates a random HTTP Basic credential (passed via
-    ``--server-auth-username`` / ``--server-auth-password``) and every
-    client request carries the matching Authorization header — other
-    local processes cannot drive the server.  If the installed joern
-    does not support the auth flags, ``start()`` raises rather than
-    exposing an unauthenticated server; callers fall back to the
-    subprocess-per-query runner.
+    not raw target input.
+
+    Cross-user isolation — ``POST /query-sync`` executes arbitrary
+    Scala, so the endpoint must be unreachable for other local users.
+    Two tiers, probed at boot (``_netns_isolation_available``):
+
+    * Strong tier (unprivileged user namespaces work): the server
+      boots inside a private network namespace behind
+      ``netns_forwarder.py``. Its loopback TCP port does not exist on
+      the host; the only way in is the forwarder's unix socket inside
+      a 0700 directory, bound before the server can accept traffic.
+      Every boot still generates a random HTTP Basic credential
+      (``--server-auth-username`` / ``--server-auth-password``) and
+      every client request carries the matching Authorization header.
+      Honest caveat: that credential still travels on the server's
+      argv and remains readable by ANY local user via
+      ``/proc/<pid>/cmdline`` — but on this tier it gates nothing a
+      cross-user attacker can reach (netns hides the port, directory
+      permissions gate the socket), so it is defense-in-depth rather
+      than a load-bearing secret. Same-uid processes can read it and
+      connect through the socket; that is the intended trust boundary.
+    * Fallback tier (no user namespaces): the server listens on
+      host-loopback TCP and the argv credential is the ONLY thing
+      keeping other local users out — and it is /proc-visible for the
+      server's lifetime. ``start()`` logs a WARNING stating exactly
+      that degradation, mirroring the sandbox's tier-degradation
+      convention.
+
+    If the installed joern does not support the auth flags,
+    ``start()`` raises rather than exposing an unauthenticated
+    server; callers fall back to the subprocess-per-query runner.
     """
 
     # Class-level default so ``__del__`` → ``stop()`` never raises
@@ -245,6 +369,10 @@ class JoernServer:
     # via ``__new__``. ``stop()`` early-returns on None, so teardown
     # of such an instance is a no-op instead of an unraisable.
     _proc: subprocess.Popen | None = None
+    # Same bare-instance safety for the strong-tier socket state:
+    # ``stop()`` and ``health_check()`` consult these.
+    _uds_path: str | None = None
+    _uds_dir: str | None = None
 
     def __init__(
         self,
@@ -278,6 +406,12 @@ class JoernServer:
         self._workdir: str | None = None
         self._auth_user: str | None = None
         self._auth_password: str | None = None
+        # Strong-tier state: the unix socket clients dial instead of
+        # TCP, and its parent directory (owned by the process that
+        # booted the server; None on the fallback tier and on
+        # lifecycle-reuse handles).
+        self._uds_path: str | None = None
+        self._uds_dir: str | None = None
         # Learned FlowSemantic rows (packages.joern.semantics), applied
         # to the dataflow EngineContext of the tiered sweep and batch
         # taint queries. Instance-level: semantics describe the loaded
@@ -332,19 +466,36 @@ class JoernServer:
         parallelism = "-J-Djava.util.concurrent.ForkJoinPool.common.parallelism=6"
         flag_sets = [_jvm_gc_flags() + [parallelism], [parallelism]]
 
+        # Isolation tier (see class docstring). On the fallback tier
+        # the per-boot credential on the server's argv is the only
+        # cross-user barrier — say so, loudly, like the sandbox does
+        # when one of its layers cannot engage.
+        use_netns = _netns_isolation_available()
+        if not use_netns:
+            logger.warning(
+                "Joern server: network-namespace isolation UNAVAILABLE "
+                "on this host (unprivileged user namespaces refused) — "
+                "the server listens on host-loopback TCP and its "
+                "per-boot credential is visible to other local users in "
+                "/proc/<pid>/cmdline for the server's lifetime. "
+                "Cross-user isolation of /query-sync is DEGRADED to "
+                "that credential alone."
+            )
+
         from core.config import RaptorConfig
         for attempt, tuning_flags in enumerate(flag_sets):
             self._port = _find_free_port()
             self._base_url = f"http://127.0.0.1:{self._port}"
 
             # Per-boot-attempt state: stop() after a failed attempt
-            # clears the credential and removes the workdir.
+            # clears the credential and removes the workdir and
+            # socket directory.
             self._auth_user = _AUTH_USERNAME
             self._auth_password = secrets.token_urlsafe(32)
             if self._workdir is None:
                 self._workdir = tempfile.mkdtemp(prefix="raptor-joern-ws-")
 
-            cmd = [binary] + heap_flags + tuning_flags + [
+            joern_cmd = [binary] + heap_flags + tuning_flags + [
                 # RAPTOR strips ANSI from every response anyway
                 # (_strip_ansi); emitting it just bloats payloads.
                 "--nocolors",
@@ -355,7 +506,28 @@ class JoernServer:
                 "--server-auth-password", self._auth_password,
             ]
 
-            logger.info("starting Joern server on 127.0.0.1:%d", self._port)
+            if use_netns:
+                # mkdtemp gives the 0700 parent the forwarder requires;
+                # the forwarder binds the socket (also 0700) BEFORE it
+                # spawns joern, so the permission gate exists before
+                # the server can accept any traffic.
+                self._uds_dir = _make_uds_dir()
+                self._uds_path = os.path.join(self._uds_dir, _UDS_SOCKET_NAME)
+                cmd = [
+                    sys.executable, str(_FORWARDER_SCRIPT),
+                    "--socket", self._uds_path,
+                    "--port", str(self._port),
+                    "--", *joern_cmd,
+                ]
+                logger.info(
+                    "starting Joern server in a private network namespace "
+                    "(in-ns port %d, unix socket %s)",
+                    self._port, self._uds_path,
+                )
+            else:
+                cmd = joern_cmd
+                logger.info("starting Joern server on 127.0.0.1:%d",
+                            self._port)
 
             # New session so stop() can signal the whole process group:
             # the joern launcher may be a shell wrapper that spawns the
@@ -512,10 +684,14 @@ class JoernServer:
         # Per-boot credential — a fresh one is generated on start().
         self._auth_user = None
         self._auth_password = None
+        self._uds_path = None
 
         if self._workdir is not None:
             shutil.rmtree(self._workdir, ignore_errors=True)
             self._workdir = None
+        if self._uds_dir is not None:
+            shutil.rmtree(self._uds_dir, ignore_errors=True)
+            self._uds_dir = None
 
     def is_alive(self) -> bool:
         if self._proc is None or self._proc.poll() is not None:
@@ -541,6 +717,11 @@ class JoernServer:
         """
         if not self._base_url:
             return False
+        if self._uds_path is not None:
+            data = self._uds_request(
+                "POST", "/query-sync", {"query": "1+1"}, timeout,
+            )
+            return data is not None and data.get("success", False) is not False
         from urllib.error import URLError
         from urllib.request import Request
 
@@ -934,8 +1115,10 @@ class JoernServer:
     ) -> dict[str, Any] | None:
         """POST to /query-sync and return the parsed JSON response.
 
-        Uses httpx with connection pooling when available (~50ms saved
-        per query vs new-TCP-per-request urllib).  Falls back to urllib.
+        On the strong tier, dials the forwarder's unix socket via
+        ``http.client``. Otherwise uses httpx with connection pooling
+        when available (~50ms saved per query vs new-TCP-per-request
+        urllib), falling back to urllib.
         """
         if self._base_url is None:
             return None
@@ -944,9 +1127,51 @@ class JoernServer:
         payload = {"query": query_str}
 
         self._last_post_error = ""
+        if self._uds_path is not None:
+            return self._uds_request("POST", "/query-sync", payload, timeout)
         if _httpx is not None:
             return self._post_httpx(url, payload, timeout)
         return self._post_urllib(url, payload, timeout)
+
+    def _uds_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None,
+        timeout: float,
+    ) -> dict[str, Any] | None:
+        """One HTTP round-trip over the strong tier's unix socket.
+
+        Preserves the TCP paths' contract: Authorization header on
+        every request, parsed-JSON-or-None result, and the same
+        ``_last_post_error`` classification strings — ``query()``'s
+        timeout-triggered restart keys on "timed out".
+        """
+        if self._uds_path is None:
+            return None
+        conn = _UnixHTTPConnection(self._uds_path, timeout=timeout)
+        try:
+            body: bytes | None = None
+            headers = dict(self._auth_headers())
+            if payload is not None:
+                body = json.dumps(payload).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            return json.loads(resp.read().decode("utf-8"))
+        except (OSError, HTTPException, json.JSONDecodeError,
+                ValueError) as e:
+            if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
+                self._last_post_error = f"query timed out after {timeout}s"
+            elif (isinstance(e, (ConnectionRefusedError, FileNotFoundError))
+                  or "refused" in str(e).lower()):
+                self._last_post_error = f"connection failed: {e}"
+            else:
+                self._last_post_error = str(e)
+            logger.debug("query (unix socket) failed: %s", e)
+            return None
+        finally:
+            conn.close()
 
     def _post_httpx(
         self,
@@ -1012,6 +1237,11 @@ class JoernServer:
             return None
         url = f"{self._base_url}/query"
         payload = {"query": query_str}
+        if self._uds_path is not None:
+            data = self._uds_request("POST", "/query", payload, 10)
+            if data is None:
+                return None
+            return data.get("uuid") or data.get("id")
         try:
             body = json.dumps(payload).encode("utf-8")
             req = Request(url, data=body,
@@ -1030,6 +1260,11 @@ class JoernServer:
         if self._base_url is None:
             return None
         url = f"{self._base_url}/result/{uuid}"
+        if self._uds_path is not None:
+            data = self._uds_request("GET", f"/result/{uuid}", None, 5)
+            if data is not None and data.get("success") is not None:
+                return data
+            return None
         try:
             req = Request(url, method="GET",
                           headers=self._auth_headers())

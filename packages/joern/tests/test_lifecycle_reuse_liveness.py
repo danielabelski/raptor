@@ -125,6 +125,7 @@ class TestNoteServerReplaced(_StateDirFixture):
         srv.port = port
         srv._auth_user = "raptor"
         srv._auth_password = "new-cred"
+        srv._uds_path = None
         return srv
 
     def test_tracked_server_state_follows_restart(self):

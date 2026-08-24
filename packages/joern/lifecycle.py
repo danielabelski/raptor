@@ -10,8 +10,10 @@ server is stopped.
 State is stored in ``~/.cache/raptor/joern-server.json`` and
 protected by ``fcntl.flock`` for safe concurrent access.  The file
 carries the server's per-boot HTTP Basic credential so later runs can
-authenticate against the reused server; it is created (and rewritten)
-with mode 0600, and legacy state files are re-chmodded on load.
+authenticate against the reused server, plus (on the strong isolation
+tier) the unix-socket path through which the private-netns server is
+reached; it is created (and rewritten) with mode 0600, and legacy
+state files are re-chmodded on load.
 
 Usage::
 
@@ -135,18 +137,39 @@ def _locked():
         os.close(fd)
 
 
-def _health_check(port: int, auth_headers: dict[str, str] | None = None) -> bool:
+def _health_check(
+    port: int,
+    auth_headers: dict[str, str] | None = None,
+    socket_path: str | None = None,
+) -> bool:
+    payload = json.dumps({"query": "1+1"}).encode("utf-8")
+    headers = {"Content-Type": "application/json", **(auth_headers or {})}
+
+    if socket_path is not None:
+        # Strong tier: the server's TCP port only exists inside its
+        # private network namespace — dial the forwarder's unix socket.
+        from http.client import HTTPException
+
+        from .server import _UnixHTTPConnection
+
+        conn = _UnixHTTPConnection(socket_path, timeout=5)
+        try:
+            conn.request("POST", "/query-sync", body=payload,
+                         headers=headers)
+            data = json.loads(conn.getresponse().read().decode("utf-8"))
+            return data.get("success", False) is not False
+        except (OSError, HTTPException, json.JSONDecodeError, ValueError):
+            return False
+        finally:
+            conn.close()
+
     from urllib.error import URLError
     from urllib.request import Request
 
     from .server import _NO_PROXY_OPENER
 
     url = f"http://127.0.0.1:{port}/query-sync"
-    payload = json.dumps({"query": "1+1"}).encode("utf-8")
-    req = Request(url, data=payload,
-                  headers={"Content-Type": "application/json",
-                           **(auth_headers or {})},
-                  method="POST")
+    req = Request(url, data=payload, headers=headers, method="POST")
     try:
         with _NO_PROXY_OPENER.open(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -177,6 +200,16 @@ def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
         logger.info("joern lifecycle: stale PID %d — server is dead", pid)
         return None
 
+    socket_path = state.get("socket_path")
+    if socket_path and not os.path.exists(socket_path):
+        # Strong-tier server whose unix socket vanished (e.g. a tmp
+        # cleaner) — unreachable even if the process is alive.
+        logger.info(
+            "joern lifecycle: unix socket %s is gone — recycling",
+            socket_path,
+        )
+        return None
+
     srv = JoernServer.__new__(JoernServer)
     srv._heap_mb = state.get("heap_mb")
     srv._boot_timeout_s = 120
@@ -196,8 +229,12 @@ def _connect_existing(state: dict[str, Any]) -> JoernServer | None:
     srv._workdir = None
     srv._auth_user = auth_user
     srv._auth_password = auth_password
+    srv._uds_path = socket_path
+    # Reuse handles never own the socket directory — the process that
+    # booted the server (or its supervisor) cleans it up.
+    srv._uds_dir = None
 
-    if not _health_check(port, srv._auth_headers()):
+    if not _health_check(port, srv._auth_headers(), socket_path):
         logger.info("joern lifecycle: PID %d alive but server unhealthy", pid)
         return None
 
@@ -265,6 +302,9 @@ def joern_acquire(tunables: JoernTunables | None = None) -> JoernServer | None:
             # to the reused server. The state file is mode 0600.
             "auth_user": srv._auth_user,
             "auth_password": srv._auth_password,
+            # Strong tier: unix socket through which the private-netns
+            # server is reached (None on the TCP fallback tier).
+            "socket_path": srv._uds_path,
         }
         _write_state(fd, new_state)
         logger.info(
@@ -361,6 +401,7 @@ def _kill_server(state: dict[str, Any]) -> None:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if not _pid_alive(pid):
+                _remove_socket_dir(state)
                 return
             time.sleep(0.5)
         # Re-verify before SIGKILL: the pid may have died and been
@@ -369,6 +410,25 @@ def _kill_server(state: dict[str, Any]) -> None:
             _signal_server(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+    _remove_socket_dir(state)
+
+
+def _remove_socket_dir(state: dict[str, Any]) -> None:
+    """Remove a killed strong-tier server's socket directory.
+
+    The supervisor unlinks its socket on orderly exit, but a group
+    SIGKILL skips that cleanup and the killer here holds no
+    ``_uds_dir`` handle — derive it from the state's socket path.
+    Prefix-gated so a corrupt state file can never aim the rmtree at
+    an arbitrary directory.
+    """
+    sock = state.get("socket_path")
+    if not sock:
+        return
+    parent = os.path.dirname(sock)
+    if os.path.basename(parent).startswith("raptor-joern-uds-"):
+        import shutil
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 def note_server_replaced(
@@ -401,6 +461,7 @@ def note_server_replaced(
         state["started_at"] = time.time()
         state["auth_user"] = srv._auth_user
         state["auth_password"] = srv._auth_password
+        state["socket_path"] = srv._uds_path
         _write_state(fd, state)
         logger.info(
             "joern lifecycle: state updated for restarted server "

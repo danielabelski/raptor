@@ -3099,8 +3099,7 @@ Examples:
             ))
             normalized_sarif = findings_to_sarif(import_result.findings)
             normalized_path = out_dir / "imported-normalized.sarif"
-            import json as _json
-            normalized_path.write_text(_json.dumps(normalized_sarif, indent=2), encoding="utf-8")
+            save_json(normalized_path, normalized_sarif)
             all_sarif_files.append(normalized_path)
         elif not all_sarif_files:
             print("\n✗ No findings in imported SARIF and no scan results", file=sys.stderr)

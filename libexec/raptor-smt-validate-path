@@ -84,9 +84,12 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
-from core.json import dumps_display  # noqa: E402
+from core.json import dumps_display, load_json  # noqa: E402
 
 from packages.exploit_feasibility.smt_path import validate_path  # noqa: E402
+
+# attack-paths.json is a RAPTOR-written run artifact.
+_MAX_ATTACK_PATHS_BYTES = 64 * 1024 * 1024
 
 
 def _err(msg: str) -> int:
@@ -112,8 +115,10 @@ def _resolve_from_trace(args) -> "tuple[list, str | None] | int":
         return _err(f"attack-paths.json not found: {ap_path}")
 
     try:
-        paths = json.loads(ap_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        paths = load_json(
+            ap_path, strict=True, max_bytes=_MAX_ATTACK_PATHS_BYTES,
+        )
+    except (OSError, ValueError) as e:
         return _err(f"failed to read {ap_path}: {e}")
 
     if not isinstance(paths, list):

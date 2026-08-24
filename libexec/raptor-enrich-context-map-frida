@@ -14,7 +14,6 @@ frida evidence exists.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -35,6 +34,12 @@ if not (os.environ.get("CLAUDECODE")
 _RAPTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_RAPTOR_DIR))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import load_json, save_json  # noqa: E402
+
+# context-map.json is a RAPTOR-written run artifact; checklist.json
+# can grow with the target's function inventory.
+_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 
 def main() -> int:
@@ -53,8 +58,10 @@ def main() -> int:
         return 0
 
     try:
-        ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+        ctx = load_json(
+            ctx_path, strict=True, max_bytes=_MAX_CONTEXT_MAP_BYTES,
+        )
+    except (ValueError, OSError) as e:
         print(f"✗ Cannot read context-map: {e}", file=sys.stderr)
         return 1
     if not isinstance(ctx, dict):
@@ -65,12 +72,11 @@ def main() -> int:
     target_path = None
     checklist_path = workdir / "checklist.json"
     if checklist_path.is_file():
-        try:
-            cl = json.loads(checklist_path.read_text(encoding="utf-8"))
-            if isinstance(cl, dict):
-                target_path = cl.get("target_path")
-        except (json.JSONDecodeError, OSError):
-            pass
+        # Best-effort: load_json returns None on a missing, oversize,
+        # or malformed file.
+        cl = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
+        if isinstance(cl, dict):
+            target_path = cl.get("target_path")
 
     # checklist.json is a mutable run artefact — corroborate against
     # the target_path sealed into .raptor-run.json at run start.
@@ -85,7 +91,6 @@ def main() -> int:
     result = enrich_context_map_with_frida(
         ctx, search_dirs, target_path=target_path)
     if result != ctx:
-        from core.json import save_json
         save_json(ctx_path, result)
         enriched = sum(
             1 for ep in result.get("entry_points", [])

@@ -33,7 +33,6 @@ don't re-prompt.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from datetime import datetime, timezone
@@ -63,6 +62,12 @@ from core.coverage.journal import (  # noqa: E402
     INDEX_FILENAME, ReviewJournalEntry, _flock, _load_index,
     _write_index, now_iso,
 )
+from core.json import load_json  # noqa: E402
+
+# Legacy coverage-audit journals are per-run artifacts; checklists
+# grow with the target's function inventory.
+_MAX_JOURNAL_BYTES = 64 * 1024 * 1024
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 
 _META_STATUS_RE = re.compile(r"status=(\S+)")
@@ -78,10 +83,9 @@ def _iter_run_coverage_audit(project_dir: Path) -> Iterable[Dict[str, Any]]:
         path = run_dir / "coverage-audit.json"
         if not path.is_file():
             continue
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
+        # Best-effort: None on a missing/oversize/malformed file,
+        # handled by the isinstance guard below.
+        data = load_json(path, max_bytes=_MAX_JOURNAL_BYTES)
         if not isinstance(data, dict):
             continue
         # Two historical shapes: ``functions_analysed: [...]`` (list)
@@ -156,9 +160,9 @@ def _iter_checked_by_entries(project_dir: Path) -> Iterable[Dict[str, Any]]:
     path = project_dir / "checklist.json"
     if not path.is_file():
         return
-    try:
-        checklist = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    # Best-effort: None on a missing/oversize/malformed file.
+    checklist = load_json(path, max_bytes=_MAX_CHECKLIST_BYTES)
+    if not isinstance(checklist, dict):
         return
     for fe in checklist.get("files", []):
         file_path = fe.get("path")

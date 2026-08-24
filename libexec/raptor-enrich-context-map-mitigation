@@ -56,7 +56,6 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 import argparse  # noqa: E402
-import json  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -66,6 +65,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import dumps_artifact, load_json, save_json  # noqa: E402
+
+# context-map.json is a RAPTOR-written run artifact.
+_MAX_CONTEXT_MAP_BYTES = 64 * 1024 * 1024
 
 
 def main() -> int:
@@ -101,9 +104,14 @@ def main() -> int:
         return 1
 
     try:
-        cm = json.loads(context_map_path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        cm = load_json(
+            context_map_path, strict=True, max_bytes=_MAX_CONTEXT_MAP_BYTES,
+        )
+    except (OSError, ValueError) as e:
         sys.stderr.write(f"error: reading {context_map_path}: {e}\n")
+        return 1
+    if cm is None:
+        sys.stderr.write(f"error: reading {context_map_path}: file vanished\n")
         return 1
 
     build_flags = None
@@ -131,13 +139,11 @@ def main() -> int:
         sys.stderr.write(f"error: enrichment raised: {e}\n")
         return 2
 
-    text = json.dumps(cm, indent=2, sort_keys=True) + "\n"
     if args.dry_run:
-        sys.stdout.write(text)
+        sys.stdout.write(dumps_artifact(cm, sort_keys=True) + "\n")
         return 0
 
-    from core.atomic_fs import write_text_atomically
-    write_text_atomically(context_map_path, text)
+    save_json(context_map_path, cm, sort_keys=True)
     n_sinks = len(cm.get("sinks") or [])
     enriched = sum(
         1 for s in (cm.get("sinks") or [])

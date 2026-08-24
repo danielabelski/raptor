@@ -20,7 +20,6 @@ these subcommands are the ON-REQUEST steps. The tier model lives in
 the package docstring (packages/zkpox/__init__.py).
 """
 import sys
-import tempfile
 from pathlib import Path
 
 # ─── trust-marker check (do not import; inline by design) ───
@@ -38,10 +37,13 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 import argparse  # noqa: E402
-import json  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import load_json, save_json  # noqa: E402
+
+# manifest.json is a small bundle descriptor.
+_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def _cmd_bundle(args) -> int:
@@ -98,8 +100,10 @@ def _cmd_reproduce(args) -> int:
         return 2
 
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        manifest = load_json(
+            manifest_path, strict=True, max_bytes=_MAX_MANIFEST_BYTES,
+        )
+    except ValueError as e:
         sys.stderr.write(f"manifest.json is not valid JSON: {e}\n")
         return 2
     if not isinstance(manifest, dict):
@@ -166,22 +170,9 @@ def _cmd_reproduce(args) -> int:
     attach_reproduction(bundle, result)
 
     # Re-persist the manifest with the reproduction block + tier bump.
-    # Atomic write via tempfile + rename to avoid partial writes.
-    fd, tmp = tempfile.mkstemp(
-        dir=str(manifest_path.parent), suffix=".tmp")
-    closed = False
-    try:
-        os.write(fd, json.dumps(
-            bundle.as_dict(), indent=2).encode("utf-8"))
-        os.close(fd)
-        closed = True
-        os.rename(tmp, str(manifest_path))
-    except BaseException:
-        if not closed:
-            os.close(fd)
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    # save_json writes atomically (tempfile + rename) — no partial
+    # writes.
+    save_json(manifest_path, bundle.as_dict())
 
     print(render_bundle(bundle))
     print(f"  reproduced: {result.reproduced} "

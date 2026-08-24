@@ -17,7 +17,6 @@ The root is the search space for include resolution (defaults to
 detecting the top-level source root from the target path).
 """
 import bisect
-import json
 import re
 import subprocess
 import sys
@@ -47,7 +46,7 @@ import argparse  # noqa: E402
 from dataclasses import asdict  # noqa: E402
 
 from core.concepts.model import StudyItem  # noqa: E402
-from core.json import load_json  # noqa: E402
+from core.json import load_json, loads, save_json  # noqa: E402
 
 # Study artifacts (reading/study lists) are small RAPTOR-written run
 # output.
@@ -1989,7 +1988,7 @@ def _llm_seed_concepts_from_names(
         text = text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        seeded = json.loads(text)
+        seeded = loads(text, max_bytes=_MAX_STUDY_ARTIFACT_BYTES)
         if isinstance(seeded, list):
             name_set = set(all_names)
             return [s for s in seeded if isinstance(s, str) and s in name_set]
@@ -2964,17 +2963,7 @@ def main() -> None:
         "unresolved_identifiers": ml_unresolved,
         "items": [asdict(item) for item in items],
     }
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(output_dir), suffix=".tmp", prefix="study-list-",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(out_data, f, indent=2)
-            f.write("\n")
-        Path(tmp_name).rename(out_path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    save_json(out_path, out_data)
     print(f"study-prep: wrote {out_path} ({len(items)} items)", file=sys.stderr)
 
     if discovered_patterns:
@@ -2987,17 +2976,7 @@ def main() -> None:
                 for name, role in sorted(discovered_patterns.items())
             },
         }
-        fd2, tmp2 = tempfile.mkstemp(
-            dir=str(output_dir), suffix=".tmp", prefix="patterns-",
-        )
-        try:
-            with os.fdopen(fd2, "w", encoding="utf-8") as f2:
-                json.dump(patterns_data, f2, indent=2)
-                f2.write("\n")
-            Path(tmp2).rename(patterns_path)
-        except BaseException:
-            Path(tmp2).unlink(missing_ok=True)
-            raise
+        save_json(patterns_path, patterns_data)
         print(f"study-prep: wrote {patterns_path} "
               f"({len(discovered_patterns)} patterns)", file=sys.stderr)
 

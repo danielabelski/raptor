@@ -27,7 +27,6 @@ the skill can detect failure.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -48,6 +47,14 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import (  # noqa: E402
+    JsonBudgetExceededError,
+    load_json,
+    save_json,
+)
+
+# Trace files are analysis artifacts (operator- or RAPTOR-produced).
+_MAX_TRACES_BYTES = 64 * 1024 * 1024
 
 
 # Per-model cost floor. Each model gets at LEAST this much budget so
@@ -262,21 +269,24 @@ def _load_traces(path_str: str) -> list[dict]:
     p = Path(path_str)
     if not p.is_file():
         raise FileNotFoundError(f"traces file not found: {path_str}")
-    # Read and decode separately so we can attribute errors clearly.
+    # Catch clauses ordered most-specific first so errors attribute
+    # clearly (UnicodeDecodeError and the budget error are ValueError
+    # subclasses).
     try:
-        raw = p.read_bytes()
+        data = load_json(p, strict=True, max_bytes=_MAX_TRACES_BYTES)
     except OSError as e:
         raise ValueError(f"could not read traces file: {e}") from None
-    try:
-        text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         raise ValueError(
             f"traces file is not UTF-8: {e}. JSON must be UTF-8."
         ) from None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
+    except JsonBudgetExceededError as e:
+        raise ValueError(f"traces file too large: {e}") from None
+    except ValueError as e:
         raise ValueError(f"traces file is not valid JSON: {e}") from None
+    if data is None:
+        # File vanished between the is_file() check and the read.
+        raise ValueError(f"could not read traces file: {path_str}")
     if not isinstance(data, list):
         raise ValueError(
             f"traces file must contain a JSON list; got {type(data).__name__}"
@@ -643,24 +653,19 @@ def _extract_model_errors(result) -> dict:
 def _write_result(out_dir: Path, mode: str, payload: dict) -> Path:
     """Write JSON to <out>/<mode>-result.json. Returns the path.
 
+    Non-JSON-native values in payload are stringified by the
+    ``save_json`` encoder hooks (Path, datetime, arbitrary objects)
+    rather than raising.
+
     Raises:
-        OSError: mkdir or write_text failure (permission denied, disk
+        OSError: mkdir or write failure (permission denied, disk
             full, name too long, etc.).
-        TypeError: ``json.dumps`` rejects a non-serializable value in
-            payload (defensive — substrate output should be JSON-native
-            but bugs happen). Caller surfaces as a clean error.
+        ValueError: payload contains a non-finite float (NaN or
+            Infinity) — ``save_json`` refuses to serialise those.
+            Caller surfaces as a clean error.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"{mode}-result.json"
-    path = out_dir / fname
-    try:
-        serialized = json.dumps(payload, indent=2, sort_keys=True)
-    except TypeError as e:
-        raise TypeError(
-            f"could not serialize result payload: {e}. "
-            f"Adapter or substrate returned a non-JSON-native value."
-        ) from None
-    path.write_text(serialized, encoding="utf-8")
+    path = out_dir / f"{mode}-result.json"
+    save_json(path, payload, sort_keys=True)
     return path
 
 
@@ -780,9 +785,10 @@ def _main_body(args) -> int:
         # PermissionError, disk full, name too long, etc.
         print(f"error: could not write result to {out_dir}: {e}", file=sys.stderr)
         return 1
-    except TypeError as e:
-        # json.dumps rejected a non-serializable value in payload.
-        print(f"error: {e}", file=sys.stderr)
+    except (TypeError, ValueError) as e:
+        # save_json rejected the payload (non-finite float, or an
+        # unserialisable dict key).
+        print(f"error: could not serialize result payload: {e}", file=sys.stderr)
         return 1
     _print_summary(payload, output_path)
 

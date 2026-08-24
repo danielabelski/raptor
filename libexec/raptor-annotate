@@ -100,7 +100,11 @@ from core.annotations import (  # noqa: E402
     remove_annotation,
     write_annotation,
 )
+from core.json import load_json  # noqa: E402
 from core.security.prompt_output_sanitise import sanitise_string  # noqa: E402
+
+# Checklists grow with the target's function inventory.
+_MAX_CHECKLIST_BYTES = 256 * 1024 * 1024
 
 
 def _line(value, max_chars: int = 200) -> str:
@@ -184,10 +188,9 @@ def _lookup_bounds_by_name(
     """Look up ``(line_start, line_end)`` for ``function`` in
     ``file_path`` from a checklist. Returns ``None`` if either is
     missing or the function isn't in the inventory."""
-    try:
-        import json
-        data = json.loads(checklist_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    # Best-effort: None on a missing/oversize/malformed checklist.
+    data = load_json(checklist_path, max_bytes=_MAX_CHECKLIST_BYTES)
+    if not isinstance(data, dict):
         return None
     for file_entry in data.get("files", []):
         if file_entry.get("path") != file_path:

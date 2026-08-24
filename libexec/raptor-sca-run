@@ -50,11 +50,15 @@ from pathlib import Path  # noqa: E402
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 import core.startup.process_init  # noqa: E402,F401
+from core.json import load_json  # noqa: E402
 from core.run.metadata import complete_run, fail_run, start_run  # noqa: E402
 from core.run.output import get_output_dir  # noqa: E402
 from packages.sca import cli as sca_cli  # noqa: E402
 from packages.sca.cli import SUBCOMMANDS as _SUBCOMMANDS  # noqa: E402
 from packages.sca.cli import _configure_logging, _print_summary  # noqa: E402
+
+# findings.json is a RAPTOR-written run artifact.
+_MAX_FINDINGS_BYTES = 64 * 1024 * 1024
 
 _HELP = """\
 raptor-sca — dependency security scanner
@@ -229,13 +233,17 @@ def _run_analyse(argv):
     )
     cfg = cfg_from_args(args)
     if cfg.is_active:
-        import json as _json
         try:
-            rows = _json.loads(
-                (output_dir / "findings.json").read_text(encoding="utf-8")
+            rows = load_json(
+                output_dir / "findings.json", strict=True,
+                max_bytes=_MAX_FINDINGS_BYTES,
             )
-        except (OSError, _json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             print(f"raptor-sca: cannot read findings for threshold check: {e}",
+                  file=sys.stderr)
+            return 3
+        if rows is None:
+            print("raptor-sca: findings.json not found for threshold check",
                   file=sys.stderr)
             return 3
         if not isinstance(rows, list):

@@ -16,7 +16,6 @@ The prompt is built from positional arguments (joined by spaces) plus any
 a pipe, stdin is the prompt.
 """
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -37,7 +36,10 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
-from core.json import dumps_display  # noqa: E402
+from core.json import dumps_display, load_json  # noqa: E402
+
+# --json-schema files are small hand-written schemas.
+_MAX_SCHEMA_BYTES = 8 * 1024 * 1024
 
 
 def main() -> int:
@@ -181,7 +183,12 @@ def main() -> int:
     # --- structured or free-form ---
     try:
         if args.json_schema:
-            schema = json.loads(args.json_schema.read_text())
+            schema = load_json(
+                args.json_schema, strict=True, max_bytes=_MAX_SCHEMA_BYTES,
+            )
+            if schema is None:
+                raise FileNotFoundError(
+                    f"--json-schema file not found: {args.json_schema}")
             response = client.generate_structured(
                 prompt, schema,
                 system_prompt=system_prompt,

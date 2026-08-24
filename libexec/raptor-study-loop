@@ -22,7 +22,6 @@ Usage:
     raptor-study-loop <target> <output_dir> [options]
 """
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -45,7 +44,7 @@ if not (os.environ.get("CLAUDECODE")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core.startup.process_init  # noqa: E402,F401
-from core.json import load_json  # noqa: E402
+from core.json import load_json, save_json  # noqa: E402
 
 # Study artifacts (reading/study lists, domain model, overview,
 # struct annotations) are small RAPTOR-written run output.
@@ -158,16 +157,7 @@ def _mark_items_resolved(output_dir: Path, idents: list[str],
             resolved_count += 1
 
     if resolved_count:
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(rl_path.parent), suffix=".tmp", prefix=".rl-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(rl_data, f, indent=2)
-                f.write("\n")
-            Path(tmp_name).rename(rl_path)
-        except BaseException:
-            Path(tmp_name).unlink(missing_ok=True)
-            raise
+        save_json(rl_path, rl_data)
         print(f"study-loop: resolved {resolved_count} reading-list items",
               file=sys.stderr)
 
@@ -1048,9 +1038,7 @@ def main() -> int:
             "subject_title": overview_title,
         }
         overview_path = output_dir / "overview.json"
-        overview_path.write_text(
-            json.dumps(overview, indent=2), encoding="utf-8",
-        )
+        save_json(overview_path, overview)
         print("\nIdentifiers:", file=sys.stderr)
         for ident in overview_idents:
             print(f"  - {ident}", file=sys.stderr)
@@ -1254,16 +1242,7 @@ def main() -> int:
                 if syn_arch and isinstance(syn_arch, dict):
                     dm_data["architecture"] = syn_arch
 
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(output_dir), suffix=".tmp", prefix=".dm-")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(dm_data, f, indent=2)
-                    f.write("\n")
-                Path(tmp_name).rename(dm_path)
-            except BaseException:
-                Path(tmp_name).unlink(missing_ok=True)
-                raise
+            save_json(dm_path, dm_data)
         except (OSError, ValueError):
             pass
 

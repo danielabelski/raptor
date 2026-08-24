@@ -43,6 +43,9 @@ import core.startup.process_init  # noqa: E402,F401
 
 FAILURE_MARKER = ".raptor-tool-failure"
 
+# .raptor-run.json metadata files are tiny.
+_MAX_META_BYTES = 8 * 1024 * 1024
+
 # Multi-turn commands where the LLM orchestrates across separate tool
 # calls.  tool_pid from start_run is dead by the next turn, so Stop
 # must not act — SessionEnd catches orphans instead.
@@ -58,10 +61,9 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    import json
-
     event = sys.argv[1]
 
+    from core.json import load_json
     from core.run.metadata import (
         _find_claude_ancestor, _pid_alive, complete_run, fail_run,
         RUN_METADATA_FILE, STATUS_RUNNING,
@@ -137,8 +139,10 @@ def main():
                 meta_path = d / RUN_METADATA_FILE
                 if not meta_path.exists():
                     continue
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                # Best-effort: None on a missing/oversize/malformed
+                # file, handled by the isinstance guard below.
+                meta = load_json(meta_path, max_bytes=_MAX_META_BYTES)
+            except OSError:
                 continue
             if not isinstance(meta, dict):
                 meta = {}

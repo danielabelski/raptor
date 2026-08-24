@@ -458,10 +458,15 @@ def main() -> None:
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a project",
-                              usage="raptor project delete <name> [--purge] [--yes]", **_F)
+                              usage="raptor project delete <name> [--purge] [--yes] [--force]", **_F)
     p_delete.add_argument("name", help="Project name")
     p_delete.add_argument("--purge", action="store_true", help="Also delete output directory")
     p_delete.add_argument("--yes", action="store_true", help="Skip confirmation")
+    p_delete.add_argument("--force", action="store_true",
+                          help="Purge even when live runs exist under the "
+                               "project (default: refuse — another "
+                               "session's in-flight run would lose its "
+                               "directory)")
 
     # rename
     p_rename = sub.add_parser("rename", help="Rename a project",
@@ -638,6 +643,18 @@ def main() -> None:
                            output_dir=args.output_dir,
                            binaries=getattr(args, "binary", None))
             print(f"Created project '{p.name}' → {p.output_dir}")
+            # Creation activates for the creating session and bumps the
+            # last-activated default (design decision 2) — binding
+            # first, bookmark second, same discipline as `use`.
+            from .sessions import bind_session, resolve_session_pid
+            if resolve_session_pid() is not None:
+                bind_session(p.name)
+                print(f"  Active for this session; new sessions will "
+                      f"default to it.")
+            else:
+                print(f"  New sessions will default to it "
+                      f"(no session — no binding recorded).")
+            mgr.set_active(p.name)
             _p_binaries = getattr(p, "binaries", None) or []
             if _p_binaries:
                 print(f"  binaries: {', '.join(_p_binaries)}")
@@ -837,26 +854,45 @@ def main() -> None:
 
         elif args.subcommand == "use":
             if args.name is None:
-                # No argument — show current active project
-                active = mgr.get_active()
-                if active:
-                    p = mgr.load(active)
-                    if p:
-                        print(f"Active project: {p.name} ({p.target})")
-                    else:
-                        print(f"Active project: {active} (project file missing)")
+                # No argument — report BOTH layers, labelled (design §11).
+                from .sessions import resolve_session_pid, session_binding
+                binding, state = session_binding()
+                bookmark = _read_bookmark(mgr)
+                if state == "bound":
+                    print(f"Session project: {binding}")
+                elif state == "none":
+                    print("Session project: none (explicitly cleared)")
+                elif resolve_session_pid() is not None:
+                    print("Session project: (follows the last-activated "
+                          "default — no binding recorded)")
                 else:
-                    print("No active project.")
+                    print("Session project: (no session — bare shell)")
+                print(f"Last-activated default: {bookmark or '(none)'}")
                 return
             if args.name == "none":
-                prev = mgr.get_active()
-                mgr.set_active(None)
-                from .sessions import record_session
-                record_session(None)  # clear this session's registry entry
-                if prev:
-                    print(f"Cleared active project: {prev}")
+                from .sessions import bind_session, resolve_session_pid
+                if resolve_session_pid() is not None:
+                    bind_session(None)
+                    prev_default = _read_bookmark(mgr)
+                    default_note = (
+                        f"Last-activated default "
+                        f"('{prev_default}') unchanged — new sessions "
+                        f"still start on it."
+                        if prev_default else
+                        "No last-activated default is set."
+                    )
+                    print(f"Session project cleared. {default_note}")
                 else:
-                    print("No active project.")
+                    # Bare shell: act on the last-activated default,
+                    # loudly labelled (design §11).
+                    prev = mgr.get_active()
+                    mgr.set_active(None)
+                    print("(no session — acting on the last-activated "
+                          "default)")
+                    if prev:
+                        print(f"Cleared last-activated default: {prev}")
+                    else:
+                        print("No last-activated default was set.")
                 return
             p = mgr.load(args.name)
             if not p:
@@ -874,15 +910,36 @@ def main() -> None:
                     f"'{p.name}' — explicit use makes it "
                     f"operator-owned"
                 )
+            # Binding FIRST, bookmark second (design §3: a crash
+            # between the two must leave the session on its new
+            # project rather than moving the machine-wide default
+            # while the session stays behind). Success message only
+            # after both writes.
+            from .sessions import (
+                awareness_lines,
+                bind_session,
+                resolve_session_pid,
+                session_binding,
+            )
+            prev_binding, prev_state = session_binding()
+            in_session = resolve_session_pid() is not None
+            _own_pid = bind_session(args.name) if in_session else None
             mgr.set_active(args.name)
-            print(f"Active project: {p.name} ({p.target})")
+            if in_session:
+                was = (prev_binding if prev_state == "bound"
+                       else "none" if prev_state == "none" else "unset")
+                print(f"Session now on '{p.name}' (was: {was}). "
+                      f"Last-activated default updated — new sessions "
+                      f"will start on '{p.name}'.")
+            else:
+                print("(no session — acting on the last-activated "
+                      "default; live sessions keep their bindings)")
+                print(f"Last-activated default: {p.name} ({p.target})")
             print(f"  Output dir: {p.output_dir}")
             # Session-awareness (advisory, never lock-based): project
             # switch is one of exactly two places this line surfaces —
             # the other is launcher startup. Contention messages never
             # repeat it.
-            from .sessions import awareness_lines, record_session
-            _own_pid = record_session(args.name)
             for _line in awareness_lines(args.name, exclude_pid=_own_pid):
                 print(f"  note: {_line}")
 
@@ -916,7 +973,8 @@ def main() -> None:
                     print("Cancelled.")
                     return
             output_dir = p.output_dir
-            mgr.delete(args.name, purge=args.purge)
+            mgr.delete(args.name, purge=args.purge,
+                       force=getattr(args, "force", False))
             if args.purge:
                 print(f"Deleted project '{args.name}' and its output")
             else:
@@ -1286,8 +1344,24 @@ def _acquire_mutation_lock(mgr, args):
     return cm
 
 
+def _read_bookmark(mgr) -> str | None:
+    """The last-activated default — the raw ``.active`` symlink target,
+    deliberately BYPASSING the layered resolution (which would answer
+    with the session binding). UI surfaces that must show the bookmark
+    layer use this; everything else goes through ``get_active()``."""
+    try:
+        target = os.readlink(mgr.projects_dir / ".active")
+    except OSError:
+        return None
+    if target.endswith(".json") and "/" not in target and "\\" not in target:
+        return target[:-5]
+    return None
+
+
 def _get_active_project():
-    """Get the active project name from .active symlink or env var."""
+    """The active project for this context — layered resolution
+    (session binding first, then the last-activated symlink; design
+    §3) via ``ProjectManager.get_active()``."""
     mgr = ProjectManager()
     return mgr.get_active()
 

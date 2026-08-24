@@ -5,6 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.json import load_json
+from core.project.sessions import (
+    _walk_session_pid as _REAL_WALK_SESSION_PID,
+)
 from core.run import (
     RUN_METADATA_FILE,
     cancel_run,
@@ -264,6 +267,10 @@ class TestFindClaudeAncestor(unittest.TestCase):
         from core.project import sessions
 
         stack = contextlib.ExitStack()
+        # The battery-wide conftest neutralises the walk (hermetic
+        # default); these tests exercise it — restore the real one.
+        stack.enter_context(mock.patch.object(
+            sessions, "_walk_session_pid", _REAL_WALK_SESSION_PID))
         stack.enter_context(mock.patch.object(sys, "platform", "linux"))
         stack.enter_context(mock.patch.object(md.os, "getpid",
                                               lambda: self_pid))

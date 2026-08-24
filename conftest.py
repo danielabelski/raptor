@@ -253,29 +253,24 @@ def _binary_cache_in_tmp(tmp_path_factory):
 
 # The session registry (~/.local/share/raptor/sessions.d) is REAL user
 # state: start_run appends run-ledger records for the owning claude
-# session, and a test battery running inside a live session would
-# otherwise accrete records pointing at pytest temp dirs (and could
-# perturb the operator's actual binding entry). Redirect the module
-# path for the whole battery; tests that exercise the registry patch
-# their own isolated dir on top, as before. The env credential is
-# scrubbed so resolution can't reach the real session's entry either.
+# session, /project use|create write binding entries, and a battery
+# running inside a live claude session would otherwise perturb the
+# operator's actual entries (and accrete records pointing at pytest
+# temp dirs). PER-TEST isolation: each test gets a fresh registry dir,
+# so one test's binding writes can never poison another's layered
+# get_active() resolution. Session identity is also neutralised by
+# default — the tree walk finding the developer's real claude ancestor
+# would make batch behaviour differ between "run inside claude" and CI.
+# Tests that exercise resolution patch resolve_session_pid (or the
+# walk) explicitly, as the registry suites already do.
 
-@pytest.fixture(autouse=True, scope="session")
-def _sessions_registry_in_tmp(tmp_path_factory):
-    from unittest.mock import patch as _patch
-
+@pytest.fixture(autouse=True)
+def _sessions_registry_in_tmp(tmp_path, monkeypatch):
     from core.project import sessions as _sessions
-    isolated = tmp_path_factory.mktemp("sessions.d")
-    with _patch.object(_sessions, "SESSIONS_DIR", isolated):
-        saved = {}
-        for var in (_sessions.ENV_SESSION_PID, _sessions.ENV_SESSION_TOKEN):
-            saved[var] = os.environ.pop(var, None)
-        try:
-            yield
-        finally:
-            for var, value in saved.items():
-                if value is not None:
-                    os.environ[var] = value
+    monkeypatch.setattr(_sessions, "SESSIONS_DIR", tmp_path / "sessions.d")
+    monkeypatch.setattr(_sessions, "_walk_session_pid", lambda: None)
+    monkeypatch.delenv(_sessions.ENV_SESSION_PID, raising=False)
+    monkeypatch.delenv(_sessions.ENV_SESSION_TOKEN, raising=False)
 
 
 # ---------------------------------------------------------------------------

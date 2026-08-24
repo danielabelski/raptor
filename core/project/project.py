@@ -805,12 +805,32 @@ class ProjectManager:
                 projects.append(Project.from_dict(data))
         return projects
 
-    def delete(self, name: str, purge: bool = False) -> None:
-        """Delete a project. With purge=True, also delete the output directory."""
+    def delete(self, name: str, purge: bool = False,
+               force: bool = False) -> None:
+        """Delete a project. With purge=True, also delete the output
+        directory — REFUSED while any run under it is live (another
+        session's in-flight run would have its dir deleted underneath
+        it; the same ``split_live_runs`` predicate clean/dedup/merge
+        already use — purge never had it). ``force=True`` overrides."""
         project = self.load(name)
         if not project:
             msg = f"Project '{name}' not found"
             raise ValueError(msg)
+
+        if purge and not force and project.output_path.exists():
+            from core.project.clean import split_live_runs
+            run_dirs = [d for d in project.output_path.iterdir()
+                        if d.is_dir() and not d.name.startswith((".", "_"))]
+            _rest, live = split_live_runs(run_dirs)
+            if live:
+                names = ", ".join(d.name for d in live[:3])
+                msg = (
+                    f"Refusing to purge '{name}': {len(live)} live "
+                    f"run(s) under it ({names}{'…' if len(live) > 3 else ''}) "
+                    f"— possibly another session's. Wait for them, or "
+                    f"pass --force."
+                )
+                raise ValueError(msg)
 
         if purge and project.output_path.exists():
             # Safety: refuse to delete paths that could cause serious damage.
@@ -859,7 +879,39 @@ class ProjectManager:
         if active_link.is_symlink() and os.readlink(active_link) == f"{name}.json":
             active_link.unlink(missing_ok=True)
 
+        # Session-binding hygiene (design §3): live sessions bound to
+        # the deleted project are re-bound to none — a dangling binding
+        # must never fall through to the bookmark layer's (unrelated)
+        # project. Warn about each; other sessions get the loud
+        # stale-binding warning on their next resolution regardless.
+        self._rewrite_bindings(name, None)
+
         logger.info("Deleted project '%s'", name)
+
+    def _rewrite_bindings(self, old_name: str,
+                          new_name: str | None) -> None:
+        """Re-point (rename) or null (delete) every LIVE session
+        binding naming *old_name*. Best-effort: registry failures never
+        block the project mutation itself."""
+        try:
+            from core.project import sessions
+            live = sessions.read_sessions(prune=False)
+            hits = [pid for pid, fields in live.items()
+                    if fields.get("v") == sessions.ENTRY_VERSION
+                    and fields.get("project") == old_name]
+            for pid in hits:
+                sessions.record_session(
+                    new_name if new_name is not None
+                    else sessions.NONE_SENTINEL, pid=pid)
+            if hits:
+                logger.warning(
+                    "%d live session(s) were bound to '%s' — %s",
+                    len(hits), old_name,
+                    f"re-bound to '{new_name}'" if new_name
+                    else "re-bound to none (authoritatively projectless)",
+                )
+        except Exception:  # noqa: BLE001 — hygiene, never blocks mutation
+            logger.debug("binding rewrite failed", exc_info=True)
 
     def rename(self, old_name: str, new_name: str) -> Project:
         """Rename a project."""
@@ -911,6 +963,10 @@ class ProjectManager:
         active_link = self.projects_dir / ".active"
         if active_link.is_symlink() and os.readlink(active_link) == f"{old_name}.json":
             self.set_active(new_name)
+
+        # Re-point live session bindings (design §3): a session bound
+        # to the old name must follow the rename, not dangle.
+        self._rewrite_bindings(old_name, new_name)
 
         logger.info("Renamed project '%s' → '%s'", old_name, new_name)
         return project
@@ -1240,16 +1296,60 @@ class ProjectManager:
             active_link.unlink(missing_ok=True)
 
     def get_active(self) -> str | None:
-        """Get the active project name from the .active symlink.
+        """The active project for THIS context — layered (design §3).
 
-        Consumes machine-project auto-expiry: when the linked project
-        is a MACHINE_PROJECT_PREFIXES name whose ``expires_at`` has
-        passed (stamped at creation by the corpus runner), the symlink
-        is cleared with a loud log line and None is returned — a
-        throwaway corpus project left active by a crashed run must not
-        keep steering no-path commands at /tmp. Operator projects are
-        never expired; ``/project use <name>`` clears the marker.
+        1. **Session binding** (authoritative v2 registry entry): the
+           session's own project. Bound-to-none is authoritative — it
+           never falls through to the symlink. A stale binding
+           (project deleted) reads as None with a warning, never as
+           another layer's project.
+        2. **`.active` symlink** — the LAST-ACTIVATED bookmark: serves
+           bare shells, pre-series (v1/advisory) sessions, and
+           sessions whose entry is absent.
+
+        Consumes machine-project auto-expiry on BOTH layers, and the
+        remediation clears only the layer that produced the name: an
+        expired binding is re-bound to none (the machine-wide bookmark
+        — which may point at a different, healthy project that other
+        sessions seed from — is never collateral); an expired symlink
+        is unlinked, as before. Operator projects are never expired;
+        ``/project use <name>`` clears the marker.
         """
+        try:
+            from core.project.sessions import bind_session, session_binding
+            name, state = session_binding()
+        except Exception:  # noqa: BLE001 — registry failure = symlink layer
+            logger.debug("session binding resolution failed", exc_info=True)
+            name, state = None, "absent"
+        if state == "bound" and name is not None:
+            project_file = self.projects_dir / f"{name}.json"
+            if not project_file.exists():
+                logger.warning(
+                    "Session is bound to missing project '%s' "
+                    "(deleted/renamed?) — authoritatively projectless. "
+                    "Re-bind with '/project use <name>'.", name,
+                )
+                return None
+            if is_machine_project_name(name):
+                project = self.load(name)
+                if (project is not None
+                        and project.is_expired_machine_project()):
+                    logger.warning(
+                        "Session-bound project '%s' is a machine-"
+                        "generated project past its auto-expiry (%s) — "
+                        "clearing THIS SESSION's binding (the "
+                        "last-activated default is untouched). "
+                        "Re-activate explicitly with '/project use %s' "
+                        "to keep it (this clears the expiry).",
+                        name, project.expires_at, name,
+                    )
+                    with contextlib.suppress(Exception):
+                        bind_session(None)
+                    return None
+            return name
+        if state == "none":
+            return None
+
         active_link = self.projects_dir / ".active"
         if active_link.is_symlink():
             target = os.readlink(active_link)

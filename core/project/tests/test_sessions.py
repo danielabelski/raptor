@@ -512,12 +512,21 @@ class UseCommandAwarenessTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("also active", out)
 
-    def test_use_none_clears_entry(self):
-        # Pre-P05 contract; P05 changes this to sentinel binding.
+    def test_use_none_binds_sentinel_and_keeps_bookmark(self):
+        """In-session `/project none` is a session-only clear: the entry
+        binds the `-` sentinel (authoritatively projectless) and the
+        last-activated default is untouched (design decision 4)."""
         self._run("use", "myapp")
-        self._run("none")
-        self.assertFalse(
-            (self.sessions_dir / str(self.FAKE_SELF)).exists())
+        code, out, _ = self._run("none")
+        self.assertEqual(code, 0)
+        entry = self.sessions_dir / str(self.FAKE_SELF)
+        self.assertTrue(entry.exists())
+        self.assertIn("project=-", entry.read_text(encoding="utf-8"))
+        self.assertIn("Session project cleared", out)
+        self.assertIn("unchanged", out)
+        # Bookmark still points at myapp.
+        target = os.readlink(self.projects_dir / ".active")
+        self.assertEqual(target, "myapp.json")
 
 
 @unittest.skipIf(sys.platform == "win32", "bash launcher")
@@ -613,3 +622,144 @@ class LauncherAwarenessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LayeredChokepointTest(unittest.TestCase):
+    """get_active() / get_active_name() layered resolution (design §3):
+    binding beats symlink, bound-to-none is authoritative, stale
+    bindings never fall through, expiry remediation clears only the
+    producing layer — and the two chokepoints always agree."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.projects_dir = root / "projects"
+        self.sessions_dir = root / "sessions.d"
+        (root / "code").mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("bound-proj", str(root / "code"),
+                        output_dir=str(root / "out" / "bound-proj"))
+        self.mgr.create("bookmark-proj", str(root / "code"),
+                        output_dir=str(root / "out" / "bookmark-proj"))
+        self.mgr.set_active("bookmark-proj")
+        import core.startup as startup
+        for p in (
+            patch.object(sessions, "SESSIONS_DIR", self.sessions_dir),
+            patch("core.project.project.PROJECTS_DIR", self.projects_dir),
+            patch.object(startup, "PROJECTS_DIR", self.projects_dir),
+            patch.object(startup, "ACTIVE_LINK",
+                         self.projects_dir / ".active"),
+            patch.object(sessions, "resolve_session_pid",
+                         return_value=os.getpid()),
+            patch.object(sessions, "_comm",
+                         lambda pid: "claude" if pid == os.getpid()
+                         else None),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        self.startup = startup
+
+    def test_binding_beats_bookmark_in_both_chokepoints(self):
+        sessions.record_session("bound-proj", pid=os.getpid())
+        self.assertEqual(self.mgr.get_active(), "bound-proj")
+        self.assertEqual(self.startup.get_active_name(), "bound-proj")
+
+    def test_bound_to_none_is_authoritative_in_both(self):
+        sessions.bind_session(None, pid=os.getpid())
+        self.assertIsNone(self.mgr.get_active())
+        self.assertIsNone(self.startup.get_active_name())
+
+    def test_no_binding_falls_to_bookmark_in_both(self):
+        self.assertEqual(self.mgr.get_active(), "bookmark-proj")
+        self.assertEqual(self.startup.get_active_name(), "bookmark-proj")
+
+    def test_stale_binding_never_falls_through(self):
+        self.mgr.create("doomed", str(Path(self._tmp.name) / "code"),
+                        output_dir=str(Path(self._tmp.name) / "out" / "d"))
+        sessions.record_session("doomed", pid=os.getpid())
+        (self.projects_dir / "doomed.json").unlink()
+        self.assertIsNone(self.mgr.get_active())
+        self.assertIsNone(self.startup.get_active_name())
+
+    def _make_expired_machine_project(self, name: str):
+        self.mgr.create(name, "/tmp")
+        proj = self.mgr.load(name)
+        proj.expires_at = "2020-01-01T00:00:00+00:00"
+        self.mgr._save(proj)
+
+    def test_expired_binding_clears_binding_not_bookmark(self):
+        """op-C4/conc-C5: the expiry vet fired via a session binding
+        must never destroy the machine-wide bookmark."""
+        self._make_expired_machine_project("corpus-999")
+        sessions.record_session("corpus-999", pid=os.getpid())
+        self.assertIsNone(self.mgr.get_active())
+        # Binding re-bound to none...
+        name, state = sessions.session_binding(pid=os.getpid())
+        self.assertEqual((name, state), (None, "none"))
+        # ...bookmark untouched.
+        self.assertEqual(
+            os.readlink(self.projects_dir / ".active"),
+            "bookmark-proj.json")
+
+    def test_expired_bookmark_unlinks_symlink(self):
+        self._make_expired_machine_project("corpus-888")
+        self.mgr.set_active("corpus-888")
+        self.assertIsNone(self.mgr.get_active())
+        self.assertFalse(
+            (self.projects_dir / ".active").is_symlink())
+
+
+class ProjectMutationHygieneTest(unittest.TestCase):
+    """delete/rename binding hygiene + the purge live-run guard
+    (design §3 / decision 14)."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.projects_dir = root / "projects"
+        self.sessions_dir = root / "sessions.d"
+        (root / "code").mkdir()
+        # Output under the expected base so purge containment passes.
+        from core.project.project import DEFAULT_OUTPUT_BASE
+        self.out_base = DEFAULT_OUTPUT_BASE / f"_test-{os.getpid()}"
+        self.addCleanup(lambda: __import__("shutil").rmtree(
+            self.out_base, ignore_errors=True))
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("victim", str(root / "code"),
+                        output_dir=str(self.out_base / "victim"))
+        for p in (
+            patch.object(sessions, "SESSIONS_DIR", self.sessions_dir),
+            patch("core.project.project.PROJECTS_DIR", self.projects_dir),
+            patch.object(sessions, "_comm",
+                         lambda pid: "claude" if pid == os.getpid()
+                         else None),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_delete_nulls_live_bindings(self):
+        sessions.record_session("victim", pid=os.getpid())
+        self.mgr.delete("victim")
+        name, state = sessions.session_binding(pid=os.getpid())
+        self.assertEqual((name, state), (None, "none"))
+
+    def test_rename_repoints_live_bindings(self):
+        sessions.record_session("victim", pid=os.getpid())
+        self.mgr.rename("victim", "renamed")
+        name, state = sessions.session_binding(pid=os.getpid())
+        self.assertEqual((name, state), ("renamed", "bound"))
+
+    def test_purge_refuses_on_live_run(self):
+        from core.json import save_json
+        run = Path(self.mgr.load("victim").output_dir) / "scan-live"
+        run.mkdir(parents=True)
+        save_json(run / ".raptor-run.json", {
+            "status": "running", "tool_pid": os.getpid(),
+        })
+        with self.assertRaises(ValueError):
+            self.mgr.delete("victim", purge=True)
+        # force overrides.
+        self.mgr.delete("victim", purge=True, force=True)
+        self.assertFalse(run.exists())

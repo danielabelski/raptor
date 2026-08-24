@@ -1,0 +1,327 @@
+"""Binary checklist builder — REDatabase to checklist.json.
+
+Parallel to :func:`build_inventory` for source targets. Takes an
+:class:`~packages.ghidra.model.REDatabase` (from Ghidra, r2, or
+objdump) and produces a checklist dict in the same schema shape that
+:mod:`core/audit` and :mod:`core/orchestration/understand_bridge`
+consume.
+
+Items use ``address`` + ``size`` instead of ``line_start`` / ``line_end``.
+File paths use a ``binary:<stem>`` prefix so downstream consumers know
+this is not a source file.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
+
+#: Sentinel prefix marking a checklist/journal ``file`` value as a
+#: binary program rather than a source path. Emitters go through
+#: :func:`binary_path_key` — never hand-roll the string, so the
+#: discriminator has exactly one definition.
+BINARY_PATH_PREFIX = "binary:"
+
+_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+
+
+def binary_path_key(binary_path: "Path | str") -> str:
+    """Canonical ``file`` value for a binary program's checklist items."""
+    return BINARY_PATH_PREFIX + Path(binary_path).stem
+
+
+_DANGEROUS_SINKS: Optional[frozenset] = None
+
+
+def _get_dangerous_sinks() -> frozenset:
+    """Lazy-load the dangerous-sink set from the function taxonomy."""
+    global _DANGEROUS_SINKS  # noqa: PLW0603
+    if _DANGEROUS_SINKS is not None:
+        return _DANGEROUS_SINKS
+    try:
+        from core.function_taxonomy import (
+            EXEC_FUNCS,
+            FORMAT_STRING_FUNCS,
+            MEMORY_COPY_FUNCS,
+            NETWORK_INGEST_FUNCS,
+            SCAN_FAMILY_FUNCS,
+            STRING_OVERFLOW_FUNCS,
+        )
+        _DANGEROUS_SINKS = frozenset(
+            STRING_OVERFLOW_FUNCS | SCAN_FAMILY_FUNCS | MEMORY_COPY_FUNCS
+            | FORMAT_STRING_FUNCS | EXEC_FUNCS | NETWORK_INGEST_FUNCS
+        )
+    except ImportError:
+        _DANGEROUS_SINKS = frozenset()
+    return _DANGEROUS_SINKS
+
+
+def build_binary_checklist(
+    db,
+    *,
+    binary_path: Optional[Path] = None,
+    include_auto_named: bool = False,
+    min_size: int = 16,
+    context_map: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a checklist from an REDatabase.
+
+    Parameters
+    ----------
+    db:
+        An :class:`~packages.ghidra.model.REDatabase` instance.
+    binary_path:
+        Override path for the ``binary:`` prefix. Defaults to
+        ``db.binary_path``.
+    include_auto_named:
+        If True, include auto-named functions (FUN_XXXXX). Default False.
+    min_size:
+        Skip functions smaller than this (thunks, stubs). Default 16 bytes.
+    context_map:
+        Optional BinaryContextMap dict (from r2 or ``/understand``). Used
+        to enrich priority scoring with entry-point and sink data.
+
+    Returns
+    -------
+    dict
+        Checklist in the same schema as :func:`core.inventory.build_inventory`.
+    """
+    bp = binary_path or Path(db.binary_path or "unknown")
+    path_key = binary_path_key(bp)
+
+    dangerous = _get_dangerous_sinks()
+    import_names = {
+        (imp.get("name") or "").split("@")[0]
+        for imp in (db.imports or [])
+    }
+    export_names = {
+        (exp.get("name") or "")
+        for exp in (db.exports or [])
+    }
+
+    callee_index = _build_callee_index(db)
+
+    entry_addrs: Set[int] = set()
+    sink_addrs: Set[int] = set()
+    if context_map:
+        for ep in context_map.get("entry_points", []):
+            addr = ep.get("address")
+            if addr is not None:
+                entry_addrs.add(_parse_addr(addr))
+        for sk in context_map.get("dangerous_sinks", context_map.get("sinks", [])):
+            addr = sk.get("address")
+            if addr is not None:
+                sink_addrs.add(_parse_addr(addr))
+
+    items: List[Dict[str, Any]] = []
+    for func in db.functions:
+        if func.is_thunk or func.is_external:
+            continue
+        if not include_auto_named and func.is_auto_named:
+            continue
+        if func.size < min_size:
+            continue
+
+        priority, reasons = _score_function(
+            func, dangerous, import_names, export_names,
+            callee_index, entry_addrs, sink_addrs,
+        )
+
+        metadata = _build_metadata(func, export_names)
+
+        item: Dict[str, Any] = {
+            "name": func.name,
+            "kind": "function",
+            "address": func.address,
+            "size": func.size,
+            "source_tool": func.source_tool,
+            "metadata": metadata,
+        }
+        if func.signature:
+            item["signature"] = func.signature
+        if func.decompilation:
+            item["has_decompilation"] = True
+        if priority == "high":
+            item["priority"] = "high"
+            item["priority_reason"] = "; ".join(reasons)
+
+        items.append(item)
+
+    items.sort(key=_sort_key)
+
+    total_funcs = len(db.functions)
+    named = sum(1 for f in db.functions if not f.is_auto_named)
+
+    return {
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "target_path": str(bp),
+        "total_files": 1,
+        "total_items": len(items),
+        "total_functions": len(items),
+        "total_sloc": 0,
+        "skipped_files": 0,
+        "excluded_patterns": [],
+        "excluded_files": [],
+        "files": [
+            {
+                "path": path_key,
+                "language": "binary",
+                "lines": 0,
+                "sloc": 0,
+                "sha256": "",
+                "items": items,
+            },
+        ],
+        "target_kind": "binary",
+        "target_kind_reason": "binary target (REDatabase)",
+        "target_kind_source": db.source_tool,
+        "binary_stats": {
+            "total_functions": total_funcs,
+            "named_functions": named,
+            "auto_named": total_funcs - named,
+            "architecture": db.architecture,
+            "source_tool": db.source_tool,
+        },
+    }
+
+
+def _build_callee_index(db) -> Dict[int, List[str]]:
+    """Map function entry address → names of functions it calls."""
+    addr_to_name: Dict[int, str] = {}
+    for f in db.functions:
+        addr_to_name[f.address] = f.name
+
+    index: Dict[int, List[str]] = {}
+    for xref in db.xrefs:
+        if xref.kind != "call":
+            continue
+        caller = db.function_containing_address(xref.from_addr)
+        if caller is None:
+            continue
+        callee_name = addr_to_name.get(xref.to_addr, "")
+        if callee_name:
+            index.setdefault(caller.address, []).append(callee_name)
+
+    return index
+
+
+def _score_function(
+    func, dangerous, import_names, export_names,
+    callee_index, entry_addrs, sink_addrs,
+):
+    """Score a function for priority. Returns (priority, reasons)."""
+    reasons = []
+
+    if func.address in entry_addrs:
+        reasons.append("entry point")
+    if func.name in export_names:
+        reasons.append("exported symbol")
+    if func.address in sink_addrs:
+        reasons.append("dangerous sink")
+
+    callees = callee_index.get(func.address, [])
+    dangerous_calls = [c for c in callees if c in dangerous]
+    if dangerous_calls:
+        # Callee names come from the binary; strip control characters
+        # before they reach prompts/terminals via priority_reason.
+        cleaned = [
+            _CTRL_CHARS.sub("", c)[:80] for c in dangerous_calls[:3]
+        ]
+        reasons.append("calls %s" % ", ".join(cleaned))
+
+    if reasons:
+        return "high", reasons
+    return "normal", []
+
+
+def _sort_key(item: Dict[str, Any]):
+    """Sort: high-priority first, then by size (largest first)."""
+    priority_order = 0 if item.get("priority") == "high" else 1
+    return (priority_order, -(item.get("size", 0)))
+
+
+def _build_metadata(func, export_names: Set[str]) -> Dict[str, Any]:
+    """Build a metadata dict from a binary function for strategy selection."""
+    meta: Dict[str, Any] = {}
+
+    if func.signature:
+        meta["signature"] = func.signature
+        ret, params = _parse_c_signature(func.signature)
+        if ret:
+            meta["return_type"] = ret
+        if params:
+            meta["parameters"] = [
+                {"name": p[0], "type": p[1]} for p in params
+            ]
+
+    if func.name in export_names:
+        meta["visibility"] = "exported"
+
+    return meta
+
+
+def _parse_c_signature(sig: str):
+    """Parse a C-style signature into (return_type, [(name, type), ...]).
+
+    Handles common Ghidra/r2 output like:
+        "int main(int argc, char **argv)"
+        "void *malloc(size_t size)"
+        "undefined processPacket(byte *param_1, int param_2)"
+    """
+    sig = sig.strip().rstrip(";")
+    paren_open = sig.find("(")
+    if paren_open < 0:
+        return None, []
+
+    prefix = sig[:paren_open].strip()
+    parts = prefix.rsplit(None, 1)
+    if len(parts) == 2:
+        return_type = parts[0]
+        stars = ""
+        if parts[1].startswith("*"):
+            stars = "*" * parts[1].count("*")
+        if stars:
+            return_type = return_type + " " + stars
+    elif len(parts) == 1:
+        return_type = "void"
+    else:
+        return_type = None
+
+    params_str = sig[paren_open + 1:].rstrip(")")
+    if not params_str.strip() or params_str.strip() == "void":
+        return return_type, []
+
+    params = []
+    for p in params_str.split(","):
+        p = p.strip()
+        if not p:
+            continue
+        last_space = p.rfind(" ")
+        last_star = p.rfind("*")
+        split_at = max(last_space, last_star)
+        if split_at > 0:
+            ptype = p[:split_at + 1].strip()
+            pname = p[split_at + 1:].strip() or "?"
+        else:
+            ptype = p
+            pname = "?"
+        params.append((pname, ptype))
+
+    return return_type, params
+
+
+def _parse_addr(value) -> int:
+    """Parse an address that may be hex string or int."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 16) if value.startswith("0x") else int(value)
+        except (ValueError, TypeError):
+            return -1
+    return -1

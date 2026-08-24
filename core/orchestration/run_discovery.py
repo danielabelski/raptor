@@ -96,7 +96,9 @@ def collect_sibling_runs(
     results: list[Path] = []
 
     for led in _ledger_candidates(marker, exclude, dir_filter):
-        key = str(led)
+        # Resolved-Path keys, same as _scan_dir — mixed key types made
+        # cross-tier dedup silently miss.
+        key = led.resolve()
         if key not in seen:
             seen.add(key)
             results.append(led)

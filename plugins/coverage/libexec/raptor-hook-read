@@ -73,8 +73,12 @@ if [ -n "$_SESSION_PID" ]; then
                 /*) ;;
                 *) continue ;;
             esac
+            # [[:cntrl:]] not [![:print:]]: the print class is
+            # locale-dependent (under LC_ALL=C a multibyte path reads
+            # unprintable and legit non-ASCII run dirs lose coverage);
+            # the writer rejects control bytes, so match that.
             case "$_rdir" in
-                *[![:print:]]*) continue ;;
+                *[[:cntrl:]]*) continue ;;
             esac
             [ -f "$_rdir/.raptor-run.json" ] || continue
             [ "$_epoch" -gt "$BEST_EPOCH" ] || continue
@@ -143,7 +147,7 @@ else
             STATUS=$(python3 "$HELPER" get "${d}.raptor-run.json" status 2>/dev/null) || true
         fi
         [ "$STATUS" = "running" ] || continue
-        MTIME=$(stat -c %Y "${d}.raptor-run.json" 2>/dev/null || stat -f %m "${d}.raptor-run.json" 2>/dev/null)
+        MTIME=$(stat -c %Y "${d}.raptor-run.json" 2>/dev/null || stat -f %m "${d}.raptor-run.json" 2>/dev/null || true)
         [ -z "$MTIME" ] && MTIME=0
         if [ "$MTIME" -gt "$NEWEST_MTIME" ] 2>/dev/null; then
             NEWEST_MTIME=$MTIME
@@ -183,7 +187,9 @@ fi
 if [ -d "$FILE_PATH" ]; then
     exit 0
 fi
-case "${FILE_PATH##*.}" in
+_EXT="${FILE_PATH##*.}"
+_EXT="${_EXT,,}"    # case-insensitive: the twin lowercases too
+case "$_EXT" in
     py|js|ts|jsx|tsx|c|h|cpp|hpp|cc|cxx|java|go|rs|rb|php|cs|swift|kt|scala|sh|bash|zsh|zig|nim|cr|sol|dart|m|mm|lua|pl|pm|jl|ex|exs|erl|hrl|fs|fsi|fsx|ml|mli|clj|cljs|cljc|groovy|gradle|r|hs|elm|vue|svelte|astro|tf|tofu|nix) ;;
     *) exit 0 ;;
 esac

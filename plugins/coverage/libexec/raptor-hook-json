@@ -47,7 +47,15 @@ def _get(src: str, key: str) -> None:
         if not isinstance(cur, dict):
             return
         cur = cur.get(part)
+    # Scalars, not only strings: .raptor-run.json records session_pid
+    # as a JSON int — printing nothing for it silently killed the
+    # whole no-jq attribution path (owner comparison never matched).
+    # Mirrors jq -r: strings raw, numbers/bools rendered.
     if isinstance(cur, str) and cur:
+        print(cur)
+    elif isinstance(cur, bool):
+        print("true" if cur else "false")
+    elif isinstance(cur, (int, float)):
         print(cur)
 
 

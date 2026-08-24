@@ -2020,31 +2020,49 @@ def find_engine_rules_dir(out_dir: Path, repo_path: Path) -> Path | None:
     repo_resolved = Path(repo_path).resolve()
     candidates = []
     out_resolved = Path(out_dir).resolve()
-    candidates.append(out_resolved.parent / "engine-rules")
-    candidates.append(out_resolved.parent.parent / "engine-rules")
+    run_root: Path | None = None
     try:
-        # Pin-governed project candidate + the target-keyed standalone
-        # location (core/audit/rules_dirs). The pre-fix third candidate
-        # read the ambient ACTIVE project mid-scan in a child process:
-        # a /project switch (or another session's bookmark move)
-        # swapped which project's rules ran as trusted engine config
-        # against this repo.
+        # THE PIN DECIDES FIRST — graduated rules run as trusted engine
+        # config, so candidate ORDER is a privilege decision. The
+        # pre-fix topology candidates came first: an --out run placed
+        # in a foreign project's dir loaded that project's rules ahead
+        # of the pinned project's, and for an /agentic child
+        # (out=<run>/scan) candidate 1 was <run>/engine-rules — INSIDE
+        # the sandbox write grant, plantable by any earlier hostile
+        # stage. Topology shapes remain only as the legacy fallback
+        # for pin-less dirs, and never from inside the governed run
+        # dir itself.
         from core.audit.rules_dirs import standalone_read_candidates
-        from core.run.pin import pin_project_dir
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_resolved)
+        run_root = pin.run_dir
         proj_dir = pin_project_dir(out_resolved)
         if proj_dir is not None:
             candidates.append(proj_dir / "engine-rules")
         candidates.extend(standalone_read_candidates(repo_resolved))
+        if not pin.authoritative:
+            candidates.append(out_resolved.parent / "engine-rules")
+            candidates.append(out_resolved.parent.parent / "engine-rules")
     except Exception:
         logger.debug(
             "graduated-rules: pinned-project lookup failed", exc_info=True,
         )
+        candidates.append(out_resolved.parent / "engine-rules")
+        candidates.append(out_resolved.parent.parent / "engine-rules")
 
     for candidate in candidates:
         rules_dir = candidate / "semgrep" / "rules"
         try:
             resolved = rules_dir.resolve()
         except OSError:
+            continue
+        if run_root is not None and (
+                resolved == run_root or run_root in resolved.parents):
+            logger.warning(
+                "graduated-rules: refusing rules dir inside the run "
+                "dir (%s) — the run dir is the sandbox write grant",
+                resolved,
+            )
             continue
         if resolved == repo_resolved or repo_resolved in resolved.parents:
             logger.warning(
@@ -2879,9 +2897,13 @@ def main() -> None:
     if args.project is not None:
         from core.run.pin import set_process_project
         set_process_project(args.project)
-    elif args.out:
+    if args.out:
         # Child of a run: adopt the owning run's pin as the process
-        # override so every ambient consumer follows it.
+        # override so every ambient consumer follows it. Runs even
+        # when --project was given — bootstrap then enforces the
+        # argv-vs-pin agreement (hard error on a split) and seals the
+        # freeze cache so this process stops re-reading the disk
+        # marker for its lifetime.
         from core.run.pin import bootstrap_process_pin
         bootstrap_process_pin(args.out)
 

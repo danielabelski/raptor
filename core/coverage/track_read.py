@@ -82,13 +82,17 @@ def _find_session_run(session_pid):
     for _epoch, run_dir in sorted(candidates, reverse=True):
         d = Path(run_dir)
         try:
-            meta = json.loads(
-                (d / ".raptor-run.json").read_text(encoding="utf-8"))
+            meta_path = d / ".raptor-run.json"
+            if meta_path.stat().st_size > 1_048_576:
+                continue  # attacker-influenced file — never slurp GBs
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, ValueError):
             continue
         if not isinstance(meta, dict) or meta.get("status") != "running":
             continue
-        if meta.get("session_pid") != session_pid:
+        # String-compare like the bash twin: a metadata writer that
+        # stringifies session_pid must not diverge the two consumers.
+        if str(meta.get("session_pid")) != str(session_pid):
             continue  # resumed by (or belonging to) another session
         target = meta.get("target_path") or ""
         return str(d), target
@@ -193,9 +197,12 @@ def main() -> None:
     if "\x00" in file_path or "\n" in file_path or "\r" in file_path:
         return
 
-    # Skip non-source files
+    # Skip non-source files — and directories named like one (the
+    # bash twin has the explicit [ -d ] guard; keep parity).
     dot = file_path.rfind(".")
     if dot == -1 or file_path[dot:].lower() not in _SOURCE_EXTENSIONS:
+        return
+    if os.path.isdir(file_path):
         return
 
     # Skip files outside the target directory (path-level check, not string prefix).

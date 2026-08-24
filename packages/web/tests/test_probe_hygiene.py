@@ -150,3 +150,52 @@ class TestSmugglingVariants(unittest.TestCase):
             ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),
         ])
         self.assertEqual(results, [])
+
+
+class TestSurfaceCoverageArtifact(unittest.TestCase):
+    def test_coverage_web_json_written_from_request_history(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from packages.web.models import WebFinding
+        from packages.web.scanner import WebScanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("packages.web.scanner.WebClient"), patch(
+                "packages.web.scanner.WebCrawler"
+            ):
+                scanner = WebScanner("https://t.example", None, Path(tmpdir))
+            scanner.client.request_history = [
+                {"method": "GET", "url": "https://t.example/a?x=1",
+                 "status_code": 200},
+                {"method": "GET", "url": "https://t.example/a?x=2",
+                 "status_code": 200},
+                {"method": "POST", "url": "https://t.example/login",
+                 "status_code": 302},
+                {"method": "GET", "url": "https://t.example/missing",
+                 "status_code": 404},
+            ]
+            finding = WebFinding(
+                id="WEB-0001", title="t", severity="high",
+                confidence="high", status="confirmed",
+                url="https://t.example/a", evidence="e", description="d",
+                recommendation="r", vuln_type="sqli",
+                asvs_category="V5", check_id="V5.2.1",
+            )
+
+            scanner._write_surface_coverage([finding])
+
+            record = json.loads(
+                (Path(tmpdir) / "coverage-web.json").read_text(),
+            )
+            self.assertEqual(record["requests_in_window"], 4)
+            self.assertEqual(record["distinct_paths_probed"], 3)
+            self.assertEqual(record["by_method"], {"GET": 3, "POST": 1})
+            self.assertEqual(
+                record["by_status_class"],
+                {"2xx": 2, "3xx": 1, "4xx": 1},
+            )
+            self.assertEqual(record["finding_paths"], ["/a"])
+            self.assertIn("no knowable", record["note"])

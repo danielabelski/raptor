@@ -2204,9 +2204,61 @@ class WebScanner:
     # Report
     # ------------------------------------------------------------------
 
+    def _write_surface_coverage(self, findings) -> None:
+        """coverage-web.json: what surface this run actually touched.
+
+        DAST has no knowable denominator, so this is honest observed
+        coverage, not a percentage: distinct paths probed, request
+        volume by method and status class, and which paths produced
+        findings. The request history is a bounded ring buffer — the
+        record says so, and long runs report the window, never a
+        fabricated total.
+        """
+        from urllib.parse import urlparse as _parse
+
+        history = list(getattr(self.client, "request_history", []) or [])
+        paths: dict[str, int] = {}
+        by_method: dict[str, int] = {}
+        by_status_class: dict[str, int] = {}
+        for entry in history:
+            path = _parse(str(entry.get("url") or "")).path or "/"
+            paths[path] = paths.get(path, 0) + 1
+            method = str(entry.get("method") or "GET").upper()
+            by_method[method] = by_method.get(method, 0) + 1
+            status = entry.get("status_code")
+            if isinstance(status, int):
+                klass = f"{status // 100}xx"
+                by_status_class[klass] = by_status_class.get(klass, 0) + 1
+        finding_paths = sorted({
+            _parse(str(f.url or "")).path or "/" for f in findings
+        })
+        save_json(self.out_dir / "coverage-web.json", {
+            "note": (
+                "Observed surface only — DAST has no knowable "
+                "denominator. Request counts reflect the client's "
+                "bounded history window."
+            ),
+            "requests_in_window": len(history),
+            "distinct_paths_probed": len(paths),
+            "paths": [
+                {"path": path, "requests": count}
+                for path, count in sorted(
+                    paths.items(), key=lambda kv: -kv[1],
+                )[:200]
+            ],
+            "by_method": by_method,
+            "by_status_class": by_status_class,
+            "finding_paths": finding_paths,
+            "phases_completed": list(self._phases_completed),
+        })
+
     def _phase_report(self, findings, discovery, crawl_data) -> dict[str, Any]:
         logger.info("Phase 7: Report")
         self._sage_store_observations(findings, discovery)
+        try:
+            self._write_surface_coverage(findings)
+        except Exception:
+            logger.debug("surface coverage write failed", exc_info=True)
         findings_dicts = [f.to_dict() for f in findings]
         save_json(self.out_dir / "web_findings.json", {"findings": findings_dicts})
         # Core-schema findings.json: this is what /project findings, diff,

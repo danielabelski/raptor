@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+from core.inventory.fixture_detection import is_fixture_path
 from core.json import save_json
 
 from .evidence_grade import (
@@ -120,9 +121,53 @@ def _validate_history_receipt(
     return ""
 
 
+# Test-tree directory conventions the fixture path patterns don't
+# cover: OpenSSH-style ``regress/`` trees. Directory segments only —
+# a file named ``regress.c`` is production code.
+_TEST_TREE_SEGMENTS = frozenset({"regress", "regression", "regressions"})
+
+
+def classify_file_class(
+    file_path: str,
+    vendor_verdicts: dict[str, Any] | None = None,
+) -> str:
+    """File-class context for an exported finding.
+
+    Returns ``"vendored"`` / ``"generated"`` from the prep-time
+    vendored/generated detector verdicts (threaded in, not re-detected
+    per finding), ``"test"`` for test-tree / fixture paths, or ``""``
+    for first-party code (the field is then omitted from the export).
+    """
+    if not file_path:
+        return ""
+    if vendor_verdicts:
+        verdict = vendor_verdicts.get(file_path)
+        if verdict is not None:
+            kind = getattr(verdict, "kind", "")
+            if not kind and isinstance(verdict, dict):
+                kind = verdict.get("kind", "")
+            if kind:
+                return str(kind)
+    if _is_test_tree_path(file_path):
+        return "test"
+    return ""
+
+
+def _is_test_tree_path(file_path: str) -> bool:
+    """Test-tree membership: the shared fixture-path conventions
+    (``core.inventory.fixture_detection``) plus regress-tree directory
+    segments."""
+    if is_fixture_path(file_path)[0]:
+        return True
+    parts = PurePosixPath(file_path.replace("\\", "/")).parts
+    return any(p.lower() in _TEST_TREE_SEGMENTS for p in parts[:-1])
+
+
 def build_graded_finding(
     outcome: Any,
     evidence_record: Any | None = None,
+    *,
+    file_class: str = "",
 ) -> dict[str, Any]:
     """Build a finding dict with graded evidence chain.
 
@@ -260,6 +305,12 @@ def build_graded_finding(
         # Tool-blind bucket: no mechanical channel can decide this
         # class — exactly the findings /validate exists to judge.
         finding["needs_validation"] = True
+    if file_class:
+        # File-class context: a finding in vendored / generated / test
+        # code is not an unqualified first-party finding — a fuzz-
+        # harness overflow must not export indistinguishable from a
+        # production one. Absent for first-party code.
+        finding["file_class"] = file_class
 
     # Hypothesis multiplicity: the review's full hypotheses array.
     # A multi-bug function used to export as one finding with one
@@ -375,10 +426,15 @@ def export_findings(
     *,
     out_dir: Path | None = None,
     run_id: str = "",
+    vendor_verdicts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Export all findings with evidence chains and attack chains.
 
     Returns a structured dict suitable for writing to findings-graded.json.
+
+    ``vendor_verdicts`` is the orchestrator's prep-time per-file
+    vendored/generated map (``core.audit.vendored_detector``) — threaded
+    in so each finding exports its ``file_class`` without re-detecting.
 
     When ``out_dir`` is given, the promotion-without-tool-evidence
     alarm sweeps the FINAL outcome statuses here (post-loop promotions
@@ -408,9 +464,13 @@ def export_findings(
         if status not in ("finding", "suspicious", "dark"):
             continue
 
-        key = f"{getattr(outcome, 'file', '')}:{getattr(outcome, 'function', '')}"
+        file_path = getattr(outcome, "file", "")
+        key = f"{file_path}:{getattr(outcome, 'function', '')}"
         ev_record = evidence_index.get(key) if evidence_index else None
-        finding = build_graded_finding(outcome, ev_record)
+        finding = build_graded_finding(
+            outcome, ev_record,
+            file_class=classify_file_class(file_path, vendor_verdicts),
+        )
         findings.append(finding)
 
     result: dict[str, Any] = {

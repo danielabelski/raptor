@@ -4904,6 +4904,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         "taint_path_keys": taint_path_keys,
         "triage_results": triage_results,
         "vendored_triage_counts": vendored_triage_counts,
+        "vendor_verdicts": vendor_verdicts,
         "conventions": conventions,
         "sibling_ns_findings": sibling_ns_findings,
         "peer_groups": peer_groups,
@@ -8103,6 +8104,9 @@ def _run_audit_body(
             evidence_index=evidence_index,
             attack_chains=chains,
             out_dir=config.out_dir,
+            # Prep-time vendored/generated per-file verdicts → each
+            # finding's file_class (threaded, not re-detected).
+            vendor_verdicts=_prep.get("vendor_verdicts") or None,
         )
         try:
             _attach_bypass_evidence(graded, post_loop_findings)

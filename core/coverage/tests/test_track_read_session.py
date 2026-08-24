@@ -84,6 +84,16 @@ class PythonTwinSessionTest(_LedgerCase):
         self.assertEqual(run_dir, str(run))
         self.assertEqual(target, "")
 
+    def test_deleted_leaf_keeps_the_filter_like_bash(self):
+        # bash realpath resolves a missing LEAF fine (fails only on a
+        # missing parent) and keeps the filter — parity means the twin
+        # keeps it too.
+        tree = self.home / "goneleaf"   # parent exists, leaf doesn't
+        run = self._mk_run("scan_leaf", target=str(tree))
+        self._ledger((100, run))
+        _run_dir, target = self._resolve()
+        self.assertEqual(target, str(tree))
+
     def test_far_future_epoch_record_skipped(self):
         ok = self._mk_run("scan_now")
         skew = self._mk_run("scan_skew")

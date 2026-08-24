@@ -264,7 +264,7 @@ def _rank_candidates(
     disk_hash_cache: dict[str, str | None] = {}
     scored: list[tuple[int, int, Path, set[str]]] = []
     for d in candidates:
-        u_checklist = load_json(d / "checklist.json")
+        u_checklist = load_json(d / "checklist.json", max_bytes=64 * 1024 * 1024)
         if not u_checklist:
             # No checklist — treat as fully stale (can't verify any file)
             scored.append((1, _safe_mtime_ns(d), d, set()))
@@ -445,7 +445,7 @@ def _search_understand_dirs(
 
         if target_resolved:
             from core.json import load_json
-            checklist = load_json(d / "checklist.json")
+            checklist = load_json(d / "checklist.json", max_bytes=64 * 1024 * 1024)
             if not checklist:
                 continue
             d_target = str(checklist.get("target_path", "") or "")
@@ -514,7 +514,7 @@ def load_understand_context(
     #     would survive a stale-files set containing the canonical
     #     `foo.py` and leak through. The validate dir's checklist is the
     #     ground truth for normalisation. ---
-    _raw_cl = load_json(validate_dir / "checklist.json")
+    _raw_cl = load_json(validate_dir / "checklist.json", max_bytes=64 * 1024 * 1024)
     validate_checklist = _raw_cl if isinstance(_raw_cl, dict) else {}
     normalize_context_map(context_map, validate_checklist,
                           target_path=validate_checklist.get("target_path"))
@@ -1388,7 +1388,7 @@ def _load_context_map(understand_dir: Path) -> dict[str, Any] | None:
     if not context_map_path.exists():
         return None
 
-    data = load_json(context_map_path)
+    data = load_json(context_map_path, max_bytes=64 * 1024 * 1024)
     if not isinstance(data, dict):
         logger.warning("understand_bridge: context-map.json is not a JSON object")
         return None

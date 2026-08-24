@@ -5,6 +5,7 @@ Built from the reads manifest (populated by the PostToolUse hook),
 Semgrep JSON output, CodeQL SARIF, and findings.json.
 """
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,20 @@ def _read_manifest_lines(manifest_path: Path) -> set[str]:
     """
     files: set[str] = set()
     if not manifest_path.exists():
+        return files
+    try:
+        import stat as _stat_mod
+        st = os.lstat(manifest_path)
+        if not _stat_mod.S_ISREG(st.st_mode):
+            # A FIFO here blocks the open/read forever and a symlink
+            # reads a foreign file into the coverage record — the
+            # manifest is inside the sandbox write grant.
+            import logging
+            logging.getLogger(__name__).warning(
+                "reads-manifest at %s is not a regular file — ignored",
+                manifest_path)
+            return files
+    except OSError:
         return files
     try:
         try:

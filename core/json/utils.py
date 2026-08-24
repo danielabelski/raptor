@@ -151,6 +151,24 @@ def load_json(
     p = Path(path)
     if not p.exists():
         return None
+    # Regular files only: a FIFO stats as 0 bytes (passing any
+    # max_bytes) and then BLOCKS the reader forever — a plantable
+    # hang for every consumer of files in another principal's
+    # write grant. Symlink-to-regular still resolves (stat follows);
+    # symlink-to-FIFO is refused with the FIFO.
+    try:
+        import stat as _stat_mod
+        if not _stat_mod.S_ISREG(p.stat().st_mode):
+            msg = f"not a regular file: {p}"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("load_json: refusing %s", msg)
+            return None
+    except OSError as e:
+        if strict:
+            raise
+        logger.warning("load_json: failed to stat %s: %s", p, e)
+        return None
     if max_bytes is not None:
         try:
             size = p.stat().st_size

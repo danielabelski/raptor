@@ -285,7 +285,13 @@ class TestMergeIntoIndex:
         count = merge_into_index(project, run)
         assert count == 0
 
-    def test_corrupt_index_recovers(self, tmp_path: Path) -> None:
+    def test_corrupt_index_freezes_merges(self, tmp_path: Path) -> None:
+        # Writers REFUSE an unreadable index instead of rewriting a
+        # fresh one over it: 'starting fresh' at write time destroyed
+        # every accumulated verdict (an attacker could trigger it by
+        # inflating the index past its read budget). The index is a
+        # rebuildable projection — the operator deletes it
+        # deliberately, then project_run_projections restores it.
         project = tmp_path / "project"
         project.mkdir()
         (project / INDEX_FILENAME).write_text("NOT JSON", encoding="utf-8")
@@ -295,9 +301,15 @@ class TestMergeIntoIndex:
         append_entry(run, _entry())
 
         count = merge_into_index(project, run)
-        assert count == 1
-        idx = load_index(project)
-        assert "src/auth.c:check_pw" in idx
+        assert count == 0
+        assert (project / INDEX_FILENAME).read_text(
+            encoding="utf-8") == "NOT JSON"
+        # Readers degrade to empty (no crash), writers refuse.
+        assert load_index(project) == {}
+        # Operator remedy: remove the projection and re-merge.
+        (project / INDEX_FILENAME).unlink()
+        assert merge_into_index(project, run) == 1
+        assert "src/auth.c:check_pw" in load_index(project)
 
 
 class TestLoadIndex:

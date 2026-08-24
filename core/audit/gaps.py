@@ -1896,6 +1896,17 @@ def _fold_project_index(
         except Exception:
             logger.debug("strategy backfill build failed", exc_info=True)
 
+    known_run_ids: set[str] | None = None
+    try:
+        # The project's recorded runs corroborate unstamped rows: run
+        # dirs under the project, plus session-ledger records pinned
+        # to it (external --out runs).
+        known_run_ids = {
+            d.name for d in Path(project_dir).iterdir() if d.is_dir()
+        }
+    except Exception:  # noqa: BLE001 — corroboration unavailable
+        known_run_ids = None
+
     _verify_entries_fold(
         covered,
         list(latest_function_grade_collapse(full_entries).values()),
@@ -1910,6 +1921,7 @@ def _fold_project_index(
         source_label="prior-run",
         reuse_stats=reuse_stats,
         strategy_backfill=strategy_backfill,
+        known_run_ids=known_run_ids,
     )
 
 
@@ -1928,6 +1940,7 @@ def _verify_entries_fold(
     domain_ctx: dict | None = None,
     reuse_stats: dict | None = None,
     strategy_backfill=None,
+    known_run_ids: set[str] | None = None,
 ) -> None:
     """Hash-verify journal *entries* and fold them into ``covered``.
 
@@ -2153,9 +2166,23 @@ def _verify_entries_fold(
                 )
                 continue
             if not verified_row:
-                # Unstamped row, hash checks out: keep the historical
-                # suppression (legacy tolerance) but never import an
-                # unauthenticated verdict as a $0 reuse.
+                # Unstamped row, hash checks out: the historical
+                # suppression (legacy tolerance) — but the source hash
+                # is NOT evidence against a same-repo attacker (they
+                # compute it trivially), so the row's run_id must also
+                # name a run the project actually recorded. No known
+                # set = no corroboration possible = keep legacy
+                # behaviour (same-run folds, standalone dirs).
+                if (known_run_ids is not None
+                        and getattr(entry, "run_id", None)
+                        not in known_run_ids):
+                    stale += 1
+                    logger.debug(
+                        "journal-fold: unstamped %s row from unknown "
+                        "run %r — resurfacing as gap",
+                        key, getattr(entry, "run_id", None),
+                    )
+                    continue
                 unstamped_credited += 1
                 _credit(key, matched_span[0])
                 continue

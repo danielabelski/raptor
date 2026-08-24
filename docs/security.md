@@ -274,3 +274,20 @@ There is no dedicated viewer; inspect with standard JSONL tooling:
 ```bash
 jq -c 'select(.message | startswith("SECURITY:"))' out/logs/raptor_*.jsonl
 ```
+
+
+## Same-target sibling trust
+
+Sibling-run imports (`/understand` maps, discovered sinks, SCA
+findings, attack chains) are gated on the RECORDED TARGET matching —
+a hygiene gate, not an authentication boundary. Two runs against the
+same repository trust each other's artifacts by design: a hostile run
+on your target can steer a later run's prioritisation (sink
+priorities, checklist ordering, exploit goals) through the same
+import channels a legitimate sibling uses. Verdict-grade state is
+held to a higher bar (MAC-stamped journal rows for $0 reuse;
+run-id-corroborated rows for suppression credit; pin + ledger-witness
+gates on every project-store write), and imported free text is
+defanged and stamped untrusted — but sibling STEERING within one
+target is an accepted posture. Do not run analyses you do not trust
+into an output root or project that later analyses will read from.

@@ -115,11 +115,14 @@ def _find_session_run(session_pid):
         target = meta.get("target_path")
         if not isinstance(target, str):
             target = ""  # typed corruption: attribute without a filter
-        elif target and not os.path.exists(target):
-            # Unresolvable target tree: the bash twin's realpath fails
-            # and clears the FILTER (attribute unfiltered) — a
-            # non-strict realpath here kept the filter and silently
-            # dropped every read instead.
+        elif target and not os.path.isdir(
+                os.path.dirname(os.path.realpath(target)) or "/"):
+            # Parity with the bash twin's realpath semantics: it
+            # FAILS (filter cleared, attribute unfiltered) only when
+            # a PARENT component is missing; a missing leaf resolves
+            # fine there and keeps the filter. Matching exactly —
+            # divergence either way silently changes what a session's
+            # reads attribute to.
             target = ""
         return str(d), target
     return None, None

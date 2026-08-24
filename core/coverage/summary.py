@@ -93,7 +93,12 @@ def format_execution_detail(detail: dict[str, Any]) -> str:
         if info.get("rules_applied"):
             bits.append(f"{len(info['rules_applied'])} rule-group(s)")
         if info.get("packs"):
-            bits.append(f"packs: {', '.join(info['packs'])}")
+            from core.security.log_sanitisation import (
+                sanitise_for_terminal,
+            )
+            bits.append("packs: " + ", ".join(
+                sanitise_for_terminal(str(p), max_len=80)
+                for p in info["packs"]))
         if info.get("files_failed"):
             # ``files_failed`` is per-file PARSE errors (semgrep
             # couldn't tokenise N source files), not failed PACKS
@@ -103,8 +108,12 @@ def format_execution_detail(detail: dict[str, Any]) -> str:
                 f"{len(info['files_failed'])} file parse error"
                 f"{'s' if len(info['files_failed']) != 1 else ''}"
             )
-        ver = f" {info['version']}" if info.get("version") else ""
-        lines.append(f"    {tool}{ver}: {', '.join(bits)}")
+        from core.security.log_sanitisation import sanitise_for_terminal
+        ver = (f" {sanitise_for_terminal(str(info['version']), max_len=40)}"
+               if info.get("version") else "")
+        lines.append(
+            f"    {sanitise_for_terminal(str(tool), max_len=40)}{ver}: "
+            f"{', '.join(bits)}")
     missing = detail.get("missing_groups") or []
     if missing:
         lines.append(

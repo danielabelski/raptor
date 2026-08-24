@@ -316,10 +316,21 @@ def file_breakdown(store: CoverageStore, checklist: dict[str, Any]) -> list[dict
                        r["path"]))
 
 
+def _defang(value) -> str:
+    """Terminal-defang a journal/inventory-derived string (file and
+    function names originate in hostile repos and forged journals)."""
+    from core.security.log_sanitisation import sanitise_for_terminal
+    return sanitise_for_terminal(str(value), max_len=200)
+
+
 def format_file_breakdown(rows: list[dict[str, Any]], max_files: int = 40) -> str:
     """Render :func:`file_breakdown` as a per-file table ('' if empty)."""
     if not rows:
         return ""
+    from core.security.log_sanitisation import sanitise_for_terminal
+    rows = [{**r, "path": sanitise_for_terminal(str(r["path"]),
+                                                max_len=200)}
+            for r in rows]
     name_w = min(max(len(r["path"]) for r in rows), 60)
     lines = [
         "  Per-file (worst LLM-review first):",
@@ -556,12 +567,16 @@ def format_store_view(view: dict[str, Any], max_gap: int = 15) -> str:
         shown = ftl[:max_gap]
         lines.append(f"  Found-then-lost — detail discarded, re-examine "
                      f"(first {len(shown)} of {len(ftl)}):")
-        lines.extend(f"    {g['file']}:{g['function']} @ {g['line']}" for g in shown)
+        lines.extend(
+            f"    {_defang(g['file'])}:{_defang(g['function'])} "
+            f"@ {g['line']}" for g in shown)
 
     gap = view["llm_gap_functions"]
     if gap:
         shown = gap[:max_gap]
         lines.append(f"  LLM-review gap (first {len(shown)} of {len(gap)}):")
-        lines.extend(f"    {g['file']}:{g['function']} @ {g['line']}" for g in shown)
+        lines.extend(
+            f"    {_defang(g['file'])}:{_defang(g['function'])} "
+            f"@ {g['line']}" for g in shown)
 
     return "\n".join(lines)

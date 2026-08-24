@@ -458,7 +458,9 @@ def load_entries(out_dir: Path) -> list[ReviewJournalEntry]:
     Interior corrupt lines are also skipped with warnings.
     """
     journal_path = out_dir / JOURNAL_FILENAME
-    if not journal_path.is_file():
+    if journal_path.is_symlink() or not journal_path.is_file():
+        # A planted symlink reads a FOREIGN journal (another
+        # project's, or any file) into this run's merge.
         return []
 
     # Size gate before the read buffers the whole journal.
@@ -523,6 +525,24 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
             f"this reader supports {SCHEMA_VERSION} only"
         )
         raise ValueError(msg)
+    # Line spans are vetted at parse: journal files live inside run
+    # dirs (sandbox write grants), and a forged multi-million-line
+    # span detonates in the coverage store's interval-to-set
+    # conversion (hundreds of MB per row) at every snapshot/render.
+    _MAX_LINE = 2_000_000
+    _ls = raw.get("line_start", 0)
+    _le = raw.get("line_end")
+    if not isinstance(_ls, int) or isinstance(_ls, bool) \
+            or not (0 <= _ls <= _MAX_LINE):
+        _ls = 0
+    if _le is not None and (not isinstance(_le, int)
+                            or isinstance(_le, bool)
+                            or not (0 <= _le <= _MAX_LINE)):
+        _le = None
+    if _le is not None and _ls and _le < _ls:
+        _le = None
+    if _le is not None and _ls and (_le - _ls) > 50_000:
+        _le = _ls + 50_000  # no real function is 50k lines
     return ReviewJournalEntry(
         ts=raw["ts"],
         run_id=raw["run_id"],
@@ -531,8 +551,8 @@ def _entry_from_dict(raw: dict[str, Any]) -> ReviewJournalEntry:
         function_qualified=raw.get("function_qualified"),
         verdict=raw["verdict"],
         source_hash=raw.get("source_hash", ""),
-        line_start=raw.get("line_start", 0),
-        line_end=raw.get("line_end"),
+        line_start=_ls,
+        line_end=_le,
         cwe=raw.get("cwe"),
         confidence=raw.get("confidence"),
         strategy_id=raw.get("strategy_id"),
@@ -741,11 +761,27 @@ def merge_into_index(project_dir: Path, run_dir: Path) -> int:
     run_entries = load_entries(run_dir)
     if not run_entries:
         return 0
+    # Per-run merge cap: journals live inside sandbox write grants,
+    # and per-journal size caps alone let a hostile run push the
+    # INDEX past its own read budget across several subdir journals —
+    # after which (pre-guard) the next load read it as empty and the
+    # next merge destroyed all accumulated history.
+    _MAX_MERGE_ENTRIES = 20_000
+    if len(run_entries) > _MAX_MERGE_ENTRIES:
+        logger.warning(
+            "journal: run %s carries %d entries — merging only the "
+            "newest %d", run_dir, len(run_entries), _MAX_MERGE_ENTRIES)
+        run_entries = sorted(run_entries,
+                             key=lambda e: e.ts)[-_MAX_MERGE_ENTRIES:]
 
     index_path = project_dir / INDEX_FILENAME
 
     with _flock(index_path):
-        index = _load_index(index_path)
+        try:
+            index = _load_index(index_path, for_write=True)
+        except IndexUnreadable as e:
+            logger.error("journal: %s — run %s NOT merged", e, run_dir)
+            return 0
         merged = 0
 
         # Lazy legacy-key migration: re-home any row whose on-disk key
@@ -806,7 +842,11 @@ def merge_run_into_index(project_dir: Path, run_dir: Path) -> int:
     run_dir = Path(run_dir)
     merged = merge_into_index(project_dir, run_dir)
     try:
-        subdirs = sorted(d for d in run_dir.iterdir() if d.is_dir())
+        # No symlinked dirs: the walk otherwise followed a planted
+        # link OUT of the run dir and merged a foreign journal into
+        # this project's index. Subdir count capped (merge-time DoS).
+        subdirs = sorted(d for d in run_dir.iterdir()
+                         if d.is_dir() and not d.is_symlink())[:64]
     except OSError:
         return merged
     for sub in subdirs:
@@ -855,19 +895,39 @@ def load_index_full(project_dir: Path) -> dict[str, ReviewJournalEntry]:
     return result
 
 
-def _load_index(path: Path) -> dict[str, dict[str, Any]]:
+class IndexUnreadable(RuntimeError):
+    """The index exists but cannot be read (oversize/corrupt) — a
+    WRITER must fail loudly rather than rewrite a fresh index over
+    it: 'starting fresh' at write time silently destroyed every
+    accumulated verdict (including MAC-stamped finding rows) when an
+    attacker inflated the index past its cap via per-run merges."""
+
+
+def _load_index(path: Path, for_write: bool = False
+                ) -> dict[str, dict[str, Any]]:
     """Load raw index dict from disk (bounded — st_size gate before
-    read; an oversize index degrades to the corrupt-index path)."""
+    read). Readers degrade to empty; writers (``for_write=True``)
+    raise :class:`IndexUnreadable` when a file EXISTS but cannot be
+    read, so a merge never replaces unknown history."""
     from core.json.utils import load_json
 
     if not path.is_file():
         return {}
     try:
         data = load_json(path, strict=True, max_bytes=_MAX_JOURNAL_BYTES)
-    except (OSError, ValueError):
-        logger.warning("journal: corrupt index at %s, starting fresh", path)
+    except (OSError, ValueError) as e:
+        if for_write:
+            raise IndexUnreadable(
+                f"journal index at {path} is unreadable ({e}) — "
+                "refusing to overwrite it") from e
+        logger.warning("journal: unreadable index at %s — read as "
+                       "empty (writers refuse)", path)
         return {}
     if not isinstance(data, dict):
+        if for_write:
+            raise IndexUnreadable(
+                f"journal index at {path} is not an object — "
+                "refusing to overwrite it")
         return {}
     return data.get("entries", {})
 

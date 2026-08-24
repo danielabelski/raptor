@@ -57,13 +57,31 @@ __all__ = ["keepalive_register", "keepalive_unregister", "scratch_dir"]
 #: Keepalive refresh period. Must sit well below the reaper's age
 #: floor (default 24 h; operators can shrink it via
 #: ``RAPTOR_TMP_REAP_MAX_AGE_H`` — 15 min keeps floors down to ~30 min
-#: safe).
+#: safe, and ``tmp_reaper._max_age_seconds`` derives its floor clamp
+#: from this constant, so raising the interval raises the clamp).
 _KEEPALIVE_INTERVAL_S: float = 900.0
 
 _keepalive_lock = threading.Lock()
 #: Live system-tmp scratch paths (str) whose mtime the tick refreshes.
 _keepalive_paths: set[str] = set()
 _keepalive_thread: threading.Thread | None = None
+
+
+def _reinit_after_fork_in_child() -> None:
+    # A fork taken while another thread holds the lock leaves the
+    # child's copy held forever (its owner does not exist there), so
+    # the child's first register would deadlock. Fresh lock, and the
+    # inherited registrations are cleared: they are the PARENT's
+    # scratch, and a child that kept refreshing them would mask the
+    # parent's death from the reaper.
+    global _keepalive_lock, _keepalive_thread
+    _keepalive_lock = threading.Lock()
+    _keepalive_paths.clear()
+    _keepalive_thread = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reinit_after_fork_in_child)
 
 
 def _keepalive_tick() -> None:
@@ -121,21 +139,38 @@ def keepalive_register(path: str | Path) -> None:
     for long-lived dirs (presence past the floor then always means the
     owning process is gone, because a live owner keeps refreshing).
 
-    Lazily starts the daemon ticker. The liveness re-check covers
-    ``fork()`` children: they inherit the parent's thread OBJECT but
-    not the running thread, so the first registration in a forked
-    child restarts its own ticker.
+    Lazily starts the daemon ticker. Fork children get a fresh lock
+    and an empty registration set from the at-fork hook above, so
+    their first registration starts a child-local ticker; the
+    ``is_alive()`` re-check remains for platforms without
+    ``os.register_at_fork`` and for a ticker that died to an
+    exception.
     """
     global _keepalive_thread
     with _keepalive_lock:
         _keepalive_paths.add(str(path))
         if _keepalive_thread is None or not _keepalive_thread.is_alive():
-            _keepalive_thread = threading.Thread(
+            thread = threading.Thread(
                 target=_keepalive_loop,
                 name="raptor-scratch-keepalive",
                 daemon=True,
             )
-            _keepalive_thread.start()
+            try:
+                thread.start()
+            except Exception:
+                # Thread limits (uid-wide RLIMIT_NPROC exhaustion). A
+                # path left registered with no ticker would be pinned
+                # by a LATER register's ticker while its owner may be
+                # long dead; unprotected-but-reapable is the safe
+                # direction, and the owner's own cleanup still runs.
+                _keepalive_paths.discard(str(path))
+                logger.warning(
+                    "scratch keepalive unavailable (thread start "
+                    "failed); %s is unprotected against the stale-tmp "
+                    "sweep past the age floor", path,
+                )
+                return
+            _keepalive_thread = thread
 
 
 def keepalive_unregister(path: str | Path) -> None:

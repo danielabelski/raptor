@@ -85,6 +85,7 @@ class TestTimeoutKillsTargetTree(unittest.TestCase):
         the sandbox teardown, not keep mutating output afterwards."""
         from core.sandbox._spawn import run_sandboxed
         out = tempfile.mkdtemp(prefix="raptor-pdsig-")
+        self.addCleanup(shutil.rmtree, out, True)
         beat = os.path.join(out, "beat")
         prog = textwrap.dedent(f"""
             import os, time
@@ -152,6 +153,7 @@ class TestHighFdSweep(unittest.TestCase):
                             else None)
             from core.sandbox._spawn import run_sandboxed
             out = tempfile.mkdtemp(prefix="raptor-hifd-")
+            self.addCleanup(shutil.rmtree, out, True)
             prog = textwrap.dedent(f"""
                 import os
                 try:

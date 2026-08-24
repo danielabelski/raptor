@@ -48,6 +48,17 @@ class TestDirReaping:
             _make_old_dir(tmp_root, "trust-synth-work-abc123"),
             _make_old_dir(tmp_root, "raptor-iris-codeql-abc123"),
             _make_old_dir(tmp_root, "raptor_recon_abc123"),
+            _make_old_dir(tmp_root, ".raptor-lane-abc123"),
+            _make_old_dir(tmp_root, ".raptor-sbx-abc123"),
+            _make_old_dir(tmp_root, ".raptor-scratch-abc123"),
+            _make_old_dir(tmp_root, "semmleTempDir123456"),
+            _make_old_dir(tmp_root, "codeql-packaging123456"),
+            _make_old_dir(tmp_root, "scala-repl-pp1234567890"),
+            _make_old_dir(tmp_root, "raptor-pdsig-abc123"),
+            _make_old_dir(tmp_root, "raptor-hifd-abc123"),
+            _make_old_dir(tmp_root, "raptor-persona-abc123"),
+            _make_old_dir(tmp_root, ".scr-a1b2c3_d"),
+            _make_old_dir(tmp_root, ".fp-zyx98_w0"),
         ]
         reaped = reap_stale_tmp()
         assert sorted(reaped) == sorted(dirs)
@@ -79,6 +90,38 @@ class TestDirReaping:
         d.mkdir()
         assert reap_stale_tmp() == []
         assert d.is_dir()
+
+    def test_anchored_prefixes_require_tool_random_suffix(self, tmp_root):
+        """Bare-word third-party names must not claim operator files."""
+        kept = [
+            _make_old_dir(tmp_root, "scala-repl-pp"),       # src checkout
+            _make_old_dir(tmp_root, "scala-repl-pp2"),      # operator copy
+            _make_old_dir(tmp_root, "semmleTempDir.bak"),
+            _make_old_dir(tmp_root, "codeql-packaging-notes"),
+        ]
+        stray = _make_old_dir(tmp_root, "scala-repl-pp98765")
+        reaped = reap_stale_tmp()
+        assert reaped == [stray]
+        for d in kept:
+            assert d.is_dir()
+
+    def test_neutral_prefixes_require_exact_mkdtemp_suffix(self, tmp_root):
+        """.scr-/.fp- are too short to claim on prefix alone."""
+        kept = [
+            _make_old_dir(tmp_root, ".scr-notes"),        # 5 chars
+            _make_old_dir(tmp_root, ".scr-myoldbackup"),  # 11 chars
+            _make_old_dir(tmp_root, ".scr-ABC123_x"),     # uppercase
+            _make_old_dir(tmp_root, ".fp-x"),
+            _make_old_dir(tmp_root, ".fp-12345678a"),     # 9 chars
+        ]
+        strays = [
+            _make_old_dir(tmp_root, ".scr-8charsfx"),
+            _make_old_dir(tmp_root, ".fp-_0a1b2c3"),
+        ]
+        reaped = reap_stale_tmp()
+        assert sorted(reaped) == sorted(strays)
+        for d in kept:
+            assert d.is_dir()
 
     def test_foreign_prefix_kept(self, tmp_root):
         d = _make_old_dir(tmp_root, "someone-elses-dir")
@@ -154,7 +197,9 @@ class TestFileReaping:
                      "raptor-audit-cfg-ab12cd34.json",
                      "raptor-cocci-ab12cd34.cocci",
                      "cocci-output-3-abc123-file.c",
-                     "cocci_small_output-3-abc123-file.c"):
+                     "cocci_small_output-3-abc123-file.c",
+                     "x2cpg1234567890stdout",
+                     "x2cpg1234567890stderr"):
             f = tmp_root / name
             f.write_text("rules: []\n")
             os.utime(f, (_OLD, _OLD))
@@ -170,6 +215,13 @@ class TestFileReaping:
 
     def test_prefix_without_suffix_kept(self, tmp_root):
         f = tmp_root / "audit_sweep_notes.txt"
+        f.write_text("keep me")
+        os.utime(f, (_OLD, _OLD))
+        assert reap_stale_tmp() == []
+        assert f.is_file()
+
+    def test_anchored_file_pattern_requires_random_middle(self, tmp_root):
+        f = tmp_root / "x2cpg-mynotes-stdout"
         f.write_text("keep me")
         os.utime(f, (_OLD, _OLD))
         assert reap_stale_tmp() == []
@@ -192,6 +244,18 @@ class TestConfigAndSafety:
         assert reap_stale_tmp() == []
         monkeypatch.setenv("RAPTOR_TMP_REAP_MAX_AGE_H", "1")
         assert reap_stale_tmp() == [d]
+
+    def test_floor_below_keepalive_minimum_clamped(self, tmp_root,
+                                                   monkeypatch):
+        """An operator floor under two keepalive ticks could reap a
+        LIVE registered scratch between refreshes; it must clamp."""
+        d = tmp_root / "raptor-llm-raptor-cafe0007-young2"
+        d.mkdir()
+        aged = time.time() - 25 * 60  # older than the raw 0.1h floor
+        os.utime(d, (aged, aged))
+        monkeypatch.setenv("RAPTOR_TMP_REAP_MAX_AGE_H", "0.1")
+        assert reap_stale_tmp() == []
+        assert d.is_dir()
 
     def test_non_numeric_env_falls_back_to_default(self, tmp_root,
                                                    monkeypatch):

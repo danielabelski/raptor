@@ -134,6 +134,14 @@ def direct_nuclei(monkeypatch: pytest.MonkeyPatch):
             "PATH": os.environ.get("PATH", ""),
             "HOME": home,
             "NO_PROXY": "127.0.0.1,localhost",
+            # nuclei mints MkdirTemp scratch (runner tmp dir + leveldb
+            # datastore) under $TMPDIR and removes it only on clean
+            # exit; unset, that means one leaked dir pair in the host
+            # /tmp per invocation. The production path is immune (the
+            # sandbox gives a private /tmp or a swept TMPDIR scratch);
+            # this direct-subprocess route must sweep its own, so
+            # scratch rides the per-test home removed below.
+            "TMPDIR": home,
         }
         return subprocess.run(
             cmd,

@@ -42,7 +42,11 @@ to preserve it for re-inspection.
 Safety posture (world-writable /tmp on a shared box):
 
   - Only entries directly under :func:`tempfile.gettempdir` whose name
-    matches a known RAPTOR prefix are considered.
+    matches a known RAPTOR prefix, an anchored third-party tool name
+    that only RAPTOR's own tool runs strand here
+    (``_ANCHORED_DIR_PREFIXES``), or a neutral de-branded scratch name
+    anchored to its exact mkdtemp suffix
+    (``_MKDTEMP_ANCHORED_DIR_PREFIXES``) are considered.
   - ``lstat`` only — a symlink planted at a matching name is never
     followed, and anything not owned by the current euid is skipped.
   - Entries younger than the age floor are skipped, so a concurrent
@@ -52,7 +56,8 @@ Safety posture (world-writable /tmp on a shared box):
   - Removal is best-effort; errors never propagate to the caller.
 
 Set ``RAPTOR_TMP_REAP_MAX_AGE_H=0`` to disable the sweep, or to another
-number of hours to move the age floor (default 24).
+number of hours to move the age floor (default 24; floors below two
+scratch-keepalive ticks clamp to 30 min — see ``_max_age_seconds``).
 """
 
 from __future__ import annotations
@@ -172,7 +177,110 @@ _DIR_PREFIXES = (
     # stress.py, RAPTOR_SCA_STRESS_EPHEMERAL=1 mode; rmtree'd in its
     # finally).
     "raptor-sca-stress-",
+    # Egress-proxy lane socket dirs (core/sandbox/proxy.py
+    # make_lane_dir; caller-owned rmtree with atexit + SIGTERM hooks,
+    # so only SIGKILL strands one). A live lane's socket still answers
+    # and the in-use probe below keeps it out of the sweep. Lanes
+    # minted under make_lane_dir's short-path fallback bases
+    # (/run/user/<uid>, /tmp when the temp dir is deep) sit outside
+    # the gettempdir() root this sweep covers — kept, never
+    # mis-deleted.
+    ".raptor-lane-",
+    # Sandbox root stubs (core/sandbox/_spawn mkdtemp and the mount-ns
+    # pid-named fallback); removed post-exit by _cleanup_stub, leaked
+    # when the orchestrator itself is killed first. A child that
+    # legitimately outlives the age floor (a multi-day fuzz campaign)
+    # is NOT protected by the probes — a pivoted child's host-visible
+    # cwd is "/", not the stub — and its stub WILL be reaped. That is
+    # benign by construction, not by the floor: host-side the stub is
+    # an empty dentry (the mount tree lives in the child's namespace,
+    # which keeps its own references; rmtree lazy-detaches without
+    # disturbing the child), and _cleanup_stub tolerates the dir
+    # already being gone.
+    ".raptor-sbx-",
+    # Landlock-only restricted-posture private scratch
+    # (core/sandbox/context.py); rmtree'd at context teardown. A live
+    # context holds a keepalive registration (core.run.scratch) for
+    # exactly the reaper's sake: a sandboxed campaign can sit
+    # mtime-quiet past the floor while its TMPDIR still points here.
+    # Legacy branded name — fresh mints use the neutral .scr- prefix
+    # in _MKDTEMP_ANCHORED_DIR_PREFIXES below.
+    ".raptor-scratch-",
+    # Persona home tmpdirs (core/sandbox/context.py); rmtree'd at
+    # context teardown. Legacy branded name — fresh mints use the
+    # neutral .fp- prefix below.
+    "raptor-persona-",
+    # Test scratch from core/sandbox/tests/test_spawn_lifecycle_
+    # hardening.py (addCleanup'd there now, but strays from
+    # non-contained historical runs persist) — same test-only
+    # contract as raptor-coord-isolation- above.
+    "raptor-pdsig-",
+    "raptor-hifd-",
 )
+
+# Third-party scratch names carry no RAPTOR marker and end in a bare
+# word, so a plain prefix match would also claim an operator's own
+# same-named files (a scala-repl-pp source checkout, a
+# semmleTempDir.bak someone parked). These match only when the
+# remainder after the prefix is exactly the creating tool's random
+# decimal/hex suffix.
+_ANCHORED_DIR_PREFIXES = (
+    # CodeQL CLI's own scratch dirs, stranded when a codeql child is
+    # killed — same third-party contract as spatch's cocci-output-
+    # entries in _FILE_PATTERNS.
+    "semmleTempDir",
+    "codeql-packaging",
+    # Joern's script-wrapping scratch (a nested JVM ignores the
+    # launcher's java.io.tmpdir argv flag), stranded by every
+    # timeout-killed `joern --script` query — the dir sibling of the
+    # wrapped-script*.sc entry in _FILE_PATTERNS.
+    "scala-repl-pp",
+)
+
+# Neutral child-visible scratch names, de-branded so the target
+# cannot fingerprint the framework from its TMPDIR: the Landlock-only
+# private scratch (.scr-) and the persona home (.fp-), both minted by
+# core/sandbox/context.py, rmtree'd at context teardown, and
+# keepalive-registered while their context lives. Too short to claim
+# on prefix alone — an operator's ".scr-notes" must survive — so
+# these match only when the remainder is exactly a tempfile random
+# suffix.
+_MKDTEMP_ANCHORED_DIR_PREFIXES = (
+    ".scr-",
+    ".fp-",
+)
+
+# tempfile's random names draw eight characters from
+# lowercase+digits+underscore.
+_MKDTEMP_SUFFIX_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789_")
+_MKDTEMP_SUFFIX_LEN = 8
+
+
+def _mkdtemp_anchored_match(name: str, prefix: str) -> bool:
+    """True when *name* is *prefix* + one exact tempfile random suffix."""
+    rest = name[len(prefix):]
+    return (name.startswith(prefix)
+            and len(rest) == _MKDTEMP_SUFFIX_LEN
+            and all(c in _MKDTEMP_SUFFIX_CHARS for c in rest))
+
+
+_TOOL_RANDOM_CHARS = frozenset("0123456789abcdef")
+
+
+def _anchored_name_match(name: str, prefix: str, suffix: str = "") -> bool:
+    """True when *name* is *prefix* + tool-random hex/decimal + *suffix*.
+
+    The middle must be at least 4 characters: every creating tool
+    appends a long random number, and the floor keeps short
+    operator-made names (a "scala-repl-pp2" copy) out of reach.
+    """
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        return False
+    middle = (name[len(prefix):len(name) - len(suffix)] if suffix
+              else name[len(prefix):])
+    return (len(middle) >= 4
+            and all(c in _TOOL_RANDOM_CHARS for c in middle))
 
 # Prefixes registered at runtime by core.run.scratch.scratch_dir for
 # system-tmp scratch areas. Per-process: a registration made here is
@@ -205,6 +313,17 @@ _FILE_PATTERNS = (
     # tool invoking spatch without one). Empty suffix = prefix match.
     ("cocci-output-", ""),
     ("cocci_small_output-", ""),
+)
+
+# Same anchored contract as _ANCHORED_DIR_PREFIXES, for files:
+# joern-parse's frontend output-capture tempfiles (x2cpg<random>stdout
+# / stderr), stranded when the parse driver is killed mid-frontend.
+# RAPTOR's own parses now confine the driver's tmpdir to the build
+# output dir, so these catch strays predating that and non-RAPTOR
+# joern invocations.
+_ANCHORED_FILE_PATTERNS = (
+    ("x2cpg", "stdout"),
+    ("x2cpg", "stderr"),
 )
 
 _MAX_AGE_ENV = "RAPTOR_TMP_REAP_MAX_AGE_H"
@@ -243,7 +362,21 @@ def _max_age_seconds() -> float | None:
         hours = _DEFAULT_MAX_AGE_H
     if hours <= 0:
         return None
-    return hours * 3600.0
+    floor_s = hours * 3600.0
+    # A floor below two keepalive ticks could reap a LIVE registered
+    # scratch dir between refreshes (core.run.scratch keeps owned
+    # dirs at most one interval stale). Clamp loudly rather than
+    # honour a data-loss window.
+    from core.run.scratch import _KEEPALIVE_INTERVAL_S
+    min_floor = 2 * _KEEPALIVE_INTERVAL_S
+    if floor_s < min_floor:
+        logger.warning(
+            "%s=%g sets a %ds age floor below the scratch-keepalive "
+            "safety minimum; clamping to %ds",
+            _MAX_AGE_ENV, hours, int(floor_s), int(min_floor),
+        )
+        return min_floor
+    return floor_s
 
 
 def _live_cwds() -> set[str]:
@@ -277,7 +410,13 @@ def _socket_answers(sock_path: Path) -> bool:
 
 
 def _dir_in_use(path: Path, live_cwds: set[str]) -> bool:
-    """Liveness probes for a candidate dir: cwd references, live sockets."""
+    """Liveness probes for a candidate dir: cwd references, live sockets.
+
+    The socket scan covers TOP-LEVEL entries only. Every covered
+    prefix keeps its socket at the top of its dir (lane.sock,
+    llm.sock); a future prefix that nests its socket needs this
+    walk deepened or it will be reaped while live.
+    """
     p = str(path)
     if any(cwd == p or cwd.startswith(p + os.sep) for cwd in live_cwds):
         return True
@@ -321,11 +460,19 @@ def _reap(now: float | None) -> list[Path]:
     dir_candidates: list[Path] = []
     file_candidates: list[Path] = []
     for name in names:
-        if any(name.startswith(p) for p in _dir_prefixes()):
+        if any(name.startswith(p) for p in _dir_prefixes()) or any(
+            _anchored_name_match(name, p) for p in _ANCHORED_DIR_PREFIXES
+        ) or any(
+            _mkdtemp_anchored_match(name, p)
+            for p in _MKDTEMP_ANCHORED_DIR_PREFIXES
+        ):
             dir_candidates.append(tmp_root / name)
         elif any(
             name.startswith(pre) and name.endswith(suf)
             for pre, suf in _FILE_PATTERNS
+        ) or any(
+            _anchored_name_match(name, pre, suf)
+            for pre, suf in _ANCHORED_FILE_PATTERNS
         ):
             file_candidates.append(tmp_root / name)
     if not dir_candidates and not file_candidates:
@@ -355,6 +502,23 @@ def _reap(now: float | None) -> list[Path]:
         if live_cwds is None:
             live_cwds = _live_cwds()
         if _dir_in_use(path, live_cwds):
+            continue
+        # Same validation-to-delete identity pin as reap_stale_runs:
+        # a same-uid writer swapping a different entry (or a symlink —
+        # S_ISDIR on lstat is then false) into this name between the
+        # checks above and the rmtree is skipped this sweep.
+        try:
+            st2 = path.lstat()
+        except OSError:
+            continue
+        if (
+            (st2.st_dev, st2.st_ino) != (st.st_dev, st.st_ino)
+            or not stat.S_ISDIR(st2.st_mode)
+        ):
+            logger.debug(
+                "tmp reaper: %s changed identity between validation "
+                "and delete; skipping this sweep", path,
+            )
             continue
         shutil.rmtree(path, ignore_errors=True)
         if not path.exists():

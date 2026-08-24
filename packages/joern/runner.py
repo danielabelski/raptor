@@ -514,6 +514,15 @@ def build_cpg(
         "-J-XX:+IgnoreUnrecognizedVMOptions",
         "-J-XX:+UseCompactObjectHeaders",
     ])
+    # java.io.tmpdir defaults to a hardcoded /tmp on Linux (TMPDIR is
+    # ignored), and the driver's frontend-capture tempfiles (x2cpg
+    # stdout/stderr) are cleaned only on clean exit — a killed parse
+    # stranded them there. Confine JVM scratch to the build's own
+    # output dir instead: the caller owns it (the run-scratch shape
+    # is reaper-covered; a persistent cache dir keeps inert extras
+    # the loader never reads), and it is the sandbox's declared
+    # writable surface on the sandboxed path.
+    heap_flags.append(f"-J-Djava.io.tmpdir={output_dir}")
     cmd = [joern_parse, *heap_flags, "--output", str(cpg_path), str(target)]
 
     if languages:
@@ -780,7 +789,18 @@ def run_query(
     except OSError as e:
         return JoernResult(query=query, errors=[f"cannot write query script: {e}"])
 
-    cmd = [joern, "--script", str(wrapper_path)]
+    # Point the driver JVM's java.io.tmpdir at the CPG dir (already
+    # the sandbox's writable surface and the caller's to clean).
+    # This does NOT capture the script-wrapping scratch
+    # (scala-repl-pp*/ and wrapped-script*.sc land in /tmp from a
+    # nested JVM the argv flag never reaches; only an _JAVA_OPTIONS
+    # env override moves them, and the sandboxed runner owns its env)
+    # — those strays are reaped by core.run.tmp_reaper instead.
+    cmd = [
+        joern,
+        f"-J-Djava.io.tmpdir={cpg.path.parent}",
+        "--script", str(wrapper_path),
+    ]
 
     runner = subprocess_runner or _default_sandbox_runner()
 

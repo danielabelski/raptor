@@ -340,3 +340,33 @@ def test_persona_tmpdir_cleaned_up_on_exit(monkeypatch):
         assert not os.path.exists(d), (
             f"persona tmpdir leaked: {d} still exists after sandbox exit"
         )
+
+
+def test_persona_tmpdir_keepalive_spans_context_lifetime(tmp_path):
+    """The persona home is reaper-listed (.fp- anchored) and
+    mtime-quiet after build_persona writes it once; a long-lived
+    context making run() calls past the age floor still needs its
+    source files, so the context must keepalive-register the dir for
+    its lifetime and unregister at teardown."""
+    from unittest.mock import patch
+
+    from core.run import scratch as scratch_mod
+    from core.sandbox import sandbox
+
+    seen = {}
+    with (
+        patch("core.sandbox._spawn.mount_ns_available", return_value=True),
+        patch("core.sandbox.fingerprint.build_persona") as fake_build,
+    ):
+        with sandbox(target=str(tmp_path), output=str(tmp_path),
+                     sanitise_host_fingerprint=True):
+            (persona_dir,) = (
+                c.args[0] for c in fake_build.call_args_list
+            )
+            seen["dir"] = str(persona_dir)
+            with scratch_mod._keepalive_lock:
+                registered = set(scratch_mod._keepalive_paths)
+            assert seen["dir"] in registered
+    with scratch_mod._keepalive_lock:
+        registered = set(scratch_mod._keepalive_paths)
+    assert seen["dir"] not in registered

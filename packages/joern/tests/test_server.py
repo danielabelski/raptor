@@ -391,6 +391,44 @@ class TestJoernServerZGCFlags:
 
         self._safe_stop(srv)
 
+    def test_spawn_env_confines_jvm_tmpdir_to_workspace(self):
+        """JVM scratch must land in the disposable workspace, not /tmp."""
+        import os
+        from unittest.mock import MagicMock
+
+        captured_env = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env") or {})
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_proc.poll.return_value = None
+            mock_proc.stderr = MagicMock()
+            mock_proc.wait = MagicMock()
+            return mock_proc
+
+        srv = JoernServer()
+        with (
+            patch("packages.joern.prereqs._java_version", return_value=21),
+            patch("packages.joern.server._server_auth_supported",
+                  return_value=True),
+            patch("packages.joern.server._netns_isolation_available",
+                  return_value=False),
+            patch("packages.joern.server.os.killpg",
+                  side_effect=ProcessLookupError),
+            patch("packages.joern.server.subprocess.Popen",
+                  side_effect=fake_popen),
+            patch.object(srv, "_wait_for_ready", return_value=True),
+            patch.object(srv, "_warmup_imports"),
+        ):
+            srv.start()
+            jvm_tmp = os.path.join(srv._workdir, "jvm-tmp")
+            assert captured_env.get("_JAVA_OPTIONS") == (
+                f"-Djava.io.tmpdir={jvm_tmp}"
+            )
+            assert os.path.isdir(jvm_tmp)
+        self._safe_stop(srv)
+
     def test_start_cmd_omits_zgenerational_jdk24_plus(self):
         """JDK >= 24 removed ZGenerational — must not be passed."""
         srv = JoernServer()

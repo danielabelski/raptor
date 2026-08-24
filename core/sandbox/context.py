@@ -2043,6 +2043,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         elif _use_private_scratch:
             _private_scratch_dir = _tempfile.mkdtemp(
                 prefix=".scr-")
+            # The reaper lists this prefix; a sandboxed campaign
+            # (uncapped fuzz durations) legitimately holds the dir
+            # mtime-quiet past the age floor while its TMPDIR still
+            # points here. The keepalive registration for the
+            # context's lifetime happens adjacent to the try/finally
+            # that unregisters it, NOT here — a setup failure in
+            # between must not orphan a registration that would pin
+            # the stray dir against reaping for the process lifetime.
             writable_paths = [_private_scratch_dir]
         else:
             writable_paths = [_tempfile.gettempdir()]
@@ -4282,7 +4290,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         import tempfile as _tempfile_dem
                         _demoted_scratch = _tempfile_dem.mkdtemp(
                             prefix=".scr-")
+                        # Reaper-listed prefix: keep the per-call
+                        # scratch registered while the (possibly
+                        # multi-day) call runs; unregistered with the
+                        # context teardown. Appended to the teardown
+                        # list FIRST so a register failure can never
+                        # strand a dir the teardown loop won't see.
                         _demoted_scratch_dirs.append(_demoted_scratch)
+                        from core.run.scratch import keepalive_register
+                        keepalive_register(_demoted_scratch)
                         _shared_scratch = {
                             "/tmp", "/dev/shm",
                             os.path.realpath(
@@ -5100,6 +5116,22 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 _proxy_mod.DEFAULT_HOST_RECON_THRESHOLD,
             ),
         )
+    if _private_scratch_dir is not None:
+        # Registered here, adjacent to the try whose finally
+        # unregisters (only the guard-tested non-raising audit
+        # acquire sits between), so no setup-failure path can strand
+        # the registration. The dir is seconds old during setup, so
+        # late registration loses no reaper protection.
+        from core.run.scratch import keepalive_register
+        keepalive_register(_private_scratch_dir)
+    if _persona_tmpdir is not None:
+        # Same contract as the scratch above: the persona home is
+        # reaper-listed and mtime-quiet after build_persona writes it
+        # once, but a long-lived context making run() calls past the
+        # age floor still needs its source files — losing them would
+        # skip the overlay and leak host-real identity to the target.
+        from core.run.scratch import keepalive_register
+        keepalive_register(_persona_tmpdir)
     if use_egress_proxy and _will_engage_audit:
         # Scope the leniency to THIS context's lane. Concurrent
         # sandboxes and in-process consumers (main listener) stay
@@ -5214,6 +5246,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # we only clean up at __exit__; the file count is small.
         if _persona_tmpdir is not None:
             import shutil as _shutil
+            from core.run.scratch import keepalive_unregister
+            keepalive_unregister(_persona_tmpdir)
             try:
                 _shutil.rmtree(_persona_tmpdir, ignore_errors=True)
             except Exception:
@@ -5225,6 +5259,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # per-context, so it goes with the context.
         if _private_scratch_dir is not None:
             import shutil as _shutil
+            from core.run.scratch import keepalive_unregister
+            keepalive_unregister(_private_scratch_dir)
             try:
                 _shutil.rmtree(_private_scratch_dir, ignore_errors=True)
             except Exception:
@@ -5235,7 +5271,9 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # Per-call scratch dirs minted by mount-ns demotions.
         if _demoted_scratch_dirs:
             import shutil as _shutil
+            from core.run.scratch import keepalive_unregister
             for _dsd in _demoted_scratch_dirs:
+                keepalive_unregister(_dsd)
                 try:
                     _shutil.rmtree(_dsd, ignore_errors=True)
                 except Exception:

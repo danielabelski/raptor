@@ -529,6 +529,18 @@ class JoernServer:
                 logger.info("starting Joern server on 127.0.0.1:%d",
                             self._port)
 
+            # Confine JVM scratch (scala-repl-pp dirs, wrapped-script
+            # launchers) to the disposable workspace: java.io.tmpdir
+            # defaults to a hardcoded /tmp on Linux (TMPDIR is
+            # ignored), the JVM's cleanup is exit-path-only, and a
+            # killed server stranded its scratch there on every boot.
+            # _JAVA_OPTIONS reaches every JVM under the launcher shell,
+            # including nested ones, unlike a launcher argv flag.
+            jvm_tmp = os.path.join(self._workdir, "jvm-tmp")
+            os.makedirs(jvm_tmp, exist_ok=True)
+            env = RaptorConfig.get_safe_env()
+            env["_JAVA_OPTIONS"] = f"-Djava.io.tmpdir={jvm_tmp}"
+
             # New session so stop() can signal the whole process group:
             # the joern launcher may be a shell wrapper that spawns the
             # JVM without exec — terminating just the wrapper orphans it.
@@ -537,7 +549,7 @@ class JoernServer:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=RaptorConfig.get_safe_env(),
+                env=env,
                 start_new_session=True,
                 cwd=self._workdir,
             )

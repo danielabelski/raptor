@@ -114,6 +114,36 @@ class TestRestrictedLandlockOnlyScratch(unittest.TestCase):
                          "private scratch dir must be removed at context "
                          "exit")
 
+    def test_scratch_dir_keepalive_spans_context_lifetime(self):
+        """A live campaign can hold the scratch mtime-quiet past the
+        reaper's age floor; the keepalive registration is what makes
+        the reaper's scratch-prefix listing (.scr- anchored, legacy
+        .raptor-scratch-) safe for it."""
+        from core.run import scratch as scratch_mod
+        from core.sandbox import sandbox
+        seen = {}
+        prog = ("import os, json; "
+                "print(json.dumps({'tmpdir': os.environ.get('TMPDIR')}))")
+        with patch("core.sandbox.context.check_net_available",
+                   return_value=False), \
+             patch("core.sandbox.context.check_mount_available",
+                   return_value=False):
+            with sandbox(target=self.target, output=self.out,
+                         block_network=False, restrict_reads=True) as run:
+                r = run([_SYS_PY, "-c", prog],
+                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                seen["tmpdir"] = json.loads(
+                    r.stdout.strip().splitlines()[-1])["tmpdir"]
+                with scratch_mod._keepalive_lock:
+                    registered = set(scratch_mod._keepalive_paths)
+                self.assertIn(seen["tmpdir"], registered,
+                              "live scratch must be keepalive-registered")
+        with scratch_mod._keepalive_lock:
+            registered = set(scratch_mod._keepalive_paths)
+        self.assertNotIn(seen["tmpdir"], registered,
+                         "teardown must unregister the scratch keepalive")
+
     def test_unrestricted_posture_keeps_compatible_baseline(self):
         res, r = self._run_probe()
         self.assertEqual(res["host_tmp"], "written",

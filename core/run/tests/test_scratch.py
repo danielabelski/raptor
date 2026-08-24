@@ -273,3 +273,66 @@ class TestKeepalivePublicAPI:
             assert scratch_mod._keepalive_thread.is_alive()
         finally:
             keepalive_unregister(d)
+
+    def test_ticker_start_failure_discards_registration(
+            self, tmp_path, monkeypatch):
+        """A path left registered with no ticker would be pinned by a
+        LATER register's ticker while its owner may be long dead —
+        the register must discard it and swallow the failure."""
+        import threading
+        from core.run import scratch as scratch_mod
+        from core.run.scratch import keepalive_register
+
+        class _BoomThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread limit")
+
+        d = tmp_path / "owned"
+        d.mkdir()
+        monkeypatch.setattr(scratch_mod, "_keepalive_thread", None)
+        monkeypatch.setattr(threading, "Thread", _BoomThread)
+        keepalive_register(d)  # must not raise
+        assert str(d) not in scratch_mod._keepalive_paths
+        assert scratch_mod._keepalive_thread is None
+
+    # Forking with the keepalive thread live is the scenario under
+    # test; Python >= 3.12 warns about exactly that.
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_fork_child_gets_fresh_lock_and_no_inherited_paths(
+            self, tmp_path):
+        """A child forked while the lock is held must not deadlock on
+        its first register, and must not keep refreshing the PARENT's
+        registrations (that would mask the parent's death from the
+        reaper)."""
+        import os as _os
+        if not hasattr(_os, "register_at_fork"):
+            pytest.skip("no register_at_fork on this platform")
+        from core.run import scratch as scratch_mod
+        from core.run.scratch import keepalive_register, keepalive_unregister
+        parent_dir = tmp_path / "parent-owned"
+        parent_dir.mkdir()
+        keepalive_register(parent_dir)
+        try:
+            with scratch_mod._keepalive_lock:  # held across the fork
+                pid = _os.fork()
+            if pid == 0:  # child
+                code = 9
+                try:
+                    # A deadlocked register must kill the child, not
+                    # hang the suite's waitpid.
+                    import signal as _signal
+                    _signal.alarm(10)
+                    if not scratch_mod._keepalive_paths:
+                        keepalive_register(tmp_path)  # must not deadlock
+                        code = 0
+                finally:
+                    _os._exit(code)
+            _, status = _os.waitpid(pid, 0)
+            assert _os.waitstatus_to_exitcode(status) == 0
+            # Parent state survives the child's fork-reinit untouched.
+            assert str(parent_dir) in scratch_mod._keepalive_paths
+        finally:
+            keepalive_unregister(parent_dir)

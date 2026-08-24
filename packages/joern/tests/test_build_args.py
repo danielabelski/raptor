@@ -211,6 +211,13 @@ class TestBuildCpgWiring:
                         "--include", str(inc.resolve()),
                         "--exclude-regex", runner_mod.CPG_EXCLUDE_REGEX]
 
+    def test_jvm_tmpdir_confined_to_output_dir(self, tmp_path):
+        out_dir = tmp_path / "cpg-out"
+        calls = []
+        build_cpg(tmp_path, languages={"c"}, output_dir=out_dir,
+                  subprocess_runner=self._capture_runner(calls))
+        assert f"-J-Djava.io.tmpdir={out_dir}" in calls[0]
+
     def test_non_c_language_skips_discovery(self, tmp_path):
         _write_db(tmp_path, [_entry(tmp_path, ["-DFOO=1"])])
         calls = []

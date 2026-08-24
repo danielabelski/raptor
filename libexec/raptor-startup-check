@@ -16,7 +16,7 @@ interactive mismatch menu included — goes to STDERR. Stdout carries
 machine lines only, the LAST being the seed sentinel the launcher
 parses:
 
-    RAPTOR_SEEDED_BY=<flag|auto|bookmark|use|none>
+    RAPTOR_SEEDED_BY=<flag|auto|bookmark|use|create|adopt>
     RAPTOR_RESOLVED_PROJECT=<name|->
 
 The launcher seeds the session's registry entry from that value and

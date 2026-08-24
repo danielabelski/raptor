@@ -66,11 +66,30 @@ class PythonTwinSessionTest(_LedgerCase):
     def test_standalone_run_attributes(self):
         """Decision 12: no project anywhere — the ledger still names
         the run, and the target filter comes from run metadata."""
-        run = self._mk_run("scan_solo", target="/some/tree")
+        tree = self.home / "sometree"
+        tree.mkdir()
+        run = self._mk_run("scan_solo", target=str(tree))
         self._ledger((100, run))
         run_dir, target = self._resolve()
         self.assertEqual(run_dir, str(run))
-        self.assertEqual(target, "/some/tree")
+        self.assertEqual(target, str(tree))
+
+    def test_unresolvable_target_clears_the_filter(self):
+        # bash-twin parity: realpath fails on a missing tree and the
+        # hook attributes UNFILTERED — the twin must not silently
+        # drop every read by keeping a filter nothing can match.
+        run = self._mk_run("scan_gone", target="/no/such/tree")
+        self._ledger((100, run))
+        run_dir, target = self._resolve()
+        self.assertEqual(run_dir, str(run))
+        self.assertEqual(target, "")
+
+    def test_far_future_epoch_record_skipped(self):
+        ok = self._mk_run("scan_now")
+        skew = self._mk_run("scan_skew")
+        self._ledger((99999999999, skew), (100, ok))
+        run_dir, _target = self._resolve()
+        self.assertEqual(run_dir, str(ok))
 
     def test_newest_valid_live_run_wins(self):
         old = self._mk_run("old_run")

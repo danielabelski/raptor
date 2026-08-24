@@ -2130,6 +2130,40 @@ Examples:
             parser.error(f"--reanalyze: no SARIF files found in {reanalyze_dir}")
         args.sarif = (args.sarif or []) + prev_sarif
         logger.info("--reanalyze: re-using %d SARIF files from %s", len(prev_sarif), reanalyze_dir)
+        # The NEW run adopts the OLD run's project pin: a reanalysis
+        # of project P's SARIF must consume P's trust markers and
+        # write into P's stores, whatever the session happens to be
+        # bound to today. An explicit --project must AGREE or it is a
+        # hard error — never a silent pick.
+        try:
+            from core.run.pin import (
+                ProjectArgvError,
+                resolve_run_pin,
+                set_process_project,
+            )
+            _old_pin = resolve_run_pin(reanalyze_dir)
+            if _old_pin.authoritative:
+                _wanted = _old_pin.project if _old_pin.project else "-"
+                if args.project is not None and args.project != _wanted:
+                    msg = (
+                        f"--project {args.project!r} conflicts with the "
+                        f"reanalyzed run's pin {_old_pin.project!r} — "
+                        "a reanalysis runs under the original run's "
+                        "project"
+                    )
+                    raise ProjectArgvError(msg)
+                if args.project is None:
+                    args.project = _wanted
+                    set_process_project(_wanted)
+                    logger.info(
+                        "--reanalyze: adopting the previous run's "
+                        "project pin (%s)",
+                        _old_pin.project or "projectless")
+        except Exception as _e:  # noqa: BLE001 — hard error passes through
+            from core.run.pin import ProjectArgvError as _PAE
+            if isinstance(_e, _PAE):
+                parser.error(str(_e))
+            logger.debug("--reanalyze: pin adoption failed", exc_info=True)
 
     if not args.repo:
         parser.error("--repo is required (or launch via `raptor` from the target directory)")

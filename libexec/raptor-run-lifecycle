@@ -163,6 +163,15 @@ def main():
         except (OpLockContention, ProjectArgvError) as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+        except OSError as e:
+            # Disk-full / permission failures at the start boundary
+            # must keep the CLI contract (one ERROR line, exit 1) —
+            # a raw traceback here broke every caller that parses
+            # stderr. The half-born dir is left for inspection; a
+            # marker-less dir is inert to run discovery.
+            print(f"ERROR: could not start the run in {out_dir}: {e}",
+                  file=sys.stderr)
+            sys.exit(1)
 
         # Pre-flight cost gate (scorecard-derived). When
         # --max-cost-usd is set, compare against the scorecard

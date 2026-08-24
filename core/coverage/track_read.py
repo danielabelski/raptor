@@ -11,6 +11,7 @@ bash hook's case statement (line 185 of raptor-hook-read).
 
 import json
 import os
+import time
 import sys
 from pathlib import Path
 
@@ -85,6 +86,12 @@ def _find_session_run(session_pid):
         epoch_i = int(epoch)
         if epoch_i >= 2 ** 63:
             continue  # the bash twin's integer test rejects these
+        if epoch_i > int(time.time()) + 86400:
+            # A skewed-ahead-clock record would out-compete every
+            # legitimate run in the newest-running selection until it
+            # terminates; the ledger writer clamps these on rewrite,
+            # readers skip them meanwhile.
+            continue
         candidates.append((epoch_i, run_dir))
     # Newest first; ties keep FILE ORDER (stable sort on the epoch
     # key only) — the bash twin takes the first-listed record on
@@ -108,6 +115,12 @@ def _find_session_run(session_pid):
         target = meta.get("target_path")
         if not isinstance(target, str):
             target = ""  # typed corruption: attribute without a filter
+        elif target and not os.path.exists(target):
+            # Unresolvable target tree: the bash twin's realpath fails
+            # and clears the FILTER (attribute unfiltered) — a
+            # non-strict realpath here kept the filter and silently
+            # dropped every read instead.
+            target = ""
         return str(d), target
     return None, None
 

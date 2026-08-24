@@ -77,6 +77,12 @@ if [ -n "$_SESSION_PID" ]; then
         while IFS=' ' read -r _st _epoch _rid _rdir; do
             [ "$_st" = "running" ] || continue
             case "$_epoch" in ''|*[!0-9]*) continue ;; esac
+            # Skip skewed-ahead-clock records (see the python twin);
+            # the writer clamps them on its next rewrite.
+            _now_cap=$(( $(date +%s) + 86400 ))
+            if [ "$_epoch" -gt "$_now_cap" ] 2>/dev/null; then
+                continue
+            fi
             case "$_rdir" in
                 /*) ;;
                 *) continue ;;

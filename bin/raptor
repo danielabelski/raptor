@@ -574,8 +574,19 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
     fi
 
     # Unconditional stale-state delete for $$ FIRST (a recycled pid
-    # must never expose a predecessor's binding or ledger).
-    rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" "$_sessions_dir/$$.run.lock" 2>/dev/null || true
+    # must never expose a predecessor's binding or ledger). Under the
+    # per-pid ledger flock when flock(1) exists — a predecessor's
+    # straggling finisher may be mid-RMW; without the lock this rm
+    # raced it (python writers hold the same lock).
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock -w 2 9 || exit 0
+            rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" 2>/dev/null || true
+        ) 9>"$_sessions_dir/$$.run.lock" 2>/dev/null ||             rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" 2>/dev/null || true
+        rm -f -- "$_sessions_dir/$$.run.lock" 2>/dev/null || true
+    else
+        rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" "$_sessions_dir/$$.run.lock" 2>/dev/null || true
+    fi
 
     # Prune + awareness pass. Prune predicate: only
     # same-boot, same-pidns entries with a positively dead pid are
@@ -631,6 +642,8 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
         RAPTOR_SESSION_TOKEN=""
     fi
     unset _f _fpid _fproj _fsince _fboot _fns _tmp_entry _starttime _bootid _pidns
+else
+    echo "raptor: WARNING: could not create $_sessions_dir — no session binding recorded; this session follows the machine-wide default" >&2
 fi
 # The env credential: pid + token, validated on every read against the
 # entry. Exported only when the seed landed with a token.

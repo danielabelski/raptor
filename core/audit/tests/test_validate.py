@@ -446,6 +446,15 @@ class TestDispatchGates:
             "core.llm.cc_adapter.resolve_claude_cli",
             lambda explicit=None: "/fake/claude",
         )
+        # cc_subprocess_env mints scoped AWS child credentials via a
+        # REAL botocore/STS call — with proxy env scrubbed (per-dir
+        # egress reset) that dial hangs through botocore's retries for
+        # minutes. The launch failure under test happens after env
+        # prep; credential minting is not what this test pins.
+        monkeypatch.setattr(
+            "core.llm.cc_adapter._mint_child_aws_credentials",
+            lambda *args, **kwargs: None,
+        )
         run_dir = tmp_path / "validate_run"
         lifecycle_calls = []
 

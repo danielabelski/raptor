@@ -190,18 +190,47 @@ class TestSancovPieBaseInference:
         out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
         assert out is None  # nothing mapped, no record emitted
 
-    def test_unaligned_base_never_inferred(self, tmp_path):
-        """PCs at a non-page-aligned offset can't vote in a base."""
+    def test_unaligned_delta_pins_neighbor_base_auditably(self, tmp_path):
+        """A non-page-aligned delta cannot come from a real loader
+        (mmap bases are page-aligned) — only from a forged or corrupt
+        trace. Documented residual: on a REGULAR layout the aligned
+        neighbor base validates and attribution shifts by one
+        function. The defence is auditability, not refusal: the
+        inferred base is recorded in meta, and attribution stays
+        bounded by the checklist ranges."""
         _pie_checklist(tmp_path)
         binary = tmp_path / "t"
         binary.write_bytes(b"\x7fELF")
-        odd = self.BASE + 0x123  # unaligned true delta
+        odd = self.BASE + 0x123  # unaligned true delta — forged trace
         _sancov(tmp_path / "run.sancov",
                 [odd + 0x1000 + i * 0x100 + 8 for i in range(12)])
         out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
-        # page-aligned candidates near the odd delta may catch SOME
-        # spans, but never with the dominance a real base shows —
-        # either no record or no inferred base with wide attribution
-        if out is not None:
-            doc = json.loads(out.read_text())
-            assert len(doc["files"]["binary:t"]["functions"]) <= 12
+        assert out is not None
+        doc = json.loads(out.read_text())
+        # the aligned neighbor is what actually gets inferred — the
+        # record must say so, so the shift is auditable
+        assert doc["meta"]["inferred_pie_bases"] == {
+            "run.sancov": hex(self.BASE),
+        }
+        assert len(doc["files"]["binary:t"]["functions"]) <= 12
+
+    def test_partial_checklist_never_infers_intra_module_shift(
+        self, tmp_path,
+    ):
+        """A file-relative dump whose PCs mostly fall OUTSIDE a
+        partial checklist must not vote an intra-module shift into a
+        "base" (that would re-attribute coverage to functions that
+        never ran). The genuine in-range hits survive unshifted."""
+        _pie_checklist(tmp_path)  # covers 0x1000..0x2800 only
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        pcs = [0x1000 + i * 0x100 + 8 for i in range(2)]      # 2 real hits
+        pcs += [0x10000 + i * 0x340 + 4 for i in range(60)]   # module tail
+        _sancov(tmp_path / "run.sancov", pcs)
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        if out is None:
+            return  # 2 direct hits below len//4 and no inference: fine
+        doc = json.loads(out.read_text())
+        assert doc["meta"]["inferred_pie_bases"] == {}
+        funcs = set(doc["files"]["binary:t"]["functions"])
+        assert funcs <= {"fn00", "fn01"}

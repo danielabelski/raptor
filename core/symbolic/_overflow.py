@@ -421,26 +421,63 @@ def _state_snapshot(state, *, entry_sp: Optional[int] = None) -> dict:
     """
     registers = _register_snapshot(state)
     snap = {"registers": registers}
-    rsp = registers.get("rsp") or registers.get("esp") or {}
-    rsp_val = rsp.get("value")
-    if rsp_val is None or entry_sp is None:
+    sp_name = "rsp" if "rsp" in registers else (
+        "esp" if "esp" in registers else None)
+    sp_val = (registers.get(sp_name) or {}).get("value") if sp_name else None
+    if sp_val is None or entry_sp is None:
         return snap
+    reject_value = _model_value_rejector(state, entry_sp)
     memory: dict = {}
     for off in range(0, _MEM_WINDOW_BYTES, 8):
-        addr = rsp_val + off
+        addr = sp_val + off
         if addr >= entry_sp:
             break  # loader-layout territory — model, not program
         try:
             v = state.memory.load(
                 addr, 8, endness=state.arch.memory_endness,
             )
-            if state.solver.unique(v):
-                memory[f"rsp+{off:#x}"] = int(state.solver.eval(v))
+            if not state.solver.unique(v):
+                continue
+            value = int(state.solver.eval(v))
+            if reject_value(value):
+                # A pointer into the model stack, the extern/
+                # SimProcedure glue, or a PIC object is an address
+                # no real (ASLR'd) process reproduces — conditioning
+                # a one-gadget verdict on it would be unsound even
+                # though the slot itself was program-written.
+                continue
+            memory[f"{sp_name}+{off:#x}"] = value
         except Exception:  # noqa: BLE001 — unmapped slot: omit
             continue
     if memory:
         snap["memory"] = memory
     return snap
+
+
+def _model_value_rejector(state, entry_sp: int):
+    """Predicate: is this concrete VALUE a model-specific address?
+
+    The entry-sp boundary handles model addresses; program-written
+    slots below it can still HOLD model addresses the program copied
+    or the glue wrote (argv pointers, saved returns into the loader's
+    fake libc, frame pointers). Real processes randomise all of them.
+    """
+    bands = [(entry_sp - 0x800000, entry_sp + 0x10000)]
+    try:
+        loader = state.project.loader
+        ext = loader.extern_object
+        if ext is not None:
+            bands.append((ext.min_addr, ext.max_addr))
+        for obj in loader.all_objects:
+            if getattr(obj, "pic", False):
+                bands.append((obj.min_addr, obj.max_addr))
+    except Exception:  # noqa: BLE001 — filter degrades to stack band
+        pass
+
+    def _reject(value: int) -> bool:
+        return any(lo <= value <= hi for lo, hi in bands)
+
+    return _reject
 
 
 def _register_snapshot(state) -> dict:

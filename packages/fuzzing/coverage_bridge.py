@@ -525,6 +525,14 @@ _BASE_VOTE_QUORUM = 8
 _BASE_CANDIDATES = 5
 _BASE_HIT_DOMINANCE = 1.25
 _PAGE = 0x1000
+#: Spans wider than this take no part in base voting: function sizes
+#: ride the attacker-controlled symtab, and one forged multi-GiB span
+#: would turn the per-(pc, span) interval walk into a CPU/memory sink
+#: (millions of page candidates per pair). Real functions fit easily.
+_BASE_VOTE_MAX_SPAN = 256 * _PAGE
+#: Hit-validation sample for candidate SELECTION; the winner is then
+#: re-scored on the full PC set once.
+_BASE_VALIDATE_CAP = 200_000
 
 
 def _base_candidates(pcs, spans) -> list:
@@ -543,11 +551,13 @@ def _base_candidates(pcs, spans) -> list:
     from collections import Counter
     sample = sorted(pcs)
     if len(sample) > _BASE_SAMPLE_CAP:
-        stride = len(sample) // _BASE_SAMPLE_CAP
+        stride = -(-len(sample) // _BASE_SAMPLE_CAP)
         sample = sample[::stride][:_BASE_SAMPLE_CAP]
     votes: Counter = Counter()
     for pc in sample:
         for start, end, _name in spans:
+            if end - start >= _BASE_VOTE_MAX_SPAN:
+                continue  # forged-size defence — see constant note
             lo = pc - end
             hi = pc - start
             if hi < 0:
@@ -575,20 +585,37 @@ def _resolve_sancov_view(pcs, spans, starts):
     direct = _span_hits(pcs, spans, starts)
     if direct >= max(1, len(pcs) // 4):
         return pcs, None
+    # An intra-module shift is not a load base: a file-relative dump
+    # whose checklist covers only part of the module would otherwise
+    # vote its own out-of-checklist PCs into a small bogus "base" that
+    # re-attributes coverage to functions that never ran. A real PIE
+    # load base sits beyond the module's file-address extent.
+    min_base = spans[-1][1] + 1
+    sample = sorted(pcs)
+    if len(sample) > _BASE_VALIDATE_CAP:
+        stride = -(-len(sample) // _BASE_VALIDATE_CAP)
+        sample = sample[::stride][:_BASE_VALIDATE_CAP]
     scored = []
     for base in _base_candidates(pcs, spans):
-        rebased = {pc - base for pc in pcs}
-        scored.append((_span_hits(rebased, spans, starts), base, rebased))
+        if base < min_base:
+            continue
+        shifted = [pc - base for pc in sample]
+        scored.append((_span_hits(shifted, spans, starts), base))
     scored.sort(reverse=True)
     if not scored:
         return pcs, None
-    rehits, base, rebased = scored[0]
-    if rehits <= direct or rehits < 3:
+    _sample_hits, base = scored[0]
+    rebased = {pc - base for pc in pcs}
+    rehits = _span_hits(rebased, spans, starts)
+    # The rebased view must clear the SAME evidence bar the direct
+    # view is held to — merely beating a failed direct view is how
+    # partial-checklist dumps got misattributed.
+    if rehits <= direct or rehits < max(3, len(pcs) // 4):
         return pcs, None
     # Validated-hit dominance over the runner-up candidate: harmonic
     # aliases of regular layouts survive the vote but lose on actual
     # range hits; a near-tie means ambiguity — refuse, don't guess.
-    if len(scored) > 1 and rehits < scored[1][0] * _BASE_HIT_DOMINANCE:
+    if len(scored) > 1 and _sample_hits < scored[1][0] * _BASE_HIT_DOMINANCE:
         return pcs, None
     import bisect
     funcs = set()

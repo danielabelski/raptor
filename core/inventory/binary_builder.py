@@ -138,8 +138,15 @@ def build_binary_checklist(
     # function's range and hide real gaps.
     starts = sorted(f.address for f in db.functions if f.address >= 0)
     import bisect
+    # Hard ceiling regardless of neighbours: the last symbol has no
+    # next start to clamp against, and widely spaced symbols evade
+    # the gap clamp — an attacker-forged multi-GiB st_size would
+    # otherwise ride into every address-range consumer (coverage
+    # spans, trace-vote intervals). No real function needs more.
+    _MAX_FUNCTION_SPAN = 0x100000
+
     def _clamped_size(func) -> int:
-        size = max(func.size or 0, 0)
+        size = min(max(func.size or 0, 0), _MAX_FUNCTION_SPAN)
         i = bisect.bisect_right(starts, func.address)
         if i < len(starts):
             gap = starts[i] - func.address

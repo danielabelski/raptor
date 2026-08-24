@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import os
 import logging
 import shutil
 import subprocess
@@ -47,13 +48,12 @@ def _safe_env() -> dict:
         # full caller environment here would hand API keys to a JVM
         # that parses attacker-controlled data (and would falsify the
         # env_caller_filtered=True assertion at the sandbox call).
-        import os
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     env.setdefault("GHIDRA_HEADLESS_MAXMEM", "4G")
     return env
 
 
-def _install_read_paths(headless: str) -> list:
+def _install_read_paths(headless: str) -> list[str]:
     """Read-allowlist extras for the sandboxed JVM.
 
     With ``restrict_reads`` the sandbox allows system dirs, /tmp,
@@ -63,11 +63,41 @@ def _install_read_paths(headless: str) -> list:
     lives in ``<install>/support/``).
     """
     real = Path(headless).resolve()
-    paths = [str(real.parent.parent)]
-    import os
+    if real.parent.name == "support":
+        paths = [str(real.parent.parent)]
+    else:
+        # A copied/wrapper analyzeHeadless outside <install>/support/
+        # — parent.parent could be $HOME (e.g. ~/bin). Grant only the
+        # wrapper's own directory rather than silently widening.
+        logger.warning(
+            "analyzeHeadless at %s is not under a support/ dir — "
+            "granting only its directory to the sandbox read set",
+            real,
+        )
+        paths = [str(real.parent)]
     install_dir = os.environ.get("GHIDRA_INSTALL_DIR")
-    if install_dir and str(Path(install_dir).resolve()) not in paths:
-        paths.append(str(Path(install_dir).resolve()))
+    if install_dir:
+        candidate = Path(install_dir)
+        resolved = str(candidate.resolve())
+        valid = (
+            candidate.is_absolute()
+            and (candidate / "support" / "analyzeHeadless").is_file()
+        )
+        if valid and resolved not in paths:
+            paths.append(resolved)
+        elif not valid:
+            logger.warning(
+                "GHIDRA_INSTALL_DIR=%s does not look like a Ghidra "
+                "install (no support/analyzeHeadless) — not granting "
+                "it to the sandbox read set", install_dir,
+            )
+    home = str(Path.home().resolve())
+    for granted in paths:
+        if granted == "/" or granted == home:
+            logger.warning(
+                "sandbox read grant %s covers the whole home/root — "
+                "check the analyzeHeadless install layout", granted,
+            )
     return paths
 
 
@@ -245,8 +275,11 @@ def import_enrichments(
     # Explicit contract instead of inferring from destination
     # existence (a pre-placed copy would otherwise be silently
     # trusted): the bridge sets copy_prepared=True after preparing
-    # the copy itself; standalone callers get a fresh copy here and
-    # a refusal if something already occupies the destination.
+    # the copy itself; standalone callers get a fresh copy below and
+    # a refusal if something already occupies the destination. All
+    # validation runs BEFORE the tool lookup (hermetic on
+    # Ghidra-less hosts) and the copy AFTER it (no stray copy when
+    # analyzeHeadless is missing).
     if copy_prepared:
         if not output_gpr.exists():
             raise GhidraError(
@@ -254,15 +287,26 @@ def import_enrichments(
                 f"{output_gpr}"
             )
     else:
-        if output_gpr.exists():
-            raise GhidraError(
-                f"destination already exists: {output_gpr} — remove "
-                "it or pass copy_prepared=True if it is a working "
-                "copy you just prepared"
-            )
-        prepare_working_copy(gpr_path, dst_dir)
+        # The .gpr is only a marker file — the .rep directory holds
+        # the actual project data, so a pre-placed .rep (or stale
+        # lock) is just as untrustworthy as a pre-placed .gpr.
+        for leftover in (
+            output_gpr,
+            output_gpr.with_suffix(".rep"),
+            dst_dir / f"{output_gpr.stem}.lock",
+        ):
+            if leftover.exists():
+                raise GhidraError(
+                    f"destination already exists: {leftover} — "
+                    "remove it or pass copy_prepared=True if it is "
+                    "a working copy you just prepared"
+                )
 
     headless = _find_headless()
+    if not copy_prepared:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        prepare_working_copy(gpr_path, dst_dir)
+
     env = _safe_env()
 
     from .import_script_java import IMPORT_SCRIPT_JAVA

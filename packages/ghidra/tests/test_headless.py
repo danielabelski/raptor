@@ -34,3 +34,14 @@ class TestCopyPreparedContract:
             import_enrichments(
                 gpr, tmp_path / "e.json", tmp_path / "renamed.gpr",
             )
+
+    def test_preplaced_rep_only_refused(self, tmp_path):
+        import pytest
+        from packages.ghidra.headless import GhidraError, import_enrichments
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("x")
+        dst = tmp_path / "out"
+        dst.mkdir()
+        (dst / "p.rep").mkdir()
+        with pytest.raises(GhidraError, match="already exists"):
+            import_enrichments(gpr, tmp_path / "e.json", dst / "p.gpr")

@@ -103,6 +103,11 @@ _DIR_PREFIXES = (
     # and the bench harness's cve-diff-bench- mkdtemp — both match
     # this prefix); cleaned on exit, leaked on SIGKILL/OOM.
     "cve-diff-",
+    # Ghidra working copies: session/headless scratch (rmtree'd in
+    # their finally blocks) and the persistent server's work dir
+    # (removed on stop(); survives when the parent dies or a worker
+    # hangs past the join grace).
+    "raptor-ghidra-",
     # Per-session pytest temp containment (root conftest.py): the test
     # session points TMPDIR/tempfile.tempdir at one scratch dir so raw
     # tempfile call sites in tests and code under test land inside it.

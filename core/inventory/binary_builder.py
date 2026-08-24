@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 #: discriminator has exactly one definition.
 BINARY_PATH_PREFIX = "binary:"
 
-_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+_CTRL_CHARS = re.compile(
+    r"[\x00-\x08\x0b-\x1f\x7f\x9b\u202a-\u202e\u2066-\u2069]"
+)
 
 
 def binary_path_key(binary_path: "Path | str") -> str:

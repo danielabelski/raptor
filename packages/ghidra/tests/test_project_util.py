@@ -49,3 +49,16 @@ class TestHostileRepCopy:
         work.mkdir()
         with pytest.raises(ValueError, match="symlink"):
             prepare_working_copy(link, work)
+
+    def test_preplaced_rep_wiped_not_merged(self, tmp_path):
+        from packages.ghidra.project_util import prepare_working_copy
+        gpr, rep = self._project(tmp_path)
+        (rep / "real.txt").write_text("real")
+        work = tmp_path / "work"
+        work.mkdir()
+        planted = work / "p.rep"
+        planted.mkdir()
+        (planted / "planted.txt").write_text("evil")
+        prepare_working_copy(gpr, work)
+        copied = sorted(x.name for x in (work / "p.rep").rglob("*"))
+        assert copied == ["real.txt"]

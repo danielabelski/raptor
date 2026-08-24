@@ -143,6 +143,11 @@ def get_project_version(path: Path) -> Optional[str]:
     return None
 
 
+def _is_hex(text: str) -> bool:
+    """True for a non-empty lowercase-hex storage id field."""
+    return bool(text) and all(c in "0123456789abcdef" for c in text)
+
+
 def get_programs(path: Path) -> list[str]:
     """List program names in a Ghidra project (no JVM).
 
@@ -158,19 +163,36 @@ def get_programs(path: Path) -> list[str]:
         return []
 
     index = idata / "~index.dat"
-    if index.is_file():
+    # The index is attacker-controlled and read in-process: refuse
+    # symlinks (a hostile project must not turn this into an
+    # arbitrary-file read oracle) and cap size/entries.
+    if index.is_file() and not index.is_symlink():
         programs = []
         try:
+            if index.lstat().st_size > 1024 * 1024:
+                raise OSError("index over 1 MiB — refusing")
             for line in index.read_text(
                     encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
-                if not line or "=" in line.split(":", 1)[0]:
+                if not line:
                     continue
+                # Entry lines are "<hex storage id>:<name>[:<fileId>]"
+                # — the fileId is absent on V0 indexes and V1 entries
+                # with a null fileId, so 2-field lines are legal. The
+                # hex check on field 0 excludes the VERSION=/NEXT-ID:/
+                # MD5: header+trailer lines and folder lines.
                 parts = line.split(":")
-                if len(parts) >= 3 and parts[0].isalnum():
-                    name = parts[1]
+                if len(parts) >= 2 and _is_hex(parts[0]):
+                    # Ghidra forbids ":" in names; the rejoin is
+                    # belt-and-braces for a hand-edited index.
+                    name = (
+                        parts[1] if len(parts) == 2
+                        else ":".join(parts[1:-1])
+                    )
                     if name:
                         programs.append(name)
+                if len(programs) >= 4096:
+                    break
         except OSError:
             programs = []
         if programs:

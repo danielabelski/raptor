@@ -86,10 +86,19 @@ def prepare_working_copy(gpr_path: Path, work_dir: Path) -> Path:
     dst_gpr = work_dir / gpr_path.name
     if gpr_path.is_symlink():
         raise ValueError(f"refusing symlinked project file: {gpr_path}")
-    shutil.copy2(gpr_path, dst_gpr)
 
     src_rep = gpr_path.with_suffix(".rep")
     dst_rep = work_dir / f"{name}.rep"
+    # Always a CLEAN copy: a pre-existing destination .rep would be
+    # merge-overwritten (planted files absent from the source survive
+    # into the copy the JVM opens — and into the enriched
+    # deliverable).
+    if dst_rep.exists():
+        shutil.rmtree(dst_rep)
+    if dst_gpr.exists():
+        dst_gpr.unlink()
+
+    shutil.copy2(gpr_path, dst_gpr)
     if src_rep.is_dir() and not src_rep.is_symlink():
         _copy_rep_tree(src_rep, dst_rep)
 

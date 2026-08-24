@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 _CVE_RE = re.compile(r"CVE-\d{4}-\d+", re.IGNORECASE)
 
-_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+_CTRL_CHARS = re.compile(
+    r"[\x00-\x08\x0b-\x1f\x7f\x9b\u202a-\u202e\u2066-\u2069]"
+)
 
 
 def _clean(text: str, limit: int = 200) -> str:

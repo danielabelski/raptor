@@ -259,3 +259,45 @@ class TestGetProgramsIndex:
         idata.mkdir(parents=True)
         (idata / "00").mkdir()
         assert get_programs(gpr) == ["00"]
+
+    def test_symlinked_index_refused(self, tmp_path):
+        from packages.ghidra.detect import get_programs
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("")
+        idata = tmp_path / "p.rep" / "idata"
+        idata.mkdir(parents=True)
+        (idata / "00").mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("aaaa:leaked:bbbb\n")
+        (idata / "~index.dat").symlink_to(outside)
+        # falls back to the folder scan instead of following the link
+        assert get_programs(gpr) == ["00"]
+
+    def test_oversized_index_refused(self, tmp_path):
+        from packages.ghidra.detect import get_programs
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("")
+        idata = tmp_path / "p.rep" / "idata"
+        idata.mkdir(parents=True)
+        (idata / "00").mkdir()
+        (idata / "~index.dat").write_bytes(b"x" * (1024 * 1024 + 1))
+        assert get_programs(gpr) == ["00"]
+
+    def test_two_field_entries_parsed(self, tmp_path):
+        # V0 indexes and V1 entries with a null fileId are 2-field —
+        # legal, and must yield real names (not the folder-id
+        # fallback). Header/trailer lines are excluded by the hex
+        # guard on the storage-id field.
+        from packages.ghidra.detect import get_programs
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("")
+        idata = tmp_path / "p.rep" / "idata"
+        idata.mkdir(parents=True)
+        (idata / "00").mkdir()
+        (idata / "~index.dat").write_text(
+            "VERSION=1\n/\n"
+            "  00000000:target:645079\n"
+            "  00000001:nofileid\n"
+            "NEXT-ID:2\nMD5:d41d8cd98f00b204e9800998ecf8427e\n"
+        )
+        assert get_programs(gpr) == ["target", "nofileid"]

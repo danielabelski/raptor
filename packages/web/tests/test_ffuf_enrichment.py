@@ -129,3 +129,69 @@ class TestConfigEnrichment(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWordlistPriors(unittest.TestCase):
+    def test_preferred_name_parsed_from_recall_rows(self):
+        from packages.web.discovery.wordlists import preferred_from_recall
+
+        rows = [
+            {"content": "Confirmed vulnerability classes on h: sqli at /s."},
+            {"content": (
+                "Wordlist effectiveness on h: common.txt: 3 hit(s), "
+                "raft-small-words.txt: 12 hit(s)."
+            )},
+        ]
+        self.assertEqual(preferred_from_recall(rows), "raft-small-words.txt")
+        self.assertIsNone(preferred_from_recall([]))
+        self.assertIsNone(preferred_from_recall(
+            [{"content": "nothing relevant"}],
+        ))
+
+    def test_preferred_wins_only_when_present(self):
+        from packages.web.discovery.wordlists import select_wordlist
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "common.txt").write_text("admin\n", encoding="utf-8")
+            (root / "raft-small-words.txt").write_text(
+                "admin\n", encoding="utf-8",
+            )
+
+            chosen = select_wordlist(
+                {}, root, preferred="raft-small-words.txt",
+            )
+            self.assertEqual(chosen.name, "raft-small-words.txt")
+
+            # A prior naming an absent file is just a hint that misses:
+            # normal ordering applies.
+            chosen = select_wordlist({}, root, preferred="nope.txt")
+            self.assertEqual(chosen.name, "common.txt")
+
+    def test_scanner_threads_prior_into_selection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "lists"
+            root.mkdir()
+            (root / "common.txt").write_text("admin\n", encoding="utf-8")
+            (root / "raft-small-words.txt").write_text(
+                "admin\n", encoding="utf-8",
+            )
+            with patch("packages.web.scanner.WebClient"), patch(
+                "packages.web.scanner.WebCrawler"
+            ):
+                from packages.web.scanner import WebScanner
+
+                scanner = WebScanner(
+                    "http://example.com", None, Path(tmpdir),
+                    ffuf_wordlist_dir=root,
+                )
+            scanner._sage_recall_rows = [{"content": (
+                "Wordlist effectiveness on example.com: "
+                "raft-small-words.txt: 9 hit(s)."
+            )}]
+
+            enriched = scanner._enriched_ffuf_config(DiscoveryResult())
+
+            self.assertEqual(
+                enriched.wordlist, root / "raft-small-words.txt",
+            )

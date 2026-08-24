@@ -59,18 +59,52 @@ def recommend_extensions(fingerprint: dict) -> tuple[str, ...]:
     return tuple(extensions)
 
 
-def select_wordlist(fingerprint: dict, wordlist_dir: Path | str) -> Path | None:
+def preferred_from_recall(rows: list[dict]) -> str | None:
+    """The best-performing wordlist NAME from SAGE recall rows, or None.
+
+    Parses the wordlist-effectiveness observations this scanner stores
+    at report time ("Wordlist effectiveness on host: name.txt: 12
+    hit(s)"). Hint tier only: the caller merely tries this name first —
+    a missing file or a better fingerprint match still wins, and
+    nothing is ever suppressed on recall.
+    """
+    import re
+
+    best_name: str | None = None
+    best_hits = 0
+    pair_re = re.compile(r"([\w.\-]+\.txt):\s*(\d+)\s*hit")
+    for row in rows or []:
+        content = str(row.get("content") or "")
+        if "Wordlist effectiveness" not in content:
+            continue
+        for name, hits_text in pair_re.findall(content):
+            hits = int(hits_text)
+            if hits > best_hits:
+                best_hits = hits
+                best_name = name
+    return best_name
+
+
+def select_wordlist(
+    fingerprint: dict,
+    wordlist_dir: Path | str,
+    preferred: str | None = None,
+) -> Path | None:
     """A conventionally-named wordlist under *wordlist_dir*, or None.
 
     Fingerprint-specific names are preferred; the generic discovery
     lists are the fallback. Search is recursive so a SecLists checkout
-    works as-is.
+    works as-is. ``preferred`` (a prior from SAGE recall) is tried
+    first when given — a hint, not an override: if the file is absent
+    the normal ordering applies untouched.
     """
     root = Path(wordlist_dir)
     if not root.is_dir():
         return None
     blob = _signals(fingerprint)
     names: list[str] = []
+    if preferred:
+        names.append(preferred)
     for needles, candidates in _WORDLIST_RULES:
         if any(needle in blob for needle in needles):
             names.extend(candidates)

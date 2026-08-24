@@ -232,6 +232,7 @@ class WebScanner:
         self._external_tool_results: list[dict] = []
         self._ffuf_wordlist_used: str | None = None
         self._ffuf_hit_count = 0
+        self._sage_recall_rows: list[dict] = []
         self._external_validation_results: list[dict] = []
         self._raw_injection_hits: list[dict] = []
         self._external_sensitive_candidates: list[tuple[str, str]] = []
@@ -402,14 +403,22 @@ class WebScanner:
         from dataclasses import replace as _replace
 
         from packages.web.discovery.wordlists import (
+            preferred_from_recall,
             recommend_extensions,
             select_wordlist,
         )
 
         config = self.ffuf_config
         if config is None and self.ffuf_wordlist_dir is not None:
+            preferred = preferred_from_recall(self._sage_recall_rows)
+            if preferred:
+                logger.info(
+                    "Phase 2a: SAGE prior suggests wordlist %s "
+                    "(hint tier — used only if present)", preferred,
+                )
             chosen = select_wordlist(
                 discovery.fingerprint or {}, self.ffuf_wordlist_dir,
+                preferred=preferred,
             )
             if chosen is None:
                 logger.info(
@@ -1630,6 +1639,7 @@ class WebScanner:
             return
         if not rows:
             return
+        self._sage_recall_rows = rows
         text = " | ".join(
             str(row.get("content") or "")[:300] for row in rows[:3]
         )

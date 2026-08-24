@@ -1,25 +1,17 @@
 """Per-directory test infra for ``core.llm`` tests.
 
-Reset env vars + module state that ``core.llm.egress.enable_llm_egress``
-mutates as a side effect of ``LLMClient.__init__``. Without this, any
-test in this directory that constructs a real ``LLMClient`` (e.g.
-``test_exclude_fallback``, ``test_ollama_warning``) leaks
-``HTTPS_PROXY=127.0.0.1:<port>`` into ``os.environ``, which subsequent
-tests in the pytest session pick up — notably
-``core/sandbox/tests/test_e2e_sandbox::test_allowed_host_succeeds``,
-where the in-process proxy reads it as a (now-dead) upstream chain
-target and the test's curl call fails with exit 56.
-
-Direct ``os.environ`` mutations bypass ``monkeypatch``'s auto-cleanup,
-so the fixture below records explicit undo entries for them on the
-shared per-test ``monkeypatch`` instance.
+The egress-reset fixture (proxy-env/OLLAMA_HOST hermeticity for tests
+that construct real LLMClients) moved to the package-level conftest —
+``core/llm/conftest.py`` — so the sibling test trees
+(``dispatcher/tests``, ``scorecard/tests``, ``tool_use/tests``) are
+covered too. Its history and load-bearing mechanics live on
+``core.testing.reset_llm_egress_state``'s docstring.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from core.testing import reset_llm_egress_state
 
 
 @pytest.fixture(autouse=True)
@@ -54,23 +46,6 @@ def _isolated_cache_mac_key(tmp_path_factory, monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
-def _reset_llm_egress_state(monkeypatch):
-    """Reset egress module flag, clear proxy env vars, and pin
-    OLLAMA_HOST for every test in this directory.
-
-    Shared body: :func:`core.testing.reset_llm_egress_state` — its
-    docstring carries the hard-won mechanics (single monkeypatch undo
-    stack; the setenv→delenv two-step for vars absent from the real
-    env). This directory's history is why those mechanics exist: the
-    manual pop-before-and-after version erased the operator's real
-    proxy env for the remainder of the pytest process on
-    mandatory-egress-proxy hosts, and a save/restore could not fix it
-    because ``_isolate_scorecard``'s monkeypatch instantiates first
-    and undoes after ours. The shared body also scrubs the FULL
-    8-var proxy family (this copy had drifted to 4, leaving
-    HTTP_PROXY/ALL_PROXY leaks possible)."""
-    yield from reset_llm_egress_state(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

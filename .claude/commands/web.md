@@ -101,6 +101,12 @@ python3 raptor.py web --url https://target --browser
 # scanner process (trusted code, never sandboxed — callbacks are
 # inbound from the target). One callback proves nothing; findings are
 # confirmed only when a replay with a FRESH token calls back too.
+# Bare-host positions (Host/X-Forwarded-Host: reset poisoning,
+# host-header injection, cache poisoning) can't carry a token, so
+# they use windowed path-scoped EXPECTATIONS instead — those hits are
+# reported as needs_review corroboration, never confirmation. With
+# --browser too, a host-poisoned render is detected via the origin
+# gate's blocked-attempt record (no bytes leave the target origin).
 python3 raptor.py web --url https://target --oob-listen 8880 \
   --oob-callback-host scanner.reachable.example:8880
 ```

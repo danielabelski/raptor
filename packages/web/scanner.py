@@ -314,9 +314,10 @@ class WebScanner:
                     self._phase_browser_xss(injection_findings, crawl_data),
                 )
         except BaseException:
-            # The OOB listener starts inside Phase 6; if anything
-            # between injection and Phase 6o dies, the bound socket
-            # must not outlive the scan.
+            # The OOB listener starts at first probe use (a check leg
+            # or Phase 6 injection); if anything between then and
+            # Phase 6o dies, the bound socket must not outlive the
+            # scan. close() covers exits outside this window.
             if self.oob_listener is not None:
                 self.oob_listener.stop()
             raise
@@ -643,11 +644,35 @@ class WebScanner:
         return findings
 
     def _instantiate_check(self, cls):
-        """Build a check, handing it the OOB canary mint when live."""
+        """Build a check, handing it the OOB hooks when live.
+
+        All three hooks are lazy: nothing binds a port until a check's
+        probing leg actually uses one, so runs whose receipt excludes
+        every probing check never start the listener.
+        """
         check = cls(llm=self.llm)
         if self.oob_listener is not None:
             check.oob_mint = self._oob_mint
+            check.oob_expect = self._oob_expect
+            check._oob_host_resolver = self._resolve_oob_host
         return check
+
+    def _oob_expect(self, context, *, path_marker: str = ""):
+        """Lazy-start the listener and open a scoped expectation."""
+        if self.oob_listener is None:
+            return None
+        self.oob_listener.start()
+        return self.oob_listener.expect(
+            context, path_marker=path_marker,
+        )
+
+    def _resolve_oob_host(self):
+        """The listener's externally-reachable host:port (starts it)."""
+        if self.oob_listener is None:
+            return None
+        self.oob_listener.start()
+        from urllib.parse import urlparse as _parse
+        return _parse(self.oob_listener.callback_base).netloc
 
     def _oob_mint(self, context):
         """Lazy-start the listener and mint one canary URL.
@@ -1258,7 +1283,7 @@ class WebScanner:
         attempts = []
         try:
             stats = listener.stats
-            if not stats["tokens_minted"]:
+            if not (stats["tokens_minted"] or stats["expectations"]):
                 return []
             logger.info(
                 "Phase 6o: waiting %.0fs for out-of-band callbacks "
@@ -1325,6 +1350,8 @@ class WebScanner:
                 findings.append(
                     self._oob_finding(context, hit, replay_hit, verified),
                 )
+            for expectation in listener.correlated_expectations():
+                findings.append(self._oob_correlated_finding(expectation))
             if findings:
                 write_web_attempts(attempts, self.out_dir)
             stats = listener.stats
@@ -1567,6 +1594,9 @@ class WebScanner:
                         new_findings.append(
                             self._dom_xss_finding(proof),
                         )
+                poison = self._browser_cache_poison_probe(engine)
+                if poison is not None:
+                    new_findings.append(poison)
         except Exception as e:
             logger.warning(
                 "Browser XSS phase failed after %d finding(s): %s",
@@ -1585,6 +1615,92 @@ class WebScanner:
         )
         self._phases_completed.append("browser_xss")
         return new_findings
+
+    def _browser_cache_poison_probe(self, engine) -> WebFinding | None:
+        """Render-level host-poisoning oracle (needs --oob-listen too).
+
+        Prime a cache-busted URL with X-Forwarded-Host set to the
+        listener's host, render the SAME URL in the browser, and check
+        whether the generated markup made the page request resources
+        from that host. The origin gate blocks the request — the
+        blocked-attempt record IS the evidence: poisoned URL
+        generation is proven without a byte leaving the target origin.
+        Generation proof, not cache-hit proof, so needs_review.
+        """
+        if self.oob_listener is None:
+            return None
+        import secrets as _secrets
+
+        listener_host = (self._resolve_oob_host() or "").lower()
+        if not listener_host:
+            return None
+        buster = _secrets.token_hex(6)
+        probe_url = f"{self.base_url}/?raptorcb={buster}"
+        try:
+            self.client.get(
+                probe_url,
+                headers={"X-Forwarded-Host": listener_host},
+            )
+        except Exception:
+            logger.debug("cache-poison prime failed", exc_info=True)
+            return None
+        # Snapshot/diff: earlier Phase 6b renders may already have
+        # blocked the listener host (a page echoing an earlier-phase
+        # canary URL is enough) — only attempts recorded DURING the
+        # probe render count as evidence.
+        before = set(engine.blocked_hosts)
+        rendered = engine.render(probe_url)
+        newly_blocked = set(engine.blocked_hosts) - before
+        if rendered is None or listener_host not in newly_blocked:
+            return None
+        auth_ctx = "authenticated" if self.session else "unauthenticated"
+        self._finding_counter += 1
+        return WebFinding(
+            id=f"WEB-{self._finding_counter:04d}",
+            title=(
+                "Host-poisoned markup -- rendered page requested "
+                "resources from the injected host"
+            ),
+            severity="high",
+            confidence="medium",
+            status="needs_review",
+            url=probe_url,
+            evidence=(
+                "After priming the URL with X-Forwarded-Host set to "
+                f"the run's listener host ({listener_host}), rendering "
+                "the same URL produced markup that made the browser "
+                "request resources from that host (attempt recorded "
+                "and blocked by the origin gate — no bytes left the "
+                "target origin). URL generation from the forwarded "
+                "host is proven; whether a shared cache would serve "
+                "the poisoned copy to other users needs manual "
+                "cache-behavior verification."
+            ),
+            description=(
+                "The application builds resource URLs from the "
+                "X-Forwarded-Host header; with a caching layer this is "
+                "the web-cache-poisoning prerequisite."
+            ),
+            recommendation=(
+                "Never derive absolute URLs from forwarded-host "
+                "headers; key caches on the full effective host and "
+                "validate it against an allowlist."
+            ),
+            vuln_type="host_header",
+            asvs_category="V14", check_id="V14.5.4",
+            auth_context=auth_ctx,
+            cwe_id="CWE-644",
+            confirmed=False,
+            target_url=probe_url,
+            confirmation_payload=listener_host,
+            response_evidence=(
+                f"browser attempted (blocked) fetch from {listener_host}"
+            ),
+            attack_vector="host_poisoned_markup",
+            method="GET",
+            affected_parameters=["X-Forwarded-Host"],
+            oracle_signal="cache_poison_render",
+        )
 
     def _dom_xss_finding(self, proof) -> WebFinding:
         auth_ctx = "authenticated" if self.session else "unauthenticated"
@@ -1625,6 +1741,73 @@ class WebScanner:
             method="GET",
             affected_parameters=[proof.parameter],
             oracle_signal="xss_executed_in_dom",
+        )
+
+    def _oob_correlated_finding(self, expectation) -> WebFinding:
+        """Windowed-expectation hits: corroboration, NEVER confirmation.
+
+        No token could ride the injected value (bare-host position),
+        so the match is path-plus-window — exactly the ambiguity the
+        exact-token replay exists to kill. The finding stays
+        needs_review at low confidence with the callback record
+        attached; the operator judges whether the fetching agent is
+        the application or an appliance.
+        """
+        context = expectation.context
+        hit = expectation.hits[0]
+        auth_ctx = "authenticated" if self.session else "unauthenticated"
+        self._finding_counter += 1
+        marker_note = (
+            f"path marker {expectation.path_marker!r}"
+            if expectation.path_marker else "any path"
+        )
+        return WebFinding(
+            id=f"WEB-{self._finding_counter:04d}",
+            title=(
+                f"Out-of-band corroboration -- {context.kind} probe "
+                "drew an inbound request"
+            ),
+            severity="high",
+            confidence="low",
+            status="needs_review",
+            url=context.url,
+            evidence=(
+                f"After injecting the listener host into "
+                f"'{context.param}', an inbound request matching "
+                f"{marker_note} arrived within the expectation window: "
+                f"{hit.method} {hit.path} from {hit.source_ip} "
+                f"(User-Agent: {hit.user_agent}); "
+                f"{len(expectation.hits)} hit(s) total. Bare-host "
+                "positions carry no token, so this is a window-plus-"
+                "path correlation — treat as corroboration of the "
+                "check's reflection evidence, not as proof."
+            ),
+            description=(
+                f"A bare-host out-of-band probe via '{context.param}' "
+                f"({context.kind}) was followed by an inbound request "
+                "consistent with the injected host being used to build "
+                "a URL server-side."
+            ),
+            recommendation=(
+                "Validate forwarded-host headers against an allowlist "
+                "and never use them to construct links, redirects, or "
+                "outbound requests."
+            ),
+            vuln_type="ssrf" if context.kind == "ssrf" else "host_header",
+            asvs_category="V13", check_id="V13.1.1",
+            auth_context=auth_ctx,
+            cwe_id="CWE-644",
+            confirmed=False,
+            target_url=context.url,
+            confirmation_payload=str(context.extra.get("injected") or ""),
+            response_evidence=(
+                f"in-window callback: {hit.method} {hit.path} from "
+                f"{hit.source_ip}"
+            ),
+            attack_vector="oob_expectation",
+            method=context.method,
+            affected_parameters=[context.param],
+            oracle_signal="oob_callback_correlated",
         )
 
     def _sage_attach_priors(self) -> None:

@@ -110,6 +110,11 @@ class BrowserEngine:
         self._browser: Any = None
         self._context: Any = None
         self._blocked_requests = 0
+        # Hosts the gate refused (bounded): blocked-attempt records are
+        # evidence in their own right — a poisoned page whose generated
+        # markup references an attacker-controllable host proves the
+        # generation without letting a single byte leave.
+        self._blocked_hosts: list[str] = []
 
     # -- lifecycle -----------------------------------------------------
 
@@ -204,6 +209,7 @@ class BrowserEngine:
 
         if not self._same_origin(route.request.url):
             self._blocked_requests += 1
+            self._note_blocked(route.request.url)
             route.abort()
             return
         try:
@@ -267,10 +273,22 @@ class BrowserEngine:
         # (close() here would deadlock — the sync handler runs on the
         # event loop that close() needs to make progress.)
         self._blocked_requests += 1
+        self._note_blocked(ws_route.url)
+
+    def _note_blocked(self, url: str) -> None:
+        if len(self._blocked_hosts) >= 256:
+            return
+        host = urlparse(url).netloc.lower()
+        if host and host not in self._blocked_hosts:
+            self._blocked_hosts.append(host)
 
     @property
     def blocked_requests(self) -> int:
         return self._blocked_requests
+
+    @property
+    def blocked_hosts(self) -> list[str]:
+        return list(self._blocked_hosts)
 
     # -- rendered crawl ----------------------------------------------------
 

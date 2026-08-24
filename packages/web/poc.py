@@ -96,6 +96,13 @@ def _comment_text(value: object) -> str:
 
 _OOB_VECTORS = ("oob_callback", "oob_callback_header")
 
+# Corroboration-tier vectors (windowed-expectation hits, poisoned-
+# render generation proof): needs_review by construction, so they get
+# NO artifacts — a reproducer would bake the scan-time listener host
+# into a wrong-shaped curl, and a template would fabricate a matcher.
+# The probe instructions live in the finding's evidence text.
+_UNPROVEN_VECTORS = ("oob_expectation", "host_poisoned_markup")
+
 # The operator substitutes their own listener at run time; the shell
 # parameter guard makes the script refuse to run without one instead
 # of silently curling a placeholder.
@@ -157,6 +164,8 @@ def build_reproducer(finding: WebFinding) -> str | None:
     data = finding.to_dict()
     if not has_exploit_oracle_evidence(data):
         return None
+    if data.get("attack_vector") in _UNPROVEN_VECTORS:
+        return None
     if data.get("attack_vector") in _OOB_VECTORS:
         return _oob_reproducer(data)
     method, url, body = _confirmation_request(finding)
@@ -189,10 +198,11 @@ def build_nuclei_template(finding: WebFinding) -> str | None:
     data = finding.to_dict()
     if not has_exploit_oracle_evidence(data):
         return None
-    if data.get("attack_vector") in _OOB_VECTORS:
-        # No response marker exists for callback-verified findings —
-        # a template would fabricate a matcher. The reproducer script
-        # is the replay artifact for these.
+    if data.get("attack_vector") in (_OOB_VECTORS + _UNPROVEN_VECTORS):
+        # No response marker exists for callback-verified or
+        # corroboration-tier findings — a template would fabricate a
+        # matcher. The reproducer script is the replay artifact for
+        # the token-verified ones; the corroboration tier gets none.
         return None
     vuln_type = str(data.get("vuln_type") or "")
     method, url, body = _confirmation_request(finding)

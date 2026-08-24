@@ -84,6 +84,22 @@ class Check(abc.ABC):
     # the check itself. None when no listener is configured; checks
     # must degrade to their reflection-grade logic silently.
     oob_mint = None
+    # Bare-host companion hooks for positions that cannot carry a URL
+    # (Host, X-Forwarded-Host): oob_host resolves the listener's
+    # reachable host:port LAZILY at use time (so wiring a check never
+    # starts the listener — a passive receipt's checks are wired but
+    # never probe), and oob_expect(context, path_marker=...) opens a
+    # windowed path-scoped expectation. Expectation hits are the LOWER
+    # correlation tier (no token can ride) — Phase 6o reports them as
+    # needs_review corroboration, never as confirmation.
+    _oob_host_resolver = None
+    oob_expect = None
+
+    @property
+    def oob_host(self):
+        if self._oob_host_resolver is None:
+            return None
+        return self._oob_host_resolver()
 
     def __init__(self, llm: "LLMClient | None" = None) -> None:
         self.llm = llm

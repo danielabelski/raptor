@@ -82,6 +82,32 @@ class HostHeaderInjectionCheck(Check):
             except Exception:
                 continue
 
+        # Bare-host out-of-band leg: no token can ride a host value, so
+        # a probe with the LISTENER's host opens a windowed any-path
+        # expectation instead — an inbound request within the window is
+        # CORROBORATION Phase 6o reports at needs_review, never
+        # confirmation (that ambiguity is why the exact-token tier
+        # exists). Silent without a listener.
+        if self.oob_host and self.oob_expect:
+            from packages.web.oob import OobContext
+            probed = list(_OVERRIDE_HEADERS[:2])
+            try:
+                # ONE expectation for all probed headers: an inbound
+                # hit carries no token, so attributing it to a single
+                # header would claim more than the evidence supports.
+                self.oob_expect(OobContext(
+                    url=target_url,
+                    param="/".join(probed),
+                    kind="host_header",
+                    extra={"injected": self.oob_host},
+                ))
+                for header_name in probed:
+                    client.get(
+                        "/", headers={header_name: self.oob_host},
+                    )
+            except Exception:
+                pass
+
         return findings
 
 
@@ -134,6 +160,38 @@ class PasswordResetPoisoningCheck(Check):
                         ),
                         severity="high", asvs_ref="ASVS 5.0 V5.1.11",
                     )]
+
+                # Bare-host out-of-band leg: the reset link's path is
+                # built by the APPLICATION, so no token can ride —
+                # open a windowed expectation scoped to reset-shaped
+                # paths and re-probe with the listener's host. An
+                # in-window hit (the mail pipeline, a link scanner, or
+                # the app itself dereferencing the poisoned link) is
+                # corroboration Phase 6o reports at needs_review,
+                # never confirmation. Same intrusive tier as the rest
+                # of this check — the probe may trigger a real reset
+                # email.
+                if self.oob_host and self.oob_expect:
+                    from packages.web.oob import OobContext
+                    if not getattr(self, "_reset_expectation_open", False):
+                        # One expectation per check run — hits carry
+                        # no token, so per-candidate registrations
+                        # would multiply findings from a single
+                        # unattributable inbound request.
+                        self._reset_expectation_open = True
+                        self.oob_expect(
+                            OobContext(
+                                url=target_url.rstrip("/") + path,
+                                param="X-Forwarded-Host",
+                                kind="reset_poisoning",
+                                extra={"injected": self.oob_host},
+                            ),
+                            path_marker="reset",
+                        )
+                    client.get(
+                        path,
+                        headers={"X-Forwarded-Host": self.oob_host},
+                    )
             except Exception:
                 continue
         return []

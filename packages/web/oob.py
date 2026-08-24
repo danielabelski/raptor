@@ -40,6 +40,10 @@ _MAX_TOKENS = 4096
 # Recorded hits are bounded so a hostile target cannot balloon memory
 # by hammering the listener.
 _MAX_HITS_PER_TOKEN = 20
+# Scoped expectations (see OobListener.expect): far fewer than tokens —
+# one per bare-host injection point.
+_MAX_EXPECTATIONS = 256
+_MAX_HITS_PER_EXPECTATION = 10
 # Idle-connection reap + live-connection cap: the listener faces the
 # hostile network by design, and every held-open connection pins a
 # handler thread — without these, a slowloris peer kills the scan.
@@ -98,6 +102,25 @@ class OobContext:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class OobExpectation:
+    """A WINDOWED, path-scoped callback expectation — the lower
+    correlation tier for injection points that can only carry a bare
+    host (X-Forwarded-Host, Host), where no token can ride: the
+    application builds the path itself (a reset link, a cache-key
+    URL), so hits are matched by path marker + time window instead of
+    an exact token. This tier NEVER confirms anything by itself —
+    consumers must keep such findings at needs_review with the
+    callback attached as corroboration, because a window-plus-path
+    match is exactly the ambiguity the exact-token replay exists to
+    kill."""
+
+    context: OobContext
+    path_marker: str          # substring the hit's path must carry; "" = any
+    expires_at: float
+    hits: list[OobHit] = field(default_factory=list)
+
+
 class OobListener:
     """HTTP callback listener with token mint/correlate/replay support.
 
@@ -125,6 +148,7 @@ class OobListener:
         self._lock = threading.Lock()
         self._contexts: dict[str, OobContext] = {}
         self._hits: dict[str, list[OobHit]] = {}
+        self._expectations: list[OobExpectation] = []
         self._unknown_token_requests = 0
 
     # -- lifecycle ---------------------------------------------------------
@@ -202,11 +226,39 @@ class OobListener:
             self._contexts[token] = context
         return f"{self.callback_base}/{token}"
 
+    def expect(
+        self,
+        context: OobContext,
+        *,
+        path_marker: str = "",
+        window_s: float = 300.0,
+    ) -> OobExpectation:
+        """Register a windowed, path-scoped expectation (see
+        OobExpectation). Returns the registration for later
+        inspection."""
+        with self._lock:
+            if len(self._expectations) >= _MAX_EXPECTATIONS:
+                msg = "OOB expectation budget exhausted"
+                raise RuntimeError(msg)
+            expectation = OobExpectation(
+                context=context,
+                path_marker=path_marker,
+                expires_at=time.time() + window_s,
+            )
+            self._expectations.append(expectation)
+            return expectation
+
+    def correlated_expectations(self) -> list[OobExpectation]:
+        """Expectations that received at least one in-window hit."""
+        with self._lock:
+            return [e for e in self._expectations if e.hits]
+
     def _record(self, handler: BaseHTTPRequestHandler) -> None:
         match = _TOKEN_RE.match(handler.path or "")
         token = match.group(1) if match else None
         with self._lock:
             if token is None or token not in self._contexts:
+                self._record_expectation_hit(handler)
                 self._unknown_token_requests += 1
                 return
             hits = self._hits.setdefault(token, [])
@@ -221,6 +273,33 @@ class OobListener:
                     str(handler.headers.get("User-Agent", "")), 256,
                 ),
                 received_at=time.time(),
+            ))
+
+    def _record_expectation_hit(
+        self, handler: BaseHTTPRequestHandler,
+    ) -> None:
+        """Lock held by caller. Non-token requests match open
+        expectations by path marker within their window."""
+        now = time.time()
+        path = _strip_ctl(str(handler.path or ""), 256)
+        for expectation in self._expectations:
+            if now > expectation.expires_at:
+                continue
+            if expectation.path_marker and (
+                expectation.path_marker not in path
+            ):
+                continue
+            if len(expectation.hits) >= _MAX_HITS_PER_EXPECTATION:
+                continue
+            expectation.hits.append(OobHit(
+                token="",
+                path=path,
+                method=_strip_ctl(str(handler.command), 16),
+                source_ip=str(handler.client_address[0]),
+                user_agent=_strip_ctl(
+                    str(handler.headers.get("User-Agent", "")), 256,
+                ),
+                received_at=now,
             ))
 
     def hits_for(self, token: str) -> list[OobHit]:
@@ -253,6 +332,10 @@ class OobListener:
             return {
                 "tokens_minted": len(self._contexts),
                 "tokens_hit": sum(1 for h in self._hits.values() if h),
+                "expectations": len(self._expectations),
+                "expectations_hit": sum(
+                    1 for e in self._expectations if e.hits
+                ),
                 "unknown_token_requests": self._unknown_token_requests,
             }
 

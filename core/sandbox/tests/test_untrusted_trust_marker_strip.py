@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from core.sandbox import context as _ctx
+from core.sandbox._env_quarantine import ENV_RESTORE_KEY
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -265,3 +266,39 @@ def test_run_untrusted_has_no_keep_opt_out(monkeypatch, tmp_path):
             output=str(tmp_path / "output"),
             keep_trust_markers=True,
         )
+
+
+@pytest.mark.integration
+def test_untrusted_child_env_carries_no_identity_tells(monkeypatch, tmp_path):
+    """Whatever backend spawns the child, its env must not name the
+    RAPTOR checkout, the operator, or the host."""
+    _require_sandbox()
+    env_bin = shutil.which("env") or "/usr/bin/env"
+    monkeypatch.setenv("RAPTOR_DIR", str(_REPO_ROOT))
+    monkeypatch.setenv("USER", "someoperator")
+    monkeypatch.setenv("LOGNAME", "someoperator")
+    monkeypatch.setenv("HOSTNAME", "somehost")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result = _ctx.run_untrusted(
+        [env_bin],
+        output=str(out_dir),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"env exited {result.returncode}: {result.stderr!r}"
+    )
+    assert "PATH=" in result.stdout, "child env output looks empty"
+    for tell in ("RAPTOR_DIR=", "HOSTNAME=",
+                 "PWD=", "OLDPWD=", f"{ENV_RESTORE_KEY}="):
+        assert tell not in result.stdout, (
+            f"identity tell {tell!r} leaked into the untrusted child env"
+        )
+    # USER/LOGNAME may be present, but only as the fake-home neutral
+    # identity — never the operator's login name.
+    for line in result.stdout.splitlines():
+        if line.startswith(("USER=", "LOGNAME=")):
+            assert line.endswith("=sandbox"), (
+                f"operator identity leaked: {line!r}"
+            )
+        assert "someoperator" not in line, f"operator name leaked: {line!r}"

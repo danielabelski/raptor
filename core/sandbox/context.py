@@ -2474,9 +2474,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # backend, seatbelt, Landlock-only subprocess) has both
         # markers removed; the shim-bearing unshare path keeps them
         # because the shim itself strips both before exec'ing the
-        # target (see raptor-pid1-shim). RAPTOR_DIR is deliberately
-        # NOT stripped: it is not accepted by the libexec trust gate
-        # and children may derive tool paths from it.
+        # target (see raptor-pid1-shim). RAPTOR_DIR is stripped on
+        # the same contract (direct paths here; shim path via the
+        # --strip-raptor-dir argv flag): the libexec trust gate never
+        # accepted it, in-tree sandboxed children self-anchor via
+        # __file__, and to an untrusted target it is a pure "inside
+        # RAPTOR at <path>" tell. Dispatch children keep it alongside
+        # the markers (keep_trust_markers_for_dispatch).
         strip_trust_markers = kwargs.pop("strip_trust_markers", False)
         # ``keep_trust_markers_for_dispatch``: the ONLY sanctioned way
         # to keep CLAUDECODE/_RAPTOR_TRUSTED in a sandboxed target's
@@ -2545,6 +2549,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 _scrubbed = dict(kwargs["env"])
                 _scrubbed.pop("PWD", None)
                 _scrubbed.pop("OLDPWD", None)  # belt-and-braces (allowlist already drops it)
+                # Host-identity tells: the operator's login name and
+                # the machine hostname identify the analysis host to
+                # the sandboxed target. Tools that genuinely need a
+                # user name fall back to getpwuid(), which the env
+                # cannot fix (documented residual — the mount-ns
+                # map-root path presents ns-root there anyway).
+                _scrubbed.pop("USER", None)
+                _scrubbed.pop("LOGNAME", None)
+                _scrubbed.pop("HOSTNAME", None)
                 _home_prefix = os.path.expanduser("~")
                 _path_val = _scrubbed.get("PATH")
                 if _path_val:
@@ -2668,9 +2681,24 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # exec) still works.
         _env_for_target = kwargs["env"]
         if strip_trust_markers:
+            # RAPTOR_DIR joins the strip on untrusted-target paths:
+            # the libexec trust gate never accepted it, no sandboxed
+            # child legitimately derives paths from it (libexec
+            # scripts self-anchor via __file__; the netns coordinator
+            # exports its own), and to an untrusted target it is a
+            # pure "you are inside RAPTOR at <checkout path>" tell.
+            # Dispatch children that DO need it keep it via
+            # keep_trust_markers_for_dispatch (marker handling itself
+            # is unchanged: the keep decision reaches the shim path as
+            # argv, and direct paths strip markers exactly as before).
+            _strip_keys = (
+                ("CLAUDECODE", "_RAPTOR_TRUSTED")
+                if keep_trust_markers_for_dispatch
+                else ("CLAUDECODE", "_RAPTOR_TRUSTED", "RAPTOR_DIR")
+            )
             _env_for_target = {
                 k: v for k, v in kwargs["env"].items()
-                if k not in ("CLAUDECODE", "_RAPTOR_TRUSTED")
+                if k not in _strip_keys
             }
         if "_RAPTOR_KEEP_TRUST_MARKERS" in _env_for_target:
             # Internal control flag for the pid1 shim only (see
@@ -3126,6 +3154,11 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # that call, keyed on the wrapper-level strip_trust_markers
             # contract (run_untrusted_networked(keep_trust_markers=
             # True) is the sole legitimate minting site).
+            # Untrusted-target contract: RAPTOR_DIR strip decision
+            # travels out-of-band like the keep decision — flag order
+            # matters (the shim parses --strip-raptor-dir first).
+            if strip_trust_markers and not keep_trust_markers_for_dispatch:
+                _shim_argv.append("--strip-raptor-dir")
             if keep_trust_markers_for_dispatch:
                 _shim_argv.append("--keep-trust-markers")
             full_cmd = unshare_cmd + ["--"] + prlimit_wrapper + _shim_argv + cmd
@@ -5259,9 +5292,10 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
     The trust markers (``CLAUDECODE`` / ``_RAPTOR_TRUSTED``) are
     stripped from the child environment so a target-spawned process
     cannot invoke RAPTOR's ``libexec/`` scripts as a "trusted caller"
-    — it hits their refusal path instead. ``RAPTOR_DIR`` is kept: the
-    libexec trust gate does not accept it and children may derive
-    tool paths from it.
+    — it hits their refusal path instead. ``RAPTOR_DIR`` is stripped
+    on the same contract: the libexec trust gate does not accept it
+    and an untrusted target has no legitimate use for the checkout
+    path.
 
     `**kwargs` forwards to run() — composable with audit/audit_verbose
     (audit-mode applies to the run_untrusted's full-strict profile),

@@ -224,6 +224,19 @@ def main() -> int:
     # untrusted code; an argv flag can only come from the code that
     # builds this command line.
     keep_trust_markers = False
+    # --strip-raptor-dir (from context.run() ONLY, set on the
+    # untrusted-target contract): also remove RAPTOR_DIR at target
+    # exec. Out-of-band for the same reason as --keep-trust-markers.
+    strip_raptor_dir = False
+    if target_argv and target_argv[0] == "--strip-raptor-dir":
+        target_argv = target_argv[1:]
+        strip_raptor_dir = True
+        if not target_argv:
+            sys.stderr.write(
+                "raptor-pid1-shim: missing target argv after "
+                "--strip-raptor-dir\n"
+            )
+            sys.exit(125)
     if target_argv and target_argv[0] == "--keep-trust-markers":
         target_argv = target_argv[1:]
         keep_trust_markers = True
@@ -355,6 +368,12 @@ def main() -> int:
                 ("_RAPTOR_DEATH_FD",) if keep_trust_markers
                 else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE")
             )
+            if strip_raptor_dir and not keep_trust_markers:
+                # Untrusted-target contract (--strip-raptor-dir): the
+                # checkout path is a pure "inside RAPTOR" tell — no
+                # libexec script accepts it as a trust input and an
+                # untrusted target has no legitimate use for it.
+                _strip = (*_strip, "RAPTOR_DIR")
             for _m in _strip:
                 os.environ.pop(_m, None)
             # Re-apply quarantined loader variables (LD_*/DYLD_*) for

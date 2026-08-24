@@ -555,7 +555,7 @@ setting them manually either does nothing or weakens a boundary.
 
 | Variable | Set by | Purpose |
 |----------|--------|---------|
-| `RAPTOR_DIR` | `bin/raptor` (exported after symlink resolution) | Installation root; children derive libexec/tool paths. `get_safe_env()` **re-pins** it to the current tree so a multi-checkout operator's ambient value cannot cross-import trees. The only value ever added to `sys.path`. |
+| `RAPTOR_DIR` | `bin/raptor` (exported after symlink resolution) | Installation root; RAPTOR's own children derive libexec/tool paths. `get_safe_env()` **re-pins** it to the current tree so a multi-checkout operator's ambient value cannot cross-import trees. The only value ever added to `sys.path`. Stripped from untrusted-target envs (`strip_trust_markers` on direct paths, `--strip-raptor-dir` on the pid1-shim path) — the checkout path is a pure "inside RAPTOR" tell there; dispatch children keep it. |
 | `RAPTOR_CALLER_DIR` | `bin/raptor` | Operator's `$PWD` at launch; default-target resolution for commands run without a path. Refuses control bytes. |
 | `_RAPTOR_TRUSTED` | `bin/raptor`, sandbox shims | Trust marker: `libexec/` scripts exit 2 unless it or `CLAUDECODE` is present. Stripped from target-bound envs (`strip_trust_markers`) so target-spawned processes cannot invoke libexec as trusted callers. Power users may set `_RAPTOR_TRUSTED=1` to drive libexec scripts directly — with the understanding that it bypasses the dispatch guard. |
 | `CLAUDECODE` | Claude Code | Same trust-marker role, set by the harness for its child processes; allowlisted, stripped from untrusted targets. |

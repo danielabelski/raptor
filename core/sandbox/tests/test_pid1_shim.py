@@ -279,3 +279,45 @@ class TestPid1ShimDeathPipe(unittest.TestCase):
                 orch.kill()
                 orch.wait()
             subprocess.run(["pkill", "-9", "-f", marker], capture_output=True)
+
+
+class TestPid1ShimRaptorDirStrip(unittest.TestCase):
+    """--strip-raptor-dir: the untrusted-target contract removes the
+    checkout-path tell at target exec (out-of-band argv flag, same
+    posture as --keep-trust-markers)."""
+
+    def setUp(self):
+        if not SHIM_PATH.is_file() or not os.access(SHIM_PATH, os.X_OK):
+            self.skipTest("shim missing/not executable")
+
+    _PROBE = ("import os;"
+              "print('RD=' + os.environ.get('RAPTOR_DIR', '<unset>'))")
+
+    def test_strip_raptor_dir_flag(self):
+        r = subprocess.run(
+            [str(SHIM_PATH), "--strip-raptor-dir",
+             _sys.executable, "-c", self._PROBE],
+            capture_output=True, text=True, timeout=10,
+            env=dict(os.environ, _RAPTOR_TRUSTED="1",
+                     RAPTOR_DIR="/somewhere/raptor"),
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("RD=<unset>", r.stdout)
+
+    def test_no_flag_keeps_raptor_dir(self):
+        r = subprocess.run(
+            [str(SHIM_PATH), _sys.executable, "-c", self._PROBE],
+            capture_output=True, text=True, timeout=10,
+            env=dict(os.environ, _RAPTOR_TRUSTED="1",
+                     RAPTOR_DIR="/somewhere/raptor"),
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("RD=/somewhere/raptor", r.stdout)
+
+    def test_strip_raptor_dir_missing_target_argv(self):
+        r = subprocess.run(
+            [str(SHIM_PATH), "--strip-raptor-dir"],
+            capture_output=True, text=True, timeout=10,
+            env=dict(os.environ, _RAPTOR_TRUSTED="1"),
+        )
+        self.assertEqual(r.returncode, 125)

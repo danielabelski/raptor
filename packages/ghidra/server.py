@@ -41,6 +41,7 @@ from .project_util import prepare_working_copy
 logger = logging.getLogger(__name__)
 
 _BOOT_TIMEOUT_S = 60
+_MAX_RESTARTS = 3
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _REQUEST_TIMEOUT_S = 300
 _SHUTDOWN_GRACE_S = 5
@@ -48,6 +49,11 @@ _SHUTDOWN_GRACE_S = 5
 
 class GhidraServerError(Exception):
     """Raised when the Ghidra server fails to boot or serve."""
+
+
+class GhidraServerDied(GhidraServerError):
+    """The worker process died mid-run (watchdog self-kill on a
+    wedged JVM call, crash, sandbox reap). restart() recovers."""
 
 
 class GhidraServer:
@@ -77,6 +83,9 @@ class GhidraServer:
         self._result: Dict[str, Any] = {}
         self._req_id = 0
         self._lock = threading.Lock()
+        self._boot_seq = 0
+        self._restarts = 0
+        self._opened_program: Optional[str] = None
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -92,7 +101,30 @@ class GhidraServer:
         )
         work_gpr = prepare_working_copy(self.gpr_path, self._work_dir)
         self._work_gpr = work_gpr
-        socket_path = self._work_dir / "worker.sock"
+        try:
+            self._boot()
+        except BaseException:
+            # First-boot failure tears down (a raising __enter__
+            # never reaches __exit__, so callers can't clean up).
+            # restart() deliberately does NOT get this treatment —
+            # a failed REBOOT must not destroy the working copy and
+            # its saved enrichments.
+            self.stop()
+            raise
+
+    def _boot(self) -> None:
+        """Boot one sandboxed worker against the prepared work dir."""
+        self._boot_seq += 1
+        self._result = {}
+        socket_path = self._work_dir / f"worker-{self._boot_seq}.sock"
+        # The work dir is worker-writable: a hostile worker from a
+        # previous boot can squat the predictable next socket name to
+        # make the replacement die at bind. Clear anything there.
+        try:
+            if socket_path.is_symlink() or socket_path.exists():
+                socket_path.unlink()
+        except OSError:
+            pass
 
         worker = Path(__file__).parent / "server_worker.py"
         cmd = [
@@ -188,9 +220,7 @@ class GhidraServer:
                 f"worker did not come up within {_BOOT_TIMEOUT_S}s"
             )
         except BaseException:
-            # Every boot failure tears down (a raising __enter__
-            # never reaches __exit__, so callers can't clean up).
-            self.stop()
+            self._disconnect()
             raise
 
     def stop(self) -> None:
@@ -213,6 +243,59 @@ class GhidraServer:
         finally:
             if self._work_dir is not None and not self._thread_alive():
                 shutil.rmtree(self._work_dir, ignore_errors=True)
+                # Consistent object protocol: a stopped server is
+                # stopped — restart()/start() see the nulled state
+                # instead of booting against a deleted dir.
+                self._work_dir = None
+                self._work_gpr = None
+
+    def restart(self) -> None:
+        """Boot a fresh worker after the previous one died mid-run.
+
+        Recovers from a watchdog self-kill (a request wedged in native
+        JVM code makes the worker answer with an error and exit) or
+        any other worker death, without losing the working copy: the
+        replacement opens the same on-disk project, so saved
+        enrichments survive; unsaved ones from the dead worker are
+        lost. Refuses while the old worker is still alive — its JVM
+        holds the project lock, and a second opener on a live project
+        risks corrupting the working copy; the sandbox lifetime cap
+        remains the backstop for that case.
+        """
+        if self._work_dir is None or self._work_gpr is None:
+            raise GhidraServerError(
+                "server not started (or already stopped)"
+            )
+        if self._restarts >= _MAX_RESTARTS:
+            raise GhidraServerError(
+                f"restart budget ({_MAX_RESTARTS}) exhausted — a "
+                "worker dying this often is a hostile or broken "
+                "project; giving up for this run"
+            )
+        # Liveness check BEFORE touching the connection: refusing a
+        # restart on a live worker must leave that worker usable.
+        if self._thread is not None:
+            self._thread.join(timeout=_SHUTDOWN_GRACE_S)
+            if self._thread.is_alive():
+                raise GhidraServerError(
+                    "old worker still running — refusing to restart "
+                    "over a live project lock"
+                )
+        self._restarts += 1
+        self._disconnect()
+        # The dead worker cannot release its Ghidra lock file.
+        lock = self._work_gpr.parent / f"{self._work_gpr.stem}.lock"
+        for stale in (lock, lock.with_suffix(".lock~")):
+            try:
+                if stale.is_file() or stale.is_symlink():
+                    stale.unlink()
+            except OSError:
+                pass
+        logger.info("ghidra server: restarting worker (boot %d)",
+                    self._boot_seq + 1)
+        self._boot()
+        if self._opened_program is not None:
+            self.open()
 
     def _thread_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -268,12 +351,32 @@ class GhidraServer:
                 # Bounded read: an unbounded readline() would buffer
                 # a hostile newline-free response wholesale.
                 line = self._stream.readline(_MAX_RESPONSE_BYTES + 1)
+            except socket.timeout:
+                # A half-read stream can never re-frame; the worker's
+                # own watchdog is stricter than this socket timeout,
+                # so reaching here means the worker died without
+                # answering. restart() recovers.
+                self._disconnect()
+                raise GhidraServerDied(
+                    "request timed out with the stream desynchronized "
+                    "— call restart() to boot a fresh worker"
+                ) from None
+            except OSError as e:
+                # Broken pipe / connection reset: the worker died
+                # between requests (watchdog kill, crash, sandbox
+                # reap) and the write or read surfaced it.
+                self._disconnect()
+                raise GhidraServerDied(
+                    f"worker connection lost ({type(e).__name__}) — "
+                    "call restart() to boot a fresh worker"
+                ) from e
             finally:
                 if timeout is not None and self._sock is not None:
                     self._sock.settimeout(_REQUEST_TIMEOUT_S)
         if not line:
-            raise GhidraServerError(
-                "worker closed the connection: "
+            raise GhidraServerDied(
+                "worker closed the connection (restart() boots a "
+                "fresh worker): "
                 f"{self._result.get('stderr', '')[-500:]}"
             )
         if len(line) > _MAX_RESPONSE_BYTES:
@@ -292,6 +395,9 @@ class GhidraServer:
                 "worker response id mismatch — desynchronized stream"
             )
         if not resp.get("ok"):
+            if resp.get("worker_exiting"):
+                raise GhidraServerDied(
+                    resp.get("error", "worker watchdog kill"))
             raise GhidraServerError(
                 resp.get("error", "unknown worker error"))
         return resp
@@ -300,11 +406,28 @@ class GhidraServer:
 
     def open(self) -> Dict[str, Any]:
         """Open the working copy in the worker's JVM."""
-        return self._request({
+        program = self._opened_program or self.program_name
+        if program is not None:
+            # Program names originate in the hostile project's own
+            # database — the same validation the headless -process
+            # path applies (dash-leading names become switches there;
+            # here they'd just misresolve, but stay consistent).
+            parts = str(program).strip("/").split("/")
+            if any(not p or p.startswith("-") or p == ".." for p in parts):
+                raise GhidraServerError(
+                    f"refusing suspicious program name: {program!r}"
+                )
+        resp = self._request({
             "op": "open",
             "gpr": str(self._work_gpr),
-            "program": self.program_name,
+            "program": program,
         })
+        # Remember what actually opened so a restarted worker reopens
+        # the same program even when the caller passed none.
+        opened = resp.get("opened")
+        if isinstance(opened, str) and opened:
+            self._opened_program = opened
+        return resp
 
     def list_programs(self) -> list:
         return self._request({"op": "list"})["programs"]

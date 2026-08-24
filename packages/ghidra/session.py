@@ -141,7 +141,7 @@ class GhidraSession:
                     f"failed to open project {project_name_str}: {e}"
                 ) from e
 
-            target_program = program_name
+            target_program = program_name.strip("/") if program_name else None
             if not target_program:
                 programs = self.list_programs()
                 if not programs:
@@ -184,7 +184,8 @@ class GhidraSession:
         )
 
     def list_programs(self) -> list[str]:
-        """List program names in the open project.
+        """List program paths in the open project (project-root
+        relative, so subfolder programs appear as ``sub/dir/prog``).
 
         Filters to actual imported programs (DomainFile objects whose
         content class is ProgramDB or similar), excluding data type
@@ -193,15 +194,22 @@ class GhidraSession:
         if not self._project:
             return []
 
-        root = self._project.getProjectData().getRootFolder()
-        names = []
-        for f in root.getFiles():
-            cls_name = str(f.getContentType())
-            if "Program" in cls_name:
-                names.append(str(f.getName()))
+        def walk(folder, prefix=""):
+            files = [(prefix + str(f.getName()), f)
+                     for f in folder.getFiles()]
+            for sub in folder.getFolders():
+                files.extend(walk(sub, prefix + str(sub.getName()) + "/"))
+            return files
+
+        entries = walk(self._project.getProjectData().getRootFolder())
+        names = [path for path, f in entries
+                 if "Program" in str(f.getContentType())]
         if not names:
-            names = sorted(str(f.getName()) for f in root.getFiles())
-        return sorted(names)
+            names = [path for path, _ in entries]
+        # Depth-first sort: root programs before subfolder programs,
+        # so the [0] default keeps the pre-subfolder-support choice
+        # (and matches the server worker's root-files-first default).
+        return sorted(names, key=lambda n: (n.count("/"), n))
 
     def export(self, *, decompile: bool = False) -> REDatabase:
         """Export the open program to an REDatabase.

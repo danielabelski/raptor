@@ -101,6 +101,35 @@ def _install_read_paths(headless: str) -> list[str]:
     return paths
 
 
+def _project_process_args(
+    project_name: str, program_name: Optional[str],
+) -> tuple:
+    """Resolve a possibly folder-qualified program name for headless.
+
+    ``analyzeHeadless`` addresses programs in project subfolders by
+    appending the folder path to the PROJECT NAME argument
+    (``proj/sub/dir``); ``-process`` takes only the leaf program
+    name. A bare name (no ``/``) passes through unchanged.
+    """
+    if not program_name:
+        return project_name, ["-process"]
+    stripped = program_name.strip("/")
+    # Program names come from the analysed project's own database
+    # (attacker-controlled): a dash-leading leaf would be parsed by
+    # analyzeHeadless as its next SWITCH (-deleteProject and friends),
+    # and an empty component would corrupt the project path. Refuse.
+    parts = stripped.split("/")
+    if any(not part or part.startswith("-") or part == ".." for part in parts):
+        raise GhidraError(
+            f"refusing suspicious program name: {program_name!r} "
+            "(empty, dash-leading, or traversal component)"
+        )
+    if len(parts) == 1:
+        return project_name, ["-process", stripped]
+    folder = "/".join(parts[:-1])
+    return f"{project_name}/{folder}", ["-process", parts[-1]]
+
+
 def export_project(
     gpr_path: Path,
     output_path: Path,
@@ -130,9 +159,9 @@ def export_project(
         GhidraError: If Ghidra is not installed or the export fails.
     """
     headless = _find_headless()
-    project_name_str = get_project_name(gpr_path)
-
-    process_args = ["-process", program_name] if program_name else ["-process"]
+    project_name_str, process_args = _project_process_args(
+        get_project_name(gpr_path), program_name,
+    )
 
     env = _safe_env()
 
@@ -348,13 +377,13 @@ def import_enrichments(
             ).strip(),
         )
 
-        process_args = (
-            ["-process", program_name] if program_name else ["-process"]
+        proc_project, process_args = _project_process_args(
+            dst_name, program_name,
         )
         cmd = [
             headless,
             str(dst_dir),
-            dst_name,
+            proc_project,
             *process_args,
             "-noanalysis",
             "-scriptPath", script_dir,

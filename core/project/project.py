@@ -618,7 +618,11 @@ class Project:
                          without session_pid).
         """
         from core.json import load_json
-        from core.run.metadata import RUN_METADATA_FILE, _pid_alive, fail_run
+        from core.run.metadata import (
+            RUN_METADATA_FILE,
+            _session_alive_for_meta,
+            fail_run,
+        )
 
         # Find all running dirs with their timestamps and PIDs
         running = []
@@ -628,18 +632,22 @@ class Project:
                 continue
             meta = load_json(meta_file)
             if isinstance(meta, dict) and meta.get("status") == "running":
-                running.append((meta.get("timestamp", ""), d, meta.get("session_pid")))
+                running.append((meta.get("timestamp", ""), d,
+                                meta.get("session_pid"), meta))
 
         if not running:
             return 0
 
         swept = 0
-        # Sort newest first for keep_latest
-        running.sort(reverse=True)
+        # Sort newest first for keep_latest (tuples compare on the
+        # timestamp; the dict tail never participates because (ts, dir)
+        # pairs are unique).
+        running.sort(key=lambda row: (row[0], str(row[1])), reverse=True)
 
-        for i, (_ts, d, pid) in enumerate(running):
-            # If session_pid is recorded and alive, skip — session will clean up
-            if pid is not None and _pid_alive(pid):
+        for i, (_ts, d, pid, meta) in enumerate(running):
+            # Recorded owner still alive (identity-checked when the
+            # metadata carries a stamp) — skip; the session cleans up.
+            if pid is not None and _session_alive_for_meta(meta):
                 continue
             # No PID (legacy run) — use keep_latest heuristic
             if pid is None and keep_latest and i == 0:

@@ -261,6 +261,8 @@ class TestFindClaudeAncestor(unittest.TestCase):
             except KeyError:
                 raise OSError(f"no such pid {pid}") from None
 
+        from core.project import sessions
+
         stack = contextlib.ExitStack()
         stack.enter_context(mock.patch.object(sys, "platform", "linux"))
         stack.enter_context(mock.patch.object(md.os, "getpid",
@@ -270,11 +272,25 @@ class TestFindClaudeAncestor(unittest.TestCase):
         stack.enter_context(mock.patch.object(md, "_read_ppid",
                                               _fake_read_ppid))
         stack.enter_context(mock.patch.object(md, "Path", _path_factory))
+        # The shared resolver lives in core.project.sessions and walks
+        # the same tree — give it the same fake comms and an isolated,
+        # empty registry (no entry-bearing ancestors unless a test
+        # writes one).
+        stack.enter_context(mock.patch.object(
+            sessions, "_comm", lambda pid: comms.get(pid)))
+        self._sessions_tmp = stack.enter_context(TemporaryDirectory())
+        stack.enter_context(mock.patch.object(
+            sessions, "SESSIONS_DIR",
+            Path(self._sessions_tmp) / "sessions.d"))
         return stack
 
     # pid 100 (test) -> 50 (bash) -> 40 (claude) -> 1 (init)
     _TREE = {100: 50, 50: 40, 40: 1}
     _COMMS = {50: "bash", 40: "claude"}
+    # pid 100 (test) -> 50 (claude subagent) -> 45 (bash)
+    #   -> 40 (claude SESSION) -> 1 (init)
+    _NESTED_TREE = {100: 50, 50: 45, 45: 40, 40: 1}
+    _NESTED_COMMS = {50: "claude", 45: "bash", 40: "claude"}
 
     def test_finds_claude_ancestor(self):
         """The walk returns the nearest ancestor whose comm is claude."""
@@ -314,6 +330,42 @@ class TestFindClaudeAncestor(unittest.TestCase):
                 self.assertEqual(meta["session_pid"], 40)
                 self.assertEqual(meta["session_pid"],
                                  _find_claude_ancestor())
+
+    def test_nested_claude_resolves_outermost(self):
+        """Beneath a nested ``claude -p`` subagent, the shared resolver
+        picks the OUTERMOST claude ancestor (the session), not the
+        nearest (the subagent) — one logical session, one identity
+        (design §4). ``_find_claude_ancestor`` itself stays
+        nearest-first for its remaining boolean consumers."""
+        from core.project.sessions import resolve_session_pid
+        from core.run.metadata import (
+            _find_claude_ancestor,
+            _get_session_pid,
+        )
+        with self._patch_tree(self._NESTED_TREE, self._NESTED_COMMS):
+            self.assertEqual(_find_claude_ancestor(), 50)
+            self.assertEqual(resolve_session_pid(), 40)
+            self.assertEqual(_get_session_pid(), 40)
+
+    def test_nested_claude_prefers_verified_entry_bearing(self):
+        """When an intermediate claude ancestor owns a VERIFIED registry
+        entry, it wins over the outermost — but a mere unverifiable
+        entry (recycled pid shape) must not."""
+        from unittest import mock
+
+        from core.project import sessions
+        with self._patch_tree(self._NESTED_TREE, self._NESTED_COMMS):
+            sessions.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+            (sessions.SESSIONS_DIR / "50").write_text(
+                "v=2\nproject=myapp\nsince=x\nstarttime=7\n"
+                "boot_id=b\npidns=1\n", encoding="utf-8")
+            # Unverifiable stamp → outermost still wins.
+            self.assertEqual(sessions.resolve_session_pid(), 40)
+            with mock.patch.object(sessions, "_identity_matches",
+                                   lambda pid, fields: pid == 50), \
+                    mock.patch.object(sessions, "_pid_running",
+                                      lambda pid: True):
+                self.assertEqual(sessions.resolve_session_pid(), 50)
 
 
 class TestIsRunDirectory(unittest.TestCase):
@@ -988,3 +1040,151 @@ class TestCoverageProgress(unittest.TestCase):
             start_run(run, "scan")
             complete_run(run)
             self.assertFalse((out / "coverage-progress.jsonl").exists())
+
+
+class TestSessionIdentityStamp(unittest.TestCase):
+    """Run-metadata identity stamps (design §19.4→v5 §5.1/§12): a
+    recycled claude PID must not keep a dead session's runs alive, a
+    resumed run must carry the RESUMING session's stamp, and unstamped
+    legacy metadata keeps the fail-open comm check."""
+
+    def _stamped_meta(self, pid: int, start: str = "7", boot: str = "b",
+                      pidns: str = "1") -> dict:
+        return {
+            "session_pid": pid,
+            "session_start": start,
+            "session_boot_id": boot,
+            "session_pidns": pidns,
+        }
+
+    def test_start_run_records_stamp(self):
+        import os
+        from unittest import mock
+
+        from core.project import sessions
+        from core.run.metadata import RUN_METADATA_FILE, start_run
+        with TemporaryDirectory() as d, \
+                mock.patch(
+                    "core.run.metadata._get_session_pid",
+                    return_value=os.getpid()), \
+                mock.patch.object(sessions, "proc_starttime",
+                                  lambda pid: "1234"), \
+                mock.patch.object(sessions, "boot_id", lambda: "boot-x"), \
+                mock.patch.object(sessions, "pidns_id", lambda: "42"):
+            out = Path(d) / "run"
+            start_run(out, "scan")
+            meta = load_json(out / RUN_METADATA_FILE)
+            self.assertEqual(meta["session_start"], "1234")
+            self.assertEqual(meta["session_boot_id"], "boot-x")
+            self.assertEqual(meta["session_pidns"], "42")
+
+    def test_stamp_mismatch_reads_dead(self):
+        """Live claude process at the pid, WRONG starttime — a recycled
+        pid; the owner is dead (closes forever-contention)."""
+        import os
+        from unittest import mock
+
+        from core.project import sessions
+        from core.run.metadata import _session_alive_for_meta
+        meta = self._stamped_meta(os.getpid(), start="999999")
+        with mock.patch.object(sessions, "boot_id", lambda: "b"), \
+                mock.patch.object(sessions, "pidns_id", lambda: "1"), \
+                mock.patch.object(sessions, "_comm",
+                                  lambda pid: "claude"), \
+                mock.patch.object(sessions, "proc_starttime",
+                                  lambda pid: "7"):
+            self.assertTrue(
+                _session_alive_for_meta(self._stamped_meta(os.getpid())))
+            self.assertFalse(_session_alive_for_meta(meta))
+
+    def test_foreign_stamp_reads_alive(self):
+        """Other boot / pid namespace — unverifiable here: fail OPEN
+        (sweeps skip, contention preserved)."""
+        from unittest import mock
+
+        from core.project import sessions
+        from core.run.metadata import _session_alive_for_meta
+        meta = self._stamped_meta(1, boot="other-boot")
+        with mock.patch.object(sessions, "boot_id", lambda: "b"):
+            self.assertTrue(_session_alive_for_meta(meta))
+
+    def test_unstamped_uses_legacy_comm_check(self):
+        import os
+        from unittest import mock
+
+        from core.run import metadata as md
+        meta = {"session_pid": os.getpid()}
+        with mock.patch.object(md, "_pid_alive",
+                               lambda pid: pid == os.getpid()):
+            self.assertTrue(md._session_alive_for_meta(meta))
+        with mock.patch.object(md, "_pid_alive", lambda pid: False):
+            self.assertFalse(md._session_alive_for_meta(meta))
+
+    def test_resume_refreshes_full_stamp(self):
+        """A run resumed by a different session must not carry the old
+        session's stamp — the verifiers would judge the LIVE resumed
+        run abandoned."""
+        from unittest import mock
+
+        from core.project import sessions
+        from core.run.metadata import (
+            RUN_METADATA_FILE,
+            fail_run,
+            resume_run,
+            start_run,
+        )
+        with TemporaryDirectory() as d:
+            out = Path(d) / "run"
+            with mock.patch("core.run.metadata._get_session_pid",
+                            return_value=11111), \
+                    mock.patch.object(sessions, "proc_starttime",
+                                      lambda pid: "old-start"), \
+                    mock.patch.object(sessions, "boot_id", lambda: "b"), \
+                    mock.patch.object(sessions, "pidns_id", lambda: "1"):
+                start_run(out, "scan")
+            fail_run(out, "interrupted for test", record_timing=False)
+            with mock.patch("core.run.metadata._get_session_pid",
+                            return_value=22222), \
+                    mock.patch.object(sessions, "proc_starttime",
+                                      lambda pid: "new-start"), \
+                    mock.patch.object(sessions, "boot_id", lambda: "b"), \
+                    mock.patch.object(sessions, "pidns_id", lambda: "1"):
+                resume_run(out)
+            meta = load_json(out / RUN_METADATA_FILE)
+            self.assertEqual(meta["session_pid"], 22222)
+            self.assertEqual(meta["session_start"], "new-start")
+
+    def test_cleanup_abandoned_sweeps_recycled_claude_pid(self):
+        """The dead-session branch fires on a stamped mismatch even when
+        a claude-comm process is live at the recorded pid."""
+        from unittest import mock
+
+        from core.project import sessions
+        from core.run import metadata as md
+        from core.run.metadata import RUN_METADATA_FILE, start_run
+        with TemporaryDirectory() as d:
+            out = Path(d) / "old-run"
+            with mock.patch("core.run.metadata._get_session_pid",
+                            return_value=33333), \
+                    mock.patch.object(sessions, "proc_starttime",
+                                      lambda pid: "gone"), \
+                    mock.patch.object(sessions, "boot_id", lambda: "b"), \
+                    mock.patch.object(sessions, "pidns_id", lambda: "1"):
+                start_run(out, "scan")
+            # Age it past the freshness gate.
+            meta = load_json(out / RUN_METADATA_FILE)
+            meta["timestamp"] = "2020-01-01T00:00:00+00:00"
+            from core.json import save_json
+            save_json(out / RUN_METADATA_FILE, meta)
+            # Recycled: live claude at 33333 with a DIFFERENT starttime.
+            with mock.patch.object(sessions, "boot_id", lambda: "b"), \
+                    mock.patch.object(sessions, "pidns_id", lambda: "1"), \
+                    mock.patch.object(sessions, "_pid_running",
+                                      lambda pid: True), \
+                    mock.patch.object(sessions, "_comm",
+                                      lambda pid: "claude"), \
+                    mock.patch.object(sessions, "proc_starttime",
+                                      lambda pid: "recycled"):
+                md._cleanup_abandoned(Path(d), "scan", 44444)
+            meta = load_json(out / RUN_METADATA_FILE)
+            self.assertEqual(meta["status"], "failed")

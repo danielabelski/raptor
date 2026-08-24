@@ -185,17 +185,76 @@ def _read_ppid_ps(pid: int) -> int:
 def _get_session_pid() -> int | None:
     """Get the PID of the Claude Code session process.
 
-    Walks the ancestor tree to find the 'claude' process rather than
-    using getppid(), because the immediate parent varies by context
-    (Bash tool shell, hook sh wrapper, Python subprocess).
-    Falls back to CLAUDECODE env var check + getppid() on non-Linux.
+    Delegates to the ONE shared session resolver
+    (``core.project.sessions.resolve_session_pid``: validated
+    ``RAPTOR_SESSION_PID`` env credential first — correct beneath
+    nested ``claude -p`` subagents and across PID namespaces — then
+    the claude-ancestor tree walk). Binding readers, run-metadata
+    recording, the contention gate, and the abandon sweeps must all
+    agree on one identity; two resolvers meant a run recorded under a
+    subagent pid that the sweeps then judged dead the moment the
+    subagent exited.
+
+    The CLAUDECODE env + getppid() fallback survives ONLY here — for
+    run-metadata recording in claude-less contexts (bare-shell libexec
+    flows). It is never used for project-binding resolution.
     """
-    ancestor = _find_claude_ancestor()
-    if ancestor is not None:
-        return ancestor
+    from core.project.sessions import resolve_session_pid
+    pid = resolve_session_pid()
+    if pid is not None:
+        return pid
     if not os.environ.get("CLAUDECODE"):
         return None
     return os.getppid()
+
+
+def _session_stamp(pid: int) -> dict[str, str]:
+    """Identity stamp for *pid*, recorded beside ``session_pid`` in run
+    metadata so the liveness verifiers can tell "this exact process"
+    from "some process that recycled the PID" — including another real
+    claude session, which every comm check accepts by construction.
+    Keys absent when unreadable (legacy semantics apply on read)."""
+    from core.project import sessions as _sessions
+    stamp: dict[str, str] = {}
+    start = _sessions.proc_starttime(pid)
+    if start is not None:
+        stamp["session_start"] = start
+    boot = _sessions.boot_id()
+    if boot is not None:
+        stamp["session_boot_id"] = boot
+    ns = _sessions.pidns_id()
+    if ns is not None:
+        stamp["session_pidns"] = ns
+    return stamp
+
+
+def _session_alive_for_meta(meta: dict) -> bool:
+    """Is the session that owns this run metadata still alive?
+
+    Stamped metadata (``session_start`` + ``session_boot_id``) gets the
+    full identity check: a live claude process at the recorded pid with
+    a MISMATCHING stamp is a recycled pid — the owner is dead. Foreign
+    stamps (other boot / machine / pid namespace) are unverifiable here
+    and read as ALIVE — the fail-open direction: sweeps skip rather
+    than fail a run they cannot judge, and the gate preserves
+    contention. Unstamped (pre-series) metadata keeps the legacy
+    comm-checked ``_pid_alive`` — also fail-open.
+    """
+    pid = meta.get("session_pid")
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return False
+    start = meta.get("session_start")
+    boot = meta.get("session_boot_id")
+    if start and boot:
+        from core.project import sessions as _sessions
+        fields = {"starttime": str(start), "boot_id": str(boot)}
+        pidns = meta.get("session_pidns")
+        if pidns:
+            fields["pidns"] = str(pidns)
+        if _sessions._foreign_entry(fields):
+            return True  # unverifiable — fail open
+        return _sessions._identity_matches(pid, fields)
+    return _pid_alive(pid)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -401,7 +460,13 @@ def _live_conflicting_run(project_dir: Path, self_dir: Path,
             continue
         if self_session_pid is not None and owner == self_session_pid:
             continue
-        if not _gate_session_alive(owner):
+        # Stamped metadata gets the identity check (a recycled claude
+        # pid must not hold contention forever); unstamped falls back
+        # to the gate's EPERM-aware comm probe.
+        if meta.get("session_start") and meta.get("session_boot_id"):
+            if not _session_alive_for_meta(meta):
+                continue
+        elif not _gate_session_alive(owner):
             continue
         # Sibling metadata is FILE CONTENT another workspace user can
         # plant — terminal-sanitise every field that reaches the
@@ -559,6 +624,7 @@ def start_run(output_dir: Path, command: str,
         if session_pid is not None:
             metadata["session_pid"] = session_pid
             metadata["tool_pid"] = os.getppid()
+            metadata.update(_session_stamp(session_pid))
         if target:
             metadata["target_path"] = str(target)
         # Order: persist metadata FIRST, then mark as active.
@@ -665,7 +731,7 @@ def _cleanup_abandoned(project_dir: Path, command: str, session_pid: int) -> Non
         session_dead = (
             isinstance(run_session, int)
             and run_session != session_pid
-            and not _pid_alive(run_session)
+            and not _session_alive_for_meta(meta)
         )
         if same_session_retry or session_dead:
             # Freshness gate — skip recent siblings (probable
@@ -1410,6 +1476,14 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
         if session_pid is not None:
             metadata["session_pid"] = session_pid
             metadata["tool_pid"] = os.getppid()
+            # Refresh the FULL identity stamp with the pid — a resumed
+            # run owned by a different session must never carry the old
+            # session's stamp (the verifiers would judge the live
+            # resumed run abandoned: stamp != live process at new pid).
+            for key in ("session_start", "session_boot_id",
+                        "session_pidns"):
+                metadata.pop(key, None)
+            metadata.update(_session_stamp(session_pid))
         save_json(path, metadata)
     # Re-mark as the active run so sandbox summaries and coverage
     # tracking attach to the resumed segment.

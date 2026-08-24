@@ -73,10 +73,13 @@ class FuzzEnvBuild:
 
 def env_build_candidate(
     repo: Path, *, build: bool | None = None,
+    run_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """Cheap candidacy check for plan(): consent + command resolution
     + docker presence. Runs nothing; returns ``(candidate, hint)``
-    where *hint* explains a decline in operator terms.
+    where *hint* explains a decline in operator terms. In-run callers
+    pass *run_dir* so consent and the build command come from the RUN
+    PIN's project (design §5).
     """
     repo = Path(repo)
     if not repo.is_dir():
@@ -88,14 +91,15 @@ def env_build_candidate(
         return False, ("env build-on-demand needs docker for the "
                        "containerized AFL build; docker not found")
     from core.project.trust import resolve_build_execution
-    if not resolve_build_execution(build, banner=False, target_path=repo):
+    if not resolve_build_execution(build, banner=False, target_path=repo,
+                                   run_dir=run_dir):
         return False, (
             "source tree could be fuzzed via env build-on-demand: set "
             "the project 'build' trust marker (/project trust build) "
             "or pass --env-build to authorise building it"
         )
     from core.build.resolve import resolve_build_command
-    resolved = resolve_build_command(repo)
+    resolved = resolve_build_command(repo, run_dir=run_dir)
     if resolved is None:
         return False, (
             "env build-on-demand authorised but no build command "

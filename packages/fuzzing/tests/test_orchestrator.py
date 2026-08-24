@@ -262,7 +262,7 @@ class TestEnvBuildPlanning(unittest.TestCase):
         repo = self._source_repo()
         seen = {}
 
-        def fake_candidate(path, build=None):
+        def fake_candidate(path, build=None, run_dir=None):
             seen["build"] = build
             return True, ""
 

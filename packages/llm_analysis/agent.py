@@ -3594,6 +3594,12 @@ def main() -> None:
 
     repo_path = Path(args.repo).resolve()
     if args.out:
+        # Child of a run: adopt the owning run's pin as the process
+        # override so every ambient consumer (trust resolvers, IRIS
+        # store, exemplar pools, threat model, verified outcomes)
+        # follows it (design §5).
+        from core.run.pin import bootstrap_process_pin
+        bootstrap_process_pin(args.out)
         out_dir = Path(args.out).resolve()
     else:
         # Collision-prevention via unique_run_suffix — see core/run/output.py.
@@ -3612,6 +3618,7 @@ def main() -> None:
         from core.project.trust import resolve_dynamic_validation
         execute_exploits = resolve_dynamic_validation(
             _execute_explicit, target_path=repo_path,
+            run_dir=Path(args.out).resolve() if args.out else None,
         )
     except ImportError:
         execute_exploits = bool(_execute_explicit)

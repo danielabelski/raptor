@@ -126,7 +126,7 @@ class BumpReport:
     # assertions). Reported, never silently truncated.
 
 
-def _resolve_repo_trust() -> bool:
+def _resolve_repo_trust(target: Path | str | None = None) -> bool:
     """Effective repo-trust for a bump run when the caller didn't
     decide: the process-wide ``cc_trust`` override (set by the bump
     CLI's ``--trust-repo``) as the per-run positive flag, then the
@@ -150,6 +150,15 @@ def _resolve_repo_trust() -> bool:
         return overridden
     markers, _name = active_project_trust()
     marker_set = "config" in markers
+    if marker_set and target is not None:
+        # One-target rule (design §9 rider): the config marker is an
+        # assertion about ONE tree — bump runs against arbitrary
+        # --repo paths, and project A's marker must not relax vetting
+        # for tree B (the same gate trust flags and persisted
+        # binaries already have).
+        from core.project.trust import run_target_matches_project
+        if not run_target_matches_project(target):
+            marker_set = False
     if marker_set and not overridden:
         emit_trust_banner(["config"])
     return resolve_trust_flag(False, overridden, marker_set)
@@ -206,7 +215,7 @@ def run_bump(
     if policy is None:
         from .policy import load_policy
         if trust_repo is None:
-            trust_repo = _resolve_repo_trust()
+            trust_repo = _resolve_repo_trust(target)
         policy = load_policy(target, trust_repo=trust_repo)
     candidates, skipped, excluded_by_pattern = _enumerate_candidates(
         target, http=http, cache=cache, github_token=github_token,

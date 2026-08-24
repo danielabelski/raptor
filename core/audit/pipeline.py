@@ -218,6 +218,7 @@ def _resolve_dynamic(opts: AuditPipelineOpts) -> bool:
         from core.project.trust import resolve_dynamic_validation
         return resolve_dynamic_validation(
             opts.dynamic_validation, target_path=opts.target_path,
+            run_dir=opts.out_dir,
         )
     except Exception:  # noqa: BLE001 — fail-closed to off
         return bool(opts.dynamic_validation)

@@ -1989,6 +1989,10 @@ Examples:
         from core.run.pin import set_process_project
         set_process_project(args.project)
 
+    # The parent pipeline bootstraps its own pin after start_run (see
+    # below at the lifecycle start): mid-session /project switches must
+    # not move this process's ambient consumers once the run is pinned.
+
     if args.threat_model_only:
         args.threat_model = True
     if args.threat_model:
@@ -2273,6 +2277,13 @@ Examples:
     try:
         from core.run import start_run
         start_run(out_dir, "agentic", target=str(original_repo_path))
+        # Pin bootstrap: freeze THIS process's ambient project
+        # resolution to the run's recorded pin — a mid-session
+        # /project switch must not move trust markers, IRIS stores,
+        # exemplar pools, or threat models under an in-flight run
+        # (design §5). No-op when --project already set the override.
+        from core.run.pin import bootstrap_process_pin
+        bootstrap_process_pin(out_dir)
     except Exception as e:  # noqa: BLE001
         # Run-start contention must not be swallowed like an optional
         # metadata failure: another session's live run owns the project.

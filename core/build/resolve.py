@@ -33,6 +33,7 @@ def resolve_build_command(
     lang: str | None = None,
     *,
     settings: dict[str, Any] | None = None,
+    run_dir: Path | str | None = None,
 ) -> tuple[str, str] | None:
     """The build command for *target*, or ``None`` when nothing resolves.
 
@@ -44,7 +45,7 @@ def resolve_build_command(
 
     Returns ``(command, source)``.
     """
-    slots = _build_command_slots(settings, target)
+    slots = _build_command_slots(settings, target, run_dir)
     if slots:
         if lang and slots.get(lang):
             return str(slots[lang]), f"project-setting:{lang}"
@@ -66,20 +67,26 @@ def resolve_build_command(
 
 def _build_command_slots(
     settings: dict[str, Any] | None, target: Path | str,
+    run_dir: Path | str | None = None,
 ) -> dict[str, Any]:
-    """The ``build-command`` slot dict, honouring the one-target rule."""
+    """The ``build-command`` slot dict, honouring the one-target rule.
+    In-run callers pass *run_dir* so the setting comes from the RUN
+    PIN's project (design §5), never a mid-run ambient re-read."""
     if settings is not None:
         raw = settings.get("build-command")
         return raw if isinstance(raw, dict) else {}
     try:
         from core.json import load_json
-        from core.project.trust import run_target_matches_project
-        from core.startup import PROJECTS_DIR, get_active_name
+        from core.project.trust import (
+            _context_project_name,
+            run_target_matches_project,
+        )
+        from core.startup import PROJECTS_DIR
 
-        name = get_active_name()
+        name = _context_project_name(run_dir)
         if not name:
             return {}
-        if not run_target_matches_project(target):
+        if not run_target_matches_project(target, run_dir):
             return {}
         data = load_json(PROJECTS_DIR / f"{name}.json")
         if not isinstance(data, dict):

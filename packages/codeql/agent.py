@@ -1270,6 +1270,13 @@ Examples:
     args = parser.parse_args()
     apply_cli_args(args, parser=parser)
 
+    if getattr(args, "out", None):
+        # Child of a run: adopt the owning run's pin as the process
+        # override so ambient consumers (IRIS store, trust) follow it
+        # (design §5).
+        from core.run.pin import bootstrap_process_pin
+        bootstrap_process_pin(args.out)
+
     # Explicit negative beats positive (per-run escape hatch; no
     # project-marker consumption here — the /agentic and /codeql
     # entry points resolve markers before forwarding --traced-build).

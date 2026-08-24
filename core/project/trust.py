@@ -35,15 +35,38 @@ from pathlib import Path
 from core.project.project import VALID_TRUST_MARKERS
 
 
-def active_project_trust() -> tuple[dict[str, str], str | None]:
-    """Load the active project's trust markers. Returns
-    ``(markers, project_name)``. Best-effort — a missing project or
-    schema mismatch returns ``({}, None)`` rather than crashing the
-    run (mirrors ``binary_oracle_cli._project_binaries``)."""
+def _context_project_name(run_dir: str | Path | None = None) -> str | None:
+    """The project whose state governs THIS context (design §5):
+    inside a run, the RUN PIN (resolved by walking up from *run_dir*)
+    — a mid-session /project switch must never move an in-flight
+    run's trust posture; outside a run, the layered ambient
+    resolution (argv override > session binding > symlink)."""
+    if run_dir is not None:
+        from core.run.pin import resolve_run_pin
+        return resolve_run_pin(run_dir).project
+    try:
+        from core.run.pin import ARGV_NONE, get_process_project
+        override = get_process_project()
+        if override is not None:
+            return None if override == ARGV_NONE else override
+    except Exception:  # noqa: BLE001 — pin module unavailable: ambient
+        pass
+    from core.project.project import ProjectManager
+    return ProjectManager().get_active()
+
+
+def active_project_trust(
+    run_dir: str | Path | None = None,
+) -> tuple[dict[str, str], str | None]:
+    """Load the governing project's trust markers — the RUN PIN's
+    project when *run_dir* is given, the ambient layers otherwise.
+    Returns ``(markers, project_name)``. Best-effort — a missing
+    project or schema mismatch returns ``({}, None)`` rather than
+    crashing the run (mirrors ``binary_oracle_cli._project_binaries``)."""
     try:
         from core.project.project import ProjectManager
         mgr = ProjectManager()
-        active = mgr.get_active()
+        active = _context_project_name(run_dir)
         if not active:
             return {}, None
         proj = mgr.load(active)
@@ -59,13 +82,13 @@ def active_project_trust() -> tuple[dict[str, str], str | None]:
         return {}, None
 
 
-def active_project_target() -> str | None:
-    """The active project's target path, or ``None``. Best-effort,
+def active_project_target(run_dir: str | Path | None = None) -> str | None:
+    """The governing project's target path, or ``None``. Best-effort,
     same failure posture as :func:`active_project_trust`."""
     try:
         from core.project.project import ProjectManager
         mgr = ProjectManager()
-        active = mgr.get_active()
+        active = _context_project_name(run_dir)
         if not active:
             return None
         proj = mgr.load(active)
@@ -76,8 +99,9 @@ def active_project_target() -> str | None:
         return None
 
 
-def run_target_matches_project(target_path: str | Path | None) -> bool:
-    """True when the run's target IS the active project's target or
+def run_target_matches_project(target_path: str | Path | None,
+                               run_dir: str | Path | None = None) -> bool:
+    """True when the run's target IS the governing project's target or
     lives inside it (resolved-path comparison).
 
     Fail-closed: an unknown run target, an unknown project target, or
@@ -85,7 +109,7 @@ def run_target_matches_project(target_path: str | Path | None) -> bool:
     assertion about ONE target, so when the run's target cannot be
     shown to be that target the marker must not apply.
     """
-    project_target = active_project_target()
+    project_target = active_project_target(run_dir)
     if not project_target or not target_path:
         return False
     try:
@@ -201,6 +225,7 @@ def apply_project_trust_flags(
 def resolve_dynamic_validation(
     explicit: bool | None, *, banner: bool = True,
     target_path: str | Path | None = None,
+    run_dir: str | Path | None = None,
 ) -> bool:
     """Resolve ``config.dynamic_validation`` for /audit-/validate-side
     consumers: explicit per-run choice (True/False from ``--dynamic`` /
@@ -214,10 +239,10 @@ def resolve_dynamic_validation(
     """
     if explicit is not None:
         return bool(explicit)
-    markers, _name = active_project_trust()
+    markers, _name = active_project_trust(run_dir)
     if "dynamic" in markers:
         run_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
-        if not run_target_matches_project(run_target):
+        if not run_target_matches_project(run_target, run_dir):
             _emit_marker_target_mismatch(["dynamic"], run_target and str(run_target))
             return False
         if banner:
@@ -229,6 +254,7 @@ def resolve_dynamic_validation(
 def resolve_build_execution(
     explicit: bool | None, *, banner: bool = True,
     target_path: str | Path | None = None,
+    run_dir: str | Path | None = None,
 ) -> bool:
     """Resolve build-execution consent for consumers that must RUN a
     target's build system (env build-on-demand): explicit per-run
@@ -241,10 +267,10 @@ def resolve_build_execution(
     """
     if explicit is not None:
         return bool(explicit)
-    markers, _name = active_project_trust()
+    markers, _name = active_project_trust(run_dir)
     if "build" in markers:
         run_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
-        if not run_target_matches_project(run_target):
+        if not run_target_matches_project(run_target, run_dir):
             _emit_marker_target_mismatch(["build"], run_target and str(run_target))
             return False
         if banner:

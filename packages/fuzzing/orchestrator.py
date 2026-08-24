@@ -111,6 +111,7 @@ class FuzzingOrchestrator:
         target_path: Path,
         *,
         env_build: bool | None = None,
+        run_dir: Path | None = None,
     ) -> CampaignPlan:
         """Inspect the target, pick a fuzzer, return a campaign plan.
 
@@ -167,7 +168,8 @@ class FuzzingOrchestrator:
             # below is untouched when it declines.
             from packages.fuzzing.env_build import env_build_candidate
             candidate, why = (
-                env_build_candidate(target.path, build=env_build)
+                env_build_candidate(target.path, build=env_build,
+                                    run_dir=run_dir)
                 if target.path.is_dir() else (False, "")
             )
             if candidate:

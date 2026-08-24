@@ -269,19 +269,46 @@ def _autodetect_binaries(
     return locally_built
 
 
-def _project_binaries() -> tuple[list[Path], str | None]:
-    """Layer in any binaries persisted on the active project. Returns
+def _project_binaries(
+    repo: Path | None = None,
+    run_dir: Path | None = None,
+) -> tuple[list[Path], str | None]:
+    """Layer in any binaries persisted on the governing project (the
+    run pin's project in-run, the ambient layers otherwise). Returns
     ``(paths, project_name)``. Best-effort — a missing project /
     schema mismatch returns ``([], None)`` rather than crashing the
-    run."""
+    run.
+
+    ONE-TARGET GATE (design §9): persisted binaries are an operator
+    assertion about ONE target, exactly like trust markers — which got
+    this gate first while the binaries path stayed open. Without it,
+    project X's binaries drove `absent` verdicts (pre-LLM
+    hard-suppression of findings) for whatever tree a `--repo Y
+    --out ...` run pointed at.
+    """
     try:
         from core.project.project import ProjectManager
+        from core.project.trust import (
+            _context_project_name,
+            run_target_matches_project,
+        )
         mgr = ProjectManager()
-        active = mgr.get_active()
+        active = _context_project_name(run_dir)
         if not active:
             return [], None
         proj = mgr.load(active)
         if not proj or not getattr(proj, "binaries", None):
+            return [], active
+        if repo is not None and not run_target_matches_project(
+                repo, run_dir):
+            logger.warning(
+                "binary-oracle: IGNORED %d persisted binar%s on project "
+                "'%s' — this run's target (%s) is not that project's "
+                "target. A binary is an assertion about ONE target.",
+                len(proj.binaries),
+                "y" if len(proj.binaries) == 1 else "ies",
+                active, repo,
+            )
             return [], active
         return [Path(b).expanduser().resolve() for b in proj.binaries], active
     except Exception:  # noqa: BLE001
@@ -435,7 +462,7 @@ def resolve_binary_paths(args, repo: Path, target_kind: str,
                 repo, target_kind, explicit=explicit_auto):
             seen.setdefault(str(p), True)
 
-    proj_paths, proj_name = _project_binaries()
+    proj_paths, proj_name = _project_binaries(repo=repo)
     added = 0
     for p in proj_paths:
         if not Path(p).is_file():

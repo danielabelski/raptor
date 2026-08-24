@@ -495,7 +495,8 @@ Examples:
         if args.no_env_build and args.env_build:
             logger.warning("--no-env-build wins over --env-build "
                            "(negative flag precedence)")
-        plan = orch.plan(binary_path, env_build=env_build_consent)
+        plan = orch.plan(binary_path, env_build=env_build_consent,
+                         run_dir=out_dir)
         print(plan.summary())
 
         if args.plan_only:

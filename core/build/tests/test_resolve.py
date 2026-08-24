@@ -84,7 +84,7 @@ class TestActiveProjectPath:
         """A project setting must not steer a run against a different
         tree — settings=None resolves the active project only when the
         target matches it."""
-        with patch("core.startup.get_active_name", return_value="p"), \
+        with patch("core.project.trust._context_project_name", return_value="p"), \
              patch("core.project.trust.run_target_matches_project",
                    return_value=False):
             got = resolve_build_command(tmp_path, "cpp")
@@ -95,7 +95,7 @@ class TestActiveProjectPath:
         proj = tmp_path / "p.json"
         proj.write_text(json.dumps({
             "settings": {"build-command": {"default": "make smoke"}}}))
-        with patch("core.startup.get_active_name", return_value="p"), \
+        with patch("core.project.trust._context_project_name", return_value="p"), \
              patch("core.startup.PROJECTS_DIR", tmp_path), \
              patch("core.project.trust.run_target_matches_project",
                    return_value=True):

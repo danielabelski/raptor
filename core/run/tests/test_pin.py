@@ -268,3 +268,94 @@ class RunPinShapeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PinConsumerMigrationTest(_PinCase):
+    """Wave-1 consumers follow the RUN PIN, not the ambient layers
+    (design §5.3 items 4/5): trust markers, persisted binaries, and
+    the child-process pin bootstrap."""
+
+    def _pinned_run(self, project: str | None) -> Path:
+        d = self.root / "out" / f"run-{project or 'none'}"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": project,
+            "project_source": "session",
+        })
+        return d
+
+    def test_trust_markers_follow_the_pin(self):
+        proj = self.mgr.load("pinned")
+        proj.trust = {"dynamic": "2026-08-23T00:00:00+00:00"}
+        self.mgr._save(proj)
+        self.mgr.create("ambient", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "ambient"))
+        self.mgr.set_active("ambient")
+        run = self._pinned_run("pinned")
+        from core.project.trust import active_project_trust
+        markers, name = active_project_trust(run_dir=run)
+        self.assertEqual(name, "pinned")
+        self.assertIn("dynamic", markers)
+        # Ambient (no run_dir) resolves the active layer instead.
+        _m, ambient_name = active_project_trust()
+        self.assertEqual(ambient_name, "ambient")
+
+    def test_dynamic_marker_gated_by_pinned_target(self):
+        proj = self.mgr.load("pinned")
+        proj.trust = {"dynamic": "2026-08-23T00:00:00+00:00"}
+        self.mgr._save(proj)
+        run = self._pinned_run("pinned")
+        from core.project.trust import resolve_dynamic_validation
+        self.assertTrue(resolve_dynamic_validation(
+            None, banner=False,
+            target_path=self.root / "code", run_dir=run))
+        self.assertFalse(resolve_dynamic_validation(
+            None, banner=False,
+            target_path=self.root / "elsewhere", run_dir=run))
+
+    def test_project_binaries_one_target_gate(self):
+        """sec-F3: project X's binaries must never drive absent
+        verdicts for tree Y."""
+        binary = self.root / "code" / "app.bin"
+        binary.write_bytes(b"\x7fELF")
+        proj = self.mgr.load("pinned")
+        proj.binaries = [str(binary)]
+        self.mgr._save(proj)
+        self.mgr.set_active("pinned")
+        from core.analysis.binary_oracle_cli import _project_binaries
+        paths, name = _project_binaries(repo=self.root / "code")
+        self.assertEqual([str(p) for p in paths], [str(binary)])
+        foreign = self.root / "foreign-tree"
+        foreign.mkdir()
+        paths, name = _project_binaries(repo=foreign)
+        self.assertEqual(paths, [])
+        self.assertEqual(name, "pinned")
+
+    def test_bootstrap_adopts_authoritative_pin_only(self):
+        from core.run.pin import bootstrap_process_pin, get_process_project
+        run = self._pinned_run("pinned")
+        child_out = run / "scan"
+        child_out.mkdir()
+        bootstrap_process_pin(child_out)
+        self.assertEqual(get_process_project(), "pinned")
+        set_process_project(None)
+        # Legacy (pin-less) run dir: containment is reads-only — the
+        # bootstrap must NOT promote it to a process override.
+        legacy = Path(self.mgr.load("pinned").output_dir) / "legacy"
+        legacy.mkdir(parents=True)
+        save_json(legacy / RUN_METADATA_FILE, {"status": "running"})
+        bootstrap_process_pin(legacy)
+        self.assertIsNone(get_process_project())
+
+    def test_bootstrap_never_overwrites_explicit_argv(self):
+        from core.run.pin import bootstrap_process_pin, get_process_project
+        run = self._pinned_run("pinned")
+        set_process_project("-")
+        bootstrap_process_pin(run)
+        self.assertEqual(get_process_project(), "-")
+
+    def test_null_pin_bootstraps_projectless(self):
+        from core.run.pin import bootstrap_process_pin, get_process_project
+        run = self._pinned_run(None)
+        bootstrap_process_pin(run)
+        self.assertEqual(get_process_project(), "-")

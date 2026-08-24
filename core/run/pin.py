@@ -298,3 +298,26 @@ def _pin_from_marker(run_dir: Path) -> RunPin:
             run_dir, project)
         return RunPin(None, source, run_dir, True, True)
     return RunPin(project, source, run_dir, True, True)
+
+
+def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
+    """Child-process pin bootstrap (design §5, packages-C2): a run's
+    child process (scan/codeql/analysis workers spawned with an
+    ``--out`` under the run dir) adopts the OWNING RUN's pin as its
+    process-scoped project override, so every ambient consumer in the
+    child — trust resolvers, IRIS store, exemplar pools, threat model,
+    verified outcomes — follows the pin with zero per-site threading.
+
+    Only AUTHORITATIVE pins bootstrap (a real ``project`` key in the
+    owning run's metadata): the legacy containment fallback authorizes
+    reads only, and promoting it to a process override would authorize
+    privilege-bearing writes. An explicit ``--project`` argv set by the
+    entry point always wins (never overwritten here).
+    """
+    if out_dir is None or get_process_project() is not None:
+        return
+    pin = resolve_run_pin(out_dir)
+    if not pin.authoritative:
+        return
+    set_process_project(pin.project if pin.project is not None
+                        else ARGV_NONE)

@@ -1919,6 +1919,32 @@ class TestRepoDerivedPromptDefence:
         fence = re.search(r"^(`{3,})", out, re.M).group(1)
         assert len(fence) >= 4
 
+    def test_glance_prompt_caller_contract_summary_line(self):
+        # Teardown helpers are often <= 20 SLOC and triage to GLANCE,
+        # where the full digest never renders — the one-line summary
+        # is the only caller context that bucket gets.
+        from core.audit.context import _format_glance_prompt
+        out = _format_glance_prompt(self._minimal_ctx(
+            caller_contract={"function": "f", "total_sites": 3,
+                             "sites": [], "declined": False},
+        ))
+        assert "3 in-repo call site(s)" in out
+        assert "misuse-contract" in out.lower()
+
+    def test_glance_prompt_caller_contract_absent_when_no_digest(self):
+        from core.audit.context import _format_glance_prompt
+        out = _format_glance_prompt(self._minimal_ctx())
+        assert "Caller note" not in out
+
+    def test_glance_caller_contract_incomplete_enumeration_flagged(self):
+        from core.audit.context import _format_glance_prompt
+        out = _format_glance_prompt(self._minimal_ctx(
+            caller_contract={"function": "f", "total_sites": 2,
+                             "sites": [], "declined": False,
+                             "scan_capped": True},
+        ))
+        assert "enumeration incomplete" in out
+
     # -- body surfaces: fence escape + injection-warning aggregation --
 
     def test_source_fence_escape_contained(self):

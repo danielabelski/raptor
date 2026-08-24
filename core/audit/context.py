@@ -2105,9 +2105,47 @@ def _format_glance_prompt(ctx: dict[str, Any]) -> str:
         f"{_defend_identifier(ctx.get('function', ''), max_length=256)}",
         _source_heading(ctx),
         _fenced(ctx.get("source", "(not available)")),
-        question,
     ]
+    summary = _glance_caller_contract_line(ctx.get("caller_contract"))
+    if summary:
+        parts.append(summary)
+    parts.append(question)
     return "\n".join(parts)
+
+
+def _glance_caller_contract_line(digest: dict[str, Any] | None) -> str:
+    """One-line caller-contract summary for the glance prompt.
+
+    Teardown helpers are often <= 20 SLOC and triage to GLANCE, where
+    the full digest is never rendered — so the bucket that reviews
+    most of the caller-proof FP family used to see zero caller
+    context.  One line keeps the glance prompt minimal while still
+    anchoring misuse-contract escalations to actual usage.
+    """
+    if not digest:
+        return ""
+    total = digest.get("total_sites", 0)
+    if digest.get("declined"):
+        return (
+            f"\nCaller note: {total} in-repo call sites — too many to "
+            "enumerate; misuse-contract concerns (\"if called twice\", "
+            "\"if a caller passes NULL\") cannot be caller-verified."
+        )
+    if total == 0:
+        return (
+            "\nCaller note: no in-repo call sites found (external-only "
+            "or indirect callers)."
+        )
+    incomplete = bool(
+        digest.get("scan_capped") or digest.get("uncertain_callers"),
+    )
+    qualifier = "; enumeration incomplete" if incomplete else ""
+    return (
+        f"\nCaller note: {total} in-repo call site(s), mechanically "
+        f"enumerated{qualifier}.  A misuse-contract concern (\"if "
+        "called twice\", \"if a caller passes NULL\") is only worth "
+        "escalating if an actual call site can violate it."
+    )
 
 
 def _read_source(

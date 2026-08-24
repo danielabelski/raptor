@@ -1206,3 +1206,70 @@ class WitnessLifecycleTest(_RegistryCase):
             os.getpid(), "appa", "appb"))
         self.assertEqual(sessions.session_binding(pid=os.getpid()),
                          ("appb", "bound"))
+
+
+class LedgerBudgetDisciplineTest(_RegistryCase):
+    """The writer guarantees an under-budget ledger even when pin
+    witnesses (which survive while their run dirs exist) would
+    otherwise hoard the whole budget — an over-budget file reads as
+    EMPTY and the next RMW would wipe every record AND witness."""
+
+    def test_witness_hoard_cannot_push_the_file_over_budget(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        deep = Path(self._tmp.name) / ("p" * 220) / ("q" * 220)
+        for i in range(700):
+            d = deep / f"run_{i}"
+            d.mkdir(parents=True)
+            (d / ".raptor-run.json").write_text(
+                '{"status": "completed"}', encoding="utf-8")
+            sessions.ledger_record_start(d, pid=os.getpid(),
+                                         pin_project="appz",
+                                         record_pin=True)
+            sessions.ledger_record_finish(d, "completed",
+                                          pid=os.getpid())
+        ledger = self.sessions_dir / f"{os.getpid()}.run"
+        self.assertLessEqual(ledger.stat().st_size,
+                             sessions._MAX_LEDGER_BYTES)
+        # The reader must still see a non-empty ledger (newest
+        # witnesses survive; oldest were evicted).
+        _r, pins, _u = sessions._read_ledger_full(os.getpid())
+        self.assertTrue(pins)
+        self.assertIn(f"run_699", pins[-1]["run_id"])
+
+    def test_finish_refuses_stale_stamped_entries(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = Path(self._tmp.name) / "runs" / "scan_fs"
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        # The stale-stamped finish must not have landed.
+        text = (self.sessions_dir / f"{os.getpid()}.run").read_text()
+        self.assertIn("running", text)
+        self.assertNotIn("completed", text)
+
+    def test_far_future_epochs_clamped_on_rewrite(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = Path(self._tmp.name) / "runs" / "scan_ep"
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        ledger = self.sessions_dir / f"{os.getpid()}.run"
+        ledger.write_text(
+            f"running 99999999999 scan_ep {d.resolve()}\n",
+            encoding="utf-8")
+        d2 = Path(self._tmp.name) / "runs" / "scan_ep2"
+        d2.mkdir(parents=True)
+        (d2 / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        sessions.ledger_record_start(d2, pid=os.getpid())
+        import time as _t
+        for r in sessions.ledger_runs(pid=os.getpid()):
+            self.assertLessEqual(r["epoch"], int(_t.time()) + 86400)

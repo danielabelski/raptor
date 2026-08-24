@@ -554,7 +554,12 @@ def _record_session_locked(project: str, pid: int,
     if token:
         fields["token"] = token
     if seeded_by:
-        fields["seeded_by"] = seeded_by
+        if seeded_by in ("flag", "auto", "bookmark", "use", "create",
+                         "adopt"):
+            fields["seeded_by"] = seeded_by
+        else:
+            logger.warning(
+                "sessions: dropping unknown seeded_by %r", seeded_by)
     try:
         _atomic_write(entry, _entry_content(project, fields))
     except OSError:
@@ -571,7 +576,13 @@ def rebind_session_if(pid: int, expected: str,
     was clobbered with a decision made against its old binding.
     ``new_project=None`` binds the none sentinel."""
     entry = SESSIONS_DIR / str(pid)
-    with _ledger_lock(pid):
+    with _ledger_lock_nb(pid) as held:
+        if not held:
+            logger.warning(
+                "sessions: pid %d's ledger lock is held — skipping "
+                "its binding rewrite (%r); re-bind it with "
+                "'/project use' from that session", pid, expected)
+            return False
         fields = _parse_entry(entry)
         if (fields.get("v") != ENTRY_VERSION
                 or fields.get("project") != expected):
@@ -780,6 +791,58 @@ def _ledger_path(pid: int) -> Path:
 
 
 @contextlib.contextmanager
+def _ledger_lock_nb(pid: int,
+                    attempts: int = 20,
+                    interval: float = 0.05) -> Iterator[bool]:
+    """Bounded, non-blocking variant for BEST-EFFORT sweeps
+    (witness rewrites, CAS rebinds): yields True holding the lock, or
+    False after ~attempts*interval seconds — a single wedged holder
+    (SIGSTOP'd process, dead NFS client) must not hang a rename that
+    is itself holding the project op lock, behind which every run
+    start on the project queues silently.
+    """
+    try:
+        import fcntl
+        import time as _time
+    except ImportError:
+        yield True
+        return
+    if not _ensure_dir():
+        yield True
+        return
+    lock_path = SESSIONS_DIR / f"{pid}.run.lock"
+    for _ in range(attempts):
+        try:
+            fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            yield True
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            _time.sleep(interval)
+            continue
+        try:
+            held = os.fstat(fd)
+            current = os.stat(str(lock_path))
+            same = (held.st_ino == current.st_ino
+                    and held.st_dev == current.st_dev)
+        except OSError:
+            same = False
+        if same:
+            try:
+                yield True
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            return
+        os.close(fd)
+    yield False
+
+
+@contextlib.contextmanager
 def _ledger_lock(pid: int) -> Iterator[None]:
     """flock a sibling ``.run.lock`` across a ledger read-modify-write
     (the ``_metadata_lock`` idiom — rename atomicity protects readers,
@@ -795,6 +858,10 @@ def _ledger_lock(pid: int) -> Iterator[None]:
     if not _ensure_dir():
         yield
         return
+    # NFS note: flock on an NFS-mounted HOME is only as reliable as
+    # the NFS implementation — same posture as the metadata/project
+    # file locks. Any OSError below degrades to an UNLOCKED
+    # read-modify-write; that is logged, never silent.
     lock_path = SESSIONS_DIR / f"{pid}.run.lock"
     # Verify-after-lock: the prune paths (read_sessions, the launcher
     # sweep, record_session removal) UNLINK lock files of sessions they
@@ -813,6 +880,10 @@ def _ledger_lock(pid: int) -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_EX)
         except OSError:
             os.close(fd)
+            logger.warning(
+                "sessions: ledger lock acquisition failed for pid %d "
+                "— proceeding UNLOCKED (best-effort data)", pid,
+                exc_info=True)
             yield
             return
         try:
@@ -906,7 +977,14 @@ def _zombie_correct(records: list[dict]) -> None:
     without this, crashed runs' lines accumulate forever, the cap
     evicts all real history, and the 64KB read bound eventually zeroes
     the ledger."""
+    import time as _time
+    _now = int(_time.time())
     for r in records:
+        # A record stamped under a skewed-ahead clock out-competes
+        # every legitimate run in the hooks' newest-running selection
+        # until it terminates — clamp absurd epochs on rewrite.
+        if r["epoch"] > _now + 86400:
+            r["epoch"] = _now
         if r["status"] != "running":
             continue
         run_dir = Path(r["run_dir"])
@@ -945,39 +1023,58 @@ def _write_ledger(pid: int, records: list[dict],
         records = [r for r in records
                    if r["status"] == "running" or r in keep_finished]
 
-    def _render(recs: list[dict]) -> list[str]:
+    pins = list(pins or [])
+    if pins:
+        alive = {(r["run_id"], r["run_dir"]) for r in records}
+        # A witness survives while its record does OR its run dir
+        # still exists: in-grant metadata can zombie-flip a LIVE
+        # run's record to finished and cap-evict it — the witness
+        # (the tamper defense) must not die with that trick.
+        pins = [p for p in pins
+                if (p["run_id"], p["run_dir"]) in alive
+                or Path(p["run_dir"]).exists()]
+    # Unknown (future-format) lines survive rewrites up to a byte
+    # share, order preserved; they are appended after the pins.
+    unknown = list(unknown or [])
+    _unknown_budget = 64 * 1024
+    while unknown and sum(len(u) + 1 for u in unknown) > _unknown_budget:
+        unknown.pop(0)
+
+    def _render() -> list[str]:
         out = [
             f"{r['status']} {r['epoch']} {r['run_id']} {r['run_dir']}"
-            for r in recs
+            for r in records
         ]
-        if pins:
-            alive = {(r["run_id"], r["run_dir"]) for r in recs}
-            # A witness survives while its record does OR its run dir
-            # still exists: in-grant metadata can zombie-flip a LIVE
-            # run's record to finished and cap-evict it — the witness
-            # (the tamper defense) must not die with that trick.
-            out.extend(
-                f"pin {p['epoch']} {p['run_id']} "
-                f"{p['project']} {p['run_dir']}"
-                for p in pins
-                if (p["run_id"], p["run_dir"]) in alive
-                or Path(p["run_dir"]).exists()
-            )
-        if unknown:
-            out.extend(unknown[:_LEDGER_CAP])
+        out.extend(
+            f"pin {p['epoch']} {p['run_id']} "
+            f"{p['project']} {p['run_dir']}"
+            for p in pins
+        )
+        out.extend(unknown)
         return out
 
-    lines = _render(records)
-    # Byte budget: evict oldest finished records until the rendered
-    # ledger fits — a ledger the reader's cap zeroes is worse than a
-    # shorter one.
-    while (sum(len(ln) + 1 for ln in lines) > _MAX_LEDGER_BYTES
-           and any(r["status"] != "running" for r in records)):
+    lines = _render()
+    # Byte budget — the writer GUARANTEES an under-budget file (an
+    # over-budget ledger reads as EMPTY and the next RMW would wipe
+    # every record AND every witness). Eviction order: oldest
+    # finished records, then oldest witnesses (they otherwise
+    # accumulate one per pinned start for as long as run dirs live),
+    # then unknown lines.
+    def _over() -> bool:
+        return sum(len(ln) + 1 for ln in lines) > _MAX_LEDGER_BYTES
+
+    while _over() and any(r["status"] != "running" for r in records):
         for i, r in enumerate(records):
             if r["status"] != "running":
                 del records[i]
                 break
-        lines = _render(records)
+        lines = _render()
+    while _over() and pins:
+        pins.pop(0)
+        lines = _render()
+    while _over() and unknown:
+        unknown.pop(0)
+        lines = _render()
     for line in lines:  # belt-and-braces: the format must stay one-line
         if "\n" in line or not line.isprintable():
             logger.warning("sessions: dropping unprintable ledger line")
@@ -1116,7 +1213,13 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
         return
     # Same registered-session gate as start — and checked BEFORE the
     # lock, so an unregistered context never even creates a lock file.
-    if not _parse_entry(SESSIONS_DIR / str(pid)):
+    # A v2 entry with a stale stamp is a recycled pid's leftover:
+    # refuse, like the start writer does.
+    _fin_fields = _parse_entry(SESSIONS_DIR / str(pid))
+    if not _fin_fields:
+        return
+    if (_fin_fields.get("v") == ENTRY_VERSION
+            and not _identity_matches(pid, _fin_fields)):
         return
     run_id = Path(str(run_dir)).name
     try:
@@ -1138,12 +1241,17 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
 
 def ledger_record_resume(run_dir: str | os.PathLike[str],
                          prior_session_pid: int | None = None,
-                         pid: int | None = None) -> None:
+                         pid: int | None = None,
+                         pin_project: str | None = None,
+                         pin_source: str | None = None,
+                         record_pin: bool = False) -> None:
     """Resume wiring: append a running record to the
-    RESUMING session's ledger, and CAS-mark the original owner's line
-    ``interrupted`` so its session's hook stops attributing to a run it
-    no longer owns."""
-    ledger_record_start(run_dir, pid=pid)
+    RESUMING session's ledger — carrying the (verified) pin as this
+    session's witness for segment 2+ when ``record_pin`` — and
+    CAS-mark the original owner's line ``interrupted`` so its
+    session's hook stops attributing to a run it no longer owns."""
+    ledger_record_start(run_dir, pid=pid, pin_project=pin_project,
+                        pin_source=pin_source, record_pin=record_pin)
     if prior_session_pid is None:
         return
     resolved_own = pid if pid is not None else resolve_session_pid()
@@ -1210,7 +1318,14 @@ def ledger_rewrite_pin_project(old_name: str, new_name: str) -> None:
             continue
         pid = int(stem)
         try:
-            with _ledger_lock(pid):
+            with _ledger_lock_nb(pid) as held:
+                if not held:
+                    logger.warning(
+                        "sessions: pid %d's ledger lock is held — "
+                        "skipping its witness rewrite (%r→%r); its "
+                        "runs may log witness-disagreement warnings "
+                        "until re-pointed", pid, old_name, new_name)
+                    continue
                 records, pins, unknown = _read_ledger_full(pid)
                 hit = False
                 for p in pins:

@@ -1490,6 +1490,26 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
                 # the artifact's name — e.g. main.c building vulnapp.
                 single_env_binary = next(iter(env_built.values()))[0]
 
+    # Single-artifact rule for PRE-BUILT trees, mirroring the
+    # env-build case: when discovery yields exactly ONE ELF, that
+    # binary IS the program — stem heuristics (source name vs
+    # artifact name) would otherwise skip findings on any target
+    # whose binary isn't named after the finding's file (daemon
+    # naming: proto.c building protod). Fuzzy MULTI-binary matching
+    # stays refused; this is the one-candidate case only.
+    single_prebuilt_elf = ""
+    if not single_env_binary:
+        elfs = []
+        for path in executables.values():
+            try:
+                with open(path, "rb") as fh:
+                    if fh.read(4) == b"\x7fELF":
+                        elfs.append(path)
+            except OSError:
+                continue
+        if len(set(elfs)) == 1:
+            single_prebuilt_elf = elfs[0]
+
     matched = 0
     skipped = []  # (finding id, reason) — named in the group summary
     for finding in data.get("findings", []):
@@ -1504,7 +1524,7 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
         bp = finding.get("feasibility", {}).get("binary_path", "")
         if not bp and executables:
             bp = (_match_finding_to_binary(finding, executables)
-                  or single_env_binary)
+                  or single_env_binary or single_prebuilt_elf)
             if bp:
                 if str(bp) in env_built_paths:
                     from packages.exploitability_validation.env_build_stage import (  # noqa: E501

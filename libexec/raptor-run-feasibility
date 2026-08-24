@@ -150,7 +150,13 @@ def main():
             for assessment in mapped:
                 finding = by_id.get(assessment.finding_id)
                 if finding:
+                    # MERGE over the existing dict: earlier passes of
+                    # this same run attach evidence here (the witness
+                    # synthesis empirical map with its source-binding
+                    # provenance) — a wholesale replace silently
+                    # destroys it.
                     finding["feasibility"] = {
+                        **(finding.get("feasibility") or {}),
                         "status": "analyzed",
                         "binary_path": binary_path,
                         "context_file": str(context_file),
@@ -178,6 +184,14 @@ def main():
                     }
                     print(f"  {finding['id']}: {assessment.verdict}", file=sys.stderr)
 
+            # --- One-gadget conditioning (register/memory snapshot) ---
+            # Witness synthesis runs BEFORE this script in the stage
+            # pipeline, so its conditioning pass found no gadget info
+            # to condition. Now that analyze_binary has produced the
+            # one-gadget data, re-run conditioning for findings that
+            # carry a snapshot.
+            _recondition_one_gadgets(group, result)
+
             # --- Empirical mitigation map (PR #609 consumer) ---
             # Only attempt when ``--target`` was supplied — without a
             # source root we can't resolve ``finding.file`` to an on-disk
@@ -199,6 +213,71 @@ def main():
                 fcntl.flock(findings_lock_fh.fileno(), fcntl.LOCK_UN)
             except OSError:
                 pass
+
+
+def _collect_one_gadget_infos(context: dict) -> list:
+    """Every one_gadget_info dict reachable in an exploit context."""
+    found = []
+    if not isinstance(context, dict):
+        return found
+    ogi = context.get("one_gadget_info")
+    if isinstance(ogi, dict) and ogi.get("gadgets"):
+        found.append(ogi)
+    for key in ("analysis", "exploitation_paths"):
+        sub = context.get(key)
+        if isinstance(sub, dict):
+            inner = sub.get("one_gadget_info")
+            if isinstance(inner, dict) and inner.get("gadgets"):
+                found.append(inner)
+            for v in sub.values():
+                if isinstance(v, dict):
+                    vi = v.get("one_gadget_info")
+                    if isinstance(vi, dict) and vi.get("gadgets"):
+                        found.append(vi)
+    return found
+
+
+def _recondition_one_gadgets(group, context):
+    """Condition one-gadget constraints on stored solve snapshots.
+
+    The synthesis pass captured the register/memory state at the
+    hijacked PC; the one-gadget data only exists after analyze_binary
+    runs here. Attaches the gadget info (with its symbolic verdict)
+    under the finding's feasibility so report consumers see both.
+    """
+    try:
+        from packages.exploitability_validation.symbolic_witness import (
+            _condition_one_gadgets,
+        )
+    except ImportError:
+        return
+    infos = _collect_one_gadget_infos(context)
+    if not infos:
+        return
+    conditioned = 0
+    for finding in group:
+        record = finding.get("symbolic_witness") or {}
+        snapshot = record.get("register_snapshot")
+        if not snapshot:
+            continue
+        feas = finding.setdefault("feasibility", {})
+        if not isinstance(feas, dict):
+            continue
+        ba = feas.setdefault("binary_analysis", {})
+        # copy: per-finding conditioning must not share mutable state
+        # across findings via the context dict
+        import copy as _copy
+        ba["one_gadget_info"] = _copy.deepcopy(infos[0])
+        if _condition_one_gadgets(
+            finding, snapshot, memory=record.get("memory_snapshot"),
+        ):
+            conditioned += 1
+    if conditioned:
+        print(
+            f"  One-gadget conditioning: {conditioned} finding(s) "
+            "conditioned on solve snapshots",
+            file=sys.stderr,
+        )
 
 
 def _enrich_with_empirical_mitigation_map(
@@ -288,6 +367,20 @@ def _enrich_with_empirical_mitigation_map(
         if best is None or not best.is_real:
             continue
 
+        # The synthesis pass may have already attached a map for
+        # this very witness (same run, richer record: source-binding
+        # provenance rides it). Re-running the rebuild would only
+        # clobber that evidence with a leaner record.
+        existing = (finding.get("feasibility") or {}).get(
+            "empirical_mitigation_map") or {}
+        if existing.get("witness_hash") == best.witness.bytes_hash:
+            print(
+                f"  {finding['id']}: empirical map already attached "
+                "for this witness (synthesis pass) — keeping it",
+                file=sys.stderr,
+            )
+            continue
+
         # Resolve the witness bytes from the matched store. We need
         # the raw file path because the bytes aren't on the Witness
         # itself.
@@ -313,6 +406,21 @@ def _enrich_with_empirical_mitigation_map(
             print(
                 f"  WARN: {finding['id']}: empirical analysis raised "
                 f"({type(e).__name__}: {e}); skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        summary_probe = fmap.summary()
+        if not summary_probe.get("bug_fired_under") and not summary_probe.get(
+                "blocked_under"):
+            # Every profile failed to build (single-file rebuild
+            # contract vs a multi-file target, or no compiler for
+            # the flags) — an all-unbuildable map is noise, not
+            # evidence. Say so instead of attaching it.
+            print(
+                f"  {finding['id']}: empirical map skipped — no "
+                "profile built "
+                f"(unbuildable: {summary_probe.get('unbuildable_profiles')})",
                 file=sys.stderr,
             )
             continue

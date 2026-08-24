@@ -713,9 +713,7 @@ def start_run(output_dir: Path, command: str,
                         output_dir,
                         prior_pin[0] if prior_pin else "<missing>",
                         witnessed)
-                    prior_pin = (witnessed,
-                                 (prior_pin[1] if prior_pin
-                                  else wit_source or "session"))
+                    prior_pin = (witnessed, wit_source or "session")
             except Exception:  # noqa: BLE001 — witness is best-effort
                 logger.debug("pin witness check failed", exc_info=True)
         if prior_pin is not None:
@@ -1286,11 +1284,28 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
     except Exception:  # noqa: BLE001 — resolver failure: no fallthrough
         return None
     parent = out_res.parent
+    if _is_out_root(parent):
+        # A stray checklist.json at the out-root must not turn it
+        # into a pseudo project store for every marker-less run
+        # beneath it (the pin walk stops at the out-root; this direct
+        # parent probe needs the same boundary).
+        return None
     if (parent / "checklist.json").exists() or (
         parent / "coverage.json"
     ).exists():
         return parent
     return None
+
+
+def _is_out_root(directory: Path) -> bool:
+    """Is *directory* the configured out-root? (Runs live UNDER it —
+    it is never itself a project dir.)"""
+    try:
+        from core.config import RaptorConfig
+        return directory.resolve() == Path(
+            RaptorConfig.get_out_dir()).resolve()
+    except Exception:  # noqa: BLE001 — out-root unknown
+        return False
 
 
 def _pin_witness_ok(run_dir, pin) -> bool:
@@ -1457,6 +1472,8 @@ def _snapshot_run_coverage(output_dir: Path,
             except Exception:  # noqa: BLE001 — no privileged fallthrough
                 return
         if proj is None:
+            if _is_out_root(run_dir.parent):
+                return  # same out-root boundary as _journal_project_dir
             proj = run_dir.parent
         checklist_path = proj / "checklist.json"
         if not checklist_path.exists():
@@ -1697,12 +1714,25 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
         # marker is verified against the out-of-grant witness FIRST:
         # a hostile child rewriting project (and status → resumable)
         # during segment 1 must not be laundered into a trusted
-        # frozen pin here.
+        # frozen pin here. Witness lookup: the RESUMING session's
+        # ledger first, then the ORIGINAL owner's (a cross-session
+        # resume otherwise found no witness and trusted the marker —
+        # the prior pid comes from the same child-writable metadata,
+        # but a FORGED pid merely yields no witness, i.e. today's
+        # posture). Neither found = the documented sessionless
+        # residual. Any restore is a fresh LOCKED read-modify-write —
+        # the earlier snapshot is stale by now, and an unlocked save
+        # would clobber concurrent status writers wholesale.
+        _restored_pin = None
         try:
             from core.project.sessions import ledger_pin_witness
             from core.run.pin import freeze_run_pin, resolve_run_pin
             _pin = resolve_run_pin(output_dir)
             _found, _witnessed, _wsource = ledger_pin_witness(output_dir)
+            if not _found and isinstance(prior_session_pid, int) \
+                    and not isinstance(prior_session_pid, bool):
+                _found, _witnessed, _wsource = ledger_pin_witness(
+                    output_dir, pid=prior_session_pid)
             if _found and _witnessed != (_pin.project
                                          if _pin.authoritative else None):
                 logger.warning(
@@ -1712,21 +1742,34 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
                     output_dir,
                     _pin.project if _pin.authoritative else None,
                     _witnessed)
-                metadata["project"] = _witnessed
-                metadata["project_source"] = _wsource or "session"
-                save_json(path, metadata)
-                freeze_run_pin(output_dir, _witnessed,
-                               _wsource or "session")
+                _wsource = _wsource or "session"
+                with _metadata_lock(path):
+                    _fresh = load_json(path)
+                    if isinstance(_fresh, dict):
+                        _fresh["project"] = _witnessed
+                        _fresh["project_source"] = _wsource
+                        save_json(path, _fresh)
+                freeze_run_pin(output_dir, _witnessed, _wsource)
+                _restored_pin = (_witnessed, _wsource)
             elif _pin.authoritative:
                 freeze_run_pin(output_dir, _pin.project, _pin.source)
+                _restored_pin = (_pin.project, _pin.source)
         except Exception:  # noqa: BLE001 — seal is best-effort
             logger.debug("resume pin seal failed", exc_info=True)
         from core.project.sessions import ledger_record_resume
         prior = (prior_session_pid
                  if isinstance(prior_session_pid, int)
                  and not isinstance(prior_session_pid, bool) else None)
+        # Thread the verified pin so the RESUMING session's ledger
+        # carries a witness for segment 2+ — without it, this
+        # session's later completions had nothing to verify against.
         ledger_record_resume(Path(output_dir),
-                             prior_session_pid=prior, pid=session_pid)
+                             prior_session_pid=prior, pid=session_pid,
+                             pin_project=(_restored_pin[0]
+                                          if _restored_pin else None),
+                             pin_source=(_restored_pin[1]
+                                         if _restored_pin else None),
+                             record_pin=_restored_pin is not None)
     return segment
 
 

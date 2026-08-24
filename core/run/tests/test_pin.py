@@ -690,3 +690,109 @@ class ResumeAndTamperTest(_PinCase):
             "project_source": "session", "target_path": ["/x"],
         })
         self.assertFalse(pinned_write_target_ok(d))
+
+
+class ResumeWitnessLifecycleTest(_PinCase):
+    """Resume-path witness semantics: locked restore, cross-session
+    lookup via the prior owner's ledger, fresh witness for segment 2."""
+
+    def _sessioned(self, name="pinned"):
+        sessions.record_session(name, pid=os.getpid())
+        patcher = patch.object(sessions, "resolve_session_pid",
+                               return_value=os.getpid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_cross_session_resume_consults_prior_owner_witness(self):
+        from core.json import load_json
+        from core.run.metadata import resume_run
+        from core.run.pin import _frozen_pins
+        self._sessioned()
+        self.mgr.create("mallory", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "mallory"))
+        d = self.root / "out" / "standalone" / "scan_x"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": None,
+            "project_source": "none", "command": "scan",
+            "session_pid": os.getpid(),
+        })
+        # The ORIGINAL owner's ledger carries the witness.
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project=None, record_pin=True)
+        # Hostile child re-pins + makes resumable; the RESUMING
+        # session is a different pid with no witness of its own.
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "interrupted", "project": "mallory",
+            "project_source": "argv", "command": "scan",
+            "session_pid": os.getpid(),
+        })
+        _frozen_pins.clear()
+        other_pid = os.getpid() + 1  # no ledger for this pid
+        with patch.object(sessions, "resolve_session_pid",
+                          return_value=other_pid):
+            resume_run(d)
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertIsNone(meta["project"],
+                          "the prior owner's witness must veto the "
+                          "laundered marker on a cross-session resume")
+
+    def test_resume_restore_is_a_fresh_locked_rmw(self):
+        # The restore must re-read the file, not save a stale
+        # snapshot: a field written by a concurrent locked writer
+        # after resume's first save must survive the restore.
+        from core.json import load_json
+        from core.run import metadata as md
+        from core.run.pin import _frozen_pins
+        self._sessioned()
+        d = self.root / "out" / "standalone" / "scan_y"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": None,
+            "project_source": "none", "command": "scan",
+        })
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project=None, record_pin=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "interrupted", "project": "pinned",
+            "project_source": "argv", "command": "scan",
+            "sentinel_field": "must-survive",
+        })
+        _frozen_pins.clear()
+        md.resume_run(d)
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertIsNone(meta["project"])
+        self.assertEqual(meta.get("sentinel_field"), "must-survive")
+
+    def test_resume_writes_a_segment2_witness(self):
+        from core.run.metadata import resume_run
+        from core.run.pin import _frozen_pins
+        self._sessioned()
+        d = self.root / "out" / "pinned" / "scan_z"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "interrupted", "project": "pinned",
+            "project_source": "session", "command": "scan",
+        })
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="pinned",
+                                     record_pin=True,
+                                     pin_source="session")
+        _frozen_pins.clear()
+        resume_run(d)
+        found, project, _src = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "pinned")
+
+
+class OutRootBoundaryTest(_PinCase):
+    def test_stray_checklist_at_out_root_is_not_a_project_store(self):
+        from core.run.metadata import _journal_project_dir
+        out_root = self.root / "out"
+        (out_root / "checklist.json").write_text("{}", encoding="utf-8")
+        legacy = out_root / "scan_legacy"
+        legacy.mkdir()
+        with patch("core.config.RaptorConfig.get_out_dir",
+                   return_value=out_root):
+            self.assertIsNone(_journal_project_dir(legacy))

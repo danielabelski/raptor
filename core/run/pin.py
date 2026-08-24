@@ -66,7 +66,10 @@ _WALK_DEPTH = 8
 
 #: Process-scoped ``--project`` override. Set exactly once by an entry
 #: point's arg parsing; children receive the value by explicit argv
-#: threading, never ambiently.
+#: threading, never ambiently. Thread-safety relies on GIL-atomic
+#: reads/writes of these two names: writers run at entry-point/
+#: bootstrap time before worker pools spawn, and no compound
+#: check-then-set exists on the read paths.
 _process_project: str | None = None
 _process_project_set = False
 
@@ -288,6 +291,9 @@ def _containment_project(start_dir: Path) -> str | None:
 #: the sandbox WRITE GRANT handed to prompt-injectable children —
 #: cannot move this process's consumers. Keyed by the resolved run
 #: root. Never invalidated within a process: a run dir is pinned once.
+#: Thread-safety: single-bytecode dict ops only (get/setitem/
+#: setdefault — GIL-atomic); worker threads read, writers run before
+#: pools spawn.
 _frozen_pins: dict[str, RunPin] = {}
 
 

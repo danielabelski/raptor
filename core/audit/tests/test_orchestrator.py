@@ -2334,6 +2334,48 @@ class TestRejournalFinalStatuses:
 
         assert _rejournal_final_statuses(result, config) == 0
 
+    def test_corrective_entry_carries_prior_strategies_and_span(
+        self, tmp_path: Path,
+    ):
+        # The corrective row re-describes the SAME review — dropping
+        # the strategy record (the old minimal gap did) made cross-run
+        # verdict reuse refuse the function as strategy_changed on
+        # every later run, and the line_end-less span left only a
+        # one-line source hash as staleness evidence.
+        from core.audit.collector import append_journal_for_outcome
+        from core.audit.journal import latest_entries, make_function_key
+        from core.audit.orchestrator import _rejournal_final_statuses
+
+        config = self._setup(tmp_path)
+        initial = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="initial", hypothesis="auth bypass", line=1,
+        )
+        append_journal_for_outcome(
+            out_dir=config.out_dir,
+            target_path=config.target_path,
+            run_id="run-1",
+            outcome=initial,
+            gap={
+                "line_start": 1, "line_end": 1,
+                "strategies": ["auth", "general"],
+            },
+        )
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="resolved clean", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _rejournal_final_statuses(result, config) == 1
+        entry = latest_entries(config.out_dir)[make_function_key("a.c", "f")]
+        assert entry.verdict == "clean"
+        assert entry.strategies == ["auth", "general"]
+        assert entry.line_start == 1
+        assert entry.line_end == 1
+
 
 class TestPostLoopReceiptRescue:
     """Post-loop structural receipts re-drive the anti-self-refutation

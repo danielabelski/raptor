@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from core.coverage.journal import make_function_key
@@ -1539,7 +1540,8 @@ def _fold_journal_into_covered(
                 # on every resume.
                 from .journal import load_entries
                 per_site: dict[tuple, Any] = {}
-                for _e in load_entries(out_dir):
+                own_entries = load_entries(out_dir)
+                for _e in own_entries:
                     _k = (_e.file, _e.function, _e.line_start)
                     _prev = per_site.get(_k)
                     if _prev is None or _e.ts > _prev.ts:
@@ -1557,6 +1559,7 @@ def _fold_journal_into_covered(
                     domain_ctx=domain_ctx,
                     source_label="same-run",
                     reuse_stats=reuse_stats,
+                    strategy_backfill=_strategy_backfill_from(own_entries),
                 )
             else:
                 from .journal import is_function_grade, load_entries
@@ -1660,6 +1663,7 @@ def _reuse_ineligibility(
     current_strategies_fn,
     current_model: str | None,
     domain_ctx: dict | None = None,
+    recorded_strategies: list | None = None,
 ) -> str | None:
     """Why a hash-verified prior entry may NOT be imported as a
     reused verdict. ``None`` when it is eligible.
@@ -1682,8 +1686,12 @@ def _reuse_ineligibility(
       strategy landing), the review context materially changed and
       the entry is re-reviewed. The current inference is resolved at
       the entry's own site (``line_start``) so same-named siblings
-      never cross-compare. Entries without recorded strategies
-      (non-gap review paths) only match a currently-empty set.
+      never cross-compare. ``recorded_strategies`` (when not None)
+      substitutes for the entry's own record — the fold passes the
+      strategy set backfilled from a sibling journal row when the
+      entry itself recorded none (corrective re-journal entries; see
+      ``_strategy_backfill_from``). Entries without recorded
+      strategies and no backfill only match a currently-empty set.
     * domain-model context — when the domain model changed since the
       review AND gained concepts/invariants relevant to this
       function's current strategies (:func:`_context_staleness`),
@@ -1710,8 +1718,12 @@ def _reuse_ineligibility(
         # construction and refused valid reuse.
         current = current_strategies_fn(
             key, getattr(entry, "line_start", 0) or 0)
+        recorded = (
+            recorded_strategies if recorded_strategies is not None
+            else (entry.strategies or [])
+        )
         if current is not None and (
-                frozenset(entry.strategies or []) != frozenset(current)):
+                frozenset(recorded) != frozenset(current)):
             # Set compare: the journaled order (and any duplicate) of
             # the strategy names is presentation, not review context —
             # only a different SET of strategy classes means the
@@ -1736,6 +1748,72 @@ def _reuse_block_class(reason: str) -> str:
     if reason.startswith("strategy set"):
         return "strategy_changed"
     return "domain_model_context"
+
+
+def _strategy_backfill_from(
+    entries: Iterable[Any],
+) -> Callable[[Any], list | None]:
+    """Build a sibling-row strategy lookup for corrective entries.
+
+    Post-loop corrective re-journal writers (final-status corrections,
+    deepen re-reviews and the other ``_find_gap_in_checklist``-fed
+    commit paths) historically journaled ``strategies: []`` because
+    their synthetic gap dicts never carried the field. The corrective
+    row is the newest for its site, so the latest-per-site collapse
+    hands the FOLD an empty strategy record for a function whose
+    actual review was briefed with the full inferred set — and the
+    eligibility screen then refuses reuse as ``strategy_changed`` on
+    every subsequent run, on unchanged source, forever (observed live
+    as a mass strategy_changed re-buy).
+
+    The briefing is not lost: the shadowed sibling row (same file,
+    function and site) still records it. This helper indexes every
+    populated, function-grade, MAC-verified row per site and returns
+    ``lookup(entry) -> list | None`` resolving the latest sibling that
+    shares the empty entry's ``run_id`` (corrective rows are written
+    seconds after the review they correct, in the same run, on the
+    same source snapshot) or its exact ``source_hash``. The backfilled
+    set substitutes for the empty record in the strategy comparison
+    ONLY — the screen itself stays strict set-equality, so a genuine
+    coverage regression (sibling recorded strategies the current
+    inference no longer produces) still refuses reuse.
+
+    MAC gate: an unverified sibling row could otherwise steer a
+    verified verdict back into $0 reuse, so unstamped/tampered rows
+    never backfill.
+    """
+    from core.coverage import journal_mac
+
+    from .journal import is_function_grade
+
+    by_site: dict[tuple, list] = {}
+    for e in entries:
+        if e.verdict == "error" or not is_function_grade(e):
+            continue
+        if getattr(e, "edge_callee", None):
+            continue
+        if not (e.strategies or []):
+            continue
+        site = (e.file, e.function, getattr(e, "line_start", 0) or 0)
+        by_site.setdefault(site, []).append(e)
+
+    def lookup(entry: Any) -> list | None:
+        site = (
+            entry.file, entry.function,
+            getattr(entry, "line_start", 0) or 0,
+        )
+        candidates = [
+            c for c in by_site.get(site, ())
+            if (c.run_id and c.run_id == entry.run_id)
+            or (c.source_hash and c.source_hash == entry.source_hash)
+        ]
+        candidates.sort(key=lambda c: c.ts, reverse=True)
+        for c in candidates:
+            if journal_mac.entry_provenance(c) == journal_mac.ROW_VERIFIED:
+                return sorted(c.strategies)
+        return None
+
+    return lookup
 
 
 def _fold_project_index(
@@ -1793,17 +1871,34 @@ def _fold_project_index(
     requires positive hash evidence.
 
     Kind-aware collapse: the index is read through
-    ``latest_function_grade_index``, not ``load_index`` — the plain
+    ``latest_function_grade_collapse``, not ``load_index`` — the plain
     latest-per-function collapse would let a newer /agentic
     finding-analysis shadow the /audit verdict this fold exists to
     honour (and finding-grade entries never fold; see
     ``_fold_journal_into_covered``).
     """
-    from .journal import latest_function_grade_index
+    from core.coverage.journal import (
+        latest_function_grade_collapse,
+        load_index_full,
+    )
+
+    full_entries = list(load_index_full(project_dir).values())
+
+    strategy_backfill = None
+    if reuse_sink is not None:
+        try:
+            # Full history, not the per-site collapse: the collapse is
+            # exactly what shadows the populated sibling rows the
+            # backfill needs (the index stores one row per
+            # file:function:model:strategy_hash, so the original
+            # review's row survives beside its corrective).
+            strategy_backfill = _strategy_backfill_from(full_entries)
+        except Exception:
+            logger.debug("strategy backfill build failed", exc_info=True)
 
     _verify_entries_fold(
         covered,
-        list(latest_function_grade_index(project_dir).values()),
+        list(latest_function_grade_collapse(full_entries).values()),
         target_path=target_path,
         current_spans=current_spans,
         binary_hashes=binary_hashes,
@@ -1814,6 +1909,7 @@ def _fold_project_index(
         domain_ctx=domain_ctx,
         source_label="prior-run",
         reuse_stats=reuse_stats,
+        strategy_backfill=strategy_backfill,
     )
 
 
@@ -1831,6 +1927,7 @@ def _verify_entries_fold(
     source_label: str,
     domain_ctx: dict | None = None,
     reuse_stats: dict | None = None,
+    strategy_backfill=None,
 ) -> None:
     """Hash-verify journal *entries* and fold them into ``covered``.
 
@@ -1860,6 +1957,13 @@ def _verify_entries_fold(
     Finding-grade entries are dropped here as well as at the collapse
     (belt-and-braces): the same-run resume path feeds this fold from
     ``latest_entries`` on a run dir that could carry mixed producers.
+
+    ``strategy_backfill`` (optional, see ``_strategy_backfill_from``)
+    resolves the recorded strategy set for entries that journaled
+    none — corrective re-journal rows whose writers dropped the
+    field — from a verified sibling row, so the eligibility screen
+    compares the review's REAL briefing instead of refusing every
+    corrected function as ``strategy_changed`` forever.
     """
     from core.coverage import journal_mac
 
@@ -2056,11 +2160,16 @@ def _verify_entries_fold(
                 _credit(key, matched_span[0])
                 continue
             if reuse_sink is not None:
+                recorded_strategies = None
+                if not (entry.strategies or []) and (
+                        strategy_backfill is not None):
+                    recorded_strategies = strategy_backfill(entry)
                 reason = _reuse_ineligibility(
                     entry, key,
                     current_strategies_fn=current_strategies_fn,
                     current_model=current_model,
                     domain_ctx=domain_ctx,
+                    recorded_strategies=recorded_strategies,
                 )
                 if reason is not None:
                     cls = _reuse_block_class(reason)

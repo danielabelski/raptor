@@ -312,6 +312,139 @@ class TestReuseBlockedStats:
         assert "auth.c:check_pw" in _gap_keys(gaps)
 
 
+class TestCorrectiveStrategyBackfill:
+    """Corrective re-journal rows (final-status corrections, deepen /
+    post-loop re-reviews) historically journaled ``strategies: []``
+    because their synthetic gap dicts never carried the field. Being
+    the newest row for the site, the corrective shadowed the original
+    review in the latest-per-site collapse and the eligibility screen
+    refused every corrected function as strategy_changed on all later
+    runs — on unchanged source (observed live as a mass re-buy). The
+    fold now backfills the empty record from the shadowed sibling row
+    (same site, same run or same source hash); the strict set-equality
+    comparison itself is unchanged, so a genuine strategy-coverage
+    regression still refuses."""
+
+    def _project_with_history(self, tmp_path, *entries):
+        project = tmp_path / "project"
+        for entry in entries:
+            run_dir = project / entry.run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            append_entry(run_dir, entry)
+        for run_id in {e.run_id for e in entries}:
+            merge_into_index(project, project / run_id)
+        return project
+
+    def _corrective(self, target, **over):
+        # The observed corrective shape: same site, empty strategies,
+        # single-line source hash (the writer's minimal gap had no
+        # line_end), final verdict differing from the original.
+        fields = {
+            "verdict": "clean",
+            "strategies": [],
+            "line_end": None,
+            "source_hash": hash_span(target / "auth.c", 1, 1),
+            "body": "[resolution] corrective entry",
+        }
+        fields.update(over)
+        return _entry(target, **fields)
+
+    def test_corrective_empty_row_reuses_via_same_run_sibling(
+            self, tmp_path):
+        target = _write_target(tmp_path)
+        original = _entry(target, verdict="suspicious")
+        corrective = self._corrective(target)   # later ts, same run
+        project = self._project_with_history(
+            tmp_path, original, corrective)
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+        assert "auth.c:check_pw" in sink
+        # The FINAL verdict (the corrective row's) is what reuses.
+        assert sink["auth.c:check_pw"].verdict == "clean"
+
+    def test_deepen_shape_reuses_via_same_hash_sibling(self, tmp_path):
+        # Deepen-shaped corrective: full span + full-span hash, but a
+        # different run than the populated sibling — donation matches
+        # on the exact source hash instead.
+        target = _write_target(tmp_path)
+        original = _entry(target, run_id="run0", verdict="suspicious")
+        corrective = _entry(
+            target, verdict="clean", strategies=[],
+            body="DEEPEN pass corrective",
+        )
+        project = self._project_with_history(
+            tmp_path, original, corrective)
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" in sink
+        assert sink["auth.c:check_pw"].verdict == "clean"
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
+    def test_strategy_regression_still_refused(self, tmp_path):
+        # The sibling proves the review was briefed with a SUPERSET of
+        # what current inference produces (a strategy was retired or
+        # its inputs regressed): materially different briefing — the
+        # backfilled comparison must still refuse.
+        target = _write_target(tmp_path)
+        original = _entry(
+            target, verdict="suspicious",
+            strategies=[*_current_strategies(), "some_retired_strategy"],
+        )
+        corrective = self._corrective(target)
+        project = self._project_with_history(
+            tmp_path, original, corrective)
+        stats: dict = {}
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+            reuse_stats=stats,
+        )
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+        assert stats == {"auth.c:check_pw": "strategy_changed"}
+
+    def test_empty_row_without_sibling_still_refused(self, tmp_path):
+        # No populated sibling: the pre-backfill guard holds — an
+        # empty record only matches a currently-empty inference.
+        target = _write_target(tmp_path)
+        project = self._project_with_history(
+            tmp_path, self._corrective(target))
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+
+    def test_unrelated_sibling_never_donates(self, tmp_path):
+        # A populated row from another run AND another source snapshot
+        # (different hash) is not evidence of this row's briefing.
+        target = _write_target(tmp_path)
+        original = _entry(
+            target, run_id="run0", verdict="suspicious",
+            source_hash="f" * 12,
+        )
+        corrective = self._corrective(target)
+        project = self._project_with_history(
+            tmp_path, original, corrective)
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert sink == {}
+        assert "auth.c:check_pw" in _gap_keys(gaps)
+
+
 class TestOutcomeFromEntry:
     def test_fields(self, tmp_path):
         target = _write_target(tmp_path)

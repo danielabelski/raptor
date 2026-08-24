@@ -388,3 +388,85 @@ class TestCollectorSageHypothesis:
             c.submit(outcome, gap)
 
         assert len(c._log_entries) == 1
+
+
+class TestCorrectiveStrategyInheritance:
+    """Strategies-less corrective writes (deepen / post-loop re-review
+    commit paths pass synthetic gaps without the field) inherit the
+    strategy set the run's own journal already recorded for the site,
+    so the corrective row keeps the review's briefing instead of
+    shadowing it with ``strategies: []`` (which made cross-run verdict
+    reuse refuse the function as strategy_changed forever)."""
+
+    def _write(self, out_dir: Path, gap: dict, **outcome_over) -> None:
+        from core.audit.collector import append_journal_for_outcome
+        outcome = _FakeOutcome(**outcome_over)
+        append_journal_for_outcome(
+            out_dir=out_dir, target_path=out_dir, run_id="run-1",
+            outcome=outcome, gap=gap,
+        )
+
+    def test_corrective_write_inherits_site_strategies(
+        self, tmp_path: Path,
+    ) -> None:
+        from core.coverage.journal import load_entries
+        self._write(
+            tmp_path,
+            {"line_start": 10, "line_end": 30,
+             "strategies": ["general", "input_handling"]},
+            status="suspicious",
+        )
+        self._write(tmp_path, {"line_start": 10}, status="clean",
+                    body="[resolution] corrective")
+        entries = load_entries(tmp_path)
+        assert entries[-1].verdict == "clean"
+        assert entries[-1].strategies == ["general", "input_handling"]
+
+    def test_no_prior_row_keeps_empty_record(self, tmp_path: Path) -> None:
+        from core.coverage.journal import load_entries
+        self._write(tmp_path, {"line_start": 10}, status="clean")
+        assert load_entries(tmp_path)[-1].strategies == []
+
+    def test_other_site_never_donates(self, tmp_path: Path) -> None:
+        # Same-named sibling at a different span must not donate its
+        # briefing to this site's corrective row.
+        from core.coverage.journal import load_entries
+        self._write(
+            tmp_path,
+            {"line_start": 10, "line_end": 30, "strategies": ["auth"]},
+            status="suspicious",
+        )
+        self._write(tmp_path, {"line_start": 99}, status="clean")
+        assert load_entries(tmp_path)[-1].strategies == []
+
+    def test_agentic_producer_never_inherits(self, tmp_path: Path) -> None:
+        from core.audit.collector import append_journal_for_outcome
+        from core.coverage.journal import load_entries
+        self._write(
+            tmp_path,
+            {"line_start": 10, "line_end": 30, "strategies": ["auth"]},
+            status="suspicious",
+        )
+        append_journal_for_outcome(
+            out_dir=tmp_path, target_path=tmp_path, run_id="run-1",
+            outcome=_FakeOutcome(status="clean"),
+            gap={"line_start": 10}, producer="agentic",
+        )
+        assert load_entries(tmp_path)[-1].strategies == []
+
+    def test_later_segment_row_found_after_snapshot(
+        self, tmp_path: Path,
+    ) -> None:
+        # The per-run snapshot is built at the first strategies-less
+        # write; a site journaled only AFTER that must still resolve
+        # (miss-triggered refresh when the journal grew).
+        from core.coverage.journal import load_entries
+        self._write(tmp_path, {"line_start": 10}, status="clean")
+        self._write(
+            tmp_path,
+            {"line_start": 50, "line_end": 70, "strategies": ["memory"]},
+            status="suspicious", function="login",
+        )
+        self._write(tmp_path, {"line_start": 50}, status="clean",
+                    function="login")
+        assert load_entries(tmp_path)[-1].strategies == ["memory"]

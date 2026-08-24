@@ -86,6 +86,31 @@ def _gap_keys(gaps):
 
 
 class TestOwnRunReuseFold:
+    def test_corrective_empty_strategies_row_reuses_on_resume(
+            self, tmp_path):
+        # The interrupted run's post-loop pass appended a corrective
+        # row with strategies=[] (the writer's synthetic gap carried
+        # none) AFTER the strategy-briefed review row. Resume must
+        # backfill the briefing from the sibling row and reuse the
+        # final verdict instead of refusing it as strategy_changed.
+        target = _write_target(tmp_path)
+        original = _entry(target, verdict="suspicious")
+        corrective = _entry(
+            target, verdict="clean", strategies=[], line_end=None,
+            source_hash=hash_span(target / "auth.c", 1, 1),
+            body="[resolution] corrective entry",
+        )
+        run_dir = _run_dir(tmp_path, original, corrective)
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], out_dir=run_dir,
+            reuse_sink=sink, own_run_reuse=True,
+            current_model="model-a",
+        )
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+        assert "auth.c:check_pw" in sink
+        assert sink["auth.c:check_pw"].verdict == "clean"
+
     def test_verified_own_entry_lands_in_sink(self, tmp_path):
         target = _write_target(tmp_path)
         run_dir = _run_dir(tmp_path, _entry(target))

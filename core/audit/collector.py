@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
@@ -27,6 +28,108 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+#: Per-run-dir snapshot of the latest journaled strategy set per
+#: reviewed site, for strategy inheritance on corrective re-journal
+#: writes (see ``_inherited_strategies``). Maps run-dir → (journal
+#: size at snapshot time, site → strategies). Built lazily on the
+#: first strategies-less audit write — the mid-loop review path
+#: always carries gap strategies and never touches this.
+_STRATEGY_SNAPSHOTS: dict[str, tuple[int, dict[tuple, list[str]]]] = {}
+_STRATEGY_SNAPSHOTS_LOCK = threading.Lock()
+
+
+def _journal_size(out_dir: Path) -> int:
+    from .journal import JOURNAL_FILENAME
+    try:
+        return (out_dir / JOURNAL_FILENAME).stat().st_size
+    except OSError:
+        return 0
+
+
+def _build_strategy_snapshot(out_dir: Path) -> dict[tuple, list[str]]:
+    snapshot: dict[tuple, list[str]] = {}
+    try:
+        from core.coverage import journal_mac
+
+        from .journal import is_function_grade, load_entries
+        for e in load_entries(out_dir):
+            if e.verdict == "error" or not is_function_grade(e):
+                continue
+            if getattr(e, "edge_callee", None):
+                continue
+            if not (e.strategies or []):
+                continue
+            # The journal lives in a target-writable run dir: only
+            # rows this install's writer stamped may donate a
+            # briefing (same gate the fold-side backfill applies).
+            if journal_mac.entry_provenance(e) != journal_mac.ROW_VERIFIED:
+                continue
+            site = (e.file, e.function, e.line_start or 0)
+            # load_entries preserves append order; later entries
+            # overwrite so the newest record wins.
+            snapshot[site] = list(e.strategies)
+    except Exception:
+        logger.debug(
+            "strategy-inheritance snapshot failed for %s",
+            out_dir, exc_info=True,
+        )
+    return snapshot
+
+
+def _inherited_strategies(
+    out_dir: Path,
+    file: str,
+    function: str,
+    line_start: int,
+) -> list[str] | None:
+    """Latest strategy set this run's journal recorded for a site.
+
+    Corrective re-journal writers (deepen re-reviews, post-loop
+    resolution passes, final-status corrections) re-describe a
+    function the run already reviewed, but their synthetic gap dicts
+    historically carried no ``strategies`` — the corrective row then
+    journaled ``strategies: []``, shadowed the original row in the
+    latest-per-site collapse, and cross-run verdict reuse refused the
+    function as ``strategy_changed`` on every later run. The review's
+    actual briefing is in the run's own journal; inherit it.
+
+    Site-bound: only a row at the same ``line_start`` (or a span-less
+    legacy row) donates, so same-named siblings never cross-donate.
+    Returns None when the run journaled nothing usable — the entry
+    then records ``[]`` exactly as before (the fold-side sibling
+    backfill in ``core.audit.gaps`` remains the safety net).
+
+    Caching: one snapshot per run dir, refreshed on a lookup MISS
+    when the journal has grown since — so the corrective pass costs
+    one journal parse total in the common case (every corrected
+    function was journaled mid-loop, before the first corrective
+    write), and a later-segment site missing from an early snapshot
+    still resolves without re-parsing per append.
+    """
+    key_dir = str(out_dir)
+
+    def _lookup(snapshot: dict[tuple, list[str]]) -> list[str] | None:
+        found = snapshot.get((file, function, line_start or 0))
+        if found is None and line_start:
+            found = snapshot.get((file, function, 0))
+        return found
+
+    with _STRATEGY_SNAPSHOTS_LOCK:
+        cached = _STRATEGY_SNAPSHOTS.get(key_dir)
+        if cached is None:
+            cached = (_journal_size(out_dir),
+                      _build_strategy_snapshot(out_dir))
+            _STRATEGY_SNAPSHOTS[key_dir] = cached
+        size, snapshot = cached
+        found = _lookup(snapshot)
+        if found is None and _journal_size(out_dir) > size:
+            cached = (_journal_size(out_dir),
+                      _build_strategy_snapshot(out_dir))
+            _STRATEGY_SNAPSHOTS[key_dir] = cached
+            found = _lookup(cached[1])
+        return found
 
 
 def append_journal_for_outcome(
@@ -259,6 +362,19 @@ def append_journal_for_outcome(
     except Exception:
         logger.debug("promotion alarm hook failed", exc_info=True)
 
+    strategies = list(gap.get("strategies") or [])
+    if (
+        not strategies
+        and producer == "audit"
+        and not edge_callee
+    ):
+        # Strategy inheritance for corrective writers whose synthetic
+        # gaps carry no strategies (see ``_inherited_strategies``).
+        strategies = _inherited_strategies(
+            out_dir, outcome.file, outcome.function,
+            gap.get("line_start", 0),
+        ) or []
+
     entry = ReviewJournalEntry(
         ts=now_iso(),
         run_id=run_id,
@@ -272,7 +388,7 @@ def append_journal_for_outcome(
         line_start=gap.get("line_start", 0),
         line_end=gap.get("line_end"),
         cwe=review_result.get("cwe") if review_result else None,
-        strategies=gap.get("strategies", []),
+        strategies=strategies,
         domain_model_hash=domain_model_hash,
         domain_concepts_available=domain_concepts,
         invariants_available=invariants_available,

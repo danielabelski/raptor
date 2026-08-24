@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -658,8 +659,19 @@ def latest_function_grade_index(
     per-site fold). Computed from entry FIELDS, so legacy span-less
     index rows collapse correctly too.
     """
+    return latest_function_grade_collapse(load_index_full(project_dir).values())
+
+
+def latest_function_grade_collapse(
+    entries: Iterable[ReviewJournalEntry],
+) -> dict[str, ReviewJournalEntry]:
+    """Per-site latest-function-grade collapse over pre-loaded
+    *entries* — the core of :func:`latest_function_grade_index`,
+    split out so callers that already hold the full index (the gap
+    fold loads it once for both the collapse and the strategy
+    backfill) don't parse a multi-MB index file twice."""
     result: dict[str, ReviewJournalEntry] = {}
-    for entry in load_index_full(project_dir).values():
+    for entry in entries:
         if not is_function_grade(entry):
             continue
         site_key = f"{entry.key}@{entry.line_start or 0}"

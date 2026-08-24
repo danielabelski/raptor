@@ -21599,13 +21599,33 @@ def _rejournal_final_statuses(
         prior = entries.get(key)
         if prior is None or prior.verdict == outcome.status:
             continue
+        # Carry the corrected entry's span AND strategy record
+        # forward. The old minimal gap ({"line_start": line})
+        # journaled the corrective row with strategies=[] and a
+        # single-line source hash; the latest-per-site collapse then
+        # handed cross-run verdict reuse an empty strategy set for a
+        # fully-briefed review, refusing it as strategy_changed on
+        # every later run, and the one-line hash weakened staleness
+        # evidence to near nothing. Same-named siblings: only adopt
+        # the prior row's fields when it describes the SAME site —
+        # a mismatched sibling keeps the minimal-gap behaviour
+        # (the collector's sibling-inheritance fallback still fills
+        # strategies when it can).
+        gap: dict[str, Any] = {"line_start": outcome.line or 0}
+        if not outcome.line or (prior.line_start or 0) in (
+                0, outcome.line):
+            gap = {
+                "line_start": prior.line_start or (outcome.line or 0),
+                "line_end": prior.line_end,
+                "strategies": list(prior.strategies or []),
+            }
         try:
             append_journal_for_outcome(
                 out_dir=config.out_dir,
                 target_path=config.target_path,
                 run_id=(config.out_dir.name if config.out_dir else ""),
                 outcome=outcome,
-                gap={"line_start": outcome.line or 0},
+                gap=gap,
             )
             updated += 1
         except Exception:

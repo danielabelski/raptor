@@ -2361,5 +2361,10 @@
     "count": 10,
     "kind": "literal",
     "note": "registry of evidence-channel keys -> classifier module paths (code registry, not a target-API name vocabulary; grows one entry per new evidence channel)"
+  },
+  "packages/joern/lifecycle.py::new_state": {
+    "count": 10,
+    "kind": "literal",
+    "note": "lifecycle state-file field names (pid/comm/port/heap/credential/socket_path keys of joern-server.json), not name vocabulary \u2014 same class as the to_dict field-name entries"
   }
 }

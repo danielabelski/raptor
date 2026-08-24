@@ -505,6 +505,102 @@ def find_pc_dumps(out_dir: Path) -> list[Path]:
     return kept
 
 
+def _span_hits(pcs, spans, starts) -> int:
+    """How many PCs land inside checklist function ranges."""
+    import bisect
+    n = 0
+    for pc in pcs:
+        i = bisect.bisect_right(starts, pc) - 1
+        if i >= 0 and spans[i][0] <= pc <= spans[i][1]:
+            n += 1
+    return n
+
+
+#: Base-inference bounds: sample cap keeps the vote O(sample x spans);
+#: the quorum and validated-hit dominance keep a noise-built base from
+#: being trusted (a wrong base would attribute coverage to functions
+#: that never ran, which downstream reads as reviewed-adjacent signal).
+_BASE_SAMPLE_CAP = 800
+_BASE_VOTE_QUORUM = 8
+_BASE_CANDIDATES = 5
+_BASE_HIT_DOMINANCE = 1.25
+_PAGE = 0x1000
+
+
+def _base_candidates(pcs, spans) -> list:
+    """Vote page-aligned base candidates for a PIE module's PCs.
+
+    sancov dumps carry runtime addresses with no module map; for a
+    PIE binary under ASLR they miss every file-relative checklist
+    range. The true base B satisfies ``pc - B in [start, end]`` for
+    the function containing each PC, so every (pc, span) pair votes
+    for the page-aligned values of ``pc - end .. pc - start``. Raw
+    vote counts alone cannot be trusted: regularly spaced function
+    layouts produce harmonic aliases one page off the true base —
+    the caller validates candidates by actual rebased hit-rate.
+    Returns up to _BASE_CANDIDATES quorum-reaching candidates.
+    """
+    from collections import Counter
+    sample = sorted(pcs)
+    if len(sample) > _BASE_SAMPLE_CAP:
+        stride = len(sample) // _BASE_SAMPLE_CAP
+        sample = sample[::stride][:_BASE_SAMPLE_CAP]
+    votes: Counter = Counter()
+    for pc in sample:
+        for start, end, _name in spans:
+            lo = pc - end
+            hi = pc - start
+            if hi < 0:
+                continue
+            b = (lo + _PAGE - 1) & ~(_PAGE - 1)
+            while b <= hi:
+                if b > 0:
+                    votes[b] += 1
+                b += _PAGE
+    return [b for b, n in votes.most_common(_BASE_CANDIDATES)
+            if n >= _BASE_VOTE_QUORUM]
+
+
+def _resolve_sancov_view(pcs, spans, starts):
+    """Pick the usable interpretation of a sancov PC set.
+
+    Returns ``(addresses, inferred_base)``. Direct (file-relative)
+    view wins when it lands; otherwise a per-trace base inference is
+    attempted — per-trace because every dump comes from its own
+    process with its own ASLR base. The rebased view is accepted only
+    when it strictly beats the direct view and reaches at least three
+    distinct functions; anything weaker keeps the honest no-signal
+    behaviour.
+    """
+    direct = _span_hits(pcs, spans, starts)
+    if direct >= max(1, len(pcs) // 4):
+        return pcs, None
+    scored = []
+    for base in _base_candidates(pcs, spans):
+        rebased = {pc - base for pc in pcs}
+        scored.append((_span_hits(rebased, spans, starts), base, rebased))
+    scored.sort(reverse=True)
+    if not scored:
+        return pcs, None
+    rehits, base, rebased = scored[0]
+    if rehits <= direct or rehits < 3:
+        return pcs, None
+    # Validated-hit dominance over the runner-up candidate: harmonic
+    # aliases of regular layouts survive the vote but lose on actual
+    # range hits; a near-tie means ambiguity — refuse, don't guess.
+    if len(scored) > 1 and rehits < scored[1][0] * _BASE_HIT_DOMINANCE:
+        return pcs, None
+    import bisect
+    funcs = set()
+    for pc in rebased:
+        i = bisect.bisect_right(starts, pc) - 1
+        if i >= 0 and spans[i][0] <= pc <= spans[i][1]:
+            funcs.add(spans[i][2])
+    if len(funcs) < 3:
+        return pcs, None
+    return rebased, base
+
+
 def emit_binary_fuzz_coverage(
     out_dir: Path,
     *,
@@ -560,10 +656,23 @@ def emit_binary_fuzz_coverage(
     starts = [sp[0] for sp in spans]
 
     addresses: set[int] = set()
+    inferred_bases: dict[str, str] = {}
     for dump in dumps:
         try:
             if dump.suffix == ".sancov":
-                addresses.update(parse_sancov(dump))
+                pcs = set(parse_sancov(dump))
+                if pcs:
+                    usable, base = _resolve_sancov_view(
+                        pcs, spans, starts,
+                    )
+                    if base is not None:
+                        inferred_bases[dump.name] = hex(base)
+                        logger.info(
+                            "sancov trace %s: inferred PIE base %#x "
+                            "(per-trace — each dump has its own "
+                            "ASLR base)", dump.name, base,
+                        )
+                    addresses.update(usable)
             else:
                 # drcov: {module_path: {base, offsets}} with
                 # module-relative offsets. Keep only the analysed
@@ -588,16 +697,10 @@ def emit_binary_fuzz_coverage(
                     # actually lands in the checklist ranges.
                     rebased = {off + base for off in offsets}
                     if base and spans:
-                        def _hits(pcs):
-                            import bisect as _b
-                            n = 0
-                            for pc in pcs:
-                                i = _b.bisect_right(starts, pc) - 1
-                                if i >= 0 and spans[i][0] <= pc <= spans[i][1]:
-                                    n += 1
-                            return n
                         addresses.update(
-                            rebased if _hits(rebased) >= _hits(offsets)
+                            rebased
+                            if _span_hits(rebased, spans, starts)
+                            >= _span_hits(offsets, spans, starts)
                             else offsets
                         )
                     else:
@@ -655,6 +758,7 @@ def emit_binary_fuzz_coverage(
             "representation": "pc_trace",
             "trace_files": [str(d) for d in dumps[:20]],
             "pcs_total": len(addresses),
+            "inferred_pie_bases": inferred_bases,
         },
     }
     out_path = out_dir / "coverage-fuzz.json"

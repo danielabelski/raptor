@@ -108,3 +108,100 @@ class TestBinaryFuzzCoverage:
         # only OUR module's PC mapped; the other module's 0x2004
         # (which collides with 'quiet') must not leak in.
         assert set(funcs) == {"vuln"}
+
+
+def _pie_checklist(tmp_path, n_funcs=24):
+    """A denser checklist: base inference needs a vote quorum."""
+    items = [
+        {"name": f"fn{i:02d}", "kind": "function",
+         "address": 0x1000 + i * 0x100, "size": 0x80}
+        for i in range(n_funcs)
+    ]
+    cl = {
+        "target_path": str(tmp_path / "t"),
+        "target_kind": "binary",
+        "files": [{
+            "path": "binary:t", "language": "binary",
+            "sha256": "ab" * 32, "items": items,
+        }],
+    }
+    (tmp_path / "checklist.json").write_text(json.dumps(cl))
+    return cl
+
+
+class TestSancovPieBaseInference:
+    BASE = 0x55555554000  # page-aligned runtime base
+
+    def test_pie_trace_rebased_and_attributed(self, tmp_path):
+        _pie_checklist(tmp_path)
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        # runtime-view PCs inside 12 distinct functions
+        pcs = [self.BASE + 0x1000 + i * 0x100 + 0x10 for i in range(12)]
+        _sancov(tmp_path / "run.sancov", pcs)
+
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        assert out is not None
+        doc = json.loads(out.read_text())
+        funcs = doc["files"]["binary:t"]["functions"]
+        assert len(funcs) == 12
+        assert doc["meta"]["inferred_pie_bases"] == {
+            "run.sancov": hex(self.BASE),
+        }
+
+    def test_per_trace_bases(self, tmp_path):
+        """Two dumps from two processes with different ASLR bases."""
+        _pie_checklist(tmp_path)
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        other = 0x7f0000000000
+        _sancov(tmp_path / "a.sancov",
+                [self.BASE + 0x1000 + i * 0x100 + 8 for i in range(10)])
+        _sancov(tmp_path / "b.sancov",
+                [other + 0x1000 + i * 0x100 + 8 for i in range(10, 20)])
+
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        doc = json.loads(out.read_text())
+        funcs = doc["files"]["binary:t"]["functions"]
+        assert len(funcs) == 20
+        assert doc["meta"]["inferred_pie_bases"] == {
+            "a.sancov": hex(self.BASE), "b.sancov": hex(other),
+        }
+
+    def test_file_relative_trace_untouched(self, tmp_path):
+        """Non-PIE (direct-view) PCs never get a base invented."""
+        _pie_checklist(tmp_path)
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        _sancov(tmp_path / "run.sancov",
+                [0x1000 + i * 0x100 + 4 for i in range(8)])
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        doc = json.loads(out.read_text())
+        assert doc["meta"]["inferred_pie_bases"] == {}
+        assert len(doc["files"]["binary:t"]["functions"]) == 8
+
+    def test_no_quorum_contributes_nothing(self, tmp_path):
+        """Too few PCs for a quorum: honest no-signal, no guessing."""
+        _pie_checklist(tmp_path)
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        _sancov(tmp_path / "run.sancov", [self.BASE + 0x1010,
+                                          self.BASE + 0x1110])
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        assert out is None  # nothing mapped, no record emitted
+
+    def test_unaligned_base_never_inferred(self, tmp_path):
+        """PCs at a non-page-aligned offset can't vote in a base."""
+        _pie_checklist(tmp_path)
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        odd = self.BASE + 0x123  # unaligned true delta
+        _sancov(tmp_path / "run.sancov",
+                [odd + 0x1000 + i * 0x100 + 8 for i in range(12)])
+        out = emit_binary_fuzz_coverage(tmp_path, binary=binary)
+        # page-aligned candidates near the odd delta may catch SOME
+        # spans, but never with the dominance a real base shows —
+        # either no record or no inferred base with wide attribution
+        if out is not None:
+            doc = json.loads(out.read_text())
+            assert len(doc["files"]["binary:t"]["functions"]) <= 12

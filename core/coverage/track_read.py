@@ -33,10 +33,70 @@ _SOURCE_EXTENSIONS = frozenset({
 
 
 def _find_active_run():
-    """Find the running run directory via project symlink.
+    """Find the run directory this session's read should attribute to.
 
-    Returns (run_dir, target) or (None, None).
+    PRIMARY: the session RUN LEDGER — the hook process inherits the
+    launcher-exported RAPTOR_SESSION_PID (env-only resolution is sound
+    here because the hook runs inside claude's own environment), and
+    the ledger names exactly the runs this session started. Each
+    candidate is validated: absolute control-char-free path, a
+    self-authenticating `.raptor-run.json` with status=running
+    (project dirs are NOT enumerated, so --out and standalone runs
+    work), and the run's recorded session_pid equals ours (a run
+    resumed BY ANOTHER SESSION no longer belongs to us). Newest valid
+    live run wins; when none validates we attribute NOTHING — never
+    the global heuristic in-session.
+
+    FALLBACK (no session env — pre-series launchers, bare invocations):
+    the historical machine-global route via the .active symlink and
+    the newest-running-run scan, unchanged.
+
+    Returns (run_dir, target) or (None, None). The read filter comes
+    from the run's own recorded target_path (absent = no filter),
+    matching the bash twin (plugins/coverage/libexec/raptor-hook-read
+    — keep the two in lock-step).
     """
+    session_pid = os.environ.get("RAPTOR_SESSION_PID", "")
+    if session_pid.isdigit():
+        return _find_session_run(int(session_pid))
+    return _find_global_run()
+
+
+def _find_session_run(session_pid):
+    try:
+        ledger = (Path.home() / ".local" / "share" / "raptor"
+                  / "sessions.d" / f"{session_pid}.run")
+        text = ledger.read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    candidates = []
+    for line in text.splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) != 4 or parts[0] != "running":
+            continue
+        epoch, run_dir = parts[1], parts[3]
+        if (not run_dir.startswith("/") or not run_dir.isprintable()
+                or not epoch.isdigit()):
+            continue
+        candidates.append((int(epoch), run_dir))
+    for _epoch, run_dir in sorted(candidates, reverse=True):
+        d = Path(run_dir)
+        try:
+            meta = json.loads(
+                (d / ".raptor-run.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("status") != "running":
+            continue
+        if meta.get("session_pid") != session_pid:
+            continue  # resumed by (or belonging to) another session
+        target = meta.get("target_path") or ""
+        return str(d), target
+    return None, None
+
+
+def _find_global_run():
+    """Legacy machine-global discovery (no-session fallback only)."""
     active_link = Path.home() / ".raptor" / "projects" / ".active"
     if not active_link.is_symlink():
         return None, None
@@ -59,19 +119,7 @@ def _find_active_run():
         if not project_dir or not Path(project_dir).is_dir():
             return None, None
 
-        # Find most recent running run.
-        # `iterdir()` enumerates the directory; the sort key calls
-        # `.stat()` separately on each entry. Race: a run that exists
-        # at iterdir time can be deleted before `.stat()` runs (parent
-        # cleanup process, /project clean concurrent, manual rm), and
-        # `.stat()` then raises FileNotFoundError, leaking out of the
-        # try/except (OSError catches it but then we lose the WHOLE
-        # run discovery for THIS hook fire — the operator sees no
-        # tracked read for that file). Same for the `meta_file.exists()`
-        # → `read_text()` race below.
-        #
-        # Materialise the entries-with-mtimes pairs first, skipping
-        # any that fail to stat. Sort the surviving pairs only.
+        # Newest running run; stat races skipped per-entry.
         entries = []
         for d in Path(project_dir).iterdir():
             if not d.is_dir() or d.name.startswith((".", "_")):
@@ -79,15 +127,11 @@ def _find_active_run():
             try:
                 mtime = d.stat().st_mtime
             except OSError:
-                continue  # raced with deletion; skip rather than abort the whole loop
+                continue
             entries.append((mtime, d))
         for _mtime, d in sorted(entries, key=lambda t: t[0], reverse=True):
             meta_file = d / ".raptor-run.json"
             try:
-                # `read_text` raises FileNotFoundError if the file
-                # disappeared between the `entries` build above and
-                # this read; treat it as "no longer running" rather
-                # than aborting.
                 meta_text = meta_file.read_text(encoding="utf-8")
             except OSError:
                 continue
@@ -95,14 +139,6 @@ def _find_active_run():
                 meta = json.loads(meta_text)
             except (json.JSONDecodeError, ValueError):
                 continue
-            # Pre-fix `meta.get("status")` raised AttributeError if
-            # `meta` was not a dict (JSON file legitimately
-            # contained `null`, a list, a bare string, or a number).
-            # The outer except at line 90 didn't catch
-            # AttributeError or TypeError, so a malformed run-meta
-            # JSON crashed `_find_active_run` instead of falling
-            # through to "no active run found". isinstance-guard so
-            # malformed metas degrade gracefully.
             if not isinstance(meta, dict):
                 continue
             if meta.get("status") == "running":

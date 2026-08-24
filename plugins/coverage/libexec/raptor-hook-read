@@ -28,138 +28,125 @@ set -euo pipefail
 
 umask 077
 
-# Find active project. Pre-fix the LINK_TARGET from
-# `readlink` was used unvalidated:
-#
-#   LINK_TARGET=$(readlink "$ACTIVE_LINK")
-#   PROJECT_FILE="$HOME/.raptor/projects/$LINK_TARGET"
-#
-# `.active` is operator-controlled but should always
-# point at a SIBLING entry under `~/.raptor/projects/`.
-# If something flipped it (intentional misuse, hostile
-# /tmp/race, or a stray rebuild that pointed it
-# elsewhere), `LINK_TARGET` could be:
-#
-#   * `../../etc/passwd` → `PROJECT_FILE` resolves to
-#     `~/.raptor/projects/../../etc/passwd` →
-#     `/etc/passwd`. The next jq/python parse would
-#     then read /etc/passwd as JSON and probably fail,
-#     but the failure would be confusing and the read
-#     itself happens.
-#   * `../foo/bar.json` — escapes `~/.raptor/projects/`
-#     into other directories under `~/.raptor/`.
-#   * Absolute path — same as above.
-#
-# Reject `LINK_TARGET` that contains `/` or `..`. Real
-# project entries are bare basenames (`my-target`,
-# `assessment-2026-05`, etc.), never path components.
-ACTIVE_LINK="$HOME/.raptor/projects/.active"
-[ ! -L "$ACTIVE_LINK" ] && exit 0
-
-LINK_TARGET=$(readlink "$ACTIVE_LINK")
-case "$LINK_TARGET" in
-    */*|"") exit 0 ;;       # path component or empty — refuse
-    .|..)  exit 0 ;;        # parent / self — refuse
-    .*)    exit 0 ;;        # leading dot reserved for hook state files (.active etc.)
-esac
-# `..` substring guard catches `..foo`, `foo..`, `foo..bar`
-# even though those are legal filenames — the false-positive
-# cost (an operator naming a project literally `foo..bar`)
-# is acceptable next to "no traversal smuggled through".
-case "$LINK_TARGET" in
-    *..*) exit 0 ;;
-esac
-PROJECT_FILE="$HOME/.raptor/projects/$LINK_TARGET"
-[ ! -f "$PROJECT_FILE" ] && exit 0
-
-# Cache the jq detection: pre-fix the script called
-# `command -v jq` THREE times (once per JSON parse site).
-# `command -v` shells out to a builtin lookup, but in
-# repeated calls the cumulative wall time was measurable
-# on hosts where /usr/bin is on a slow PATH (NFS-mounted
-# corp envs, container filesystems with lazy-resolved
-# paths). For an async hook fired hundreds of times per
-# Claude Code session, the per-call overhead summed to
-# noticeable latency. Cache once at the top of the script
-# and branch on the cached value.
+# Cache the jq detection once (this async hook fires on every tracked
+# Read; repeated `command -v` lookups were measurable on slow-PATH
+# hosts). The named helper handles the no-jq JSON fallbacks and the
+# O_NOFOLLOW manifest append — arguments stay argv DATA, never
+# interpolated into python source.
 HAVE_JQ=0
 if command -v jq >/dev/null 2>&1; then
     HAVE_JQ=1
 fi
-
-# Named python helper for the no-jq JSON fallbacks and the O_NOFOLLOW
-# manifest append. Pre-fix these were inline `python3 -c "..."` blobs
-# and a `python3 - <<PY` heredoc — behaviourally fine, but an
-# interpreter invocation carrying embedded source is exactly the
-# process shape endpoint-security heuristics flag, and this hook
-# fires on EVERY tracked file read. A named on-disk script is
-# attributable; arguments stay argv DATA exactly as before.
 HELPER="$(dirname "${BASH_SOURCE[0]}")/raptor-hook-json"
 [ -f "$HELPER" ] || exit 0
 
-# Read project output dir and target
-if [ "$HAVE_JQ" = "1" ]; then
-    PROJECT_DIR=$(jq -r '.output_dir // empty' "$PROJECT_FILE" 2>/dev/null)
-    PROJECT_TARGET=$(jq -r '.target // empty' "$PROJECT_FILE" 2>/dev/null)
-else
-    PROJECT_DIR=$(python3 "$HELPER" get "$PROJECT_FILE" output_dir 2>/dev/null)
-    PROJECT_TARGET=$(python3 "$HELPER" get "$PROJECT_FILE" target 2>/dev/null)
-fi
-[ -z "$PROJECT_DIR" ] && exit 0
-[ ! -d "$PROJECT_DIR" ] && exit 0
-
-# Find the most recent running run. Pre-fix the loop walked
-# `$PROJECT_DIR/*/` in BASH GLOB ORDER (lexicographic) and broke
-# at the first dir with status==running:
+# Resolve THIS SESSION's run via the run ledger (primary), falling
+# back to the legacy machine-global project route only when no session
+# credential is present (pre-series launchers, bare invocations).
 #
-#   for d in "$PROJECT_DIR"/*/; do
-#       … if STATUS == running: RUN_DIR=$d; break
-#   done
-#
-# Two simultaneously-active runs (operator launches /scan in one
-# shell, /codeql in another, both write status=running into their
-# own .raptor-run.json) would have the LEX-FIRST dir win. Reads
-# done by Claude Code while /codeql was the actual active run
-# would be silently attributed to the /scan dir (or vice versa) —
-# the wrong manifest grew, and /scan's coverage report at the end
-# included paths it never actually touched. Hard to debug because
-# both runs LOOKED fine; only the per-run coverage attribution
-# was crossed.
-#
-# Pick the running dir with the newest .raptor-run.json mtime
-# (most recently transitioned to running, hence the actual active
-# run). Use stat's portable two-arm form (BSD vs GNU stat).
+# The hook inherits the launcher-exported RAPTOR_SESSION_PID — env-only
+# resolution is sound here because the hook runs inside claude's own
+# environment. sessions.d/<pid>.run lines are
+# '<status> <epoch> <run-id> <abs-dir>'; candidates are validated:
+# absolute printable path, a self-authenticating .raptor-run.json with
+# status=running (project dirs are NOT enumerated, so --out and
+# STANDALONE runs get read-coverage too — the old project requirement
+# was only ever an artifact of run-dir discovery), and the run's
+# recorded session_pid equals ours (a run resumed by another session
+# no longer belongs to us). Newest valid live run wins; none valid →
+# attribute NOTHING in-session, never the global heuristic.
+# Keep in lock-step with the python twin core/coverage/track_read.py.
 RUN_DIR=""
-NEWEST_MTIME=0
-for d in "$PROJECT_DIR"/*/; do
-    [ -f "${d}.raptor-run.json" ] || continue
+PROJECT_TARGET=""
+_SESSION_PID="${RAPTOR_SESSION_PID:-}"
+case "$_SESSION_PID" in
+    ''|*[!0-9]*) _SESSION_PID="" ;;
+esac
+if [ -n "$_SESSION_PID" ]; then
+    _LEDGER="$HOME/.local/share/raptor/sessions.d/$_SESSION_PID.run"
+    if [ -f "$_LEDGER" ]; then
+        BEST_EPOCH=0
+        while IFS=' ' read -r _st _epoch _rid _rdir; do
+            [ "$_st" = "running" ] || continue
+            case "$_epoch" in ''|*[!0-9]*) continue ;; esac
+            case "$_rdir" in
+                /*) ;;
+                *) continue ;;
+            esac
+            case "$_rdir" in
+                *[![:print:]]*) continue ;;
+            esac
+            [ -f "$_rdir/.raptor-run.json" ] || continue
+            [ "$_epoch" -gt "$BEST_EPOCH" ] || continue
+            if [ "$HAVE_JQ" = "1" ]; then
+                _status=$(jq -r '.status // empty' "$_rdir/.raptor-run.json" 2>/dev/null)
+                _owner=$(jq -r '.session_pid // empty' "$_rdir/.raptor-run.json" 2>/dev/null)
+                _tgt=$(jq -r '.target_path // empty' "$_rdir/.raptor-run.json" 2>/dev/null)
+            else
+                _status=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" status 2>/dev/null)
+                _owner=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" session_pid 2>/dev/null)
+                _tgt=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" target_path 2>/dev/null)
+            fi
+            [ "$_status" = "running" ] || continue
+            [ "$_owner" = "$_SESSION_PID" ] || continue
+            BEST_EPOCH="$_epoch"
+            RUN_DIR="$_rdir/"
+            PROJECT_TARGET="$_tgt"
+        done < "$_LEDGER"
+        unset _st _epoch _rid _rdir _status _owner _tgt BEST_EPOCH _LEDGER
+    fi
+    # In-session with no valid live run: attribute nothing.
+    [ -z "$RUN_DIR" ] && exit 0
+else
+    # ── legacy machine-global route (no-session fallback) ──────────
+    # `.active` is operator-controlled but should always point at a
+    # SIBLING entry under `~/.raptor/projects/`; reject path-shaped
+    # targets (`../`, absolute) — see the twin for the full rationale.
+    ACTIVE_LINK="$HOME/.raptor/projects/.active"
+    [ ! -L "$ACTIVE_LINK" ] && exit 0
+
+    LINK_TARGET=$(readlink "$ACTIVE_LINK")
+    case "$LINK_TARGET" in
+        */*|"") exit 0 ;;       # path component or empty — refuse
+        .|..)  exit 0 ;;        # parent / self — refuse
+        .*)    exit 0 ;;        # leading dot reserved for hook state files (.active etc.)
+    esac
+    case "$LINK_TARGET" in
+        *..*) exit 0 ;;
+    esac
+    PROJECT_FILE="$HOME/.raptor/projects/$LINK_TARGET"
+    [ ! -f "$PROJECT_FILE" ] && exit 0
+
     if [ "$HAVE_JQ" = "1" ]; then
-        STATUS=$(jq -r '.status // empty' "${d}.raptor-run.json" 2>/dev/null)
+        PROJECT_DIR=$(jq -r '.output_dir // empty' "$PROJECT_FILE" 2>/dev/null)
+        PROJECT_TARGET=$(jq -r '.target // empty' "$PROJECT_FILE" 2>/dev/null)
     else
-        # Pass the path via argv, NOT via shell-interpolation
-        # into Python source. Pre-fix (twice over) this was
-        # `python3 -c "...open('${d}.raptor-run.json')..."` with
-        # the bash variable baked into the Python literal — a
-        # path with a single quote, newline, or backslash broke
-        # the Python syntax (SyntaxError → silent failure under
-        # `2>/dev/null`). Worse: an attacker-controlled `${d}`
-        # (paths under a target repo could conceivably be named
-        # to inject) could close the string and append arbitrary
-        # Python code to the `-c` source, executing under the
-        # hook's uid (the parent Claude Code process). The named
-        # helper keeps the value as argv DATA, not code.
-        STATUS=$(python3 "$HELPER" get "${d}.raptor-run.json" status 2>/dev/null)
+        PROJECT_DIR=$(python3 "$HELPER" get "$PROJECT_FILE" output_dir 2>/dev/null)
+        PROJECT_TARGET=$(python3 "$HELPER" get "$PROJECT_FILE" target 2>/dev/null)
     fi
-    [ "$STATUS" = "running" ] || continue
-    # Get mtime in epoch seconds; try GNU stat first, fall back to BSD.
-    MTIME=$(stat -c %Y "${d}.raptor-run.json" 2>/dev/null || stat -f %m "${d}.raptor-run.json" 2>/dev/null)
-    [ -z "$MTIME" ] && MTIME=0
-    if [ "$MTIME" -gt "$NEWEST_MTIME" ] 2>/dev/null; then
-        NEWEST_MTIME=$MTIME
-        RUN_DIR=$d
-    fi
-done
-[ -z "$RUN_DIR" ] && exit 0
+    [ -z "$PROJECT_DIR" ] && exit 0
+    [ ! -d "$PROJECT_DIR" ] && exit 0
+
+    # Newest running run (mtime of .raptor-run.json — most recently
+    # transitioned to running).
+    NEWEST_MTIME=0
+    for d in "$PROJECT_DIR"/*/; do
+        [ -f "${d}.raptor-run.json" ] || continue
+        if [ "$HAVE_JQ" = "1" ]; then
+            STATUS=$(jq -r '.status // empty' "${d}.raptor-run.json" 2>/dev/null)
+        else
+            STATUS=$(python3 "$HELPER" get "${d}.raptor-run.json" status 2>/dev/null)
+        fi
+        [ "$STATUS" = "running" ] || continue
+        MTIME=$(stat -c %Y "${d}.raptor-run.json" 2>/dev/null || stat -f %m "${d}.raptor-run.json" 2>/dev/null)
+        [ -z "$MTIME" ] && MTIME=0
+        if [ "$MTIME" -gt "$NEWEST_MTIME" ] 2>/dev/null; then
+            NEWEST_MTIME=$MTIME
+            RUN_DIR=$d
+        fi
+    done
+    [ -z "$RUN_DIR" ] && exit 0
+fi
 
 # Extract file path from hook payload (JSON on stdin)
 if [ "$HAVE_JQ" = "1" ]; then

@@ -114,11 +114,34 @@ def _resolve_project_dir(explicit: str | None = None) -> Path | None:
     return None
 
 
+def _project_dir_for(args) -> Path | None:
+    """The project dir governing this invocation: explicit ``--project``
+    first; else the ``--out`` run's PIN (a run pinned to project P
+    reads P's journal index / coverage store / annotations wherever
+    the ambient session points — the ambient fallback here was a
+    cross-project bleed); ambient only when neither is given.
+    """
+    explicit = getattr(args, "project", None)
+    if explicit:
+        return _resolve_project_dir(explicit)
+    out = getattr(args, "out", None)
+    if out:
+        try:
+            from core.run.pin import pin_project_dir, resolve_run_pin
+            pin = resolve_run_pin(Path(out))
+            if pin.authoritative:
+                proj = pin_project_dir(Path(out))
+                return proj if proj is not None and proj.is_dir() else None
+        except Exception:  # noqa: BLE001 — fall to the ambient layer
+            pass
+    return _resolve_project_dir(None)
+
+
 def _resolve_out_dir(args) -> Path | None:
     """Resolve output directory: explicit --out, or latest in project."""
     if getattr(args, "out", None):
         return Path(args.out)
-    project = _resolve_project_dir(getattr(args, "project", None))
+    project = _project_dir_for(args)
     if not project:
         return None
     runs = sorted(
@@ -254,7 +277,7 @@ def _context_map_role(cm: dict | None, file: str, function: str) -> str | None:
 def cmd_show(args):
     """Show unified view for a file or function."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     cm = _load_context_map(out_dir)
     ann_dir = _annotations_dir(out_dir)
 
@@ -394,7 +417,7 @@ def _show_file(file, cm, entries, index, ann_dir, args):
 def cmd_findings(args):
     """List all findings across runs."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
 
     entries = _load_journal_entries(out_dir)
     index = _load_journal_index(project_dir)
@@ -522,7 +545,7 @@ def _edge_gap_lines(out_dir) -> list:
 def cmd_history(args):
     """Show all reviews of a function over time."""
     out_dir = _resolve_out_dir(args)
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     key = f"{args.file}:{args.function}"
 
     entries = [e for e in _load_journal_entries(out_dir) if e.key == key]
@@ -694,7 +717,7 @@ def _stale_journal(args):
     Operators previously had no way to find stale LLM reviews —
     this closes that gap.
     """
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     if not project_dir:
         print("  No active project.", file=sys.stderr)
         sys.exit(1)
@@ -764,7 +787,7 @@ def cmd_edges(args):
         # the project index too, per-run entries winning on conflict,
         # or a reused run reads as entirely "unreviewed" here while
         # the report says otherwise.
-        project_dir = _resolve_project_dir(getattr(args, "project", None))
+        project_dir = _project_dir_for(args)
         if project_dir is not None:
             index_entries = list(load_index(project_dir).values())
         else:
@@ -842,7 +865,7 @@ def _resolve_diff_runs(args, project_dir):
 
 def cmd_diff(args):
     """Verdict changes between two runs' journals."""
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     run_a, run_b = _resolve_diff_runs(args, project_dir)
     if run_a is None or run_b is None:
         print("Need two runs with journals to diff (pass two run "
@@ -952,7 +975,7 @@ def cmd_live(args):
 
 def cmd_coverage(args):
     """Show mechanical tool coverage for a project run."""
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     store = _load_coverage_store(project_dir)
     if store is None:
         print("  No coverage data found.")
@@ -975,7 +998,7 @@ def cmd_coverage(args):
 
 def cmd_compact(args):
     """Compact the project journal index."""
-    project_dir = _resolve_project_dir(getattr(args, "project", None))
+    project_dir = _project_dir_for(args)
     if not project_dir:
         print("  No active project.", file=sys.stderr)
         sys.exit(1)

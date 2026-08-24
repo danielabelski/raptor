@@ -2065,7 +2065,27 @@ def find_engine_rules_dir(out_dir: Path, repo_path: Path) -> Path | None:
                 repo=str(repo_resolved),
             )
             continue
-        if rules_dir.is_dir() and any(rules_dir.glob("*.yaml")):
+        if not rules_dir.is_dir():
+            continue
+        # Ownership gate (same predicate the pin walk applies to run
+        # markers): graduated rules load and execute as trusted
+        # scanner config, so a candidate dir another local user owns
+        # or can write — e.g. `--out /tmp/x` putting a planted
+        # `/tmp/engine-rules` on the topology candidates — never
+        # loads.
+        try:
+            from core.run.pin import _marker_trustworthy
+            if not (_marker_trustworthy(resolved)
+                    and _marker_trustworthy(resolved.parent)):
+                logger.warning(
+                    "graduated-rules: refusing rules dir %s — not "
+                    "owned by us, or writable by other users",
+                    resolved,
+                )
+                continue
+        except ImportError:
+            continue
+        if any(rules_dir.glob("*.yaml")):
             return rules_dir
     return None
 

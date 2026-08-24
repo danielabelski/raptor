@@ -46,7 +46,19 @@ def _safe_env() -> dict[str, str]:
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             "TERM": "dumb",
         }
-    env.pop("_RAPTOR_TRUSTED", None)
+    # Subtract the target-facing strip set (trust markers + the
+    # session credential): several of its members sit on the safe-env
+    # allowlist for RAPTOR's own tooling, but the process observed
+    # here is TARGET code — it must not inherit the session token.
+    try:
+        from core.config import RaptorConfig as _RC
+        for _k in _RC.TARGET_ENV_STRIP_SET:
+            env.pop(_k, None)
+    except (ImportError, AttributeError):
+        env.pop("_RAPTOR_TRUSTED", None)
+        env.pop("RAPTOR_SESSION_PID", None)
+        env.pop("RAPTOR_SESSION_TOKEN", None)
+        env.pop("CLAUDECODE", None)
     env["RAPTOR_DIR"] = os.environ["RAPTOR_DIR"]
     env["CLAUDECODE"] = "1"
     env["PYTHONPATH"] = os.environ["RAPTOR_DIR"]

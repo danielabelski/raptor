@@ -128,8 +128,10 @@ def _ledger_candidates(marker, exclude, dir_filter):
         for record in ledger_runs():
             d = Path(record["run_dir"])
             try:
-                if (d.resolve() == Path(exclude).resolve()
-                        or not (d / marker).is_file()):
+                if exclude is not None and \
+                        d.resolve() == Path(exclude).resolve():
+                    continue
+                if not (d / marker).is_file():
                     continue
             except OSError:
                 continue

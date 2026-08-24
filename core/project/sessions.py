@@ -537,6 +537,15 @@ def _record_session_locked(project: str, pid: int,
         # the env credential for whoever held it.
         fields.pop("token", None)
         fields.pop("seeded_by", None)
+        env_pid = os.environ.get(ENV_SESSION_PID, "")
+        env_tok = os.environ.get(ENV_SESSION_TOKEN, "")
+        if (env_tok and env_pid.isascii() and env_pid.isdigit()
+                and int(env_pid) == pid):
+            # The caller IS this session (its own env credential names
+            # this pid): restore credential continuity — the drop is
+            # for DEAD predecessors' tokens, not the live session
+            # repairing its own corrupt entry.
+            fields["token"] = env_tok
         fields.update(identity)
         # Same reasoning for the run ledger: the dead session's run
         # records must not become THIS session's attribution and
@@ -747,6 +756,22 @@ def read_sessions(prune: bool = True,
                         continue
                     f.unlink(missing_ok=True)
                 (SESSIONS_DIR / f"{stem}.run.lock").unlink(missing_ok=True)
+        # Lone lock files (entry AND ledger gone — a crash between the
+        # three-file removal's unlinks) are never reaped by the passes
+        # above, which key on entries and ledgers.
+        for f in children:
+            if not f.name.endswith(".run.lock"):
+                continue
+            stem = f.name[:-len(".run.lock")]
+            if (not stem.isdigit() or stem != str(int(stem))
+                    or (SESSIONS_DIR / stem).exists()
+                    or (SESSIONS_DIR / f"{stem}.run").exists()):
+                continue
+            with contextlib.suppress(OSError):
+                with _ledger_lock_nb(int(stem)) as held:
+                    if held and not (SESSIONS_DIR / stem).exists() \
+                            and not (SESSIONS_DIR / f"{stem}.run").exists():
+                        f.unlink(missing_ok=True)
     return sessions
 
 
@@ -815,6 +840,10 @@ def _ledger_lock_nb(pid: int,
         try:
             fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
         except OSError:
+            logger.warning(
+                "sessions: ledger lock open failed for pid %d — "
+                "proceeding UNLOCKED (best-effort data)", pid,
+                exc_info=True)
             yield True
             return
         try:
@@ -1033,12 +1062,11 @@ def _write_ledger(pid: int, records: list[dict],
         pins = [p for p in pins
                 if (p["run_id"], p["run_dir"]) in alive
                 or Path(p["run_dir"]).exists()]
-    # Unknown (future-format) lines survive rewrites up to a byte
-    # share, order preserved; they are appended after the pins.
+    # Unknown (future-format) lines survive rewrites; order preserved,
+    # appended after the pins. They are evicted only under BYTE
+    # PRESSURE (below, last in the eviction order) — an unconditional
+    # cap destroyed a future format's state while far under budget.
     unknown = list(unknown or [])
-    _unknown_budget = 64 * 1024
-    while unknown and sum(len(u) + 1 for u in unknown) > _unknown_budget:
-        unknown.pop(0)
 
     def _render() -> list[str]:
         out = [
@@ -1069,16 +1097,31 @@ def _write_ledger(pid: int, records: list[dict],
                 del records[i]
                 break
         lines = _render()
+    # Pin eviction is status-aware: a LIVE run's witness is the
+    # tamper defense — evict finished/record-less pins first, oldest
+    # first, and a running record's witness only as the last resort.
+    _running = {(r["run_id"], r["run_dir"]) for r in records
+                if r["status"] == "running"}
     while _over() and pins:
-        pins.pop(0)
+        for i, pn in enumerate(pins):
+            if (pn["run_id"], pn["run_dir"]) not in _running:
+                del pins[i]
+                break
+        else:
+            pins.pop(0)
         lines = _render()
     while _over() and unknown:
         unknown.pop(0)
         lines = _render()
-    for line in lines:  # belt-and-braces: the format must stay one-line
-        if "\n" in line or not line.isprintable():
-            logger.warning("sessions: dropping unprintable ledger line")
-            return False
+    # Belt-and-braces: the format must stay one-line. A bad line is
+    # SKIPPED, not fatal — one unprintable future-format line must not
+    # freeze every finish CAS forever.
+    _bad = [ln for ln in lines
+            if "\n" in ln or not ln.isprintable()]
+    if _bad:
+        logger.warning("sessions: dropping %d unprintable ledger "
+                       "line(s)", len(_bad))
+        lines = [ln for ln in lines if ln not in _bad]
     try:
         if not _ensure_dir():
             return False
@@ -1275,10 +1318,23 @@ def ledger_pin_witness(
     cap-evicted) means unverifiable — callers keep their existing
     posture. Best-effort: any failure reads as no witness.
     """
+    explicit_pid = pid is not None
     if pid is None:
         pid = resolve_session_pid()
     if pid is None:
         return False, None, None
+    if explicit_pid:
+        # An explicitly-named pid (e.g. the prior owner recorded in
+        # child-writable run metadata) must correspond to a REGISTERED
+        # session whose identity verifies — otherwise a forged pid
+        # points the lookup at an arbitrary stale/orphan ledger and
+        # its pins would read as authority.
+        fields = _parse_entry(SESSIONS_DIR / str(pid))
+        if not fields:
+            return False, None, None
+        if (fields.get("v") == ENTRY_VERSION
+                and not _identity_matches(pid, fields)):
+            return False, None, None
     try:
         resolved = str(Path(run_dir).resolve())
     except OSError:
@@ -1337,6 +1393,84 @@ def ledger_rewrite_pin_project(old_name: str, new_name: str) -> None:
                     _write_ledger(pid, records, pins, unknown)
         except Exception:  # noqa: BLE001 — per-ledger best-effort
             logger.debug("sessions: witness rewrite failed for pid %s",
+                         stem, exc_info=True)
+
+
+def ledger_pinned_dirs(project: str) -> list[dict]:
+    """Every surviving pin WITNESS naming *project* across all local
+    ledgers — regardless of whether the run RECORD survived the cap.
+    The rename marker-rewrite needs this: a witness outlives its
+    cap-evicted record while the run dir exists, and a rename that
+    only saw witnessed RECORDS re-pointed the witness but left the
+    marker on the old name — manufacturing a permanent
+    witness/marker 'tamper' disagreement on a legitimate run.
+    Each dict carries ``run_dir``/``run_id``/``source``.
+    """
+    out: list[dict] = []
+    try:
+        children = list(SESSIONS_DIR.iterdir())
+    except OSError:
+        return out
+    for f in children:
+        if not f.name.endswith(".run"):
+            continue
+        stem = f.name[:-len(".run")]
+        if not stem.isdigit() or stem != str(int(stem)):
+            continue
+        try:
+            _records, pins, _unknown = _read_ledger_full(int(stem))
+        except Exception:  # noqa: BLE001
+            continue
+        for p in pins:
+            name, _, source = p["project"].partition(":")
+            if name == project:
+                out.append({"run_dir": p["run_dir"],
+                            "run_id": p["run_id"],
+                            "source": source or None})
+    return out
+
+
+def ledger_repair_witnesses_for_dir(run_dir, new_project: str,
+                                    missing) -> None:
+    """Re-point pin witnesses for *run_dir* whose project name is
+    MISSING (per the *missing* predicate) to *new_project* — the
+    repair half of ``project add`` for rename crashes and skipped
+    ledgers: witness=old(missing) vs marker=new reads as tamper and
+    suppresses the run's projections. Best-effort per ledger.
+    """
+    try:
+        resolved = str(Path(run_dir).resolve())
+        children = list(SESSIONS_DIR.iterdir())
+    except OSError:
+        return
+    for f in children:
+        if not f.name.endswith(".run"):
+            continue
+        stem = f.name[:-len(".run")]
+        if not stem.isdigit() or stem != str(int(stem)):
+            continue
+        pid = int(stem)
+        try:
+            with _ledger_lock_nb(pid) as held:
+                if not held:
+                    continue
+                records, pins, unknown = _read_ledger_full(pid)
+                hit = False
+                for pn in pins:
+                    name, sep, source = pn["project"].partition(":")
+                    if (pn["run_dir"] == resolved
+                            and name not in (new_project, NONE_SENTINEL)
+                            and _NAME_RE.match(name)
+                            and missing(name)):
+                        pn["project"] = f"{new_project}{sep}{source}"
+                        hit = True
+                if hit:
+                    _write_ledger(pid, records, pins, unknown)
+                    logger.info(
+                        "sessions: repaired %d stale witness(es) for "
+                        "%s (now %r)", 1, resolved, new_project)
+        except Exception:  # noqa: BLE001 — per-ledger best-effort
+            logger.debug("sessions: witness repair failed for pid %s",
                          stem, exc_info=True)
 
 

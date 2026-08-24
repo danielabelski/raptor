@@ -571,3 +571,54 @@ class ForceAndRepairTest(unittest.TestCase):
         meta = load_json(d / ".raptor-run.json")
         self.assertEqual(meta["project"], "myapp")
         self.assertEqual(meta["project_source"], "adopted")
+
+
+class AddRepairScopeTest(unittest.TestCase):
+    """The add-repair overrides ONLY pins naming missing projects —
+    an authoritative pin to an existing other project (or explicit
+    projectless) is the run's identity."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+        self.mgr.create("otherapp", self.target_code,
+                        output_dir=str(Path(self.tmpdir.name) / "o2"))
+
+    def _present_run(self, name, project, source="argv"):
+        from core.json import save_json
+        d = Path(self.output_dir) / name
+        d.mkdir(parents=True)
+        save_json(d / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+            "project": project, "project_source": source,
+            "target_path": self.target_code,
+        })
+        return d
+
+    def test_existing_project_pin_is_not_overridden(self):
+        from core.json import load_json
+        d = self._present_run("scan_cross", "otherapp")
+        self.mgr.add_directory("myapp", str(d))
+        meta = load_json(d / ".raptor-run.json")
+        self.assertEqual(meta["project"], "otherapp")
+
+    def test_explicit_projectless_pin_is_not_overridden(self):
+        from core.json import load_json
+        d = self._present_run("scan_none", None, source="none")
+        self.mgr.add_directory("myapp", str(d))
+        meta = load_json(d / ".raptor-run.json")
+        self.assertIsNone(meta["project"])
+
+    def test_missing_project_pin_is_repaired(self):
+        from core.json import load_json
+        d = self._present_run("scan_ghost", "ghost-project")
+        self.mgr.add_directory("myapp", str(d))
+        meta = load_json(d / ".raptor-run.json")
+        self.assertEqual(meta["project"], "myapp")

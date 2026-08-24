@@ -638,7 +638,8 @@ def start_run(output_dir: Path, command: str,
         # would silently kill the first session's hook attribution and
         # contention identity. resume_run is the sanctioned re-owning
         # path (it refreshes the full stamp).
-        _prior_meta = load_json(output_dir / RUN_METADATA_FILE)
+        _prior_meta = load_json(output_dir / RUN_METADATA_FILE,
+                                max_bytes=1024 * 1024)
         if (isinstance(_prior_meta, dict)
                 and _prior_meta.get("status") == STATUS_RUNNING
                 and _prior_meta.get("session_pid") is not None
@@ -700,10 +701,12 @@ def start_run(output_dir: Path, command: str,
             # consulted even when the marker carries NO pin — a child
             # that deletes/corrupts the marker must not convert a
             # re-entrant start into a fresh ambient re-pin.
+            _witness_found = False
             try:
                 from core.project.sessions import ledger_pin_witness
                 found, witnessed, wit_source = ledger_pin_witness(
                     output_dir)
+                _witness_found = found
                 if found and (prior_pin is None
                               or witnessed != prior_pin[0]):
                     logger.warning(
@@ -716,6 +719,25 @@ def start_run(output_dir: Path, command: str,
                     prior_pin = (witnessed, wit_source or "session")
             except Exception:  # noqa: BLE001 — witness is best-effort
                 logger.debug("pin witness check failed", exc_info=True)
+            if (prior_pin is not None and not _witness_found):
+                # No witness and no freeze: the disk pin is
+                # UNCORROBORATED. It stands only when it AGREES with
+                # what this start would resolve anyway — a marker
+                # PLANTED in a pre-existing --out dir must not become
+                # the run's first pin and seed the first witness with
+                # an attacker-chosen project. (Sessioned reuse flows
+                # always have a witness; this narrows only the
+                # sessionless residual.)
+                _fresh_project, _fresh_source = resolve_pin_for_start()
+                if _fresh_project != prior_pin[0]:
+                    logger.warning(
+                        "run pin in %s (%r) has no corroborating "
+                        "witness and disagrees with start-time "
+                        "resolution (%r) — using start-time "
+                        "resolution; a pre-existing marker in a "
+                        "reused --out dir does not elect a project",
+                        output_dir, prior_pin[0], _fresh_project)
+                    prior_pin = (_fresh_project, _fresh_source)
         if prior_pin is not None:
             pin_project, pin_source = prior_pin
             override = get_process_project()
@@ -1728,20 +1750,34 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
             from core.project.sessions import ledger_pin_witness
             from core.run.pin import freeze_run_pin, resolve_run_pin
             _pin = resolve_run_pin(output_dir)
+            _marker_project = (_pin.project if _pin.authoritative
+                               else None)
             _found, _witnessed, _wsource = ledger_pin_witness(output_dir)
+            _fallback = False
             if not _found and isinstance(prior_session_pid, int) \
                     and not isinstance(prior_session_pid, bool):
+                # The prior pid comes from CHILD-WRITABLE metadata:
+                # the lookup verifies the pid's registered identity,
+                # and its witness is used VETO-ONLY below — a steered
+                # lookup can at most suppress, never choose a project.
                 _found, _witnessed, _wsource = ledger_pin_witness(
                     output_dir, pid=prior_session_pid)
-            if _found and _witnessed != (_pin.project
-                                         if _pin.authoritative else None):
-                logger.warning(
-                    "resume: run pin in %s (%r) disagrees with the "
-                    "session ledger witness (%r) — restoring the "
-                    "witness; the marker may have been tampered with",
-                    output_dir,
-                    _pin.project if _pin.authoritative else None,
-                    _witnessed)
+                _fallback = True
+            if _found and _witnessed != _marker_project:
+                if _fallback:
+                    logger.warning(
+                        "resume: run pin in %s (%r) disagrees with the "
+                        "PRIOR owner's ledger witness (%r) — freezing "
+                        "projectless (fallback witnesses veto, never "
+                        "elect); the marker may have been tampered "
+                        "with", output_dir, _marker_project, _witnessed)
+                    _witnessed, _wsource = None, "none"
+                else:
+                    logger.warning(
+                        "resume: run pin in %s (%r) disagrees with the "
+                        "session ledger witness (%r) — restoring the "
+                        "witness; the marker may have been tampered "
+                        "with", output_dir, _marker_project, _witnessed)
                 _wsource = _wsource or "session"
                 with _metadata_lock(path):
                     _fresh = load_json(path)

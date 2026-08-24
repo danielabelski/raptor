@@ -658,7 +658,7 @@ def emit_binary_fuzz_coverage(
         },
     }
     out_path = out_dir / "coverage-fuzz.json"
-    out_path.write_text(json.dumps(doc, indent=2))
+    save_json(out_path, doc)
     logger.info(
         "binary fuzz coverage: %d PCs over %d trace file(s) → %d/%d "
         "checklist functions reached",

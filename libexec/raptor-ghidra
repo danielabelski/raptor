@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""Operator CLI for Ghidra RE bridge operations.
+
+Usage:
+    libexec/raptor-ghidra attach <project.gpr> [--out <dir>]
+    libexec/raptor-ghidra detach
+    libexec/raptor-ghidra import <project.gpr> [--out <dir>] [--enrich]
+    libexec/raptor-ghidra diff <old.gpr> <new.gpr> [--out <dir>]
+    libexec/raptor-ghidra decompile <project.gpr> <function>
+    libexec/raptor-ghidra list <project.gpr>
+    libexec/raptor-ghidra export <out-dir> [--to <project.gpr>]
+"""
+
+from __future__ import annotations
+
+import argparse
+import faulthandler
+import json
+import os
+import re
+import signal
+import sys
+from pathlib import Path
+
+faulthandler.enable()
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, all_threads=True, file=sys.stderr)
+
+# ─── trust-marker check ───
+if not (os.environ.get("CLAUDECODE")
+        or os.environ.get("_RAPTOR_TRUSTED")):
+    sys.stderr.write(
+        f"{sys.argv[0]}: internal dispatch script.\n"
+        "  Run via 'bin/raptor' instead.\n"
+        "  Tests / power users: set _RAPTOR_TRUSTED=1 to bypass.\n"
+    )
+    sys.exit(2)
+# ─── end trust-marker check ───
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core.startup.process_init  # noqa: E402,F401
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="raptor-ghidra",
+        description="Ghidra RE bridge — attach, import, diff, decompile, list.",
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    # attach — persistent bidirectional binding
+    p_attach = sub.add_parser(
+        "attach",
+        help="Bind a Ghidra project to the active RAPTOR project (bidirectional sync)",
+    )
+    p_attach.add_argument("gpr", type=Path, help=".gpr project file")
+    p_attach.add_argument("--out", type=Path, help="Output directory")
+    p_attach.add_argument("--enrich", action="store_true", help="Merge r2 analysis on import")
+    p_attach.add_argument("--decompile-all", action="store_true", help="Decompile every function")
+    p_attach.add_argument("--program", default=None, help="Program name in multi-binary project")
+    p_attach.add_argument("--binary", type=Path, help="Binary path for r2 enrichment")
+
+    # detach — release the active Ghidra project
+    p_detach = sub.add_parser(
+        "detach",
+        help="Release attached Ghidra project(s) (stop auto-sync)",
+    )
+    p_detach.add_argument(
+        "gpr", nargs="?", type=Path, default=None,
+        help=".gpr to detach (default: detach all)",
+    )
+
+    # status — show attached projects
+    sub.add_parser(
+        "status",
+        help="Show attached Ghidra projects and sync state",
+    )
+
+    # import — one-shot ingest
+    p_import = sub.add_parser("import", help="One-shot import of a Ghidra project (no persistent binding)")
+    p_import.add_argument("gpr", type=Path, help=".gpr project file")
+    p_import.add_argument("--out", type=Path, help="Output directory")
+    p_import.add_argument("--enrich", action="store_true", help="Merge r2 analysis")
+    p_import.add_argument("--decompile-all", action="store_true", help="Decompile every function")
+    p_import.add_argument("--program", default=None, help="Program name in multi-binary project")
+    p_import.add_argument("--binary", type=Path, help="Binary path for r2 enrichment")
+
+    # diff
+    p_diff = sub.add_parser("diff", help="Cross-version comparison of two Ghidra projects")
+    p_diff.add_argument("old_gpr", type=Path, help="Older .gpr project")
+    p_diff.add_argument("new_gpr", type=Path, help="Newer .gpr project")
+    p_diff.add_argument("--out", type=Path, help="Output directory")
+    p_diff.add_argument("--label-old", default="", help="Label for old version")
+    p_diff.add_argument("--label-new", default="", help="Label for new version")
+    p_diff.add_argument("--program", default=None, help="Program name in multi-binary project")
+    p_diff.add_argument("--json", action="store_true", help="JSON output to stdout")
+
+    # decompile
+    p_decomp = sub.add_parser("decompile", help="Decompile a single function")
+    p_decomp.add_argument("gpr", type=Path, help=".gpr project file")
+    p_decomp.add_argument("function", help="Function name or hex address (0x...)")
+    p_decomp.add_argument("--program", default=None, help="Program name in multi-binary project")
+    p_decomp.add_argument("--timeout", type=int, default=30, help="Decompilation timeout in seconds")
+
+    # list
+    p_list = sub.add_parser("list", help="List programs in a Ghidra project")
+    p_list.add_argument("gpr", type=Path, help=".gpr project file")
+
+    # export
+    p_export = sub.add_parser(
+        "export",
+        help="Export RAPTOR findings from an output directory to a Ghidra project",
+    )
+    p_export.add_argument("out_dir", type=Path, help="RAPTOR output directory")
+    p_export.add_argument(
+        "--to", type=Path, dest="gpr",
+        help=".gpr project to write to (required until project "
+             "binding lands)",
+    )
+    p_export.add_argument(
+        "--target", type=Path,
+        help="Target path (for project lookup when --to is not given)",
+    )
+
+    return p
+
+
+_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+
+
+def _safe_name(name: str) -> str:
+    """Strip terminal control characters from attacker-chosen names."""
+    return _CTRL_CHARS.sub("", str(name))
+
+
+def _print_db_summary(db, out_dir: Path) -> None:
+    """Print a human-readable summary of an imported REDatabase."""
+    named = sum(1 for f in db.functions if not f.is_auto_named)
+    print(f"functions: {len(db.functions)} ({named} named)")
+    print(f"xrefs:     {len(db.xrefs)}")
+    print(f"comments:  {len(db.comments)}")
+    print(f"types:     {len(db.types)}")
+    print(f"imports:   {len(db.imports)}")
+    print(f"exports:   {len(db.exports)}")
+    print(f"strings:   {len(db.strings)}")
+    print(f"segments:  {len(db.segments)}")
+    print(f"output:    {out_dir / 're-database.json'}")
+
+
+def _do_import(gpr: Path, args: argparse.Namespace, out_dir: Path):
+    """Shared import logic for attach and import subcommands."""
+    from packages.ghidra.bridge import GhidraBridge
+
+    bridge = GhidraBridge(gpr, program_name=args.program)
+
+    if args.enrich:
+        db = bridge.import_and_enrich(
+            out_dir,
+            binary_path=args.binary.resolve() if args.binary else None,
+        )
+    else:
+        db = bridge.import_project(out_dir, decompile=args.decompile_all)
+
+    bridge.close()
+    return db
+
+
+def _cmd_attach(args: argparse.Namespace) -> int:
+    # Persistent project binding is deferred: core/project is under
+    # active rewrite; the attach lifecycle lands as a follow-up
+    # against the new schema. Everything else works with explicit
+    # --gpr paths (import/export/diff/decompile/list).
+    print(
+        "ghidra attach: persistent attach/detach/status is not "
+        "available yet — pass the .gpr explicitly to "
+        "'raptor-ghidra import/export/diff' instead "
+        "(project binding follows the projects-schema rework)",
+        file=sys.stderr,
+    )
+    return 2
+
+def _cmd_detach(args: argparse.Namespace) -> int:
+    # Persistent project binding is deferred: core/project is under
+    # active rewrite; the attach lifecycle lands as a follow-up
+    # against the new schema. Everything else works with explicit
+    # --gpr paths (import/export/diff/decompile/list).
+    print(
+        "ghidra detach: persistent attach/detach/status is not "
+        "available yet — pass the .gpr explicitly to "
+        "'raptor-ghidra import/export/diff' instead "
+        "(project binding follows the projects-schema rework)",
+        file=sys.stderr,
+    )
+    return 2
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    # Persistent project binding is deferred: core/project is under
+    # active rewrite; the attach lifecycle lands as a follow-up
+    # against the new schema. Everything else works with explicit
+    # --gpr paths (import/export/diff/decompile/list).
+    print(
+        "ghidra status: persistent attach/detach/status is not "
+        "available yet — pass the .gpr explicitly to "
+        "'raptor-ghidra import/export/diff' instead "
+        "(project binding follows the projects-schema rework)",
+        file=sys.stderr,
+    )
+    return 2
+
+def _import_binary_fallback(binary: Path, out_dir: Path) -> int:
+    """Engine-fallback import for a RAW BINARY (no .gpr): r2 first,
+    objdump last. Same REDatabase artifact as the Ghidra path, so
+    downstream consumers work identically; the degradation is
+    printed, never silent."""
+    from packages.ghidra.r2_import import import_binary_r2, r2_available
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    db = None
+    if r2_available():
+        print("ghidra unavailable for this input — importing via r2 "
+              "(degraded: no decompiler types)", file=sys.stderr)
+        try:
+            db = import_binary_r2(binary)
+        except (RuntimeError, ImportError) as e:
+            print(f"warning: r2 import failed ({e}) — falling back to "
+                  "objdump/nm", file=sys.stderr)
+    if db is None:
+        from packages.ghidra.objdump_import import import_binary_objdump
+        print("importing via objdump/nm "
+              "(degraded: symbols + disassembly only)", file=sys.stderr)
+        db = import_binary_objdump(binary)
+    if not db.functions:
+        print("warning: no functions recovered — the binary may be "
+              "stripped, or objdump/nm are not installed; the written "
+              "database is empty", file=sys.stderr)
+    out_path = out_dir / "re-database.json"
+    with open(out_path, "w") as f:
+        json.dump(db.to_dict(), f, indent=2)
+    _print_db_summary(db, out_dir)
+    return 0
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    gpr = args.gpr.resolve()
+    if not gpr.exists():
+        print(f"error: project not found: {gpr}", file=sys.stderr)
+        return 1
+
+    from packages.ghidra.detect import (
+        get_ghidra_version,
+        ghidra_available,
+        pyghidra_available,
+    )
+
+    # Raw-binary input, or Ghidra absent: engine fallback chain.
+    if gpr.suffix != ".gpr" or not (
+            ghidra_available() or pyghidra_available()):
+        out_dir = args.out or Path(f"out/ghidra-import-{gpr.stem}")
+        if gpr.suffix == ".gpr":
+            print("error: analyzeHeadless not on PATH — cannot open a "
+                  ".gpr project; pass the raw binary to use the "
+                  "r2/objdump fallback importers", file=sys.stderr)
+            return 1
+        return _import_binary_fallback(gpr, Path(out_dir).resolve())
+
+    version = get_ghidra_version()
+    if version:
+        print(f"ghidra: {version}", file=sys.stderr)
+
+    out_dir = args.out
+    if out_dir is None:
+        out_dir = Path(f"out/ghidra-import-{gpr.stem}")
+    out_dir = out_dir.resolve()
+
+    db = _do_import(gpr, args, out_dir)
+    _print_db_summary(db, out_dir)
+    return 0
+
+
+def _cmd_diff(args: argparse.Namespace) -> int:
+    from packages.ghidra.bridge import GhidraBridge
+    from packages.ghidra.diff import diff_databases
+
+    old_gpr = args.old_gpr.resolve()
+    new_gpr = args.new_gpr.resolve()
+
+    if not old_gpr.exists():
+        print(f"error: old project not found: {old_gpr}", file=sys.stderr)
+        return 1
+    if not new_gpr.exists():
+        print(f"error: new project not found: {new_gpr}", file=sys.stderr)
+        return 1
+
+    out_dir = args.out
+    if out_dir is None:
+        out_dir = Path(f"out/ghidra-diff-{old_gpr.stem}-vs-{new_gpr.stem}")
+    out_dir = out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"importing: {old_gpr.name}", file=sys.stderr)
+    bridge_old = GhidraBridge(old_gpr, program_name=args.program)
+    db_old = bridge_old.import_project(out_dir / "old")
+    bridge_old.close()
+
+    print(f"importing: {new_gpr.name}", file=sys.stderr)
+    bridge_new = GhidraBridge(new_gpr, program_name=args.program)
+    db_new = bridge_new.import_project(out_dir / "new")
+    bridge_new.close()
+
+    label_old = args.label_old or db_old.metadata.get("program_name", old_gpr.stem)
+    label_new = args.label_new or db_new.metadata.get("program_name", new_gpr.stem)
+
+    diff = diff_databases(
+        db_old, db_new,
+        label_old=label_old,
+        label_new=label_new,
+    )
+    diff.write_json(out_dir / "version-diff.json")
+
+    if args.json:
+        json.dump(diff.to_dict(), sys.stdout, indent=2)
+        print()
+    else:
+        print(diff.summary())
+        targets = diff.changed_function_names
+        if targets:
+            print("\npriority review targets (added/changed, "
+                  "auto-named excluded):")
+            for name in targets[:25]:
+                print(f"  - {_safe_name(name)}")
+            if len(targets) > 25:
+                print(f"  … and {len(targets) - 25} more "
+                      "(see version-diff.json)")
+
+    return 0
+
+
+def _cmd_decompile(args: argparse.Namespace) -> int:
+    from packages.ghidra.session import GhidraSession, GhidraSessionError
+
+    gpr = args.gpr.resolve()
+    if not gpr.exists():
+        print(f"error: project not found: {gpr}", file=sys.stderr)
+        return 1
+
+    func_id = args.function
+    if func_id.startswith(("0x", "0X")):
+        try:
+            func_id = int(func_id, 16)
+        except ValueError:
+            print(f"error: not a hex address: {args.function}",
+                  file=sys.stderr)
+            return 1
+
+    # Cached decompilation first: a prior import with --decompile-all
+    # already holds Ghidra-quality output, no JVM needed.
+    from packages.ghidra.context_inject import _load_cached_redb
+    db = _load_cached_redb(gpr)
+    func = None
+    if db is not None:
+        for f in db.functions:
+            if f.name == args.function or (
+                    isinstance(func_id, int) and f.address == func_id):
+                func = f
+                break
+    if func is not None and func.decompilation:
+        print(func.decompilation)
+        return 0
+
+    code = None
+    try:
+        with GhidraSession() as session:
+            session.open(gpr, program_name=args.program)
+            code = session.decompile_function(func_id, timeout=args.timeout)
+    except GhidraSessionError as e:
+        print(f"note: in-process decompiler unavailable ({e}) — "
+              "trying disassembly fallback", file=sys.stderr)
+
+    if code is None:
+        # Disassembly fallback: a cached re-database (fallback
+        # importers) knows the function's address/size even when no
+        # decompiler is available — degraded output, never silent
+        # failure.
+        from packages.ghidra.objdump_import import disassemble_function
+        if func is not None and db is not None and db.binary_path:
+            binary = Path(db.binary_path)
+            # The cached database's binary_path is derived data —
+            # only follow it into the project's own directory or a
+            # RAPTOR out/ dir, never arbitrary local paths.
+            allowed = (gpr.parent.resolve(), Path("out").resolve())
+            contained = any(
+                binary.resolve().is_relative_to(a) for a in allowed
+                if a.exists()
+            )
+            if contained and binary.is_file():
+                print("decompiler unavailable — objdump disassembly "
+                      f"for {func.name}:", file=sys.stderr)
+                print(disassemble_function(
+                    binary, func.address, func.size))
+                return 0
+            if binary.is_file():
+                print(f"error: cached binary path {binary} is outside "
+                      "the project and out/ directories — refusing "
+                      "to disassemble it", file=sys.stderr)
+                return 1
+        print(f"error: function not found or decompilation failed: {args.function}", file=sys.stderr)
+        return 1
+
+    print(code)
+    return 0
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    from packages.ghidra.detect import pyghidra_available
+    from packages.ghidra.session import GhidraSession
+
+    gpr = args.gpr.resolve()
+    if not gpr.exists():
+        print(f"error: project not found: {gpr}", file=sys.stderr)
+        return 1
+
+    if not pyghidra_available():
+        # Filesystem scan of the .rep — no JVM needed.
+        from packages.ghidra.detect import get_programs
+        programs = get_programs(gpr)
+        if not programs:
+            print(f"{gpr.name}: no programs")
+        else:
+            print(f"{gpr.name}: {len(programs)} program(s)")
+            for name in programs:
+                print(f"  {_safe_name(name)}")
+        return 0
+
+    with GhidraSession() as session:
+        session.ensure_jvm()
+        from packages.ghidra.project_util import prepare_working_copy
+        from packages.ghidra.detect import get_project_name
+        from pyghidra.api import open_project
+        import tempfile
+        import shutil
+
+        work_dir = tempfile.mkdtemp(prefix="raptor-ghidra-list-")
+        try:
+            work_gpr = prepare_working_copy(gpr, Path(work_dir))
+            project_name = get_project_name(work_gpr)
+            project = open_project(str(work_gpr.parent), project_name)
+            root = project.getProjectData().getRootFolder()
+            files = list(root.getFiles())
+            if not files:
+                print(f"{gpr.name}: no programs")
+            else:
+                print(f"{gpr.name}: {len(files)} program(s)")
+                for f in files:
+                    print(f"  {_safe_name(f.getName())}  "
+                          f"({_safe_name(f.getContentType())})")
+            project.close()
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    out_dir = args.out_dir.resolve()
+    if not out_dir.is_dir():
+        print(f"error: output directory not found: {out_dir}", file=sys.stderr)
+        return 1
+
+    # Resolving the .gpr from the active project's persisted binding
+    # is deferred until the projects-schema rework lands (attach
+    # follow-up) — until then --to is required.
+    if not args.gpr:
+        print(
+            "error: no Ghidra project given. Pass --to "
+            "<project.gpr> (persistent project binding follows "
+            "the projects-schema rework)",
+            file=sys.stderr,
+        )
+        return 1
+    gpr_str = str(args.gpr.resolve())
+    if not Path(gpr_str).exists():
+        print(f"error: project not found: {gpr_str}", file=sys.stderr)
+        return 1
+
+    gpr_path = Path(gpr_str)
+
+    results = []
+    agentic_json = out_dir / "orchestrated_report.json"
+    if agentic_json.is_file():
+        try:
+            report = json.loads(agentic_json.read_text())
+            if isinstance(report, dict):
+                results = report.get("results", [])
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"warning: could not read orchestrated_report.json: {e}",
+                  file=sys.stderr)
+
+    # One combined apply pass: each apply re-copies the project into
+    # the export dir, so per-source passes would clobber each other.
+    from packages.ghidra.roundtrip import export_all_to_ghidra
+    try:
+        counts = export_all_to_ghidra(out_dir, gpr_path, results)
+    except Exception as e:
+        print(f"error: export failed: {e}", file=sys.stderr)
+        return 1
+
+    for source, label in (
+        ("agentic", "agentic finding(s)"),
+        ("journal", "audit finding(s)"),
+        ("annotations", "annotation(s)"),
+    ):
+        if counts.get(source):
+            print(f"submitted {counts[source]} {label}")
+
+    if counts.get("total"):
+        print(f"total: {counts['total']} item(s) submitted to Ghidra "
+              "(unresolvable names are skipped during apply — see log)")
+    else:
+        print("no exportable data found in %s" % out_dir)
+
+    return 0
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+
+    handlers = {
+        "attach": _cmd_attach,
+        "detach": _cmd_detach,
+        "import": _cmd_import,
+        "diff": _cmd_diff,
+        "decompile": _cmd_decompile,
+        "list": _cmd_list,
+        "export": _cmd_export,
+        "status": _cmd_status,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        print(f"unknown command: {args.command}", file=sys.stderr)
+        return 1
+    try:
+        return handler(args)
+    except Exception as e:
+        from packages.ghidra.headless import GhidraError
+        from packages.ghidra.session import GhidraSessionError
+        if isinstance(e, (GhidraError, GhidraSessionError)):
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        if not isinstance(e, ImportError):
+            raise
+        return _report_import_error(e)
+
+
+def _report_import_error(e: ImportError) -> int:
+    msg = str(e)
+    if "pyghidra" in msg.lower() or "jpype" in msg.lower():
+        print(
+            "error: pyghidra is not installed — install via: "
+            "pip install pyghidra (or use Ghidra 12+ which bundles it)",
+            file=sys.stderr,
+        )
+    else:
+        print(f"error: missing dependency — {msg}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

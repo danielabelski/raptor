@@ -141,3 +141,26 @@ class TestFormatSummary:
     def test_with_missing_tool(self):
         s = format_sandbox_summary(["r2", "unknown"])
         assert "WITHOUT" in s
+
+
+class TestLedgerPseudoPhasesExcluded:
+    """Incident regression: two live runs warned "tools invoked
+    without policy" on pure ledger rows — a resumed segment's
+    prior-segment booking and the on-demand checker-synthesis call
+    class. Ledger phase keys are LLM-side by construction; neither is
+    a tool invocation. The exclusion lives HERE (the policy module's
+    phase set), not in per-call-site filters."""
+
+    def test_booking_pseudo_phases_are_not_unsandboxed_tools(self):
+        from core.audit.sandbox_policy import validate_all_tools_sandboxed
+        missing = validate_all_tools_sandboxed([
+            "review", "prior_segments", "checker_synthesis_ondemand",
+            "summary", "spec_inference", "study",
+        ])
+        assert missing == []
+
+    def test_unknown_name_still_flagged(self):
+        from core.audit.sandbox_policy import validate_all_tools_sandboxed
+        assert validate_all_tools_sandboxed(["mystery_binary"]) == [
+            "mystery_binary"
+        ]

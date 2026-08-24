@@ -8200,14 +8200,7 @@ def _run_audit_body(
     try:
         from .sandbox_policy import validate_all_tools_sandboxed
 
-        # Booking pseudo-phases are ledger rows, not tool
-        # invocations — a resumed run's prior-segment booking is not
-        # an unsandboxed tool (pre-fix it warned on every resume).
-        _PSEUDO_PHASES = {"prior_segments"}
-        invoked = [
-            k for k in result.cost_tracker.phases
-            if k not in _PSEUDO_PHASES
-        ]
+        invoked = list(result.cost_tracker.phases.keys())
         unsandboxed = validate_all_tools_sandboxed(invoked)
         if unsandboxed:
             logger.warning(

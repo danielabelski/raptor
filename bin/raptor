@@ -510,12 +510,16 @@ _startup_out="$("$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}")
 }
 _seed_proj="$(printf '%s\n' "$_startup_out" | _rp sed -n 's/^RAPTOR_RESOLVED_PROJECT=//p' | _rp tail -n 1)"
 _seed_by="$(printf '%s\n' "$_startup_out" | _rp sed -n 's/^RAPTOR_SEEDED_BY=//p' | _rp tail -n 1)"
-# Validate: the project-name character class, or the '-' sentinel.
+# Validate: the project-name character class AND the 64-char cap, or
+# the '-' sentinel. Cap matches the python reader's _NAME_RE
+# ({0,63} after the leading alnum) — an over-long name written here
+# would be an entry every authoritative reader rejects.
 case "$_seed_proj" in
     -) ;;
     [A-Za-z0-9]*) case "$_seed_proj" in
             *[!A-Za-z0-9._-]*) _seed_proj="-" ;;
-        esac ;;
+        esac
+        if [ "${#_seed_proj}" -gt 64 ]; then _seed_proj="-"; fi ;;
     *) _seed_proj="-" ;;
 esac
 case "$_seed_by" in

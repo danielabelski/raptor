@@ -58,6 +58,7 @@ second, clean-looking record.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -172,9 +173,13 @@ def proc_starttime(pid: int) -> str | None:
     return fields[idx]
 
 
+@functools.lru_cache(maxsize=1)
 def boot_id() -> str | None:
     """Kernel boot id (per KERNEL — containers on one host share it,
-    which is why ``pidns`` exists as a second axis). None off-Linux."""
+    which is why ``pidns`` exists as a second axis). None off-Linux.
+
+    Process-constant, so cached: identity checks run per-entry in
+    read_sessions sweeps and per-record in ledger paths."""
     if sys.platform != "linux":
         return None
     try:
@@ -184,8 +189,10 @@ def boot_id() -> str | None:
         return None
 
 
+@functools.lru_cache(maxsize=1)
 def pidns_id() -> str | None:
-    """Inode of this process's pid namespace, or None when unavailable.
+    """Inode of this process's pid namespace, or None when unavailable
+    (process-constant, so cached — a process never changes pid ns).
 
     Two processes sharing a kernel but not a pid namespace must never
     prune or trust each other's entries — pid liveness is meaningless
@@ -381,6 +388,11 @@ def _ensure_dir() -> bool:
     return True
 
 
+# _parse_entry uses setdefault, so the FIRST occurrence of a duplicate
+# key wins — with append-style corruption, the original (earlier)
+# binding is the one authoritative readers see. Deliberate tie-break.
+
+
 def _clean_value(value: str) -> str:
     """Field values are one printable line — control characters would
     corrupt the KEY=VALUE format (and could forge extra keys)."""
@@ -442,8 +454,16 @@ def record_session(project: str | None, pid: int | None = None,
         return None
     if project is None:
         try:
+            # Entry first: ledger writers gate on it, so once it is
+            # gone no new append can resurrect the ledger. The ledger
+            # itself is unlinked UNDER its lock — an in-flight
+            # finisher's read-modify-write completes before, not
+            # across, the removal. Unlinking the lock file last is
+            # safe: writers verify their fd still names the path
+            # after acquiring and retry when it doesn't.
             (SESSIONS_DIR / str(pid)).unlink(missing_ok=True)
-            (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
+            with _ledger_lock(pid):
+                (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
             (SESSIONS_DIR / f"{pid}.run.lock").unlink(missing_ok=True)
         except OSError:
             return None
@@ -464,7 +484,22 @@ def record_session(project: str | None, pid: int | None = None,
                 "sessions: refusing to bind pid %d — identity "
                 "unreadable, the entry could never verify", pid)
             return None
+        # A stale stamp means the old entry belonged to a DIFFERENT
+        # process (recycled pid): its token and seeded_by are that
+        # dead session's credentials and must not be re-minted onto
+        # this one — a propagated stale token would keep validating
+        # the env credential for whoever held it.
+        fields.pop("token", None)
+        fields.pop("seeded_by", None)
         fields.update(identity)
+        # Same reasoning for the run ledger: the dead session's run
+        # records must not become THIS session's attribution and
+        # sibling-discovery history. Cleared under the ledger lock
+        # (a straggling finisher of the old session may be mid-CAS);
+        # the lock FILE stays — unlinking a held lock splits it.
+        if (SESSIONS_DIR / f"{pid}.run").exists():
+            with _ledger_lock(pid), contextlib.suppress(OSError):
+                (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
     if token:
         fields["token"] = token
     if seeded_by:
@@ -525,12 +560,29 @@ def session_binding(pid: int | None = None) -> tuple[str | None, str]:
 
 def _entry_state(pid: int, fields: dict[str, str]) -> str:
     """Classification for enumeration surfaces: live | stale | foreign
-    | advisory."""
+    | advisory | unknown.
+
+    ``stale`` is the ONLY prunable state and requires positive
+    evidence: a v2 entry whose pid is dead, or alive with a
+    positively mismatching stamp. A live pid whose starttime is
+    unreadable (procfs EPERM, hidepid) is ``unknown`` — skipped, never
+    pruned. v1 entries are never prunable here (``v1-stale``, skipped
+    from normal reads but left on disk): they carry no stamp, so a
+    namespace-blind reader (this python runs inside sandboxes and
+    containers) cannot distinguish "dead" from "alive in a pid
+    namespace I can't see" — the launcher's bash prune, which runs
+    where sessions run, owns v1 cleanup.
+    """
     if _foreign_entry(fields):
         return "foreign"
     if fields.get("v") != ENTRY_VERSION:
-        return "advisory" if _pid_running(pid) else "stale"
-    return "live" if _identity_matches(pid, fields) else "stale"
+        return "advisory" if _pid_running(pid) else "v1-stale"
+    if _identity_matches(pid, fields):
+        return "live"
+    if (sys.platform == "linux" and _pid_running(pid)
+            and proc_starttime(pid) is None):
+        return "unknown"
+    return "stale"
 
 
 def read_sessions(prune: bool = True,
@@ -565,15 +617,38 @@ def read_sessions(prune: bool = True,
         state = _entry_state(pid, fields)
         prunable = state == "stale"
         if prunable and prune:
+            # Same ordering discipline as entry removal in
+            # record_session: entry first (kills the writers' gate),
+            # ledger under its lock, lock file last (writers
+            # verify-after-lock, so this unlink cannot split it).
             with contextlib.suppress(OSError):
                 f.unlink(missing_ok=True)
-                (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
+                with _ledger_lock(pid):
+                    (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
                 (SESSIONS_DIR / f"{pid}.run.lock").unlink(missing_ok=True)
         if state in ("live", "advisory") or include_stale:
             if include_stale:
                 fields = dict(fields)
                 fields["_state"] = state
             sessions[pid] = fields
+    if prune:
+        # Reap ORPHAN ledgers: a `.run` whose sibling entry file is
+        # gone has no owner, no reader (the hook resolves through the
+        # entry-backed credential), and no writer (ledger writers gate
+        # on the entry) — but it WOULD be inherited on pid reuse if a
+        # recycled pid re-registered before its record_session refresh
+        # cleared it. Entry-less means the writers' gate already
+        # refuses, so removal races nothing.
+        for f in children:
+            if not f.name.endswith(".run"):
+                continue
+            stem = f.name[:-len(".run")]
+            if not stem.isdigit() or (SESSIONS_DIR / stem).exists():
+                continue
+            with contextlib.suppress(OSError):
+                with _ledger_lock(int(stem)):
+                    f.unlink(missing_ok=True)
+                (SESSIONS_DIR / f"{stem}.run.lock").unlink(missing_ok=True)
     return sessions
 
 
@@ -634,19 +709,46 @@ def _ledger_lock(pid: int) -> Iterator[None]:
         yield
         return
     lock_path = SESSIONS_DIR / f"{pid}.run.lock"
-    try:
-        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
-    except OSError:
-        yield
-        return
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    # Verify-after-lock: the prune paths (read_sessions, the launcher
+    # sweep, record_session removal) UNLINK lock files of sessions they
+    # can prove dead — but a finishing run of that session may hold the
+    # flock right then. A later writer would open the PATH, get a fresh
+    # inode, and lock it: two writers each "holding" the lock. After
+    # acquiring, re-stat the path; if our fd's inode is no longer what
+    # the path names, release and retry against the current file.
+    for _ in range(5):
         try:
+            fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
             yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            os.close(fd)
+            yield
+            return
+        try:
+            held = os.fstat(fd)
+            current = os.stat(str(lock_path))
+            same = (held.st_ino == current.st_ino
+                    and held.st_dev == current.st_dev)
+        except OSError:
+            same = False  # path unlinked under us — retry
+        if same:
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            return
         os.close(fd)
+    # Persistent swapping (hostile or pathological): proceed unlocked
+    # rather than deadlock — the ledger is an aid, never critical.
+    logger.debug("sessions: ledger lock for pid %d kept vanishing — "
+                 "proceeding without it", pid)
+    yield
 
 
 def _read_ledger(pid: int) -> list[dict]:
@@ -722,12 +824,22 @@ def _write_ledger(pid: int, records: list[dict]) -> bool:
 
 
 def _valid_run_dir(run_dir: str) -> bool:
-    """Reject ANY whitespace or non-printable character anywhere in the
-    resolved path — ``str.splitlines`` splits on the U+2028 class, so a
-    crafted component could forge a second ledger record."""
-    return (run_dir.startswith("/")
-            and run_dir.isprintable()
-            and not any(c.isspace() for c in run_dir))
+    """Vet a resolved run dir for the one-line ledger grammar.
+
+    Non-printables are rejected everywhere (``str.splitlines`` splits
+    on the U+2028 class, so a crafted component could forge a second
+    ledger record — ``isprintable`` covers that class plus newlines and
+    tabs). Exotic printable spaces (U+00A0 etc.) are rejected
+    everywhere too. A PLAIN space is legal in parent components — the
+    run-dir field is last on the line and greedy, so an operator's
+    ``/home/u/My Projects/...`` tree must not silently lose ledger
+    attribution — but never in the basename, which doubles as the
+    space-delimited run-id field."""
+    if not run_dir.startswith("/") or not run_dir.isprintable():
+        return False
+    if any(c.isspace() and c != " " for c in run_dir):
+        return False
+    return " " not in Path(run_dir).name
 
 
 def ledger_record_start(run_dir: str | os.PathLike[str],
@@ -757,6 +869,8 @@ def ledger_record_start(run_dir: str | os.PathLike[str],
         return
     run_id = Path(resolved).name
     with _ledger_lock(pid):
+        if not _parse_entry(SESSIONS_DIR / str(pid)):
+            return  # entry pruned since the pre-lock gate — no orphan
         records = [r for r in _read_ledger(pid) if r["run_id"] != run_id]
         records.append({
             "status": "running",
@@ -772,8 +886,14 @@ def ledger_record_start(run_dir: str | os.PathLike[str],
 def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
                          pid: int | None = None) -> None:
     """CAS-mark *run_dir*'s record with its TRUE terminal status — only
-    the matching run-id's running line changes; a concurrent sibling
-    run's record is never touched (the guarded-clear doctrine)."""
+    a running line matching BOTH the run id and the recorded absolute
+    dir changes; a concurrent sibling run's record is never touched
+    (the guarded-clear doctrine). The dir match matters most on the
+    resume path, where the target pid comes from child-writable run
+    metadata: a forged ``session_pid`` plus a COLLIDING run-id
+    basename must not let one run mark another session's different
+    run interrupted.
+    """
     if status not in _RUN_STATUSES or status == "running":
         status = "failed"
     if pid is None:
@@ -785,11 +905,16 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
     if not _parse_entry(SESSIONS_DIR / str(pid)):
         return
     run_id = Path(str(run_dir)).name
+    try:
+        resolved = str(Path(run_dir).resolve())
+    except OSError:
+        resolved = str(run_dir)
     with _ledger_lock(pid):
         records = _read_ledger(pid)
         hit = False
         for r in records:
-            if r["run_id"] == run_id and r["status"] == "running":
+            if (r["run_id"] == run_id and r["status"] == "running"
+                    and r["run_dir"] == resolved):
                 r["status"] = status
                 hit = True
         if hit and not _write_ledger(pid, records):

@@ -145,8 +145,10 @@ class SessionsRegistryTest(_RegistryCase):
         entries = sessions.read_sessions()
         self.assertIn(os.getpid(), entries)
         self.assertNotIn(DEAD_PID, entries)
-        self.assertFalse((self.sessions_dir / str(DEAD_PID)).exists(),
-                         "dead entry not unlinked")
+        # v1 entries are skipped but never PRUNED by the python
+        # reader: a namespace-blind reader cannot prove the pid dead.
+        # The launcher's bash prune owns v1 cleanup.
+        self.assertTrue((self.sessions_dir / str(DEAD_PID)).exists())
 
     def test_stale_v2_prunes_ledger_too(self):
         sessions.record_session("myapp", pid=os.getpid())
@@ -194,7 +196,7 @@ class SessionsRegistryTest(_RegistryCase):
         self._write_v1(DEAD_PID, "dead")             # stale
         entries = sessions.read_sessions(prune=False, include_stale=True)
         self.assertEqual(entries[os.getpid()]["_state"], "advisory")
-        self.assertEqual(entries[DEAD_PID]["_state"], "stale")
+        self.assertEqual(entries[DEAD_PID]["_state"], "v1-stale")
 
     def test_non_pid_files_left_alone(self):
         self.sessions_dir.mkdir(parents=True)
@@ -379,13 +381,26 @@ class RunLedgerTest(_RegistryCase):
         sessions.ledger_record_start(evil, pid=os.getpid())
         self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])
 
-    def test_whitespace_in_parent_path_rejected(self):
+    def test_plain_space_in_parent_path_accepted(self):
+        # An operator's "My Projects"-style tree keeps attribution:
+        # the run-dir field is last on the line and read greedily.
         spaced = self.run_root / "with space"
         spaced.mkdir()
         d = spaced / "run_1"
         d.mkdir()
         sessions.ledger_record_start(d, pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertEqual([r["run_dir"] for r in runs], [str(d.resolve())])
+
+    def test_space_in_basename_rejected(self):
+        d = self.run_root / "run 1"
+        d.mkdir()
+        sessions.ledger_record_start(d, pid=os.getpid())
         self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])
+
+    def test_exotic_whitespace_rejected_everywhere(self):
+        for bad in ("run\u2028x", "run\tx", "par\u00a0ent"):
+            self.assertFalse(sessions._valid_run_dir(f"/tmp/{bad}/r1"))
 
     def test_zombie_running_records_corrected(self):
         d = self._mk_run("scan_3")
@@ -900,3 +915,66 @@ class SessionsSubcommandTest(unittest.TestCase):
         self.assertRegex(out, r"\* myapp")
         self.assertRegex(out, r"> bookmarked")
         self.assertIn("this session's project", out)
+
+
+class LedgerHardeningTest(_RegistryCase):
+    """Remediation regressions: recycled-pid ledger reset, orphan
+    reaping, finish dir-match CAS, stale-credential drop."""
+
+    def _mk_run(self, name: str, status: str = "running") -> Path:
+        d = Path(self._tmp.name) / "runs" / name
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "%s"}' % status, encoding="utf-8")
+        return d
+
+    def test_stale_refresh_drops_token_and_seeded_by(self):
+        sessions.record_session("myapp", pid=os.getpid(),
+                                token="ab" * 16, seeded_by="flag")
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        sessions.record_session("other", pid=os.getpid())
+        fields = sessions._parse_entry(entry)
+        self.assertNotIn("token", fields)
+        self.assertNotIn("seeded_by", fields)
+
+    def test_stale_refresh_clears_inherited_ledger(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_old")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        # Recycled pid re-registers: the dead session's run records
+        # must not become this session's history.
+        sessions.record_session("other", pid=os.getpid())
+        self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])
+
+    def test_orphan_ledger_reaped(self):
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        orphan = self.sessions_dir / f"{DEAD_PID}.run"
+        orphan.write_text("running 1 r1 /tmp/r1\n", encoding="utf-8")
+        sessions.read_sessions()
+        self.assertFalse(orphan.exists())
+
+    def test_finish_requires_matching_dir_not_just_run_id(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_1")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        # Colliding basename, different dir: must NOT CAS the record.
+        other = Path(self._tmp.name) / "elsewhere" / "scan_1"
+        other.mkdir(parents=True)
+        sessions.ledger_record_finish(other, "interrupted",
+                                      pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertEqual([r["status"] for r in runs], ["running"])
+        sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertEqual([r["status"] for r in runs], ["completed"])

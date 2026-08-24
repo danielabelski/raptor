@@ -3696,10 +3696,34 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         #   L/S/U → Landlock/seccomp/namespace-unshare failed
                         #           to APPLY though its probe passed → a real
                         #           "can't engage" → fail loud.
+                        #   P     → a bind source stopped resolving to its
+                        #           validation-time inode (tamper signal from
+                        #           the pinned mount setup) → fail loud; the
+                        #           M-degrade below would re-run via the
+                        #           Landlock-only tier, where the planted
+                        #           symlink resolves on the host filesystem
+                        #           and the refused steering would succeed.
                         #   M/X   → mount-ns setup, or exec inside the
                         #           sandbox, failed → degrade to Landlock-only
                         #           (handled by the block below).
                         _setup_status = getattr(result, "_setup_status", None)
+                        if _setup_status is not None and _setup_status[0] == "P":
+                            from .errors import SandboxSetupError
+                            msg_0 = (
+                                f"sandbox bind-source pin violation: "
+                                f"{_setup_status[1]}"
+                            )
+                            raise SandboxSetupError(
+                                msg_0,
+                                "a target/output/readable bind source was "
+                                "replaced after this call validated it — "
+                                "treat this as concurrent tampering with "
+                                "the run's paths, not an environment "
+                                "problem. Stop whatever is rewriting the "
+                                "path (a sibling run sharing the output "
+                                "tree, or hostile code with write access "
+                                "to an ancestor directory) and re-run.",
+                            )
                         if _setup_status is not None and _setup_status[0] in ("L", "S", "U"):
                             from .errors import SandboxSetupError
                             from .probes import (

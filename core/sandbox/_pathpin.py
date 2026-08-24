@@ -24,24 +24,43 @@ Usage contract:
    pinned inode with no re-resolution window); Landlock callers hand
    the fd to ``path_beneath`` directly.
 
-Scope, stated precisely — this is WINDOW-NARROWING, not full closure:
+Scope, stated precisely. What a single walk closes depends on WHEN the
+caller runs it:
 
-* CLOSED: the post-canonicalisation swap. A symlink that appears
-  between the ``realpath`` call and the mount/add_rule is refused
-  (ELOOP), so the classic validate-then-mount race no longer steers a
-  bind or grant.
-* REMAINS (same as before this module existed): a symlink PRE-PLANTED
-  before canonicalisation resolves at the ``realpath`` step exactly
-  like a benign operator symlink — the walk then pins the attacker's
-  chosen destination. Callers whose path components cross a directory
-  a concurrent same-UID writer controls are still exposed to
-  pre-planted steering; closing that class needs validation-time
-  inode pinning (hold the O_PATH fd from the caller's original
-  validation all the way to the mount), which is cross-layer plumbing
-  tracked as follow-up work, not something this helper can do.
+* CLOSED everywhere: the post-canonicalisation swap. A symlink that
+  appears between the ``realpath`` call and the mount/add_rule is
+  refused (ELOOP), so the classic validate-then-mount race no longer
+  steers a bind or grant.
+* CLOSED for mount-ns bind sources (target= / output= / rootfs= /
+  readable_paths): the pre-planted class. The spawn parent runs this
+  walk at VALIDATION time (``_spawn._pin_bind_sources``, before the
+  fork) and the returned fd rides the fork into the mount-ns child,
+  which refuses each bind unless its mount-time walk resolves to the
+  SAME inode the validation walk pinned (identity check against the
+  held fd, which also keeps that inode's (st_dev, st_ino) from being
+  recycled; the fd cannot be mounted directly — mount(2) rejects
+  bind sources on a foreign-mount-namespace vfsmount). So a symlink
+  planted any time after the caller-side validation (the whole
+  fork/newuidmap/mount window included) cannot steer a bind — it can
+  only fail the spawn loudly. What remains there is irreducible at
+  this layer: a symlink already resolving when the caller validates
+  the path is indistinguishable from operator intent (usrmerge
+  ``/bin``, symlinked home trees).
+* REMAINS window-narrowed (mount-time walk only) for the other
+  consumers — Landlock grant opens and etc_overlay sources: a symlink
+  pre-planted before THAT walk's ``realpath`` resolves like a benign
+  operator symlink and pins the attacker's chosen destination.
+  Deliberate scoping, not an oversight: a steered Landlock GRANT
+  confers no access the same-UID planter did not already have (DAC
+  still applies to the sandboxed child), and etc_overlay sources are
+  caller-work-dir-internal files, not attacker-adjacent trees.
 * Also remains: a rename-swap to a REAL directory the attacker
   already controls — that grants access only to content they could
-  already write.
+  already write. The validation-time identity check is likewise
+  inode-identity, not path-identity: relocating the VALIDATED inode
+  itself (mv + symlink back to its new location) still passes, and
+  confers nothing — the bind lands on exactly the directory the
+  caller validated, wherever it now sits.
 
 Fork-safety: only ``os`` syscall wrappers and str/bytes ops — callable
 from post-fork children and preexec functions (same constraints as

@@ -69,6 +69,7 @@ MS_REC         = 0x4000
 # path) — same fork-safety convention as the other constants here.
 _EINVAL        = 22
 _ELOOP         = 40
+_ESTALE        = 116
 MS_NOSUID      = 0x2
 MS_NODEV       = 0x4
 MS_NOEXEC      = 0x8
@@ -165,7 +166,8 @@ def _mount(source: str | None, target: str,
         )
 
 
-def _bind_pinned_source(source: str, inside: str, flags: int) -> None:
+def _bind_pinned_source(source: str, inside: str, flags: int,
+                        pinned_fd: int | None = None) -> None:
     """Bind-mount *source* onto *inside* with the SOURCE inode pinned.
 
     Generalises the ``.audit`` dirfd pin to the bind
@@ -175,27 +177,78 @@ def _bind_pinned_source(source: str, inside: str, flags: int) -> None:
     component between the parent's validation and the mount — steering
     a bind (the OUTPUT one writable) onto an arbitrary host directory.
 
-    ``os.path.realpath`` runs immediately before the pinned walk so
-    benign pre-existing symlinks in operator paths still resolve; a
-    symlink encountered DURING the walk appeared after
-    canonicalisation — the swap — and fails the setup loudly (OSError
-    ELOOP out of ``open_pinned``). The mount source is
-    ``/proc/self/fd/<fd>``: the magic-link resolves to exactly the
-    pinned inode with no re-resolution window. The bind lands at the
-    caller's original ``inside`` path, so the child-visible layout is
-    unchanged.
+    Always: ``os.path.realpath`` runs immediately before a
+    symlink-refusing component walk (``open_pinned``), so benign
+    pre-existing symlinks in operator paths resolve while a symlink
+    that appears DURING the walk fails the setup loudly (OSError
+    ELOOP), and the mount consumes ``/proc/self/fd/<fd>`` of the
+    walked fd — the magic-link resolves to exactly the walked inode
+    with no re-resolution window. The walk must run HERE, in the
+    mount-ns child: mount(2) requires the bind source's vfsmount to
+    belong to the caller's mount namespace (``check_mnt`` — EINVAL
+    otherwise), so an fd opened by the parent pre-unshare cannot be
+    mounted directly.
 
-    Scope: window-narrowing only — a symlink PRE-PLANTED before this
-    function's realpath resolves like any operator symlink and still
-    steers the bind (unchanged from the pathname-mount behaviour this
-    replaces). See core/sandbox/_pathpin.py for the full scope
-    statement and the validation-time inode-pinning follow-up that
-    would close the pre-planted class.
+    ``pinned_fd`` (the production spawn path) raises this from
+    window-narrowing to CLOSED for the pre-planted class: it is the
+    VALIDATION-TIME pin — an O_PATH fd the parent opened via the same
+    symlink-refusing walk before forking this child. The freshly
+    walked inode must be IDENTICAL (st_dev, st_ino) to the
+    validation-pinned one, else the bind is refused (OSError ESTALE)
+    — so no swap of the source path at ANY point after the caller's
+    validation (rename swap, rmdir+symlink re-plant, the whole
+    fork/newuidmap window) can steer the mount; it can only fail it,
+    loudly. The held fd is also what makes the comparison sound: it
+    keeps the validation-time inode allocated, so its (st_dev,
+    st_ino) cannot be recycled by an attacker-created replacement.
+    The fd is NOT closed here — the caller owns its lifetime (it may
+    be reused for the recursive-bind retry).
+
+    Without ``pinned_fd`` (direct/legacy callers, etc_overlay
+    sources) the walk alone is window-narrowing only: a symlink
+    pre-planted before the mount-time realpath resolves like any
+    operator symlink and still steers the bind. See
+    core/sandbox/_pathpin.py for the full scope statement.
+
+    Either way the bind lands at the caller's original ``inside``
+    path, so the child-visible layout is unchanged.
     """
     from ._pathpin import open_pinned
 
-    src_fd = open_pinned(os.path.realpath(source))
     try:
+        src_fd = open_pinned(os.path.realpath(source))
+    except OSError as walk_exc:
+        if pinned_fd is None:
+            raise
+        # The parent pinned this source at validation (the held fd
+        # still names a live inode), yet the same path no longer
+        # resolves to ANY pinnable inode — it was unlinked, renamed
+        # away, or a component swapped to a symlink (ELOOP). Uniform
+        # tamper signal: ESTALE, so the spawn layer can distinguish
+        # "source tampered after validation" (fail loud) from an
+        # environmental mount failure (degradable).
+        raise OSError(
+            _ESTALE,
+            f"mount_ns: bind source {source!r} failed re-resolution "
+            f"at mount time (errno={walk_exc.errno}) though it was "
+            f"pinned at validation; refusing the bind (source "
+            f"tampered after validation)",
+        ) from walk_exc
+    try:
+        if pinned_fd is not None:
+            pinned_st = os.fstat(pinned_fd)
+            walked_st = os.fstat(src_fd)
+            if ((pinned_st.st_dev, pinned_st.st_ino)
+                    != (walked_st.st_dev, walked_st.st_ino)):
+                raise OSError(
+                    _ESTALE,
+                    f"mount_ns: bind source {source!r} no longer "
+                    f"resolves to its validation-time inode "
+                    f"(dev/ino {pinned_st.st_dev}/{pinned_st.st_ino} "
+                    f"-> {walked_st.st_dev}/{walked_st.st_ino}); "
+                    f"refusing the bind (source swapped after "
+                    f"validation)",
+                )
         _mount(f"/proc/self/fd/{src_fd}", inside, None, flags)
     finally:
         os.close(src_fd)
@@ -371,7 +424,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                    stage_files: dict | None = None,
                    rw_submounts_ok: bool = False,
                    rootfs: str | None = None,
-                   require_target_ro: bool = False) -> None:
+                   require_target_ro: bool = False,
+                   src_fds: dict[str, int] | None = None) -> None:
     """Establish pivot_root'd tmpfs sandbox root.
 
     Must be called AFTER the child has entered the new user-ns and acquired
@@ -419,7 +473,30 @@ def setup_mount_ns(target: str | None, output: str | None,
     unprivileged UID inside the user-ns. A staging failure logs via
     ``warn_post_fork`` and continues — partial staging is better than
     an aborted sandbox setup.
+
+    `src_fds` (Optional[dict[str, int]]): validation-time O_PATH pins
+    for the bind SOURCES, keyed by ``os.path.abspath`` of the caller
+    path (target / output / rootfs / each extra_ro_paths entry). The
+    parent opens these via a symlink-refusing walk BEFORE forking this
+    child (fds survive fork), and every bind here refuses to mount
+    unless its freshly-walked source inode is IDENTICAL to the
+    validation-pinned one (see ``_bind_pinned_source``) — so a
+    symlink planted at a source path any time after the parent's
+    validation (including the whole fork/newuidmap window) cannot
+    steer a bind; it can only fail the setup loudly. Fd type (dir vs
+    file) decisions for extra_ro_paths use ``fstat`` on the pinned
+    fd, never the (swappable) pathname. When ``src_fds`` is provided,
+    an extra_ro_paths entry WITHOUT a pin is skipped outright (the
+    parent found it non-pinnable at validation; falling back to
+    mount-time resolution would reopen the window as a downgrade
+    lever). When ``src_fds`` is None (direct/legacy callers), every
+    bind falls back to mount-time pinning — see
+    ``_bind_pinned_source``. The fds are NOT closed here; the caller
+    owns their lifetime.
     """
+    def _src_fd(path: str) -> int | None:
+        return None if src_fds is None else src_fds.get(path)
+
     # Absolutize target/output BEFORE any bind-mount work. A relative
     # path here produces a malformed bind-target like
     # "/root_path" + "out/X" → "/root_pathout/X" (no slash separator,
@@ -469,7 +546,8 @@ def setup_mount_ns(target: str | None, output: str | None,
         # "/" to Landlock when a write mask engages; the namespace
         # itself is the write boundary in this mode).
         rootfs = os.path.abspath(rootfs)
-        _mount(rootfs, root, None, MS_BIND)
+        _bind_pinned_source(rootfs, root, MS_BIND,
+                            pinned_fd=_src_fd(rootfs))
         # Exported image tarballs routinely lack /run, ship an empty
         # /dev, etc. — create the per-namespace mount points inside
         # the (writable) rootfs so steps 5-7 can stack their mounts.
@@ -642,7 +720,8 @@ def setup_mount_ns(target: str | None, output: str | None,
         if rootfs:
             _refuse_image_symlink_components(root, target)
         os.makedirs(inside, exist_ok=True)
-        _bind_pinned_source(target, inside, MS_BIND)
+        _bind_pinned_source(target, inside, MS_BIND,
+                            pinned_fd=_src_fd(target))
         _step8_bound_dirs.add(target)
         # Remount-bind-ro is best-effort. Skip when output == target
         # since output must remain writable. Landlock enforces
@@ -672,7 +751,8 @@ def setup_mount_ns(target: str | None, output: str | None,
         if rootfs:
             _refuse_image_symlink_components(root, output)
         os.makedirs(inside, exist_ok=True)
-        _bind_pinned_source(output, inside, MS_BIND)
+        _bind_pinned_source(output, inside, MS_BIND,
+                            pinned_fd=_src_fd(output))
         _step8_bound_dirs.add(output)
 
     # 8a. Shadow the evidence directory (<dir>/.audit — see
@@ -792,7 +872,26 @@ def setup_mount_ns(target: str | None, output: str | None,
             # fails with EROFS.
             if path in (target, output):
                 continue
-            if not os.path.isdir(path) and not os.path.isfile(path):
+            # Dir-vs-file decides stub creation below; derive it from
+            # the PINNED inode when a validation-time fd exists — the
+            # pathname isdir/isfile pair follows symlinks and is
+            # swappable between here and the bind. With pinning
+            # engaged (src_fds is not None), an entry the parent could
+            # not pin is skipped outright: it did not exist at
+            # validation, and falling back to mount-time resolution
+            # would hand a concurrent writer a downgrade lever (plant
+            # the path after validation, get it bound).
+            _extra_fd = _src_fd(path)
+            if _extra_fd is not None:
+                _pin_mode = os.fstat(_extra_fd).st_mode
+                _extra_is_dir = stat_module.S_ISDIR(_pin_mode)
+                _extra_is_file = stat_module.S_ISREG(_pin_mode)
+            elif src_fds is not None:
+                continue
+            else:
+                _extra_is_dir = os.path.isdir(path)
+                _extra_is_file = os.path.isfile(path)
+            if not _extra_is_dir and not _extra_is_file:
                 continue
             inside = f"{root}{path}"
             # _step names which sub-operation is running so the outer
@@ -810,7 +909,7 @@ def setup_mount_ns(target: str | None, output: str | None,
             try:
                 if rootfs:
                     _refuse_image_symlink_components(root, path)
-                if os.path.isdir(path):
+                if _extra_is_dir:
                     _step = b"makedirs"
                     os.makedirs(inside, exist_ok=True)
                     _bound_dirs.add(path)
@@ -853,7 +952,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                     os.close(fd)
                 _step = b"bind"
                 try:
-                    _bind_pinned_source(path, inside, MS_BIND)
+                    _bind_pinned_source(path, inside, MS_BIND,
+                                        pinned_fd=_extra_fd)
                 except OSError as bind_exc:
                     # EINVAL: a NON-recursive bind of a tree containing
                     # locked submounts (mounts created by a more-
@@ -874,7 +974,8 @@ def setup_mount_ns(target: str | None, output: str | None,
                     # worse than a loud setup failure.
                     if bind_exc.errno != _EINVAL or not rw_submounts_ok:
                         raise
-                    _bind_pinned_source(path, inside, MS_BIND | MS_REC)
+                    _bind_pinned_source(path, inside, MS_BIND | MS_REC,
+                                        pinned_fd=_extra_fd)
                     try:
                         _path_b = path.encode("utf-8", errors="replace")
                     except Exception:  # noqa: BLE001

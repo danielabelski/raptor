@@ -63,6 +63,7 @@ from typing import TYPE_CHECKING
 from . import state
 from ._fork_safe_warn import warn_post_fork
 from .landlock import _make_landlock_preexec
+from .mount_ns import _ESTALE as _PIN_TAMPER_ERRNO
 from .mount_ns import setup_mount_ns
 from .probes import _find_sandbox_binary
 from .seccomp import _make_seccomp_preexec
@@ -102,6 +103,9 @@ def _write_setup_status(fd: int, category: bytes, reason: str = "") -> None:
     ``category`` is a single byte identifying WHICH step failed:
         b'M' mount-ns   b'L' Landlock   b'S' seccomp
         b'U' unshare (pid-ns)           b'X' target exec
+        b'P' bind-source pin violation (a bind source stopped
+             resolving to its validation-time inode — tamper signal;
+             the caller must fail loud, never degrade)
     ``reason`` is a short diagnostic. The whole payload is one ``os.write``
     well under PIPE_BUF (4096) so it lands atomically. Runs in a dying
     child after fork — must not raise and must not touch the Python logger
@@ -120,7 +124,7 @@ def _parse_setup_status(raw: bytes):
 
     Returns ``None`` for empty input (EOF ⇒ the target execed; genuine
     result), else ``(category, reason)`` where category is one of
-    M/L/S/U/X. Kept standalone for unit-testing the contract.
+    M/L/S/U/X/P. Kept standalone for unit-testing the contract.
     """
     if not raw:
         return None
@@ -621,6 +625,84 @@ def _cleanup_stub(root_dir: str) -> None:
         os.rmdir(root_dir)
     except OSError:
         pass
+
+
+def _pin_bind_sources(
+    target: str | None,
+    output: str | None,
+    rootfs: str | None,
+    readable_paths: Iterable[str] | None,
+) -> dict[str, int]:
+    """Validation-time O_PATH pins for every mount-ns bind SOURCE.
+
+    Runs in the PARENT, before the fork. Each returned fd names the
+    inode the bind source resolved to at this moment — the same moment
+    the caller's validation saw it — via a symlink-refusing component
+    walk (``open_pinned``; benign pre-existing symlinks resolve at the
+    ``realpath`` step, a symlink appearing mid-walk refuses with
+    ELOOP). The fds survive the fork into the mount-ns child, which
+    refuses each bind unless the source still resolves to the
+    validation-pinned inode (identity check against the held fd —
+    see ``mount_ns._bind_pinned_source``; the fd cannot be mounted
+    directly because mount(2) rejects bind sources on a
+    foreign-mount-namespace vfsmount). This closes the
+    pre-planted-symlink steering class for the entire
+    validation→mount window (fork, newuidmap handshake, mount setup),
+    not just the mount-time walk's own microseconds: a post-validation
+    swap can only fail the spawn loudly, never redirect a bind. The
+    held fd also keeps the validation-time inode allocated, so its
+    (st_dev, st_ino) identity cannot be recycled by a replacement.
+
+    Keys are ``os.path.abspath`` of the caller path (matching the
+    child-side absolutisation in ``setup_mount_ns``). ``target`` /
+    ``output`` / ``rootfs`` pins are REQUIRED — a failure to pin (the
+    path vanished, or a component swapped to a symlink mid-walk)
+    raises the corresponding OSError, before any fork happens; the
+    caller (``run_sandboxed``) converts it to SandboxSetupError so it
+    can never ride the environmental degrade ladder into a fallback
+    tier the planted path would steer.
+    ``readable_paths`` entries that cannot be pinned are SKIPPED, and
+    the child then refuses to bind them at all (matching the previous
+    "not a dir or file → skip" behaviour, minus the late
+    re-resolution).
+
+    Fds carry O_CLOEXEC: they survive every fork in the spawn chain
+    but never leak across an exec (newuidmap, tracer, target). The
+    caller must close them — parent-side right after the fork,
+    child-side after ``setup_mount_ns`` returns; every returned fd is
+    closed here on failure, so no fd leaks when this raises.
+    """
+    from ._pathpin import open_pinned
+
+    fds: dict[str, int] = {}
+    try:
+        for req in (target, output, rootfs):
+            if not req:
+                continue
+            key = os.path.abspath(req)
+            if key in fds:
+                continue
+            fds[key] = open_pinned(os.path.realpath(key))
+        for extra in (readable_paths or ()):
+            if not extra:
+                continue
+            key = os.path.abspath(extra)
+            if key in fds:
+                continue
+            try:
+                fds[key] = open_pinned(os.path.realpath(key))
+            except OSError:
+                # Non-pinnable readable path (typically: does not
+                # exist on this host — /lib64 on non-multilib, an
+                # optional tool dir). The child skips unpinned
+                # extra_ro_paths entries outright.
+                continue
+        return fds
+    except BaseException:
+        for fd in fds.values():
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        raise
 
 
 def _subid_range(path: str, user: str, numeric_id: str) -> tuple[int, int] | None:
@@ -1257,6 +1339,56 @@ def run_sandboxed(
                  or _target_under_writable)
         )
 
+        # Validation-time inode pins for the mount-ns bind sources
+        # (target / output / rootfs / readable_paths). Opened HERE in
+        # the parent — before the fork — so the inode each bind mounts
+        # is exactly the one this call's validation resolved; the fds
+        # ride the fork into the mount-ns child (O_CLOEXEC: they
+        # survive fork but never cross an exec), and setup_mount_ns
+        # refuses any bind whose source no longer resolves to its
+        # validation-pinned inode. A symlink planted at a bind source
+        # after this point — anywhere in the fork/newuidmap/mount
+        # window that the child's mount-time walk could not defend —
+        # can no longer steer a bind, only fail the spawn loudly.
+        # Mirrors the step-9 engagement condition; on skip_mount_ns /
+        # no-bind spawns nothing is pinned because nothing is
+        # mounted. A required pin failing raises SandboxSetupError —
+        # NEVER a plain OSError: the caller's environmental-fallback
+        # ladder would demote the run to the Landlock-only tier,
+        # where a symlink the attacker plants at the source path
+        # resolves on the host filesystem and steers the fallback's
+        # write grants — the exact steering the pin refuses at the
+        # mount tier. ELOOP here is a mid-validation symlink plant
+        # (tamper); ENOENT is a required source that does not exist
+        # at validation (caller-input error, same category as the
+        # audit-target-dir gate) — both must fail loud, not degrade.
+        _bind_src_fds: dict[str, int] | None = None
+        if (target or output or rootfs) and not skip_mount_ns:
+            try:
+                _bind_src_fds = _pin_bind_sources(
+                    target, output, rootfs, readable_paths)
+            except OSError as _pin_exc:
+                from .errors import SandboxSetupError
+                msg = (
+                    f"sandbox bind-source validation pin failed for a "
+                    f"required source ({_pin_exc}) — refusing every "
+                    f"fallback tier: a target/output/rootfs path that "
+                    f"cannot be pinned at validation time would let a "
+                    f"concurrently planted symlink steer the "
+                    f"Landlock-only fallback's write grants on the "
+                    f"host filesystem."
+                )
+                raise SandboxSetupError(
+                    msg,
+                    "verify the path exists before the call "
+                    "(production callers pass lifecycle-created run "
+                    "dirs) and stop anything concurrently rewriting "
+                    "it (a sibling run sharing the tree, or hostile "
+                    "code with write access to an ancestor "
+                    "directory), then re-run.",
+                ) from _pin_exc
+            _parent_fds.update(_bind_src_fds.values())
+
         # All-or-nothing persona: without the mount-ns overlay step the
         # file half (/proc/cpuinfo, /etc/os-release, ...) never applies
         # while UTS + affinity still would — an inconsistent
@@ -1791,6 +1923,14 @@ def run_sandboxed(
                     if _forwarder_pid == 0:
                         os.close(_fwd_death_w)
                         os.close(status_w)
+                        # Bind-source pins belong to the mount-setup
+                        # path (step 9), not the relay — drop this
+                        # process's copies so it doesn't hold the
+                        # pinned inodes alive for the whole run.
+                        if _bind_src_fds:
+                            for _pin_fd in _bind_src_fds.values():
+                                with contextlib.suppress(OSError):
+                                    os.close(_pin_fd)
                         # p_ready_w was closed at step 5 — do NOT close
                         # here; the fd number may have been reused by
                         # the death pipe allocated above.
@@ -1827,14 +1967,40 @@ def run_sandboxed(
             # the child can't reach (ENOENT before EACCES).
             if (target or output or rootfs) and not skip_mount_ns:
                 _status_step = b"M"
-                setup_mount_ns(target, output,
-                               extra_ro_paths=readable_paths,
-                               root_path=_root_dir,
-                               persona=persona,
-                               etc_overlay=etc_overlay,
-                               rw_submounts_ok=_rw_submounts_ok,
-                               rootfs=rootfs,
-                               require_target_ro=_require_target_ro)
+                try:
+                    setup_mount_ns(target, output,
+                                   extra_ro_paths=readable_paths,
+                                   root_path=_root_dir,
+                                   persona=persona,
+                                   etc_overlay=etc_overlay,
+                                   rw_submounts_ok=_rw_submounts_ok,
+                                   rootfs=rootfs,
+                                   require_target_ro=_require_target_ro,
+                                   src_fds=_bind_src_fds)
+                except OSError as _mnt_exc:
+                    # ESTALE out of a pinned bind = the source stopped
+                    # resolving to its validation-time inode — a
+                    # tamper signal, not an environmental failure.
+                    # Categorise as 'P' so the parent FAILS LOUD: the
+                    # 'M' degrade path would re-run the command via
+                    # the Landlock-only subprocess tier, where the
+                    # planted symlink resolves on the HOST filesystem
+                    # and the steering this pin exists to refuse
+                    # succeeds at the fallback tier instead.
+                    if (_bind_src_fds
+                            and _mnt_exc.errno == _PIN_TAMPER_ERRNO):
+                        _status_step = b"P"
+                    raise
+                # The validation-time source pins have served their
+                # one purpose (every bind above verified its source
+                # inode against them). Close the child's copies now;
+                # O_CLOEXEC would reap them at exec anyway, but the
+                # pid-ns grandchild fork and the fd sweep before exec
+                # shouldn't have to carry them.
+                if _bind_src_fds:
+                    for _pin_fd in _bind_src_fds.values():
+                        with contextlib.suppress(OSError):
+                            os.close(_pin_fd)
 
             # Step 9.5 (fingerprint sanitisation): pin sched_setaffinity
             # to a mask of size persona.cpu_count. The persona's
@@ -2280,6 +2446,15 @@ def run_sandboxed(
     # regardless of where in the parent flow we exit.
     tracer_pid: int | None = None
     try:
+        # Validation-time bind-source pins: the child received its own
+        # copies at fork; the parent's serve no further purpose, and
+        # holding them would extend the pinned inodes' lifetimes to
+        # the whole run on this side. Close now.
+        if _bind_src_fds:
+            for _pin_fd in _bind_src_fds.values():
+                with contextlib.suppress(OSError):
+                    os.close(_pin_fd)
+                _parent_fds.discard(_pin_fd)
         # Close the ends the child owns — parent doesn't write to them.
         os.close(p_ready_w)
         _parent_fds.discard(p_ready_w)

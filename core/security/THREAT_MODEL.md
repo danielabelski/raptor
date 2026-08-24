@@ -87,20 +87,34 @@ unavailable, and is bounded by the host firewall. Landlock ≤ ABI 8
 offers no inbound/accept right that could close it without
 restricting bind.
 
-**Accepted residual — pre-planted symlink bind steering.** Bind-mount
-sources and Landlock grant paths are pinned against
-post-canonicalisation symlink swaps (realpath, then a
-symlink-refusing component walk, then a `/proc/self/fd` mount — see
-`core/sandbox/_pathpin.py`). This narrows the classic
-validate-then-mount race window; it does NOT close the pre-planted
-class: a symlink already in place before canonicalisation resolves
-like a benign operator symlink and steers the bind exactly as the
-pathname mounts it replaced did. Operators sharing a writable
-output ancestor with concurrently-running hostile code should treat
-that sharing itself as the boundary violation; full closure needs
-validation-time inode pinning (carrying the O_PATH fd from the
-caller's original validation through to the mount), tracked as
-follow-up work.
+**Symlink bind steering — closed for bind sources, residual for
+grants.** Mount-namespace bind sources (`target=`, `output=`,
+`rootfs=`, `readable_paths`) are pinned at VALIDATION time: the spawn
+parent resolves each source once (realpath, then a symlink-refusing
+component walk — see `core/sandbox/_pathpin.py`) and holds the
+resulting O_PATH fd across the fork into the mount-namespace child,
+which refuses each bind unless its own mount-time walk resolves to
+the identical (st_dev, st_ino) — the held fd both carries the
+validation-time identity and keeps that inode from being recycled
+(`_spawn._pin_bind_sources` → `mount_ns.setup_mount_ns
+(src_fds=...)`; the fd cannot be mounted directly because mount(2)
+rejects bind sources on a foreign-mount-namespace vfsmount). A
+symlink planted at a bind source at ANY point after the caller-side
+validation — including the previously-open fork/newuidmap/mount
+window — can no longer steer a writable bind; it can only fail the
+spawn loudly.
+The irreducible remainder is definitional, not a race: a symlink
+already resolving when the caller validates the path is
+indistinguishable from operator intent (the API takes a path; a
+caller that passes one already routed through attacker-controlled
+links lost at path-selection time). Landlock grant opens and
+etc_overlay sources keep the mount/grant-time walk only
+(post-canonicalisation swaps refused; pre-planted symlinks resolve):
+a steered Landlock grant confers no access the same-UID planter did
+not already hold under DAC, and etc_overlay sources are
+caller-work-dir-internal. Operators sharing a writable output
+ancestor with concurrently-running hostile code should still treat
+that sharing itself as the boundary violation.
 
 **Accepted residuals — no-pid-namespace teardown.** On the same
 degraded (namespace-less, operator-opt-in) posture, teardown

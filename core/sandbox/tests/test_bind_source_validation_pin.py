@@ -1,0 +1,540 @@
+"""Validation-time inode pinning for mount-ns bind sources.
+
+Threat under test: a symlink planted at a bind source (target= /
+output= / readable_paths) AFTER the caller-side validation but BEFORE
+the mount-ns child's mount(2). The child's mount-time canonicalisation
+used to resolve such a "pre-planted" symlink exactly like a benign
+operator symlink, steering the (writable, for output=) bind onto an
+arbitrary same-UID directory. Verified empirically on the pre-fix
+tree: the TestAttackRegression scenario below — rename the output dir
+away and plant a symlink to VICTIM inside the validate→mount window —
+ended with the sandboxed child's write landing in VICTIM/proof
+(rc=0, bind steered) on the pre-fix code; with the pin it ends in a
+refused spawn and no write anywhere.
+
+Defense: the spawn parent opens an O_PATH fd per bind source at
+validation time (symlink-refusing walk); the fd rides the fork into
+the mount-ns child, which refuses each bind unless its own mount-time
+walk resolves to the identical (st_dev, st_ino). Refusals surface as
+exec-status 'P' and fail LOUD at the context layer — never the
+Landlock-only degrade, where the planted symlink would resolve on the
+host filesystem and the steering would succeed at the fallback tier.
+
+Hermeticity: everything above the mount boundary (pin construction,
+identity refusal, fd hygiene) runs on any Linux kernel with O_PATH and
+needs no namespaces, no sudo, no ptrace. The end-to-end attack
+regressions additionally need a working mount-ns (uidmap binaries +
+unprivileged userns permitted) and skip cleanly where the runner lacks
+them — same gating as test_spawn_mount_ns.py.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[3]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux" or not hasattr(os, "O_PATH"),
+    reason="Linux-only sandbox internals (O_PATH pinning / mount-ns)",
+)
+
+
+def _mount_ns_usable() -> bool:
+    """True iff the fork+newuidmap+mount chain can actually run here."""
+    if not shutil.which("newuidmap") or not shutil.which("newgidmap"):
+        return False
+    sysctl = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    if sysctl.exists() and sysctl.read_text().strip() == "1":
+        return False
+    return True
+
+
+def _open_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _close_all(fds: dict[str, int]) -> None:
+    for fd in fds.values():
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+class TestPinBindSources(unittest.TestCase):
+    """_spawn._pin_bind_sources — parent-side validation-time pins."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        (self.base / "tgt").mkdir()
+        (self.base / "out").mkdir()
+        (self.base / "ro").mkdir()
+
+    def test_pins_keyed_by_abspath_and_identity_matches(self) -> None:
+        from core.sandbox._spawn import _pin_bind_sources
+        tgt = str(self.base / "tgt")
+        out = str(self.base / "out")
+        ro = str(self.base / "ro")
+        fds = _pin_bind_sources(tgt, out, None, [ro])
+        self.addCleanup(_close_all, fds)
+        self.assertEqual(set(fds), {tgt, out, ro})
+        for path, fd in fds.items():
+            st_fd = os.fstat(fd)
+            st_path = os.stat(path)
+            self.assertEqual(
+                (st_fd.st_dev, st_fd.st_ino),
+                (st_path.st_dev, st_path.st_ino),
+                f"pin for {path} names a different inode",
+            )
+
+    def test_fds_are_cloexec(self) -> None:
+        """Pins must survive fork but never an exec — CLOEXEC set."""
+        from core.sandbox._spawn import _pin_bind_sources
+        fds = _pin_bind_sources(str(self.base / "tgt"), None, None, None)
+        self.addCleanup(_close_all, fds)
+        for path, fd in fds.items():
+            flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+            self.assertTrue(flags & fcntl.FD_CLOEXEC,
+                            f"pin fd for {path} is not CLOEXEC")
+
+    def test_benign_preexisting_symlink_resolves(self) -> None:
+        """An output path that IS a symlink at validation resolves like
+        any operator symlink: key is the caller path, pinned inode is
+        the link target's."""
+        from core.sandbox._spawn import _pin_bind_sources
+        real = self.base / "real-out"
+        real.mkdir()
+        link = self.base / "link-out"
+        link.symlink_to(real)
+        fds = _pin_bind_sources(None, str(link), None, None)
+        self.addCleanup(_close_all, fds)
+        self.assertEqual(set(fds), {str(link)})
+        st_fd = os.fstat(fds[str(link)])
+        st_real = os.stat(real)
+        self.assertEqual((st_fd.st_dev, st_fd.st_ino),
+                         (st_real.st_dev, st_real.st_ino))
+
+    def test_target_equals_output_single_pin(self) -> None:
+        from core.sandbox._spawn import _pin_bind_sources
+        tgt = str(self.base / "tgt")
+        fds = _pin_bind_sources(tgt, tgt, None, [tgt])
+        self.addCleanup(_close_all, fds)
+        self.assertEqual(list(fds), [tgt])
+
+    def test_missing_readable_path_skipped(self) -> None:
+        """A readable_paths entry that does not exist at validation is
+        skipped (the child then refuses to bind it at all) — matching
+        the previous 'not a dir or file → skip' behaviour without the
+        late re-resolution a planter could steer."""
+        from core.sandbox._spawn import _pin_bind_sources
+        tgt = str(self.base / "tgt")
+        ghost = str(self.base / "does-not-exist")
+        fds = _pin_bind_sources(tgt, None, None, [ghost, ""])
+        self.addCleanup(_close_all, fds)
+        self.assertEqual(set(fds), {tgt})
+
+    def test_missing_required_source_raises_without_fd_leak(self) -> None:
+        """target/output/rootfs pins are REQUIRED; a failure must close
+        every fd already opened (no leak on the raise path)."""
+        from core.sandbox._spawn import _pin_bind_sources
+        tgt = str(self.base / "tgt")
+        ghost_out = str(self.base / "no-such-out")
+        before = _open_fd_count()
+        with self.assertRaises(FileNotFoundError):
+            _pin_bind_sources(tgt, ghost_out, None, None)
+        self.assertEqual(_open_fd_count(), before,
+                         "fd leaked on the pin-failure path")
+
+    def test_no_leak_across_many_pin_cycles(self) -> None:
+        """Repeated pin/close cycles must not creep the fd table —
+        the exhaustion-DoS shape."""
+        from core.sandbox._spawn import _pin_bind_sources
+        tgt = str(self.base / "tgt")
+        out = str(self.base / "out")
+        before = _open_fd_count()
+        for _ in range(64):
+            _close_all(_pin_bind_sources(tgt, out, None, [out]))
+        self.assertEqual(_open_fd_count(), before)
+
+
+class TestBindPinnedSourceIdentityRefusal(unittest.TestCase):
+    """mount_ns._bind_pinned_source with a validation-time fd refuses —
+    BEFORE any mount(2) — when the source no longer resolves to the
+    pinned inode. Runs unprivileged: every asserted path raises ahead
+    of the mount call."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+
+    def _pin(self, path: str) -> int:
+        from core.sandbox._pathpin import open_pinned
+        fd = open_pinned(os.path.realpath(path))
+        self.addCleanup(os.close, fd)
+        return fd
+
+    def test_symlink_swap_refused_estale(self) -> None:
+        """The attack shape: rename the source away, plant a symlink
+        to VICTIM. The mount-time walk resolves VICTIM; identity
+        differs from the pinned inode → ESTALE, no mount attempted."""
+        from core.sandbox.mount_ns import (
+            _ESTALE,
+            MS_BIND,
+            _bind_pinned_source,
+        )
+        src = self.base / "out"
+        victim = self.base / "victim"
+        src.mkdir()
+        victim.mkdir()
+        fd = self._pin(str(src))
+        os.rename(src, self.base / "out-moved")
+        os.symlink(victim, src)
+        with self.assertRaises(OSError) as cm:
+            _bind_pinned_source(str(src), str(self.base / "inside"),
+                                MS_BIND, pinned_fd=fd)
+        self.assertEqual(cm.exception.errno, _ESTALE)
+
+    def test_rename_swap_to_real_dir_refused_estale(self) -> None:
+        """Swap to a REAL directory (no symlink at all) is refused
+        too: the identity check is on inodes, not link-shape."""
+        from core.sandbox.mount_ns import (
+            _ESTALE,
+            MS_BIND,
+            _bind_pinned_source,
+        )
+        src = self.base / "out"
+        src.mkdir()
+        fd = self._pin(str(src))
+        os.rename(src, self.base / "out-moved")
+        (self.base / "out").mkdir()  # attacker's replacement dir
+        with self.assertRaises(OSError) as cm:
+            _bind_pinned_source(str(src), str(self.base / "inside"),
+                                MS_BIND, pinned_fd=fd)
+        self.assertEqual(cm.exception.errno, _ESTALE)
+
+    def test_vanished_source_refused_estale(self) -> None:
+        """A pinned source that stops resolving entirely (rmdir'd) is
+        the same tamper signal — uniform ESTALE, not a bare ENOENT
+        that the spawn layer would degrade on."""
+        from core.sandbox.mount_ns import (
+            _ESTALE,
+            MS_BIND,
+            _bind_pinned_source,
+        )
+        src = self.base / "out"
+        src.mkdir()
+        fd = self._pin(str(src))
+        os.rmdir(src)
+        with self.assertRaises(OSError) as cm:
+            _bind_pinned_source(str(src), str(self.base / "inside"),
+                                MS_BIND, pinned_fd=fd)
+        self.assertEqual(cm.exception.errno, _ESTALE)
+
+    def test_legacy_no_pin_keeps_original_errno(self) -> None:
+        """Without a validation fd (direct/legacy callers) the walk's
+        own errno propagates unchanged — no ESTALE masquerade."""
+        import errno
+        from core.sandbox.mount_ns import MS_BIND, _bind_pinned_source
+        ghost = str(self.base / "never-existed")
+        with self.assertRaises(OSError) as cm:
+            _bind_pinned_source(ghost, str(self.base / "inside"),
+                                MS_BIND, pinned_fd=None)
+        self.assertEqual(cm.exception.errno, errno.ENOENT)
+
+
+class TestPinTimeFailureNeverDegrades(unittest.TestCase):
+    """A required-pin failure at VALIDATION time must raise
+    SandboxSetupError — never a plain OSError. The context layer's
+    environmental-fallback ladder catches (FileNotFoundError,
+    RuntimeError, OSError) and would re-run the command at the
+    Landlock-only tier, where a symlink the attacker plants at the
+    source path resolves on the host filesystem and steers the
+    fallback's write grants — demonstrated empirically during review:
+    a pin-time ELOOP surfaced as a generic degrade warning and the
+    fallback wrote through the planted symlink (rc=0). These run
+    unprivileged: the raise happens before any fork."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        (self.base / "tgt").mkdir()
+
+    def _kwargs(self, out: str) -> dict:
+        return dict(
+            target=str(self.base / "tgt"), output=out,
+            block_network=True, nproc_limit=1024,
+            limits={"memory_mb": 0, "max_file_mb": 10240,
+                    "cpu_seconds": 300},
+            writable_paths=[out, "/tmp"],
+            readable_paths=None, allowed_tcp_ports=None,
+            seccomp_profile=None, seccomp_block_udp=False,
+            env=None, cwd=None, timeout=30,
+            capture_output=True, text=True,
+        )
+
+    def test_pin_eloop_raises_sandbox_setup_error(self) -> None:
+        """Mid-validation symlink plant (ELOOP out of the pin walk)."""
+        import errno
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        from core.sandbox.errors import SandboxSetupError
+        out = self.base / "out"
+        out.mkdir()
+        eloop = OSError(errno.ELOOP,
+                        "open_pinned: component is a symlink")
+        with patch.object(_spawn, "_pin_bind_sources",
+                          side_effect=eloop), \
+                self.assertRaises(SandboxSetupError):
+            _spawn.run_sandboxed(["true"], **self._kwargs(str(out)))
+
+    def test_pin_enoent_raises_sandbox_setup_error(self) -> None:
+        """A required source missing at validation (real ENOENT from
+        the pin walk, no mocking) is caller-input error — fail loud,
+        never FileNotFoundError (which the fallback ladder absorbs)."""
+        from core.sandbox import _spawn
+        from core.sandbox.errors import SandboxSetupError
+        ghost_out = str(self.base / "no-such-out")
+        with self.assertRaises(SandboxSetupError):
+            _spawn.run_sandboxed(["true"], **self._kwargs(ghost_out))
+
+    def test_no_stub_dir_leak_on_pin_failure(self) -> None:
+        """The mkdtemp sandbox-root stub must be cleaned up when the
+        pin raises (the raise happens after the stub is created)."""
+        import tempfile as _tf
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        from core.sandbox.errors import SandboxSetupError
+        captured: list[str] = []
+        real_mkdtemp = _tf.mkdtemp
+
+        def recording_mkdtemp(*args, **kwargs):
+            path = real_mkdtemp(*args, **kwargs)
+            if kwargs.get("prefix", "").startswith(".raptor-sbx-"):
+                captured.append(path)
+            return path
+
+        ghost_out = str(self.base / "no-such-out")
+        with patch("tempfile.mkdtemp", side_effect=recording_mkdtemp), \
+                self.assertRaises(SandboxSetupError):
+            _spawn.run_sandboxed(["true"], **self._kwargs(ghost_out))
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(os.path.exists(captured[0]),
+                         "sandbox-root stub leaked on the pin-failure "
+                         "path")
+
+
+class TestAttackRegressionE2E(unittest.TestCase):
+    """End-to-end: post-validation swap of the output= bind source.
+
+    Interposition point: a wrapper around _spawn._pin_bind_sources
+    performs the swap immediately AFTER the parent's validation-time
+    pin — i.e. inside the exact window (fork, newuidmap handshake,
+    mount setup) that the pin exists to cover. On the pre-fix tree
+    the equivalent scenario (hooking the parent's post-validation
+    mkdtemp, since _pin_bind_sources did not exist) ended STEERED:
+    rc=0 and the child's write in VICTIM/proof through the writable
+    bind. With the pin the spawn refuses with exec-status 'P' and no
+    write lands anywhere.
+    """
+
+    def setUp(self) -> None:
+        if not _mount_ns_usable():
+            self.skipTest(
+                "mount-ns unusable here (needs uidmap package + "
+                "kernel.apparmor_restrict_unprivileged_userns=0)"
+            )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.tgt = self.base / "tgt"
+        self.out = self.base / "out"
+        self.victim = self.base / "victim"
+        for d in (self.tgt, self.out, self.victim):
+            d.mkdir()
+
+    def _swap_after_pin(self):
+        """Patch _pin_bind_sources: pin normally, then swap out →
+        symlink(victim). Returns the patcher (caller enters it)."""
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        real_pin = _spawn._pin_bind_sources
+        out, victim, moved = self.out, self.victim, self.base / "out-moved"
+
+        def pin_then_swap(*args, **kwargs):
+            fds = real_pin(*args, **kwargs)
+            os.rename(out, moved)
+            os.symlink(victim, out)
+            return fds
+
+        return patch.object(_spawn, "_pin_bind_sources",
+                            side_effect=pin_then_swap)
+
+    def _spawn_kwargs(self) -> dict:
+        return dict(
+            target=str(self.tgt), output=str(self.out),
+            block_network=True, nproc_limit=1024,
+            limits={"memory_mb": 0, "max_file_mb": 10240,
+                    "cpu_seconds": 300},
+            writable_paths=[str(self.out), "/tmp"],
+            readable_paths=None, allowed_tcp_ports=None,
+            seccomp_profile=None, seccomp_block_udp=False,
+            env=None, cwd=None, timeout=30,
+            capture_output=True, text=True,
+        )
+
+    def test_post_validation_swap_refused_at_spawn_layer(self) -> None:
+        from core.sandbox._spawn import run_sandboxed
+        with self._swap_after_pin():
+            r = run_sandboxed(
+                ["sh", "-c", f"echo PWNED > {self.out}/proof"],
+                **self._spawn_kwargs(),
+            )
+        self.assertNotEqual(r.returncode, 0,
+                            "spawn must refuse the swapped bind source")
+        status = getattr(r, "_setup_status", None)
+        if status is None:
+            self.fail("expected a setup-failure status on the pipe")
+        self.assertEqual(status[0], "P",
+                         f"expected pin-violation category, got {status}")
+        for where in (self.victim, self.base / "out-moved", self.out):
+            self.assertFalse(
+                (Path(where) / "proof").exists(),
+                f"write escaped the refused spawn into {where}",
+            )
+
+    def test_context_layer_fails_loud_no_landlock_demotion(self) -> None:
+        """The 'P' refusal must NOT ride the M-degrade ladder: the
+        Landlock-only retry would re-run the command on the host
+        filesystem where the planted symlink resolves and the write
+        lands in VICTIM anyway. context.run must raise
+        SandboxSetupError and nothing may be written."""
+        from core.sandbox import context as ctx
+        from core.sandbox.errors import SandboxSetupError
+        with self._swap_after_pin(), self.assertRaises(SandboxSetupError):
+            ctx.run(
+                ["sh", "-c", f"echo PWNED > {self.out}/proof"],
+                target=str(self.tgt), output=str(self.out),
+                timeout=30, capture_output=True, text=True,
+            )
+        for where in (self.victim, self.base / "out-moved", self.out):
+            self.assertFalse(
+                (Path(where) / "proof").exists(),
+                f"write escaped into {where} — the refusal degraded "
+                f"to a tier the planted symlink steers",
+            )
+
+    def test_pin_time_plant_fails_loud_at_context_layer(self) -> None:
+        """Reviewer-demonstrated shape: the symlink lands DURING the
+        validation walk (pin raises ELOOP with the plant already in
+        place). Pre-remediation this rode context.py's environmental
+        except (FileNotFoundError, RuntimeError, OSError) into the
+        Landlock-only fallback, whose write grants resolved the
+        planted symlink on the HOST filesystem — the probe observed
+        rc=0 and the write inside VICTIM. Must now raise
+        SandboxSetupError with nothing written anywhere."""
+        import errno
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        from core.sandbox import context as ctx
+        from core.sandbox.errors import SandboxSetupError
+
+        out, victim = self.out, self.victim
+
+        def plant_and_eloop(*args, **kwargs):
+            os.rename(out, out.parent / "out-moved")
+            os.symlink(victim, out)
+            raise OSError(errno.ELOOP,
+                          "open_pinned: component is a symlink")
+
+        with patch.object(_spawn, "_pin_bind_sources",
+                          side_effect=plant_and_eloop), \
+                self.assertRaises(SandboxSetupError):
+            ctx.run(
+                ["sh", "-c", f"echo PWNED > {out}/proof"],
+                target=str(self.tgt), output=str(out),
+                timeout=30, capture_output=True, text=True,
+            )
+        for where in (victim, self.base / "out-moved", out):
+            self.assertFalse(
+                (Path(where) / "proof").exists(),
+                f"write escaped into {where} — a pin-time failure "
+                f"degraded to a tier the planted symlink steers",
+            )
+
+    def test_planted_readable_path_not_bound(self) -> None:
+        """A readable_paths entry that did NOT exist at validation and
+        is planted (as a symlink to a secret-bearing directory) before
+        the mount must not be bound: the child skips unpinned entries
+        outright instead of re-resolving. Pre-fix the child's
+        mount-time isdir()+realpath accepted the plant and bound the
+        symlink target read-only into the sandbox."""
+        from core.sandbox._spawn import run_sandboxed
+        secret_dir = self.base / "secrets"
+        secret_dir.mkdir()
+        (secret_dir / "token").write_text("SECRET-CONTENT\n")
+        ghost = self.base / "ghost-ro"  # absent at validation
+
+        from unittest.mock import patch
+
+        from core.sandbox import _spawn
+        real_pin = _spawn._pin_bind_sources
+
+        def pin_then_plant(*args, **kwargs):
+            fds = real_pin(*args, **kwargs)
+            os.symlink(secret_dir, ghost)
+            return fds
+
+        kwargs = self._spawn_kwargs()
+        kwargs["readable_paths"] = [str(ghost)]
+        with patch.object(_spawn, "_pin_bind_sources",
+                          side_effect=pin_then_plant):
+            r = run_sandboxed(
+                ["cat", str(ghost / "token")], **kwargs,
+            )
+        self.assertNotEqual(r.returncode, 0,
+                            "planted readable path must not be bound")
+        self.assertNotIn("SECRET-CONTENT", r.stdout or "",
+                         "planted symlink content leaked into sandbox")
+
+    def test_benign_run_unaffected(self) -> None:
+        """No swap: pinned spawn works end-to-end, including an output
+        path that is a benign pre-existing symlink."""
+        from core.sandbox._spawn import run_sandboxed
+        real = self.base / "real-out"
+        real.mkdir()
+        link = self.base / "link-out"
+        link.symlink_to(real)
+        kwargs = self._spawn_kwargs()
+        kwargs["output"] = str(link)
+        kwargs["writable_paths"] = [str(link), "/tmp"]
+        r = run_sandboxed(
+            ["sh", "-c", f"echo OK > {link}/proof && cat {link}/proof"],
+            **kwargs,
+        )
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr!r}")
+        self.assertIn("OK", r.stdout)
+        self.assertTrue((real / "proof").exists(),
+                        "benign symlink output should resolve normally")
+
+
+if __name__ == "__main__":
+    unittest.main()

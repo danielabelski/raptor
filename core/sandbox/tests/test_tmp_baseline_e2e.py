@@ -133,11 +133,18 @@ class TestTmpBaselineEnforcement:
         )
         os.makedirs(blocked_dir, exist_ok=True)
         probe_file = os.path.join(blocked_dir, "should_not_exist")
+        # target must exist: bind sources are inode-pinned at
+        # validation time and a missing target/output fails the call
+        # loudly (SandboxSetupError) instead of degrading — this
+        # test's subject is the write allowlist, so give it a real
+        # (empty) target dir.
+        target_dir = tmp_path / "target_dummy"
+        target_dir.mkdir()
 
         try:
             r = sandbox_run(
                 _write_probe_script(probe_file),
-                target=str(tmp_path / "target_dummy"),
+                target=str(target_dir),
                 output=str(output),
                 capture_output=True, text=True, timeout=15,
             )

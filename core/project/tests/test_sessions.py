@@ -1,9 +1,13 @@
-"""Session-awareness registry — pruning, awareness lines, CLI + launcher wiring.
+"""Session registry — v2 authoritative bindings, run ledger, pruning,
+awareness lines, CLI + launcher wiring.
 
-The registry is advisory only: these tests pin that entries round-trip
-between the two writers (bash launcher, python ``/project use``), that
-dead-pid entries prune at read time, and that the awareness line
-surfaces on project switch and launcher startup — and nowhere else.
+v2 entries are identity-stamped (starttime + boot_id + pidns) and carry
+the authoritative session→project binding; v1 entries remain advisory.
+These tests pin: the identity/foreign/prune predicates, the binding
+state machine (bound/none/advisory/absent), sentinel semantics, the run
+ledger (grammar, CAS finish, injection rejection, zombie correction,
+resume), and the pre-series advisory surfaces (awareness lines,
+launcher wiring) that must keep working unchanged.
 """
 
 from __future__ import annotations
@@ -27,22 +31,40 @@ LAUNCHER = REPO_ROOT / "bin" / "raptor"
 
 DEAD_PID = 999999999
 
+#: Unpatched starttime reader, for fixtures that fake ONE pid's identity
+#: while leaving real pids alone.
+_REAL_STARTTIME = sessions.proc_starttime
 
-class SessionsRegistryTest(unittest.TestCase):
+
+class _RegistryCase(unittest.TestCase):
+    """Shared fixture: isolated SESSIONS_DIR + claude-shaped self.
+
+    Tests run under pytest (comm ``python3``), so pids that must read
+    as sessions get a patched comm probe. Liveness stays real unless a
+    test patches it.
+    """
 
     def setUp(self):
         self._tmp = TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.sessions_dir = Path(self._tmp.name) / "sessions.d"
-        p = patch.object(sessions, "SESSIONS_DIR", self.sessions_dir)
-        p.start()
-        self.addCleanup(p.stop)
+        for p in (
+            patch.object(sessions, "SESSIONS_DIR", self.sessions_dir),
+            patch.object(sessions, "_comm",
+                         lambda pid: "claude" if pid == os.getpid()
+                         else None),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
 
-    def _write_entry(self, pid: int, project: str,
-                     since: str = "2026-08-20T00:00:00+00:00"):
+    def _write_v1(self, pid: int, project: str,
+                  since: str = "2026-08-20T00:00:00+00:00"):
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         (self.sessions_dir / str(pid)).write_text(
             f"project={project}\nsince={since}\n", encoding="utf-8")
+
+
+class SessionsRegistryTest(_RegistryCase):
 
     def test_record_and_read_roundtrip(self):
         pid = sessions.record_session("myapp", pid=os.getpid())
@@ -50,25 +72,129 @@ class SessionsRegistryTest(unittest.TestCase):
         entries = sessions.read_sessions()
         self.assertEqual(entries[os.getpid()]["project"], "myapp")
         self.assertIn("since", entries[os.getpid()])
+        self.assertEqual(entries[os.getpid()]["v"], "2")
 
-    def test_record_none_clears_entry(self):
+    def test_record_stamps_identity(self):
         sessions.record_session("myapp", pid=os.getpid())
+        fields = sessions._parse_entry(self.sessions_dir / str(os.getpid()))
+        self.assertTrue(fields.get("starttime"))
+        self.assertTrue(fields.get("boot_id"))
+        if sys.platform == "linux":
+            self.assertTrue(fields.get("pidns"))
+
+    def test_record_none_clears_entry_and_ledger(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        sessions.ledger_record_start(self._tmp.name, pid=os.getpid())
         sessions.record_session(None, pid=os.getpid())
         self.assertNotIn(os.getpid(), sessions.read_sessions())
+        self.assertFalse(
+            (self.sessions_dir / f"{os.getpid()}.run").exists())
 
     def test_record_without_session_pid_is_noop(self):
-        with patch.object(sessions, "session_pid", return_value=None):
+        with patch.object(sessions, "resolve_session_pid",
+                          return_value=None):
             self.assertIsNone(sessions.record_session("myapp"))
         self.assertFalse(self.sessions_dir.exists())
 
+    def test_record_refuses_invalid_name(self):
+        self.assertIsNone(
+            sessions.record_session("../evil", pid=os.getpid()))
+        self.assertIsNone(
+            sessions.record_session("a\nb", pid=os.getpid()))
+
+    def test_record_preserves_seeded_by_and_token_on_rebind(self):
+        sessions.record_session("myapp", pid=os.getpid(),
+                                token="ab" * 16, seeded_by="flag")
+        sessions.record_session("other", pid=os.getpid())
+        fields = sessions._parse_entry(self.sessions_dir / str(os.getpid()))
+        self.assertEqual(fields["project"], "other")
+        self.assertEqual(fields["token"], "ab" * 16)
+        self.assertEqual(fields["seeded_by"], "flag")
+
+    def test_record_refreshes_stale_identity_stamp(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        good_start = fields["starttime"]
+        # Corrupt the stamp on disk, rebind: the stale stamp must be
+        # refreshed, never propagated.
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={good_start}", "starttime=1"),
+            encoding="utf-8")
+        sessions.record_session("myapp", pid=os.getpid())
+        fields = sessions._parse_entry(entry)
+        self.assertEqual(fields["starttime"], good_start)
+
+    def test_control_chars_stripped_from_fields(self):
+        sessions.record_session("myapp", pid=os.getpid(),
+                                seeded_by="use\x1b[2J\nproject=evil")
+        entry = self.sessions_dir / str(os.getpid())
+        text = entry.read_text(encoding="utf-8")
+        self.assertNotIn("\x1b", text)
+        # The newline was stripped, so no forged key LINE exists: the
+        # parse must still see the real project, and the hostile text
+        # survives only as inert substring inside the seeded_by value.
+        self.assertNotIn("\nproject=evil", text)
+        fields = sessions._parse_entry(entry)
+        self.assertEqual(fields["project"], "myapp")
+
     def test_dead_pid_entries_pruned_at_read(self):
-        self._write_entry(DEAD_PID, "myapp")
-        self._write_entry(os.getpid(), "myapp")
+        self._write_v1(DEAD_PID, "myapp")
+        self._write_v1(os.getpid(), "myapp")
         entries = sessions.read_sessions()
         self.assertIn(os.getpid(), entries)
         self.assertNotIn(DEAD_PID, entries)
         self.assertFalse((self.sessions_dir / str(DEAD_PID)).exists(),
                          "dead entry not unlinked")
+
+    def test_stale_v2_prunes_ledger_too(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        sessions.ledger_record_start(self._tmp.name, pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        # Positively mismatching stamp on a live pid → stale → pruned.
+        content = entry.read_text(encoding="utf-8")
+        fields = sessions._parse_entry(entry)
+        entry.write_text(content.replace(
+            f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        self.assertNotIn(os.getpid(), sessions.read_sessions())
+        self.assertFalse(entry.exists())
+        self.assertFalse(
+            (self.sessions_dir / f"{os.getpid()}.run").exists())
+
+    def test_foreign_boot_never_pruned_never_returned(self):
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        entry = self.sessions_dir / str(DEAD_PID)
+        entry.write_text(
+            "v=2\nproject=other\nsince=x\nstarttime=42\n"
+            "boot_id=00000000-dead-beef-0000-000000000000\n"
+            "pidns=1\n", encoding="utf-8")
+        entries = sessions.read_sessions()
+        self.assertNotIn(DEAD_PID, entries)
+        self.assertTrue(entry.exists(), "foreign entry was pruned")
+
+    @unittest.skipUnless(sys.platform == "linux", "pidns identity")
+    def test_same_boot_different_pidns_is_foreign(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"pidns={fields['pidns']}", "pidns=424242"),
+            encoding="utf-8")
+        self.assertTrue(
+            sessions._foreign_entry(sessions._parse_entry(entry)))
+        self.assertTrue(entry.exists())
+        self.assertNotIn(os.getpid(), sessions.read_sessions())
+        self.assertTrue(entry.exists(), "cross-pidns entry was pruned")
+
+    def test_include_stale_labels_states(self):
+        self._write_v1(os.getpid(), "adv")           # advisory (live)
+        self._write_v1(DEAD_PID, "dead")             # stale
+        entries = sessions.read_sessions(prune=False, include_stale=True)
+        self.assertEqual(entries[os.getpid()]["_state"], "advisory")
+        self.assertEqual(entries[DEAD_PID]["_state"], "stale")
 
     def test_non_pid_files_left_alone(self):
         self.sessions_dir.mkdir(parents=True)
@@ -78,28 +204,22 @@ class SessionsRegistryTest(unittest.TestCase):
         self.assertTrue(stray.exists())
 
     def test_other_sessions_filters_project_and_self(self):
-        self._write_entry(os.getpid(), "myapp",
-                          since="2026-08-20T01:00:00+00:00")
+        self._write_v1(os.getpid(), "myapp",
+                       since="2026-08-20T01:00:00+00:00")
         others = sessions.other_sessions("myapp")
         self.assertEqual([e["pid"] for e in others], [os.getpid()])
-        # Excluding ourselves empties it.
         self.assertEqual(
             sessions.other_sessions("myapp", exclude_pid=os.getpid()), [])
-        # Different project doesn't match.
         self.assertEqual(sessions.other_sessions("otherapp"), [])
 
     def test_registry_dir_is_private(self):
-        """0700 on the registry dir — including tightening a
-        pre-existing looser one."""
         self.sessions_dir.mkdir(parents=True, mode=0o755)
         sessions.record_session("myapp", pid=os.getpid())
         self.assertEqual(self.sessions_dir.stat().st_mode & 0o777, 0o700)
 
     def test_hostile_since_field_is_escaped_and_bounded(self):
-        """Entry fields are file content — no raw escapes or floods in
-        the awareness line."""
-        self._write_entry(os.getpid(), "myapp",
-                          since="2026\x1b[2J\x07" + "C" * 4000)
+        self._write_v1(os.getpid(), "myapp",
+                       since="2026\x1b[2J\x07" + "C" * 4000)
         lines = sessions.awareness_lines("myapp")
         self.assertEqual(len(lines), 1)
         self.assertNotIn("\x1b", lines[0])
@@ -107,8 +227,8 @@ class SessionsRegistryTest(unittest.TestCase):
         self.assertLess(len(lines[0]), 400)
 
     def test_awareness_line_wording(self):
-        self._write_entry(os.getpid(), "myapp",
-                          since="2026-08-20T01:00:00+00:00")
+        self._write_v1(os.getpid(), "myapp",
+                       since="2026-08-20T01:00:00+00:00")
         lines = sessions.awareness_lines("myapp")
         self.assertEqual(lines, [
             f"project myapp is also active in session pid {os.getpid()} "
@@ -116,8 +236,203 @@ class SessionsRegistryTest(unittest.TestCase):
         ])
 
 
+class SessionBindingTest(_RegistryCase):
+    """The authoritative binding state machine (design §3)."""
+
+    def test_bound(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         ("myapp", "bound"))
+
+    def test_none_sentinel(self):
+        sessions.bind_session(None, pid=os.getpid())
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         (None, "none"))
+        text = (self.sessions_dir / str(os.getpid())).read_text(
+            encoding="utf-8")
+        self.assertIn("project=-", text)
+
+    def test_v1_entry_is_advisory(self):
+        self._write_v1(os.getpid(), "myapp")
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         (None, "advisory"))
+
+    def test_no_entry_is_absent(self):
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         (None, "absent"))
+
+    def test_corrupt_v2_is_authoritative_none_not_fallthrough(self):
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        # v2 shape, empty project value (the torn/legacy-empty case).
+        stamp = sessions._identity_for(os.getpid())
+        (self.sessions_dir / str(os.getpid())).write_text(
+            "v=2\nproject=\nsince=x\n"
+            f"starttime={stamp['starttime']}\n"
+            f"boot_id={stamp['boot_id']}\n"
+            + (f"pidns={stamp['pidns']}\n" if "pidns" in stamp else ""),
+            encoding="utf-8")
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         (None, "none"))
+
+    @unittest.skipUnless(sys.platform == "linux", "starttime identity")
+    def test_identity_mismatch_is_absent(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         (None, "absent"))
+
+    def test_env_credential_resolution(self):
+        token = sessions.mint_token()
+        sessions.record_session("myapp", pid=os.getpid(), token=token)
+        with patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: str(os.getpid()),
+            sessions.ENV_SESSION_TOKEN: token,
+        }):
+            self.assertEqual(sessions._env_session_pid(), os.getpid())
+        with patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: str(os.getpid()),
+            sessions.ENV_SESSION_TOKEN: "wrong" * 8,
+        }):
+            self.assertIsNone(sessions._env_session_pid())
+        # Tokenless entry: env path unusable even with a "matching" var.
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        content = entry.read_text(encoding="utf-8")
+        entry.write_text(
+            "\n".join(ln for ln in content.splitlines()
+                      if not ln.startswith("token=")) + "\n",
+            encoding="utf-8")
+        with patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: str(os.getpid()),
+            sessions.ENV_SESSION_TOKEN: token,
+        }):
+            self.assertIsNone(sessions._env_session_pid())
+
+
+class RunLedgerTest(_RegistryCase):
+    """Ledger grammar, CAS finish, injection defense, zombie
+    correction, resume wiring (design §10.1)."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_root = Path(self._tmp.name) / "runs"
+        self.run_root.mkdir()
+
+    def _mk_run(self, name: str, status: str = "running") -> Path:
+        d = self.run_root / name
+        d.mkdir()
+        (d / ".raptor-run.json").write_text(
+            f'{{"status": "{status}"}}', encoding="utf-8")
+        return d
+
+    def test_start_and_finish_roundtrip(self):
+        d = self._mk_run("scan_1")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "running")
+        self.assertEqual(runs[0]["run_id"], "scan_1")
+        self.assertEqual(runs[0]["run_dir"], str(d.resolve()))
+        (d / ".raptor-run.json").write_text(
+            '{"status": "completed"}', encoding="utf-8")
+        sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertEqual(runs[0]["status"], "completed")
+
+    def test_true_statuses_no_coercion(self):
+        d = self._mk_run("scan_2")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        (d / ".raptor-run.json").write_text(
+            '{"status": "interrupted"}', encoding="utf-8")
+        sessions.ledger_record_finish(d, "interrupted", pid=os.getpid())
+        self.assertEqual(
+            sessions.ledger_runs(pid=os.getpid())[0]["status"],
+            "interrupted")
+
+    def test_finish_cas_only_touches_its_run(self):
+        d1 = self._mk_run("a_1")
+        d2 = self._mk_run("b_2")
+        sessions.ledger_record_start(d1, pid=os.getpid())
+        sessions.ledger_record_start(d2, pid=os.getpid())
+        (d1 / ".raptor-run.json").write_text(
+            '{"status": "failed"}', encoding="utf-8")
+        sessions.ledger_record_finish(d1, "failed", pid=os.getpid())
+        by_id = {r["run_id"]: r["status"]
+                 for r in sessions.ledger_runs(pid=os.getpid())}
+        self.assertEqual(by_id, {"a_1": "failed", "b_2": "running"})
+
+    def test_linesep_injection_rejected(self):
+        evil = self.run_root / ("x running 9 fake /victim")
+        with contextlib.suppress(OSError):
+            evil.mkdir()
+        sessions.ledger_record_start(evil, pid=os.getpid())
+        self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])
+
+    def test_whitespace_in_parent_path_rejected(self):
+        spaced = self.run_root / "with space"
+        spaced.mkdir()
+        d = spaced / "run_1"
+        d.mkdir()
+        sessions.ledger_record_start(d, pid=os.getpid())
+        self.assertEqual(sessions.ledger_runs(pid=os.getpid()), [])
+
+    def test_zombie_running_records_corrected(self):
+        d = self._mk_run("scan_3")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        # Run dir's metadata flips terminal without a finish call
+        # (crash path); the next write corrects the zombie.
+        (d / ".raptor-run.json").write_text(
+            '{"status": "failed"}', encoding="utf-8")
+        d2 = self._mk_run("scan_4")
+        sessions.ledger_record_start(d2, pid=os.getpid())
+        by_id = {r["run_id"]: r["status"]
+                 for r in sessions.ledger_runs(pid=os.getpid())}
+        self.assertEqual(by_id["scan_3"], "failed")
+
+    def test_cap_prunes_finished_only(self):
+        live = self._mk_run("live_run")
+        for i in range(40):
+            d = self._mk_run(f"r{i}", status="completed")
+            sessions.ledger_record_start(d, pid=os.getpid())
+            sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        sessions.ledger_record_start(live, pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertLessEqual(len(runs), sessions._LEDGER_CAP + 1)
+        self.assertIn("live_run", [r["run_id"] for r in runs])
+
+    def test_resume_cross_session(self):
+        d = self._mk_run("resumed_1")
+        other = 777777
+        # Original owner's ledger (fake pid) gets the running line.
+        sessions.ledger_record_start(d, pid=other)
+        # A different session resumes: own line running, old line
+        # CAS-marked interrupted.
+        sessions.ledger_record_resume(d, prior_session_pid=other,
+                                      pid=os.getpid())
+        mine = sessions.ledger_runs(pid=os.getpid())
+        theirs = sessions.ledger_runs(pid=other)
+        self.assertEqual(mine[0]["status"], "running")
+        self.assertEqual(theirs[0]["status"], "interrupted")
+
+    def test_dedup_on_reused_run_id(self):
+        d = self._mk_run("dup_1")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        sessions.ledger_record_start(d, pid=os.getpid())
+        self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)
+
+
 class UseCommandAwarenessTest(unittest.TestCase):
-    """/project use writes the registry and prints the awareness line."""
+    """/project use writes the registry and prints the awareness line.
+
+    NOTE (pre-P05 semantics): the CLI still calls the historical
+    record/clear paths; P05 rewires `use`/`none` to the binding-first
+    contract and updates these expectations.
+    """
 
     FAKE_SELF = 555555
 
@@ -136,14 +451,22 @@ class UseCommandAwarenessTest(unittest.TestCase):
             patch.object(sessions, "SESSIONS_DIR", self.sessions_dir),
             patch("core.project.project.PROJECTS_DIR", self.projects_dir),
             # `use` runs outside a real claude session here; give it a
-            # deterministic fake session pid. The fake must read as
-            # LIVE so its own freshly-written entry isn't pruned —
-            # patch the liveness probe: our real pid + the fake are
-            # alive, everything else dead.
-            patch.object(sessions, "session_pid",
+            # deterministic fake session pid, and make both our real
+            # pid and the fake read as live claude sessions.
+            patch.object(sessions, "resolve_session_pid",
                          return_value=self.FAKE_SELF),
             patch.object(sessions, "_pid_running",
                          lambda pid: pid in (os.getpid(), self.FAKE_SELF)),
+            patch.object(sessions, "_comm",
+                         lambda pid: "claude"
+                         if pid in (os.getpid(), self.FAKE_SELF)
+                         else None),
+            # The fake session pid has no /proc entry; give it a
+            # stable fake starttime so writer validation and the
+            # subsequent authoritative read both succeed.
+            patch.object(sessions, "proc_starttime",
+                         lambda pid: "7777" if pid == self.FAKE_SELF
+                         else _REAL_STARTTIME(pid)),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -184,6 +507,7 @@ class UseCommandAwarenessTest(unittest.TestCase):
         self.assertNotIn("also active", out)
 
     def test_use_none_clears_entry(self):
+        # Pre-P05 contract; P05 changes this to sentinel binding.
         self._run("use", "myapp")
         self._run("none")
         self.assertFalse(
@@ -192,7 +516,12 @@ class UseCommandAwarenessTest(unittest.TestCase):
 
 @unittest.skipIf(sys.platform == "win32", "bash launcher")
 class LauncherAwarenessTest(unittest.TestCase):
-    """The launcher prunes, warns, and registers before exec."""
+    """The launcher prunes, warns, and registers before exec.
+
+    Pre-P06: the launcher writes v1 entries and prunes with kill -0;
+    P06 upgrades it to the v2 mandatory seed + sentinel handoff and
+    extends these tests.
+    """
 
     def _launch(self, home: Path, tmpdir: Path):
         path_dirs = [str(Path(sys.executable).resolve().parent)]
@@ -220,15 +549,12 @@ class LauncherAwarenessTest(unittest.TestCase):
             home.mkdir()
             tmpdir = root / "tmp"
             tmpdir.mkdir()
-            # Active project whose target is the launch cwd (home) so
-            # startup-check sees no mismatch.
             mgr = ProjectManager(projects_dir=home / ".raptor" / "projects")
             mgr.create("myapp", str(home),
                        output_dir=str(root / "out" / "myapp"))
             mgr.set_active("myapp")
             sessions_dir = home / ".local" / "share" / "raptor" / "sessions.d"
             sessions_dir.mkdir(parents=True)
-            # One live "other" session on the same project, one dead.
             (sessions_dir / str(os.getpid())).write_text(
                 "project=myapp\nsince=2026-08-20T01:00:00+00:00\n",
                 encoding="utf-8")
@@ -245,7 +571,6 @@ class LauncherAwarenessTest(unittest.TestCase):
                              "dead session produced an awareness line")
             self.assertFalse((sessions_dir / str(DEAD_PID)).exists(),
                              "dead entry not pruned at launch")
-            # The launcher registered its own (now-exited) session.
             own = [f for f in sessions_dir.iterdir()
                    if f.name.isdigit()
                    and f.name not in (str(os.getpid()), str(DEAD_PID))]

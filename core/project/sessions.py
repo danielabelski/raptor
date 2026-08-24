@@ -1,34 +1,123 @@
-"""Session-awareness registry — which sessions have which project active.
+"""Session registry — which sessions have which project active.
 
 ``~/.local/share/raptor/sessions.d/<pid>`` maps a live Claude Code
-session to the project it had active, written by the launcher at exec
-time (bash — see bin/raptor) and by ``/project use`` (here). Each
-entry is KEY=VALUE lines so both writers speak the same format:
+session to its project state, written by the launcher at exec time
+(bash — see bin/raptor) and by ``/project use`` (here). Each entry is
+KEY=VALUE lines so both writers speak the same format.
 
-    project=myapp
-    since=2026-08-20T12:34:56+00:00
+Two entry generations coexist:
 
-This is ADVISORY ONLY — never lock-based, never consulted for
-contention decisions (the op lock and run metadata own those). Its
-single purpose is the awareness line — "project X is also active in
-session pid N (since T)" — surfaced in exactly two places: launcher
-startup (stderr, before exec) and project switch (``use`` output).
-Contention messages never repeat it.
+* **v1 (advisory)** — ``project=`` + ``since=`` only. Written by
+  pre-series launchers/CLIs. Consulted ONLY for awareness lines
+  ("project X is also active in session pid N"); never authoritative.
+* **v2 (authoritative)** — adds ``v=2`` plus an identity stamp
+  (``starttime`` from ``/proc/<pid>/stat`` field 22, ``boot_id``,
+  ``pidns`` = the inode of ``/proc/self/ns/pid``) and a launcher-minted
+  ``token``. The ``project=`` field IS the session's project binding,
+  resolved ahead of the ``.active`` symlink by the active-project
+  chokepoints. ``project=-`` is the bound-to-none sentinel: the session
+  is authoritatively projectless and does NOT fall through to the
+  symlink. (``-`` can never pass project-name validation, so a torn or
+  legacy empty value stays *invalid* rather than becoming a meaningful
+  state.)
 
-Entries are pruned by pid-liveness at read time. Liveness is a plain
-``kill(pid, 0)`` — PID reuse can briefly keep a stale entry alive,
-which at worst yields one spurious advisory line; the safe direction
-for an awareness hint.
+Authority demands what the advisory registry never needed:
+
+* **Identity, not just liveness.** A recycled PID backed by another
+  *claude* process passes any comm check by construction. v2 reads
+  require the live process's starttime + boot_id to match the stamp,
+  and the reader's pid namespace to match ``pidns`` — a reader inside a
+  same-kernel container (shared ``$HOME``, shared boot_id, host pids
+  invisible) treats host entries as FOREIGN: never authoritative,
+  never pruned. Off-Linux there is no procfs identity: entries carry
+  platform sentinels (``starttime=0``, ``boot_id=none-<platform>``) and
+  are accepted on comm-checked liveness alone — a documented weaker
+  residual (design §3.4).
+* **Atomic, lock-disciplined writes.** Entry writes are tmp+rename;
+  ledger read-modify-writes additionally hold a sibling ``.run.lock``
+  flock (rename atomicity protects readers, not concurrent writers).
+* **No writer-side comm gate.** The launcher seeds pre-exec while comm
+  is still the shell (pid + starttime survive the exec into claude;
+  comm flips after). The old bash-pid hazard is structurally
+  unreachable: ``resolve_session_pid()`` only returns claude-shaped or
+  token-verified pids. Explicit-pid callers are trusted internal
+  surfaces.
+
+A sibling file ``sessions.d/<pid>.run`` is the session's RUN LEDGER:
+one line per run — ``<status> <epoch> <run-id> <abs-run-dir>`` with
+status in running|completed|failed|cancelled|interrupted — appended at
+lifecycle start and CAS-marked in place on finish (only the matching
+run-id's line changes). Live records drive exact coverage-hook
+attribution; finished records give sibling discovery a "runs this
+session produced" tier. Run-dir paths are rejected if they contain any
+whitespace or non-printable character: ``str.splitlines`` splits on
+U+2028-class separators, so a crafted path could otherwise forge a
+second, clean-looking record (design §10.1).
 """
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
+import re
+import secrets
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
+
+logger = logging.getLogger(__name__)
 
 SESSIONS_DIR = Path.home() / ".local" / "share" / "raptor" / "sessions.d"
 
+#: Bound-to-none sentinel — rejected by _NAME_RE, so it can never
+#: collide with a real project name.
+NONE_SENTINEL = "-"
+
+ENTRY_VERSION = "2"
+
+#: Env vars exported by the launcher. The PID names the session; the
+#: token must match the entry's ``token`` field for the env path to be
+#: believed (an attacker guessing a live claude PID gains nothing
+#: without the token, which lives in a 0700 directory).
+ENV_SESSION_PID = "RAPTOR_SESSION_PID"
+ENV_SESSION_TOKEN = "RAPTOR_SESSION_TOKEN"
+
+#: Mirror of ProjectManager._validate_name's character class. Kept
+#: local so this module stays importable without core.project.project
+#: (core.startup consults it at banner time).
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+#: The full v2 key list, shared by both writers (the bash seeder in
+#: bin/raptor mirrors this order). Unknown keys are dropped on rewrite
+#: BY DESIGN — the list is the schema.
+ENTRY_KEYS = ("v", "project", "since", "starttime", "boot_id", "pidns",
+              "token", "seeded_by")
+
+#: Identity keys preserved/refreshed on rewrite (subset of ENTRY_KEYS).
+_IDENTITY_KEYS = ("starttime", "boot_id", "pidns")
+
+#: Off-Linux sentinel stamps — platform-tagged so the foreign rule can
+#: distinguish "no identity available" from "identity from elsewhere".
+_STARTTIME_SENTINEL = "0"
+
+#: Run-ledger cap — oldest FINISHED records beyond this are pruned;
+#: running records are exempt (but zombie-corrected, see _write_ledger).
+_LEDGER_CAP = 32
+
+_MAX_ENTRY_BYTES = 64 * 1024  # defensive read bound
+
+_RUN_STATUSES = ("running", "completed", "failed", "cancelled",
+                 "interrupted")
+
+_RUN_LINE_RE = re.compile(
+    r"^(running|completed|failed|cancelled|interrupted) (\d+) (\S+) (/.+)$")
+
+
+# ---------------------------------------------------------------------------
+# process identity
+# ---------------------------------------------------------------------------
 
 def _pid_running(pid: int) -> bool:
     if pid <= 0:
@@ -44,64 +133,435 @@ def _pid_running(pid: int) -> bool:
     return True
 
 
-def session_pid() -> int | None:
-    """The owning Claude Code session's pid, or None outside a session.
-
-    A bare-terminal ``raptor project use`` has no session to register —
-    its CLI process dies immediately and the entry would just be prune
-    fodder."""
+def _comm(pid: int) -> str | None:
+    """Process comm — /proc on Linux, ps(1) elsewhere; None if unreadable."""
+    if sys.platform == "linux":
+        try:
+            return Path(f"/proc/{pid}/comm").read_text(
+                encoding="utf-8").strip()
+        except OSError:
+            return None
     try:
-        from core.run.metadata import _get_session_pid
-        return _get_session_pid()
-    except Exception:  # noqa: BLE001 — advisory feature, never fatal
+        from core.run.metadata import _read_comm_ps
+        return _read_comm_ps(pid)
+    except Exception:  # noqa: BLE001 — identity probe, never fatal
         return None
 
 
-def record_session(project: str | None, pid: int | None = None) -> int | None:
-    """Bind this session to *project* (None clears the binding).
+def _claude_shaped(comm: str | None) -> bool:
+    """ONE comm predicate for walker, liveness, and readers (design §4:
+    unified — the pre-series code had three different strictnesses)."""
+    return comm is not None and comm.startswith("claude")
 
-    Returns the pid the entry was written under, or None when no
-    session pid could be resolved (nothing recorded). Best-effort:
-    failures are silent — the registry is advisory."""
-    if pid is None:
-        pid = session_pid()
-    if pid is None:
+
+def proc_starttime(pid: int) -> str | None:
+    """``starttime`` (field 22 of ``/proc/<pid>/stat``) — the standard
+    PID-reuse discriminator. None off-Linux or when unreadable."""
+    if sys.platform != "linux":
         return None
     try:
-        # 0700: which project each session is working on is operator
-        # telemetry — not for other local users. chmod covers a dir
-        # created looser by an older writer (mkdir mode only applies
-        # at creation).
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-        SESSIONS_DIR.chmod(0o700)
-        entry = SESSIONS_DIR / str(pid)
-        if project is None:
-            entry.unlink(missing_ok=True)
-        else:
-            entry.write_text(
-                f"project={project}\n"
-                f"since={datetime.now(timezone.utc).isoformat()}\n",
-                encoding="utf-8",
-            )
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
+        return None
+    close_paren = stat.rfind(")")
+    if close_paren < 0:
+        return None
+    fields = stat[close_paren + 2:].split()
+    idx = 22 - 3  # fields[0] is stat field 3
+    if len(fields) <= idx:
+        return None
+    return fields[idx]
+
+
+def boot_id() -> str | None:
+    """Kernel boot id (per KERNEL — containers on one host share it,
+    which is why ``pidns`` exists as a second axis). None off-Linux."""
+    if sys.platform != "linux":
+        return None
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def pidns_id() -> str | None:
+    """Inode of this process's pid namespace, or None when unavailable.
+
+    Two processes sharing a kernel but not a pid namespace must never
+    prune or trust each other's entries — pid liveness is meaningless
+    across the boundary (design §3.2/§3.3, same-kernel containers).
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        st = os.stat("/proc/self/ns/pid")
+    except OSError:
+        return None
+    return str(st.st_ino)
+
+
+def _platform_boot_sentinel() -> str:
+    return f"none-{sys.platform}"
+
+
+def _sentinel_stamp(fields: dict[str, str]) -> bool:
+    return (fields.get("starttime") == _STARTTIME_SENTINEL
+            and str(fields.get("boot_id", "")).startswith("none-"))
+
+
+def _foreign_entry(fields: dict[str, str]) -> bool:
+    """Entry owned by a different boot, machine, or pid namespace —
+    never authoritative HERE, never pruned HERE (design §3.2).
+
+    Also foreign: an entry carrying a REAL boot_id that this reader
+    cannot verify (e.g. macOS reader, Linux-stamped entry).
+    """
+    stamp_boot = fields.get("boot_id", "")
+    if not stamp_boot:
+        return False  # v1 — handled by advisory rules
+    if _sentinel_stamp(fields):
+        # Sentinel-stamped (off-Linux writer). A Linux reader treats it
+        # as foreign (cannot corroborate); the writing platform accepts
+        # it on liveness (see _identity_matches).
+        return sys.platform == "linux"
+    live_boot = boot_id()
+    if live_boot is None:
+        return True  # real stamp, unverifiable reader → foreign
+    if stamp_boot != live_boot:
+        return True
+    stamp_ns = fields.get("pidns", "")
+    live_ns = pidns_id()
+    if stamp_ns and live_ns and stamp_ns != live_ns:
+        return True  # same kernel, different pid namespace
+    return False
+
+
+def _identity_matches(pid: int, fields: dict[str, str]) -> bool:
+    """Does the LIVE process at *pid* match the entry's identity stamp?
+
+    v1 entries (no stamp) never match — advisory only. Sentinel-stamped
+    entries (off-Linux writers, read on their own platform) are accepted
+    on comm-checked liveness alone — the documented weaker residual.
+    """
+    stamp_start = fields.get("starttime")
+    stamp_boot = fields.get("boot_id")
+    if not stamp_start or not stamp_boot:
+        return False
+    if _foreign_entry(fields):
+        return False
+    if not _pid_running(pid) or not _claude_shaped(_comm(pid)):
+        return False
+    if _sentinel_stamp(fields):
+        return True  # off-Linux: liveness-strength (design §3.4)
+    live_start = proc_starttime(pid)
+    if live_start is None:
+        return False  # identity unknown on a Linux reader → not proven
+    return stamp_start == live_start
+
+
+def mint_token() -> str:
+    return secrets.token_hex(16)
+
+
+# ---------------------------------------------------------------------------
+# session resolution (ONE shared resolver — env first, then tree walk)
+# ---------------------------------------------------------------------------
+
+def _env_session_pid() -> int | None:
+    """Validated env-credential path: pid digits AND entry token match
+    AND identity stamp matches the live process. Anything less returns
+    None (the tree walk may still succeed)."""
+    raw = os.environ.get(ENV_SESSION_PID, "")
+    token = os.environ.get(ENV_SESSION_TOKEN, "")
+    if not raw.isdigit() or not token:
+        return None
+    pid = int(raw)
+    fields = _parse_entry(SESSIONS_DIR / str(pid))
+    if not fields:
+        return None
+    entry_token = fields.get("token", "")
+    if not entry_token or not secrets.compare_digest(entry_token, token):
+        return None
+    if not _identity_matches(pid, fields):
         return None
     return pid
 
 
-def _parse_entry(path: Path) -> dict:
+def _walk_session_pid() -> int | None:
+    """Tree walk: collect ALL claude-shaped ancestors; prefer the one
+    whose entry PASSES IDENTITY MATCHING (a merely entry-bearing
+    recycled pid must not win — design §4), else the outermost.
+
+    RAPTOR dispatches nested ``claude -p`` skill children; the nearest
+    claude ancestor of a helper under one of those is the *subagent*,
+    which owns no entry. Preferring the identity-verified entry-bearing
+    (else outermost) ancestor keeps one logical session = one identity.
+    """
+    from core.run.metadata import _read_ppid
+    candidates: list[int] = []
+    pid = os.getpid()
+    for hop in range(20):
+        try:
+            pid = os.getppid() if hop == 0 else _read_ppid(pid)
+        except (OSError, ValueError, IndexError):
+            break
+        if pid <= 1:
+            break
+        if _claude_shaped(_comm(pid)):
+            candidates.append(pid)
+    for cand in candidates:  # nearest-first: first with a VALID entry wins
+        fields = _parse_entry(SESSIONS_DIR / str(cand))
+        if fields and _identity_matches(cand, fields):
+            return cand
+    if candidates:
+        return candidates[-1]  # outermost
+    return None
+
+
+def resolve_session_pid() -> int | None:
+    """The owning session's pid: validated env credential first (works
+    across PID namespaces and beneath nested claude processes), tree
+    walk second, None outside any session."""
+    pid = _env_session_pid()
+    if pid is not None:
+        return pid
+    try:
+        return _walk_session_pid()
+    except Exception:  # noqa: BLE001 — resolution is best-effort by contract
+        logger.debug("session pid walk failed", exc_info=True)
+        return None
+
+
+def session_pid() -> int | None:
+    """Back-compat alias used by the advisory writers."""
+    return resolve_session_pid()
+
+
+# ---------------------------------------------------------------------------
+# entry IO
+# ---------------------------------------------------------------------------
+
+def _parse_entry(path: Path) -> dict[str, str]:
     fields: dict[str, str] = {}
     try:
+        if path.stat().st_size > _MAX_ENTRY_BYTES:
+            return fields
         for line in path.read_text(encoding="utf-8").splitlines():
             key, sep, value = line.partition("=")
             if sep:
+                # First occurrence wins — the authoritative tie-break
+                # for a (should-be-impossible) duplicated key.
                 fields.setdefault(key.strip(), value.strip())
     except (OSError, UnicodeDecodeError):
         pass
     return fields
 
 
-def read_sessions(prune: bool = True) -> dict[int, dict]:
-    """All registered sessions, pruning dead-pid entries on the way."""
+def _atomic_write(path: Path, content: str) -> None:
+    """tmp+rename in the entry's directory (the set_active pattern);
+    pid+tid suffix so concurrent writers get distinct slots."""
+    import threading
+    tmp = path.with_name(
+        f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
+    tmp.write_text(content, encoding="utf-8")
+    with contextlib.suppress(OSError):
+        tmp.chmod(0o600)
+    os.rename(str(tmp), str(path))
+
+
+def _ensure_dir() -> bool:
+    try:
+        # 0700: which project each session works on is operator
+        # telemetry — not for other local users. chmod covers a dir
+        # created looser by an older writer.
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        SESSIONS_DIR.chmod(0o700)
+    except OSError:
+        return False
+    return True
+
+
+def _clean_value(value: str) -> str:
+    """Field values are one printable line — control characters would
+    corrupt the KEY=VALUE format (and could forge extra keys)."""
+    return "".join(c for c in value if c.isprintable())
+
+
+def _entry_content(project: str, fields: dict[str, str]) -> str:
+    merged = dict(fields)
+    merged["v"] = ENTRY_VERSION
+    merged["project"] = project
+    merged["since"] = datetime.now(timezone.utc).isoformat()
+    lines = []
+    for key in ENTRY_KEYS:
+        value = merged.get(key, "")
+        if value:
+            lines.append(f"{key}={_clean_value(str(value))}")
+    return "\n".join(lines) + "\n"
+
+
+def _fresh_identity() -> dict[str, str]:
+    start = proc_starttime(os.getpid()) if sys.platform == "linux" else None
+    fields: dict[str, str] = {}
+    # NOTE: identity describes the SESSION pid, not this process — the
+    # caller supplies/refreshes per-pid values via _identity_for.
+    if start is not None:
+        fields["starttime"] = start
+    return fields
+
+
+def _identity_for(pid: int) -> dict[str, str] | None:
+    """The identity stamp for *pid*, with off-Linux sentinels.
+
+    Returns None on Linux when the pid's starttime is unreadable (pid
+    gone, procfs race): an entry stamped without it could never pass an
+    authoritative read — writers must refuse rather than write a doomed
+    entry (design §3.1: writers validate like readers).
+    """
+    start = proc_starttime(pid)
+    boot = boot_id()
+    if sys.platform == "linux" and start is None:
+        return None
+    fields: dict[str, str] = {
+        "starttime": start if start is not None else _STARTTIME_SENTINEL,
+        "boot_id": boot if boot is not None else _platform_boot_sentinel(),
+    }
+    ns = pidns_id()
+    if ns is not None:
+        fields["pidns"] = ns
+    return fields
+
+
+def record_session(project: str | None, pid: int | None = None,
+                   token: str | None = None,
+                   seeded_by: str | None = None) -> int | None:
+    """Bind this session to *project* (None REMOVES the entry — the
+    launcher seed-cleanup path; in-session ``/project none`` binds the
+    NONE_SENTINEL instead, see :func:`bind_session`).
+
+    v2 semantics: versioned, identity-stamped, atomic. An existing
+    entry's identity fields are preserved ONLY after verifying them
+    against the live pid — a stale (recycled-pid) stamp is refreshed,
+    never propagated. Name validation failures refuse loudly (return
+    None + warning): an entry an authoritative reader would reject must
+    not be written.
+    """
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return None
+    if project is None:
+        try:
+            (SESSIONS_DIR / str(pid)).unlink(missing_ok=True)
+            (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
+            (SESSIONS_DIR / f"{pid}.run.lock").unlink(missing_ok=True)
+        except OSError:
+            return None
+        return pid
+    if project != NONE_SENTINEL and not _NAME_RE.match(project):
+        logger.warning(
+            "sessions: refusing to bind invalid project name %r", project)
+        return None
+    if not _ensure_dir():
+        return None
+    entry = SESSIONS_DIR / str(pid)
+    fields = _parse_entry(entry)
+    have_valid_stamp = bool(fields) and _identity_matches(pid, fields)
+    if not have_valid_stamp:
+        identity = _identity_for(pid)
+        if identity is None:
+            logger.warning(
+                "sessions: refusing to bind pid %d — identity "
+                "unreadable, the entry could never verify", pid)
+            return None
+        fields.update(identity)
+    if token:
+        fields["token"] = token
+    if seeded_by:
+        fields["seeded_by"] = seeded_by
+    try:
+        _atomic_write(entry, _entry_content(project, fields))
+    except OSError:
+        return None
+    return pid
+
+
+def bind_session(project: str | None, pid: int | None = None,
+                 seeded_by: str | None = None) -> int | None:
+    """In-session binding write: ``None`` means bound-to-none (sentinel
+    ``-``), NOT entry removal. This is what ``/project none`` calls."""
+    return record_session(
+        NONE_SENTINEL if project is None else project, pid=pid,
+        seeded_by=seeded_by)
+
+
+def session_binding(pid: int | None = None) -> tuple[str | None, str]:
+    """The session's authoritative project binding.
+
+    Returns ``(project_name_or_None, state)`` with state one of:
+
+    * ``"bound"``    — v2 entry names a valid project name (existence is
+      the caller's next check; a missing project file must read as
+      authoritative none, never symlink fallthrough).
+    * ``"none"``     — v2 entry carries the bound-to-none sentinel, OR a
+      v2 entry is corrupt/invalid (fail toward projectless, never
+      toward another layer's project).
+    * ``"advisory"`` — v1 (unversioned) entry: pre-series session;
+      symlink layer applies.
+    * ``"absent"``   — no session, no entry, foreign entry, or identity
+      mismatch: symlink layer applies.
+    """
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return None, "absent"
+    fields = _parse_entry(SESSIONS_DIR / str(pid))
+    if not fields:
+        return None, "absent"
+    if fields.get("v") != ENTRY_VERSION:
+        return None, "advisory"
+    if not _identity_matches(pid, fields):
+        return None, "absent"
+    name = fields.get("project")
+    if name == NONE_SENTINEL:
+        return None, "none"
+    if not name or not _NAME_RE.match(name):
+        logger.warning(
+            "sessions: corrupt binding for pid %d (%r) — treating as "
+            "authoritatively projectless", pid, name)
+        return None, "none"
+    return name, "bound"
+
+
+def _entry_state(pid: int, fields: dict[str, str]) -> str:
+    """Classification for enumeration surfaces: live | stale | foreign
+    | advisory (design §11 /project sessions)."""
+    if _foreign_entry(fields):
+        return "foreign"
+    if fields.get("v") != ENTRY_VERSION:
+        return "advisory" if _pid_running(pid) else "stale"
+    return "live" if _identity_matches(pid, fields) else "stale"
+
+
+def read_sessions(prune: bool = True,
+                  include_stale: bool = False) -> dict[int, dict]:
+    """Registered sessions, pruning dead entries on the way.
+
+    Prune predicate (design §3.3, normative): a v2 entry is pruned only
+    when it is NOT foreign AND (its pid is positively dead, or alive
+    with a positively mismatching stamp). "Identity unknown" is never
+    pruned. v1 entries keep the historical dead-pid prune, gated on
+    this reader not being namespace-blind (foreign rule covers the
+    cross-boot case; v1 entries carry no stamp, so a same-boot pidns
+    check is the best available guard: outside the root-ish namespace
+    where claude sessions run, we skip pruning entirely).
+
+    With ``include_stale=True``, dead/stale/foreign entries are RETURNED
+    (with ``fields["_state"]`` set) instead of skipped — the
+    ``/project sessions`` rendering surface. Pruning still applies to
+    prunable rows unless ``prune=False``.
+    """
     sessions: dict[int, dict] = {}
     try:
         children = list(SESSIONS_DIR.iterdir())
@@ -110,18 +570,27 @@ def read_sessions(prune: bool = True) -> dict[int, dict]:
     for f in children:
         name = f.name
         if not name.isdigit():
-            continue  # not ours to manage
+            continue  # .run ledgers, locks, tmp slots — not ours here
         pid = int(name)
-        if not _pid_running(pid):
-            if prune:
-                try:
-                    f.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            continue
-        sessions[pid] = _parse_entry(f)
+        fields = _parse_entry(f)
+        state = _entry_state(pid, fields)
+        prunable = state == "stale"
+        if prunable and prune:
+            with contextlib.suppress(OSError):
+                f.unlink(missing_ok=True)
+                (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
+                (SESSIONS_DIR / f"{pid}.run.lock").unlink(missing_ok=True)
+        if state in ("live", "advisory") or include_stale:
+            if include_stale:
+                fields = dict(fields)
+                fields["_state"] = state
+            sessions[pid] = fields
     return sessions
 
+
+# ---------------------------------------------------------------------------
+# advisory surfaces (unchanged semantics)
+# ---------------------------------------------------------------------------
 
 def other_sessions(project: str, exclude_pid: int | None = None) -> list[dict]:
     """Live sessions (other than *exclude_pid*) with *project* active."""
@@ -149,3 +618,207 @@ def awareness_lines(project: str, exclude_pid: int | None = None) -> list[str]:
         f"(since {e['since']})"
         for e in other_sessions(project, exclude_pid)
     ]
+
+
+# ---------------------------------------------------------------------------
+# run ledger
+# ---------------------------------------------------------------------------
+
+def _ledger_path(pid: int) -> Path:
+    return SESSIONS_DIR / f"{pid}.run"
+
+
+@contextlib.contextmanager
+def _ledger_lock(pid: int) -> Iterator[None]:
+    """flock a sibling ``.run.lock`` across a ledger read-modify-write
+    (the ``_metadata_lock`` idiom — rename atomicity protects readers,
+    not concurrent writers; two parallel lifecycle starts in one
+    session must not lose each other's records). Degrades to a no-op
+    without fcntl. The lock file is deliberately left behind (unlink
+    after unlock races — see core.run.metadata._metadata_lock)."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    if not _ensure_dir():
+        yield
+        return
+    lock_path = SESSIONS_DIR / f"{pid}.run.lock"
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _read_ledger(pid: int) -> list[dict]:
+    records: list[dict] = []
+    path = _ledger_path(pid)
+    try:
+        if path.stat().st_size > _MAX_ENTRY_BYTES:
+            return records
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return records
+    for line in text.splitlines():
+        m = _RUN_LINE_RE.match(line)
+        if not m:
+            continue
+        records.append({
+            "status": m.group(1),
+            "epoch": int(m.group(2)),
+            "run_id": m.group(3),
+            "run_dir": m.group(4),
+        })
+    return records
+
+
+def _zombie_correct(records: list[dict]) -> None:
+    """Status-correct stale ``running`` records in place: a record whose
+    dir is gone, or whose run metadata is terminal, is not running —
+    without this, crashed runs' lines accumulate forever, the cap
+    evicts all real history, and the 64KB read bound eventually zeroes
+    the ledger (design §10.1)."""
+    for r in records:
+        if r["status"] != "running":
+            continue
+        run_dir = Path(r["run_dir"])
+        meta = run_dir / ".raptor-run.json"
+        if not meta.is_file():
+            r["status"] = "failed"
+            continue
+        try:
+            from core.json import load_json
+            data = load_json(meta)
+            status = (data or {}).get("status", "")
+        except Exception:  # noqa: BLE001 — correction is best-effort
+            continue
+        if status and status != "running":
+            r["status"] = status if status in _RUN_STATUSES else "failed"
+
+
+def _write_ledger(pid: int, records: list[dict]) -> bool:
+    _zombie_correct(records)
+    finished = [r for r in records if r["status"] != "running"]
+    if len(records) > _LEDGER_CAP and finished:
+        drop = min(len(records) - _LEDGER_CAP, len(finished))
+        keep_finished = finished[drop:]
+        records = [r for r in records
+                   if r["status"] == "running" or r in keep_finished]
+    lines = [
+        f"{r['status']} {r['epoch']} {r['run_id']} {r['run_dir']}"
+        for r in records
+    ]
+    for line in lines:  # belt-and-braces: the format must stay one-line
+        if "\n" in line or not line.isprintable():
+            logger.warning("sessions: dropping unprintable ledger line")
+            return False
+    try:
+        if not _ensure_dir():
+            return False
+        _atomic_write(_ledger_path(pid),
+                      "\n".join(lines) + ("\n" if lines else ""))
+    except OSError:
+        return False
+    return True
+
+
+def _valid_run_dir(run_dir: str) -> bool:
+    """Reject ANY whitespace or non-printable character anywhere in the
+    resolved path — ``str.splitlines`` splits on the U+2028 class, so a
+    crafted component could forge a second ledger record."""
+    return (run_dir.startswith("/")
+            and run_dir.isprintable()
+            and not any(c.isspace() for c in run_dir))
+
+
+def ledger_record_start(run_dir: str | os.PathLike[str],
+                        pid: int | None = None) -> None:
+    """Append a running record for *run_dir* (basename = run id).
+
+    Best-effort: failures are logged at debug and swallowed — the
+    ledger is an attribution/discovery aid, never lifecycle-critical.
+    """
+    import time
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return
+    resolved = str(Path(run_dir).resolve())
+    if not _valid_run_dir(resolved):
+        logger.debug("sessions: ledger refused run dir %r", resolved)
+        return
+    run_id = Path(resolved).name
+    with _ledger_lock(pid):
+        records = [r for r in _read_ledger(pid) if r["run_id"] != run_id]
+        records.append({
+            "status": "running",
+            "epoch": int(time.time()),
+            "run_id": run_id,
+            "run_dir": resolved,
+        })
+        if not _write_ledger(pid, records):
+            logger.debug("sessions: ledger start write failed for %s",
+                         resolved)
+
+
+def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
+                         pid: int | None = None) -> None:
+    """CAS-mark *run_dir*'s record with its TRUE terminal status — only
+    the matching run-id's running line changes; a concurrent sibling
+    run's record is never touched (the guarded-clear doctrine)."""
+    if status not in _RUN_STATUSES or status == "running":
+        status = "failed"
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return
+    run_id = Path(str(run_dir)).name
+    with _ledger_lock(pid):
+        records = _read_ledger(pid)
+        hit = False
+        for r in records:
+            if r["run_id"] == run_id and r["status"] == "running":
+                r["status"] = status
+                hit = True
+        if hit and not _write_ledger(pid, records):
+            logger.debug("sessions: ledger finish write failed for %s",
+                         run_dir)
+
+
+def ledger_record_resume(run_dir: str | os.PathLike[str],
+                         prior_session_pid: int | None = None,
+                         pid: int | None = None) -> None:
+    """Resume wiring (design §10.1): append a running record to the
+    RESUMING session's ledger, and CAS-mark the original owner's line
+    ``interrupted`` so its session's hook stops attributing to a run it
+    no longer owns."""
+    ledger_record_start(run_dir, pid=pid)
+    if prior_session_pid is None:
+        return
+    resolved_own = pid if pid is not None else resolve_session_pid()
+    if prior_session_pid == resolved_own:
+        return
+    ledger_record_finish(run_dir, "interrupted", pid=prior_session_pid)
+
+
+def ledger_runs(pid: int | None = None,
+                status: str | None = None) -> list[dict]:
+    """This session's run records, newest-first; optionally filtered."""
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return []
+    records = _read_ledger(pid)
+    if status is not None:
+        records = [r for r in records if r["status"] == status]
+    return sorted(records, key=lambda r: r["epoch"], reverse=True)

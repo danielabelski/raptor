@@ -527,7 +527,11 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
         if is_archive(target):
             res = _unpack_archive_target(target, args, out_dir)
             if res is None:
-                return 1  # extraction failed (message printed); no run sealed yet
+                # Extraction failed (message printed); no run sealed
+                # yet — remove the pre-created dir so nothing later
+                # JIT-promotes a metadata-less orphan to a phantom run.
+                _cleanup_refused_run_dir(out_dir)
+                return 1
             args, target_identity = res
             # args now points at the extracted directory; update the local
             # target variable so downstream consumers (license detection,
@@ -545,8 +549,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
         start_run(out_dir, command, target=target,
                   target_identity=target_identity)
     except (OpLockContention, ProjectArgvError) as e:
-        with contextlib.suppress(OSError):
-            out_dir.rmdir()
+        _cleanup_refused_run_dir(out_dir)
         print(f"✗ {e}", file=sys.stderr)
         return 1
 
@@ -816,6 +819,22 @@ def _worker_keyless_enabled() -> bool:
     """
     raw = (os.environ.get("RAPTOR_LLM_WORKER_KEYLESS") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def _cleanup_refused_run_dir(out_dir: Path) -> None:
+    """Remove a just-pre-created run dir after a refused start.
+
+    Only the shapes this wrapper itself creates are removed: the
+    ``_source`` symlink an archive unpack plants (which made the bare
+    ``rmdir`` fail silently, leaving an orphan), then the empty dir.
+    Anything else in the dir means it isn't ours to delete.
+    """
+    with contextlib.suppress(OSError):
+        src_link = out_dir / "_source"
+        if src_link.is_symlink():
+            src_link.unlink()
+    with contextlib.suppress(OSError):
+        out_dir.rmdir()
 
 
 def _run_script(script_path: Path, args: list) -> int:
@@ -1571,6 +1590,13 @@ if __name__ == "__main__":
         print("\n\nInterrupted by user", file=sys.stderr)
         sys.exit(130)
     except Exception as e:  # noqa: BLE001
+        from core.run.pin import ProjectArgvError
+        if isinstance(e, ProjectArgvError):
+            # The designed clean hard-error, not an internal fault —
+            # it can fire before start_run (get_output_dir resolves
+            # the override), so catch it here too, without traceback.
+            print(f"✗ {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"\n✗ Fatal error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)

@@ -144,10 +144,11 @@ def main():
             from core.run.pin import set_process_project
             set_process_project(args.project)
 
+        from core.run.pin import ProjectArgvError
         try:
             out_dir = get_output_dir(args.command, target_path=target_path,
                                      explicit_out=args.explicit_out)
-        except TargetMismatchError as e:
+        except (TargetMismatchError, ProjectArgvError) as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -159,7 +160,7 @@ def main():
         try:
             start_run(out_dir, args.command, target=target_path,
                       wait_for_project=args.wait)
-        except OpLockContention as e:
+        except (OpLockContention, ProjectArgvError) as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 

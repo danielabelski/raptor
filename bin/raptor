@@ -455,7 +455,7 @@ done
 # the operator-supplied TARGET first - an embedded newline would
 # split the prompt and read as a second downstream instruction;
 # legitimate paths don't contain them.
-_target_clean=$(printf '%s' "$TARGET" | tr -d '\000-\010\013-\037')
+_target_clean=$(printf '%s' "$TARGET" | tr -d '\000-\010\012-\037')
 if [ "$_target_clean" != "$TARGET" ]; then
     echo "raptor: TARGET contained control bytes - stripped before use" >&2
 fi
@@ -505,6 +505,14 @@ cd "$RAPTOR_DIR" || { echo "raptor: cannot cd to $RAPTOR_DIR" >&2; exit 1; }
 # the pre-fix re-read raced concurrent symlink writers, so an explicit
 # -p could seed another session's project.
 _startup_out="$("$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}")" || {
+    _startup_rc=$?
+    # Exit 3 is the operator-quit contract from the mismatch menu:
+    # abort the launch entirely. Any other failure degrades to a
+    # projectless session (startup-check is best-effort).
+    if [ "$_startup_rc" -eq 3 ]; then
+        echo "raptor: aborted at the project-mismatch prompt" >&2
+        exit 1
+    fi
     echo "raptor: startup-check failed — this session starts projectless" >&2
     _startup_out=""
 }

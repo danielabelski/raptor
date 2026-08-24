@@ -161,7 +161,7 @@ def _check_mismatch(caller_dir):
             sys.stderr.flush()
             choice = input().strip() or "1"
         except (EOFError, KeyboardInterrupt):
-            sys.exit(0)
+            sys.exit(3)  # operator quit — launcher aborts on 3
 
     if choice == "1":
         return active["name"]
@@ -177,7 +177,7 @@ def _check_mismatch(caller_dir):
         print("  No project for this session "
               "(last-activated default unchanged)", file=sys.stderr)
         return "-"
-    sys.exit(0)
+    sys.exit(3)  # operator quit — launcher aborts on 3
 
 
 def main():

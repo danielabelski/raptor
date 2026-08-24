@@ -2337,6 +2337,11 @@ Examples:
         if isinstance(e, (OpLockContention, ProjectArgvError)):
             # ProjectArgvError is a hard error by contract: an invalid
             # --project must never fall back to an ambient layer.
+            # Remove the just-created (still empty) dir so a refused
+            # direct invocation leaves no phantom run behind.
+            import contextlib as _ctx
+            with _ctx.suppress(OSError):
+                out_dir.rmdir()
             print(f"✗ {e}", file=sys.stderr)
             sys.exit(1)
         logger.debug("Run metadata: %s", e)  # Optional — don't fail the pipeline

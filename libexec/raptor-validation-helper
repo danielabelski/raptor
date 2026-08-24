@@ -1643,8 +1643,49 @@ def prepare_E(workdir, target=None, dynamic=None, build=None,
     else:
         print("  No --target provided, skipping binary discovery")
 
+    # --- Symbolic witness synthesis (angr; mechanical, no LLM) ---
+    _run_symbolic_witnesses(workdir, data, dynamic=dynamic, target=target)
+
     # --- Witness execution (dark-verify oracle, gated on dynamic trust) ---
     _run_witness_execution(workdir, target, data, dynamic=dynamic)
+
+
+def _run_symbolic_witnesses(workdir, data, dynamic=None, target=None):
+    """Angr-first evidence pass: concrete reaching inputs for findings
+    matched to a discovered binary. The solve is static; the REPLAY of
+    the solved bytes executes the target, so it rides the same dynamic
+    trust gate as the witness oracle. Findings gain
+    ``symbolic_witness`` records; bytes land in the run WitnessStore
+    (visible to Stage E's discovery pass and later runs) and, with
+    replay allowed, feed the empirical mitigation map directly so the
+    evidence lands in this run.
+    """
+    try:
+        from packages.exploitability_validation.symbolic_witness import (
+            symbolic_available,
+            synthesize_witnesses,
+        )
+    except ImportError:
+        return
+    if not symbolic_available():
+        return
+    from core.project.trust import resolve_dynamic_validation
+    allow_replay = resolve_dynamic_validation(dynamic, target_path=target)
+    findings = data.get("findings", [])
+    stats = synthesize_witnesses(
+        findings, Path(workdir), replay=allow_replay,
+        target_path=Path(target) if target else None,
+    )
+    if stats["attempted"]:
+        _save_findings(workdir, data)
+        print(
+            f"  Symbolic witnesses: {stats['attempted']} attempted of "
+            f"{stats['eligible']} eligible — {stats['solved']} solved, "
+            f"{stats['replayed_crash']} crashed on replay, "
+            f"{stats['stored']} stored, "
+            f"{stats['empirical_maps']} empirical maps"
+            + ("" if allow_replay else " (replay off: dynamic trust not set)")
+        )
 
 
 # ---------------------------------------------------------------------------

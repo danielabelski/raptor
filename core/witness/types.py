@@ -73,6 +73,12 @@ class WitnessSource(str, Enum):
     # PoC imported from a CVE writeup.
     MANUAL = "manual"
 
+    # core/symbolic derived the bytes by solving path constraints
+    # (angr): a concrete stdin input predicted to reach the target.
+    # Producers replay it when they can (earning EXIT_SIGNAL /
+    # NO_OBVIOUS_EFFECT); an un-replayed solve stays NOT_RUN.
+    SYMBOLIC = "symbolic"
+
 
 class WitnessOutcome(str, Enum):
     """What was observed when the target ran on the witness bytes.

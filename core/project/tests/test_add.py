@@ -1,5 +1,6 @@
 """Tests for project add and remove operations."""
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -436,3 +437,70 @@ class SecondReviewProjectTest(unittest.TestCase):
                     return_value=([], [d])), \
                 self.assertRaises(ValueError):
             self.mgr.delete("myapp")
+
+
+class ThirdReviewRenameTest(unittest.TestCase):
+    """Round-3: rename rewrites external pins + witnesses; URL targets
+    stay opaque in the discovery gate."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+        # The ledger writers identity-gate on a claude-shaped comm.
+        from unittest.mock import patch as _patch
+        from core.project import sessions as _sessions
+        p = _patch.object(_sessions, "_comm",
+                          lambda pid: "claude" if pid == os.getpid()
+                          else None)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_rename_repoints_external_pinned_run(self):
+        from core.json import load_json, save_json
+        from core.project import sessions
+        sessions.record_session("myapp", pid=os.getpid())
+        ext = Path(self.tmpdir.name) / "elsewhere" / "scan_x"
+        ext.mkdir(parents=True)
+        save_json(ext / ".raptor-run.json", {
+            "status": "completed", "project": "myapp",
+            "project_source": "argv", "target_path": self.target_code,
+        })
+        sessions.ledger_record_start(ext, pid=os.getpid(),
+                                     pin_project="myapp",
+                                     record_pin=True)
+        sessions.ledger_record_finish(ext, "completed", pid=os.getpid())
+        self.mgr.rename("myapp", "renamed")
+        meta = load_json(ext / ".raptor-run.json")
+        self.assertEqual(meta["project"], "renamed")
+        found, project, _src = sessions.ledger_pin_witness(
+            ext, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "renamed")
+
+    def test_url_recorded_target_never_matches_filesystem(self):
+        from core.json import save_json
+        from core.orchestration.run_discovery import (
+            recorded_target_matches,
+        )
+        d = Path(self.tmpdir.name) / "web_run"
+        d.mkdir()
+        save_json(d / ".raptor-run.json", {
+            "status": "completed",
+            "target_path": "https://evil-unrelated.example/api",
+        })
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.target_code)
+            self.assertFalse(
+                recorded_target_matches(d, self.target_code))
+        finally:
+            os.chdir(cwd)
+        self.assertTrue(recorded_target_matches(
+            d, "https://evil-unrelated.example/api"))

@@ -1408,7 +1408,15 @@ def _mutation_lock_target(mgr, args: argparse.Namespace):
     elif sc == "set":
         if not getattr(args, "key", None) or args.value is None:
             return None  # listing form
-    elif sc not in ("unset", "untrust", "clean"):
+    elif sc == "rename":
+        # Lock the OLD project's dir: run starts contend on it, so a
+        # rename can no longer interleave with a start's
+        # resolve-pin/write-pin window (which orphaned the new run's
+        # pin to the just-renamed-away name).
+        name = getattr(args, "old", None) or getattr(args, "old_name",
+                                                     None)
+    elif sc not in ("unset", "untrust", "clean", "delete", "add",
+                    "adopt", "remove"):
         return None
     name = name or _get_active_project()
     if not name:

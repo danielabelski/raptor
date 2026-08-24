@@ -703,8 +703,12 @@ class ProjectManager:
     # boundary visible in the pattern itself.
     # Length cap matches core.project.sessions._NAME_RE — a project
     # whose name the session registry rejects could never be
-    # session-bound, so refuse it at creation instead.
-    _NAME_PATTERN = re.compile(r'\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\Z')
+    # session-bound, so refuse it at creation instead. The lookaheads
+    # refuse '..' sequences and trailing dots: both coverage hooks'
+    # symlink validators reject them (path-shaped), so such projects
+    # silently lost legacy-route read attribution.
+    _NAME_PATTERN = re.compile(
+        r'\A(?!.*\.\.)[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}(?<!\.)\Z')
 
     @classmethod
     def _validate_name(cls, name: str) -> None:
@@ -829,6 +833,16 @@ class ProjectManager:
             from core.project.clean import split_live_runs
             run_dirs = [d for d in project.output_path.iterdir()
                         if d.is_dir() and not d.name.startswith((".", "_"))]
+            try:
+                from core.project.sessions import ledger_runs_pinned_to
+                known = {str(d.resolve()) for d in run_dirs}
+                run_dirs.extend(
+                    Path(rec["run_dir"])
+                    for rec in ledger_runs_pinned_to(name)
+                    if rec["run_dir"] not in known
+                    and Path(rec["run_dir"]).is_dir())
+            except Exception:  # noqa: BLE001 — ledger scan best-effort
+                pass
             _rest, live = split_live_runs(run_dirs)
             if live:
                 names = ", ".join(d.name for d in live[:3])
@@ -904,13 +918,15 @@ class ProjectManager:
         try:
             from core.project import sessions
             live = sessions.read_sessions(prune=False)
-            hits = [pid for pid, fields in live.items()
-                    if fields.get("v") == sessions.ENTRY_VERSION
-                    and fields.get("project") == old_name]
-            for pid in hits:
-                sessions.record_session(
-                    new_name if new_name is not None
-                    else sessions.NONE_SENTINEL, pid=pid)
+            candidates = [pid for pid, fields in live.items()
+                          if fields.get("v") == sessions.ENTRY_VERSION
+                          and fields.get("project") == old_name]
+            # Compare-and-swap per entry: only rewrite bindings that
+            # STILL name the old project at write time — a session
+            # that concurrently bound elsewhere keeps its choice.
+            hits = [pid for pid in candidates
+                    if sessions.rebind_session_if(pid, old_name,
+                                                  new_name)]
             if hits:
                 logger.warning(
                     "%d live session(s) were bound to '%s' — %s",
@@ -937,9 +953,20 @@ class ProjectManager:
         # Refuse while runs are live: their owning processes hold the
         # OLD name in their pin freeze caches, and a rewrite under
         # them would drop their completion-time project writes.
+        # External runs (--project P --out /elsewhere) are found via
+        # the session ledgers' pin witnesses — they are invisible to
+        # the child-dir scan.
         try:
             from core.project.clean import split_live_runs
-            _rest, live = split_live_runs(project.get_run_dirs())
+            candidates = list(project.get_run_dirs())
+            from core.project.sessions import ledger_runs_pinned_to
+            known = {str(Path(d).resolve()) for d in candidates}
+            for rec in ledger_runs_pinned_to(old_name):
+                if rec["run_dir"] not in known:
+                    ext = Path(rec["run_dir"])
+                    if ext.is_dir():
+                        candidates.append(ext)
+            _rest, live = split_live_runs(candidates)
         except Exception:  # noqa: BLE001 — liveness probe best-effort
             live = []
         if live:
@@ -991,6 +1018,20 @@ class ProjectManager:
         # to the old name must follow the rename, not dangle.
         self._rewrite_bindings(old_name, new_name)
 
+        # Re-point pin WITNESSES across all session ledgers: a witness
+        # naming the old project would DISAGREE with the re-pointed
+        # markers, and the tamper check would suppress every later
+        # projection of the renamed project's runs.
+        try:
+            from core.project.sessions import ledger_rewrite_pin_project
+            ledger_rewrite_pin_project(old_name, new_name)
+        except Exception:  # noqa: BLE001 — witnesses are best-effort
+            logger.warning(
+                "rename: could not re-point ledger pin witnesses from "
+                "%r to %r — completing runs of the renamed project may "
+                "log witness-disagreement warnings", old_name, new_name,
+                exc_info=True)
+
         # Re-point every run pin: a pin recording the old name would
         # resolve as authoritatively-projectless forever ("pinned to
         # missing project"), silently suppressing the whole renamed
@@ -1000,7 +1041,22 @@ class ProjectManager:
             from core.json import load_json as _lj
             from core.json import save_json as _sj
             from core.run.metadata import RUN_METADATA_FILE as _MF
-            for run_dir in project.get_run_dirs():
+            _pin_dirs = list(project.get_run_dirs())
+            # External pinned runs join the rewrite via the ledgers.
+            try:
+                from core.project.sessions import ledger_runs_pinned_to
+                _known = {str(Path(d).resolve()) for d in _pin_dirs}
+                # The witness rewrite above already re-pointed the
+                # ledgers to the NEW name — query that, or external
+                # runs are invisible here.
+                _pin_dirs.extend(
+                    Path(rec["run_dir"])
+                    for rec in ledger_runs_pinned_to(new_name)
+                    if rec["run_dir"] not in _known
+                    and Path(rec["run_dir"]).is_dir())
+            except Exception:  # noqa: BLE001 — ledger scan best-effort
+                logger.debug("rename: ledger scan failed", exc_info=True)
+            for run_dir in _pin_dirs:
                 marker = run_dir / _MF
                 try:
                     meta = _lj(marker)
@@ -1156,13 +1212,38 @@ class ProjectManager:
                     "target %s", run_src.name, recorded, project.target,
                 )
                 return False
+            # Liveness BEFORE the move: write_run_pin refuses live
+            # runs, and raising after the move leaves a half-adopted
+            # dir (moved, pin not rewritten, projections skipped).
+            try:
+                from core.run.metadata import (
+                    STATUS_RUNNING,
+                    _session_alive_for_meta,
+                    load_run_metadata,
+                )
+                _meta = load_run_metadata(run_src) or {}
+                if (_meta.get("status") == STATUS_RUNNING
+                        and _session_alive_for_meta(_meta)):
+                    logger.warning(
+                        "adopt refused for %s: the run is live",
+                        run_src.name)
+                    return False
+            except Exception:  # noqa: BLE001 — write_run_pin backstops
+                pass
             dest = dest_base / run_src.name
             try:
                 dest.mkdir()
             except FileExistsError:
                 return False
             dest.rmdir()
-            shutil.move(str(run_src), str(dest))
+            try:
+                shutil.move(str(run_src), str(dest))
+            except (FileNotFoundError, shutil.Error) as e:
+                # A concurrent adopt of the same source won the move —
+                # skip this run, keep the batch going.
+                logger.warning("adopt skipped for %s: %s",
+                               run_src.name, e)
+                return False
             generate_run_metadata(dest)
             # The move changed the run's governing project: rewrite
             # the pin to the adopting project so the projections
@@ -1477,8 +1558,14 @@ class ProjectManager:
                             active_link.unlink(missing_ok=True)
                             return None
                     return name
-                # Dangling — clean up
-                active_link.unlink(missing_ok=True)
+                # Dangling — clean up, but only if the link still
+                # names the dangling target we just read: another
+                # process may have re-pointed it to a healthy project
+                # in between, and a path-based unlink would destroy
+                # the fresh bookmark.
+                with contextlib.suppress(OSError):
+                    if os.readlink(active_link) == target:
+                        active_link.unlink(missing_ok=True)
         return None
 
     def find_project_for_target(

@@ -1562,6 +1562,13 @@ Examples:
              "so CostTracker enforces the cap during LLM calls",
     )
     parser.add_argument("--out", help="Output directory")
+    parser.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default). '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.",
+    )
 
     # Sanitizer-cut value-bound suppression mode (review #4, PR #794).
     # Replaces the RAPTOR_SANITIZER_CUT* env vars. configure() below
@@ -1977,6 +1984,10 @@ Examples:
     args = parser.parse_args()
 
     apply_cli_args(args, parser=parser)
+
+    if args.project is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
 
     if args.threat_model_only:
         args.threat_model = True

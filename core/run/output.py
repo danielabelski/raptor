@@ -69,20 +69,41 @@ def unique_run_suffix(separator: str = "_") -> str:
 
 
 def _resolve_active_project() -> tuple[str, str, str] | None:
-    """Resolve the current active project from the .active symlink.
+    """Resolve the current active project.
 
-    Returns (output_dir, name, target) or None if no project is active.
-    The symlink is the single source of truth — no env var fallback.
+    Precedence (design §6): the process-scoped ``--project`` argv
+    override first — ``-`` is the explicit bound-to-none value and
+    resolves as "no project" — then the ambient chokepoint
+    (``ProjectManager.get_active()``: session binding, then the
+    ``.active`` symlink). Returns (output_dir, name, target) or None.
+    An invalid override is a hard error, never a fallback.
     """
+    try:
+        from core.run.pin import ARGV_NONE, get_process_project
+        override = get_process_project()
+    except Exception:  # noqa: BLE001 — pin module unavailable: ambient only
+        override = None
     try:
         from core.project.project import ProjectManager
         mgr = ProjectManager()
+        if override is not None:
+            if override == ARGV_NONE:
+                return None
+            from core.run.pin import ProjectArgvError
+            project = mgr.load(override)
+            if project is None:
+                msg = f"--project: project {override!r} does not exist"
+                raise ProjectArgvError(msg)
+            return project.output_dir, project.name, project.target
         active_name = mgr.get_active()
         if active_name:
             project = mgr.load(active_name)
             if project:
                 return project.output_dir, project.name, project.target
     except Exception as exc:  # noqa: BLE001 — fall back to the default out/ dir
+        from core.run.pin import ProjectArgvError
+        if isinstance(exc, ProjectArgvError):
+            raise
         logger.warning("active project resolution failed: %s", exc)
 
     return None

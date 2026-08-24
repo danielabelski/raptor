@@ -179,8 +179,9 @@ def _corpus_project_context(run_tag: str):
 
         from core.project.project import ProjectManager
 
+        from core.run.pin import get_process_project, set_process_project
+
         mgr = ProjectManager()
-        prev_active = mgr.get_active()
         project_name = f"corpus-{run_tag}"
 
         try:
@@ -201,15 +202,21 @@ def _corpus_project_context(run_tag: str):
                 + timedelta(hours=_CORPUS_PROJECT_TTL_HOURS)
             ).isoformat()
             mgr._save(project)
-        mgr.set_active(project_name)
+        # EXPLICIT threading (design §7): the corpus project is a
+        # process-scoped --project override, never a mutation of the
+        # machine-wide bookmark or any session binding. Pre-fix this
+        # flipped `.active` for the whole run — every other session's
+        # no-path commands were steered at the throwaway /tmp project,
+        # and a crash left it active for up to the TTL. The runner is
+        # in-process (the orchestrator is imported, not spawned), so
+        # the override reaches every start_run and pin resolution.
+        prev_override = get_process_project()
 
+        set_process_project(project_name)
         try:
             yield project_name
         finally:
-            if prev_active:
-                mgr.set_active(prev_active)
-            else:
-                mgr.set_active(None)
+            set_process_project(prev_override)
 
     return _ctx()
 

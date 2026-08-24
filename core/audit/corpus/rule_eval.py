@@ -426,18 +426,28 @@ def find_engine_rules_base(
         out_resolved = Path(out_dir).resolve()
         candidates.append(out_resolved.parent / "engine-rules")
         candidates.append(out_resolved.parent.parent / "engine-rules")
+    # Project candidate via the RUN PIN / process override — never the
+    # ambient active project. Pre-fix this read `mgr.get_active()`,
+    # which only worked because the corpus runner flipped `.active` to
+    # the corpus project; with explicit threading (design §7) the
+    # ambient read would resolve the OPERATOR's project instead and
+    # load its graduated rules as trusted engine config inside a
+    # measurement run.
     try:
         from core.project.project import ProjectManager
+        from core.run.pin import get_process_project, resolve_run_pin
 
-        mgr = ProjectManager()
-        active = mgr.get_active()
-        if active:
-            proj = mgr.load(active)
+        project_name = get_process_project()
+        if project_name in (None, "-") and out_dir is not None:
+            pin = resolve_run_pin(out_dir)
+            project_name = pin.project
+        if project_name and project_name != "-":
+            proj = ProjectManager().load(project_name)
             if proj is not None and getattr(proj, "output_dir", ""):
                 candidates.append(Path(proj.output_dir) / "engine-rules")
     except Exception:
         logger.debug(
-            "graduated-rules: active-project lookup failed", exc_info=True,
+            "graduated-rules: pinned-project lookup failed", exc_info=True,
         )
 
     roots = []

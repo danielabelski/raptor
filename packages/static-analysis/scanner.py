@@ -2805,6 +2805,13 @@ def main() -> None:
     ap.add_argument("--sequential", action="store_true", help="Fully serial run: semgrep packs one at a time AND stages in order (no semgrep/codeql overlap). Debugging knob.")
     ap.add_argument("--out", default=None, help="Output directory (from lifecycle). Overrides auto-generated path.")
     ap.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default). '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.",
+    )
+    ap.add_argument(
         "--exclude-dir", action="append", default=None, metavar="GLOB",
         dest="exclude_dir",
         help=(
@@ -2843,6 +2850,10 @@ def main() -> None:
     add_cli_args(ap)
     args = ap.parse_args()
     apply_cli_args(args, parser=ap)
+
+    if args.project is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
 
     # Unknown policy groups are an argparse-level HARD error. Pre-fix
     # they only logged a warning mid-scan — an operator copying a bad

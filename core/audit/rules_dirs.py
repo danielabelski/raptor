@@ -50,8 +50,9 @@ def graduation_dir(out_dir: Path | str | None,
                 "(pin-less) run dir; containment authorizes reads only",
                 out_dir)
             return None
+        from core.run.pin import pinned_write_target_ok
         proj_dir = pin_project_dir(out_dir, for_write=True)
-        if proj_dir is not None:
+        if proj_dir is not None and pinned_write_target_ok(out_dir, target):
             return proj_dir / "engine-rules"
         if target is None:
             return None

@@ -111,6 +111,25 @@ class ProjectArgvError(ValueError):
    : never a fallback to any ambient layer."""
 
 
+def _machine_project_expired(name: str) -> bool:
+    """True when *name* is a machine-generated project past its
+    auto-expiry (the get_active vet, applied at start-time pin
+    resolution too). Operator projects never expire."""
+    try:
+        from core.project.project import (
+            ProjectManager,
+            is_machine_project_name,
+        )
+        if not is_machine_project_name(name):
+            return False
+        project = ProjectManager().load(name)
+        return (project is not None
+                and project.is_expired_machine_project())
+    except Exception:  # noqa: BLE001 — vet failure = not expired
+        logger.debug("pin: machine-expiry vet failed", exc_info=True)
+        return False
+
+
 def _project_exists(name: str) -> bool:
     try:
         from core.project.project import ProjectManager
@@ -149,6 +168,24 @@ def resolve_pin_for_start() -> tuple[str | None, str]:
     name, state = session_binding()
     if state == "bound":
         if name is not None and _project_exists(name):
+            if _machine_project_expired(name):
+                # Same machine-project auto-expiry vet (and same
+                # layer-scoped remediation) get_active applies: an
+                # expired machine project must not silently pin a
+                # fresh run just because a stale binding names it.
+                logger.warning(
+                    "pin: session-bound machine project %r is past its "
+                    "auto-expiry — clearing this session's binding; "
+                    "run starts projectless. '/project use %s' "
+                    "re-activates it (clearing the expiry).",
+                    name, name)
+                try:
+                    from core.project.sessions import bind_session
+                    bind_session(None)
+                except Exception:  # noqa: BLE001 — remediation only
+                    logger.debug("pin: expiry re-bind failed",
+                                 exc_info=True)
+                return None, "session"
             return name, "session"
         logger.warning(
             "pin: session binding names missing project %r — "
@@ -212,6 +249,12 @@ def _walk_boundary(directory: Path, start_dev: int | None) -> bool:
                 return True  # filesystem boundary
         except OSError:
             return True
+    try:
+        from core.config import RaptorConfig
+        if directory == Path(RaptorConfig.get_out_dir()).resolve().parent:
+            return True  # never walk above the configured out-root
+    except Exception:  # noqa: BLE001 — out-root unknown: other stops apply
+        pass
     return False
 
 
@@ -233,10 +276,39 @@ def _containment_project(start_dir: Path) -> str | None:
     return None
 
 
+#: Process-scoped pin freeze (the memoization the design mandates):
+#: populated at start_run / bootstrap time, BEFORE any child spawns,
+#: so a mid-run rewrite of the on-disk marker — the run dir root is
+#: the sandbox WRITE GRANT handed to prompt-injectable children —
+#: cannot move this process's consumers. Keyed by the resolved run
+#: root. Never invalidated within a process: a run dir is pinned once.
+_frozen_pins: dict[str, RunPin] = {}
+
+
+def freeze_run_pin(run_dir: str | os.PathLike[str], project: str | None,
+                   source: str) -> None:
+    """Record the just-written pin in the process freeze cache."""
+    try:
+        key = str(Path(run_dir).resolve())
+    except (OSError, ValueError):
+        return
+    _frozen_pins[key] = RunPin(project, source, Path(key), True, True)
+
+
 def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
     """Resolve the project pin governing *start_dir* (state table in
     the module docstring). *start_dir* must be an explicit run-dir
-    handle — an argument or config out_dir — NEVER the cwd."""
+    handle — an argument or config out_dir — NEVER the cwd.
+
+    Resolution prefers, in order: the process FREEZE CACHE (the value
+    sealed at start_run, immune to on-disk rewrites by sandboxed
+    children whose write grant includes the run dir); then the
+    OUTERMOST trustworthy marker on the walk (nearest-wins let a child
+    plant a marker in its own writable subdir — e.g. the AFL output
+    dir — and capture consumers resolving from below it; legitimate
+    runs are never nested inside other runs, the run-ownership
+    doctrine forbids it); then containment inference, reads only.
+    """
     try:
         current = Path(start_dir).resolve()
     except (OSError, ValueError):
@@ -246,19 +318,24 @@ def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
     except OSError:
         start_dev = None
 
+    marker_dirs: list[Path] = []
     probe = current
     for _ in range(_WALK_DEPTH):
+        frozen = _frozen_pins.get(str(probe))
+        if frozen is not None:
+            return frozen
         marker = probe / RUN_METADATA_FILE
         try:
             has_marker = marker.is_file()
         except OSError:
             has_marker = False
-        if has_marker and _marker_trustworthy(probe):
-            return _pin_from_marker(probe)
         if has_marker:
-            logger.warning(
-                "pin: ignoring untrustworthy run marker in %s "
-                "(not owned by us, or group/world-writable)", probe)
+            if _marker_trustworthy(probe):
+                marker_dirs.append(probe)
+            else:
+                logger.warning(
+                    "pin: ignoring untrustworthy run marker in %s "
+                    "(not owned by us, or group/world-writable)", probe)
         parent = probe.parent
         if parent == probe or _walk_boundary(parent, start_dev):
             break
@@ -269,6 +346,13 @@ def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
         except Exception:  # noqa: BLE001 — boundary probe only
             pass
         probe = parent
+
+    if marker_dirs:
+        outermost = marker_dirs[-1]
+        frozen = _frozen_pins.get(str(outermost))
+        if frozen is not None:
+            return frozen
+        return _pin_from_marker(outermost)
 
     # No marker: legacy containment fallback — READS ONLY.
     name = _containment_project(current)
@@ -314,13 +398,74 @@ def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
     privilege-bearing writes. An explicit ``--project`` argv set by the
     entry point always wins (never overwritten here).
     """
-    if out_dir is None or get_process_project() is not None:
+    if out_dir is None:
         return
+    override = get_process_project()
     pin = resolve_run_pin(out_dir)
+    if override is not None:
+        # Both an explicit --project AND a pinned --out: they must
+        # AGREE, or the process would run split — override for the
+        # ambient consumers, pin for the run-dir consumers.
+        if pin.authoritative:
+            wanted = None if override == ARGV_NONE else override
+            if wanted != pin.project:
+                msg = (
+                    f"--project {override!r} conflicts with the run's "
+                    f"existing pin {pin.project!r} in {out_dir} — a "
+                    "run dir is pinned to one project for its whole "
+                    "lifetime"
+                )
+                raise ProjectArgvError(msg)
+        return
     if not pin.authoritative:
         return
     set_process_project(pin.project if pin.project is not None
                         else ARGV_NONE)
+    # Seal the resolved pin in the process freeze cache: consumers in
+    # THIS process resolving the same run dir later must see the value
+    # read at bootstrap, not whatever a sandboxed child rewrote the
+    # on-disk marker to in between.
+    if pin.run_dir is not None:
+        _frozen_pins.setdefault(str(pin.run_dir), pin)
+
+
+def pinned_write_target_ok(out_dir: str | os.PathLike[str],
+                           target: str | os.PathLike[str] | None = None,
+                           ) -> bool:
+    """ONE-TARGET GATE for pin-keyed privileged writes (engine-rules
+    graduation, domain-model promotion, journal-index merges, coverage
+    snapshots): the run's target must BE the pinned project's target
+    (or live inside it) before the run may write into the project's
+    durable stores. A pin names a project; the project is an assertion
+    about ONE target — a run whose target is some other tree must not
+    steer that project's cross-run state, whether the divergence is an
+    operator mistake (``--project P --repo other``) or a forged
+    marker. Callers pass the target they independently know when they
+    have one; otherwise the run's recorded ``target_path`` is used.
+    Runs with no recorded target (legacy dirs) pass — the gate must
+    not regress pre-series projections.
+    """
+    if target is None:
+        try:
+            from core.json import load_json
+            meta = load_json(Path(out_dir) / RUN_METADATA_FILE)
+            target = (meta or {}).get("target_path")
+        except Exception:  # noqa: BLE001 — unreadable metadata: no target
+            target = None
+    if not target:
+        return True
+    try:
+        from core.project.trust import run_target_matches_project
+        ok = run_target_matches_project(str(target), str(out_dir))
+    except Exception:  # noqa: BLE001 — resolver unavailable: don't block
+        logger.debug("pin: one-target gate resolver failed", exc_info=True)
+        return True
+    if not ok:
+        logger.warning(
+            "pin: SUPPRESSED project-store write for %s — the run's "
+            "target (%s) is not the pinned project's target. A project "
+            "is an assertion about one target.", out_dir, target)
+    return ok
 
 
 def pin_project_dir(out_dir: str | os.PathLike[str] | None,

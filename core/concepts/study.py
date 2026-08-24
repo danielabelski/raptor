@@ -239,12 +239,18 @@ def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
     # the shape probe so pre-series behaviour holds at landing.
     project_dir = None
     try:
-        from core.run.pin import pin_project_dir, resolve_run_pin
+        from core.run.pin import (
+            pin_project_dir,
+            pinned_write_target_ok,
+            resolve_run_pin,
+        )
         pin = resolve_run_pin(output_dir)
         if pin.authoritative:
             project_dir = pin_project_dir(output_dir, for_write=True)
             if project_dir is None:
                 return  # standalone by pin — run-local only
+            if not pinned_write_target_ok(output_dir):
+                return  # one-target gate: foreign target
     except Exception:  # noqa: BLE001 — shape fallback below
         project_dir = None
     if project_dir is None:

@@ -628,6 +628,24 @@ def start_run(output_dir: Path, command: str,
         if target:
             metadata["target_path"] = str(target)
 
+        # Session ownership — WRITE-ONCE while running (same doctrine
+        # as the pin below): a re-entrant start on a dir some session
+        # already owns and is still running must not re-own it — that
+        # would silently kill the first session's hook attribution and
+        # contention identity. resume_run is the sanctioned re-owning
+        # path (it refreshes the full stamp).
+        _prior_meta = load_json(output_dir / RUN_METADATA_FILE)
+        if (isinstance(_prior_meta, dict)
+                and _prior_meta.get("status") == STATUS_RUNNING
+                and _prior_meta.get("session_pid") is not None
+                and _session_alive_for_meta(_prior_meta)):
+            for _k in ("session_pid", "tool_pid", "session_start",
+                       "session_boot_id", "session_pidns"):
+                if _k in _prior_meta:
+                    metadata[_k] = _prior_meta[_k]
+                else:
+                    metadata.pop(_k, None)
+
         # Project pin — WRITE-ONCE. A start_run on a dir
         # whose metadata is already status=running (the documented
         # re-entrant flows: the raptor.py wrapper followed by
@@ -637,30 +655,47 @@ def start_run(output_dir: Path, command: str,
         # kill. A conflicting explicit --project is a hard error.
         from core.run.pin import (
             ProjectArgvError,
+            _frozen_pins,
+            freeze_run_pin,
             get_process_project,
             resolve_pin_for_start,
         )
-        prior = load_json(output_dir / RUN_METADATA_FILE)
-        if (isinstance(prior, dict) and prior.get("status") == STATUS_RUNNING
-                and "project" in prior):
-            metadata["project"] = prior.get("project")
-            metadata["project_source"] = prior.get("project_source") or "none"
+        # Prior pin: the PROCESS FREEZE CACHE first (the on-disk marker
+        # sits in the sandbox write grant handed to prompt-injectable
+        # children, so a re-entrant start must never re-derive
+        # write-once state from a file a hostile child may have
+        # rewritten), then disk for cross-process re-entrant flows.
+        # A dir that EVER carried a pin keeps it regardless of status:
+        # /understand → /validate reusing one --out is one pinned dir,
+        # and re-resolving after the first command completed raced
+        # mid-gap project switches.
+        frozen = _frozen_pins.get(str(output_dir.resolve()))
+        prior = _prior_meta
+        prior_pin: tuple[str | None, str] | None = None
+        if frozen is not None:
+            prior_pin = (frozen.project, frozen.source)
+        elif isinstance(prior, dict) and "project" in prior:
+            _pp = prior.get("project")
+            prior_pin = (_pp if isinstance(_pp, str) else None,
+                         str(prior.get("project_source") or "none"))
+        if prior_pin is not None:
+            pin_project, pin_source = prior_pin
             override = get_process_project()
             if override is not None:
-                pinned = prior.get("project")
                 wanted = None if override == "-" else override
-                if wanted != pinned:
+                if wanted != pin_project:
                     msg = (
                         f"--project {override!r} conflicts with the "
-                        f"run's existing pin {pinned!r} in {output_dir} "
-                        "— a run is pinned to one project for its "
-                        "whole lifetime"
+                        f"run's existing pin {pin_project!r} in "
+                        f"{output_dir} — a run dir is pinned to one "
+                        "project for its whole lifetime"
                     )
                     raise ProjectArgvError(msg)
         else:
             pin_project, pin_source = resolve_pin_for_start()
-            metadata["project"] = pin_project
-            metadata["project_source"] = pin_source
+        metadata["project"] = pin_project
+        metadata["project_source"] = pin_source
+        freeze_run_pin(output_dir, pin_project, pin_source)
         # Order: persist metadata FIRST, then mark as active.
         #
         # Pre-fix `set_active_run_dir(output_dir)` ran BEFORE `save_json`.
@@ -1190,10 +1225,16 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
     except OSError:
         return None
     try:
-        from core.run.pin import pin_project_dir, resolve_run_pin
+        from core.run.pin import (
+            pin_project_dir,
+            pinned_write_target_ok,
+            resolve_run_pin,
+        )
         pin = resolve_run_pin(out_res)
         if pin.authoritative:
             proj_dir = pin_project_dir(out_res, for_write=True)
+            if proj_dir is not None and not pinned_write_target_ok(out_res):
+                return None
             return proj_dir.resolve() if proj_dir is not None else None
     except Exception:  # noqa: BLE001 — fall through to the marker probe
         pass
@@ -1205,7 +1246,8 @@ def _journal_project_dir(out_dir: Path) -> Path | None:
     return None
 
 
-def project_run_projections(output_dir: Path) -> None:
+def project_run_projections(output_dir: Path,
+                            project_dir: Path | None = None) -> None:
     """Re-run the project-facing completion projections for one run.
 
     The journal-index merge, reads-manifest conversion, and coverage
@@ -1218,12 +1260,13 @@ def project_run_projections(output_dir: Path) -> None:
     never raises. Idempotent — the index merge is latest-ts keyed and
     the coverage import is interval-union.
     """
-    _merge_run_journal(output_dir)
+    _merge_run_journal(output_dir, project_dir=project_dir)
     _convert_reads_manifest(output_dir)
-    _snapshot_run_coverage(output_dir)
+    _snapshot_run_coverage(output_dir, project_dir=project_dir)
 
 
-def _merge_run_journal(output_dir: Path) -> None:
+def _merge_run_journal(output_dir: Path,
+                       project_dir: Path | None = None) -> None:
     """Best-effort: merge this run's review journals (run root + one-
     level tool subdirs, see ``merge_run_into_index``) into the
     project-level index so sibling runs, resume, and the coverage-
@@ -1238,7 +1281,13 @@ def _merge_run_journal(output_dir: Path) -> None:
     """
     try:
         run_dir = Path(output_dir)
-        proj = _journal_project_dir(run_dir)
+        # An explicit project_dir comes from a trusted caller that
+        # KNOWS the governing project (the adoption path, whose
+        # registry is authoritative for it and which target-validated
+        # the run before moving it) — ambient re-resolution through
+        # the default registry would miss custom-registry projects.
+        proj = project_dir if project_dir is not None \
+            else _journal_project_dir(run_dir)
         if proj is None:
             return
         from core.coverage.journal import merge_run_into_index
@@ -1278,7 +1327,8 @@ def _convert_reads_manifest(output_dir: Path) -> None:
         )
 
 
-def _snapshot_run_coverage(output_dir: Path) -> None:
+def _snapshot_run_coverage(output_dir: Path,
+                           project_dir: Path | None = None) -> None:
     """Best-effort: fold a just-completed run's coverage into the project's
     durable ``coverage.json`` so it survives out-of-band deletion of the run
     dir (manual ``rm``, tmpfs) — not only ``/project clean``.
@@ -1303,16 +1353,25 @@ def _snapshot_run_coverage(output_dir: Path) -> None:
         # project's dir merged into that project. Pin-less legacy runs
         # keep the parent-marker shape so their projections don't
         # regress at landing.
-        proj = None
-        try:
-            from core.run.pin import pin_project_dir, resolve_run_pin
-            pin = resolve_run_pin(run_dir)
-            if pin.authoritative:
-                proj = pin_project_dir(run_dir, for_write=True)
-                if proj is None:
-                    return               # standalone by pin — no store
-        except Exception:  # noqa: BLE001 — fall to the legacy probe
-            pin = None
+        # Explicit project_dir = trusted adoption-path caller (see
+        # _merge_run_journal) — skip ambient pin re-resolution.
+        proj = project_dir
+        if proj is None:
+            try:
+                from core.run.pin import (
+                    pin_project_dir,
+                    pinned_write_target_ok,
+                    resolve_run_pin,
+                )
+                pin = resolve_run_pin(run_dir)
+                if pin.authoritative:
+                    proj = pin_project_dir(run_dir, for_write=True)
+                    if proj is None:
+                        return           # standalone by pin — no store
+                    if not pinned_write_target_ok(run_dir):
+                        return           # one-target gate: foreign target
+            except Exception:  # noqa: BLE001 — fall to the legacy probe
+                pin = None
         if proj is None:
             proj = run_dir.parent
         checklist_path = proj / "checklist.json"
@@ -1774,6 +1833,31 @@ def generate_run_metadata(run_dir: Path) -> None:
     }
 
     save_json(run_dir / RUN_METADATA_FILE, metadata)
+
+
+def write_run_pin(run_dir: Path, project: str | None, source: str) -> None:
+    """Rewrite a run dir's project pin — the SANCTIONED rewrites only:
+    adoption into a project (``adopted``), removal from one (``none``),
+    and merge-synthesised dirs (``merged``). A run in flight is never
+    re-pinned; these all operate on non-live dirs by construction.
+
+    Upserts into existing metadata (all other keys preserved) and
+    updates the process pin freeze cache so in-process consumers —
+    the projections that fire right after adoption — see the rewrite
+    rather than the pre-move resolution.
+    """
+    from core.run.pin import PIN_SOURCES, freeze_run_pin
+    if source not in PIN_SOURCES:
+        msg = f"invalid pin source {source!r} (one of {PIN_SOURCES})"
+        raise ValueError(msg)
+    path = Path(run_dir) / RUN_METADATA_FILE
+    meta = load_json(path)
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["project"] = project
+    meta["project_source"] = source
+    save_json(path, meta)
+    freeze_run_pin(run_dir, project, source)
 
 
 _TERMINAL_STATUSES = frozenset({

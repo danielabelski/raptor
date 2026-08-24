@@ -271,6 +271,11 @@ def _sessions_registry_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(_sessions, "_walk_session_pid", lambda: None)
     monkeypatch.delenv(_sessions.ENV_SESSION_PID, raising=False)
     monkeypatch.delenv(_sessions.ENV_SESSION_TOKEN, raising=False)
+    # The pin freeze cache is process-global by design (sealed at
+    # start_run); across TESTS it would leak one test's pin into the
+    # next test's resolution — clear it per test.
+    from core.run import pin as _pin
+    _pin._frozen_pins.clear()
 
 
 # ---------------------------------------------------------------------------

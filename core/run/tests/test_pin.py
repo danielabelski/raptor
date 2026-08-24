@@ -350,12 +350,162 @@ class PinConsumerMigrationTest(_PinCase):
     def test_bootstrap_never_overwrites_explicit_argv(self):
         from core.run.pin import bootstrap_process_pin, get_process_project
         run = self._pinned_run("pinned")
-        set_process_project("-")
+        set_process_project("pinned")
         bootstrap_process_pin(run)
-        self.assertEqual(get_process_project(), "-")
+        self.assertEqual(get_process_project(), "pinned")
+
+    def test_bootstrap_conflicting_argv_hard_errors(self):
+        # --project X plus --out <run pinned to Y> would run SPLIT
+        # (override for ambient consumers, pin for run-dir consumers):
+        # hard error, never a silent pick.
+        from core.run.pin import ProjectArgvError, bootstrap_process_pin
+        run = self._pinned_run("pinned")
+        set_process_project("-")
+        with self.assertRaises(ProjectArgvError):
+            bootstrap_process_pin(run)
 
     def test_null_pin_bootstraps_projectless(self):
         from core.run.pin import bootstrap_process_pin, get_process_project
         run = self._pinned_run(None)
         bootstrap_process_pin(run)
         self.assertEqual(get_process_project(), "-")
+
+
+class PinFreezeCacheTest(_PinCase):
+    """The process freeze cache seals the pin at start_run: a child
+    rewriting the on-disk marker (the run dir is the sandbox write
+    grant) must not move this process's consumers."""
+
+    def _run_dir(self) -> Path:
+        d = self.root / "out" / "pinned" / "scan_x"
+        d.mkdir(parents=True)
+        return d
+
+    def test_marker_rewrite_cannot_move_frozen_pin(self):
+        from core.run.metadata import start_run
+        from core.run.pin import resolve_run_pin
+        d = self._run_dir()
+        self.mgr.set_active("pinned")
+        start_run(d, "scan", target=str(self.root / "code"))
+        self.assertEqual(resolve_run_pin(d).project, "pinned")
+        # Hostile child rewrites the marker in place.
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": "evil",
+            "project_source": "session",
+        })
+        self.assertEqual(resolve_run_pin(d).project, "pinned")
+
+    def test_reentrant_start_consults_cache_not_disk(self):
+        from core.run.metadata import load_run_metadata, start_run
+        d = self._run_dir()
+        self.mgr.set_active("pinned")
+        start_run(d, "scan", target=str(self.root / "code"))
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": "evil",
+            "project_source": "session",
+        })
+        start_run(d, "scan", target=str(self.root / "code"))
+        self.assertEqual(load_run_metadata(d)["project"], "pinned")
+
+    def test_pin_survives_completed_status(self):
+        # /understand → /validate sharing one --out: the pin written at
+        # the first start governs the second even after completion —
+        # a mid-gap /project switch must not re-pin the dir.
+        from core.run.metadata import complete_run, load_run_metadata, start_run
+        from core.run.pin import _frozen_pins
+        d = self._run_dir()
+        self.mgr.set_active("pinned")
+        start_run(d, "understand", target=str(self.root / "code"))
+        complete_run(d)
+        _frozen_pins.clear()  # simulate a fresh process
+        self.mgr.create("other", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "other"))
+        self.mgr.set_active("other")
+        start_run(d, "validate", target=str(self.root / "code"))
+        self.assertEqual(load_run_metadata(d)["project"], "pinned")
+
+
+class OutermostMarkerTest(_PinCase):
+    def test_nested_planted_marker_loses_to_outer(self):
+        from core.run.pin import resolve_run_pin
+        outer = self.root / "out" / "pinned" / "fuzz_1"
+        inner = outer / "afl-out" / "crashes"
+        inner.mkdir(parents=True)
+        save_json(outer / RUN_METADATA_FILE, {
+            "status": "running", "project": "pinned",
+            "project_source": "session",
+        })
+        save_json(inner / RUN_METADATA_FILE, {
+            "status": "running", "project": "evil",
+            "project_source": "session",
+        })
+        pin = resolve_run_pin(inner)
+        self.assertEqual(pin.project, "pinned")
+
+
+class OneTargetGateTest(_PinCase):
+    def _pinned_run(self, target: str) -> Path:
+        d = self.root / "out" / "pinned" / "audit_1"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "session", "target_path": target,
+        })
+        return d
+
+    def test_matching_target_passes(self):
+        from core.run.pin import pinned_write_target_ok
+        d = self._pinned_run(str(self.root / "code"))
+        self.assertTrue(pinned_write_target_ok(d))
+
+    def test_foreign_target_suppresses_project_store_writes(self):
+        from core.run.metadata import _journal_project_dir
+        from core.run.pin import pinned_write_target_ok
+        (self.root / "elsewhere").mkdir()
+        d = self._pinned_run(str(self.root / "elsewhere"))
+        self.assertFalse(pinned_write_target_ok(d))
+        self.assertIsNone(_journal_project_dir(d))
+
+    def test_no_recorded_target_passes(self):
+        from core.run.pin import pinned_write_target_ok
+        d = self.root / "out" / "pinned" / "audit_1"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "session",
+        })
+        self.assertTrue(pinned_write_target_ok(d))
+
+
+class WriteRunPinTest(_PinCase):
+    def test_upsert_preserves_other_keys(self):
+        from core.json import load_json
+        from core.run.metadata import write_run_pin
+        d = self.root / "out" / "loose" / "scan_9"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "command": "scan",
+            "extra": {"k": 1},
+        })
+        write_run_pin(d, "pinned", "adopted")
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertEqual(meta["project"], "pinned")
+        self.assertEqual(meta["project_source"], "adopted")
+        self.assertEqual(meta["command"], "scan")
+        self.assertEqual(meta["extra"], {"k": 1})
+
+    def test_invalid_source_refused(self):
+        from core.run.metadata import write_run_pin
+        d = self.root / "out" / "loose" / "scan_9"
+        d.mkdir(parents=True)
+        with self.assertRaises(ValueError):
+            write_run_pin(d, "pinned", "containment")
+
+    def test_updates_freeze_cache(self):
+        from core.run.metadata import write_run_pin
+        from core.run.pin import resolve_run_pin
+        d = self.root / "out" / "loose" / "scan_9"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {"status": "completed"})
+        write_run_pin(d, "pinned", "adopted")
+        self.assertEqual(resolve_run_pin(d).project, "pinned")

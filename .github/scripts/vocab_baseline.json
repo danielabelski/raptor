@@ -2351,5 +2351,10 @@
     "count": 12,
     "kind": "literal",
     "note": "seed signature sets mapping well-known exported symbols to library identities (zlib/openssl/sqlite etc.) for static-binary SCA hints; library taxonomy, not learned target vocabulary"
+  },
+  "core/audit/evidence_grade.py::_DETECTION_CLASSIFIER_MODULES": {
+    "count": 10,
+    "kind": "literal",
+    "note": "registry of evidence-channel keys -> classifier module paths (code registry, not a target-API name vocabulary; grows one entry per new evidence channel)"
   }
 }

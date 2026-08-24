@@ -657,6 +657,12 @@
     },
     "artifacts:write_only_artifact::re-database.json": {
       "note": "read cross-module: the literal filename lives in packages/ghidra roundtrip.redb_cache_candidates and core/audit binary_context.find_redb; the open()/json.load sits in context_inject._load_cached_redb, binary_context.load_redb, and the libexec/raptor-ghidra decompile fallback — the artifact dataflow cannot connect them"
+    },
+    "artifacts:orphan_reader::drcov*.log": {
+      "note": "externally produced PC traces (DynamoRIO/Frida/AFL-QEMU drcov logs dropped into the fuzz out dir by the campaign or the operator) — consumed by packages/fuzzing coverage_bridge.find_pc_dumps; no in-repo writer by design"
+    },
+    "artifacts:write_only_artifact::-symbolic.json": {
+      "note": "operator-facing evidence artifact: the full per-finding FeasibilityMap JSON for a symbolically-synthesized witness (mitigation_feasibility/<finding>-symbolic.json), mirroring the raptor-run-feasibility per-finding map files; the machine-consumed summary rides the finding's feasibility.empirical_mitigation_map"
     }
   },
   "version": 1

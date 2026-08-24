@@ -334,6 +334,12 @@ def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
         try:
             has_marker = marker.is_file()
         except OSError:
+            if probe == current:
+                # The handle's own marker is unreadable (an in-grant
+                # child can chmod its run root): indistinguishable
+                # from tampering — fail closed rather than degrade to
+                # containment inference.
+                return RunPin(None, "unresolved", None, False, False)
             has_marker = False
         if has_marker:
             if _marker_trustworthy(probe):
@@ -365,9 +371,15 @@ def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
     return RunPin(name, "containment", None, False, False)
 
 
+#: Byte budget for run-marker reads — the file sits inside sandbox
+#: write grants (train convention: bounded loaders for this class).
+_MAX_RUN_META_BYTES = 1024 * 1024
+
+
 def _pin_from_marker(run_dir: Path) -> RunPin:
     from core.json import load_json
-    meta = load_json(run_dir / RUN_METADATA_FILE)
+    meta = load_json(run_dir / RUN_METADATA_FILE,
+                     max_bytes=_MAX_RUN_META_BYTES)
     if not isinstance(meta, dict):
         return RunPin(None, "unresolved", run_dir, False, False)
     if "project" not in meta:
@@ -380,7 +392,16 @@ def _pin_from_marker(run_dir: Path) -> RunPin:
         source = "none"
     if project is None:
         return RunPin(None, source, run_dir, True, True)
-    project = str(project)
+    if not isinstance(project, str):
+        # A pin is a string or null by construction — anything else is
+        # corruption/tampering. str()-coercing it made THIS resolver
+        # disagree with start_run's prior-pin reader on the same dir
+        # (a marker {"project": 123} resolved here as project "123").
+        logger.warning(
+            "pin: run %s has non-string project %r — authoritatively "
+            "projectless; the marker may have been tampered with",
+            run_dir, project)
+        return RunPin(None, source, run_dir, True, True)
     if not _project_exists(project):
         logger.warning(
             "pin: run %s is pinned to missing project %r — "
@@ -479,10 +500,18 @@ def pinned_write_target_ok(out_dir: str | os.PathLike[str],
     if target is None:
         try:
             from core.json import load_json
-            meta = load_json(Path(out_dir) / RUN_METADATA_FILE)
+            meta = load_json(Path(out_dir) / RUN_METADATA_FILE,
+                             max_bytes=_MAX_RUN_META_BYTES)
             target = (meta or {}).get("target_path")
         except Exception:  # noqa: BLE001 — unreadable metadata: no target
             target = None
+        if target is not None and not isinstance(target, str):
+            # target_path is a string by construction — a list/number
+            # is tamper, not legacy tolerance. Fail closed.
+            logger.warning(
+                "pin: run %s records a non-string target_path %r — "
+                "suppressing the project-store write", out_dir, target)
+            return False
     if not target:
         return True
     try:

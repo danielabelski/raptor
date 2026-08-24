@@ -241,6 +241,8 @@ def _session_alive_for_meta(meta: dict) -> bool:
     comm-checked ``_pid_alive`` — also fail-open.
     """
     pid = meta.get("session_pid")
+    if isinstance(pid, str) and pid.isascii() and pid.isdigit():
+        pid = int(pid)  # stringified pid: read like the hooks do
     if not isinstance(pid, int) or isinstance(pid, bool):
         return False
     start = meta.get("session_start")
@@ -456,6 +458,8 @@ def _live_conflicting_run(project_dir: Path, self_dir: Path,
         if not isinstance(meta, dict) or meta.get("status") != STATUS_RUNNING:
             continue
         owner = meta.get("session_pid")
+        if isinstance(owner, str) and owner.isascii() and owner.isdigit():
+            owner = int(owner)  # stringified pid: read like the hooks
         if not isinstance(owner, int) or isinstance(owner, bool):
             continue
         if self_session_pid is not None and owner == self_session_pid:
@@ -674,34 +678,44 @@ def start_run(output_dir: Path, command: str,
         prior_pin: tuple[str | None, str] | None = None
         if frozen is not None:
             prior_pin = (frozen.project, frozen.source)
-        elif isinstance(prior, dict) and "project" in prior:
-            _pp = prior.get("project")
-            if _pp is not None and not isinstance(_pp, str):
-                # A pin is a string or null by construction — anything
-                # else is corruption or tampering, and silently
-                # coercing it would strip the pin cross-process.
-                logger.warning(
-                    "run pin in %s has non-string project %r — "
-                    "treating as pinned-projectless; the marker may "
-                    "have been tampered with", output_dir, _pp)
-                _pp = None
-            prior_pin = (_pp,
-                         str(prior.get("project_source") or "none"))
+        else:
+            if isinstance(prior, dict) and "project" in prior:
+                _pp = prior.get("project")
+                if _pp is not None and not isinstance(_pp, str):
+                    # A pin is a string or null by construction —
+                    # anything else is corruption or tampering, and
+                    # silently coercing it would strip the pin
+                    # cross-process.
+                    logger.warning(
+                        "run pin in %s has non-string project %r — "
+                        "treating as pinned-projectless; the marker "
+                        "may have been tampered with", output_dir, _pp)
+                    _pp = None
+                prior_pin = (_pp,
+                             str(prior.get("project_source") or "none"))
             # Out-of-grant witness check: the disk marker sits inside
             # the sandbox write grant; the session ledger's pin record
             # (written at the FIRST start, outside the grant) is the
-            # arbiter for cross-process re-entrant flows. A mismatch
-            # means the marker was rewritten under us.
+            # arbiter for cross-process re-entrant flows. It is
+            # consulted even when the marker carries NO pin — a child
+            # that deletes/corrupts the marker must not convert a
+            # re-entrant start into a fresh ambient re-pin.
             try:
                 from core.project.sessions import ledger_pin_witness
-                found, witnessed = ledger_pin_witness(output_dir)
-                if found and witnessed != prior_pin[0]:
+                found, witnessed, wit_source = ledger_pin_witness(
+                    output_dir)
+                if found and (prior_pin is None
+                              or witnessed != prior_pin[0]):
                     logger.warning(
                         "run pin in %s (%r) disagrees with the session "
                         "ledger witness (%r) — using the witness; the "
                         "marker may have been tampered with",
-                        output_dir, prior_pin[0], witnessed)
-                    prior_pin = (witnessed, prior_pin[1])
+                        output_dir,
+                        prior_pin[0] if prior_pin else "<missing>",
+                        witnessed)
+                    prior_pin = (witnessed,
+                                 (prior_pin[1] if prior_pin
+                                  else wit_source or "session"))
             except Exception:  # noqa: BLE001 — witness is best-effort
                 logger.debug("pin witness check failed", exc_info=True)
         if prior_pin is not None:
@@ -751,7 +765,8 @@ def start_run(output_dir: Path, command: str,
     if session_pid is not None:
         from core.project.sessions import ledger_record_start
         ledger_record_start(output_dir, pid=session_pid,
-                            pin_project=pin_project, record_pin=True)
+                            pin_project=pin_project, record_pin=True,
+                            pin_source=pin_source)
     return output_dir
 
 
@@ -1292,7 +1307,7 @@ def _pin_witness_ok(run_dir, pin) -> bool:
         if str(Path(run_dir).resolve()) in _frozen_pins:
             return True
         from core.project.sessions import ledger_pin_witness
-        found, witnessed = ledger_pin_witness(run_dir)
+        found, witnessed, _wit_source = ledger_pin_witness(run_dir)
         if not found:
             return True
         resolved = pin.project if pin.authoritative else None
@@ -1677,13 +1692,32 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     # and the original owner's line is CAS-marked interrupted so its
     # session's hook stops attributing to a run it no longer owns.
     if session_pid is not None:
-        # Seal the (possibly witness-corrected) pin for THIS process —
-        # segment 2+ must enjoy the same marker-rewrite immunity as the
-        # original owner.
+        # Seal the pin for THIS process — segment 2+ must enjoy the
+        # same marker-rewrite immunity as the original owner. The
+        # marker is verified against the out-of-grant witness FIRST:
+        # a hostile child rewriting project (and status → resumable)
+        # during segment 1 must not be laundered into a trusted
+        # frozen pin here.
         try:
+            from core.project.sessions import ledger_pin_witness
             from core.run.pin import freeze_run_pin, resolve_run_pin
             _pin = resolve_run_pin(output_dir)
-            if _pin.authoritative:
+            _found, _witnessed, _wsource = ledger_pin_witness(output_dir)
+            if _found and _witnessed != (_pin.project
+                                         if _pin.authoritative else None):
+                logger.warning(
+                    "resume: run pin in %s (%r) disagrees with the "
+                    "session ledger witness (%r) — restoring the "
+                    "witness; the marker may have been tampered with",
+                    output_dir,
+                    _pin.project if _pin.authoritative else None,
+                    _witnessed)
+                metadata["project"] = _witnessed
+                metadata["project_source"] = _wsource or "session"
+                save_json(path, metadata)
+                freeze_run_pin(output_dir, _witnessed,
+                               _wsource or "session")
+            elif _pin.authoritative:
                 freeze_run_pin(output_dir, _pin.project, _pin.source)
         except Exception:  # noqa: BLE001 — seal is best-effort
             logger.debug("resume pin seal failed", exc_info=True)

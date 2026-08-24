@@ -29,26 +29,37 @@ def _run_dir_size(d: Path) -> int:
 def split_live_runs(dirs) -> tuple[list, list]:
     """Partition run dirs into ``(rest, live)``.
 
-    A run is *live* when its metadata says ``status=running`` AND the
-    recorded ``tool_pid`` is still alive — deleting or merging it would
-    yank the directory out from under an in-flight process. Runs in
-    ``running`` state whose worker is dead are NOT live (they are stale
-    abandons; the sweep machinery marks them failed, and clean may
-    reclaim them like any other terminal run).
+    A run is *live* when its metadata says ``status=running`` AND
+    either its recorded tool worker OR its owning SESSION is still
+    alive — deleting, merging, or renaming it would yank the directory
+    out from under an in-flight process. The session leg matters for
+    lifecycle-stub runs: their ``tool_pid`` is the stub's shell,
+    dead seconds after start while the run's work continues across
+    later tool calls — the run-start contention gate keys on session
+    liveness, and this predicate must not diverge from it (a run the
+    gate refuses to start next to must not be deletable). Runs whose
+    worker AND session are both dead are stale abandons; the sweep
+    machinery marks them failed, and clean may reclaim them.
     """
     from core.json import load_json
-    from core.run.metadata import RUN_METADATA_FILE, _tool_pid_alive
+    from core.run.metadata import (
+        RUN_METADATA_FILE,
+        _session_alive_for_meta,
+        _tool_pid_alive,
+    )
 
     live: list = []
     rest: list = []
     for d in dirs:
         try:
-            meta = load_json(Path(d) / RUN_METADATA_FILE)
+            meta = load_json(Path(d) / RUN_METADATA_FILE,
+                             max_bytes=1024 * 1024)
         except Exception:  # noqa: BLE001 — unreadable metadata is not live
             meta = None
         if (isinstance(meta, dict)
                 and meta.get("status") == "running"
-                and _tool_pid_alive(meta.get("tool_pid"))):
+                and (_tool_pid_alive(meta.get("tool_pid"))
+                     or _session_alive_for_meta(meta))):
             live.append(d)
         else:
             rest.append(d)

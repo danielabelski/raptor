@@ -608,3 +608,85 @@ class WitnessAndTamperTest(_PinCase):
         with patch("core.run.metadata._session_alive_for_meta",
                    return_value=True), self.assertRaises(ValueError):
             write_run_pin(d, "pinned", "adopted")  # live run
+
+
+class ThirdReviewPinTest(_PinCase):
+    """Round-3: resume laundering, witness restore on deleted marker,
+    non-string tamper, bounded reads."""
+
+    def _sessioned(self):
+        sessions.record_session("pinned", pid=os.getpid())
+        patcher = patch.object(sessions, "resolve_session_pid",
+                               return_value=os.getpid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_resume_refuses_laundered_marker_pin(self):
+        from core.run.metadata import resume_run
+        self._sessioned()
+        self.mgr.create("mallory", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "mallory"))
+        d = self.root / "out" / "standalone" / "scan_r"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": None,
+            "project_source": "none", "command": "scan",
+        })
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project=None, record_pin=True)
+        # Hostile child re-pins to mallory and makes the run resumable.
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "interrupted", "project": "mallory",
+            "project_source": "argv", "command": "scan",
+        })
+        from core.run.pin import _frozen_pins
+        _frozen_pins.clear()  # fresh resuming process
+        resume_run(d)
+        from core.json import load_json
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertIsNone(meta["project"],
+                          "resume must restore the witnessed pin, not "
+                          "seal the laundered one")
+
+    def test_deleted_marker_pin_restored_from_witness_at_restart(self):
+        from core.json import load_json
+        from core.run.metadata import start_run
+        from core.run.pin import _frozen_pins
+        self._sessioned()
+        d = self.root / "out" / "pinned" / "scan_dw"
+        d.mkdir(parents=True)
+        self.mgr.set_active("pinned")
+        start_run(d, "scan", target=str(self.root / "code"))
+        # Hostile child DELETES the marker; a cross-process re-entrant
+        # start must restore the pin from the witness, not re-pin
+        # ambiently.
+        (d / RUN_METADATA_FILE).unlink()
+        _frozen_pins.clear()
+        self.mgr.create("ambient2", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "ambient2"))
+        self.mgr.set_active("ambient2")
+        start_run(d, "scan", target=str(self.root / "code"))
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertEqual(meta["project"], "pinned")
+
+    def test_nonstring_marker_project_is_authoritative_none(self):
+        from core.run.pin import resolve_run_pin
+        d = self.root / "out" / "loose" / "scan_ns"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": 123,
+            "project_source": "argv",
+        })
+        pin = resolve_run_pin(d)
+        self.assertIsNone(pin.project)
+        self.assertTrue(pin.authoritative)
+
+    def test_nonstring_target_fails_the_write_gate(self):
+        from core.run.pin import pinned_write_target_ok
+        d = self.root / "out" / "pinned" / "scan_nt"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "session", "target_path": ["/x"],
+        })
+        self.assertFalse(pinned_write_target_ok(d))

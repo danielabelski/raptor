@@ -335,8 +335,8 @@ def _check_target_mismatch(target_path: str, project_name: str,
     msg = (
         f"target {target_path} is outside project {project_name} ({project_target})\n"
         f"  A project tracks one target. To analyze a different codebase:\n"
-        f"    /project create <name> --target {target_path}\n"
-        f"    /project use <name>\n"
-        f"  Or run without a project: /project use none"
+        f"    /project create <name> --target {target_path}   (activates for this session)\n"
+        f"  Or pin just this run: pass --project <name> (or --project - for no project)\n"
+        f"  Or clear this session's project: /project none"
     )
     raise TargetMismatchError(msg)

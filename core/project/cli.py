@@ -367,6 +367,10 @@ def main() -> None:
     sub.add_parser("none", help="Clear the active project (alias for 'use none')", **_F)
 
     # list
+    sub.add_parser(
+        "sessions",
+        help="Show live sessions and their project bindings",
+        usage="raptor project sessions", **_F)
     sub.add_parser("list", help="Show all projects",
                    usage="raptor project list", **_F)
 
@@ -761,19 +765,35 @@ def main() -> None:
         elif args.subcommand == "threat-model":
             _handle_threat_model(mgr, args)
 
+        elif args.subcommand == "sessions":
+            _print_sessions(mgr)
+
         elif args.subcommand == "list":
             projects = mgr.list_projects()
             if not projects:
                 print("No projects.")
                 return
-            active = mgr.get_active()
-            # Compute column width from actual names (+ 2 for "* " marker)
+            # Two layers, two markers: * = this session's binding
+            # (layered resolution), > = the last-activated default
+            # (raw bookmark). They can legitimately differ.
+            binding = mgr.get_active()
+            bookmark = _read_bookmark(mgr)
             max_name = max(len(p.name) for p in projects)
             col = max(max_name + 2, 12)
+            any_marker = False
             for p in projects:
-                marker = "* " if p.name == active else "  "
+                if p.name == binding:
+                    marker = "* "
+                elif p.name == bookmark:
+                    marker = "> "
+                else:
+                    marker = "  "
+                any_marker = any_marker or marker != "  "
                 desc = f"  {p.description}" if p.description else ""
                 print(f"{marker}{p.name:<{col}s}{desc:30s}  {p.target}")
+            if any_marker:
+                print("  (* this session's project; "
+                      "> last-activated default)")
 
         elif args.subcommand == "status":
             name = args.name or _get_active_project()
@@ -784,6 +804,7 @@ def main() -> None:
             if not p:
                 print(f"Project '{name}' not found.")
                 return
+            _print_layer_header(mgr, name)
             _print_status(p)
 
         elif args.subcommand == "coverage":
@@ -1353,6 +1374,54 @@ def _read_bookmark(mgr) -> str | None:
     if target.endswith(".json") and "/" not in target and "\\" not in target:
         return target[:-5]
     return None
+
+
+def _print_layer_header(mgr, name: str) -> None:
+    """One line naming the layers: binding, default, live sessions."""
+    try:
+        from core.project import sessions as _sessions
+        binding = mgr.get_active()
+        bookmark = _read_bookmark(mgr)
+        live = sum(
+            1 for _pid, fields in _sessions.read_sessions().items()
+            if fields.get("project") == name
+        )
+        bits = [f"Project: {name}"]
+        if binding == name:
+            bits[0] += " (this session)"
+        if bookmark:
+            bits.append(f"last activated: {bookmark}")
+        bits.append(f"sessions on {name}: {live} live")
+        print(" · ".join(bits))
+    except Exception:  # noqa: BLE001 — header is decoration, never fatal
+        pass
+
+
+def _print_sessions(mgr) -> None:
+    """Live/stale/foreign session rows with their bindings."""
+    from core.project import sessions as _sessions
+    entries = _sessions.read_sessions(prune=False, include_stale=True)
+    if not entries:
+        print("No registered sessions.")
+        return
+    from core.security.log_sanitisation import sanitise_for_terminal
+    print(f"{'PID':>9}  {'STATE':<9} {'PROJECT':<24} SINCE")
+    for pid in sorted(entries):
+        fields = entries[pid]
+        state = fields.get("_state", "live")
+        project = fields.get("project") or "?"
+        if project == "-":
+            project = "(none — explicitly cleared)"
+        label = {"advisory": "advisory",
+                 "foreign": "foreign",
+                 "stale": "stale",
+                 "live": "live"}.get(state, state)
+        since = sanitise_for_terminal(
+            str(fields.get("since") or "unknown"), max_len=32)
+        project = sanitise_for_terminal(str(project), max_len=40)
+        print(f"{pid:>9}  {label:<9} {project:<24} {since}")
+    bookmark = _read_bookmark(mgr)
+    print(f"Last-activated default: {bookmark or '(none)'}")
 
 
 def _get_active_project():

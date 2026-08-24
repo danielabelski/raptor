@@ -113,11 +113,11 @@ class TestTargetMismatch(unittest.TestCase):
                     get_output_dir("scan", target_path=other)
                 self.assertIn("outside project", str(ctx.exception))
                 self.assertIn("/project create", str(ctx.exception))
-                # Remediation must activate the new project (the old
-                # text said create-then-'use none', which changed
-                # nothing) and offer the standalone escape hatch.
-                self.assertIn("/project use <name>", str(ctx.exception))
-                self.assertIn("/project use none", str(ctx.exception))
+                # Remediation reflects the session model: create
+                # activates for THIS session; --project pins a single
+                # run; /project none is the session-only clear.
+                self.assertIn("--project", str(ctx.exception))
+                self.assertIn("/project none", str(ctx.exception))
 
     def test_url_target_skips_check(self):
         """/web targets are URLs, not paths — never a mismatch."""

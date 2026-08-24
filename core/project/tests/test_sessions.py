@@ -828,3 +828,75 @@ class LauncherSeedV2Test(LauncherAwarenessTest):
             r = self._launch(home, tmpdir)
             self.assertNotIn("RAPTOR_RESOLVED_PROJECT", r.stdout)
             self.assertNotIn("RAPTOR_RESOLVED_PROJECT", r.stderr)
+
+
+class SessionsSubcommandTest(unittest.TestCase):
+    """`/project sessions` renders live/stale/foreign/advisory rows."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.projects_dir = root / "projects"
+        self.sessions_dir = root / "sessions.d"
+        self.sessions_dir.mkdir(parents=True)
+        (root / "code").mkdir()
+        ProjectManager(projects_dir=self.projects_dir).create(
+            "myapp", str(root / "code"),
+            output_dir=str(root / "out" / "myapp"))
+        for p in (
+            patch.object(sessions, "SESSIONS_DIR", self.sessions_dir),
+            patch("core.project.project.PROJECTS_DIR", self.projects_dir),
+            patch.object(sessions, "_comm",
+                         lambda pid: "claude" if pid == os.getpid()
+                         else None),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with patch.object(sys, "argv", ["raptor-project", *argv]), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            try:
+                main()
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+        return code, out.getvalue(), err.getvalue()
+
+    def test_rows_and_states(self):
+        sessions.record_session("myapp", pid=os.getpid())      # live
+        (self.sessions_dir / str(DEAD_PID)).write_text(
+            "project=myapp\nsince=x\n", encoding="utf-8")      # v1 dead
+        (self.sessions_dir / "111").write_text(
+            "v=2\nproject=other\nsince=x\nstarttime=1\n"
+            "boot_id=00000000-dead-beef-0000-000000000000\n"
+            "pidns=1\n", encoding="utf-8")                     # foreign
+        code, out, _ = self._run("sessions")
+        self.assertEqual(code, 0)
+        self.assertIn(str(os.getpid()), out)
+        self.assertIn("live", out)
+        self.assertIn("foreign", out)
+        self.assertIn("stale", out)
+        self.assertIn("Last-activated default", out)
+
+    def test_empty_registry(self):
+        code, out, _ = self._run("sessions")
+        self.assertEqual(code, 0)
+        self.assertIn("No registered sessions", out)
+
+    def test_list_shows_two_markers(self):
+        mgr = ProjectManager(projects_dir=self.projects_dir)
+        mgr.create("bookmarked", str(Path(self._tmp.name) / "code"),
+                   output_dir=str(Path(self._tmp.name) / "out" / "b"))
+        mgr.set_active("bookmarked")
+        sessions.record_session("myapp", pid=os.getpid())
+        with patch.object(sessions, "resolve_session_pid",
+                          return_value=os.getpid()):
+            code, out, _ = self._run("list")
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"\* myapp")
+        self.assertRegex(out, r"> bookmarked")
+        self.assertIn("this session's project", out)

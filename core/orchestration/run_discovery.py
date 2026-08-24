@@ -32,6 +32,7 @@ def find_sibling_run(
     search_global: bool = True,
     exclude: Path | None = None,
     search_root: Path | None = None,
+    target_path: Path | str | None = None,
 ) -> Path | None:
     """Find the most recent sibling run directory containing a marker file.
 
@@ -56,6 +57,7 @@ def find_sibling_run(
         search_global=search_global,
         exclude=exclude,
         search_root=search_root,
+        target_path=target_path,
     )
     return _pick_newest(candidates, marker)
 
@@ -68,8 +70,22 @@ def collect_sibling_runs(
     search_global: bool = True,
     exclude: Path | None = None,
     search_root: Path | None = None,
+    target_path: Path | str | None = None,
 ) -> list[Path]:
     """Collect all sibling run directories containing a marker file.
+
+    Tier 0 is the session RUN LEDGER — the exact list of runs this
+    session produced (project and standalone alike): the natural cache
+    scope for the /understand → /validate handoff, and it can never
+    pick up a NEIGHBOUR session's in-flight run the way a bare
+    newest-dir scan can. Ledger entries are candidate HINTS only —
+    the marker, dir_filter, and target gate still decide.
+
+    ``target_path`` is the recorded-target gate: a candidate whose
+    ``.raptor-run.json`` records a DIFFERENT target is rejected
+    (metadata-less legacy dirs are admitted, as the audit bridge
+    always did) — cross-target artifacts must never steer a run just
+    because they share an out root.
 
     Returns deduplicated list (by resolved path), unsorted.
     """
@@ -79,19 +95,68 @@ def collect_sibling_runs(
     seen: set = set()
     results: list[Path] = []
 
+    for led in _ledger_candidates(marker, exclude, dir_filter):
+        key = str(led)
+        if key not in seen:
+            seen.add(key)
+            results.append(led)
+
     parent = Path(search_root) if search_root else origin_dir.parent
     _scan_dir(parent, marker, exclude, dir_filter, seen, results)
 
-    if search_global and results == []:
+    if search_global and not results:
         try:
             from core.config import RaptorConfig
             out_root = Path(RaptorConfig.get_out_dir())
         except Exception:
             out_root = None
         if out_root and out_root.is_dir() and out_root.resolve() != parent.resolve():
-            _scan_dir(out_root, marker, exclude, dir_filter, seen, results)
+            _scan_dir(out_root, marker, exclude, seen=seen, results=results,
+                      dir_filter=dir_filter)
 
+    if target_path is not None:
+        results = [d for d in results
+                   if recorded_target_matches(d, target_path)]
     return results
+
+
+def _ledger_candidates(marker, exclude, dir_filter):
+    """Session-ledger run dirs carrying *marker* (tier 0)."""
+    out = []
+    try:
+        from core.project.sessions import ledger_runs
+        for record in ledger_runs():
+            d = Path(record["run_dir"])
+            try:
+                if (d.resolve() == Path(exclude).resolve()
+                        or not (d / marker).is_file()):
+                    continue
+            except OSError:
+                continue
+            if dir_filter is not None and not dir_filter(d):
+                continue
+            out.append(d)
+    except Exception:  # noqa: BLE001 — tier 0 is an aid, never a gate
+        logger.debug("ledger tier-0 discovery failed", exc_info=True)
+    return out
+
+
+def recorded_target_matches(run_dir: Path,
+                            target_path: Path | str) -> bool:
+    """False only when the candidate's run metadata records a target
+    that is NOT *target_path* (resolved comparison, containment
+    either way). Metadata-less dirs are admitted — legacy tolerance."""
+    try:
+        from core.json import load_json
+        meta = load_json(Path(run_dir) / ".raptor-run.json")
+        recorded = (meta or {}).get("target_path") if isinstance(meta, dict) else None
+        if not recorded:
+            return True
+        a = Path(recorded).resolve()
+        b = Path(target_path).resolve()
+        return a == b or a in b.parents or b in a.parents
+    except Exception:  # noqa: BLE001 — unreadable metadata: admit (legacy)
+        return True
 
 
 def _scan_dir(

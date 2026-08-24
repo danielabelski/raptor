@@ -58,6 +58,16 @@ def discover_audit_dict(out_dir: Path | None) -> Path | None:
         for sibling in parent.iterdir():
             if sibling == out_dir or not sibling.is_dir():
                 continue
+            # A neighbour session's IN-FLIGHT run may hold a
+            # half-written dictionary; finished siblings only.
+            try:
+                from core.json import load_json
+                smeta = load_json(sibling / ".raptor-run.json")
+                if (isinstance(smeta, dict)
+                        and smeta.get("status") == "running"):
+                    continue
+            except Exception:  # noqa: BLE001 — admit (legacy dirs)
+                pass
             cand = sibling / DICT_FILENAME
             if _usable(cand):
                 candidates.append(cand)

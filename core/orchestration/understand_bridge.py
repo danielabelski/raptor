@@ -165,6 +165,31 @@ def _collect_candidates(
     seen: set = set()
     results: list[Path] = []
 
+    # Tier 0: the session RUN LEDGER — the exact runs this session
+    # produced (project AND standalone), the natural cache scope for
+    # the /understand → /validate handoff, and immune to picking up a
+    # neighbour session's in-flight run. Hints only: the existing
+    # target-path and freshness gates below still decide.
+    try:
+        from core.project.sessions import ledger_runs
+        for record in ledger_runs():
+            d = Path(record["run_dir"])
+            try:
+                resolved = d.resolve()
+            except OSError:
+                continue
+            if (resolved == validate_dir.resolve() or resolved in seen
+                    or not d.is_dir()):
+                continue
+            if _search_understand_dirs(d.parent, exclude=None,
+                                       require_target=target_path,
+                                       only=d):
+                seen.add(resolved)
+                results.append(d)
+    except Exception:  # noqa: BLE001 — tier 0 is an aid, never a gate
+        logger.debug("understand bridge: ledger tier failed",
+                     exc_info=True)
+
     # Tier 2: project sibling directories
     parent = validate_dir.parent  # e.g. out/projects/myapp/
     for d in _search_understand_dirs(parent, exclude=validate_dir,
@@ -347,6 +372,7 @@ def _search_understand_dirs(
     parent_dir: Path,
     exclude: Path | None = None,
     require_target: str | None = None,
+    only: Path | None = None,
 ) -> list[Path]:
     """Find understand run directories under parent_dir.
 
@@ -355,6 +381,8 @@ def _search_understand_dirs(
         exclude: Directory to skip (typically the validate dir itself).
         require_target: If set, only return dirs whose checklist.json
             target_path resolves to this path.
+        only: Vet exactly this one candidate dir (the ledger tier hands
+            exact run dirs; the same command/marker/target gates apply).
 
     Returns:
         List of matching directories, sorted newest-first by mtime.
@@ -378,7 +406,7 @@ def _search_understand_dirs(
 
     results = []
     try:
-        children = list(parent_dir.iterdir())
+        children = [only] if only is not None else list(parent_dir.iterdir())
     except OSError as exc:
         # parent_dir itself unreadable (PermissionError, ENOTDIR
         # mid-call from a racing remount). Pre-fix the loop just

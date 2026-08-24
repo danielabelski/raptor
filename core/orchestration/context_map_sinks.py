@@ -690,13 +690,32 @@ def _merge_iris_sinks(
 
 
 def _find_discovered_sinks(run_dir: Path) -> dict[str, Any] | None:
-    """Locate discovered-sinks.json: co-located, then project siblings."""
+    """Locate discovered-sinks.json: co-located, then project siblings.
+
+    Siblings pass the recorded-target gate — the pre-fix raw
+    newest-first parent scan merged another TARGET's audit sink
+    catalog into this target's context map whenever standalone runs
+    shared the out root, poisoning /understand → /validate.
+    """
     candidates = [run_dir / "discovered-sinks.json"]
     parent = run_dir.parent
+    own_target = None
+    try:
+        meta = load_json(run_dir / ".raptor-run.json")
+        own_target = ((meta or {}).get("target_path")
+                      if isinstance(meta, dict) else None)
+    except Exception:  # noqa: BLE001 — gate degrades to legacy
+        own_target = None
     try:
         if parent.is_dir():
+            from core.orchestration.run_discovery import (
+                recorded_target_matches,
+            )
             for sibling in sorted(parent.iterdir(), reverse=True):
                 if sibling == run_dir or not sibling.is_dir():
+                    continue
+                if own_target and not recorded_target_matches(
+                        sibling, own_target):
                     continue
                 candidates.append(sibling / "discovered-sinks.json")
     except OSError:

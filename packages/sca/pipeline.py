@@ -1575,12 +1575,34 @@ def _find_previous_deps(output_dir: Path) -> Path | None:
         siblings = list(parent.iterdir())
     except PermissionError:
         return None
+    own_target = None
+    try:
+        from core.json import load_json
+        _meta = load_json(output_dir / ".raptor-run.json")
+        own_target = (_meta or {}).get("target_path")             if isinstance(_meta, dict) else None
+    except Exception:  # noqa: BLE001 — gate degrades to legacy
+        own_target = None
     for sibling in siblings:
         if sibling == output_dir:
             continue
         try:
             if not sibling.is_dir():
                 continue
+            # Recorded-target + in-flight gates: the pre-fix
+            # newest-mtime pick fed another target's (or a neighbour
+            # session's HALF-WRITTEN) dependency list into the LLM
+            # version-diff as "previous versions".
+            try:
+                from core.json import load_json
+                smeta = load_json(sibling / ".raptor-run.json")
+                if isinstance(smeta, dict):
+                    if smeta.get("status") == "running":
+                        continue
+                    rec = smeta.get("target_path")
+                    if own_target and rec and                             Path(rec).resolve() != Path(own_target).resolve():
+                        continue
+            except Exception:  # noqa: BLE001 — admit (legacy dirs)
+                pass
             findings = sibling / "findings.json"
             if findings.exists():
                 candidates.append(findings)

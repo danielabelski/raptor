@@ -545,6 +545,20 @@ def _check_target_match(
     return checklist.get("target", "") == str(target_path)
 
 
+def _run_in_flight(candidate: Path) -> bool:
+    """True when the candidate run is still status=running — a
+    NEIGHBOUR session's in-flight validate run has a partial
+    findings.json that must never be imported as evidence (the target
+    gate alone admitted it)."""
+    try:
+        from core.json import load_json
+        meta = load_json(candidate / ".raptor-run.json")
+        return bool(isinstance(meta, dict)
+                    and meta.get("status") == "running")
+    except Exception:  # noqa: BLE001 — unreadable metadata: not in flight
+        return False
+
+
 def import_validate_evidence(
     audit_output_dir: Path,
     target_path: Path,
@@ -660,6 +674,8 @@ def import_validate_evidence(
                 continue
             if not _check_target_match(sibling, target_path):
                 continue
+            if _run_in_flight(sibling):
+                continue
 
             sibling_findings = _sanitised_findings(
                 _load_json(sibling / "findings.json"), sibling,
@@ -697,6 +713,8 @@ def import_validate_evidence(
             ):
                 continue
             if not _check_target_match(candidate, target_path):
+                continue
+            if _run_in_flight(candidate):
                 continue
 
             candidate_findings = _sanitised_findings(

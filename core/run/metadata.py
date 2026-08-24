@@ -734,19 +734,34 @@ def start_run(output_dir: Path, command: str,
                 # disambiguates.
                 _fresh_project, _fresh_source = resolve_pin_for_start()
                 if _fresh_project != prior_pin[0]:
-                    _keep = prior_pin[0] if prior_pin[0] else "-"
-                    _fresh = _fresh_project if _fresh_project else "-"
-                    msg = (
-                        f"the run dir {output_dir} carries an "
-                        f"uncorroborated pin to "
-                        f"{prior_pin[0] or 'no project'!r} (no ledger "
-                        f"witness — reused across a relaunch, or a "
-                        f"pre-existing marker), while this start "
-                        f"resolves to {_fresh_project or 'no project'!r}."
-                        f" Pass --project {_keep} to keep the dir's "
-                        f"pin, or --project {_fresh} to re-pin it."
-                    )
-                    raise ProjectArgvError(msg)
+                    if get_process_project() is not None:
+                        # An explicit --project IS the operator's
+                        # disambiguation: re-pin to it. (Without this,
+                        # the error's own "--project <fresh>" remedy
+                        # re-derived the same disagreement here and
+                        # looped on the same hard error.)
+                        logger.warning(
+                            "re-pinning %s from uncorroborated %r to "
+                            "%r per explicit --project", output_dir,
+                            prior_pin[0], _fresh_project)
+                        prior_pin = (_fresh_project, _fresh_source)
+                    else:
+                        _keep = prior_pin[0] if prior_pin[0] else "-"
+                        _fresh = (_fresh_project if _fresh_project
+                                  else "-")
+                        msg = (
+                            f"the run dir {output_dir} carries an "
+                            f"uncorroborated pin to "
+                            f"{prior_pin[0] or 'no project'!r} (no "
+                            f"ledger witness — reused across a "
+                            f"relaunch, or a pre-existing marker), "
+                            f"while this start resolves to "
+                            f"{_fresh_project or 'no project'!r}. "
+                            f"Pass --project {_keep} to keep the "
+                            f"dir's pin, or --project {_fresh} to "
+                            f"re-pin it."
+                        )
+                        raise ProjectArgvError(msg)
         if prior_pin is not None:
             pin_project, pin_source = prior_pin
             override = get_process_project()

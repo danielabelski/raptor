@@ -622,3 +622,49 @@ class AddRepairScopeTest(unittest.TestCase):
         self.mgr.add_directory("myapp", str(d))
         meta = load_json(d / ".raptor-run.json")
         self.assertEqual(meta["project"], "myapp")
+
+
+class MarkerRemnantContainerTest(unittest.TestCase):
+    """A run dir whose marker was destroyed (remnant lock file, or
+    located inside the project) must never be treated as a CONTAINER —
+    container semantics would adopt a planted subdir as a run."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("victim", self.target_code,
+                        output_dir=self.output_dir)
+
+    def _plundered_run(self, base: Path) -> Path:
+        run = base / "scan_x"
+        plant = run / "afl-out"
+        plant.mkdir(parents=True)
+        from core.json import save_json
+        # marker destroyed; lock remnant survives; planted subdir marker
+        (run / ".raptor-run.json.lock").write_text("")
+        save_json(plant / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+        })
+        (plant / "findings.json").write_text("[]")
+        return run
+
+    def test_inside_project_repair_never_adopts_the_plant(self):
+        run = self._plundered_run(Path(self.output_dir))
+        self.mgr.add_directory("victim", str(run))
+        self.assertTrue((run / "afl-out").is_dir(),
+                        "the plant must stay where it is")
+        self.assertFalse(
+            (Path(self.output_dir) / "afl-out").exists(),
+            "the plant must never be adopted as a run")
+
+    def test_external_remnant_dir_never_adopts_the_plant(self):
+        run = self._plundered_run(Path(self.tmpdir.name) / "elsewhere")
+        self.mgr.add_directory("victim", str(run))
+        self.assertFalse(
+            (Path(self.output_dir) / "afl-out").exists(),
+            "the plant must never be adopted as a run")

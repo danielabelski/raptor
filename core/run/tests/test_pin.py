@@ -452,13 +452,34 @@ class PinFreezeCacheTest(_PinCase):
         self.mgr.set_active("ambient3")
         with self.assertRaises(ProjectArgvError):
             start_run(d, "scan", target=str(self.root / "code"))
-        # Explicit --project resolves the ambiguity either way.
-        set_process_project("pinned")
+        # Explicit --project resolves the ambiguity EITHER way: the
+        # error's own remedies must both work.
+        set_process_project("ambient3")   # re-pin to the fresh side
         try:
             start_run(d, "scan", target=str(self.root / "code"))
         finally:
             set_process_project(None)
         from core.run.metadata import load_run_metadata
+        self.assertEqual(load_run_metadata(d)["project"], "ambient3")
+
+    def test_uncorroborated_keep_side_override_works(self):
+        from core.json import save_json as _sj
+        from core.run.metadata import load_run_metadata, start_run
+        from core.run.pin import set_process_project
+        d = self.root / "out" / "reused3"
+        d.mkdir(parents=True)
+        _sj(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "argv",
+        })
+        self.mgr.create("ambient4", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "ambient4"))
+        self.mgr.set_active("ambient4")
+        set_process_project("pinned")   # keep the dir's pin
+        try:
+            start_run(d, "scan", target=str(self.root / "code"))
+        finally:
+            set_process_project(None)
         self.assertEqual(load_run_metadata(d)["project"], "pinned")
 
     def test_uncorroborated_agreement_stands_silently(self):

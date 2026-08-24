@@ -1374,9 +1374,25 @@ class ProjectManager:
             child.is_dir() and is_run_directory(child, strict=True)
             for child in src.iterdir()
         )
-        _is_container = ((src / "project.json").is_file()
-                         or (_has_child_runs
-                             and not is_run_directory(src, strict=True)))
+        # Run-marker REMNANTS count as run-dir evidence: a hostile
+        # child can delete <run>/.raptor-run.json and plant a marker
+        # in its own subdir — container semantics would then ADOPT
+        # the plant as a first-class run via the operator's repair
+        # command. The metadata lock file survives the deletion.
+        _run_remnants = (src / ".raptor-run.json.lock").exists()
+        # And a src already INSIDE this project's output dir is a
+        # REPAIR, never an import of its subdirectories.
+        try:
+            _inside_project = src.resolve().is_relative_to(
+                project.output_path.resolve())
+        except (OSError, ValueError):
+            _inside_project = False
+        _is_container = (not _inside_project
+                         and not _run_remnants
+                         and ((src / "project.json").is_file()
+                              or (_has_child_runs
+                                  and not is_run_directory(
+                                      src, strict=True))))
         if is_run_directory(src, strict=False) and not _is_container:
             # Single run directory
             if _adopt_one(src):

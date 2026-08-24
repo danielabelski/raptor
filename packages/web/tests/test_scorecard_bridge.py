@@ -152,3 +152,48 @@ class TestGroundTruthGranularity(unittest.TestCase):
 
         llm = NS(config=_Config())
         self.assertEqual(_payload_model_name(llm), "codegen-model")
+
+
+class TestPayloadProvenance(unittest.TestCase):
+    def test_static_fallback_findings_are_marked_and_skipped(self):
+        from unittest.mock import MagicMock as _MM
+
+        from packages.web.fuzzer import WebFuzzer
+
+        client = _MM()
+        client.reveal_secrets = False
+        response = _MM(status_code=500, content=b"sql syntax error near",
+                       text="You have an error in your SQL syntax")
+        baseline = _MM(status_code=200, content=b"ok", text="ok")
+        client.get.side_effect = [baseline, response] * 50
+        fuzzer = WebFuzzer(client, llm=None)  # static payloads only
+
+        findings = fuzzer.fuzz_parameter(
+            "https://t.example/s", "q", vulnerability_types=["sqli"],
+        )
+
+        self.assertTrue(findings)
+        self.assertEqual(findings[0].get("payload_source"), "static")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from core.llm.scorecard.scorecard import ModelScorecard
+
+            llm = _FakeLlm(ModelScorecard(Path(tmpdir) / "sc.json"))
+            hit = dict(findings[0])
+            hit["endpoint"] = "https://t.example/s"
+            hit["parameter"] = "q"
+            hit["verification"] = {"status": "verified"}
+            self.assertEqual(
+                record_web_oracle_outcomes(llm, [hit], run_id="r1"), 0,
+            )
+
+    def test_absent_provenance_keeps_recording(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from core.llm.scorecard.scorecard import ModelScorecard
+
+            llm = _FakeLlm(ModelScorecard(Path(tmpdir) / "sc.json"))
+            hit = _hit("sqli", "verified")
+            hit["payload"] = "' OR 1=1--"
+            self.assertEqual(
+                record_web_oracle_outcomes(llm, [hit], run_id="r1"), 1,
+            )

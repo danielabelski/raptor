@@ -85,6 +85,13 @@ class WebFuzzer:
         # paid one redundant LLM call per extra location.
         self._payload_cache: dict[tuple, list[str]] = {}
         self._payload_cache_hits: int = 0
+        # Payload strings that came from the static fallback tables
+        # rather than the LLM. Findings carry the provenance so the
+        # scorecard never credits a model for payloads it didn't
+        # write. Marking by string is conservative in the right
+        # direction: an LLM emitting a byte-identical basic payload
+        # under-credits the model rather than over-crediting it.
+        self._static_payloads: set[str] = set()
 
         logger.info(
             "Intelligent web fuzzer initialized (%s)",
@@ -207,7 +214,9 @@ class WebFuzzer:
         Without an LLM the static fallbacks are used directly.
         """
         if self.llm is None:
-            return self._get_basic_payloads(vuln_type, param_name=param_name)
+            return self._mark_static(
+                self._get_basic_payloads(vuln_type, param_name=param_name),
+            )
 
         cache_key = (param_name, param_type, vuln_type)
         cached = self._payload_cache.get(cache_key)
@@ -298,7 +307,16 @@ class WebFuzzer:
                 redact_secrets(str(e), reveal_secrets=self.client.reveal_secrets),
             )
             # Fallback to basic payloads
-            return self._get_basic_payloads(vuln_type, param_name=param_name)
+            return self._mark_static(
+                self._get_basic_payloads(vuln_type, param_name=param_name),
+            )
+
+    def _mark_static(self, payloads: list[str]) -> list[str]:
+        self._static_payloads.update(payloads)
+        return payloads
+
+    def _payload_source(self, payload: str) -> str:
+        return "static" if payload in self._static_payloads else "llm"
 
     def _get_basic_payloads(self, vuln_type: str, param_name: str = "") -> list[str]:
         """Fallback basic payloads when no LLM is available (or it fails).
@@ -363,6 +381,7 @@ class WebFuzzer:
                     'url': redact_secrets(url, reveal_secrets=self.client.reveal_secrets),
                     'parameter': param_name,
                     'payload': payload,
+                    'payload_source': self._payload_source(payload),
                     'vulnerability_type': vuln_type,
                     'method': method.upper(),
                     'status_code': response.status_code,
@@ -503,6 +522,7 @@ class WebFuzzer:
                     'url': redact_secrets(url, reveal_secrets=self.client.reveal_secrets),
                     'parameter': ".".join(field_path),
                     'payload': payload,
+                    'payload_source': self._payload_source(payload),
                     'vulnerability_type': vuln_type,
                     'method': "POST",
                     'attack_vector': "json_body",

@@ -103,6 +103,11 @@ def record_web_oracle_outcomes(
         rule = _RULE_BY_VULN.get(str(hit.get("vulnerability_type") or ""))
         if rule is None:
             continue
+        if hit.get("payload_source") == "static":
+            # Fallback payloads carry no model decision — crediting
+            # (or blaming) the generation model for them poisons the
+            # cells. Absent provenance keeps the pre-field behavior.
+            continue
         endpoint = str(hit.get("endpoint") or hit.get("url") or "")
         payload_tag = sha256_string(str(hit.get("payload") or ""))[:8]
         finding_id = (

@@ -512,8 +512,8 @@ class WriteRunPinTest(_PinCase):
 
 
 class WitnessAndTamperTest(_PinCase):
-    """Second review round: the out-of-grant ledger witness, tampered
-    markers failing closed, and the out-root capture stop."""
+    """The out-of-grant ledger witness, tampered markers failing
+    closed, and the out-root capture stop."""
 
     def _sessioned(self):
         sessions.record_session("pinned", pid=os.getpid())
@@ -610,8 +610,8 @@ class WitnessAndTamperTest(_PinCase):
             write_run_pin(d, "pinned", "adopted")  # live run
 
 
-class ThirdReviewPinTest(_PinCase):
-    """Round-3: resume laundering, witness restore on deleted marker,
+class ResumeAndTamperTest(_PinCase):
+    """Resume laundering, witness restore on deleted marker,
     non-string tamper, bounded reads."""
 
     def _sessioned(self):

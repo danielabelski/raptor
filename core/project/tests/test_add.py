@@ -351,9 +351,9 @@ class AdoptionPinRewriteTest(unittest.TestCase):
         self.assertEqual(meta["project_source"], "none")
 
 
-class SecondReviewProjectTest(unittest.TestCase):
-    """Second review round: rename pin rewrite, container detection,
-    remove_run traversal, delete live-run guard."""
+class ProjectMutationGuardTest(unittest.TestCase):
+    """Rename pin rewrite, container detection, remove_run traversal,
+    delete live-run guard."""
 
     def setUp(self):
         self.tmpdir = TemporaryDirectory()
@@ -439,9 +439,9 @@ class SecondReviewProjectTest(unittest.TestCase):
             self.mgr.delete("myapp")
 
 
-class ThirdReviewRenameTest(unittest.TestCase):
-    """Round-3: rename rewrites external pins + witnesses; URL targets
-    stay opaque in the discovery gate."""
+class RenameExternalRunsTest(unittest.TestCase):
+    """Rename rewrites external pins + witnesses; URL targets stay
+    opaque in the discovery gate."""
 
     def setUp(self):
         self.tmpdir = TemporaryDirectory()

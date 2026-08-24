@@ -918,8 +918,8 @@ class SessionsSubcommandTest(unittest.TestCase):
 
 
 class LedgerHardeningTest(_RegistryCase):
-    """Remediation regressions: recycled-pid ledger reset, orphan
-    reaping, finish dir-match CAS, stale-credential drop."""
+    """Recycled-pid ledger reset, orphan reaping, finish dir-match
+    CAS, stale-credential drop."""
 
     def _mk_run(self, name: str, status: str = "running") -> Path:
         d = Path(self._tmp.name) / "runs" / name
@@ -980,9 +980,9 @@ class LedgerHardeningTest(_RegistryCase):
         self.assertEqual([r["status"] for r in runs], ["completed"])
 
 
-class SecondReviewRegressionTest(_RegistryCase):
-    """Second adversarial-review round: comm poisoning, sibling-record
-    erasure, pin witness, env-credential robustness."""
+class RegistryHostileInputTest(_RegistryCase):
+    """Comm poisoning, sibling-record erasure, pin witness,
+    env-credential robustness."""
 
     def _mk_run(self, name: str) -> Path:
         d = Path(self._tmp.name) / "runs" / name
@@ -1074,9 +1074,9 @@ class SecondReviewRegressionTest(_RegistryCase):
         self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)
 
 
-class ThirdReviewRegressionTest(_RegistryCase):
-    """Round-3 findings: witness lifecycle, ledger budgets, corruption
-    fail-direction, reap/writer races."""
+class WitnessLifecycleTest(_RegistryCase):
+    """Witness lifecycle, ledger budgets, corruption fail-direction,
+    reap/writer races."""
 
     def _mk_run(self, name: str, status: str = "running") -> Path:
         d = Path(self._tmp.name) / "runs" / name

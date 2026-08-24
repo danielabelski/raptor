@@ -168,6 +168,13 @@ def generate_report(
     dark_findings = _load_dark_findings(out_dir)
     if dark_findings:
         report["dark_findings"] = dark_findings
+        # Completeness honesty: dark rows the /validate post-pass never
+        # adjudicated (cap-deferred, or the post-pass never ran) are
+        # stated with the exact follow-up command — they must not
+        # dead-end silently.
+        _annotate_dark_awaiting(
+            completeness, out_dir, len(dark_findings), target_path,
+        )
 
     # Finding-survival metric: per-evidence-channel /validate outcomes
     # (pure read-side aggregation over the journal — empty until a
@@ -805,6 +812,71 @@ def _load_dark_findings(out_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _annotate_dark_awaiting(
+    completeness: dict[str, Any],
+    out_dir: Path,
+    dark_total: int,
+    target_path: Path | None,
+) -> None:
+    """State how many dark findings are still awaiting /validate.
+
+    Reads ``validate-postpass.json`` (written by ``core.audit.validate``
+    with the post-pass selection record). When the record is absent —
+    the post-pass never ran, or predates the record — every dark row
+    counts as awaiting. Sets ``dark_awaiting`` + ``dark_followup`` on
+    the completeness block; a zero-awaiting run sets neither.
+    """
+    awaiting = dark_total
+    followup = ""
+    record = None
+    record_path = out_dir / "validate-postpass.json"
+    if record_path.is_file():
+        record = load_json(record_path, max_bytes=_MAX_RUN_META_BYTES)
+    if isinstance(record, dict):
+        raw_followup = record.get("followup_command")
+        # The record lives in a directory the dispatched CC child can
+        # write — accept only a /validate command shape from it and
+        # rebuild locally otherwise.
+        if isinstance(raw_followup, str) \
+                and raw_followup.startswith("/validate "):
+            followup = raw_followup
+        try:
+            recorded = int(record.get("dark_awaiting", dark_total))
+            selected = int(record.get("dark_selected", 0))
+        except (TypeError, ValueError):
+            recorded, selected = dark_total, 0
+        # The record is a selection-time snapshot; the run can both
+        # RESOLVE dark rows after it (dark verification runs later)
+        # and ADD new ones (post-loop demotions). Count late-added
+        # rows as awaiting, and never claim more awaiting rows than
+        # the graded export still carries.
+        awaiting = min(max(recorded, dark_total - selected), dark_total)
+    if awaiting <= 0:
+        return
+    if not followup:
+        # Exact-command fallback: the run's own metadata carries the
+        # target (the main report path — libexec/raptor-audit's
+        # finalise — does not pass target_path).
+        target = str(target_path) if target_path else _run_meta_target(out_dir)
+        followup = (
+            f"/validate {target or '<target>'} "
+            f"--findings {out_dir / 'findings-graded.json'}"
+        )
+    completeness["dark_awaiting"] = awaiting
+    completeness["dark_followup"] = followup
+
+
+def _run_meta_target(out_dir: Path) -> str:
+    """Target path recorded in the run metadata, or ""."""
+    meta_path = out_dir / ".raptor-run.json"
+    if not meta_path.is_file():
+        return ""
+    meta = load_json(meta_path, max_bytes=_MAX_RUN_META_BYTES)
+    if isinstance(meta, dict):
+        return str(meta.get("target_path") or "")
+    return ""
+
+
 def _load_vendored_triage(out_dir: Path) -> dict[str, int]:
     """Count vendored/generated triage decisions from the
     suppressions.jsonl audit trail (rule_id ``audit:vendored-triage``).
@@ -1077,6 +1149,18 @@ def _completeness_lines(report: dict[str, Any]) -> list[str]:
                 "  Resumable: raptor-audit resume <run-dir> re-enters "
                 "this run ($0 verdict re-import, remaining budget)."
             )
+    # Dark rows the /validate post-pass never adjudicated — stated
+    # unconditionally (a completed run can still owe these), with the
+    # exact follow-up command.
+    dark_awaiting = int(completeness.get("dark_awaiting", 0) or 0)
+    if dark_awaiting:
+        lines.append(
+            f"{dark_awaiting} dark finding(s) awaiting validation "
+            "(tool-blind — never entered the /validate post-pass)."
+        )
+        followup = completeness.get("dark_followup")
+        if followup:
+            lines.append(f"  Follow up: {_line(followup, max_chars=400)}")
     return lines
 
 

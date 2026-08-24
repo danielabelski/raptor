@@ -7927,7 +7927,14 @@ def _run_audit_body(
             exc,
         )
 
-    if config.validate and result.findings > 0:
+    # Dark outcomes gate the post-pass too: they are the tool-blind
+    # "needs concrete verification" bucket /validate exists to judge —
+    # a dark-only run used to skip the dispatch entirely and every
+    # dark row dead-ended unadjudicated.
+    _dark_pending = sum(
+        1 for o in result.outcomes if getattr(o, "status", "") == "dark"
+    )
+    if config.validate and (result.findings > 0 or _dark_pending > 0):
         from .validate import validate_findings
 
         result = validate_findings(

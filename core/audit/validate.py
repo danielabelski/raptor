@@ -49,6 +49,18 @@ class ValidatePostpassResult:
     duration_s: float = 0.0
 
 
+# Review-confidence rank for dark-outcome selection ordering: dark
+# rows carry no exploitability signal (no tool ever confirmed them),
+# so the LLM review's own confidence is the only priority available.
+_DARK_CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def _dark_priority(outcome: Any) -> int:
+    review_result = getattr(outcome, "review_result", None) or {}
+    conf = str(review_result.get("confidence", "")).lower()
+    return _DARK_CONFIDENCE_RANK.get(conf, 3)
+
+
 def validate_findings(
     result: OrchestratorResult,
     *,
@@ -63,43 +75,97 @@ def validate_findings(
     subprocess to run the full Stage A-F pipeline. The sweep is a
     cheap wide net; /validate is the expensive filter that kills
     false promotions by tracing reachability.
+
+    Dark outcomes ("tool-blind, needs concrete verification") ride the
+    same selection: finding-status rows fill the cap first (they are
+    signal-sorted at copy time), dark rows take the remaining slots
+    ordered by review confidence. Dark rows that do not fit — or that
+    never dispatch because the post-pass is skipped — are recorded in
+    ``validate-postpass.json`` so the report's completeness block can
+    state exactly how many are awaiting validation and how to run it.
     """
     findings_outcomes = [
         (i, o) for i, o in enumerate(result.outcomes)
         if o.status == "finding"
     ]
-    if not findings_outcomes:
+    dark_outcomes = [
+        (i, o) for i, o in enumerate(result.outcomes)
+        if o.status == "dark"
+    ]
+    if not findings_outcomes and not dark_outcomes:
         logger.info("validate_findings: no findings to emit")
         return result
 
+    dark_slots = max(0, _MAX_VALIDATE_FINDINGS - len(findings_outcomes))
+    ordered_dark = sorted(dark_outcomes, key=lambda io: _dark_priority(io[1]))
+    selected_dark = ordered_dark[:dark_slots]
+    dark_deferred = len(dark_outcomes) - len(selected_dark)
+
+    selected = findings_outcomes + selected_dark
+
     logger.info(
-        "validate_findings: emitting %d finding(s) for /validate",
-        len(findings_outcomes),
+        "validate_findings: emitting %d finding(s) + %d dark for "
+        "/validate (%d dark deferred by cap)",
+        len(findings_outcomes), len(selected_dark), dark_deferred,
     )
 
-    path = _emit_findings_json(findings_outcomes, out_dir, target_path)
+    # findings.json keeps its established contract — finding-status
+    # rows only (the /project merged views read it with no status
+    # filter, so dark rows there would render as ordinary findings).
+    # When dark rows are selected, the post-pass dispatches on a
+    # separate validate-selection.json carrying findings + dark.
+    path = None
+    if findings_outcomes:
+        path = _emit_findings_json(findings_outcomes, out_dir, target_path)
+    if selected_dark:
+        path = _emit_findings_json(
+            selected, out_dir, target_path,
+            filename="validate-selection.json",
+        )
 
     append_audit_log(out_dir, {
         "action": "findings_emitted",
-        "count": len(findings_outcomes),
+        "count": len(selected),
+        "dark_selected": len(selected_dark),
+        "dark_deferred": dark_deferred,
         "path": str(path),
     })
 
-    postpass = _dispatch_validate(
-        target_path=target_path,
-        audit_out_dir=out_dir,
-        findings_path=path,
-        findings_count=len(findings_outcomes),
-    )
+    if path is None:
+        # Degenerate cap (nothing selectable) — no dispatch, but the
+        # remainder is still recorded so the report states it.
+        postpass = ValidatePostpassResult(
+            ran=False, skipped_reason="empty selection (cap exhausted)",
+        )
+    else:
+        postpass = _dispatch_validate(
+            target_path=target_path,
+            audit_out_dir=out_dir,
+            findings_path=path,
+            findings_count=len(selected),
+            dark_count=len(selected_dark),
+        )
 
     append_audit_log(out_dir, {
         "action": "validate_postpass",
         "ran": postpass.ran,
         "selected_count": postpass.selected_count,
+        "dark_selected": len(selected_dark),
+        "dark_deferred": dark_deferred,
         "validate_dir": postpass.validate_dir,
         "skipped_reason": postpass.skipped_reason,
         "duration_s": postpass.duration_s,
     })
+
+    _write_postpass_record(
+        out_dir=out_dir,
+        target_path=target_path,
+        postpass=postpass,
+        findings_selected=len(findings_outcomes),
+        dark_total=len(dark_outcomes),
+        dark_selected=len(selected_dark),
+        dark_deferred=dark_deferred,
+    )
 
     if postpass.ran and postpass.validate_dir:
         logger.info(
@@ -119,12 +185,62 @@ def validate_findings(
     return result
 
 
+def _followup_command(target_path: Path, out_dir: Path) -> str:
+    """The exact operator command that adjudicates deferred dark rows.
+
+    ``/validate`` accepts ``--findings <file>`` imports (see
+    ``.claude/commands/validate.md``; ``libexec/raptor-validation-helper``
+    stage 0 parses the flag), and findings-graded.json carries every
+    dark row with ``needs_validation: true``.
+    """
+    return (
+        f"/validate {target_path} "
+        f"--findings {Path(out_dir) / 'findings-graded.json'}"
+    )
+
+
+def _write_postpass_record(
+    *,
+    out_dir: Path,
+    target_path: Path,
+    postpass: ValidatePostpassResult,
+    findings_selected: int,
+    dark_total: int,
+    dark_selected: int,
+    dark_deferred: int,
+) -> None:
+    """Persist the post-pass selection record (validate-postpass.json).
+
+    The report's completeness block reads this to state honestly how
+    many dark findings never reached the post-pass — cap-deferred rows
+    when the dispatch ran, ALL dark rows when it did not — together
+    with the exact follow-up command. Best-effort: a write failure
+    must not break the audit pipeline (the report then conservatively
+    treats every dark row as awaiting).
+    """
+    dark_awaiting = dark_total if not postpass.ran else dark_deferred
+    try:
+        save_json(Path(out_dir) / "validate-postpass.json", {
+            "ran": postpass.ran,
+            "skipped_reason": postpass.skipped_reason,
+            "validate_dir": postpass.validate_dir,
+            "findings_selected": findings_selected,
+            "dark_total": dark_total,
+            "dark_selected": dark_selected,
+            "dark_awaiting": dark_awaiting,
+            "followup_command": _followup_command(target_path, out_dir),
+        })
+    except Exception:
+        logger.debug("validate-postpass.json write failed", exc_info=True)
+
+
 def _dispatch_validate(
     *,
     target_path: Path,
     audit_out_dir: Path,
     findings_path: Path,
     findings_count: int,
+    dark_count: int = 0,
 ) -> ValidatePostpassResult:
     """Launch /validate as a Claude Code subprocess.
 
@@ -139,6 +255,7 @@ def _dispatch_validate(
             audit_out_dir=audit_out_dir,
             findings_path=findings_path,
             findings_count=findings_count,
+            dark_count=dark_count,
         )
     except Exception as e:
         logger.exception("validate post-pass crashed unexpectedly")
@@ -154,6 +271,7 @@ def _dispatch_validate_unsafe(
     audit_out_dir: Path,
     findings_path: Path,
     findings_count: int,
+    dark_count: int = 0,
 ) -> ValidatePostpassResult:
     target_path = Path(target_path).resolve()
     audit_out_dir = Path(audit_out_dir).resolve()
@@ -184,6 +302,7 @@ def _dispatch_validate_unsafe(
         return _build_audit_validate_prompt(
             target_path, audit_out_dir, validate_dir,
             validate_dir / "selected-findings.json", findings_count,
+            dark_count=dark_count,
         )
 
     # cc-trust gate: refuse to dispatch a Claude Code child against a
@@ -252,6 +371,8 @@ def _build_audit_validate_prompt(
     validate_dir: Path,
     selection_file: Path,
     findings_count: int,
+    *,
+    dark_count: int = 0,
 ) -> str:
     from core.security.log_sanitisation import escape_nonprintable
     safe_target = escape_nonprintable(str(target))
@@ -260,11 +381,20 @@ def _build_audit_validate_prompt(
     safe_selection = escape_nonprintable(str(selection_file))
     safe_raptor = escape_nonprintable(str(_RAPTOR_DIR))
     threat_model = _threat_model_prompt_block(target)
+    dark_block = ""
+    if dark_count:
+        dark_block = f"""
+{dark_count} of the findings carry audit_status "dark": the audit's
+mechanical tools had NO channel to confirm or refute them (tool-blind
+class). Treat them as unverified hypotheses — they need concrete
+reachability and impact verification from first principles, not tool
+corroboration.
+"""
     return f"""You are running the /validate post-pass for the /audit security
 review. The audit loop has finished and produced {findings_count} findings
 (including sweep-promoted suspicious items confirmed by mechanical tools).
 Your job is to run the full validation pipeline to filter false positives.
-
+{dark_block}
 Target repository:    {safe_target}
 Audit out_dir:        {safe_audit}
 Selection file:       {safe_selection}
@@ -322,6 +452,8 @@ def _emit_findings_json(
     findings_outcomes: list[tuple],
     out_dir: Path,
     target_path: Path,
+    *,
+    filename: str = "findings.json",
 ) -> Path:
     """Write audit findings in /validate container format.
 
@@ -362,6 +494,13 @@ def _emit_findings_json(
                             or f"Finding in {outcome.function}")
         if outcome.hypothesis:
             finding["hypothesis"] = outcome.hypothesis
+        if outcome.status == "dark":
+            # Tool-blind bucket routed into the post-pass: keep the
+            # audit-side status visible so /validate (and readers of
+            # selected-findings.json) know this row was never
+            # tool-confirmed — it needs concrete verification.
+            finding["audit_status"] = "dark"
+            finding["needs_validation"] = True
         findings.append(finding)
 
     container = FindingsContainer.create_empty("audit", str(target_path))
@@ -369,7 +508,7 @@ def _emit_findings_json(
     payload = container.to_dict()
     payload["findings"] = findings
 
-    path = out_dir / "findings.json"
+    path = out_dir / filename
     save_json(path, payload)
 
     logger.info("emitted %d findings to %s", len(findings), path)

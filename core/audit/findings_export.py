@@ -362,6 +362,20 @@ def build_graded_finding(
     if dampening:
         finding["file_dampening"] = dampening
 
+    # Caller-contract demotion receipt (see orchestrator
+    # _apply_caller_contract_gate): the per-site receipts travel with
+    # the finding, and the confidence clamp is ENFORCED here — a
+    # caller obligation mechanically refuted at every enumerated call
+    # site may not export above low unless a confirming receipt
+    # exists (tool-confirmed findings are never demoted).
+    caller_ev = review_result.get("caller_evidence")
+    if caller_ev:
+        finding["caller_evidence"] = caller_ev
+        clamp = (caller_ev.get("demotion") or {}).get("confidence_clamp")
+        if clamp == "low" and not _confirmed_by:
+            confidence = Confidence.LOW
+            finding["confidence"] = confidence.value
+
     discovery_sources = []
     if evidence_record is not None:
         if getattr(evidence_record, "joern_flows", None):

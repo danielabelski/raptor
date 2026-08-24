@@ -600,6 +600,14 @@ class OrchestratorConfig:
     # (--no-caller-contract-context to disable).  Context-only channel:
     # it never stamps evidence_tool and never touches verdict lanes.
     caller_contract_context: bool = True
+    # Post-review caller-contract confidence demotion
+    # (--no-caller-contract-demotion to disable): a caller-obligation
+    # hypothesis mechanically refuted at EVERY in-repo call site
+    # (structural receipts, enumeration verified complete) exports at
+    # confidence=low with receipts.  Never suppresses (status
+    # untouched, finding still exported); never touches
+    # tool-confirmed outcomes.
+    caller_contract_demotion: bool = True
     # Review scheduling with >1 worker: "cost" (default) dispatches
     # predicted-longest reviews first (LPT makespan packing);
     # "priority" keeps the highest-priority-first order (better
@@ -8080,6 +8088,18 @@ def _run_audit_body(
         except Exception:
             logger.debug("fuzz dict handoff failed", exc_info=True)
 
+    # Caller-contract confidence demotion: caller-obligation
+    # hypotheses mechanically refuted at every in-repo call site
+    # export at confidence=low with receipts (status untouched —
+    # never suppression). Runs before the journal correction pass and
+    # the export so all three surfaces agree.
+    try:
+        _caller_contract_demotion_pass(result, config)
+    except Exception:
+        logger.debug(
+            "caller-contract demotion pass failed", exc_info=True,
+        )
+
     # Pre-export hooks: outcome-level post-processing (e.g. the ensemble
     # pipeline's file-pile-up dampener) runs BEFORE the journal
     # correction pass and the graded export so stats, journal and
@@ -14623,6 +14643,190 @@ def _record_api_boundary_receipt(
         append_audit_log(config.out_dir, record)
     except Exception:
         logger.debug("api-boundary receipt write failed", exc_info=True)
+
+
+_CALLER_CONTRACT_MARKER = "[caller-contract:"
+
+
+def _apply_caller_contract_gate(
+    outcome: ReviewOutcome,
+    config: OrchestratorConfig,
+) -> bool:
+    """Adjudicate one outcome's caller-obligation hypothesis and, on a
+    complete mechanical refutation, demote its exported confidence.
+
+    Demotion requires ALL of: status finding/suspicious; no
+    confirming-role tool evidence; caller-conditional hypothesis
+    phrasing; api_boundary ``refuted`` (every in-repo call site
+    upholds the contract on structural receipts — lexical or
+    undecided sites already gate the channel to inconclusive); and
+    ``enumeration_complete`` (uncapped tree scan, no address-taken
+    escape — ANY enumeration uncertainty declines).  The gate runs
+    the channel with ``inventory=None`` so completeness can only be
+    earned the textual way; the call-graph fast path is for the
+    in-loop chain, not for demotion.
+
+    On demotion: body gains the ``[caller-contract: all N call
+    site(s) uphold the precondition]`` prefix, ``review_result``
+    gains a structured ``caller_evidence`` record (exported next to
+    ``file_dampening`` and enforced as a confidence clamp by
+    ``findings_export.build_graded_finding``), and a
+    ``dropped: false`` row lands in suppressions.jsonl.  Status is
+    NEVER changed: "all N current callers uphold the precondition"
+    refutes a current, reachable defect of this tree — not the
+    fragile-API observation, which still ships at confidence=low.
+    """
+    if outcome.status not in ("finding", "suspicious"):
+        return False
+    if outcome.file.startswith(BINARY_PATH_PREFIX):
+        return False
+    if _is_tool_confirmed(outcome.evidence_tool):
+        return False
+    review = outcome.review_result
+    if review is not None and not isinstance(review, dict):
+        # Exotic review_result shapes cannot carry the caller_evidence
+        # record, and replacing them wholesale would destroy the
+        # review payload — decline rather than half-demote.
+        return False
+    if isinstance(review, dict) and review.get("caller_evidence"):
+        return False  # already gated (resume / replay idempotence)
+    hypothesis = _resolve_hypothesis(outcome)
+    if not hypothesis or _CALLER_CONTRACT_MARKER in (outcome.body or ""):
+        return False
+    from .api_boundary import (
+        is_caller_conditional_hypothesis,
+        run_api_boundary_check,
+    )
+    if not is_caller_conditional_hypothesis(hypothesis):
+        return False
+    # Multi-hypothesis outcomes: refuting the primary caller-contract
+    # claim says nothing about a live sibling mechanism ("also, the
+    # length is truncated before the copy") — the exported confidence
+    # covers the whole finding, so demote only when every live
+    # hypothesis is caller-conditional.
+    for h in outcome.hypotheses or []:
+        if not isinstance(h, dict):
+            continue
+        mech = h.get("mechanism") or ""
+        if (h.get("confidence") or "").lower() == "refuted":
+            continue
+        if mech and not is_caller_conditional_hypothesis(mech):
+            return False
+    line_end = _checklist_line_end(config, outcome.file, outcome.function)
+    ab_res = run_api_boundary_check(
+        config.target_path,
+        outcome.file,
+        outcome.function,
+        hypothesis,
+        inventory=None,
+        def_span=(
+            (outcome.line, line_end)
+            if outcome.line and line_end else None
+        ),
+    )
+    _record_api_boundary_receipt(
+        config, outcome.file, outcome.function, ab_res,
+    )
+    if ab_res.outcome != "refuted" or not ab_res.enumeration_complete:
+        return False
+
+    n = len(ab_res.sites)
+    prefix = (
+        f"[caller-contract: all {n} call site(s) uphold the "
+        "precondition]"
+    )
+    outcome.body = f"{prefix}\n\n{outcome.body or ''}"
+    record = {
+        "rule_id": ab_res.rule_id,
+        "outcome": ab_res.outcome,
+        "contract": ab_res.contract,
+        "reason": ab_res.reason,
+        "sites": [s.to_dict() for s in ab_res.sites],
+        "enumeration": {
+            "method": ab_res.enumeration,
+            "complete": ab_res.enumeration_complete,
+            "notes": list(ab_res.enumeration_notes),
+        },
+        "demotion": {
+            "confidence_clamp": "low",
+            "status": outcome.status,  # unchanged — never suppresses
+        },
+    }
+    if isinstance(outcome.review_result, dict):
+        outcome.review_result["caller_evidence"] = record
+    else:
+        # review_result is None here (non-dict shapes declined above).
+        # Slotted or frozen outcome objects reject the attribute — the
+        # export clamp then simply never sees the record (fail-open to
+        # the un-demoted state).
+        with contextlib.suppress(AttributeError):
+            outcome.review_result = {"caller_evidence": record}
+    if config.out_dir:
+        try:
+            from core.analysis.reach_chokepoint import record_suppression
+
+            record_suppression(
+                Path(config.out_dir),
+                finding={
+                    "id": (
+                        f"{outcome.file}:{outcome.function}:"
+                        f"{outcome.line}"
+                    ),
+                    "rule_id": ab_res.rule_id,
+                    "file_path": outcome.file,
+                    "line": outcome.line,
+                    "function": outcome.function,
+                },
+                verdict="caller_contract_refuted",
+                reason=(
+                    f"caller-contract gate: {ab_res.reason} — "
+                    "confidence clamped to low; finding still exported"
+                ),
+                dropped=False,
+                extra={
+                    "contract": ab_res.contract,
+                    "sites": n,
+                    "confidence_clamp": "low",
+                },
+            )
+        except Exception:
+            logger.debug(
+                "caller-contract suppression row failed", exc_info=True,
+            )
+    logger.info(
+        "caller-contract gate: %s:%s confidence→low — %s",
+        outcome.file, outcome.function, ab_res.reason,
+    )
+    return True
+
+
+def _caller_contract_demotion_pass(
+    result: Any,
+    config: OrchestratorConfig,
+) -> None:
+    """Post-review caller-contract confidence demotion over the final
+    outcome list (see ``_apply_caller_contract_gate`` for the per-
+    outcome contract).  Runs before the journal correction pass and
+    the graded export so journal, export, and summary agree."""
+    if not getattr(config, "caller_contract_demotion", True):
+        return
+    demoted = 0
+    for outcome in result.outcomes:
+        try:
+            if _apply_caller_contract_gate(outcome, config):
+                demoted += 1
+        except Exception:
+            logger.debug(
+                "caller-contract gate failed for %s:%s",
+                outcome.file, outcome.function, exc_info=True,
+            )
+    if demoted:
+        logger.info(
+            "caller-contract gate: %d outcome(s) demoted to "
+            "confidence=low (all enumerated call sites uphold the "
+            "asserted precondition; receipts in suppressions.jsonl)",
+            demoted,
+        )
 
 
 def _record_fail_open_receipt(

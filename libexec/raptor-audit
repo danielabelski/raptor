@@ -1522,6 +1522,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         verdict_reuse=not args.no_verdict_reuse,
         pre_scan=args.pre_scan,
         caller_contract_context=not args.no_caller_contract_context,
+        caller_contract_demotion=not args.no_caller_contract_demotion,
         schedule=args.schedule,
         on_demand_synthesis=not args.no_on_demand_synthesis,
         vendored_triage=not args.no_vendored_triage,
@@ -2066,6 +2067,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
         pre_scan=bool(run_cfg.get("pre_scan")),
         caller_contract_context=bool(
             run_cfg.get("caller_contract_context", True)),
+        caller_contract_demotion=bool(
+            run_cfg.get("caller_contract_demotion", True)),
         schedule=run_cfg.get("schedule") or "cost",
         on_demand_synthesis=bool(run_cfg.get("on_demand_synthesis", True)),
         vendored_triage=bool(run_cfg.get("vendored_triage", True)),
@@ -2181,6 +2184,7 @@ def _run_config_from_args(
         "verdict_reuse": not args.no_verdict_reuse,
         "pre_scan": args.pre_scan,
         "caller_contract_context": not args.no_caller_contract_context,
+        "caller_contract_demotion": not args.no_caller_contract_demotion,
         "schedule": args.schedule,
         "on_demand_synthesis": not args.no_on_demand_synthesis,
         "vendored_triage": not args.no_vendored_triage,
@@ -2502,6 +2506,12 @@ def main() -> int:
                             "digest in review context (all in-repo "
                             "call sites with guard/reuse windows for "
                             "teardown-shaped functions)")
+    p_run.add_argument("--no-caller-contract-demotion", action="store_true",
+                       help="Disable the post-review caller-contract "
+                            "confidence demotion (caller-obligation "
+                            "hypotheses refuted at every enumerated "
+                            "call site export at confidence=low with "
+                            "receipts; never suppressed)")
     p_run.add_argument("--no-on-demand-synthesis", action="store_true",
                        help="Disable on-demand checker synthesis for "
                             "suspicious hypotheses whose CWE has no "

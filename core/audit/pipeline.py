@@ -164,6 +164,9 @@ class AuditPipelineOpts:
     # Caller-contract call-site digest in the review context
     # (--no-caller-contract-context to disable).
     caller_contract_context: bool = True
+    # Post-review caller-contract confidence demotion
+    # (--no-caller-contract-demotion to disable). Never suppresses.
+    caller_contract_demotion: bool = True
     # Parallel review scheduling: "cost" = most-expensive-first
     # makespan packing (default), "priority" = time-to-first-finding.
     schedule: str = "cost"
@@ -352,6 +355,7 @@ def _build_orchestrator_config(
         annotations_read=opts.annotations_read,
         pre_scan=opts.pre_scan,
         caller_contract_context=opts.caller_contract_context,
+        caller_contract_demotion=opts.caller_contract_demotion,
         schedule=opts.schedule,
         on_demand_synthesis=opts.on_demand_synthesis,
         probe_determine_value=opts.probe_determine_value,

@@ -294,6 +294,60 @@ class TestFormatFindingsSummary:
         assert "Dark" in text
         assert "/validate" in text
 
+class TestCallerEvidenceClamp:
+    _RECORD = {
+        "rule_id": "api_boundary:caller-contract",
+        "outcome": "refuted",
+        "contract": "callers must not invoke again on the same b "
+                    "(single-call contract)",
+        "reason": "all 2 in-repo call site(s) honour the contract",
+        "sites": [],
+        "enumeration": {"method": "tree-scan", "complete": True,
+                        "notes": []},
+        "demotion": {"confidence_clamp": "low", "status": "suspicious"},
+    }
+
+    def test_caller_evidence_exported_and_confidence_clamped(self):
+        outcome = FakeOutcome(
+            status="suspicious",
+            review_result={
+                "hypothesis": "double free if a caller invokes it twice",
+                "caller_evidence": dict(self._RECORD),
+            },
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["caller_evidence"]["outcome"] == "refuted"
+        assert finding["confidence"] == "low"
+
+    def test_confirming_receipt_blocks_the_clamp(self):
+        # Tool-confirmed findings are never demoted: a confirming-role
+        # receipt outranks the caller-contract refutation.
+        outcome = FakeOutcome(
+            evidence_tool="semgrep:rule-1",
+            review_result={
+                "hypothesis": "double free if a caller invokes it twice",
+                "caller_evidence": dict(self._RECORD),
+            },
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["caller_evidence"]  # record still travels
+        assert finding["confidence"] != "low"
+
+    def test_record_without_demotion_does_not_clamp(self):
+        record = dict(self._RECORD, demotion=None)
+        outcome = FakeOutcome(
+            evidence_tool="smt:check-null-propagation",
+            review_result={
+                "hypothesis": "double free if a caller invokes it twice",
+                "caller_evidence": record,
+            },
+        )
+        finding = build_graded_finding(outcome)
+        assert finding["caller_evidence"]
+        # No clamp requested — confidence derives from the chain alone.
+        assert finding["confidence"] in ("high", "medium", "low")
+
+
 class TestConfirmedByDiscrimination:
     """Incident regression (openssh instrumented corpus):
     ``discovery.confirmed_by`` read a never-set outcome attribute and

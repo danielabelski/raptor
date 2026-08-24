@@ -91,6 +91,11 @@ VALID_EVIDENCE_TOOLS: frozenset = frozenset({
     "compiler",
     "compilation", "dynamic:sanitizer", "dynamic:crash", "frida:runtime",
     "dark_verify:confirmed", "dark_verify:refuted",
+    # core/symbolic (angr): a solver-derived concrete input, replayed
+    # in a sandbox. A replayed crash is execution evidence; a bare
+    # solve is a solver proof of reachability/PC-control within the
+    # modeled constraints.
+    "symbolic",
 })
 
 # NOTE: "triage" is deliberately NOT a tool namespace. The triage
@@ -139,6 +144,12 @@ _DETECTION_CLASSIFIER_MODULES: dict[str, str] = {
     # instrumented 185-finding corpus these stamps backed 88 exported
     # tool_backed findings with 0 survivors through /validate.
     "smt": "core.audit.sweep",
+    # Symbolic (angr) channel: bare reachability (symbolic-reach) is
+    # detection-role — some stdin reaching an address is guard-blind
+    # evidence; PC-hijack solves and replayed crashes keep
+    # verification role. Classifier lives with the channel in
+    # core.audit.sweep.
+    "symbolic": "core.audit.sweep",
 }
 
 

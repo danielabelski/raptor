@@ -1272,7 +1272,14 @@ def get_smt_verb_role(verb: str) -> str:
 
 
 def is_detection_rule_id(stamp: str) -> bool:
-    """SMT-channel detection-grade stamp classification.
+    """SMT- and symbolic-channel detection-grade stamp classification.
+
+    Symbolic role split: ``symbolic-pc-hijack`` (solver-proved PC
+    control) and ``symbolic-reach-crash`` (replayed crash) are
+    verification-role; bare ``symbolic-reach`` proves only that SOME
+    stdin reaches the address — guard-blind reachability, the exact
+    class the joern:live demotion exists for — so it corroborates but
+    may not promote or sustain a finding alone.
 
     The single authority for which smt evidence stamps may not promote
     or sustain a verdict alone — consulted by the evidence-grade
@@ -1287,6 +1294,10 @@ def is_detection_rule_id(stamp: str) -> bool:
     grading (the firewall only demotes what the channel has explicitly
     classified as detection-role).
     """
+    part = stamp.split(":", 1)[1] if ":" in stamp else stamp
+    if part.startswith("symbolic-") or stamp.startswith("symbolic"):
+        return part == "symbolic-reach"
+
     if ":" not in stamp or stamp.endswith(":witness"):
         return False
     verb = stamp.split(":", 2)[1]
@@ -2984,3 +2995,273 @@ def mechanical_check_to_semgrep(check: str) -> str | None:
         if keyword in check_lower:
             return pattern
     return None
+
+
+# ── symbolic (angr) channel ─────────────────────────────────────────
+
+#: CWE families where the unconstrained-PC (control-flow hijack)
+#: solve applies; everything else gets plain reachability.
+SYMBOLIC_HIJACK_CWES = frozenset({
+    "CWE-120", "CWE-121", "CWE-122", "CWE-124",
+    "CWE-131", "CWE-193", "CWE-787",
+})
+
+_SYMBOLIC_TIMEOUT_S = 90.0
+
+
+def symbolic_applicable(cwe: str, file_path: str = "") -> bool:
+    """The symbolic channel runs on BINARY items only (the substrate
+    models the compiled artifact, not source), and only when angr is
+    installed. Any CWE is eligible — the solve mode differs.
+    """
+    from core.inventory.binary_builder import BINARY_PATH_PREFIX
+    if not file_path.startswith(BINARY_PATH_PREFIX):
+        return False
+    try:
+        from core.symbolic._availability import angr_available
+        return angr_available()
+    except ImportError:
+        return False
+
+
+def run_symbolic_sweep(
+    *,
+    target_path: Path,
+    file_path: str,
+    function_name: str,
+    out_dir: Path,
+    cwe: str = "",
+    address: int | None = None,
+    replay: bool = False,
+) -> SweepResult:
+    """angr witness solve for a binary checklist item.
+
+    ``target_path`` is the analysed binary (binary audits run with
+    the ELF as the target). The item's address comes from the
+    checklist when not passed. Outcomes:
+
+    - ``confirmed`` — a concrete input was solved (and, when replay
+      is authorised and crashes, the receipt carries the signal);
+    - ``inconclusive`` — no witness within the budget. NEVER
+      ``refuted``: the substrate models stdin-driven execution under
+      a solver budget, so absence of a witness is not absence of the
+      bug.
+    """
+    from core.inventory.binary_builder import BINARY_PATH_PREFIX
+
+    if not file_path.startswith(BINARY_PATH_PREFIX):
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=["symbolic sweep applies to binary: items only"],
+        )
+    if not symbolic_applicable(cwe, file_path):
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=["angr not installed — symbolic channel unavailable"],
+        )
+    binary = Path(target_path)
+    if not binary.is_file():
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"target binary not found: {binary}"],
+        )
+
+    # Address resolution — ANGR's address space, not the checklist
+    # producer's: Ghidra rebases PIE images to 0x100000 and r2 uses
+    # file offsets, while angr maps PIE at its own base. Symbol
+    # lookup is exact; a checklist address is rebased via the modal
+    # delta over shared names, and used raw only for non-PIE (where
+    # the spaces coincide).
+    try:
+        from core.symbolic import load_binary
+        info = load_binary(binary)
+    except Exception as e:  # noqa: BLE001 — hostile binary
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[f"could not load binary: {e}"],
+        )
+    base_name = function_name
+    if "@0x" in base_name:
+        base_name = base_name.rpartition("@")[0]
+    resolved = info.symbols.get(base_name)
+    if resolved is None:
+        checklist_addr = address
+        if checklist_addr is None:
+            checklist_addr = _checklist_address(
+                out_dir, file_path, function_name,
+            )
+        if checklist_addr is not None:
+            if not info.is_pie:
+                resolved = checklist_addr
+            else:
+                delta = _producer_to_angr_delta(
+                    info, out_dir, file_path,
+                )
+                if delta is not None:
+                    resolved = checklist_addr + delta
+    address = resolved
+    if address is None:
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            errors=[
+                f"no angr-space address for {function_name}: not in "
+                "the symbol table and the checklist address could "
+                "not be rebased (stripped PIE) — the symbolic "
+                "channel cannot target this item"
+            ],
+        )
+
+    hijack = cwe in SYMBOLIC_HIJACK_CWES
+    rule_id = "symbolic-pc-hijack" if hijack else "symbolic-reach"
+    try:
+        if hijack:
+            from core.symbolic import find_overflow_reaching_input
+            result = find_overflow_reaching_input(
+                binary, address, timeout=_SYMBOLIC_TIMEOUT_S,
+            )
+        else:
+            from core.symbolic import find_reaching_input
+            result = find_reaching_input(
+                binary, address, timeout=_SYMBOLIC_TIMEOUT_S,
+            )
+    except Exception as e:  # noqa: BLE001 — solver layer must not kill the sweep
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="error",
+            rule_id=rule_id, errors=[f"solve failed: {e}"],
+        )
+
+    if not result.succeeded or result.concrete_input is None:
+        return SweepResult(
+            tool="symbolic", file_path=file_path,
+            function_name=function_name, outcome="inconclusive",
+            rule_id=rule_id,
+            details={"reason": (
+                "no witness within budget — not a refutation: "
+                + result.reason[:200]
+            )},
+        )
+
+    details: dict[str, Any] = {
+        "mode": "pc_hijack" if hijack else "reach",
+        "target_address": address,
+        "input_len": len(result.concrete_input),
+        "solve_seconds": round(result.wall_seconds, 2),
+    }
+    message = (
+        f"concrete stdin witness ({len(result.concrete_input)} "
+        f"bytes) reaches {function_name} at {address:#x}"
+    )
+
+    stored = _store_sweep_witness(
+        binary, result.concrete_input, out_dir,
+        function_name=function_name, address=address,
+        cwe=cwe, file_path=file_path, replay=replay,
+    )
+    if stored:
+        details.update(stored)
+        if stored.get("replay_outcome") == "exit_signal":
+            message += (
+                f" — replay crashed with signal "
+                f"{stored.get('replay_signal')}"
+            )
+            if not hijack:
+                # A replayed crash upgrades bare reachability to
+                # execution evidence (verification role).
+                rule_id = "symbolic-reach-crash"
+
+    return SweepResult(
+        tool="symbolic", file_path=file_path,
+        function_name=function_name, outcome="confirmed",
+        rule_id=rule_id,
+        matches=[{"rule_id": rule_id, "message": message}],
+        details=details,
+    )
+
+
+def _producer_to_angr_delta(info, out_dir, file_path):
+    """Modal (angr_symbol - checklist_address) delta over shared
+    function names — rebases producer-space checklist addresses into
+    angr's load space for PIE targets. None without >=3 agreeing
+    names (a coincidental single match must not rebase)."""
+    from collections import Counter
+    try:
+        from core.audit.gaps import load_checklist
+        cl = load_checklist(Path(out_dir))
+    except Exception:  # noqa: BLE001 — best-effort
+        return None
+    votes = Counter()
+    for fe in (cl or {}).get("files", []):
+        if fe.get("path") != file_path:
+            continue
+        for item in fe.get("items", fe.get("functions", [])) or []:
+            name = item.get("name") or ""
+            if "@0x" in name:
+                name = name.rpartition("@")[0]
+            addr = item.get("address")
+            if addr is None:
+                continue
+            sym = info.symbols.get(name)
+            if sym is not None:
+                votes[sym - addr] += 1
+    if not votes:
+        return None
+    delta, count = votes.most_common(1)[0]
+    return delta if count >= 3 else None
+
+
+def _checklist_address(out_dir, file_path, function_name):
+    try:
+        from core.audit.gaps import load_checklist
+        cl = load_checklist(Path(out_dir))
+        for fe in (cl or {}).get("files", []):
+            if fe.get("path") != file_path:
+                continue
+            for item in fe.get("items", fe.get("functions", [])) or []:
+                if item.get("name") == function_name:
+                    addr = item.get("address")
+                    if addr is None:
+                        addr = (item.get("metadata") or {}).get("address")
+                    return addr
+    except Exception:  # noqa: BLE001 — checklist read is best-effort
+        logger.debug("checklist address lookup failed", exc_info=True)
+    return None
+
+
+def _store_sweep_witness(
+    binary, witness_bytes, out_dir, *,
+    function_name, address, cwe, file_path, replay,
+):
+    """Store the solved bytes; optionally replay (dynamic-gated)."""
+    try:
+        from packages.exploitability_validation.symbolic_witness import (
+            _replay,
+            _store_witness,
+        )
+        record = {
+            "mode": "sweep",
+            "target_function": function_name,
+            "target_address": address,
+            "_input_bytes": witness_bytes,
+        }
+        if replay:
+            record.update(_replay(Path(binary), witness_bytes))
+        else:
+            record["replay_outcome"] = "not_run"
+        finding = {"function": function_name, "cwe": cwe, "file": file_path}
+        digest = _store_witness(finding, record, Path(binary), Path(out_dir))
+        out = {
+            "replay_outcome": record.get("replay_outcome"),
+            "witness_hash": digest,
+        }
+        if record.get("replay_signal") is not None:
+            out["replay_signal"] = record["replay_signal"]
+        return out
+    except Exception:  # noqa: BLE001 — storage is best-effort
+        logger.debug("sweep witness store failed", exc_info=True)
+        return None

@@ -33,6 +33,7 @@ class AuditCapabilities:
     readelf: bool = False
     binary_available: bool = False
     dwarf_available: bool = False
+    angr: bool = False
     joern_issues: tuple = ()
 
 
@@ -104,7 +105,17 @@ def probe_capabilities(
         readelf=shutil.which("readelf") is not None,
         binary_available=binary_path is not None and binary_path.is_file(),
         dwarf_available=_has_dwarf(binary_path),
+        angr=_angr_available(),
     )
+
+
+def _angr_available() -> bool:
+    """core/symbolic's own availability probe (never imports angr here)."""
+    try:
+        from core.symbolic._availability import angr_available
+        return angr_available()
+    except ImportError:
+        return False
 
 
 def format_capability_report(caps: AuditCapabilities) -> str:

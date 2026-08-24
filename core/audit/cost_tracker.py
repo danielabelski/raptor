@@ -417,12 +417,38 @@ def format_cost_summary(result: Any) -> str | None:
     # runs whose telemetry showed zero failures.
     failed_spend = min(failed_cost, total_spend)
     other_spend = max(0.0, total_spend - completed_cost - failed_spend)
+    # Split the residual into LEDGER-ATTRIBUTED spend (prior segments
+    # booked on resume, support phases like spec inference / summaries
+    # / study) and the true unattributed remainder. Pre-fix the whole
+    # residual printed as "unattributed", so a healthy resumed segment
+    # reported the majority of its spend as unexplained while its own
+    # cost-breakdown.json attributed all but a sliver.
+    prior_spend = 0.0
+    support_spend = 0.0
+    tracker = getattr(result, "cost_tracker", None)
+    phases = getattr(tracker, "phases", None) or {}
+    for name, phase in phases.items():
+        cost = float(getattr(phase, "cost_usd", 0.0) or 0.0)
+        if name == "prior_segments":
+            prior_spend = cost
+        elif name not in ("review", "re_review", "refinement"):
+            support_spend += cost
+    prior_spend = min(prior_spend, other_spend)
+    support_spend = min(support_spend, other_spend - prior_spend)
+    unattributed = max(0.0, other_spend - prior_spend - support_spend)
     detail: list[str] = []
     if failed_spend >= 0.005:
         detail.append(f"${failed_spend:.2f} on failed/timed-out attempts")
-    if other_spend >= 0.005:
+    if prior_spend >= 0.005:
+        detail.append(f"${prior_spend:.2f} booked from prior segments")
+    if support_spend >= 0.005:
         detail.append(
-            f"${other_spend:.2f} on unattributed calls "
+            f"${support_spend:.2f} on support phases "
+            f"(summaries/spec inference/study)"
+        )
+    if unattributed >= 0.005:
+        detail.append(
+            f"${unattributed:.2f} unattributed "
             f"(see cost-breakdown.json)"
         )
     if not detail:

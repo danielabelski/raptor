@@ -444,3 +444,54 @@ class TestEndToEndReconciliation:
         assert "failed/timed-out" not in line
         other_s = f"${client.total_cost - 0.5:.2f}"
         assert f"{other_s} on unattributed calls" in line
+
+
+class TestCostSummaryAttribution:
+    """Incident regression: on a resumed segment the operator-facing
+    Cost: line lumped the correctly-booked prior-segment spend and the
+    support phases into "$X on unattributed calls" — a healthy run
+    reported most of its spend as unexplained while its own
+    cost-breakdown.json attributed all but a sliver."""
+
+    def _result(self):
+        from types import SimpleNamespace
+        from core.audit.cost_tracker import PhaseCostLedger
+        tracker = PhaseCostLedger()
+        tracker.record_call("prior_segments", cost_usd=12.0)
+        tracker.record_call("review", cost_usd=5.0)
+        tracker.record_call("summary", cost_usd=2.0)
+        tracker.record_call("spec_inference", cost_usd=1.0)
+        return SimpleNamespace(
+            total_cost_usd=5.0,
+            failed_attempts_cost_usd=0.0,
+            llm_spend_usd=20.0,
+            reviewed=10,
+            errors=0,
+            cost_tracker=tracker,
+        )
+
+    def test_prior_and_support_phases_named(self):
+        from core.audit.cost_tracker import format_cost_summary
+        line = format_cost_summary(self._result())
+        assert "booked from prior segments" in line
+        assert "support phases" in line
+        assert "unattributed" not in line, (
+            "ledger-attributed spend must not print as unattributed"
+        )
+
+    def test_true_residual_still_reported(self):
+        from types import SimpleNamespace
+        from core.audit.cost_tracker import PhaseCostLedger
+        tracker = PhaseCostLedger()
+        tracker.record_call("review", cost_usd=5.0)
+        result = SimpleNamespace(
+            total_cost_usd=5.0,
+            failed_attempts_cost_usd=0.0,
+            llm_spend_usd=6.5,
+            reviewed=10,
+            errors=0,
+            cost_tracker=tracker,
+        )
+        from core.audit.cost_tracker import format_cost_summary
+        line = format_cost_summary(result)
+        assert "unattributed" in line

@@ -1491,7 +1491,15 @@ def _finalize_run(
 
     from core.audit.report import generate_report, write_report
 
-    report = generate_report(out_dir)
+    # The lifecycle transition below stamps "interrupted" for a
+    # SIGTERM drain and "completed" otherwise — tell the report which,
+    # so its completeness block names the run's terminal state instead
+    # of the mid-finalisation "running" snapshot.
+    _final_status = (
+        "interrupted" if result.terminated_by == "sigterm"
+        else "completed"
+    )
+    report = generate_report(out_dir, final_status=_final_status)
     report_path = write_report(report, out_dir)
 
     # Completed-with-remainder note for supervisor-bounded runs: the

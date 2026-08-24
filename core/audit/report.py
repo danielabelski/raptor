@@ -75,6 +75,7 @@ def generate_report(
     out_dir: Path,
     *,
     target_path: Path | None = None,
+    final_status: str | None = None,
 ) -> dict[str, Any]:
     """Generate the final audit report.
 
@@ -87,6 +88,17 @@ def generate_report(
         gaps_remaining: number of unreviewed functions
     """
     completeness = _assess_completeness(out_dir)
+    if final_status:
+        # The report is deliberately generated BEFORE the lifecycle
+        # transition (a completed stamp must never exist without its
+        # report — the resume --reopen recovery depends on that), so
+        # the on-disk status still reads "running" here. The caller
+        # passes the terminal status it is about to stamp; the
+        # completeness block names the run's real end state instead
+        # of a mid-finalisation snapshot.
+        completeness["run_status"] = final_status
+        if final_status == "completed":
+            completeness["partial"] = bool(completeness.get("missing"))
     segments = _load_segments(out_dir)
 
     audit_data = _load_review_state(out_dir)

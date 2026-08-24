@@ -206,6 +206,16 @@ def _has_strong_receipts(finding: dict[str, Any]) -> bool:
     )
 
 
+def _coerce_line(value: Any) -> int:
+    """Tolerant line-number coercion — findings files are LLM-written,
+    so '~242' / '242-250' style values must degrade to 0 (unknown),
+    never abort the whole bridge import."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _history_reason(finding: dict[str, Any]) -> str:
     ruling = finding.get("ruling") or {}
     if isinstance(ruling, dict) and ruling.get("reason"):
@@ -270,7 +280,11 @@ def _extract_verdict_history(
     """Per-function verdict history records from /validate findings.
 
     Each record: ``{file, function, verdict, raw_status, disqualifier,
-    strong_receipts, chain_breaks, reason, runtime_tiers, fresh}``.
+    strong_receipts, chain_breaks, reason, line, cwe, mechanism,
+    runtime_tiers, fresh}``. ``line``/``cwe``/``mechanism`` carry WHAT
+    was confirmed — without them a confirmed verdict reached the review
+    prompt as an unfalsifiable "something here" and the grader could
+    never match a re-found mechanism back to its confirmation.
     ``fresh`` is True only when the producing run's checklist hash for
     the file still matches the source on disk (unknown → False).
     """
@@ -312,6 +326,14 @@ def _extract_verdict_history(
                 if isinstance(feasibility, dict) else []
             ),
             "reason": _history_reason(f),
+            "line": _coerce_line(f.get("line")),
+            "cwe": str(f.get("cwe_id") or f.get("cwe_class") or ""),
+            "mechanism": str(
+                f.get("candidate_reasoning")
+                or f.get("hypothesis")
+                or f.get("title")
+                or ""
+            ),
             "runtime_tiers": runtime_tiers,
             "fresh": False,
         })
@@ -410,19 +432,37 @@ def format_validate_history(
 
     for rec in entry.get("confirmed", [])[:2]:
         stale_note = "" if rec.get("fresh") else " (source has changed since)"
-        reason = _clean_history_text(rec.get("reason", ""))
+        loc_bits = []
+        if rec.get("line"):
+            loc_bits.append(f"line {int(rec['line'])}")
+        if rec.get("cwe"):
+            loc_bits.append(_clean_history_text(str(rec["cwe"]), max_len=20))
+        loc = f" ({', '.join(loc_bits)})" if loc_bits else ""
         line = (
-            f"- A prior /validate run CONFIRMED a finding here "
-            f"({_clean_history_text(rec.get('raw_status', 'confirmed'), max_len=40)})"
+            f"- A prior /validate run CONFIRMED a finding here{loc} "
+            f"[{_clean_history_text(rec.get('raw_status', 'confirmed'), max_len=40)}]"
             f"{stale_note}"
         )
+        raw_mechanism = str(rec.get("mechanism", ""))
+        raw_reason = str(rec.get("reason", ""))
+        mechanism = _clean_history_text(raw_mechanism, max_len=300)
+        # Compare pre-truncation: identical long strings would differ
+        # after the two truncation caps and render as near-duplicates.
+        reason = (
+            _clean_history_text(raw_reason)
+            if raw_reason and raw_reason != raw_mechanism else ""
+        )
+        if mechanism:
+            line += f'\n  Confirmed mechanism: "{mechanism}"'
         if reason:
-            line += f': "{reason}"'
+            line += f': "{reason}"' if not mechanism else f'\n  Verdict reason: "{reason}"'
         lines.append(line)
     if entry.get("confirmed"):
         lines.append(
-            "  Confirmed regions are variant-dense: re-examine sibling "
-            "assumptions and adjacent code paths in depth."
+            "  Evaluate the confirmed mechanism explicitly — state "
+            "whether it is still present at the cited line — then "
+            "re-examine sibling assumptions and adjacent code paths in "
+            "depth (confirmed regions are variant-dense)."
         )
 
     for rec in entry.get("ruled_out", [])[:2]:
@@ -469,13 +509,24 @@ def _extract_mitigation_profile(
     return None
 
 
+def _run_command(candidate_dir: Path) -> str:
+    """Command recorded in the dir's run manifest ('' when absent)."""
+    manifest = _load_json(candidate_dir / ".raptor-run.json")
+    if not isinstance(manifest, dict):
+        return ""
+    return str(manifest.get("command") or "")
+
+
 def _check_target_match(
     candidate_dir: Path,
     target_path: Path,
 ) -> bool:
     """Check if a candidate output dir is for the same target."""
     checklist = _load_json(candidate_dir / "checklist.json")
-    if not checklist:
+    # A checklist without a target (e.g. /validate writes its stage
+    # checklist with target=None) must not veto the match — fall back
+    # to the run manifest instead of comparing None to the path.
+    if not checklist or not checklist.get("target"):
         manifest = _load_json(candidate_dir / ".raptor-run.json")
         if manifest:
             # Run manifests write "target_path" (core/run/metadata.py);
@@ -509,6 +560,41 @@ def import_validate_evidence(
     """
     result = BridgeResult()
 
+    # Post-pass rulings harvested from an audit run's OWN findings.json
+    # (see below) — merged into whatever the sibling/global search
+    # finds instead of shadowing it.
+    supplemental_history: list[dict[str, Any]] = []
+
+    def _finish(res: BridgeResult) -> BridgeResult:
+        if supplemental_history:
+            # A sibling record shadows a same-key supplemental record —
+            # EXCEPT a supplemental CONFIRMED, which always survives: an
+            # older sibling ruled_out must not bury a newer post-pass
+            # confirmation (confirmed precedence is the safe direction;
+            # validate_history_keys already prefers confirmed per key).
+            seen = {
+                (r.get("file", ""), r.get("function", ""))
+                for r in res.verdict_history
+            }
+            seen_confirmed = {
+                (r.get("file", ""), r.get("function", ""))
+                for r in res.verdict_history
+                if r.get("verdict") == "confirmed"
+            }
+            res.verdict_history.extend(
+                r for r in supplemental_history
+                if (r.get("file", ""), r.get("function", "")) not in seen
+                or (
+                    r.get("verdict") == "confirmed"
+                    and (r.get("file", ""), r.get("function", ""))
+                    not in seen_confirmed
+                )
+            )
+            if not res.source_dir:
+                res.source_dir = str(audit_output_dir)
+                res.source_command = "validate (post-pass rulings)"
+        return res
+
     # 1. Co-located — the gate (feasibility or ruling on the first
     #    finding) distinguishes a /validate findings.json from audit's
     #    own pre-existing-findings container (status="pending", no
@@ -519,19 +605,41 @@ def import_validate_evidence(
         if data and data.get("findings"):
             first = data["findings"][0]
             if first.get("feasibility") or first.get("ruling"):
-                data = _sanitised_findings(data, audit_output_dir)
-                result.source_dir = str(audit_output_dir)
-                result.source_command = "validate (co-located)"
-                result.feasibility_verdicts = _extract_feasibility_verdicts(data)
-                result.runtime_evidence = _extract_runtime_evidence(data)
-                result.mitigation_profile = _extract_mitigation_profile(data)
-                result.verdict_history = _extract_verdict_history(
-                    data,
-                    candidate_dir=audit_output_dir,
-                    target_path=target_path,
-                )
-                logger.debug("bridge: found co-located validate output")
-                return result
+                own_command = _run_command(audit_output_dir)
+                if own_command not in ("", "validate", "exploitability-validation"):
+                    # This dir is an audit (or other non-validate) run
+                    # whose own findings.json carries validate
+                    # post-pass rulings. Those rulings used to satisfy
+                    # the gate and return early — self-shadowing: the
+                    # project's real /validate runs were never
+                    # searched, so validate_confirmed_keys stayed
+                    # empty on every resumed/post-passed audit.
+                    # Harvest them as supplemental history and keep
+                    # searching.
+                    supplemental_history = _extract_verdict_history(
+                        _sanitised_findings(data, audit_output_dir),
+                        candidate_dir=audit_output_dir,
+                        target_path=target_path,
+                    )
+                    logger.debug(
+                        "bridge: own dir is a %s run with post-pass "
+                        "rulings — continuing sibling search",
+                        own_command,
+                    )
+                else:
+                    data = _sanitised_findings(data, audit_output_dir)
+                    result.source_dir = str(audit_output_dir)
+                    result.source_command = "validate (co-located)"
+                    result.feasibility_verdicts = _extract_feasibility_verdicts(data)
+                    result.runtime_evidence = _extract_runtime_evidence(data)
+                    result.mitigation_profile = _extract_mitigation_profile(data)
+                    result.verdict_history = _extract_verdict_history(
+                        data,
+                        candidate_dir=audit_output_dir,
+                        target_path=target_path,
+                    )
+                    logger.debug("bridge: found co-located validate output")
+                    return result
 
     # 2. Project siblings
     if project_dir and project_dir.is_dir():
@@ -574,7 +682,7 @@ def import_validate_evidence(
                     target_path=target_path,
                 )
                 logger.debug("bridge: found project sibling at %s", sibling)
-                return result
+                return _finish(result)
 
     # 3. Global out/ — anchored to the repo root via RAPTOR_DIR so the
     #    fallback doesn't silently depend on the process CWD (workers
@@ -612,9 +720,9 @@ def import_validate_evidence(
                     target_path=target_path,
                 )
                 logger.debug("bridge: found global validate output at %s", candidate)
-                return result
+                return _finish(result)
 
-    return result
+    return _finish(result)
 
 
 def import_audit_evidence(

@@ -599,3 +599,202 @@ class TestLifecycleNamedSiblings:
             audit_dir, target, project_dir=project_dir,
         )
         assert not result.has_content
+
+
+def _write_postpass_audit_findings(d, target, *, command="audit"):
+    """An audit run dir whose own findings.json carries validate
+    post-pass rulings — the self-shadowing incident shape."""
+    (d / ".raptor-run.json").write_text(json.dumps({
+        "command": command, "target": str(target),
+    }))
+    (d / "findings.json").write_text(json.dumps({"findings": [{
+        "id": "AUD-001",
+        "file": "src/util.c",
+        "function": "copy_buf",
+        "line": 88,
+        "cwe_id": "CWE-120",
+        "candidate_reasoning": "memcpy with unclamped len",
+        "ruling": {"status": "confirmed", "reason": "post-pass ruling"},
+        "final_status": "confirmed",
+    }]}))
+
+
+class TestSelfShadowing:
+    """An audit dir's own post-pass rulings must not shadow the
+    project's real /validate runs (incident: validate_confirmed_keys
+    empty on every resumed/post-passed audit)."""
+
+    def _sibling(self, project_dir, target):
+        sibling = project_dir / "validate-20260822-203354-pid1-1"
+        sibling.mkdir()
+        (sibling / ".raptor-run.json").write_text(json.dumps({
+            "command": "validate", "target": str(target),
+        }))
+        _write_history_findings(sibling)
+        return sibling
+
+    def test_postpass_rulings_do_not_shadow_sibling(self, tmp_path):
+        target = _make_target(tmp_path)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sibling = self._sibling(project_dir, target)
+        audit_dir = project_dir / "audit-rerun"
+        audit_dir.mkdir()
+        _write_postpass_audit_findings(audit_dir, target)
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.source_dir == str(sibling)
+        assert result.source_command == "validate (project sibling)"
+        funcs = {r["function"] for r in result.verdict_history}
+        assert "parse_header" in funcs  # sibling history reached
+
+    def test_postpass_rulings_merged_as_supplement(self, tmp_path):
+        target = _make_target(tmp_path)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        self._sibling(project_dir, target)
+        audit_dir = project_dir / "audit-rerun"
+        audit_dir.mkdir()
+        _write_postpass_audit_findings(audit_dir, target)
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        # copy_buf appears in BOTH: the sibling's ruled_out stays, but
+        # the post-pass CONFIRMED also survives — an older disproof
+        # must not bury a newer confirmation (confirmed precedence).
+        copy_verdicts = sorted(
+            r["verdict"] for r in result.verdict_history
+            if r["function"] == "copy_buf"
+        )
+        assert copy_verdicts == ["confirmed", "ruled_out"]
+
+    def test_postpass_rulings_used_when_no_sibling(self, tmp_path):
+        target = _make_target(tmp_path)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        audit_dir = project_dir / "audit-rerun"
+        audit_dir.mkdir()
+        _write_postpass_audit_findings(audit_dir, target)
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.source_command == "validate (post-pass rulings)"
+        assert {r["function"] for r in result.verdict_history} == {"copy_buf"}
+
+    def test_validate_command_dir_still_colocated(self, tmp_path):
+        target = _make_target(tmp_path)
+        vdir = tmp_path / "validate-run"
+        vdir.mkdir()
+        (vdir / ".raptor-run.json").write_text(json.dumps({
+            "command": "validate", "target": str(target),
+        }))
+        _write_validate_findings(vdir)
+        result = import_validate_evidence(vdir, target)
+        assert result.source_command == "validate (co-located)"
+
+    def test_manifestless_dir_keeps_legacy_colocated(self, tmp_path):
+        target = _make_target(tmp_path)
+        _write_validate_findings(tmp_path)
+        result = import_validate_evidence(tmp_path, target)
+        assert result.source_command == "validate (co-located)"
+
+
+class TestHistoryMechanism:
+    """Confirmed history must carry WHAT was confirmed (line, CWE,
+    mechanism) — incident: the review prompt said only 'a finding was
+    confirmed here' and the grader could never match it back."""
+
+    def test_records_carry_line_cwe_mechanism(self, tmp_path):
+        target = _make_target(tmp_path)
+        (tmp_path / "findings.json").write_text(json.dumps({"findings": [{
+            "id": "EXT-002",
+            "file": "src/http.c",
+            "function": "parse_header",
+            "line": 242,
+            "cwe_id": "CWE-570",
+            "candidate_reasoning": "unsigned uid < 0 is provably false",
+            "ruling": {"status": "confirmed", "reason": "dead branch"},
+            "final_status": "confirmed",
+        }]}))
+        result = import_validate_evidence(tmp_path, target)
+        rec = result.verdict_history[0]
+        assert rec["line"] == 242
+        assert rec["cwe"] == "CWE-570"
+        assert "unsigned uid" in rec["mechanism"]
+
+    def test_format_renders_mechanism(self):
+        text = format_validate_history({
+            "confirmed": [{
+                "fresh": True,
+                "raw_status": "confirmed",
+                "reason": "dead branch",
+                "line": 242,
+                "cwe": "CWE-570",
+                "mechanism": "unsigned uid < 0 is provably false",
+            }],
+            "ruled_out": [],
+        })
+        assert "line 242" in text
+        assert "CWE-570" in text
+        assert "provably false" in text
+        assert "Evaluate the confirmed mechanism" in text
+
+    def test_malformed_line_never_aborts_import(self, tmp_path):
+        # findings files are LLM-written: '~242' must degrade to
+        # line-unknown, not raise out of import_validate_evidence and
+        # lose ALL bridge evidence.
+        target = _make_target(tmp_path)
+        (tmp_path / "findings.json").write_text(json.dumps({"findings": [{
+            "id": "X-1",
+            "file": "src/http.c",
+            "function": "parse_header",
+            "line": "~242",
+            "ruling": {"status": "confirmed", "reason": "r"},
+            "final_status": "confirmed",
+        }]}))
+        result = import_validate_evidence(tmp_path, target)
+        assert result.verdict_history[0]["line"] == 0
+
+    def test_format_without_mechanism_still_renders(self):
+        text = format_validate_history({
+            "confirmed": [{
+                "fresh": True,
+                "raw_status": "confirmed",
+                "reason": "PoC replayed",
+            }],
+            "ruled_out": [],
+        })
+        assert "CONFIRMED" in text
+        assert "PoC replayed" in text
+
+
+class TestTargetlessChecklist:
+    """A checklist.json with target=None (the /validate stage
+    checklist shape) must not veto the sibling match — fall back to
+    the run manifest."""
+
+    def test_targetless_checklist_falls_back_to_manifest(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sibling = project_dir / "validate-20260822-1"
+        sibling.mkdir()
+        (sibling / "checklist.json").write_text(json.dumps({
+            "target": None, "items": [],
+        }))
+        (sibling / ".raptor-run.json").write_text(json.dumps({
+            "command": "validate", "target": str(target),
+        }))
+        _write_validate_findings(sibling)
+        audit_dir = project_dir / "audit_x"
+        audit_dir.mkdir()
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.source_command == "validate (project sibling)"

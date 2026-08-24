@@ -384,6 +384,20 @@ def compute_gaps(
             if item_kind not in reviewable_kinds:
                 continue
 
+            # CI workflow jobs/steps carry kind "function" (the
+            # extractor's reviewable-unit shape) but are scanner
+            # territory, not units an LLM reviews one-by-one. The
+            # coverage summary already keeps them out of the review
+            # denominator; excluding them here keeps them out of
+            # paid review DISPATCH too. They stay in the checklist
+            # for inventory bookkeeping.
+            if name.startswith("job:") and (
+                (file_info.get("language") or "").lower() == "yaml"
+                or file_path.startswith(".github/workflows/")
+                or "/.github/workflows/" in file_path
+            ):
+                continue
+
             # Covered-set keys use the injective encoding (file
             # component percent-encoded) so a colon-bearing filename
             # cannot alias another function's coverage and wrongly

@@ -2949,6 +2949,16 @@ class TestRefutationGateWirePoint:
         monkeypatch.setattr(
             _orch, "_start_joern_server_raw", lambda *a, **k: None,
         )
+        # Same boundary, prep side: the sandboxed mechanical-detector
+        # prep is ~5s of real detector runs per test on fixtures whose
+        # findings these gate-wiring assertions never read. Full
+        # variadic signature + the real (dict, set) contract, so the
+        # stub executes rather than dying into the phase's blanket
+        # except.
+        monkeypatch.setattr(
+            _orch, "_run_mechanical_detectors",
+            lambda *args, **kwargs: ({}, set()),
+        )
 
     def test_race_in_single_threaded_demoted_to_clean(self, tmp_path: Path):
         """Architecture gate demotes a race-condition finding to clean."""

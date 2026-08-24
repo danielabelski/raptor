@@ -107,6 +107,16 @@ class _StubClient:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch):
+    """Error-path tests trip the provider's real retry backoff — with
+    the API stubbed, time.sleep(delay) is the only thing under those
+    seconds."""
+    import core.llm.providers as providers_mod
+
+    monkeypatch.setattr(providers_mod.time, "sleep", lambda s: None)
+
+
 def _provider_with_stub() -> tuple[AnthropicProvider, _StubClient]:
     """Construct an :class:`AnthropicProvider` then swap in our stub
     SDK client. The real constructor reads ``ANTHROPIC_API_KEY`` from

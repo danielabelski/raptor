@@ -32,6 +32,23 @@ def r2_available() -> bool:
         return False
 
 
+def _normalise_r2_name(name: str) -> str:
+    """Strip r2 namespace prefixes so names match other engines.
+
+    Ghidra and objdump/nm both report the plain symbol (``greet``);
+    r2 prefixes DWARF-derived names with ``dbg.`` and symbol-table
+    names with ``sym.`` — a cross-engine consumer keying findings by
+    name would silently miss. Import thunks (``sym.imp.*``) keep the
+    full prefix: they are distinct entities from the real function.
+    """
+    if name.startswith("sym.imp."):
+        return name
+    for prefix in ("dbg.", "sym."):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
 def import_binary_r2(
     binary_path: Path,
     *,
@@ -94,7 +111,7 @@ def _context_map_to_redb(ctx, binary_path: Path) -> REDatabase:
             continue
         seen_addrs.add(fn.address)
         functions.append(REFunction(
-            name=fn.name,
+            name=_normalise_r2_name(fn.name),
             address=fn.address,
             size=fn.size,
             is_external=fn.is_imported,
@@ -107,7 +124,7 @@ def _context_map_to_redb(ctx, binary_path: Path) -> REDatabase:
             continue
         seen_addrs.add(fn.address)
         functions.append(REFunction(
-            name=fn.name,
+            name=_normalise_r2_name(fn.name),
             address=fn.address,
             size=fn.size,
             is_external=True,
@@ -165,7 +182,7 @@ def _context_map_to_redb_dict(
                 continue
             seen_addrs.add(addr)
             functions.append(REFunction(
-                name=fn.get("name", ""),
+                name=_normalise_r2_name(fn.get("name", "")),
                 address=addr,
                 size=fn.get("size", 0) or 0,
                 is_external=fn.get("is_imported", False),

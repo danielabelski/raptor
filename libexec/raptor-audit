@@ -692,10 +692,27 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             db = load_redb(redb_path) if redb_path else None
             func_obj = None
             if db is not None:
-                func_obj = next(
-                    (f for f in db.functions
-                     if f.name == args.function), None,
-                )
+                lookup = args.function
+                addr = None
+                # Collision-suffixed checklist names (name@0xADDR)
+                # resolve by address.
+                if "@0x" in lookup:
+                    base, _, addr_s = lookup.rpartition("@")
+                    try:
+                        addr = int(addr_s, 16)
+                        lookup = base
+                    except ValueError:
+                        addr = None
+                if addr is not None:
+                    func_obj = next(
+                        (f for f in db.functions
+                         if f.address == addr), None,
+                    )
+                else:
+                    func_obj = next(
+                        (f for f in db.functions
+                         if f.name == lookup), None,
+                    )
             if func_obj is None or not func_obj.decompilation:
                 print(
                     "error: no decompilation available for "
@@ -704,8 +721,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 )
                 return 1
             import tempfile as _tempfile
+            # Fixed suffix: hostile symbol names can carry '/' or
+            # exceed NAME_MAX.
             _bin_tmp = _tempfile.NamedTemporaryFile(
-                mode="w", suffix=f"-{args.function}.c",
+                mode="w", suffix=".c",
                 prefix="raptor-binsweep-", delete=False,
             )
             _bin_tmp.write(func_obj.decompilation)
@@ -715,44 +734,47 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             fn_line_start = 0
             fn_line_end = 0
 
-        if tool == "semgrep":
-            result = run_semgrep_sweep(
-                target_path=sweep_target,
-                file_path=sweep_file,
-                function_name=args.function,
-                rule_config=str(rule_path),
-                line_start=fn_line_start or 0,
-                line_end=fn_line_end or 0,
-            )
-        elif tool == "codeql":
-            result = run_codeql_sweep(
-                target_path=target_path,
-                file_path=args.file,
-                function_name=args.function,
-                query_path=str(rule_path),
-                database_path=args.codeql_db,
-            )
-        else:
-            result = run_coccinelle_sweep(
-                target_path=target_path,
-                file_path=args.file,
-                function_name=args.function,
-                cocci_rule=str(rule_path),
-                line_start=fn_line_start,
-                line_end=fn_line_end,
-            )
-
-        if _bin_tmp is not None:
-            try:
-                Path(_bin_tmp.name).unlink()
-            except OSError:
-                pass
+        try:
+            if tool == "semgrep":
+                result = run_semgrep_sweep(
+                    target_path=sweep_target,
+                    file_path=sweep_file,
+                    function_name=args.function,
+                    rule_config=str(rule_path),
+                    line_start=fn_line_start or 0,
+                    line_end=fn_line_end or 0,
+                )
+            elif tool == "codeql":
+                result = run_codeql_sweep(
+                    target_path=target_path,
+                    file_path=args.file,
+                    function_name=args.function,
+                    query_path=str(rule_path),
+                    database_path=args.codeql_db,
+                )
+            else:
+                result = run_coccinelle_sweep(
+                    target_path=target_path,
+                    file_path=args.file,
+                    function_name=args.function,
+                    cocci_rule=str(rule_path),
+                    line_start=fn_line_start,
+                    line_end=fn_line_end,
+                )
+        finally:
+            if _bin_tmp is not None:
+                try:
+                    Path(_bin_tmp.name).unlink()
+                except OSError:
+                    pass
 
         entry = result.to_log_entry()
         entry["rule_source"] = str(rule_path)
         if _bin_tmp is not None:
-            # Log the REAL item key, not the tmpfile.
+            # Log the REAL item key, not the tmpfile — the G2/G3
+            # record gates match receipts on this key.
             entry["file"] = args.file
+            entry["key"] = f"{args.file}:{args.function}"
             entry["representation"] = "decompilation"
         if args.rule and not args.rule_file:
             entry["rule_inline"] = args.rule

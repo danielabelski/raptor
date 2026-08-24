@@ -99,9 +99,10 @@ def _is_binary_target(target: Path) -> bool:
         return False
     return magic in (
         b"\x7fELF",
-        b"MZ\x90\x00",
         b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
         b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+        # fat Mach-O
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
     ) or magic[:2] == b"MZ"
 
 
@@ -123,14 +124,28 @@ def _build_binary_checklist(target: Path, output_dir: Path) -> dict:
     binary_path = target if target.suffix != ".gpr" else None
     redb_path = find_redb(output_dir, target)
     if redb_path is not None:
-        print(f"using cached binary database: {redb_path}")
         db = load_redb(redb_path)
-    elif target.suffix == ".gpr":
+        # Identity check: a cached database stamped with a different
+        # binary's hash must not be attested under this target.
+        stamped = (db.metadata or {}).get("binary_sha256")
+        if stamped and binary_path is not None:
+            from core.hash import sha256_file
+            actual = sha256_file(binary_path)
+            if stamped != actual:
+                print(
+                    f"cached database at {redb_path} belongs to a "
+                    "different binary — reimporting",
+                    file=sys.stderr,
+                )
+                db = None
+        if db is not None:
+            print(f"using cached binary database: {redb_path}")
+    if db is None and target.suffix == ".gpr":
         from packages.ghidra.bridge import GhidraBridge
         bridge = GhidraBridge(target)
         db = bridge.import_project(output_dir, decompile=True)
         bridge.close()
-    else:
+    elif db is None:
         from packages.ghidra.r2_import import r2_available
         if r2_available():
             print("importing via r2 (degraded: no decompiler types)",

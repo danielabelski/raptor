@@ -267,7 +267,10 @@ class GhidraBridge:
     ) -> None:
         """Apply enrichments to a Ghidra project via PyGhidra transactions."""
         from .detect import get_project_name
-        from pyghidra.api import open_project, consume_program
+        # The ghidra.* namespace only exists once the JVM is up —
+        # open_project alone does not start it.
+        GhidraSession.ensure_jvm()
+        from pyghidra.api import consume_program, open_project
 
         project_name = get_project_name(gpr_path)
         project = open_project(str(gpr_path.parent), project_name)
@@ -478,10 +481,25 @@ class GhidraBridge:
         return enrichments
 
     def _write_re_database(self, db: REDatabase, output_dir: Path) -> None:
-        """Write the REDatabase to disk as ``re-database.json``."""
+        """Write the REDatabase to disk as ``re-database.json``.
+
+        Stamps the analysed binary's content hash into the metadata so
+        cache reuse can verify the database belongs to the binary it
+        is being used for.
+        """
+        doc = db.to_dict()
+        try:
+            bp = Path(db.binary_path or "")
+            if bp.is_file():
+                from core.hash import sha256_file
+                doc.setdefault("metadata", {})["binary_sha256"] = (
+                    sha256_file(bp)
+                )
+        except OSError:
+            logger.debug("could not hash %s", db.binary_path, exc_info=True)
         out_path = output_dir / "re-database.json"
         with open(out_path, "w") as f:
-            json.dump(db.to_dict(), f, indent=2)
+            json.dump(doc, f, indent=2)
         logger.info("wrote %s (%d functions)", out_path, len(db.functions))
 
 

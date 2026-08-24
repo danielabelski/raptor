@@ -1659,6 +1659,14 @@ def format_context_for_prompt(
             tp.append(_fenced(td.get("source", "")))
         sections.append(PromptSection("type_definitions", "\n".join(tp), 2))
 
+    if ctx.get("ghidra_context"):
+        gp = [
+            "\n### Binary database context "
+            "(untrusted — derived from the analysed binary)",
+            f"```\n{ctx['ghidra_context']}\n```",
+        ]
+        sections.append(PromptSection("ghidra_context", "\n".join(gp), 2))
+
     if ctx.get("prior_verdict"):
         pv = ctx["prior_verdict"]
         pp = ["\n### Prior review verdict (this is a re-review)"]

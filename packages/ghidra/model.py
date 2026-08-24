@@ -239,6 +239,38 @@ class REDatabase:
                 return f
         return self.function_by_address(addr)
 
+
+    def _estimate_base_delta(self, other: "REDatabase") -> int:
+        """Rebase delta from *other*'s address space into ours.
+
+        Uses the modal address difference across same-named non-auto
+        functions — robust to a few name collisions and independent
+        of either engine's image_base metadata (which fallback
+        importers may not populate). Returns 0 when there is no
+        consistent evidence.
+        """
+        from collections import Counter
+
+        ours = {
+            f.name: f.address for f in self.functions
+            if not f.is_auto_named
+        }
+        deltas = Counter()
+        for f in other.functions:
+            if f.is_auto_named:
+                continue
+            addr = ours.get(f.name)
+            if addr is not None:
+                deltas[addr - f.address] += 1
+        if not deltas:
+            return 0
+        delta, votes = deltas.most_common(1)[0]
+        # Demand agreement from at least 3 names (or all of a small
+        # overlap) so a coincidental single match can't rebase.
+        if votes >= 3 or votes == sum(deltas.values()) >= 2:
+            return delta
+        return 0
+
     def merge(self, other: REDatabase) -> REDatabase:
         """Merge *other* into a new REDatabase.  ``self`` is the primary
         (higher trust); ``other`` provides additive enrichment.
@@ -258,9 +290,33 @@ class REDatabase:
             metadata={**other.metadata, **self.metadata},
         )
 
+        # Different engines rebase the image differently (Ghidra
+        # defaults PIE binaries to 0x100000, r2 to their file base),
+        # so an address-keyed union without normalisation matches
+        # NOTHING and duplicates every function. Estimate the delta
+        # from shared function names and rebase *other* first.
+        delta = self._estimate_base_delta(other)
+        other_functions = other.functions
+        if delta:
+            other_functions = [
+                REFunction(
+                    name=f.name,
+                    address=f.address + delta,
+                    size=f.size,
+                    is_auto_named=f.is_auto_named,
+                    is_thunk=f.is_thunk,
+                    is_external=f.is_external,
+                    signature=f.signature,
+                    calling_convention=f.calling_convention,
+                    decompilation=f.decompilation,
+                    source_tool=f.source_tool,
+                )
+                for f in other.functions
+            ]
+
         # Functions — union by address, self wins
         by_addr: Dict[int, REFunction] = {}
-        for f in other.functions:
+        for f in other_functions:
             by_addr[f.address] = f
         for f in self.functions:
             by_addr[f.address] = f

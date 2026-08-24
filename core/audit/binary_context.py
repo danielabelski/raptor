@@ -37,15 +37,23 @@ def find_redb(out_dir: Optional[Path], target_path: Optional[Path]) -> Optional[
     binary. Only RAPTOR-owned locations — never the scanned target's
     own directory.
     """
+    import os
     candidates: List[Path] = []
     if out_dir:
         candidates.append(Path(out_dir) / "re-database.json")
         candidates.append(Path(out_dir).parent / "re-database.json")
     if target_path:
-        candidates.append(
-            Path(f"out/ghidra-import-{Path(target_path).stem}")
-            / "re-database.json"
-        )
+        # Anchor to the RAPTOR repo's out/ — a cwd-relative path
+        # would resolve inside the scanned target's own directory
+        # when invoked from there, handing the target author the
+        # entire derived database.
+        raptor_dir = os.environ.get("RAPTOR_DIR")
+        if raptor_dir:
+            candidates.append(
+                Path(raptor_dir) / "out"
+                / f"ghidra-import-{Path(target_path).stem}"
+                / "re-database.json"
+            )
     for cand in candidates:
         if cand.is_file():
             return cand
@@ -99,13 +107,23 @@ def assemble_binary_context(
     if address is None:
         address = ((item or {}).get("metadata") or {}).get("address")
 
+    lookup_name = function_name
+    if address is None and "@0x" in function_name:
+        # Collision-suffixed checklist names (name@0xADDR).
+        base, _, addr_s = function_name.rpartition("@")
+        try:
+            address = int(addr_s, 16)
+            lookup_name = base
+        except ValueError:
+            address = None
+
     func = None
     if db is not None:
         if address is not None:
             func = db.function_by_address(address)
         if func is None:
             func = next(
-                (f for f in db.functions if f.name == function_name),
+                (f for f in db.functions if f.name == lookup_name),
                 None,
             )
             if func is not None:
@@ -140,7 +158,7 @@ def assemble_binary_context(
         annotations_dir, file_path, function_name, out_dir,
     )
     ctx["is_prior_audit_annotation"] = False
-    ctx["sinks"] = _binary_sinks(context_map, function_name, address)
+    ctx["sinks"] = _binary_sinks(context_map, function_name, address, func)
     ctx["threat_model"] = _load_threat_model(target_path)
     ctx["trust_surface"] = []
     ctx["prior_attempts"] = {}
@@ -182,6 +200,37 @@ def assemble_binary_context(
     if parts:
         ctx["ghidra_context"] = "\n".join(parts)
 
+    # Same prompt defences hostile SOURCE gets (control-char strip,
+    # size cap, injection scan): decompilation, database comments,
+    # and callee snippets are attacker-derived text on the same
+    # trust footing.
+    try:
+        from .prompt_defence import sanitise_for_prompt, scan_for_injection
+        location = f"{file_path}:{function_name}"
+        if ctx.get("source"):
+            ctx["source"] = sanitise_for_prompt(
+                ctx["source"], content_type="source",
+                location=location,
+            )
+            injection_warnings = scan_for_injection(
+                ctx["source"], location=location,
+            )
+            if injection_warnings:
+                ctx["injection_warnings"] = injection_warnings
+        if ctx.get("ghidra_context"):
+            ctx["ghidra_context"] = sanitise_for_prompt(
+                ctx["ghidra_context"], content_type="source",
+                location=location,
+            )
+        for callee in ctx.get("callees", []):
+            if callee.get("source_snippet"):
+                callee["source_snippet"] = sanitise_for_prompt(
+                    callee["source_snippet"], content_type="source",
+                    location=location,
+                )
+    except Exception:
+        logger.warning("prompt defence failed", exc_info=True)
+
     return ctx
 
 
@@ -189,7 +238,8 @@ def _find_item(checklist, file_path, function_name):
     for file_entry in (checklist or {}).get("files", []):
         if file_entry.get("path") != file_path:
             continue
-        for item in file_entry.get("items", []):
+        items = file_entry.get("items", file_entry.get("functions", []))
+        for item in items or []:
             if item.get("name") == function_name:
                 return item
     return None
@@ -265,18 +315,40 @@ def _binary_callees(db, func) -> List[Dict[str, Any]]:
     return callees[:15]
 
 
-def _binary_sinks(context_map, function_name, address) -> List[Dict[str, Any]]:
+def _binary_sinks(context_map, function_name, address, func=None) -> List[str]:
+    """Sinks reachable from THIS function, as prompt-ready strings.
+
+    Matches the source path's contract (strings, per-function): map
+    sink entries are kept when they name this function or fall inside
+    its address range — returning the whole map would hand every
+    function the input strategy and render dict reprs into the
+    prompt.
+    """
     if not context_map:
         return []
-    sinks = []
+    lo = address if isinstance(address, int) else None
+    hi = None
+    if lo is not None and func is not None:
+        hi = lo + max((func.size or 0) - 1, 0)
+    out = []
     for sink in context_map.get(
             "sinks", context_map.get("dangerous_sinks", [])):
-        sinks.append({
-            "location": sink.get("location", sink.get("name", "")),
-            "type": sink.get("type", ""),
-            "address": sink.get("address"),
-        })
-    return sinks[:20]
+        s_fn = sink.get("function", sink.get("containing_function", ""))
+        s_addr = sink.get("address")
+        if isinstance(s_addr, str):
+            try:
+                s_addr = int(s_addr, 16)
+            except ValueError:
+                s_addr = None
+        matched = bool(s_fn) and s_fn == function_name
+        if not matched and lo is not None and isinstance(s_addr, int):
+            matched = lo <= s_addr <= (hi if hi is not None else lo)
+        if not matched:
+            continue
+        loc = sink.get("location", sink.get("name", ""))
+        kind = sink.get("type", "")
+        out.append(f"{kind} at {loc}" if kind else str(loc))
+    return out[:20]
 
 
 def _load_threat_model(target_path):

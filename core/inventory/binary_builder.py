@@ -114,10 +114,8 @@ def build_binary_checklist(
     binary_sha = ""
     try:
         if Path(bp).is_file():
-            import hashlib
-            binary_sha = hashlib.sha256(
-                Path(bp).read_bytes()
-            ).hexdigest()
+            from core.hash import sha256_file
+            binary_sha = sha256_file(Path(bp))
     except OSError:
         logger.debug("could not hash %s", bp, exc_info=True)
 
@@ -133,6 +131,22 @@ def build_binary_checklist(
 
     callee_index = _build_callee_index(db)
 
+    # Clamp sizes against the next function's start: on symbol-table
+    # fallbacks the size is raw st_size from the (attacker-controlled)
+    # binary, and an inflated span would over-mark address-space
+    # coverage — one reviewed decoy could blanket every other
+    # function's range and hide real gaps.
+    starts = sorted(f.address for f in db.functions if f.address >= 0)
+    import bisect
+    def _clamped_size(func) -> int:
+        size = max(func.size or 0, 0)
+        i = bisect.bisect_right(starts, func.address)
+        if i < len(starts):
+            gap = starts[i] - func.address
+            if 0 < gap < size:
+                return gap
+        return size
+
     entry_addrs: Set[int] = set()
     sink_addrs: Set[int] = set()
     if context_map:
@@ -146,6 +160,7 @@ def build_binary_checklist(
                 sink_addrs.add(_parse_addr(addr))
 
     items: List[Dict[str, Any]] = []
+    seen_names: Dict[str, int] = {}
     for func in db.functions:
         if func.is_thunk or func.is_external:
             continue
@@ -164,13 +179,22 @@ def build_binary_checklist(
         # address/size must ride inside metadata to survive into
         # context assembly and the journal.
         metadata["address"] = func.address
-        metadata["size"] = func.size
+        metadata["size"] = _clamped_size(func)
+
+        # Duplicate symbol names (cross-TU statics, or a forged
+        # symtab aliasing a hot name) would collapse journal/coverage
+        # keys — every instance after the first gets an address
+        # suffix so each function keys uniquely.
+        item_name = func.name
+        if item_name in seen_names:
+            item_name = f"{func.name}@{func.address:#x}"
+        seen_names[func.name] = seen_names.get(func.name, 0) + 1
 
         item: Dict[str, Any] = {
-            "name": func.name,
+            "name": item_name,
             "kind": "function",
             "address": func.address,
-            "size": func.size,
+            "size": _clamped_size(func),
             "source_tool": func.source_tool,
             "metadata": metadata,
         }

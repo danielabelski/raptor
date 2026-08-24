@@ -136,7 +136,14 @@ def export_project(
 
     env = _safe_env()
 
-    with tempfile.TemporaryDirectory(prefix="raptor-ghidra-") as work_dir:
+    # The working copy lives INSIDE the output scope: the sandbox's
+    # mount-namespace mode replaces host-/tmp extra grants with a
+    # private scratch under restrict_reads, so a /tmp work dir would
+    # be invisible to the JVM — only target=/output= binds survive.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="raptor-ghidra-work-", dir=output_path.parent,
+    ) as work_dir:
         work_path = Path(work_dir)
 
         work_gpr = prepare_working_copy(gpr_path, work_path)
@@ -147,14 +154,20 @@ def export_project(
         # sandbox user namespace the uid maps to nobody (Debian home
         # /nonexistent). JAVA_TOOL_OPTIONS reaches every JVM the
         # launcher spawns.
+        jvm_tmp = work_path / "jvm-tmp"
+        jvm_tmp.mkdir()
         env = dict(
             env,
             HOME=str(work_path),
+            TMPDIR=str(jvm_tmp),
             XDG_CONFIG_HOME=str(work_path / ".config"),
             XDG_CACHE_HOME=str(work_path / ".cache"),
             JAVA_TOOL_OPTIONS=(
                 env.get("JAVA_TOOL_OPTIONS", "")
                 + f" -Duser.home={work_path}"
+                # Ghidra buffers database work in java.io.tmpdir;
+                # host /tmp is not granted under restrict_reads.
+                + f" -Djava.io.tmpdir={jvm_tmp}"
                 # prepare_working_copy stamps the project OWNER to
                 # the invoking OS user; inside the sandbox user
                 # namespace the JVM's passwd-derived user.name is
@@ -310,19 +323,27 @@ def import_enrichments(
     env = _safe_env()
 
     from .import_script_java import IMPORT_SCRIPT_JAVA
-    with tempfile.TemporaryDirectory(prefix="raptor-ghidra-import-") as script_dir:
+    # Script dir + JVM HOME inside the output scope (see
+    # export_project for the /tmp-grant rationale).
+    with tempfile.TemporaryDirectory(
+        prefix="raptor-ghidra-import-", dir=dst_dir,
+    ) as script_dir:
         script_path = Path(script_dir) / "ImportRaptor.java"
         script_path.write_text(IMPORT_SCRIPT_JAVA, encoding="utf-8")
         # Writable user home for the JVM launcher (see export_project
         # for the passwd-derivation rationale).
+        jvm_tmp = Path(script_dir) / "jvm-tmp"
+        jvm_tmp.mkdir()
         env = dict(
             env,
             HOME=str(script_dir),
+            TMPDIR=str(jvm_tmp),
             XDG_CONFIG_HOME=str(Path(script_dir) / ".config"),
             XDG_CACHE_HOME=str(Path(script_dir) / ".cache"),
             JAVA_TOOL_OPTIONS=(
                 env.get("JAVA_TOOL_OPTIONS", "")
                 + f" -Duser.home={script_dir}"
+                + f" -Djava.io.tmpdir={jvm_tmp}"
                 + f" -Duser.name={getpass.getuser()}"
             ).strip(),
         )
@@ -353,9 +374,11 @@ def import_enrichments(
                 target=str(dst_dir),
                 # The destination copy is what analyzeHeadless saves
                 # the enriched program into (plus its lock file) — it
-                # must be the writable scope. The script dir is a
-                # tempdir under /tmp, which is in the sandbox's
-                # writable baseline.
+                # must be the writable scope. The script dir doubles
+                # as the JVM's HOME (config cache) and must be
+                # writable too — the mount-namespace sandbox gives
+                # children a private /tmp, so host tempdirs are not
+                # implicitly writable.
                 output=str(dst_dir),
                 # Same read posture as export_project; the
                 # enrichments JSON sits in dst_dir (bridge flow) or

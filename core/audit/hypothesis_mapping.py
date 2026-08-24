@@ -48,6 +48,21 @@ _OPEN_REDIRECT_PATTERN = (
     "sendRedirect\\s*\\(\\s*request|"
     "header\\s*\\(\\s*[\\x27\"]Location:?[\\x27\"]?\\s*\\."
 )
+# Terminal escape injection (CWE-150): printf-family emitting a %s
+# whose corresponding argument is a bare variable/member (no wrapping
+# call) straight to stdout/stderr. Presence-style: the canonical safe
+# idiom (strnvis into a buffer, then print the buffer) is textually
+# identical at the print site, so the guarded fixture matches and the
+# sweep caps this rule at inconclusive — confirmation-grade evidence
+# for the family comes from the joern taint leg (cwe_dispatch
+# CWE-150 sinks). The \b anchors keep fmprintf/snprintf (filtered /
+# non-terminal) from matching.
+_ESCAPE_INJECTION_PATTERN = (
+    "\\bprintf\\s*\\(\\s*\"[^\"]*%s[^\"]*\"\\s*,\\s*"
+    "[\\w.>\\[\\]-]+\\s*[,)]|"
+    "\\bv?fprintf\\s*\\(\\s*std(?:out|err)\\s*,\\s*\"[^\"]*%s[^\"]*\""
+    "\\s*,\\s*[\\w.>\\[\\]-]+\\s*[,)]"
+)
 
 _HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
     "buffer overflow": "strcpy|sprintf|gets\\s*\\(|strcat",
@@ -69,6 +84,9 @@ _HYPOTHESIS_SEMGREP_PATTERNS: dict[str, str] = {
     "xml external entit": _XXE_PATTERN,
     "open redirect": _OPEN_REDIRECT_PATTERN,
     "unvalidated redirect": _OPEN_REDIRECT_PATTERN,
+    "terminal escape": _ESCAPE_INJECTION_PATTERN,
+    "escape sequence": _ESCAPE_INJECTION_PATTERN,
+    "escape-sequence": _ESCAPE_INJECTION_PATTERN,
 }
 
 
@@ -148,6 +166,14 @@ def hypothesis_to_semgrep_rule_keyed(
     for keyword, regex in _HYPOTHESIS_SEMGREP_PATTERNS.items():
         if keyword in hyp_lower:
             if keyword == "format string" and file_path.endswith(".go"):
+                continue
+            if regex is _ESCAPE_INJECTION_PATTERN and (
+                semgrep_language_for(file_path) not in ("c", "cpp")
+            ):
+                # C-idiom pattern (printf-family %s): on other
+                # languages a zero-match would be a false refutation
+                # of e.g. SQL/regex escape-sequence hypotheses (the
+                # format-string/.go precedent).
                 continue
             pattern = regex
             matched_keyword = keyword

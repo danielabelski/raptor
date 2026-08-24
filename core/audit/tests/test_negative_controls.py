@@ -93,6 +93,10 @@ _PRESENCE_STYLE_KEYWORDS = (
     "buffer overflow", "sql injection", "command injection",
     "path traversal", "format string", "use after free", "double free",
     "xss", "reflected", "cross-site",
+    # CWE-150: the safe idiom (strnvis into a buffer, then print) is
+    # textually identical at the printf site, so the fixture matches
+    # by design and the sweep caps the rule at inconclusive.
+    "terminal escape", "escape sequence", "escape-sequence",
 )
 
 _UNSAFE_SHAPE_STEMS = {

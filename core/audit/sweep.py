@@ -930,6 +930,9 @@ _KEYWORD_FIXTURE_STEMS: dict[str, str] = {
     "xml external entit": "xxe",
     "open redirect": "open_redirect",
     "unvalidated redirect": "open_redirect",
+    "terminal escape": "escape_injection",
+    "escape sequence": "escape_injection",
+    "escape-sequence": "escape_injection",
 }
 
 # Keyed by (keyword, fixture suffix): the pattern for a keyword is a

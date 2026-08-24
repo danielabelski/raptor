@@ -270,6 +270,23 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "codeql": "cpp/null-dereference",
         "sinks": [],
     },
+    # Improper neutralization of escape/control sequences — the
+    # terminal-escape-injection shape: attacker-influenced bytes
+    # printed raw to the operator's terminal (display spoofing /
+    # terminal control). Detection-grade: joern taint to the raw
+    # terminal-print sinks (CWE-90/829 precedent: joern+sinks-only
+    # entries are real chains); the hypothesis-keyword semgrep leg
+    # (hypothesis_mapping "terminal escape"/"escape sequence")
+    # carries the printf-%s-of-bare-variable unsafe shape. No stock
+    # CodeQL query adjudicates escape-sequence neutralization.
+    "CWE-150": {
+        "smt": None,
+        "cocci": None,
+        "joern": True,
+        "codeql": None,
+        "sinks": ["printf", "fprintf", "vprintf", "vfprintf",
+                  "dprintf", "fputs", "puts", "fwrite"],
+    },
     # Format string
     "CWE-134": {
         "smt": None,
@@ -330,6 +347,19 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
         "cocci": "toctou_stat_open.cocci",
         "joern": False,
         "codeql": None,
+        "sinks": [],
+    },
+    # Insecure temporary file — the race-prone name-generation APIs
+    # (mktemp/tmpnam/tmpnam_r/tempnam) plus the mkstemp
+    # reopen-by-path misuse; both are fixed libc vocabulary, classic
+    # Coccinelle territory (the TOCTOU-family sibling of CWE-367).
+    # The CodeQL leg covers the Python shape (tempfile.mktemp) and
+    # degrades gracefully on other-language databases.
+    "CWE-377": {
+        "smt": None,
+        "cocci": "insecure_temp_file.cocci",
+        "joern": False,
+        "codeql": "py/insecure-temporary-file",
         "sinks": [],
     },
     # CWE-667 keeps its smt/cocci entry (lock-imbalance leg); the
@@ -573,15 +603,18 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
 }
 
 # Classes a deterministic tool CANNOT adjudicate — by policy, not by
-# gap. These are quality/operational properties, not exploitability
-# claims: no tool output (pattern match, taint path, SMT model) can
-# state the harm, so a synthesized checker "confirming" one is always
-# a shape assertion, never evidence. Suspicious verdicts in these
-# families stay at hypothesis grade with the reason recorded — they
-# are NOT on-demand checker-synthesis candidates (the long
-# instrumented run watched synthesis promote empty-audit-hook and
-# irrelevant-code shapes to finding/high on self-referential pattern
-# matches).
+# gap. Two family shapes qualify: quality/operational properties
+# (CWE-778/1164 — not exploitability claims at all), and security
+# properties whose adjudicating fact lives outside any static tool's
+# observables (CWE-316/323 — data sensitivity, cross-invocation value
+# recurrence). Either way, no tool output (pattern match, taint path,
+# SMT model) can state the harm, so a synthesized checker
+# "confirming" one is always a shape assertion, never evidence.
+# Suspicious verdicts in these families stay at hypothesis grade with
+# the reason recorded — they are NOT on-demand checker-synthesis
+# candidates (the long instrumented run watched synthesis promote
+# empty-audit-hook and irrelevant-code shapes to finding/high on
+# self-referential pattern matches).
 #
 # Known gap (next pass): the park is class-exact, so logging-family
 # CWE drift bypasses it — a review emitting the operational-logging
@@ -604,6 +637,30 @@ CWE_NOT_TOOL_VERIFIABLE: dict[str, str] = {
     "CWE-1164": (
         "irrelevant/extraneous code is a code-quality property with "
         "no attacker-facing harm mechanism for a tool to test"
+    ),
+    # Cleartext sensitive data in memory: which values are sensitive
+    # and whether an attacker holds a disclosure primitive are
+    # semantic judgments outside static observables; a
+    # missing-scrub/missing-mlock match is a shape, not evidence
+    # (contrast CWE-908, where the uninitialised-copy-out FLOW is the
+    # harm and taint adjudicates it).
+    "CWE-316": (
+        "cleartext sensitive data in memory is a semantic "
+        "memory-hygiene property — which data is sensitive and "
+        "whether a disclosure primitive exists are judgments no "
+        "deterministic tool output can adjudicate; a missing-scrub "
+        "match asserts a shape, not harm"
+    ),
+    # Nonce/IV reuse: uniqueness is a cross-invocation protocol
+    # property — whether a value recurs under the same key at runtime
+    # is not decidable from any single static match (a constant-IV
+    # literal is one corner, and even that match does not establish
+    # reuse under one key).
+    "CWE-323": (
+        "nonce/IV reuse is a cross-invocation crypto-protocol "
+        "property — whether a value recurs under the same key at "
+        "runtime is outside every static tool's observables; a match "
+        "on IV construction asserts a shape, not reuse"
     ),
 }
 
@@ -735,6 +792,19 @@ _HYPOTHESIS_CWE_MAP = [
       r"untrusted.{0,40}(?:inclusion|functionality)|"
       r"(?:remote|untrusted).{0,25}(?:code|script|librar\w+|module)"
       r".{0,30}(?:includ|import|load)"), "CWE-829"),
+    # Straggler families (appended: first-match-wins, so pre-existing
+    # behaviour is unchanged). Temp-file races phrased as TOCTOU keep
+    # routing to the earlier CWE-367 row — also a real chain.
+    # \b after temp(?:orary)? — without it "insecure template
+    # rendering" / "predictable temperature" misrouted here.
+    ((r"insecure\s+temp(?:orary)?\b|predictable\s+temp(?:orary)?\b|"
+      r"\bmktemp\b|\btmpnam\b|\btempnam\b|"
+      r"temp(?:orary)?\s+file.{0,40}(?:race|predictab|symlink|"
+      r"insecure|hijack)"), "CWE-377"),
+    ((r"terminal\s+escape|escape.sequence.{0,25}inject|"
+      r"ansi\s+escape.{0,25}(?:inject|spoof)|"
+      r"control.(?:byte|char|sequence)\w*.{0,60}"
+      r"(?:terminal|console|inject|spoof)"), "CWE-150"),
 ]
 
 _HYPOTHESIS_CWE_RE = None

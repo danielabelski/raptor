@@ -53,6 +53,24 @@ def _safe_env() -> dict:
     return env
 
 
+def _install_read_paths(headless: str) -> list:
+    """Read-allowlist extras for the sandboxed JVM.
+
+    With ``restrict_reads`` the sandbox allows system dirs, /tmp,
+    target, and output only — the Ghidra install tree (often under
+    $HOME) must be granted explicitly. Resolves through the
+    ``analyzeHeadless`` symlink to the install root (the wrapper
+    lives in ``<install>/support/``).
+    """
+    real = Path(headless).resolve()
+    paths = [str(real.parent.parent)]
+    import os
+    install_dir = os.environ.get("GHIDRA_INSTALL_DIR")
+    if install_dir and str(Path(install_dir).resolve()) not in paths:
+        paths.append(str(Path(install_dir).resolve()))
+    return paths
+
+
 def export_project(
     gpr_path: Path,
     output_path: Path,
@@ -148,6 +166,11 @@ def export_project(
                 block_network=True,
                 target=str(work_path),
                 output=str(output_path.parent),
+                # The JVM parses attacker-controlled project data —
+                # deny reads outside system dirs + the working copy +
+                # the Ghidra install tree ($HOME stays invisible).
+                restrict_reads=True,
+                readable_paths=_install_read_paths(headless),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -188,6 +211,7 @@ def import_enrichments(
     output_gpr: Path,
     *,
     program_name: Optional[str] = None,
+    copy_prepared: bool = False,
     timeout: int = 300,
 ) -> Path:
     """Apply RAPTOR enrichments back to a Ghidra project.
@@ -207,8 +231,6 @@ def import_enrichments(
     Raises:
         GhidraError: If Ghidra is not installed or the import fails.
     """
-    headless = _find_headless()
-
     if output_gpr.name != gpr_path.name:
         raise GhidraError(
             f"output_gpr must keep the source project name "
@@ -220,12 +242,27 @@ def import_enrichments(
     dst_dir = output_gpr.parent
     dst_name = output_gpr.stem
 
-    # The bridge's export_enrichments prepares the copy itself before
-    # writing the enrichments JSON next to it — only copy here when
-    # called standalone.
-    if not output_gpr.exists():
+    # Explicit contract instead of inferring from destination
+    # existence (a pre-placed copy would otherwise be silently
+    # trusted): the bridge sets copy_prepared=True after preparing
+    # the copy itself; standalone callers get a fresh copy here and
+    # a refusal if something already occupies the destination.
+    if copy_prepared:
+        if not output_gpr.exists():
+            raise GhidraError(
+                f"copy_prepared=True but no working copy at "
+                f"{output_gpr}"
+            )
+    else:
+        if output_gpr.exists():
+            raise GhidraError(
+                f"destination already exists: {output_gpr} — remove "
+                "it or pass copy_prepared=True if it is a working "
+                "copy you just prepared"
+            )
         prepare_working_copy(gpr_path, dst_dir)
 
+    headless = _find_headless()
     env = _safe_env()
 
     from .import_script_java import IMPORT_SCRIPT_JAVA
@@ -276,6 +313,12 @@ def import_enrichments(
                 # tempdir under /tmp, which is in the sandbox's
                 # writable baseline.
                 output=str(dst_dir),
+                # Same read posture as export_project; the
+                # enrichments JSON sits in dst_dir (bridge flow) or
+                # must be readable via these scopes.
+                restrict_reads=True,
+                readable_paths=_install_read_paths(headless)
+                + [str(enrichments_path.parent.resolve())],
                 capture_output=True,
                 text=True,
                 timeout=timeout,

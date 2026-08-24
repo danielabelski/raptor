@@ -144,16 +144,38 @@ def get_project_version(path: Path) -> Optional[str]:
 
 
 def get_programs(path: Path) -> list[str]:
-    """List program names in a Ghidra project.
+    """List program names in a Ghidra project (no JVM).
 
-    Scans the ``.rep/idata/`` directory for program folders.  Each
-    subdirectory is a separate binary/program that Ghidra has imported
-    into the project.
+    Reads ``.rep/idata/~index.dat`` — a text index whose entry lines
+    are ``<folder-id>:<program name>:<file-id>`` — so the REAL
+    program names come back, not the numeric idata folder ids. Falls
+    back to scanning the idata subdirectories (ids only) when the
+    index is missing or unparseable.
     """
     rep_dir = path.with_suffix(".rep")
     idata = rep_dir / "idata"
     if not idata.is_dir():
         return []
+
+    index = idata / "~index.dat"
+    if index.is_file():
+        programs = []
+        try:
+            for line in index.read_text(
+                    encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or "=" in line.split(":", 1)[0]:
+                    continue
+                parts = line.split(":")
+                if len(parts) >= 3 and parts[0].isalnum():
+                    name = parts[1]
+                    if name:
+                        programs.append(name)
+        except OSError:
+            programs = []
+        if programs:
+            return programs
+
     programs = []
     for child in sorted(idata.iterdir()):
         if child.is_dir() and not child.name.startswith("."):

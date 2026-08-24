@@ -1,9 +1,10 @@
-"""Convert Ghidra bookmarks to pre-identified findings for /validate.
+"""Convert Ghidra bookmarks to pre-identified findings.
 
-When ``--bookmarks-as-findings`` is passed to ``/validate``, this module
-reads bookmarks from an REDatabase (loaded from a Ghidra project) and
-converts them to attack-surface entries. The validation pipeline then
-skips discovery and goes straight to verification.
+Reads bookmarks from an REDatabase (loaded from a Ghidra project) and
+converts them to attack-surface / checklist entries so a pipeline can
+skip discovery and go straight to verification. Pipeline wiring
+(/validate ingestion) lands with the audit binary mode follow-up —
+until then these writers are called directly.
 
 Bookmark categories recognised:
 - ``CVE-*`` prefixed comments → high-priority pre-identified findings

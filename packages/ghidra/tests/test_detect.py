@@ -235,3 +235,27 @@ class TestGetProjectVersion:
         rep.mkdir()
         (rep / "project.prp").write_text(MINIMAL_GPR, encoding="utf-8")
         assert get_project_version(gpr) is None
+
+
+class TestGetProgramsIndex:
+    def test_real_names_from_index(self, tmp_path):
+        from packages.ghidra.detect import get_programs
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("")
+        idata = tmp_path / "p.rep" / "idata"
+        idata.mkdir(parents=True)
+        (idata / "00").mkdir()
+        (idata / "~index.dat").write_text(
+            "VERSION=1\n/\n  00000000:target:645079\nNEXT-ID:1\n"
+            "MD5:d41d8cd98f00b204e9800998ecf8427e\n"
+        )
+        assert get_programs(gpr) == ["target"]
+
+    def test_folder_scan_fallback_without_index(self, tmp_path):
+        from packages.ghidra.detect import get_programs
+        gpr = tmp_path / "p.gpr"
+        gpr.write_text("")
+        idata = tmp_path / "p.rep" / "idata"
+        idata.mkdir(parents=True)
+        (idata / "00").mkdir()
+        assert get_programs(gpr) == ["00"]

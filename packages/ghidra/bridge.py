@@ -255,6 +255,7 @@ class GhidraBridge:
             import_enrichments(
                 self.gpr_path, enrichments_json, work_gpr,
                 program_name=self.program_name,
+                copy_prepared=True,
             )
         logger.info("enrichments applied to %s", work_gpr)
         return work_gpr

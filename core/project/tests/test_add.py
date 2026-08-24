@@ -301,3 +301,50 @@ class TestAdoptionProjections(unittest.TestCase):
             "audit_20260101_000005", target=self.target_code)
         self.assertEqual(self.mgr.add_directory("myapp", str(run_dir)), 1)
         self.assertEqual(_json.loads(checklist_path.read_text()), existing)
+
+
+class AdoptionPinRewriteTest(unittest.TestCase):
+    """adopt/add/remove rewrite the run pin — the moved dir's governing
+    project changes, so its recorded pin must change with it."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+
+    def _legacy_run(self, name: str) -> Path:
+        d = Path(self.tmpdir.name) / name
+        d.mkdir()
+        (d / "findings.json").write_text("[]")
+        from core.json import save_json
+        save_json(d / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+            "target_path": self.target_code,
+        })
+        return d
+
+    def test_adopted_run_gets_adopted_pin(self):
+        from core.json import load_json
+        run = self._legacy_run("scan-legacy1")
+        self.assertEqual(self.mgr.add_directory("myapp", str(run)), 1)
+        moved = Path(self.output_dir) / "scan-legacy1"
+        meta = load_json(moved / ".raptor-run.json")
+        self.assertEqual(meta["project"], "myapp")
+        self.assertEqual(meta["project_source"], "adopted")
+        self.assertEqual(meta["command"], "scan")
+
+    def test_removed_run_pin_cleared(self):
+        from core.json import load_json
+        run = self._legacy_run("scan-legacy2")
+        self.assertEqual(self.mgr.add_directory("myapp", str(run)), 1)
+        dest = Path(self.tmpdir.name) / "evicted"
+        self.mgr.remove_run("myapp", "scan-legacy2", to_path=str(dest))
+        meta = load_json(dest / "scan-legacy2" / ".raptor-run.json")
+        self.assertIsNone(meta["project"])
+        self.assertEqual(meta["project_source"], "none")

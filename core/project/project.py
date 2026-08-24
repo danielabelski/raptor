@@ -701,7 +701,10 @@ class ProjectManager:
     # below would also fix this, but anchoring on `\A`/`\Z` keeps the
     # pre-existing `re.match` call site working and makes the strict
     # boundary visible in the pattern itself.
-    _NAME_PATTERN = re.compile(r'\A[a-zA-Z0-9][a-zA-Z0-9._-]*\Z')
+    # Length cap matches core.project.sessions._NAME_RE — a project
+    # whose name the session registry rejects could never be
+    # session-bound, so refuse it at creation instead.
+    _NAME_PATTERN = re.compile(r'\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\Z')
 
     @classmethod
     def _validate_name(cls, name: str) -> None:
@@ -1112,6 +1115,13 @@ class ProjectManager:
             dest.rmdir()
             shutil.move(str(run_src), str(dest))
             generate_run_metadata(dest)
+            # The move changed the run's governing project: rewrite
+            # the pin to the adopting project so the projections
+            # below (and every later consumer) resolve HERE — the
+            # pre-move pin (a foreign project, or none) must not
+            # keep steering a run that now lives in this project.
+            from core.run.metadata import write_run_pin
+            write_run_pin(dest, project.name, "adopted")
             # An adopted run already had its completion, so the
             # projections that make its data VISIBLE (journal → index
             # merge, reads-manifest conversion, coverage snapshot)
@@ -1137,7 +1147,7 @@ class ProjectManager:
             # completion chokepoint's best-effort semantics (the
             # snapshot no-ops until the project has a checklist).
             from core.run.metadata import project_run_projections
-            project_run_projections(dest)
+            project_run_projections(dest, project_dir=dest_base)
             adopted.append(dest)
             return True
 
@@ -1216,7 +1226,7 @@ class ProjectManager:
             return
         from core.run.metadata import project_run_projections
         for dest in adopted:
-            project_run_projections(dest)
+            project_run_projections(dest, project_dir=project.output_path)
 
     def remove_run(self, name: str, run_name: str, to_path: str | None = None) -> None:
         """Remove a run from the project directory.
@@ -1240,6 +1250,17 @@ class ProjectManager:
         dest = Path(to_path)
         dest.mkdir(parents=True, exist_ok=True)
         shutil.move(str(run_dir), str(dest / run_name))
+        # The run left the project: clear its pin so consumers of the
+        # moved dir don't keep writing into (or reading trust from)
+        # a project it no longer belongs to.
+        try:
+            from core.run.metadata import write_run_pin
+            write_run_pin(dest / run_name, None, "none")
+        except Exception:  # noqa: BLE001 — the move itself succeeded
+            logger.warning(
+                "could not clear the project pin on %s — edit its "
+                ".raptor-run.json 'project' field manually",
+                dest / run_name, exc_info=True)
         logger.info("Moved '%s' to %s", run_name, to_path)
 
     def set_active(self, name: str | None = None) -> None:

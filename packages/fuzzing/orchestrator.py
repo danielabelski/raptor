@@ -495,6 +495,19 @@ class FuzzingOrchestrator:
                 iterations=iterations,
                 crashes=int(result.get("crashes") or 0),
             )
+            if cov_path is None:
+                # Uninstrumented binary target: map PC traces
+                # (drcov/sancov, when the campaign or operator
+                # produced any) onto the binary checklist instead.
+                from packages.fuzzing.coverage_bridge import (
+                    emit_binary_fuzz_coverage,
+                )
+                cov_path = emit_binary_fuzz_coverage(
+                    out_dir,
+                    binary=plan.target.path,
+                    iterations=iterations,
+                    crashes=int(result.get("crashes") or 0),
+                )
             if cov_path is not None:
                 result["fuzz_coverage"] = str(cov_path)
         except Exception as e:  # noqa: BLE001 — bridge is best-effort

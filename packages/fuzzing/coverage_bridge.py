@@ -463,3 +463,232 @@ def emit_fuzz_coverage(
         path,
     )
     return path
+
+
+# ── binary-target coverage (no source instrumentation) ─────────────
+
+#: Per-trace-file size cap and total-dump/address caps: the fuzz out
+#: dir is target-writable during a campaign, so a hostile target can
+#: plant arbitrarily large "traces".
+MAX_TRACE_FILE_BYTES = 64 * 1024 * 1024
+MAX_TRACE_FILES = 20
+MAX_TRACE_ADDRESSES = 2_000_000
+
+
+def find_pc_dumps(out_dir: Path) -> list[Path]:
+    """PC-trace artifacts a fuzz run may have produced or an operator
+    dropped in: drcov logs (DynamoRIO/Frida) and sancov dumps.
+    Oversized files are skipped with a log line; at most
+    ``MAX_TRACE_FILES`` are returned."""
+    out_dir = Path(out_dir)
+    dumps: list[Path] = []
+    for pattern in ("**/*.drcov", "**/drcov*.log", "**/*.sancov"):
+        dumps.extend(out_dir.glob(pattern))
+    kept = []
+    for dump in sorted(set(dumps)):
+        try:
+            if dump.stat().st_size > MAX_TRACE_FILE_BYTES:
+                logger.warning(
+                    "PC trace %s over %d MiB — skipped",
+                    dump, MAX_TRACE_FILE_BYTES >> 20,
+                )
+                continue
+        except OSError:
+            continue
+        kept.append(dump)
+        if len(kept) >= MAX_TRACE_FILES:
+            logger.warning(
+                "PC trace count capped at %d — remaining dumps "
+                "ignored", MAX_TRACE_FILES,
+            )
+            break
+    return kept
+
+
+def emit_binary_fuzz_coverage(
+    out_dir: Path,
+    *,
+    binary: Path,
+    checklist: dict | None = None,
+    iterations: int = 0,
+    crashes: int = 0,
+    harness: str = "afl",
+) -> Path | None:
+    """Fuzz coverage for BINARY targets: PC traces → function map.
+
+    Uninstrumented binaries have no gcov; what a fuzz run can produce
+    (QEMU/Frida modes) or an operator can drop in are PC traces —
+    drcov or sancov dumps. Those PCs map onto the binary checklist's
+    address ranges (the same coordinate system the coverage store
+    uses for ``binary:`` items), yielding the per-function
+    ``coverage-fuzz.json`` the audit's priority scorer and the store
+    already consume. Returns None when there are no traces or no
+    binary checklist to map onto — never guesses.
+    """
+    from core.coverage.collect import parse_drcov, parse_sancov
+
+    out_dir = Path(out_dir)
+    binary = Path(binary)
+
+    if checklist is None:
+        checklist = _load_binary_checklist(out_dir)
+    file_entry = _binary_file_entry(checklist, binary)
+    if file_entry is None:
+        logger.debug(
+            "binary fuzz coverage: no binary checklist for %s — skipping",
+            binary,
+        )
+        return None
+
+    dumps = find_pc_dumps(out_dir)
+    if not dumps:
+        logger.debug("binary fuzz coverage: no PC traces under %s", out_dir)
+        return None
+
+    # PC → containing checklist function, via address ranges.
+    spans = []
+    for item in file_entry.get(
+            "items", file_entry.get("functions", [])) or []:
+        addr = item.get("address")
+        if addr is None:
+            continue
+        size = item.get("size") or 0
+        spans.append((addr, addr + max(size - 1, 0), item.get("name")))
+    spans.sort()
+    if not spans:
+        return None
+    starts = [sp[0] for sp in spans]
+
+    addresses: set[int] = set()
+    for dump in dumps:
+        try:
+            if dump.suffix == ".sancov":
+                addresses.update(parse_sancov(dump))
+            else:
+                # drcov: {module_path: {base, offsets}} with
+                # module-relative offsets. Keep only the analysed
+                # binary's module and try both interpretations
+                # (loaded-base + offset for the runtime view, bare
+                # offset for PIE file-relative traces) — the
+                # checklist range mapping below drops whichever set
+                # misses.
+                modules = parse_drcov(dump)
+                for mod_path, info in modules.items():
+                    if Path(mod_path).name != binary.name:
+                        continue
+                    base = info.get("base") or 0
+                    offsets = set(info.get("offsets") or ())
+                    if not offsets:
+                        continue
+                    # One interpretation per trace: rebased
+                    # (runtime view) vs bare file-relative offsets.
+                    # Unioning them falsely credits functions whose
+                    # checklist address happens to collide with the
+                    # OTHER interpretation, so keep whichever set
+                    # actually lands in the checklist ranges.
+                    rebased = {off + base for off in offsets}
+                    if base and spans:
+                        def _hits(pcs):
+                            import bisect as _b
+                            n = 0
+                            for pc in pcs:
+                                i = _b.bisect_right(starts, pc) - 1
+                                if i >= 0 and spans[i][0] <= pc <= spans[i][1]:
+                                    n += 1
+                            return n
+                        addresses.update(
+                            rebased if _hits(rebased) >= _hits(offsets)
+                            else offsets
+                        )
+                    else:
+                        addresses.update(rebased)
+        except Exception:  # noqa: BLE001 — one bad trace must not kill the rest
+            logger.debug("unparseable PC trace: %s", dump, exc_info=True)
+        if len(addresses) > MAX_TRACE_ADDRESSES:
+            logger.warning(
+                "PC address set capped at %d — remaining traces "
+                "ignored", MAX_TRACE_ADDRESSES,
+            )
+            break
+    if not addresses:
+        return None
+
+    import bisect
+    reached: dict[str, int] = {}
+    for pc in addresses:
+        i = bisect.bisect_right(starts, pc) - 1
+        if i >= 0 and spans[i][0] <= pc <= spans[i][1]:
+            name = spans[i][2]
+            reached[name] = reached.get(name, 0) + 1
+
+    if not reached:
+        return None
+
+    path_key = file_entry.get("path")
+    doc = {
+        "tool": "fuzz",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "files_examined": [path_key],
+        "functions_analysed": [
+            {"file": path_key, "function": name} for name in sorted(reached)
+        ],
+        "files": {
+            path_key: {
+                "functions": {
+                    name: {
+                        "reached": True,
+                        "pcs": count,
+                        "iterations": iterations,
+                        "crashes": crashes,
+                        "harness": harness,
+                    }
+                    for name, count in sorted(reached.items())
+                },
+            },
+        },
+        "meta": {
+            "producer": "raptor-fuzz",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_execs": iterations,
+            "campaign_crashes": crashes,
+            "harness": harness,
+            "representation": "pc_trace",
+            "trace_files": [str(d) for d in dumps[:20]],
+            "pcs_total": len(addresses),
+        },
+    }
+    out_path = out_dir / "coverage-fuzz.json"
+    out_path.write_text(json.dumps(doc, indent=2))
+    logger.info(
+        "binary fuzz coverage: %d PCs over %d trace file(s) → %d/%d "
+        "checklist functions reached",
+        len(addresses), len(dumps), len(reached), len(spans),
+    )
+    return out_path
+
+
+def _load_binary_checklist(out_dir: Path) -> dict | None:
+    import json as _json
+    for cand in (out_dir / "checklist.json", out_dir.parent / "checklist.json"):
+        if cand.is_file():
+            try:
+                cl = _json.loads(cand.read_text())
+            except (OSError, ValueError):
+                continue
+            if cl.get("target_kind") == "binary":
+                return cl
+    return None
+
+
+def _binary_file_entry(checklist: dict | None, binary: Path) -> dict | None:
+    if not checklist:
+        return None
+    try:
+        from core.inventory.binary_builder import binary_path_key
+        wanted = binary_path_key(binary)
+    except ImportError:
+        wanted = f"binary:{Path(binary).stem}"
+    for fe in checklist.get("files", []):
+        if fe.get("path") == wanted:
+            return fe
+    return None

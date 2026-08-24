@@ -63,7 +63,7 @@ class TestToolFailureMarker(unittest.TestCase):
             out = Path(tmp) / "out"
             run = _make_running_run(out, "scan-20260503", "scan")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "tool-failure"]
                 _hook_mod.main()
@@ -76,7 +76,7 @@ class TestToolFailureMarker(unittest.TestCase):
             run1 = _make_running_run(out, "scan-001", "scan")
             run2 = _make_running_run(out, "agentic-002", "agentic")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "tool-failure"]
                 _hook_mod.main()
@@ -89,7 +89,7 @@ class TestToolFailureMarker(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan",
                                     session_pid=88888)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "tool-failure"]
                 _hook_mod.main()
@@ -103,7 +103,7 @@ class TestToolFailureMarker(unittest.TestCase):
             meta["status"] = STATUS_COMPLETED
             save_json(run / RUN_METADATA_FILE, meta)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "tool-failure"]
                 _hook_mod.main()
@@ -118,7 +118,7 @@ class TestStopHook(unittest.TestCase):
             out = Path(tmp) / "out"
             run = _make_running_run(out, "scan-001", "scan", tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -131,7 +131,7 @@ class TestStopHook(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan", tool_pid=1)
             (run / FAILURE_MARKER).write_text("")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -146,7 +146,7 @@ class TestStopHook(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan", tool_pid=1)
             (run / FAILURE_MARKER).write_text("")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -165,7 +165,7 @@ class TestStopHook(unittest.TestCase):
             # Test the complete path instead: no marker.
             (run / FAILURE_MARKER).unlink()
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -179,7 +179,7 @@ class TestStopHook(unittest.TestCase):
             run = _make_running_run(out, "validate-001", "validate",
                                     tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -192,7 +192,7 @@ class TestStopHook(unittest.TestCase):
             run = _make_running_run(out, "understand-001", "understand",
                                     tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -204,7 +204,7 @@ class TestStopHook(unittest.TestCase):
             out = Path(tmp) / "out"
             run = _make_running_run(out, "scan-001", "scan", tool_pid=12345)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=True):
                 sys.argv = ["hook", "stop"]
@@ -217,7 +217,7 @@ class TestStopHook(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan",
                                     session_pid=88888, tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -232,7 +232,7 @@ class TestStopHook(unittest.TestCase):
             meta["status"] = STATUS_COMPLETED
             save_json(run / RUN_METADATA_FILE, meta)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -254,7 +254,7 @@ class TestStopHook(unittest.TestCase):
             }
             save_json(d / RUN_METADATA_FILE, meta)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "stop"]
                 _hook_mod.main()
@@ -270,7 +270,7 @@ class TestSessionEndHook(unittest.TestCase):
             run1 = _make_running_run(out, "scan-001", "scan")
             run2 = _make_running_run(out, "validate-002", "validate")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "session-end"]
                 _hook_mod.main()
@@ -283,7 +283,7 @@ class TestSessionEndHook(unittest.TestCase):
             out = Path(tmp) / "out"
             run = _make_running_run(out, "validate-001", "validate")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "session-end"]
                 _hook_mod.main()
@@ -297,7 +297,7 @@ class TestSessionEndHook(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan")
             (run / FAILURE_MARKER).write_text("")
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "session-end"]
                 _hook_mod.main()
@@ -311,7 +311,7 @@ class TestSessionEndHook(unittest.TestCase):
             meta["status"] = STATUS_COMPLETED
             save_json(run / RUN_METADATA_FILE, meta)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "session-end"]
                 _hook_mod.main()
@@ -323,7 +323,7 @@ class TestSessionEndHook(unittest.TestCase):
             run = _make_running_run(out, "scan-001", "scan",
                                     session_pid=88888)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID):
                 sys.argv = ["hook", "session-end"]
                 _hook_mod.main()
@@ -345,7 +345,7 @@ class TestLLMOverride(unittest.TestCase):
             self.assertEqual(_status(run), STATUS_COMPLETED)
             # Now Stop fires — should skip because not running
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -361,7 +361,7 @@ class TestLLMOverride(unittest.TestCase):
             fail_run(run, "analysis found nothing")
             self.assertEqual(_status(run), STATUS_FAILED)
             with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -374,17 +374,36 @@ class TestLLMOverride(unittest.TestCase):
 class TestProjectDirScan(unittest.TestCase):
     """Hook scans both .active project dir and out/."""
 
-    def test_scans_active_project(self):
+    def test_finalizes_project_run_via_ledger(self):
+        """Project runs live at out/projects/<name>/<run> — TWO levels
+        below the out root, unreachable by the legacy one-level walk
+        (the pre-fix `.active` symlink discovery read a path nothing
+        creates, so orphaned project runs were never finalized). The
+        session run ledger names the run dir exactly."""
+        import os
+        from core.project import sessions
         with TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            proj = repo / "projects" / "myapp"
+            proj = repo / "out" / "projects" / "myapp"
             run = _make_running_run(proj, "scan-001", "scan", tool_pid=1)
-            active = repo / ".active"
-            active.symlink_to(proj)
+            sessions_dir = repo / "sessions.d"
             with patch.object(_hook_mod, "REPO_ROOT", repo), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch.object(sessions, "SESSIONS_DIR", sessions_dir), \
+                 patch.object(sessions, "_comm",
+                              lambda pid: "claude"
+                              if pid in (SESSION_PID, os.getpid())
+                              else None), \
+                 patch.object(sessions, "_pid_running",
+                              lambda pid: pid in (SESSION_PID,
+                                                  os.getpid())), \
+                 patch.object(sessions, "proc_starttime",
+                              lambda pid: "7"), \
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
-                 patch("core.run.metadata._pid_alive", return_value=False):
+                 patch("core.run.metadata._pid_alive",
+                       return_value=False):
+                sessions.record_session("myapp", pid=SESSION_PID)
+                sessions.ledger_record_start(run, pid=SESSION_PID)
                 sys.argv = ["hook", "stop"]
                 _hook_mod.main()
             self.assertEqual(_status(run), STATUS_COMPLETED)
@@ -395,7 +414,7 @@ class TestProjectDirScan(unittest.TestCase):
             out = repo / "out"
             run = _make_running_run(out, "scan-001", "scan", tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", repo), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -408,7 +427,7 @@ class TestProjectDirScan(unittest.TestCase):
             out = repo / "out"
             run = _make_running_run(out, ".internal", "scan", tool_pid=1)
             with patch.object(_hook_mod, "REPO_ROOT", repo), \
-                 patch("core.run.metadata._find_claude_ancestor",
+                 patch("core.run.metadata._get_session_pid",
                        return_value=SESSION_PID), \
                  patch("core.run.metadata._pid_alive", return_value=False):
                 sys.argv = ["hook", "stop"]
@@ -429,7 +448,7 @@ class TestMultiTurnGuard(unittest.TestCase):
                 out = Path(tmp) / "out"
                 run = _make_running_run(out, f"{cmd}-001", cmd, tool_pid=1)
                 with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                     patch("core.run.metadata._find_claude_ancestor",
+                     patch("core.run.metadata._get_session_pid",
                            return_value=SESSION_PID), \
                      patch("core.run.metadata._pid_alive",
                            return_value=False):
@@ -446,7 +465,7 @@ class TestMultiTurnGuard(unittest.TestCase):
                 out = Path(tmp) / "out"
                 run = _make_running_run(out, f"{cmd}-001", cmd)
                 with patch.object(_hook_mod, "REPO_ROOT", Path(tmp)), \
-                     patch("core.run.metadata._find_claude_ancestor",
+                     patch("core.run.metadata._get_session_pid",
                            return_value=SESSION_PID):
                     sys.argv = ["hook", "session-end"]
                     _hook_mod.main()

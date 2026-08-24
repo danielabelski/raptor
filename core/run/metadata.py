@@ -627,6 +627,40 @@ def start_run(output_dir: Path, command: str,
             metadata.update(_session_stamp(session_pid))
         if target:
             metadata["target_path"] = str(target)
+
+        # Project pin — WRITE-ONCE (design §5.1). A start_run on a dir
+        # whose metadata is already status=running (the documented
+        # re-entrant flows: the raptor.py wrapper followed by
+        # raptor_agentic's own start; /understand→/validate sharing an
+        # --out) preserves the first start's pin: re-resolving here is
+        # exactly the mid-run ambient re-resolution pinning exists to
+        # kill. A conflicting explicit --project is a hard error.
+        from core.run.pin import (
+            ProjectArgvError,
+            get_process_project,
+            resolve_pin_for_start,
+        )
+        prior = load_json(output_dir / RUN_METADATA_FILE)
+        if (isinstance(prior, dict) and prior.get("status") == STATUS_RUNNING
+                and "project" in prior):
+            metadata["project"] = prior.get("project")
+            metadata["project_source"] = prior.get("project_source") or "none"
+            override = get_process_project()
+            if override is not None:
+                pinned = prior.get("project")
+                wanted = None if override == "-" else override
+                if wanted != pinned:
+                    msg = (
+                        f"--project {override!r} conflicts with the "
+                        f"run's existing pin {pinned!r} in {output_dir} "
+                        "— a run is pinned to one project for its "
+                        "whole lifetime"
+                    )
+                    raise ProjectArgvError(msg)
+        else:
+            pin_project, pin_source = resolve_pin_for_start()
+            metadata["project"] = pin_project
+            metadata["project_source"] = pin_source
         # Order: persist metadata FIRST, then mark as active.
         #
         # Pre-fix `set_active_run_dir(output_dir)` ran BEFORE `save_json`.
@@ -650,6 +684,12 @@ def start_run(output_dir: Path, command: str,
         save_json(output_dir / RUN_METADATA_FILE, metadata)
     set_active_run_dir(output_dir)
     _setup_checklist_symlink(output_dir)
+    # Session run ledger (design §10.1): the record drives exact
+    # coverage-hook attribution and sibling-discovery tier 0.
+    # Best-effort by contract — never lifecycle-critical.
+    if session_pid is not None:
+        from core.project.sessions import ledger_record_start
+        ledger_record_start(output_dir, pid=session_pid)
     return output_dir
 
 
@@ -1472,6 +1512,7 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
         # the full multi-segment envelope from the original start.
         metadata.pop("end_timestamp", None)
         metadata.pop("duration_seconds", None)
+        prior_session_pid = metadata.get("session_pid")
         session_pid = _get_session_pid()
         if session_pid is not None:
             metadata["session_pid"] = session_pid
@@ -1489,6 +1530,17 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     # tracking attach to the resumed segment.
     from core.sandbox.summary import set_active_run_dir
     set_active_run_dir(Path(output_dir))
+    # Ledger (design §10.1): the RESUMING session gains a running
+    # record (else every read in the resumed segment is unattributable)
+    # and the original owner's line is CAS-marked interrupted so its
+    # session's hook stops attributing to a run it no longer owns.
+    if session_pid is not None:
+        from core.project.sessions import ledger_record_resume
+        prior = (prior_session_pid
+                 if isinstance(prior_session_pid, int)
+                 and not isinstance(prior_session_pid, bool) else None)
+        ledger_record_resume(Path(output_dir),
+                             prior_session_pid=prior, pid=session_pid)
     return segment
 
 
@@ -1793,6 +1845,16 @@ def _update_status(output_dir: Path, status: str,
             _apply_standard_provenance(metadata, Path(output_dir))
 
         save_json(path, metadata)
+
+    # CAS-mark the run's ledger record with its TRUE terminal status —
+    # in the OWNING session's ledger (metadata session_pid: a sweep in
+    # session B finalising session A's abandoned run must mark A's
+    # record, and after a resume the owner IS the resuming session).
+    if status in _TERMINAL_STATUSES:
+        owner = metadata.get("session_pid")
+        if isinstance(owner, int) and not isinstance(owner, bool):
+            from core.project.sessions import ledger_record_finish
+            ledger_record_finish(output_dir, status, pid=owner)
 
 
 def _apply_standard_provenance(metadata: dict[str, Any], output_dir: Path) -> None:

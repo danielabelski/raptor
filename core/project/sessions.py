@@ -757,6 +757,15 @@ def ledger_record_start(run_dir: str | os.PathLike[str],
     if not _valid_run_dir(resolved):
         logger.debug("sessions: ledger refused run dir %r", resolved)
         return
+    # Ledger records belong to REGISTERED sessions only: without an
+    # entry there is no owner, no prune path (sweeps remove ledgers
+    # alongside their entry), and no reader (the hook resolves via the
+    # entry-backed credential). Unregistered contexts — bare shells,
+    # test processes — must not accrete orphan ledgers.
+    if not _parse_entry(SESSIONS_DIR / str(pid)):
+        logger.debug("sessions: no registry entry for pid %d — "
+                     "ledger skipped", pid)
+        return
     run_id = Path(resolved).name
     with _ledger_lock(pid):
         records = [r for r in _read_ledger(pid) if r["run_id"] != run_id]
@@ -781,6 +790,10 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
     if pid is None:
         pid = resolve_session_pid()
     if pid is None:
+        return
+    # Same registered-session gate as start — and checked BEFORE the
+    # lock, so an unregistered context never even creates a lock file.
+    if not _parse_entry(SESSIONS_DIR / str(pid)):
         return
     run_id = Path(str(run_dir)).name
     with _ledger_lock(pid):

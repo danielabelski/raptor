@@ -322,6 +322,12 @@ class RunLedgerTest(_RegistryCase):
         super().setUp()
         self.run_root = Path(self._tmp.name) / "runs"
         self.run_root.mkdir()
+        # Ledger records belong to REGISTERED sessions only — give the
+        # test pids entries (the design's mandatory-seed invariant).
+        sessions.record_session("ledgerapp", pid=os.getpid())
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        (self.sessions_dir / "777777").write_text(
+            "project=ledgerapp\nsince=x\n", encoding="utf-8")
 
     def _mk_run(self, name: str, status: str = "running") -> Path:
         d = self.run_root / name

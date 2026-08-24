@@ -251,6 +251,33 @@ def _binary_cache_in_tmp(tmp_path_factory):
     os.environ.pop("RAPTOR_BINARY_CACHE_DIR", None)
 
 
+# The session registry (~/.local/share/raptor/sessions.d) is REAL user
+# state: start_run appends run-ledger records for the owning claude
+# session, and a test battery running inside a live session would
+# otherwise accrete records pointing at pytest temp dirs (and could
+# perturb the operator's actual binding entry). Redirect the module
+# path for the whole battery; tests that exercise the registry patch
+# their own isolated dir on top, as before. The env credential is
+# scrubbed so resolution can't reach the real session's entry either.
+
+@pytest.fixture(autouse=True, scope="session")
+def _sessions_registry_in_tmp(tmp_path_factory):
+    from unittest.mock import patch as _patch
+
+    from core.project import sessions as _sessions
+    isolated = tmp_path_factory.mktemp("sessions.d")
+    with _patch.object(_sessions, "SESSIONS_DIR", isolated):
+        saved = {}
+        for var in (_sessions.ENV_SESSION_PID, _sessions.ENV_SESSION_TOKEN):
+            saved[var] = os.environ.pop(var, None)
+        try:
+            yield
+        finally:
+            for var, value in saved.items():
+                if value is not None:
+                    os.environ[var] = value
+
+
 # ---------------------------------------------------------------------------
 # Default-tier slow-test guard
 # ---------------------------------------------------------------------------

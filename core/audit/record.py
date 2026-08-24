@@ -46,6 +46,21 @@ def _resolve_annotations_dir(out_dir: Path) -> Path:
     raptor-run-lifecycle start). If present, the parent is the
     project directory.
     """
+    # The run pin decides the project level — pre-fix bare
+    # out_dir.parent lost the operator's human-grade annotation inputs
+    # (Reflexion veto, FP primers) for --out runs, and standalone runs
+    # shared a pseudo project dir. Pin-less legacy dirs keep the
+    # marker+parent probe.
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_dir)
+        if pin.authoritative:
+            project_dir = pin_project_dir(out_dir)
+            if project_dir is not None and project_dir != out_dir:
+                return project_dir / "annotations"
+            return out_dir / "annotations"
+    except Exception:  # noqa: BLE001 — legacy probe below
+        pass
     run_marker = out_dir / ".raptor-run.json"
     if run_marker.exists():
         project_dir = out_dir.parent

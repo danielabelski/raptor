@@ -119,7 +119,7 @@ def find_fix_pointer(
         # An explicitly-named dir with a parseable artifact wins outright.
         return candidates[0].pointer
 
-    proj = _resolve_project_dir(project_dir)
+    proj = _resolve_project_dir(project_dir, out_dir=out_dir)
     if proj is not None:
         _collect(proj, tier=2, direct=False)
     out_root = _out_root()
@@ -198,10 +198,25 @@ def write_fix_pointer_artifact(pointer: FixPointer,
     return path
 
 
-def _resolve_project_dir(project_dir: Path | str | None) -> Path | None:
+def _resolve_project_dir(project_dir: Path | str | None,
+                         out_dir: Path | str | None = None) -> Path | None:
     if project_dir:
         p = Path(project_dir)
         return p if p.is_dir() else None
+    # In-run: the RUN PIN's project, never a mid-run ambient re-read —
+    # CVE artifacts are id-keyed, so the wrong project can silently
+    # supply a different VARIANT of the same CVE (distro fork vs
+    # upstream fix commit).
+    if out_dir is not None:
+        try:
+            from core.run.pin import pin_project_dir, resolve_run_pin
+            pin = resolve_run_pin(out_dir)
+            if pin.authoritative:
+                proj = pin_project_dir(out_dir)
+                return proj if proj is not None and proj.is_dir() else None
+        except Exception:  # noqa: BLE001 — ambient fallback below
+            logger.debug("cvediff_bridge: pin resolution failed",
+                         exc_info=True)
     try:
         from core.json import load_json
         from core.startup import PROJECTS_DIR, get_active_name

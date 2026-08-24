@@ -231,12 +231,29 @@ def _promote_to_project(per_run_path: Path, output_dir: Path) -> None:
     import shutil
     import tempfile
 
-    project_dir = output_dir.parent
-    if not (
-        (project_dir / "project.json").is_file()
-        or _is_under_projects_base(project_dir)
-    ):
-        return
+    # Promotion is a durable project-store WRITE: the run pin decides
+    # the destination. Pre-fix the parent-shape probe let an --out run
+    # placed under project B's dir promote project A's domain model
+    # into B's canonical store — steering B's future audits with
+    # another target's semantic concepts. Pin-less legacy dirs keep
+    # the shape probe so pre-series behaviour holds at landing.
+    project_dir = None
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(output_dir)
+        if pin.authoritative:
+            project_dir = pin_project_dir(output_dir, for_write=True)
+            if project_dir is None:
+                return  # standalone by pin — run-local only
+    except Exception:  # noqa: BLE001 — shape fallback below
+        project_dir = None
+    if project_dir is None:
+        project_dir = output_dir.parent
+        if not (
+            (project_dir / "project.json").is_file()
+            or _is_under_projects_base(project_dir)
+        ):
+            return
 
     concepts_dir = project_dir / "concepts"
     concepts_dir.mkdir(parents=True, exist_ok=True)

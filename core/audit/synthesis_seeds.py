@@ -411,8 +411,10 @@ def collect_external_seeds(
         run_dirs.append(Path(out_dir))
         if cross_run:
             try:
-                if (Path(out_dir) / ".raptor-run.json").exists():
-                    project_dir = Path(out_dir).parent
+                from core.audit.orchestrator import (
+                    _pinned_or_parent_project_dir,
+                )
+                project_dir = _pinned_or_parent_project_dir(out_dir)
                 from .joern_backend import sibling_run_dirs
 
                 run_dirs.extend(

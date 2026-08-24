@@ -205,6 +205,9 @@ class TestInvariantPrescreening:
         project_dir = tmp_path / "project"
         out_dir = project_dir / "run_001"
         out_dir.mkdir(parents=True)
+        # Legacy (pin-less) run marker: the parent-shape probe is the
+        # designed fallback for pre-series run dirs.
+        (out_dir / ".raptor-run.json").write_text('{"status": "running"}')
         concepts_checkers = project_dir / "concepts" / "checkers"
         concepts_checkers.mkdir(parents=True)
         (concepts_checkers / "inv.x.semgrep.0.yml").write_text("rules: []")

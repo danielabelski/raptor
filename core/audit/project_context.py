@@ -127,6 +127,34 @@ def _is_project_dir(d: Path) -> bool:
         return False
 
 
+def _pinned_context_dir(out_dir: Path, for_write: bool) -> Path | None:
+    """The run pin's project dir for context storage, or None.
+
+    Returns the pinned project's dir when the run carries a real pin;
+    None for a pin-null (standalone) run — its context stays run-local
+    even when a parent LOOKS project-shaped. Pin-less legacy dirs
+    return None here and take the caller's shape fallback (reads; a
+    legacy WRITE also falls back, preserving pre-series behaviour for
+    pre-series dirs).
+    """
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_dir)
+        if pin.authoritative:
+            return pin_project_dir(out_dir, for_write=for_write)
+    except Exception:  # noqa: BLE001 — shape fallback below
+        pass
+    return None
+
+
+def _pin_is_authoritative(out_dir: Path) -> bool:
+    try:
+        from core.run.pin import resolve_run_pin
+        return resolve_run_pin(out_dir).authoritative
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def load_project_context(out_dir: Path) -> ProjectContext:
     """Load project context from the output or project directory.
 
@@ -136,9 +164,14 @@ def load_project_context(out_dir: Path) -> ProjectContext:
     a generic parent like ``/tmp/``.
     """
     candidates = [out_dir / "project-context.json"]
-    parent = out_dir.parent
-    if parent != out_dir and _is_project_dir(parent):
-        candidates.append(parent / "project-context.json")
+    pinned = _pinned_context_dir(out_dir, for_write=False)
+    if pinned is not None:
+        candidates.append(pinned / "project-context.json")
+    elif not _pin_is_authoritative(out_dir):
+        # Pin-less legacy run dir: the historical parent-shape probe.
+        parent = out_dir.parent
+        if parent != out_dir and _is_project_dir(parent):
+            candidates.append(parent / "project-context.json")
     for candidate in candidates:
         if candidate.exists():
             try:
@@ -171,8 +204,12 @@ def save_project_context(ctx: ProjectContext, out_dir: Path) -> Path:
     directory. Otherwise writes to ``out_dir/`` directly to avoid
     polluting generic parent directories like ``/tmp/``.
     """
-    project_dir = out_dir.parent
-    if project_dir != out_dir and _is_project_dir(project_dir):
+    project_dir = _pinned_context_dir(out_dir, for_write=True)
+    if project_dir is None and not _pin_is_authoritative(out_dir):
+        parent = out_dir.parent
+        if parent != out_dir and _is_project_dir(parent):
+            project_dir = parent
+    if project_dir is not None and project_dir != out_dir:
         target = project_dir / "project-context.json"
         try:
             return _atomic_write(ctx, target)

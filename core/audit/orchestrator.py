@@ -219,6 +219,29 @@ logger = logging.getLogger(__name__)
 _MAX_STATE_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
+
+def _pinned_or_parent_project_dir(out_dir):
+    """Project-level dir for cross-run stores: the RUN PIN's project
+    dir when the run carries a real pin (an --out run pinned to P uses
+    P's dir; a pin-null standalone run uses NOTHING even under a
+    project-shaped parent); the historical out_dir.parent shape probe
+    only for pin-less legacy run dirs."""
+    from pathlib import Path as _P
+    if not out_dir:
+        return None
+    out_dir = _P(out_dir)
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_dir)
+        if pin.authoritative:
+            return pin_project_dir(out_dir)
+    except Exception:  # noqa: BLE001 — shape fallback below
+        pass
+    if (out_dir / ".raptor-run.json").exists():
+        return out_dir.parent
+    return None
+
+
 # ── Narrowed exception sets for best-effort blocks ──────────────────
 # suppress(Exception) narrowing sweep: miswiring-class exceptions
 # (TypeError, AttributeError, KeyError, NameError, ImportError on
@@ -3643,11 +3666,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             validate_history_keys,
         )
 
-        _bridge_project = (
-            Path(config.out_dir).parent
-            if config.out_dir and (Path(config.out_dir) / ".raptor-run.json").exists()
-            else None
-        )
+        _bridge_project = _pinned_or_parent_project_dir(config.out_dir)
         bridge_result = import_validate_evidence(
             config.out_dir,
             config.target_path,
@@ -3842,11 +3861,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         except Exception:
             logger.debug("sibling fuzz coverage import failed", exc_info=True)
 
-    _project_dir = (
-        Path(config.out_dir).parent
-        if config.out_dir and (Path(config.out_dir) / ".raptor-run.json").exists()
-        else None
-    )
+    _project_dir = _pinned_or_parent_project_dir(config.out_dir)
     # Prior finding-grade claims (/agentic per-finding analyses) for
     # review context. The gap fold kind-gates these OUT of coverage;
     # this map kind-gates them INTO the prompt as prior claims.
@@ -8481,8 +8496,10 @@ def _run_invariant_prescreening(
     checkers_dirs = []
     if config.out_dir:
         checkers_dirs.append(config.out_dir / "checkers")
-        checkers_dirs.append(config.out_dir.parent / "concepts" / "checkers")
-        checkers_dirs.append(config.out_dir.parent / "checkers")
+        _proj = _pinned_or_parent_project_dir(config.out_dir)
+        if _proj is not None:
+            checkers_dirs.append(_proj / "concepts" / "checkers")
+            checkers_dirs.append(_proj / "checkers")
 
     file_func_index: dict[str, list[tuple[str, int, int]]] = {}
     for g in gaps:

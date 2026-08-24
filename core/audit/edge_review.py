@@ -367,13 +367,20 @@ def run_edge_pass(
         key = f"{rec['caller_file']}:{rec['caller']}"
         tier2_by_caller.setdefault(key, []).append(rec)
 
+    # The run pin decides the project store; the parent-marker shape
+    # probe survives only for pin-less legacy run dirs.
     project_dir = None
     try:
-        parent = Path(config.out_dir).parent
-        if (parent / "checklist.json").exists() or (
-                parent / "coverage.json").exists():
-            project_dir = parent
-    except OSError:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(config.out_dir)
+        if pin.authoritative:
+            project_dir = pin_project_dir(config.out_dir)
+        else:
+            parent = Path(config.out_dir).parent
+            if (parent / "checklist.json").exists() or (
+                    parent / "coverage.json").exists():
+                project_dir = parent
+    except Exception:  # noqa: BLE001 — store discovery is best-effort
         project_dir = None
 
     gaps = compute_edge_gaps(

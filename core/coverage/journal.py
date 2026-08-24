@@ -885,12 +885,28 @@ def _write_index(path: Path, entries: dict[str, dict[str, Any]]) -> None:
 # ── Domain model hash ───────────────────────────────────────────────
 
 def _find_domain_model_file(out_dir: Path) -> Path | None:
-    """Locate domain-model.json in standard locations."""
-    candidates = [
-        out_dir / "domain-model.json",
-        out_dir.parent / "concepts" / "domain-model.json",
-        out_dir.parent / "domain-model.json",
-    ]
+    """Locate domain-model.json in standard locations.
+
+    The project-canonical candidates come from the RUN PIN's project
+    dir — the pre-fix bare ``out_dir.parent`` probe let a standalone
+    run sitting next to any unrelated domain-model.json import another
+    target's semantic concepts into the staleness gate and strategy
+    relevance. Pin-less legacy dirs keep the parent probe.
+    """
+    candidates = [out_dir / "domain-model.json"]
+    parent = None
+    try:
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_dir)
+        if pin.authoritative:
+            parent = pin_project_dir(out_dir)
+        else:
+            parent = out_dir.parent
+    except Exception:  # noqa: BLE001 — legacy probe
+        parent = out_dir.parent
+    if parent is not None:
+        candidates.append(parent / "concepts" / "domain-model.json")
+        candidates.append(parent / "domain-model.json")
     for c in candidates:
         if c.is_file():
             return c

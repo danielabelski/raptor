@@ -143,9 +143,16 @@ class TestScopingGapWarning(unittest.TestCase):
 
     def test_no_warning_for_net_only_ruleset(self):
         # A net-only deny governs no filesystem access — the missing
-        # TRUNCATE right is irrelevant there.
+        # TRUNCATE right is irrelevant there. The unrelated scoping
+        # notice (needs ABI 6) is latched out so this test pins only
+        # the truncate contract — same latch as test_no_warning_on_
+        # abi3; without it the test's outcome depended on whether an
+        # earlier test in the same process had already fired the
+        # scoping warn-once (order-dependent failure when run in
+        # isolation or on a fresh worker).
         from core.sandbox import landlock as ll
         with patch.object(ll, "_truncate_warned", False), \
+             patch.object(ll, "_scoping_warned", True), \
              patch.object(ll, "_get_landlock_abi", return_value=2), \
              self.assertNoLogs("core.sandbox.landlock", level="WARNING"):
             ll._make_landlock_preexec([], deny_all_tcp_connect=True)

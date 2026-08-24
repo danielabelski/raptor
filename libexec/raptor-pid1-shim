@@ -364,9 +364,15 @@ def main() -> int:
             # trusted — the keep decision arrives via the argv flag
             # (see above), which only context.run() can set.
             os.environ.pop("_RAPTOR_KEEP_TRUST_MARKERS", None)
+            # Keep this tuple in sync with core.config's
+            # TARGET_ENV_STRIP_SET (the shim runs inside namespace
+            # setup and cannot import core): trust markers + the
+            # session credential never reach target code; the
+            # keep-trust dispatch arm keeps both by design.
             _strip = (
                 ("_RAPTOR_DEATH_FD",) if keep_trust_markers
-                else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE")
+                else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE",
+                      "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN")
             )
             if strip_raptor_dir and not keep_trust_markers:
                 # Untrusted-target contract (--strip-raptor-dir): the

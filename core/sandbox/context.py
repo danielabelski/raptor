@@ -2675,40 +2675,53 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 and "_RAPTOR_TRUSTED" not in kwargs["env"]):
             kwargs["env"] = {**kwargs["env"], "_RAPTOR_TRUSTED": "1"}
 
-        # Target-bound env view. Identical to kwargs["env"] unless
-        # strip_trust_markers is set, in which case the trust markers
-        # are removed. kwargs["env"] itself keeps them so the
-        # unshare+shim fallback (which needs a marker to pass the
-        # shim's own trust gate, and strips both before the target
-        # exec) still works.
+        # Target-bound env view — the ONE seam every direct-exec
+        # backend (fork, seatbelt, Landlock-only subprocess) hands to
+        # the child, and the named extension point for the sandbox
+        # re-anonymisation follow-up (design §8/§20). The
+        # TARGET_ENV_STRIP_SET (trust markers + the session
+        # credential) is stripped by DEFAULT: the pre-fix strip was
+        # opt-in per caller, and its only setters were run_untrusted*
+        # — every other sandboxed spawn (CodeQL autobuild running
+        # repo-supplied build scripts, fuzz target execution) leaked
+        # CLAUDECODE/_RAPTOR_TRUSTED to target code on the primary
+        # fork backend. The keep-trust dispatch path (RAPTOR's own
+        # claude -p skill children, which drive libexec helpers and
+        # need both the markers and the session credential) is the
+        # ONLY exception, signalled by _RAPTOR_KEEP_TRUST_MARKERS.
+        # kwargs["env"] itself keeps the markers so the unshare+shim
+        # fallback (which needs one to pass the shim's own trust gate,
+        # and strips the set before the target exec) still works.
+        # The legacy strip_trust_markers kwarg is still accepted —
+        # marker-stripping is now a subset of the default, and the
+        # flag additionally drops RAPTOR_DIR on untrusted-target
+        # paths — so existing callers keep working unchanged.
+        _keep_for_dispatch = "_RAPTOR_KEEP_TRUST_MARKERS" in kwargs["env"]
         _env_for_target = kwargs["env"]
-        if strip_trust_markers:
-            # RAPTOR_DIR joins the strip on untrusted-target paths:
-            # the libexec trust gate never accepted it, no sandboxed
-            # child legitimately derives paths from it (libexec
-            # scripts self-anchor via __file__; the netns coordinator
-            # exports its own), and to an untrusted target it is a
-            # pure "you are inside RAPTOR at <checkout path>" tell.
-            # Dispatch children that DO need it keep it via
-            # keep_trust_markers_for_dispatch (marker handling itself
-            # is unchanged: the keep decision reaches the shim path as
-            # argv, and direct paths strip markers exactly as before).
-            _strip_keys = (
-                ("CLAUDECODE", "_RAPTOR_TRUSTED")
-                if keep_trust_markers_for_dispatch
-                else ("CLAUDECODE", "_RAPTOR_TRUSTED", "RAPTOR_DIR")
-            )
+        _dispatch_keep = _keep_for_dispatch or keep_trust_markers_for_dispatch
+        if not _dispatch_keep:
+            from core.config import RaptorConfig as _RC
+            _strip_keys = set(_RC.TARGET_ENV_STRIP_SET)
+            if strip_trust_markers:
+                # RAPTOR_DIR joins the strip on untrusted-target
+                # paths: the libexec trust gate never accepted it, no
+                # sandboxed child legitimately derives paths from it
+                # (libexec scripts self-anchor via __file__; the netns
+                # coordinator exports its own), and to an untrusted
+                # target it is a pure "you are inside RAPTOR at
+                # <checkout path>" tell.
+                _strip_keys.add("RAPTOR_DIR")
             _env_for_target = {
                 k: v for k, v in kwargs["env"].items()
                 if k not in _strip_keys
             }
-        if "_RAPTOR_KEEP_TRUST_MARKERS" in _env_for_target:
+        else:
             # Internal control flag for the pid1 shim only (see
             # run_untrusted_networked keep_trust_markers) — the shim
             # reads it from kwargs["env"] on the unshare path; the
             # direct-exec paths must not leak it to the child.
             _env_for_target = {
-                k: v for k, v in _env_for_target.items()
+                k: v for k, v in kwargs["env"].items()
                 if k != "_RAPTOR_KEEP_TRUST_MARKERS"
             }
         if _ENV_RESTORE_KEY in _env_for_target:

@@ -22,7 +22,8 @@ def scrub_identity_env(env: dict) -> dict:
     """
     for ident in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD",
                   "RAPTOR_DIR", "RAPTOR_OUT_DIR", "_RAPTOR_TRUSTED",
-                  "CLAUDECODE"):
+                  "CLAUDECODE", "RAPTOR_SESSION_PID",
+                  "RAPTOR_SESSION_TOKEN"):
         env.pop(ident, None)
     for key in [k for k in env if k.startswith("XDG_")]:
         env.pop(key, None)

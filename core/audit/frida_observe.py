@@ -466,12 +466,24 @@ def _parse_observations(log_file: Path) -> list[FridaObservation]:
 
 
 def _safe_env() -> dict[str, str]:
-    """Build a sanitised environment for the Frida subprocess."""
+    """Build a sanitised environment for the Frida subprocess.
+
+    This is a RAW spawn (no core.sandbox chokepoint), and frida
+    spawn-mode TARGETS inherit the CLI's environ — so the
+    target-strip set (trust markers + session credential) must be
+    removed here explicitly; the frida CLI needs none of them.
+    """
     try:
         from core.config import RaptorConfig
-        return RaptorConfig.get_safe_env()
+        env = RaptorConfig.get_safe_env()
+        for key in RaptorConfig.TARGET_ENV_STRIP_SET:
+            env.pop(key, None)
+        return env
     except Exception:  # noqa: BLE001 — config unavailable: fall back to manual scrub
         env = dict(os.environ)
+        for key in ("CLAUDECODE", "_RAPTOR_TRUSTED",
+                    "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN"):
+            env.pop(key, None)
         for key in ("TERMINAL", "EDITOR", "VISUAL", "BROWSER", "PAGER"):
             env.pop(key, None)
         return env

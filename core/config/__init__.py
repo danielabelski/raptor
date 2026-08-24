@@ -549,6 +549,40 @@ class RaptorConfig:
         #                    read as an enum (any other value → auto); no
         #                    injection surface.
         "RAPTOR_TARGET_KIND",
+        # Session identity credential (design §4): the launcher-exported
+        # pid + token that lets deep children (skill dispatches, nested
+        # claude subagents, PID-namespace-blind helpers) resolve their
+        # owning session's project binding. Same contract as
+        # RAPTOR_OUT_DIR: validated on every read (digits, token
+        # compare_digest against the 0700 registry entry, identity
+        # stamp) — an attacker able to set them gains nothing beyond
+        # what same-UID write access to ~/.local/share/raptor already
+        # grants. Target-bound envs strip both via
+        # TARGET_ENV_STRIP_SET (sandboxed code never sees the
+        # credential; see core/sandbox/context.py).
+        "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN",
+    })
+
+    # Variables that must NEVER reach code executed on behalf of a
+    # scanned TARGET (build scripts, test suites, fuzz targets, frida
+    # spawn-mode processes): trust markers a hostile child could
+    # replay against the libexec trust gate, and the session
+    # credential (design §8 — stripped by DEFAULT at the sandbox env
+    # chokepoint; the keep-trust skill-dispatch path is the only
+    # exception). Consumed by core/sandbox/context.py,
+    # libexec/raptor-pid1-shim (keep the shim's tuple in sync — it
+    # cannot import this module inside the namespace), and
+    # packages/fuzzing/env_hygiene.py; the strip regression harness is
+    # table-driven off this constant.
+    #
+    # Tier 2 (sandbox re-anonymisation follow-up, SAGE backlog
+    # 176d60fa): identity vars that today deliberately reach targets —
+    # RAPTOR_DIR, RAPTOR_OUT_DIR, RAPTOR_TARGET_KIND — move into this
+    # set once their target-side consumers are confirmed severable.
+    # Extend THIS constant; do not scatter per-caller strips.
+    TARGET_ENV_STRIP_SET = frozenset({
+        "CLAUDECODE", "_RAPTOR_TRUSTED",
+        "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN",
     })
 
     # CI markers ride the allowlist: RAPTOR's own interactivity gate

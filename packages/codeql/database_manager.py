@@ -1186,10 +1186,14 @@ class DatabaseManager:
         if build_system and build_system.env_vars:
             # Filter build env vars through the same blocklist — a malicious
             # repo's build config could try to re-inject LD_PRELOAD, BASH_ENV, etc.
+            # RAPTOR_*-prefixed names are blocked wholesale (sec-F7):
+            # repo content must never set the session credential, the
+            # out-dir override, or any other RAPTOR control var.
             blocked = set(RaptorConfig.DANGEROUS_ENV_VARS) | set(RaptorConfig.PROXY_ENV_VARS)
             for k, v in build_system.env_vars.items():
-                if k not in blocked:
-                    env[k] = v
+                if k in blocked or k.startswith(("RAPTOR_", "_RAPTOR")):
+                    continue
+                env[k] = v
         # Auto-detect toolchain-home env vars (JAVA_HOME, GOROOT, etc.)
         # per build system's env_detect list. Per-subprocess scope —
         # these land only in this build invocation, not in other sandbox

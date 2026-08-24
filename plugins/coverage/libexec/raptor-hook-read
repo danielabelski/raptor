@@ -74,12 +74,19 @@ if [ -n "$_SESSION_PID" ]; then
     fi
     if [ -n "$_LEDGER" ] && [ -f "$_LEDGER" ]; then
         BEST_EPOCH=0
+        # One date(1) per event, not per line — the hook fires on
+        # EVERY file read.
+        _now_cap=$(( $(date +%s) + 86400 ))
         while IFS=' ' read -r _st _epoch _rid _rdir; do
-            [ "$_st" = "running" ] || continue
+            case "$_st" in
+                running) ;;
+                pin) break ;;   # writer renders records before pins —
+                                # nothing below is a run record
+                *) continue ;;
+            esac
             case "$_epoch" in ''|*[!0-9]*) continue ;; esac
             # Skip skewed-ahead-clock records (see the python twin);
             # the writer clamps them on its next rewrite.
-            _now_cap=$(( $(date +%s) + 86400 ))
             if [ "$_epoch" -gt "$_now_cap" ] 2>/dev/null; then
                 continue
             fi
@@ -102,9 +109,17 @@ if [ -n "$_SESSION_PID" ]; then
             # truncated .raptor-run.json must skip THIS candidate,
             # not silence coverage attribution for the whole session.
             if [ "$HAVE_JQ" = "1" ]; then
-                _status=$(jq -r '.status // empty' "$_rdir/.raptor-run.json" 2>/dev/null || true)
-                _owner=$(jq -r '.session_pid // empty' "$_rdir/.raptor-run.json" 2>/dev/null || true)
-                _tgt=$(jq -r '(.target_path // empty) | strings' "$_rdir/.raptor-run.json" 2>/dev/null || true)
+                # Single jq spawn per candidate (three fields,
+                # newline-delimited; missing → empty line).
+                _meta3=$(jq -r '[(.status // ""), (.session_pid // ""), ((.target_path // "") | if type == "string" then . else "" end)] | .[]' "$_rdir/.raptor-run.json" 2>/dev/null || true)
+                _status=""; _owner=""; _tgt=""
+                {
+                    IFS= read -r _status || true
+                    IFS= read -r _owner || true
+                    IFS= read -r _tgt || true
+                } <<META
+$_meta3
+META
             else
                 _status=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" status 2>/dev/null || true)
                 _owner=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" session_pid 2>/dev/null || true)

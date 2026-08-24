@@ -2070,32 +2070,6 @@ Examples:
         getattr(args, "verbose", False),
     )
 
-    # Project trust markers (schema v4): resolve the active project's
-    # 'config' / 'build' markers into args.trust_repo / args.traced_build.
-    # Per-run flags always win (negative > positive > marker > off);
-    # a banner line prints when a marker affects this run. Mirrors the
-    # persisted-binaries loading path (binary_oracle_cli).
-    from core.project.trust import apply_project_trust_flags
-    apply_project_trust_flags(args)
-
-    # Propagate --trust-repo to every target-repo trust check so each
-    # in-process consumer (cc_trust, codeql_trust, build_detector, ...)
-    # agrees on the operator's intent. New checks added here must keep
-    # this list in sync.
-    if getattr(args, "trust_repo", False):
-        set_trust_override(True)
-        from core.security.codeql_trust import set_trust_override as _ql_set
-        _ql_set(True)
-
-    # --target-kind: translate the operator's choice into RAPTOR_TARGET_KIND
-    # (the env override consulted by inventory's library-mode resolver). 'auto'
-    # leaves it unset → per-target manifest detection. Setting the env var is
-    # how the intent reaches build_inventory both in-process and across the
-    # /validate libexec subprocess boundary.
-    _target_kind = getattr(args, "target_kind", "auto")
-    if _target_kind != "auto":
-        os.environ[RaptorConfig.ENV_TARGET_KIND] = _target_kind
-
     # --reanalyze: seed --sarif and --repo from a previous run's metadata
     if getattr(args, "reanalyze", None):
         from core.run.metadata import load_run_metadata
@@ -2164,6 +2138,36 @@ Examples:
             if isinstance(_e, _PAE):
                 parser.error(str(_e))
             logger.debug("--reanalyze: pin adoption failed", exc_info=True)
+
+    # (Runs BEFORE apply_project_trust_flags: the adopted pin
+    # must steer trust-marker resolution, not the session's
+    # ambient project.)
+
+    # Project trust markers (schema v4): resolve the active project's
+    # 'config' / 'build' markers into args.trust_repo / args.traced_build.
+    # Per-run flags always win (negative > positive > marker > off);
+    # a banner line prints when a marker affects this run. Mirrors the
+    # persisted-binaries loading path (binary_oracle_cli).
+    from core.project.trust import apply_project_trust_flags
+    apply_project_trust_flags(args)
+
+    # Propagate --trust-repo to every target-repo trust check so each
+    # in-process consumer (cc_trust, codeql_trust, build_detector, ...)
+    # agrees on the operator's intent. New checks added here must keep
+    # this list in sync.
+    if getattr(args, "trust_repo", False):
+        set_trust_override(True)
+        from core.security.codeql_trust import set_trust_override as _ql_set
+        _ql_set(True)
+
+    # --target-kind: translate the operator's choice into RAPTOR_TARGET_KIND
+    # (the env override consulted by inventory's library-mode resolver). 'auto'
+    # leaves it unset → per-target manifest detection. Setting the env var is
+    # how the intent reaches build_inventory both in-process and across the
+    # /validate libexec subprocess boundary.
+    _target_kind = getattr(args, "target_kind", "auto")
+    if _target_kind != "auto":
+        os.environ[RaptorConfig.ENV_TARGET_KIND] = _target_kind
 
     if not args.repo:
         parser.error("--repo is required (or launch via `raptor` from the target directory)")

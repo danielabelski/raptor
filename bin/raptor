@@ -579,11 +579,17 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
     # straggling finisher may be mid-RMW; without the lock this rm
     # raced it (python writers hold the same lock).
     if command -v flock >/dev/null 2>&1; then
+        # exit 1 on flock timeout so the || fallback DELETES anyway:
+        # inheriting a predecessor's ledger (records + pin witnesses)
+        # is strictly worse than the unlocked-delete race the lock
+        # narrows. The lock file itself is removed only on the locked
+        # path (unlinking it under a live holder splits the lock for
+        # other bash writers; python verifies-after-lock).
         (
-            flock -w 2 9 || exit 0
+            flock -w 2 9 || exit 1
             rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" 2>/dev/null || true
+            rm -f -- "$_sessions_dir/$$.run.lock" 2>/dev/null || true
         ) 9>"$_sessions_dir/$$.run.lock" 2>/dev/null ||             rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" 2>/dev/null || true
-        rm -f -- "$_sessions_dir/$$.run.lock" 2>/dev/null || true
     else
         rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" "$_sessions_dir/$$.run.lock" 2>/dev/null || true
     fi
@@ -598,8 +604,18 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
         case "$_fpid" in
             ''|*[!0-9]*) continue ;;  # not a pid-named entry — not ours
         esac
-        _fboot="$(_rp sed -n 's/^boot_id=//p' "$_f" 2>/dev/null | _rp head -n 1)"
-        _fns="$(_rp sed -n 's/^pidns=//p' "$_f" 2>/dev/null | _rp head -n 1)"
+        # One builtin read-loop per entry (first-key-wins, matching
+        # the python parser) — the sed|head pipelines spawned 4-6
+        # processes per entry, ~12ms each, paid on EVERY launch.
+        _fboot=""; _fns=""; _fproj=""; _fsince=""
+        while IFS== read -r _k _v; do
+            case "$_k" in
+                boot_id) [ -n "$_fboot" ] || _fboot="$_v" ;;
+                pidns)   [ -n "$_fns" ] || _fns="$_v" ;;
+                project) [ -n "$_fproj" ] || _fproj="$_v" ;;
+                since)   [ -n "$_fsince" ] || _fsince="$_v" ;;
+            esac
+        done < "$_f" 2>/dev/null || true
         if [ -n "$_fboot" ] && [ "$_fboot" != "$_bootid" ]; then
             continue  # foreign boot/machine — never prune here
         fi
@@ -611,9 +627,7 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
             continue
         fi
         if [ "$_fpid" != "$$" ] && [ "$_seed_proj" != "-" ]; then
-            _fproj="$(_rp sed -n 's/^project=//p' "$_f" 2>/dev/null | _rp head -n 1)"
             if [ "$_fproj" = "$_seed_proj" ]; then
-                _fsince="$(_rp sed -n 's/^since=//p' "$_f" 2>/dev/null | _rp head -n 1)"
                 # Entry fields are file content: strip non-printables
                 # and bound length (builtins) before echoing.
                 _fsince="${_fsince//[![:print:]]/}"

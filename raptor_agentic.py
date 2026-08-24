@@ -1197,6 +1197,19 @@ def _build_audit_postpass_cmd(
     cmd = [
         str(raptor_dir / "libexec" / "raptor-audit"), "run", str(target),
         "--out", str(audit_dir),
+    ]
+    # Same-project threading for the gap-audit child (the third
+    # sibling chain): its trust markers, binaries, annotations, and
+    # journal merges must follow THIS run's project, not whatever the
+    # session resolves when the child starts.
+    try:
+        from core.run.pin import get_process_project
+        _pinned = get_process_project()
+        if _pinned is not None:
+            cmd += ["--project", _pinned]
+    except Exception:  # noqa: BLE001 — child falls back to its own layers
+        pass
+    cmd += [
         # Validation is unified at the pipeline level: audit findings
         # join the --validate post-pass selection instead of spawning
         # a second validate run.

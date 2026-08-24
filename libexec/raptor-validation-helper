@@ -2441,12 +2441,16 @@ def _flag_value(args, flag):
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in STAGES:
-        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--rank] [--dynamic|--no-dynamic] [--build|--no-build] [--mitigation-matrix] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>]", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <0|A|B|C|D|E|F|1> [workdir] [--target <path>] [--out <dir>] [--findings <file>] [--model <id>] [--no-bridge] [--rank] [--dynamic|--no-dynamic] [--build|--no-build] [--mitigation-matrix] [--sanitizer-cut <off|on|strict|shadow>] [--sanitizer-cut-parity-log <path>] [--project <name|->]", file=sys.stderr)
         sys.exit(1)
 
     stage = args[0]
     target = _flag_value(args, "--target")
     explicit_out = _flag_value(args, "--out")
+    project_flag = _flag_value(args, "--project")
+    if project_flag is not None:
+        from core.run.pin import set_process_project
+        set_process_project(project_flag)
     # Ambient harness model the agent passes (only it knows /model); stage 1
     # records it into models[]. Omitted when absent.
     model = _flag_value(args, "--model")

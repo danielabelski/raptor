@@ -293,9 +293,22 @@ def start_lifecycle(command: str, target: Path) -> Path | None:
     """
     from core.config import RaptorConfig
     safe_env = RaptorConfig.get_safe_env()
+    argv = [str(_LIFECYCLE), "start", command, "--target", str(target)]
+    # Thread the parent's project explicitly: a sibling lifecycle run
+    # (the /understand pre-pass, the /validate post-pass, the gap-audit
+    # chain) must land in the SAME project as the run that spawned it —
+    # re-resolving ambiently in the child raced mid-run project
+    # switches and split one command's artifacts across two projects.
+    try:
+        from core.run.pin import ARGV_NONE, get_process_project
+        pinned = get_process_project()
+        if pinned is not None:
+            argv += ["--project", pinned if pinned else ARGV_NONE]
+    except Exception:  # noqa: BLE001 — child falls back to its own layers
+        pass
     try:
         proc = subprocess.run(
-            [str(_LIFECYCLE), "start", command, "--target", str(target)],
+            argv,
             capture_output=True, text=True, timeout=_LIFECYCLE_TIMEOUT_S,
             env=safe_env, check=False,
         )

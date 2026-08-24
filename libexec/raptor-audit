@@ -2391,6 +2391,12 @@ def main() -> int:
     p_run = sub.add_parser("run", help="Run the full audit orchestrator")
     p_run.add_argument("target", help="Path to codebase to review")
     p_run.add_argument("--out", default=None, help="Output directory")
+    p_run.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Pin this run to the named project (precedence over the "
+             "session binding and the last-activated default); '-' = "
+             "explicitly projectless. Invalid values are a hard error, "
+             "never a fallback.")
     p_run.add_argument("--strategy", default=None,
                        help="Filter to one strategy")
     p_run.add_argument("--budget", type=int, default=None,
@@ -2581,6 +2587,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    if getattr(args, "project", None) is not None:
+        from core.run.pin import set_process_project
+        set_process_project(args.project)
 
     if not args.command:
         parser.print_help()

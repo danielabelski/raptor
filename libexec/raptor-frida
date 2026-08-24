@@ -86,6 +86,7 @@ done
 TARGET=""
 OUT=""
 PASS_ARGS=()
+PROJECT_FLAG=""
 i=0
 ARGS=("$@")
 while [ $i -lt ${#ARGS[@]} ]; do
@@ -106,6 +107,13 @@ while [ $i -lt ${#ARGS[@]} ]; do
             ;;
         --out=*)
             OUT="${a#--out=}"
+            ;;
+        --project)
+            i=$((i + 1))
+            PROJECT_FLAG="${ARGS[$i]:-}"
+            ;;
+        --project=*)
+            PROJECT_FLAG="${a#--project=}"
             ;;
         --unsafe-attach)
             PASS_ARGS+=("$a")
@@ -149,7 +157,8 @@ fi
 # ─── resolve output dir via run lifecycle if not provided ──────────
 if [ -z "$OUT" ]; then
     LIFECYCLE_OUT=$("$RAPTOR_DIR/libexec/raptor-run-lifecycle" \
-        start frida --target "$TARGET") || {
+        start frida --target "$TARGET" \
+        ${PROJECT_FLAG:+--project "$PROJECT_FLAG"}) || {
         echo "raptor-frida: run lifecycle start failed" >&2
         exit 1
     }

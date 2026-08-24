@@ -22,10 +22,11 @@ facade and the bench write nothing.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
+
+from core.json import append_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,7 @@ def write_build_outcome(
             produced_by="cve-env",
         )
         path = Path(output_dir) / VERIFIED_OUTCOMES_FILENAME
-        with Path(path).open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record.to_dict(), default=str) + "\n")
+        append_jsonl(path, record.to_dict())
         return True
     except Exception:  # noqa: BLE001 — surfacing must never break the run
         logger.debug(

@@ -74,6 +74,7 @@ sys.path.insert(0, str(REPO))
 # checkout (see core.config.pin_raptor_dir). Import must follow the
 # sys.path insert above.
 from core.config import pin_raptor_dir_in_environ  # noqa: E402
+from core.json import save_json  # noqa: E402
 from core.run.scratch import scratch_dir  # noqa: E402
 
 pin_raptor_dir_in_environ()
@@ -170,7 +171,7 @@ def _save_pins(pins: dict[str, str], path: Path = _PINS_FILE) -> None:
         ),
     }
     payload.update({k: pins[k] for k in sorted(pins)})
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    save_json(path, payload)
 
 
 def _pin_key(tag: str, asset_name: str) -> str:

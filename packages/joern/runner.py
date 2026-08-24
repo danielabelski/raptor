@@ -1255,7 +1255,8 @@ def _write_cpg_manifest(
         "exclude_dirs": sorted(str(d) for d in exclude_dirs or ()),
     }
     manifest_path = cpg_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    from core.json import save_json
+    save_json(manifest_path, manifest)
 
 
 def _read_cpg_manifest(cpg_dir: Path) -> dict | None:

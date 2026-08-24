@@ -108,8 +108,7 @@ def _write_candidates_sarif(augmented_sarif, new_ids, out_path):
         if not kept_any:
             return None
         out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(_json.dumps(sarif, indent=2), encoding="utf-8")
+        save_json(out_path, sarif)
         return str(out_path)
     except Exception:  # noqa: BLE001 — additive signal only
         logger.debug("candidates SARIF write failed", exc_info=True)

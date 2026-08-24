@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import append_jsonl, save_json
+
 from .platform import HostInfo, detect_host
 
 if TYPE_CHECKING:
@@ -309,8 +311,7 @@ def run(cfg: RunConfig,
             # are summarised, not embedded - JSONL stays line-grep-able.
             record["binary_len"] = len(data)
         with events_lock:
-            with events_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str) + "\n")
+            append_jsonl(events_path, record)
             event_count["n"] += 1
             if data is not None:
                 payload = message.get("payload")
@@ -427,8 +428,7 @@ def _write_metadata(cfg: RunConfig, result: RunResult) -> None:
         "unsafe_attach": cfg.unsafe_attach,
         "resolved_pid": result.resolved_pid,
     }
-    (cfg.out_dir / "metadata.json").write_text(
-        json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    save_json(cfg.out_dir / "metadata.json", payload)
 
 
 def _write_report(cfg: RunConfig, result: RunResult) -> None:

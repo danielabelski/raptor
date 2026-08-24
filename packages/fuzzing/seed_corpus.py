@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.json import save_json
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -365,9 +367,7 @@ def prepare_seed_corpus(options: SeedCorpusOptions) -> dict:
     }
 
     manifest_path = out_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    save_json(manifest_path, manifest, sort_keys=True)
     return manifest
 
 
@@ -454,10 +454,7 @@ def prepare_builtin_seed_corpus(out_dir: Path, profile: str = "default") -> dict
         "seed_count": len(copied),
         "seeds": copied,
     }
-    (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(out_dir / "manifest.json", manifest, sort_keys=True)
     return manifest
 
 

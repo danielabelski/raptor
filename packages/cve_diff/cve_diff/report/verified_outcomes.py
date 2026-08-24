@@ -20,10 +20,11 @@ point-in-time against live OSV/NVD records, like web evidence.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from core.json import append_jsonl
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from cve_diff.core.models import DiffBundle
@@ -118,8 +119,7 @@ def write_consensus_outcome(
             produced_by="cve-diff",
         )
         path = Path(output_dir) / VERIFIED_OUTCOMES_FILENAME
-        with Path(path).open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(outcome.to_dict(), default=str) + "\n")
+        append_jsonl(path, outcome.to_dict())
         return True
     except Exception:  # noqa: BLE001 — surfacing must never break the run
         logger.debug(

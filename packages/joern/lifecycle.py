@@ -109,16 +109,11 @@ def _read_state(_lock_fd: int) -> dict[str, Any] | None:
 
 
 def _write_state(_lock_fd: int, state: dict[str, Any]) -> None:
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _STATE_FILE.with_suffix(".tmp")
     # 0600 from creation — the file carries the server credential.
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(state, indent=2) + "\n")
-    # O_CREAT mode only applies to fresh files; a leftover tmp keeps
-    # its old bits, so re-assert before the rename publishes it.
-    os.chmod(tmp, 0o600)
-    tmp.rename(_STATE_FILE)
+    # save_json installs the mode on its tempfile before the rename
+    # publishes it, so the credential is never readable in transit.
+    from core.json import save_json
+    save_json(_STATE_FILE, state, mode=0o600)
 
 
 def _remove_state(_lock_fd: int) -> None:

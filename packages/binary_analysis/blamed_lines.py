@@ -22,12 +22,13 @@ reason), never an exception out of the crash pipeline.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from core.json import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -286,8 +287,7 @@ def check_report(
     }
     sidecar = report_path.with_suffix(report_path.suffix + ".line-check.json")
     try:
-        sidecar.write_text(
-            json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        save_json(sidecar, summary)
     except OSError as exc:
         logger.warning("blamed_lines: sidecar write failed: %s", exc)
     if stamp and results:

@@ -34,7 +34,6 @@ from one is traceable back to the finding that predicted it.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import struct
@@ -43,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 # Analysis-report / attack-path artifacts are RAPTOR-written run
 # output — the audit-artifact budget class.
@@ -314,9 +313,7 @@ def synthesize_seeds(
         "seeds": seeds,
         "skipped": all_skipped,
     }
-    (out_dir / MANIFEST_NAME).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
-    )
+    save_json(out_dir / MANIFEST_NAME, manifest, sort_keys=True)
     return manifest
 
 

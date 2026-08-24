@@ -18,8 +18,9 @@ DIRECTORY — never into the rules tree, never registry content.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
+
+from core.json import dumps_artifact
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -242,4 +243,4 @@ def generate_rules_yaml(summaries: Iterable) -> str | None:
             sink_blocks=SQLI_SINK_BLOCKS,
         ),
     ]}
-    return json.dumps(doc, indent=1)
+    return dumps_artifact(doc, indent=1)

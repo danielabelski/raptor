@@ -25,7 +25,6 @@ CI).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -34,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import save_json
 from core.sandbox import SandboxSetupError
 
 if TYPE_CHECKING:
@@ -383,7 +383,7 @@ def write_fuzz_coverage(out_dir: Path, coverage: dict[str, Any]) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / COVERAGE_FUZZ_FILE
-    path.write_text(json.dumps(coverage, indent=2), encoding="utf-8")
+    save_json(path, coverage)
     return path
 
 

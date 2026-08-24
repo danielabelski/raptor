@@ -21,7 +21,7 @@ from cve_env.config import AGENTIC_AUDIT_ROOT, VERSION_ASSERTION_CMD_PATTERN
 from cve_env.models import CveRecord, HostInfo, derive_build_method
 from cve_env.tools.arch import detect_host_arch
 
-from core.json import dumps_display
+from core.json import dumps_artifact, dumps_display, save_json
 
 # Validate CVE-ID format BEFORE invoking build()/LLM. Stops bogus IDs
 # (lowercase, missing dash, wrong year width, etc.) at argparse time
@@ -446,11 +446,12 @@ def _cmd_build(args: argparse.Namespace) -> int:
         # fires after build() returns but before the stdout pipe flushes.
         # bench50.sh recovers from this file when $OUTDIR/$cve.json is empty.
         sidecar = audit_root / f"{cve.cve_id}.outcome.json"
+        # Sidecar and stdout must carry the same document: bench50.sh
+        # falls back to the sidecar when the stdout capture is empty.
+        outcome_json = dumps_artifact(outcome_dict)
         with contextlib.suppress(OSError):
-            sidecar.write_text(json.dumps(outcome_dict, indent=2, default=str))
-        print(  # noqa: T201 -- CLI output
-            json.dumps(outcome_dict, indent=2, default=str)
-        )
+            save_json(sidecar, outcome_dict)
+        print(outcome_json)  # noqa: T201 -- CLI output
         # The human-readable summary is DEFAULT-ON. Use --silent to suppress.
         # The summary on stderr answers "what worked / what failed / where" +
         # credential nudges and rate-limit visibility, so users running

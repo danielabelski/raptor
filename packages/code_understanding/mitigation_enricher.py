@@ -430,8 +430,8 @@ def enrich_context_map_file(
         generated_at=generated_at,
     )
 
-    from core.atomic_fs import write_text_atomically
-    write_text_atomically(path, json.dumps(cm, indent=2, sort_keys=True) + "\n")
+    from core.json import save_json
+    save_json(path, cm, sort_keys=True)
 
 
 __all__ = [

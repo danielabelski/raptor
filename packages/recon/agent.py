@@ -13,7 +13,6 @@ readiness. This agent remains for direct manual invocation
 - Produces scan-manifest.json (input_hash, timestamp, agent meta)
 """
 import argparse
-import json
 import os
 import sys
 import time
@@ -31,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, os.environ["RAPTOR_DIR"])
 from core.git import clone_repository
 from core.hash import sha256_tree
-from core.json import save_json
+from core.json import dumps_display, save_json
 from core.run.scratch import scratch_dir
 
 
@@ -144,7 +143,7 @@ def main() -> None:
         inv = inventory(repo_path)
         save_json(out_dir / 'recon.json', {'manifest': manifest, 'inventory': inv})
 
-        print(json.dumps({'status':'ok','manifest':manifest,'inventory':inv}, indent=2))
+        print(dumps_display({'status': 'ok', 'manifest': manifest, 'inventory': inv}))
 
 if __name__ == '__main__':
     main()

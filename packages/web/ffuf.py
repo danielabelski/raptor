@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from core.json import save_json
 from core.json.bounded import load_json_bounded
 from core.logging import get_logger
 from core.sandbox import run_untrusted_networked
@@ -1279,14 +1280,10 @@ class FfufRunner:
         scrubbed = {key: item for key, item in parsed.items() if key not in removed}
         scrubbed["redacted_keys"] = removed
         try:
-            output_file.unlink(missing_ok=True)
-            fd = os.open(
-                output_file,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(scrubbed, handle)
+            # 0600 installed on the tempfile before the rename
+            # publishes it; the atomic replace also displaces any
+            # symlink planted at the report path.
+            save_json(output_file, scrubbed, mode=0o600)
         except OSError as exc:
             logger.warning("could not scrub ffuf report %s: %s", output_file, exc)
 

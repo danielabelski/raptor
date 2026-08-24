@@ -22,11 +22,11 @@ the operator asks to keep it.
 
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.json import save_json
 from core.logging import get_logger
 
 logger = get_logger()
@@ -285,7 +285,6 @@ def _write_provenance(out_dir: Path, result: FuzzEnvBuild) -> None:
         "rootfs": str(result.rootfs),
     }
     try:
-        (out_dir / PROVENANCE_FILENAME).write_text(
-            json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        save_json(out_dir / PROVENANCE_FILENAME, record)
     except OSError as exc:  # provenance is evidence, not a gate
         logger.warning("env-build provenance write failed: %s", exc)

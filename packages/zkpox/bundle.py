@@ -26,13 +26,12 @@ The full tier model lives in the package docstring
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-
+from core.json import save_json
 from packages.zkpox.eligibility import is_zkpox_eligible
 
 if TYPE_CHECKING:
@@ -201,10 +200,7 @@ def write_bundle(
     (bundle_dir / "witness.bin").write_bytes(data)
 
     manifest_path = bundle_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(bundle.as_dict(), indent=2),
-        encoding="utf-8",
-    )
+    save_json(manifest_path, bundle.as_dict())
     return bundle_dir
 
 

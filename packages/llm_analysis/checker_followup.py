@@ -20,12 +20,11 @@ counter is bumped only when a match is actually recorded.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from core.json import loads
+from core.json import append_jsonl, loads
 
 logger = logging.getLogger(__name__)
 
@@ -471,9 +470,7 @@ def _record_matches(
             "triage": triage_status,
         }
         try:
-            line = json.dumps(record, separators=(",", ":")) + "\n"
-            with Path(matches_path).open("a", encoding="utf-8") as f:
-                f.write(line)
+            append_jsonl(matches_path, record, compact=True)
             written += 1
         except Exception:
             logger.warning(

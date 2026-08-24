@@ -71,6 +71,7 @@ from core.function_taxonomy import (
 from core.function_taxonomy import (
     TOCTOU_FUNCS as _T_TOCTOU,
 )
+from core.json import save_json
 
 from .surface_classification import classify_security_api
 
@@ -305,8 +306,7 @@ class BinaryContextMap:
 
     def write(self, out_path: Path) -> Path:
         out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(self.to_dict(), indent=2, default=str), encoding="utf-8")
+        save_json(out_path, self.to_dict())
         return out_path
 
 

@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.json import save_json
 from packages.coccinelle import runner as cocci_runner
 from packages.semgrep import runner as semgrep_runner
 
@@ -402,10 +403,7 @@ def write_report(report: SweepReport, out_dir: Path) -> Path:
         for m in report.matches:
             f.write(json.dumps(m.to_dict(), sort_keys=True) + "\n")
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(
-        json.dumps(report.summary_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_json(summary_path, report.summary_dict(), sort_keys=True)
     return matches_path
 
 

@@ -10,12 +10,12 @@ current host rather than crashing six commands deep into AFL++.
 
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json import save_json
 from core.logging import get_logger
 from core.sandbox import run_trusted as _run_trusted
 from packages.fuzzing.capability import CapabilityReport
@@ -330,8 +330,9 @@ class FuzzingOrchestrator:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Persist plan and capability report for the run record
-        (out_dir / "fuzzing_plan.json").write_text(
-            json.dumps({
+        save_json(
+            out_dir / "fuzzing_plan.json",
+            {
                 "target": {
                     "path": str(plan.target.path),
                     "kind": plan.target.kind,
@@ -339,13 +340,9 @@ class FuzzingOrchestrator:
                 },
                 "fuzzer": plan.fuzzer,
                 "needs_harness": plan.needs_harness,
-            }, indent=2),
-            encoding="utf-8",
+            },
         )
-        (out_dir / "capability_report.json").write_text(
-            json.dumps(plan.capabilities.to_dict(), indent=2, default=str),
-            encoding="utf-8",
-        )
+        save_json(out_dir / "capability_report.json", plan.capabilities.to_dict())
 
         logger.info(plan.summary())
 
@@ -555,7 +552,7 @@ class FuzzingOrchestrator:
             "commands_detected": sorted(generator.detected_commands.keys()),
             "formats_detected": sorted(generator.detected_formats),
         }
-        (out_dir / "generated-corpus.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+        save_json(out_dir / "generated-corpus.json", info)
         logger.info("Generated agentic fuzz corpus: %s seeds at %s", seeds, generated_dir)
         return generated_dir, info
 
@@ -576,7 +573,7 @@ class FuzzingOrchestrator:
             "seeds": manifest["seed_count"],
             "manifest": str(seed_dir / "manifest.json"),
         }
-        (out_dir / "seed-corpus.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        save_json(out_dir / "seed-corpus.json", info)
         logger.info(
             "Using RAPTOR built-in seed corpus: %s seeds at %s", manifest['seed_count'], seed_dir
         )

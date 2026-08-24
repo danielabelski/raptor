@@ -16,7 +16,6 @@ The ``bench`` command is registered here from
 """
 from __future__ import annotations
 
-import json
 import re
 import signal
 import sys
@@ -26,6 +25,7 @@ from typing import Annotated
 
 import typer
 
+from core.json import save_json
 from cve_diff import __version__
 from cve_diff.analysis.analyzer import RootCauseAnalysisError, RootCauseAnalyzer
 from cve_diff.cli.bench import bench as _bench_cmd
@@ -561,10 +561,7 @@ def run(
 
         osv_path = output_dir / f"{cve_id}.osv.json"
         md_path = output_dir / f"{cve_id}.md"
-        osv_path.write_text(
-            json.dumps(osv_schema.render(result.bundle, root_cause=rc), indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(osv_path, osv_schema.render(result.bundle, root_cause=rc))
         md_path.write_text(markdown.render(result.bundle, root_cause=rc), encoding="utf-8")
         if pipeline_slot[0] is not None:
             _flow_from_pipeline(output_dir, cve_id, pipeline_slot[0],

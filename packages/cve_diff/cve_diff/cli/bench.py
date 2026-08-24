@@ -29,6 +29,7 @@ from pathlib import Path
 import typer
 
 from core.atomic_fs import write_text_atomically
+from core.json import save_json
 from cve_diff.core.exceptions import CveDiffError
 from cve_diff.infra import api_status
 from cve_diff.infra.github_client import warn_if_token_missing
@@ -161,9 +162,7 @@ def _run_one(cve_id: str, output_dir: str, disk_limit_pct: float = 80.0,
             try:
                 result = pipeline.run(cve_id, Path(tmp))
                 osv = osv_schema.render(result.bundle)
-                (out / f"{cve_id}.osv.json").write_text(
-                    json.dumps(osv, indent=2) + "\n", encoding="utf-8",
-                )
+                save_json(out / f"{cve_id}.osv.json", osv)
                 consensus = result.bundle.consensus or {}
                 ext_agree = result.bundle.extraction_agreement or {}
                 r = _CveResult(
@@ -768,13 +767,9 @@ def bench(
         # long bench run (a 100-CVE bench takes 30+ minutes); the
         # operator routinely reads ``summary.json`` mid-run to track
         # progress. Torn reads got partial JSON and JSONDecode-
-        # crashed. Primitive keeps every observable state of
+        # crashed. save_json keeps every observable state of
         # summary.json complete.
-        write_text_atomically(
-            summary_path,
-            json.dumps(asdict(summary), indent=2) + "\n",
-            tmp_prefix=".bench-summary-",
-        )
+        save_json(summary_path, asdict(summary))
 
     if workers <= 1:
         for i, cve_id in enumerate(cves, 1):

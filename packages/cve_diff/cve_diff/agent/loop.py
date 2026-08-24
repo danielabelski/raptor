@@ -28,6 +28,7 @@ from cve_diff.llm.client import MODEL_PRICES
 
 from core.json import dumps_display
 from core.config import env_flag
+from core.json import dumps_artifact
 from core.llm import telemetry
 from core.llm.config import ModelConfig
 from core.llm.providers import create_provider
@@ -273,7 +274,8 @@ class AgentLoop:
             elif isinstance(event, ToolCallDispatched):
                 call = event.call
                 tool_call_log.append(call.name)
-                args_repr = json.dumps(call.input, sort_keys=True, default=str)[:120]
+                args_repr = dumps_artifact(
+                    call.input, indent=None, sort_keys=True)[:120]
                 tool_calls_with_args.append((call.name, args_repr))
                 # Index by call_id so ToolCallReturned can look up the
                 # correct dispatch even when calls overlap (parallel

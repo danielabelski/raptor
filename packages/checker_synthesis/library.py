@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from core.atomic_fs import write_bytes_atomically, write_text_atomically
+from core.json import save_json
 
 from .cwe_families import cwe_siblings
 
@@ -218,11 +219,7 @@ class RuleLibrary:
         self._ensure_dirs()
         entries = self._load()
         data = {"rules": [e.to_dict() for e in entries]}
-        write_text_atomically(
-            self._manifest_path,
-            json.dumps(data, indent=2, sort_keys=False) + "\n",
-            tmp_prefix=".manifest-",
-        )
+        save_json(self._manifest_path, data)
 
     def find(self, cwe: str, engine: str) -> list[LibraryEntry]:
         """Find active library rules matching a CWE and engine.

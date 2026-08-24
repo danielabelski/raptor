@@ -160,22 +160,15 @@ class CacheDeceptionCheck(Check):
 @registry.register(CheckCategory.INJECTION, "V5.1.14", "HTTP request smuggling probe (CL.TE)")
 class RequestSmugglingCheck(Check):
     risk = "active"
-    def run(self, client, target_url, session=None, discovery=None):
-        import socket
-        import ssl
-        import time
-        from urllib.parse import urlparse
 
-        parsed = urlparse(target_url)
-        host = parsed.hostname or ""
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        use_tls = parsed.scheme == "https"
-
-        # Send a CL.TE probe: Content-Length says 6 bytes, Transfer-Encoding says chunked.
-        # The front-end uses CL (forwards 6 bytes of body), back-end uses TE (reads "0\r\n\r\n"
-        # as empty chunk, then "X" as start of next request). A 5-second timeout differential
-        # on the second innocent request confirms the smuggle.
-        smuggle_request = (
+    # Desync-prerequisite probes, one per parser-disagreement class.
+    # Each is a heuristic ("both framing headers processed" /
+    # "body interpreted as a second request"), never a confirmed
+    # verdict — findings stay confidence=low with a manual-follow-up
+    # instruction, matching the original CL.TE behavior.
+    @staticmethod
+    def _probe_requests(host: str) -> list[tuple[str, str, str]]:
+        clte = (
             f"POST / HTTP/1.1\r\n"
             f"Host: {host}\r\n"
             f"Content-Type: application/x-www-form-urlencoded\r\n"
@@ -187,6 +180,114 @@ class RequestSmugglingCheck(Check):
             f"\r\n"
             f"X"
         )
+        # Front-end honors Transfer-Encoding (reads the full chunked
+        # body); a CL back-end stops after 3 bytes and parses the rest
+        # as the start of a new request.
+        tecl = (
+            f"POST / HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"Content-Type: application/x-www-form-urlencoded\r\n"
+            f"Content-Length: 3\r\n"
+            f"Transfer-Encoding: chunked\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+            f"8\r\n"
+            f"SMUGGLED\r\n"
+            f"0\r\n"
+            f"\r\n"
+        )
+        # A CL.0 back-end ignores Content-Length entirely: the body
+        # arrives as a SECOND request on the same connection, so two
+        # responses come back for one send.
+        prefix = (
+            f"GET /raptor-clzero-probe HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"\r\n"
+        )
+        clzero = (
+            f"POST / HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"Content-Type: application/x-www-form-urlencoded\r\n"
+            f"Content-Length: {len(prefix)}\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+            f"{prefix}"
+        )
+        return [
+            ("CL.TE", clte, "fast_400"),
+            ("TE.CL", tecl, "fast_400"),
+            ("CL.0", clzero, "double_response"),
+        ]
+
+    def run(self, client, target_url, session=None, discovery=None):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(target_url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        use_tls = parsed.scheme == "https"
+
+        for variant, request_text, signal in self._probe_requests(host):
+            response, duration = self._raw_exchange(
+                host, port, use_tls, request_text,
+            )
+            if response is None:
+                continue
+            hit = (
+                signal == "fast_400"
+                and "400" in response and duration < 1
+            ) or (
+                signal == "double_response"
+                and response.count("HTTP/1.") >= 2
+            )
+            if not hit:
+                continue
+            return [self._result(
+                passed=False, url=target_url,
+                evidence=(
+                    f"{variant} probe: "
+                    + (
+                        f"server returned 400 in {duration:.2f}s -- "
+                        "possible back-end desync."
+                        if signal == "fast_400" else
+                        "two HTTP responses returned for one request -- "
+                        "the body was parsed as a second request."
+                    )
+                    + " Manual verification required."
+                ),
+                detail=(
+                    f"The server's framing behavior is consistent with the "
+                    f"{variant} HTTP request smuggling prerequisite: the "
+                    "front-end and back-end disagree about where one "
+                    "request ends and the next begins. A successful "
+                    "smuggling attack allows bypassing front-end security "
+                    "controls, poisoning other users' requests, and "
+                    "stealing credentials from other sessions. Manual "
+                    "verification with Burp Suite HTTP Request Smuggler "
+                    "is strongly recommended."
+                ),
+                recommendation=(
+                    "Configure the front-end proxy to normalise "
+                    "Transfer-Encoding headers and reject requests with "
+                    "both Content-Length and Transfer-Encoding. "
+                    "Use HTTP/2 end-to-end where possible. "
+                    "Apply the same header handling rules on every hop "
+                    "in the proxy chain."
+                ),
+                severity="high", confidence="low",
+                asvs_ref="ASVS 5.0 V5.1.14",
+            )]
+
+        return []
+
+    @staticmethod
+    def _raw_exchange(
+        host: str, port: int, use_tls: bool, request_text: str,
+    ) -> tuple:
+        """One raw request/response exchange; (None, 0.0) on error."""
+        import socket
+        import ssl
+        import time
 
         try:
             sock = socket.create_connection((host, port), timeout=5)
@@ -205,7 +306,7 @@ class RequestSmugglingCheck(Check):
                 ctx.verify_mode = ssl.CERT_NONE
                 sock = ctx.wrap_socket(sock, server_hostname=host)
 
-            sock.sendall(smuggle_request.encode())
+            sock.sendall(request_text.encode())
             t_start = time.monotonic()
             data = b""
             try:
@@ -218,36 +319,6 @@ class RequestSmugglingCheck(Check):
                 pass
             duration = time.monotonic() - t_start
             sock.close()
-
-            response = data.decode("utf-8", errors="replace")
-
-            # A 400 Bad Request with "Invalid request" is a common sign the back-end
-            # received our smuggled prefix -- not definitive but warrants manual follow-up
-            if "400" in response and duration < 1:
-                return [self._result(
-                    passed=False, url=target_url,
-                    evidence=(
-                        f"CL.TE probe: server returned 400 in {duration:.2f}s -- "
-                        f"possible back-end desync. Manual verification required."
-                    ),
-                    detail=(
-                        "The server appears to process both Content-Length and Transfer-Encoding "
-                        "headers simultaneously on the same request. This is the prerequisite for "
-                        "HTTP request smuggling (CL.TE variant). A successful smuggling attack "
-                        "allows bypassing front-end security controls, poisoning other users' "
-                        "requests, and stealing credentials from other sessions. "
-                        "Manual verification with Burp Suite HTTP Request Smuggler is strongly recommended."
-                    ),
-                    recommendation=(
-                        "Configure the front-end proxy to normalise Transfer-Encoding headers "
-                        "and reject requests with both Content-Length and Transfer-Encoding. "
-                        "Use HTTP/2 end-to-end where possible. "
-                        "Apply the same header handling rules on every hop in the proxy chain."
-                    ),
-                    severity="high", confidence="low", asvs_ref="ASVS 5.0 V5.1.14",
-                )]
-
+            return data.decode("utf-8", errors="replace"), duration
         except Exception:
-            pass
-
-        return []
+            return None, 0.0

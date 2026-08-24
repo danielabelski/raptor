@@ -88,3 +88,65 @@ class TestProbeHostSingleSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSmugglingVariants(unittest.TestCase):
+    """Probe shapes + per-variant signals, exchange stubbed (no wire)."""
+
+    def _run(self, exchanges):
+        from packages.web.checks.cache import RequestSmugglingCheck
+
+        check = RequestSmugglingCheck()
+        calls = []
+
+        def fake_exchange(host, port, use_tls, request_text):
+            calls.append(request_text)
+            return exchanges[len(calls) - 1]
+
+        check._raw_exchange = fake_exchange
+        results = check.run(MagicMock(), "https://t.example")
+        return results, calls
+
+    def test_all_three_variants_probe_with_correct_framing(self):
+        results, calls = self._run([(None, 0.0)] * 3)
+        self.assertEqual(results, [])
+        self.assertEqual(len(calls), 3)
+        clte, tecl, clzero = calls
+        self.assertIn("Content-Length: 6", clte)
+        self.assertIn("Transfer-Encoding: chunked", clte)
+        self.assertIn("Content-Length: 3", tecl)
+        self.assertIn("SMUGGLED", tecl)
+        self.assertNotIn("Transfer-Encoding", clzero)
+        self.assertIn("raptor-clzero-probe", clzero)
+        # CL.0's declared length must exactly cover its embedded prefix.
+        prefix = clzero.split("\r\n\r\n", 1)[1]
+        import re
+        declared = int(re.search(r"Content-Length: (\d+)", clzero).group(1))
+        self.assertEqual(declared, len(prefix))
+
+    def test_tecl_fast_400_flags_with_variant_named(self):
+        results, _ = self._run([
+            ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),      # CL.TE clean
+            ("HTTP/1.1 400 Bad Request\r\n\r\n", 0.2),  # TE.CL desync
+        ])
+        self.assertEqual(len(results), 1)
+        self.assertIn("TE.CL", results[0].evidence)
+        self.assertEqual(results[0].confidence, "low")
+
+    def test_clzero_double_response_flags(self):
+        results, _ = self._run([
+            ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),
+            ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),
+            ("HTTP/1.1 200 OK\r\n\r\nHTTP/1.1 404 Not Found\r\n\r\n", 0.3),
+        ])
+        self.assertEqual(len(results), 1)
+        self.assertIn("CL.0", results[0].evidence)
+        self.assertIn("second request", results[0].evidence)
+
+    def test_slow_400_is_not_a_signal(self):
+        results, _ = self._run([
+            ("HTTP/1.1 400 Bad Request\r\n\r\n", 3.0),
+            ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),
+            ("HTTP/1.1 200 OK\r\n\r\nok", 0.1),
+        ])
+        self.assertEqual(results, [])

@@ -166,6 +166,8 @@ def enrich_all_traces(
     """
     import json
 
+    from core.json import save_json
+
     out = Path(output_dir)
     count = 0
     for trace_path in sorted(out.glob("flow-trace-*.json")):
@@ -180,8 +182,7 @@ def enrich_all_traces(
         # consumers (/diagram, the validate bridge) may read it — an
         # in-place write_text left a truncated JSON file visible on
         # crash or concurrent read.
-        from core.atomic_fs import write_text_atomically
-        write_text_atomically(trace_path, json.dumps(enriched, indent=2))
+        save_json(trace_path, enriched)
         count += 1
         n_siblings = sum(
             1 for s in enriched.get("steps", []) if s.get("siblings")

@@ -9,13 +9,12 @@ Consumers: ``/agentic --sarif-out``, ``/project export --sarif``,
 ``/validate`` (future).
 """
 
-import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.atomic_fs import write_text_atomically
+from core.json import save_json
 from core.logging import get_logger
 
 logger = get_logger()
@@ -240,6 +239,6 @@ def write_enriched_sarif(
     # opened with O_EXCL | O_NOFOLLOW. An earlier implementation wrote
     # to a predictable "<name>.sarif.tmp" sibling via open() — a
     # symlink squatted at that path would have been followed silently.
-    write_text_atomically(output_path, json.dumps(doc, indent=2))
+    save_json(output_path, doc)
     logger.info("Wrote enriched SARIF: %s (%d findings)", output_path, len(findings))
     return len(findings)

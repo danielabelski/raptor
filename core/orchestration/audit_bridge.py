@@ -22,12 +22,11 @@ Co-located (tier 1) is not searched because /audit and /validate
 always produce separate output directories.
 """
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +146,7 @@ def enrich_attack_paths(
 
     if enriched:
         try:
-            tmp = attack_paths_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(attack_paths_file)
+            save_json(attack_paths_file, data)
             logger.info(
                 "audit_bridge: enriched %d attack-path steps with constraints",
                 enriched,
@@ -354,9 +351,7 @@ def inject_dark_as_hypotheses(
 
     if injected:
         try:
-            tmp = attack_surface_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(surface, indent=2), encoding="utf-8")
-            tmp.replace(attack_surface_file)
+            save_json(attack_surface_file, surface)
             logger.info(
                 "audit_bridge: injected %d dark-outcome hypotheses", injected,
             )
@@ -477,9 +472,7 @@ def inject_chains_as_hypotheses(
 
     if injected:
         try:
-            tmp = attack_surface_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(surface, indent=2), encoding="utf-8")
-            tmp.replace(attack_surface_file)
+            save_json(attack_surface_file, surface)
             logger.info(
                 "audit_bridge: injected %d attack-chain hypotheses", injected,
             )
@@ -541,9 +534,7 @@ def enrich_with_summaries(
 
     if enriched:
         try:
-            tmp = attack_paths_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(attack_paths_file)
+            save_json(attack_paths_file, data)
             logger.info(
                 "audit_bridge: enriched %d steps with callee contracts", enriched,
             )

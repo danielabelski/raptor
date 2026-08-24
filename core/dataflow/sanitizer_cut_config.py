@@ -278,26 +278,13 @@ def persist(run_dir: str) -> str | None:
     there is no explicit config to persist."""
     if _active is None:
         return None
-    import json
+    from core.json import save_json
     path = os.path.join(run_dir, _PERSIST_NAME)
     payload = {
         "mode": _active.mode,
         "parity_log_path": _active.parity_log_path,
     }
-    import tempfile
-    dir_name = os.path.dirname(path)
-    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    save_json(path, payload, 0o600)
     return path
 
 

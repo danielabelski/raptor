@@ -56,6 +56,7 @@ from core.git.clone import (
     safe_git_command,
     safe_git_readonly_command,
 )
+from core.json import dumps_artifact
 
 #: Shipped pack location (the taxonomy loads it at import).
 PACK_PATH = (
@@ -371,7 +372,7 @@ def merge_results(pack: dict, results: list[HarvestResult]) -> dict:
 
 
 def dumps_pack(pack: dict) -> str:
-    return json.dumps(pack, indent=1, sort_keys=True) + "\n"
+    return dumps_artifact(pack, indent=1, sort_keys=True) + "\n"
 
 
 def write_pack(pack: dict, path: Path) -> None:

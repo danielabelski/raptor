@@ -30,7 +30,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +130,11 @@ def _read_cache(signature: str) -> str | None:
 
 def _write_cache(signature: str, model: str) -> None:
     try:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_PATH.write_text(json.dumps({
+        save_json(_CACHE_PATH, {
             "signature": signature,
             "model": model,
             "timestamp": time.time(),
-        }))
+        })
     except OSError:
         logger.debug("cc-probe: cache write failed", exc_info=True)
 

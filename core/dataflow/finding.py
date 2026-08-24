@@ -17,11 +17,10 @@ intermediate steps, strict JSON loading) are enforced.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from core.json import loads
+from core.json import dumps_artifact, loads
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -180,7 +179,7 @@ class Finding:
         """Render as JSON. Explicit ``indent`` signature — see
         ``core.dataflow.label.GroundTruth.to_json`` for the
         rationale."""
-        return json.dumps(self.to_dict(), indent=indent)
+        return dumps_artifact(self.to_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, text: str) -> Finding:

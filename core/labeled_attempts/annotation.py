@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 
-from core.atomic_fs import write_text_atomically
+from core.json import save_json
 
 from .types import FailureMode, LabeledAttempt
 from typing import TYPE_CHECKING
@@ -30,16 +30,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = ["set_failure_mode"]
-
-
-def _atomic_replace(path: Path, payload: str) -> None:
-    """Write ``payload`` to a same-directory temp + rename onto
-    ``path``. Atomic under POSIX rename semantics."""
-    # Atomic write: operator triage rewrites an existing labeled_attempt
-    # record; a torn write would corrupt the JSON and hide the record
-    # from downstream aggregation. Same-tier reasoning as
-    # core/annotations/storage.py — reuse the shared primitive.
-    write_text_atomically(path, payload)
 
 
 def set_failure_mode(
@@ -83,5 +73,9 @@ def set_failure_mode(
     blob["failure_mode"] = mode.value if mode is not None else None
     # Construct first to validate; reject before any write.
     updated = LabeledAttempt.from_dict(blob)
-    _atomic_replace(record_path, json.dumps(updated.to_dict(), indent=2))
+    # Atomic write: operator triage rewrites an existing labeled_attempt
+    # record; a torn write would corrupt the JSON and hide the record
+    # from downstream aggregation. Same-tier reasoning as
+    # core/annotations/storage.py — save_json owns the temp + rename.
+    save_json(record_path, updated.to_dict())
     return updated

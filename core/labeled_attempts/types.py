@@ -251,8 +251,10 @@ class SandboxEvidence:
         # outcome_detail must round-trip through JSON — if it can't,
         # we'd fail on write() later with a confusing trace. Catch it
         # here where the producer can fix the offending value.
+        # allow_nan=False matches the writer: NaN/Infinity would raise
+        # at persist time, so reject them at construction too.
         try:
-            json.dumps(self.outcome_detail)
+            json.dumps(self.outcome_detail, allow_nan=False)
         except (TypeError, ValueError) as e:
             msg = (
                 f"outcome_detail must be JSON-serialisable; got "

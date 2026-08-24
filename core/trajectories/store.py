@@ -27,6 +27,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from core.json import dumps_artifact
 from core.llm.tool_use.types import Message, TextBlock, ToolCall, ToolResult
 
 from .types import TrajectoryRecord, TrajectoryStep
@@ -140,7 +141,7 @@ def trajectory_path(base: Path, run_id: str) -> Path:
 
 
 def _record_to_json(record: TrajectoryRecord) -> str:
-    return json.dumps(asdict(record), indent=2)
+    return dumps_artifact(asdict(record))
 
 
 def _mkdir_private(path: Path) -> None:

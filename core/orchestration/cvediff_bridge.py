@@ -35,6 +35,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from core.json import save_json
+
 logger = logging.getLogger(__name__)
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
@@ -193,7 +195,7 @@ def write_fix_pointer_artifact(pointer: FixPointer,
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{pointer.cve_id}.osv.json"
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    save_json(path, record)
     return path
 
 

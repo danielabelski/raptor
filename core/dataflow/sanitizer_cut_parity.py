@@ -32,9 +32,8 @@ suppressed or not.
 """
 from __future__ import annotations
 
-import json
 
-from core.json import loads
+from core.json import append_jsonl, loads
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -232,8 +231,7 @@ def append_parity_record(path: str | Path, record: ParityRecord) -> None:
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record.to_json(), sort_keys=True) + "\n")
+        append_jsonl(p, record.to_json(), sort_keys=True)
     except OSError:                                         # pragma: no cover
         pass
 

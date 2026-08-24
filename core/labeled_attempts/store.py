@@ -41,6 +41,8 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 
+from core.json import dumps_artifact
+
 from .types import LabeledAttempt
 from typing import TYPE_CHECKING
 
@@ -205,7 +207,7 @@ def write(
     paths: list[Path] = []
 
     # Pre-serialise once so both writes get the same blob.
-    payload = json.dumps(attempt.to_dict(), indent=2)
+    payload = dumps_artifact(attempt.to_dict())
 
     project_dir_root = project_pool_path(project_dir) / attempt.finding_signature
     _mkdir_private(project_dir_root)

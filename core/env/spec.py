@@ -22,6 +22,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from core.json import dumps_artifact
+
 SPEC_VERSION = 1
 
 SourceKind = Literal["image", "dockerfile", "compose", "repo"]
@@ -190,7 +192,7 @@ class EnvironmentSpec:
         return d
 
     def to_json(self) -> str:
-        return json.dumps(self.to_dict(), indent=2, sort_keys=True)
+        return dumps_artifact(self.to_dict(), sort_keys=True)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EnvironmentSpec:

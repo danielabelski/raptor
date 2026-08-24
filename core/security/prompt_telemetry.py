@@ -44,13 +44,12 @@ are crossed. The summary is a plain dict suitable for JSON serialisation.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.atomic_fs import write_text_atomically
+from core.json import save_json
 
 
 logger = logging.getLogger("raptor.security")
@@ -331,12 +330,7 @@ class DefenseTelemetry:
         either the OLD complete file or the NEW complete file.
         """
         path = Path(output_dir) / "defense-telemetry.json"
-        data = self.summary()
-        write_text_atomically(
-            path,
-            json.dumps(data, indent=2) + "\n",
-            tmp_prefix=".defense-telemetry-",
-        )
+        save_json(path, self.summary())
         return path
 
     @property

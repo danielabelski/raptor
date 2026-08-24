@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.json import append_jsonl
+
 
 @dataclass
 class DecisionRecord:
@@ -77,11 +79,8 @@ class DecisionLog:
 
     def record(self, rec: DecisionRecord) -> None:
         """Append one decision record as a JSONL line."""
-        line = json.dumps(asdict(rec), separators=(",", ":"))
         with self._lock:
-            with self._path.open("a", encoding="utf-8") as f:
-                f.write(line)
-                f.write("\n")
+            append_jsonl(self._path, asdict(rec), compact=True)
             self._count += 1
             self._models[rec.selected_model] = (
                 self._models.get(rec.selected_model, 0) + 1

@@ -36,11 +36,10 @@ required strings, ``confidence`` in ``[0, 1]``, ``source_line >= 1``,
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
-from core.json import loads
+from core.json import dumps_artifact, loads
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -338,7 +337,7 @@ class SanitizerEvidence:
         """Render as JSON. Explicit ``indent`` signature — see
         ``core.dataflow.label.GroundTruth.to_json`` for the
         rationale."""
-        return json.dumps(self.to_dict(), indent=indent)
+        return dumps_artifact(self.to_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, text: str) -> SanitizerEvidence:

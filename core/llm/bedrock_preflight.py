@@ -31,7 +31,7 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.json import load_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.llm.config import ModelConfig
@@ -93,8 +93,7 @@ def _read_cache() -> dict:
 
 def _write_cache(cache: dict) -> None:
     try:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _CACHE_PATH.write_text(json.dumps(cache))
+        save_json(_CACHE_PATH, cache)
     except OSError as exc:
         logger.debug("bedrock preflight: cache write failed: %s", exc)
 

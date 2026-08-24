@@ -14,12 +14,11 @@ the FP distribution — without categories we can't enforce that.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
-from core.json import loads
+from core.json import dumps_artifact, loads
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -234,7 +233,7 @@ class GroundTruth:
         passes is ``indent=2`` (corpus generator + handlabel_seed
         for pretty-printing). The explicit shape lets mypy / ruff
         catch typos in callers and makes the contract greppable."""
-        return json.dumps(self.to_dict(), indent=indent)
+        return dumps_artifact(self.to_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, text: str) -> GroundTruth:

@@ -25,14 +25,13 @@ Storage: one JSON file per checker in the library directory.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +147,7 @@ def load_library(library_dir: Path) -> CheckerLibrary:
 
     for path in sorted(library_dir.glob("*.json")):
         try:
-            data = json.loads(path.read_text())
+            data = load_json(path, strict=True, max_bytes=8 * 1024 * 1024)
             entry = CheckerEntry(**{
                 k: v for k, v in data.items()
                 if k in CheckerEntry.__dataclass_fields__

@@ -50,16 +50,15 @@ crashes on a corrupt entry would block scans.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from pathlib import Path
 from collections.abc import Iterator
 
-from core.atomic_fs import write_text_atomically
 from core.binary.fingerprint import (
     FINGERPRINT_SCHEMA_VERSION,
     CapabilityFingerprint,
 )
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +110,7 @@ def save_fingerprint(
     # A torn write would corrupt JSON, get skipped as unreadable, and
     # silently disable drift signal for that ref until the next scan.
     try:
-        write_text_atomically(
-            final_path,
-            json.dumps(payload, sort_keys=True, indent=2),
-            tmp_prefix=".fingerprint-",
-        )
+        save_json(final_path, payload, sort_keys=True)
     except OSError as e:
         logger.warning(
             "core.binary.fingerprint_store: write failed for %s: %s",
@@ -143,13 +138,11 @@ def load_fingerprint(
     file_path = store_dir / _ref_filename(ref)
     if not file_path.is_file():
         return None
-    try:
-        with Path(file_path).open(encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+    payload = load_json(file_path, max_bytes=8 * 1024 * 1024)
+    if payload is None:
         logger.debug(
-            "core.binary.fingerprint_store: load failed for %s: %s",
-            file_path, e,
+            "core.binary.fingerprint_store: load failed for %s",
+            file_path,
         )
         return None
     if not isinstance(payload, dict):
@@ -209,11 +202,7 @@ def iter_refs(
             # (process killed mid-write). Skip silently — the
             # final-named entry is what's load-bearing.
             continue
-        try:
-            with Path(entry).open(encoding="utf-8") as f:
-                payload = json.load(f)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue
+        payload = load_json(entry, max_bytes=8 * 1024 * 1024)
         if not isinstance(payload, dict):
             continue
         if payload.get("schema_version") != STORE_SCHEMA_VERSION:

@@ -16,11 +16,12 @@ not added here.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from core.json import load_json
 
 if TYPE_CHECKING:  # pragma: no cover
     from .condition_smt import DomainVocabulary
@@ -54,10 +55,9 @@ def _load_pack_uncached(name: str) -> DomainVocabulary | None:
     from .condition_smt import DomainVocabulary
 
     path = _PACK_DIR / f"{name}.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        logger.warning("vocab pack %s unavailable (%s)", path, e)
+    raw = load_json(path, max_bytes=8 * 1024 * 1024)
+    if raw is None:
+        logger.warning("vocab pack %s unavailable", path)
         return None
     if not isinstance(raw, dict):
         logger.warning("vocab pack %s is not a JSON object; ignoring", path)

@@ -45,7 +45,6 @@ in ways D–S can recover.
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 import sys
 from collections import Counter
@@ -53,7 +52,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from collections.abc import Sequence
 
-from core.json import dumps_artifact
+from core.json import dumps_artifact, load_json
 from core.llm.multi_model.dawid_skene import (
     DawidSkeneResult,
     estimate_partitioned,
@@ -141,14 +140,11 @@ def _recorded_verdict_index(
     for path in report_paths:
         if not path.is_file():
             continue
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            # Mirror panel_log's tolerance — bad files surfaced via
-            # the loader's own error path; here we just skip so a
-            # corrupt file in a big corpus doesn't abort the replay.
-            continue
+        # Mirror panel_log's tolerance — bad files surfaced via
+        # the loader's own error path; here we just skip (None fails
+        # the dict gate) so a corrupt file in a big corpus doesn't
+        # abort the replay.
+        payload = load_json(path, max_bytes=64 * 1024 * 1024)
         if not isinstance(payload, dict):
             continue
         results = payload.get("results")

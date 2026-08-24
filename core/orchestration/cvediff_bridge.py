@@ -29,13 +29,12 @@ here; the agent pins the version literal itself as usual.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -235,9 +234,9 @@ def _load_artifact(path: Path, tier: int) -> _Candidate | None:
     try:
         if not path.is_file():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = load_json(path, strict=True, max_bytes=8 * 1024 * 1024)
         mtime_ns = path.stat().st_mtime_ns
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         logger.debug("cvediff_bridge: unreadable artifact %s", path,
                      exc_info=True)
         return None

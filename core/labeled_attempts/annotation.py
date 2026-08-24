@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 from .types import FailureMode, LabeledAttempt
 from typing import TYPE_CHECKING
@@ -55,7 +55,7 @@ def set_failure_mode(
         msg = f"set_failure_mode: not a file: {record_path}"
         raise FileNotFoundError(msg)
     try:
-        blob = json.loads(record_path.read_text(encoding="utf-8"))
+        blob = load_json(record_path, strict=True, max_bytes=8 * 1024 * 1024)
     except json.JSONDecodeError as e:
         msg = (
             f"set_failure_mode: {record_path} is not valid JSON: "

@@ -19,12 +19,13 @@ vocabulary arrives via the study-learned DomainVocabulary
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -229,10 +230,9 @@ def _signal_pack(name: str) -> tuple | None:
     inference then runs on the universal maps alone.
     """
     path = _STRATEGY_PACK_DIR / f"{name}.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        logger.warning("strategy pack %s unavailable (%s)", path, e)
+    raw = load_json(path, max_bytes=8 * 1024 * 1024)
+    if raw is None:
+        logger.warning("strategy pack %s unavailable", path)
         return None
     if not isinstance(raw, dict):
         return None

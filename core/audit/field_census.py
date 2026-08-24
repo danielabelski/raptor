@@ -40,7 +40,6 @@ No LLM calls, no subprocesses.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -49,7 +48,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Iterable
 
-from core.json import dumps_artifact
+from core.json import dumps_artifact, load_json
 
 from .struct_accessor_index import _MIN_FIELD_LEN, _NOISE_FIELDS, _detect_lock
 
@@ -642,8 +641,10 @@ def priority_fields_from_study_list(
             path = Path(study_list)
             if path.is_dir():
                 path = path / "study-list.json"
-            study_list = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError:
+            return frozenset()
+        study_list = load_json(path, max_bytes=64 * 1024 * 1024)
+        if study_list is None:
             return frozenset()
     if isinstance(study_list, dict):
         items = study_list.get("items") or []

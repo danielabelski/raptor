@@ -23,12 +23,11 @@ capability development).
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -264,9 +263,13 @@ def load_planted_bugs(manifest_path: Path) -> list[PlantedBug]:
         return []
 
     try:
-        data = json.loads(manifest_path.read_text())
+        data = load_json(
+            manifest_path, strict=True, max_bytes=8 * 1024 * 1024,
+        )
     except Exception:
         logger.debug("failed to load planted bugs from %s", manifest_path, exc_info=True)
+        return []
+    if data is None:  # manifest vanished between is_file() and the read
         return []
 
     items = data if isinstance(data, list) else data.get("bugs", [])

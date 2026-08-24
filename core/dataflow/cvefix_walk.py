@@ -362,12 +362,12 @@ def _count_query(db: Path, query: str, out: Path, codeql_bin: str, timeout: int,
     tunables.append_to(cmd, include_disk_cache=False)
     if not _run(cmd, timeout):
         return None
-    try:
-        import json
-        data = json.loads(out.read_text(encoding="utf-8"))
-        return sum(len(r.get("results") or []) for r in (data.get("runs") or []))
-    except (OSError, ValueError):
+    from core.json import load_json
+    # 100 MiB: canonical SARIF budget (matches core.sarif.parser).
+    data = load_json(out, max_bytes=100 * 1024 * 1024)
+    if data is None:
         return None
+    return sum(len(r.get("results") or []) for r in (data.get("runs") or []))
 
 
 def _clean_go_caches(work_dir: Path) -> None:

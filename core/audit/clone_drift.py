@@ -394,10 +394,9 @@ def load_fix_anchors(out_dir: Path | None) -> list[dict[str, Any]]:
     path = Path(out_dir) / "fix-history.json"
     if not path.is_file():
         return []
-    import json
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    from core.json import load_json
+    raw = load_json(path, max_bytes=64 * 1024 * 1024)
+    if raw is None:
         return []
     sites = raw.get("variant_sites")
     return [s for s in sites or [] if isinstance(s, dict)]

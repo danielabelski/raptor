@@ -12,7 +12,6 @@ The loop is intentionally conservative:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -20,7 +19,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 from .strategy_stats import _safe_mtime
 
@@ -248,7 +247,7 @@ def load_corrections(
     for path in candidates:
         if path.is_file():
             try:
-                data = json.loads(path.read_text())
+                data = load_json(path, strict=True, max_bytes=8 * 1024 * 1024)
                 rules = [c["rule"] for c in data.get("corrections", [])]
                 if rules:
                     logger.info(
@@ -256,7 +255,7 @@ def load_corrections(
                         len(rules), path,
                     )
                     return rules
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError):
                 logger.debug("failed to load corrections from %s", path)
                 continue
 

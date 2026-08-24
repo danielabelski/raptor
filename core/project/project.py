@@ -8,7 +8,6 @@ Output directories live wherever the user specifies (default: out/projects/<name
 import contextlib
 import os
 import re
-import json
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -136,10 +135,7 @@ def _run_target_path(run_dir: Path) -> Path | str | None:
     meta_path = Path(run_dir) / ".raptor-run.json"
     if not meta_path.is_file():
         return None
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    meta = load_json(meta_path, max_bytes=1024 * 1024)
     raw = meta.get("target_path") if isinstance(meta, dict) else None
     if not raw or not isinstance(raw, str):
         return None

@@ -23,14 +23,13 @@ guessing "propagate everything" or "propagate nothing".
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -161,9 +160,11 @@ def load_taint_specs(path: Path) -> TaintSpecSet:
         return spec_set
 
     try:
-        data = json.loads(path.read_text())
+        data = load_json(path, strict=True, max_bytes=8 * 1024 * 1024)
     except Exception:
         logger.debug("failed to load taint specs from %s", path, exc_info=True)
+        return spec_set
+    if data is None:  # file vanished between is_file() and the read
         return spec_set
 
     for item in data.get("specs", []):

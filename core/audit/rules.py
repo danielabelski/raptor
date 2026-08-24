@@ -15,12 +15,11 @@ files (coccinelle).
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -230,11 +229,8 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
     manifest_path = out_dir / RULES_DIR / RULES_MANIFEST
     if not manifest_path.exists():
         return {}
-    try:
-        with Path(manifest_path).open(encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    data = load_json(manifest_path, max_bytes=8 * 1024 * 1024)
+    return data if data is not None else {}
 
 
 def _save_manifest(out_dir: Path, manifest: dict[str, Any]) -> None:

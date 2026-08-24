@@ -164,16 +164,13 @@ def enrich_all_traces(
 
     Returns the number of traces enriched.
     """
-    import json
-
-    from core.json import save_json
+    from core.json import load_json, save_json
 
     out = Path(output_dir)
     count = 0
     for trace_path in sorted(out.glob("flow-trace-*.json")):
-        try:
-            data = json.loads(trace_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        data = load_json(trace_path, max_bytes=64 * 1024 * 1024)
+        if data is None:
             logger.debug("skipping unreadable trace: %s", trace_path)
             continue
 

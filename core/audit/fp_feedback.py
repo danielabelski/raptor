@@ -14,14 +14,13 @@ LLM verdicts live in ``core.coverage.journal`` (review journal JSONL).
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -414,10 +413,9 @@ def load_fp_patterns(out_dir: Path) -> list[FPPattern]:
     src = out_dir / "fp-patterns.json"
     if not src.exists():
         return []
-    try:
-        data = json.loads(src.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        logger.warning("Cannot load fp-patterns.json: %s", exc)
+    data = load_json(src, max_bytes=8 * 1024 * 1024)
+    if data is None:
+        logger.warning("Cannot load fp-patterns.json")
         return []
     if not isinstance(data, list):
         logger.warning("fp-patterns.json is not a list")

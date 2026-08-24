@@ -10,14 +10,13 @@ Controlled by OrchestratorConfig.validate (default False).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, save_json
 from core.orchestration.skill_dispatch import (
     MAX_VALIDATE_FINDINGS,
     run_skill_dispatch,
@@ -229,10 +228,8 @@ def _copy_findings_for_validate(
     consolidation this head-truncated — silently dropping the
     strongest findings whenever more than the cap qualified.
     """
-    try:
-        with Path(findings_path).open(encoding="utf-8") as f:
-            container = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    container = load_json(findings_path, max_bytes=256 * 1024 * 1024)
+    if container is None:
         return
     entries = container.get("findings", [])
     if isinstance(entries, list) and len(entries) > _MAX_VALIDATE_FINDINGS:

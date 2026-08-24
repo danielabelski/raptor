@@ -23,9 +23,10 @@ fields are an allowlisted ``{name, handle?, url?}``.
 
 from __future__ import annotations
 
-import json
 import unicodedata
 from pathlib import Path
+
+from core.json import load_json
 
 # $HOME-rooted ⇒ per-uid isolation for free. Same dir as the inventory cache.
 IDENTITY_PATH = Path.home() / ".raptor" / "identity.json"
@@ -63,12 +64,9 @@ def load_finder_identity(path: Path | None = None) -> dict[str, str] | None:
     config never breaks a run — it just means "no identity asserted".
     """
     p = path or IDENTITY_PATH
-    try:
-        if not p.exists() or p.stat().st_size > _MAX_FILE_BYTES:
-            return None  # absent, or implausibly large (DoS / not a real config)
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    # Size gate inside load_json: absent, unreadable, malformed, or
+    # implausibly large (DoS / not a real config) all read as None.
+    data = load_json(p, max_bytes=_MAX_FILE_BYTES)
     if not isinstance(data, dict):
         return None
     name = _clean_field(data.get("name"), _FIELD_MAXLEN["name"])

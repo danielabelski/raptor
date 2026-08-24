@@ -39,12 +39,13 @@ a dedup-wave hoist candidate).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+
+from core.json import load_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -641,9 +642,8 @@ def _sink_catalog_role(
     catalog = Path(ctx.out_dir) / "discovered-sinks.json"
     if not catalog.is_file():
         return None
-    try:
-        data = json.loads(catalog.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json(catalog, max_bytes=64 * 1024 * 1024)
+    if data is None:
         return None
     wanted = {n.rsplit(".", 1)[-1] for n in names if n}
     for sink in data.get("discovered_sinks") or []:

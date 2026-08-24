@@ -17,6 +17,8 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
+from core.json import load_json
+
 logger = logging.getLogger(__name__)
 
 _POSITIVE_STATUSES = frozenset({"finding", "suspicious"})
@@ -139,13 +141,14 @@ def find_project_log_dirs(
             if target_path is not None:
                 manifest = child / ".raptor-run.json"
                 if manifest.exists():
+                    m = load_json(manifest, max_bytes=1024 * 1024)
+                    if m is None:
+                        continue
                     try:
-                        with Path(manifest).open(encoding="utf-8") as f:
-                            m = json.load(f)
                         sibling_target = m.get("target_path") or m.get("target", "")
                         if sibling_target and Path(sibling_target).resolve() != target_path.resolve():
                             continue
-                    except (json.JSONDecodeError, OSError):
+                    except OSError:
                         continue
                 else:
                     continue

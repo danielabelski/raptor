@@ -20,12 +20,11 @@ location and type.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -125,7 +124,9 @@ def load_ground_truth(target_path: Path) -> list[GroundTruthEntry]:
         target_path.parent / "ground-truth.json",
     ):
         if candidate.exists():
-            data = json.loads(candidate.read_text())
+            data = load_json(candidate, strict=True, max_bytes=8 * 1024 * 1024)
+            if data is None:  # vanished between exists() and the read
+                raise FileNotFoundError(candidate)
             entries: list[GroundTruthEntry] = []
             items = data if isinstance(data, list) else data.get("vulnerabilities", [])
             for item in items:
@@ -272,12 +273,16 @@ def _load_findings(out_dir: Path) -> list[dict[str, Any]]:
     """Load findings from graded or standard findings file."""
     graded_path = out_dir / "findings-graded.json"
     if graded_path.exists():
-        data = json.loads(graded_path.read_text())
+        data = load_json(graded_path, strict=True, max_bytes=256 * 1024 * 1024)
+        if data is None:  # vanished between exists() and the read
+            raise FileNotFoundError(graded_path)
         return data.get("findings", [])
 
     standard_path = out_dir / "findings.json"
     if standard_path.exists():
-        data = json.loads(standard_path.read_text())
+        data = load_json(standard_path, strict=True, max_bytes=256 * 1024 * 1024)
+        if data is None:  # vanished between exists() and the read
+            raise FileNotFoundError(standard_path)
         if isinstance(data, list):
             return data
         return data.get("findings", [])

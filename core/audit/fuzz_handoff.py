@@ -25,13 +25,12 @@ failure must never affect the audit run.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
 from typing import Any
 
-from core.json import save_json
+from core.json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +180,8 @@ def _iris_seed_hints(out_dir: Path) -> list[dict[str, Any]]:
     path = Path(out_dir) / "iris-taint-specs.json"
     if not path.is_file():
         return hints
-    try:
-        specs = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    specs = load_json(path, max_bytes=8 * 1024 * 1024)
+    if specs is None:
         return hints
     for spec in specs:
         role = spec.get("role", "")

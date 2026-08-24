@@ -35,13 +35,12 @@ by reading the latest record in the directory.
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import secrets
 from datetime import datetime
 from pathlib import Path
 
-from core.json import dumps_artifact
+from core.json import dumps_artifact, load_json
 
 from .types import LabeledAttempt
 from typing import TYPE_CHECKING
@@ -243,9 +242,11 @@ def _iter_records_in_dir(root: Path) -> Iterable[LabeledAttempt]:
             continue
         for record_file in sorted(finding_dir.glob("*.json")):
             try:
-                data = json.loads(record_file.read_text(encoding="utf-8"))
+                data = load_json(
+                    record_file, strict=True, max_bytes=8 * 1024 * 1024,
+                )
                 yield LabeledAttempt.from_dict(data)
-            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError):
                 # Skip corrupt / outdated records rather than fail the
                 # whole read. Retrieval is best-effort.
                 continue

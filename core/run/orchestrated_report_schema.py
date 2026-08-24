@@ -37,14 +37,16 @@ fields when present, not the requirement that they be present.
 ## How to consume
 
 ```python
-import json
+from core.json import load_json
 from core.run.orchestrated_report_schema import SCHEMA
 
 # Validate an on-disk report (requires the optional `jsonschema`
 # dependency — not pulled in by RAPTOR's runtime).
 import jsonschema
-with open("orchestrated_report.json") as fh:
-    jsonschema.validate(json.load(fh), SCHEMA)
+report = load_json(
+    "orchestrated_report.json", strict=True, max_bytes=64 * 1024 * 1024,
+)
+jsonschema.validate(report, SCHEMA)
 ```
 
 Without ``jsonschema`` installed, consumers can still read SCHEMA

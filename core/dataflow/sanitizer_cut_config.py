@@ -41,7 +41,6 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 VALID_MODES = ("off", "on", "strict", "shadow")
 
@@ -294,15 +293,11 @@ def load_persisted(
     """Reload a config persisted by :func:`persist` and install it
     (with env export by default). No-op returning None when the file is
     absent or unreadable — the env fallback stays active."""
-    import json
+    from core.json import load_json
     path = os.path.join(run_dir, _PERSIST_NAME)
     if not os.path.isfile(path):
         return None
-    try:
-        with Path(path).open(encoding="utf-8") as fh:
-            payload = json.load(fh)
-    except (OSError, ValueError):
-        return None
+    payload = load_json(path, max_bytes=1024 * 1024)
     if not isinstance(payload, dict):
         return None
     try:

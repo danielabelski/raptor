@@ -222,10 +222,9 @@ def _ingest_sarif_file(
         from core.sarif.parser import load_sarif
         data = load_sarif(sarif_file)
     except ImportError:
-        try:
-            data = _json.loads(sarif_file.read_text())
-        except (OSError, _json.JSONDecodeError):
-            return 0
+        # Same 100 MiB SARIF cap as load_sarif; None falls through to
+        # the isinstance gate below.
+        data = load_json(sarif_file, max_bytes=100 * 1024 * 1024)
     if not isinstance(data, dict):
         return 0
     ingested = 0

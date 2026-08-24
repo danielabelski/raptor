@@ -18,13 +18,12 @@ is a JSON array of constraint dicts.  Atomic writes via
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from ._util import find_function_lines, safe_join
-from core.json import save_json
+from core.json import load_json, save_json
 from pathlib import Path
 
 if TYPE_CHECKING:
@@ -103,12 +102,11 @@ def load_constraints(out_dir: Path) -> list[Constraint]:
     if not path.exists():
         return []
     try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
         if not isinstance(data, list):
             return []
         return [Constraint.from_dict(d) for d in data]
-    except (json.JSONDecodeError, OSError, TypeError) as exc:
+    except (ValueError, OSError, TypeError) as exc:
         logger.warning("failed to load constraints: %s", exc)
         return []
 

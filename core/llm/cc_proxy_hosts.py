@@ -44,7 +44,6 @@ construction.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -52,6 +51,8 @@ import subprocess
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -168,10 +169,7 @@ def _load_override_config() -> list[str] | None:
     """
     if not _OVERRIDE_CONFIG_PATH.exists():
         return None
-    try:
-        data = json.loads(_OVERRIDE_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = load_json(_OVERRIDE_CONFIG_PATH, max_bytes=1024 * 1024)
     hosts = data.get("proxy_hosts") if isinstance(data, dict) else None
     if not isinstance(hosts, list):
         return None

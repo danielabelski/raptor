@@ -9,11 +9,12 @@ orchestrator state is mutated.
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,7 @@ def load_variants(out_dir: Path) -> set[str]:
     if not path.exists():
         return set()
     try:
-        with Path(path).open(encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
         # Visibility plumbing (docs/security.md I2-(b)): variants.json
         # is LLM-authored; log its provenance stamp (or its absence —
         # both read as untrusted) so the audit trail records the trust
@@ -105,11 +105,7 @@ def load_fuzz_coverage(out_dir: Path) -> dict[str, Any] | None:
     path = out_dir / "coverage-fuzz.json"
     if not path.exists():
         return None
-    try:
-        with Path(path).open(encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
+    return load_json(path, max_bytes=64 * 1024 * 1024)
 
 
 def load_fuzz_coverage_any(

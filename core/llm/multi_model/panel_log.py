@@ -29,11 +29,12 @@ Robustness contract:
 """
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from core.json import load_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -122,9 +123,8 @@ def load_from_orchestrated_report(
     if not path.is_file():
         return []
     try:
-        with path.open("r", encoding="utf-8") as fh:
-            payload = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = load_json(path, strict=True, max_bytes=64 * 1024 * 1024)
+    except (OSError, ValueError) as exc:
         msg = f"panel_log: cannot parse {path}: {exc}"
         raise ValueError(msg) from exc
     if not isinstance(payload, dict):

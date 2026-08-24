@@ -30,10 +30,11 @@ Verdict transitions (recorded in the correction entry):
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
+
+from core.json import load_json
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +131,7 @@ class _ValidationSiblings:
 
     @staticmethod
     def _load(path: Path) -> Any:
-        try:
-            with Path(path).open(encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return None
+        return load_json(path, max_bytes=64 * 1024 * 1024)
 
     def smt_all_paths_infeasible(self, finding_id: str) -> bool:
         """True when every attack path linked to the finding carries a
@@ -266,11 +263,9 @@ def import_validation_results(
     )
     from .record import _compute_hash
 
-    try:
-        with Path(validation_report).open(encoding="utf-8") as f:
-            report = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("failed to load validation report %s: %s", validation_report, exc)
+    report = load_json(validation_report, max_bytes=64 * 1024 * 1024)
+    if report is None:
+        logger.warning("failed to load validation report %s", validation_report)
         return {"updated": 0, "downgraded": 0, "upgraded": 0, "corroborated": 0, "skipped": 0}
 
     findings = _extract_findings(report)

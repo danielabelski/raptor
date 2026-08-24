@@ -28,10 +28,11 @@ re-fire, so they don't accumulate the way sandbox records do.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from core.json import load_json
 
 from .store import project_pool_path
 from .types import LabeledAttempt
@@ -112,10 +113,12 @@ def prune_pool(
         if not sig_dir.is_dir():
             continue
         for path in sorted(sig_dir.glob("*.json")):
+            blob = load_json(path, max_bytes=8 * 1024 * 1024)
+            if blob is None:
+                continue
             try:
-                blob = json.loads(path.read_text(encoding="utf-8"))
                 rec = LabeledAttempt.from_dict(blob)
-            except (OSError, ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError):
                 continue
             seen += 1
             buckets.setdefault(_bucket_key(rec), []).append(

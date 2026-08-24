@@ -44,7 +44,6 @@ and preserves proxy env for the lazy blob fetch.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -56,7 +55,7 @@ from core.git.clone import (
     safe_git_command,
     safe_git_readonly_command,
 )
-from core.json import dumps_artifact
+from core.json import dumps_artifact, load_json
 
 #: Shipped pack location (the taxonomy loads it at import).
 PACK_PATH = (
@@ -117,7 +116,9 @@ class HarvestResult:
 
 def load_sources(path: Path) -> list[HarvestSource]:
     """Load a harvest-source config: ``{"sources": [{...}, ...]}``."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = load_json(path, strict=True, max_bytes=1024 * 1024)
+    if raw is None:
+        raise FileNotFoundError(path)
     sources = []
     for item in raw.get("sources", []):
         library = item.get("library")
@@ -270,12 +271,12 @@ def harvest_diff_dir(source: HarvestSource) -> HarvestResult:
         cves = {c.upper() for c in _CVE_RE.findall(path.name)}
         sidecar = path.with_suffix(".json")
         if sidecar.is_file():
-            try:
-                meta = json.loads(sidecar.read_text(encoding="utf-8"))
+            meta = load_json(sidecar, max_bytes=1024 * 1024)
+            if meta is None:
+                result.errors.append(f"{sidecar.name}: unreadable sidecar")
+            else:
                 cve_id = meta.get("cve_id", "")
                 cves |= {c.upper() for c in _CVE_RE.findall(str(cve_id))}
-            except (OSError, ValueError):
-                result.errors.append(f"{sidecar.name}: unreadable sidecar")
         try:
             diff_text = path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
@@ -315,10 +316,7 @@ def harvest(
 
 def load_pack(path: Path) -> dict:
     """Load a parser_apis pack, or an empty skeleton when absent."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raw = {}
+    raw = load_json(path, max_bytes=8 * 1024 * 1024)
     if not isinstance(raw, dict):
         raw = {}
     raw.setdefault("pack", "parser_apis")

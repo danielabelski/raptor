@@ -393,16 +393,17 @@ PARSER_SEED_FUNCS: frozenset[str] = frozenset({
 def _load_parser_pack() -> frozenset[str]:
     """Names from the parser_apis data pack. Missing/malformed pack →
     empty set (consumers run on seeds alone); never raises."""
-    import json as _json
     import logging as _logging
     from pathlib import Path as _Path
+
+    from core.json import load_json as _load_json
 
     pack_path = (
         _Path(__file__).resolve().parent
         / "data" / "packs" / "parser_apis.json"
     )
     try:
-        raw = _json.loads(pack_path.read_text(encoding="utf-8"))
+        raw = _load_json(pack_path, strict=True, max_bytes=8 * 1024 * 1024)
         names = {
             e.get("name")
             for e in raw.get("entries", [])

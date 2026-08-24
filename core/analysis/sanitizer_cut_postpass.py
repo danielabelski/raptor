@@ -775,9 +775,7 @@ def filter_enforced_from_sarif(
     """
     if not enforced:
         return 0
-    import json as _json
-
-    from core.json import save_json
+    from core.json import load_json, save_json
 
     def _norm(s: str) -> str:
         return str(s or "").replace("\\", "/").lstrip("./")
@@ -788,7 +786,8 @@ def filter_enforced_from_sarif(
         for e in enforced
     ]
     try:
-        data = _json.loads(Path(sarif_path).read_text(encoding="utf-8"))
+        # 100 MiB: canonical SARIF budget (matches core.sarif.parser).
+        data = load_json(sarif_path, strict=True, max_bytes=100 * 1024 * 1024)
         removed = 0
         for run in data.get("runs") or []:
             results = run.get("results")

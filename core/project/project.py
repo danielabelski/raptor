@@ -36,8 +36,13 @@ PROJECTS_DIR = Path.home() / ".raptor" / "projects"
 # dirs whenever cwd != repo root.
 # Derived through get_out_dir() so RAPTOR_OUT_DIR redirects the
 # projects base too (hermetic harnesses; the env is set by the
-# launcher before python starts).
-DEFAULT_OUTPUT_BASE = RaptorConfig.get_out_dir() / "projects"
+# launcher before python starts). A bad env value must not turn
+# MODULE IMPORT into a traceback — fall back to the static base and
+# let the call-time consumers surface the validation error.
+try:
+    DEFAULT_OUTPUT_BASE = RaptorConfig.get_out_dir() / "projects"
+except Exception:  # noqa: BLE001 — invalid RAPTOR_OUT_DIR
+    DEFAULT_OUTPUT_BASE = RaptorConfig.BASE_OUT_DIR / "projects"
 
 
 _PROJECT_SCHEMA_VERSION = 4
@@ -1039,12 +1044,18 @@ class ProjectManager:
         try:
             from core.project.sessions import ledger_rewrite_pin_project
             ledger_rewrite_pin_project(old_name, new_name)
+            # One retry: a briefly-held ledger lock (a run finishing
+            # right now) has usually been released by the time the
+            # marker loop below completes; a witness left on the old
+            # name suppresses that run's projections as tamper.
+            ledger_rewrite_pin_project(old_name, new_name)
         except Exception:  # noqa: BLE001 — witnesses are best-effort
             logger.warning(
                 "rename: could not re-point ledger pin witnesses from "
-                "%r to %r — completing runs of the renamed project may "
-                "log witness-disagreement warnings", old_name, new_name,
-                exc_info=True)
+                "%r to %r — affected runs' project-store writes will "
+                "be suppressed as tamper; repair with "
+                "'raptor project add %s <run-dir>'",
+                old_name, new_name, new_name, exc_info=True)
 
         # Re-point every run pin: a pin recording the old name would
         # resolve as authoritatively-projectless forever ("pinned to
@@ -1056,16 +1067,21 @@ class ProjectManager:
             from core.json import save_json as _sj
             from core.run.metadata import RUN_METADATA_FILE as _MF
             _pin_dirs = list(project.get_run_dirs())
-            # External pinned runs join the rewrite via the ledgers.
+            # External pinned runs join the rewrite via the ledgers'
+            # surviving WITNESSES (not witnessed records — a witness
+            # outlives its cap-evicted record while the run dir
+            # exists, and missing those left markers on the old name
+            # with re-pointed witnesses: a manufactured 'tamper'
+            # disagreement on a legitimate run).
             try:
-                from core.project.sessions import ledger_runs_pinned_to
+                from core.project.sessions import ledger_pinned_dirs
                 _known = {str(Path(d).resolve()) for d in _pin_dirs}
                 # The witness rewrite above already re-pointed the
                 # ledgers to the NEW name — query that, or external
                 # runs are invisible here.
                 _pin_dirs.extend(
                     Path(rec["run_dir"])
-                    for rec in ledger_runs_pinned_to(new_name)
+                    for rec in ledger_pinned_dirs(new_name)
                     if rec["run_dir"] not in _known
                     and Path(rec["run_dir"]).is_dir())
             except Exception:  # noqa: BLE001 — ledger scan best-effort
@@ -1258,13 +1274,31 @@ class ProjectManager:
                     from core.json import load_json as _lj
                     _m = _lj(dest / ".raptor-run.json",
                              max_bytes=1024 * 1024)
-                    if (isinstance(_m, dict)
-                            and _m.get("project") != project.name):
+                    _pin = (_m.get("project")
+                            if isinstance(_m, dict) else None)
+                    # Repair ONLY a pin naming a MISSING project (the
+                    # rename-crash artifact): an authoritative pin to
+                    # an EXISTING other project — or an explicit
+                    # projectless pin — is the run's identity, and
+                    # topology must not override it.
+                    if (isinstance(_pin, str) and _pin != project.name
+                            and self.load(_pin) is None):
                         from core.run.metadata import write_run_pin
                         write_run_pin(dest, project.name, "adopted")
                         logger.info(
                             "adopt: re-pointed the stale pin on "
-                            "already-present run %s", dest.name)
+                            "already-present run %s (named missing "
+                            "project %r)", dest.name, _pin)
+                    # Witnesses naming missing projects for this dir
+                    # get the same repair — a rename that crashed (or
+                    # skipped a held ledger) leaves witness=old vs
+                    # marker=new, which reads as tamper.
+                    from core.project.sessions import (
+                        ledger_repair_witnesses_for_dir,
+                    )
+                    ledger_repair_witnesses_for_dir(
+                        dest, project.name,
+                        missing=lambda n: self.load(n) is None)
                 except Exception:  # noqa: BLE001 — repair best-effort
                     logger.debug("adopt: stale-pin repair failed",
                                  exc_info=True)
@@ -1642,7 +1676,8 @@ class ProjectManager:
         return None
 
 
-def is_project_output_dir(directory: Path) -> bool:
+def is_project_output_dir(directory: Path,
+                          exact: bool = False) -> bool:
     """Check whether *directory* is a managed project output directory.
 
     Returns True when *directory* matches any known project's
@@ -1651,14 +1686,28 @@ def is_project_output_dir(directory: Path) -> bool:
     directories should share state (strategy weights, project context,
     learnings). When False, sibling enumeration must validate each
     sibling's target path to prevent cross-project contamination.
+
+    ``exact=True`` matches only a project output dir ITSELF (or the
+    projects base) — never a descendant. The pin walk's boundary needs
+    this: with descendant matching, the walk stopped at the first
+    parent for any run inside a project dir, so the NEAREST marker won
+    and a child could plant one in its own writable subdir — the exact
+    capture the outermost-marker rule exists to kill.
     """
     resolved = directory.resolve()
     default_base = DEFAULT_OUTPUT_BASE.resolve()
-    try:
-        resolved.relative_to(default_base)
-        return True
-    except ValueError:
-        pass
+    if exact:
+        if resolved == default_base:
+            return True
+        # Direct children of the base are project dirs by convention.
+        if resolved.parent == default_base:
+            return True
+    else:
+        try:
+            resolved.relative_to(default_base)
+            return True
+        except ValueError:
+            pass
     try:
         mgr = ProjectManager()
         for project in mgr.list_projects():

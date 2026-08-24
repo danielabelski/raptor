@@ -410,9 +410,18 @@ class PinFreezeCacheTest(_PinCase):
     def test_pin_survives_completed_status(self):
         # /understand → /validate sharing one --out: the pin written at
         # the first start governs the second even after completion —
-        # a mid-gap /project switch must not re-pin the dir.
+        # a mid-gap /project switch must not re-pin the dir. The
+        # continuity is witness-backed: the first start's ledger
+        # witness corroborates the disk pin for the second start
+        # (an UNcorroborated disk pin in a reused --out dir does not
+        # elect a project — that is the planted-marker defense).
         from core.run.metadata import complete_run, load_run_metadata, start_run
         from core.run.pin import _frozen_pins
+        sessions.record_session("pinned", pid=os.getpid())
+        patcher = patch.object(sessions, "resolve_session_pid",
+                               return_value=os.getpid())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         d = self._run_dir()
         self.mgr.set_active("pinned")
         start_run(d, "understand", target=str(self.root / "code"))
@@ -423,6 +432,23 @@ class PinFreezeCacheTest(_PinCase):
         self.mgr.set_active("other")
         start_run(d, "validate", target=str(self.root / "code"))
         self.assertEqual(load_run_metadata(d)["project"], "pinned")
+
+    def test_uncorroborated_planted_marker_does_not_elect(self):
+        # A marker planted in a pre-existing --out dir (no witness,
+        # no freeze) must not become the run's first pin.
+        from core.json import save_json as _sj
+        from core.run.metadata import load_run_metadata, start_run
+        d = self.root / "out" / "reused"
+        d.mkdir(parents=True)
+        _sj(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "argv",
+        })
+        self.mgr.create("ambient3", str(self.root / "code"),
+                        output_dir=str(self.root / "out" / "ambient3"))
+        self.mgr.set_active("ambient3")
+        start_run(d, "scan", target=str(self.root / "code"))
+        self.assertEqual(load_run_metadata(d)["project"], "ambient3")
 
 
 class OutermostMarkerTest(_PinCase):
@@ -796,3 +822,71 @@ class OutRootBoundaryTest(_PinCase):
         with patch("core.config.RaptorConfig.get_out_dir",
                    return_value=out_root):
             self.assertIsNone(_journal_project_dir(legacy))
+
+
+class WalkBoundaryExactTest(_PinCase):
+    def test_planted_subdir_marker_inside_project_dir_loses(self):
+        # Inside a project dir the walk previously stopped at the
+        # FIRST parent (descendant matching), so the nearest planted
+        # marker won — the exact capture the outermost rule kills.
+        from core.run.pin import resolve_run_pin
+        run = Path(self.mgr.load("pinned").output_dir) / "fuzz_9"
+        sub = run / "afl-out"
+        sub.mkdir(parents=True)
+        save_json(run / RUN_METADATA_FILE, {
+            "status": "running", "project": "pinned",
+            "project_source": "session",
+        })
+        save_json(sub / RUN_METADATA_FILE, {
+            "status": "running", "project": "attacker",
+            "project_source": "argv",
+        })
+        pin = resolve_run_pin(sub)
+        self.assertEqual(pin.project, "pinned")
+
+
+class FallbackWitnessVetoTest(_PinCase):
+    def test_prior_owner_witness_vetoes_but_never_elects(self):
+        # A fallback (prior-pid) witness that disagrees with the
+        # marker freezes the run PROJECTLESS — a forged session_pid
+        # steering the lookup can suppress, never choose a project.
+        from core.json import load_json
+        from core.run.metadata import resume_run
+        from core.run.pin import _frozen_pins
+        sessions.record_session("pinned", pid=os.getpid())
+        d = self.root / "out" / "standalone" / "scan_v"
+        d.mkdir(parents=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "running", "project": None,
+            "project_source": "none", "command": "scan",
+            "session_pid": os.getpid(),
+        })
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project=None, record_pin=True)
+        save_json(d / RUN_METADATA_FILE, {
+            "status": "interrupted", "project": "pinned",
+            "project_source": "argv", "command": "scan",
+            "session_pid": os.getpid(),
+        })
+        _frozen_pins.clear()
+        other = os.getpid() + 1  # resuming session has no own witness
+        with patch.object(sessions, "resolve_session_pid",
+                          return_value=other):
+            resume_run(d)
+        meta = load_json(d / RUN_METADATA_FILE)
+        self.assertIsNone(meta["project"])
+        self.assertEqual(meta["project_source"], "none")
+
+    def test_forged_pid_at_unregistered_ledger_reads_not_found(self):
+        # An explicit pid with no registered/verified entry must not
+        # read an orphan ledger as authority.
+        sessions.record_session("pinned", pid=os.getpid())
+        d = self.root / "out" / "standalone" / "scan_w"
+        d.mkdir(parents=True)
+        ledger = Path(sessions.SESSIONS_DIR) / "999999.run"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            f"pin 100 scan_w attacker:argv {d.resolve()}\n",
+            encoding="utf-8")
+        found, _p, _s = sessions.ledger_pin_witness(d, pid=999999)
+        self.assertFalse(found)

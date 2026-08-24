@@ -359,8 +359,10 @@ def resolve_run_pin(start_dir: str | os.PathLike[str]) -> RunPin:
             break
         try:
             from core.project.project import is_project_output_dir
-            if is_project_output_dir(parent):
-                break  # never walk above a project output dir
+            if is_project_output_dir(parent, exact=True):
+                break  # never walk above a project output dir ITSELF
+                # (descendant matching stopped the walk at the first
+                # parent inside project dirs — nearest-marker capture)
         except Exception:  # noqa: BLE001 — boundary probe only
             pass
         probe = parent

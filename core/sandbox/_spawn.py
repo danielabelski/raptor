@@ -684,6 +684,16 @@ def _pid1_split_for_waiter() -> None:
         # stopped/continued — keep waiting
 
 
+# Per-stream capture ceiling: the child's RLIMIT_FSIZE/AS bound its
+# FILES, not its pipe writes — a hostile target streaming gigabytes to
+# stdout ballooned the TRUSTED PARENT's memory well inside any timeout.
+# Past the cap the stream is drained and DISCARDED (the child never
+# blocks) and a truncation marker is appended so consumers can tell.
+# Module-level and read at call time so the ceiling-behavior tests can
+# exercise it without shipping tens of real megabytes per run.
+_CAPTURE_CAP = 64 * 1024 * 1024
+
+
 def run_sandboxed(
     cmd: Sequence[str],
     *,
@@ -2753,13 +2763,6 @@ def run_sandboxed(
     # .raptor-sbx-* dir under /tmp.
     stdout_buf = b"" if capture_output else None
     stderr_buf = b"" if capture_output else None
-    # Per-stream capture ceiling: the child's RLIMIT_FSIZE/AS bound
-    # its FILES, not its pipe writes — a hostile target streaming
-    # gigabytes to stdout ballooned the TRUSTED PARENT's memory well
-    # inside any timeout. Past the cap the stream is drained and
-    # DISCARDED (the child never blocks) and a truncation marker is
-    # appended so consumers can tell.
-    _CAPTURE_CAP = 64 * 1024 * 1024
     _truncated = {1: False, 2: False}
     # time.monotonic() for deadline math — see _reap_tracer() above for the
     # NTP/wall-clock-jump rationale; same hazard applies here.
@@ -2803,12 +2806,17 @@ def run_sandboxed(
                                 stderr_buf += chunk
                             else:
                                 _truncated[2] = True
+                _cap_mib = _CAPTURE_CAP // (1024 * 1024)
                 if _truncated[1]:
-                    stdout_buf += (b"\n[RAPTOR sandbox: stdout "
-                                   b"capture truncated at 64 MiB]\n")
+                    stdout_buf += (
+                        b"\n[RAPTOR sandbox: stdout capture truncated "
+                        b"at %d MiB]\n" % _cap_mib
+                    )
                 if _truncated[2]:
-                    stderr_buf += (b"\n[RAPTOR sandbox: stderr "
-                                   b"capture truncated at 64 MiB]\n")
+                    stderr_buf += (
+                        b"\n[RAPTOR sandbox: stderr capture truncated "
+                        b"at %d MiB]\n" % _cap_mib
+                    )
             finally:
                 # Close any pipes we didn't drain (timeout, exception).
                 for fd in fds:

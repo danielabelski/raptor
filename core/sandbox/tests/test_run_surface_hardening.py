@@ -48,12 +48,25 @@ class TestCaptureCeiling(unittest.TestCase):
             self.skipTest("mount-ns not available on this host")
 
     def test_stdout_flood_is_bounded_and_marked(self):
+        from unittest import mock
+
+        from core.sandbox import _spawn
         from core.sandbox._spawn import run_sandboxed
+
+        # Ceiling behavior on a compressed scale: the cap is a
+        # call-time module constant, so 4 MiB against a 2 MiB ceiling
+        # exercises exactly the drain/discard/marker path that
+        # 80 MiB against 64 MiB did, without shipping the megabytes.
+        ceiling_patch = mock.patch.object(
+            _spawn, "_CAPTURE_CAP", 2 * 1024 * 1024,
+        )
+        ceiling_patch.start()
+        self.addCleanup(ceiling_patch.stop)
         out = tempfile.mkdtemp(prefix="raptor-cap-")
         prog = textwrap.dedent("""
             import os, sys
             chunk = b"x" * (1024 * 1024)
-            for _ in range(80):  # 80 MiB > the 64 MiB ceiling
+            for _ in range(4):  # 4 MiB > the patched 2 MiB ceiling
                 os.write(1, chunk)
             os.write(2, b"done")
         """)
@@ -71,8 +84,11 @@ class TestCaptureCeiling(unittest.TestCase):
             capture_output=True, text=False,
         )
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        # Bound tied to the PATCHED ceiling (plus one drain-chunk of
+        # overshoot and marker slack) — against the old 64 MiB literal
+        # a broken discard passed unnoticed at this flood size.
         self.assertLessEqual(
-            len(r.stdout), 64 * 1024 * 1024 + 4096,
+            len(r.stdout), 2 * 1024 * 1024 + 65536 + 4096,
             "parent-side capture exceeded the 64 MiB ceiling")
         self.assertIn(b"capture truncated", r.stdout,
                       "expected the truncation marker")

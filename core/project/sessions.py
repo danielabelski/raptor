@@ -115,6 +115,14 @@ _RUN_STATUSES = ("running", "completed", "failed", "cancelled",
 _RUN_LINE_RE = re.compile(
     r"^(running|completed|failed|cancelled|interrupted) (\d+) (\S+) (/.+)$")
 
+#: Pin-witness record: ``pin <epoch> <run-id> <project|-> <abs-dir>``.
+#: Written beside the running record at start. sessions.d sits OUTSIDE
+#: the sandbox write grant, so this is the out-of-grant witness the
+#: privileged project-store writers verify the (attacker-influenced)
+#: run marker against. Both ledger consumers (the bash hook and the
+#: python twin) skip these lines by their status filter.
+_PIN_LINE_RE = re.compile(r"^pin (\d+) (\S+) (\S+) (/.+)$")
+
 
 # ---------------------------------------------------------------------------
 # process identity
@@ -138,8 +146,13 @@ def _comm(pid: int) -> str | None:
     """Process comm — /proc on Linux, ps(1) elsewhere; None if unreadable."""
     if sys.platform == "linux":
         try:
+            # errors="replace": comm is attacker-arbitrary bytes
+            # (prctl PR_SET_NAME, any uid) — a strict decode raised
+            # UnicodeDecodeError out of every identity check, letting
+            # one hostile process name poison the whole registry
+            # (read_sessions, session_binding, resolve_session_pid).
             return Path(f"/proc/{pid}/comm").read_text(
-                encoding="utf-8").strip()
+                encoding="utf-8", errors="replace").strip()
         except OSError:
             return None
     try:
@@ -160,7 +173,10 @@ def proc_starttime(pid: int) -> str | None:
     if sys.platform != "linux":
         return None
     try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        # errors="replace": the comm field embedded in stat is
+        # attacker-arbitrary bytes — see _comm.
+        stat = Path(f"/proc/{pid}/stat").read_text(
+            encoding="utf-8", errors="replace")
     except OSError:
         return None
     close_paren = stat.rfind(")")
@@ -280,18 +296,27 @@ def _env_session_pid() -> int | None:
     None (the tree walk may still succeed)."""
     raw = os.environ.get(ENV_SESSION_PID, "")
     token = os.environ.get(ENV_SESSION_TOKEN, "")
-    if not raw.isdigit() or not token:
+    # isascii() first: str.isdigit accepts Unicode digits ("²") that
+    # int() then rejects — and the whole leg is wrapped because a
+    # malformed credential (surrogates in the token break
+    # compare_digest with TypeError) must degrade to the walk, never
+    # crash a best-effort resolver called from start_run.
+    if not raw.isascii() or not raw.isdigit() or not token:
         return None
-    pid = int(raw)
-    fields = _parse_entry(SESSIONS_DIR / str(pid))
-    if not fields:
+    try:
+        pid = int(raw)
+        fields = _parse_entry(SESSIONS_DIR / str(pid))
+        if not fields:
+            return None
+        entry_token = fields.get("token", "")
+        if not entry_token or not secrets.compare_digest(
+                entry_token, token):
+            return None
+        if not _identity_matches(pid, fields):
+            return None
+        return pid
+    except (ValueError, TypeError, OSError):
         return None
-    entry_token = fields.get("token", "")
-    if not entry_token or not secrets.compare_digest(entry_token, token):
-        return None
-    if not _identity_matches(pid, fields):
-        return None
-    return pid
 
 
 def _walk_session_pid() -> int | None:
@@ -422,7 +447,11 @@ def _identity_for(pid: int) -> dict[str, str] | None:
     """
     start = proc_starttime(pid)
     boot = boot_id()
-    if sys.platform == "linux" and start is None:
+    if sys.platform == "linux" and (start is None or boot is None):
+        # A Linux entry stamped with a real starttime but a sentinel
+        # boot_id is not sentinel-shaped: every reader (including this
+        # writer) classifies it foreign — never authoritative, never
+        # prunable. Refuse rather than write a doomed entry.
         return None
     fields: dict[str, str] = {
         "starttime": start if start is not None else _STARTTIME_SENTINEL,
@@ -494,10 +523,14 @@ def record_session(project: str | None, pid: int | None = None,
         fields.update(identity)
         # Same reasoning for the run ledger: the dead session's run
         # records must not become THIS session's attribution and
-        # sibling-discovery history. Cleared under the ledger lock
-        # (a straggling finisher of the old session may be mid-CAS);
-        # the lock FILE stays — unlinking a held lock splits it.
-        if (SESSIONS_DIR / f"{pid}.run").exists():
+        # sibling-discovery history. ONLY a positively-recycled v2
+        # entry qualifies — a v1 entry has no stamp, so this same live
+        # session upgrading from a v1 launcher would wipe its own
+        # in-flight ledger. Cleared under the ledger lock (a
+        # straggling finisher of the old session may be mid-CAS); the
+        # lock FILE stays — unlinking a held lock splits it.
+        if (fields.get("v") == ENTRY_VERSION
+                and (SESSIONS_DIR / f"{pid}.run").exists()):
             with _ledger_lock(pid), contextlib.suppress(OSError):
                 (SESSIONS_DIR / f"{pid}.run").unlink(missing_ok=True)
     if token:
@@ -592,11 +625,9 @@ def read_sessions(prune: bool = True,
     Prune predicate: a v2 entry is pruned only
     when it is NOT foreign AND (its pid is positively dead, or alive
     with a positively mismatching stamp). "Identity unknown" is never
-    pruned. v1 entries keep the historical dead-pid prune, gated on
-    this reader not being namespace-blind (foreign rule covers the
-    cross-boot case; v1 entries carry no stamp, so a same-boot pidns
-    check is the best available guard: outside the root-ish namespace
-    where claude sessions run, we skip pruning entirely).
+    pruned. v1 entries are NEVER pruned by this reader (see
+    _entry_state — the launcher's bash prune owns v1 cleanup); orphan
+    ledgers whose entry is gone are reaped.
 
     With ``include_stale=True``, dead/stale/foreign entries are RETURNED
     (with ``fields["_state"]`` set) instead of skipped — the
@@ -752,25 +783,39 @@ def _ledger_lock(pid: int) -> Iterator[None]:
 
 
 def _read_ledger(pid: int) -> list[dict]:
+    return _read_ledger_full(pid)[0]
+
+
+def _read_ledger_full(pid: int) -> tuple[list[dict], list[dict]]:
+    """(run records, pin-witness records) for *pid*'s ledger."""
     records: list[dict] = []
+    pins: list[dict] = []
     path = _ledger_path(pid)
     try:
         if path.stat().st_size > _MAX_ENTRY_BYTES:
-            return records
+            return records, pins
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return records
+        return records, pins
     for line in text.splitlines():
         m = _RUN_LINE_RE.match(line)
-        if not m:
+        if m:
+            records.append({
+                "status": m.group(1),
+                "epoch": int(m.group(2)),
+                "run_id": m.group(3),
+                "run_dir": m.group(4),
+            })
             continue
-        records.append({
-            "status": m.group(1),
-            "epoch": int(m.group(2)),
-            "run_id": m.group(3),
-            "run_dir": m.group(4),
-        })
-    return records
+        m = _PIN_LINE_RE.match(line)
+        if m:
+            pins.append({
+                "epoch": int(m.group(1)),
+                "run_id": m.group(2),
+                "project": m.group(3),
+                "run_dir": m.group(4),
+            })
+    return records, pins
 
 
 def _zombie_correct(records: list[dict]) -> None:
@@ -788,6 +833,8 @@ def _zombie_correct(records: list[dict]) -> None:
             r["status"] = "failed"
             continue
         try:
+            if meta.stat().st_size > _MAX_ENTRY_BYTES * 16:
+                continue  # attacker-influenced file — never slurp GBs
             from core.json import load_json
             data = load_json(meta)
             status = (data or {}).get("status", "")
@@ -797,7 +844,8 @@ def _zombie_correct(records: list[dict]) -> None:
             r["status"] = status if status in _RUN_STATUSES else "failed"
 
 
-def _write_ledger(pid: int, records: list[dict]) -> bool:
+def _write_ledger(pid: int, records: list[dict],
+                  pins: list[dict] | None = None) -> bool:
     _zombie_correct(records)
     finished = [r for r in records if r["status"] != "running"]
     if len(records) > _LEDGER_CAP and finished:
@@ -809,6 +857,15 @@ def _write_ledger(pid: int, records: list[dict]) -> bool:
         f"{r['status']} {r['epoch']} {r['run_id']} {r['run_dir']}"
         for r in records
     ]
+    # Pin witnesses ride only while their run record survives —
+    # cap-evicted runs drop their witness with them.
+    if pins:
+        alive = {(r["run_id"], r["run_dir"]) for r in records}
+        lines.extend(
+            f"pin {p['epoch']} {p['run_id']} {p['project']} {p['run_dir']}"
+            for p in pins
+            if (p["run_id"], p["run_dir"]) in alive
+        )
     for line in lines:  # belt-and-braces: the format must stay one-line
         if "\n" in line or not line.isprintable():
             logger.warning("sessions: dropping unprintable ledger line")
@@ -843,8 +900,13 @@ def _valid_run_dir(run_dir: str) -> bool:
 
 
 def ledger_record_start(run_dir: str | os.PathLike[str],
-                        pid: int | None = None) -> None:
-    """Append a running record for *run_dir* (basename = run id).
+                        pid: int | None = None,
+                        pin_project: str | None = None,
+                        record_pin: bool = False) -> None:
+    """Append a running record for *run_dir* (basename = run id) and,
+    when ``record_pin`` is set, the pin-witness line the privileged
+    project-store writers verify the run marker against
+    (``pin_project=None`` = pinned projectless, written as ``-``).
 
     Best-effort: failures are logged at debug and swallowed — the
     ledger is an attribution/discovery aid, never lifecycle-critical.
@@ -868,17 +930,38 @@ def ledger_record_start(run_dir: str | os.PathLike[str],
                      "ledger skipped", pid)
         return
     run_id = Path(resolved).name
+    pin_value = NONE_SENTINEL if pin_project is None else pin_project
+    if record_pin and pin_value != NONE_SENTINEL \
+            and not _NAME_RE.match(pin_value):
+        record_pin = False  # never write a witness readers reject
     with _ledger_lock(pid):
         if not _parse_entry(SESSIONS_DIR / str(pid)):
             return  # entry pruned since the pre-lock gate — no orphan
-        records = [r for r in _read_ledger(pid) if r["run_id"] != run_id]
+        # Dedup requires run-id AND dir (the finish CAS doctrine): two
+        # live runs whose dirs share a basename must not erase each
+        # other's records.
+        epoch = int(time.time())
+        records, pins = _read_ledger_full(pid)
+        records = [r for r in records
+                   if not (r["run_id"] == run_id
+                           and r["run_dir"] == resolved)]
         records.append({
             "status": "running",
-            "epoch": int(time.time()),
+            "epoch": epoch,
             "run_id": run_id,
             "run_dir": resolved,
         })
-        if not _write_ledger(pid, records):
+        pins = [p for p in pins
+                if not (p["run_id"] == run_id
+                        and p["run_dir"] == resolved)]
+        if record_pin:
+            pins.append({
+                "epoch": epoch,
+                "run_id": run_id,
+                "project": pin_value,
+                "run_dir": resolved,
+            })
+        if not _write_ledger(pid, records, pins):
             logger.debug("sessions: ledger start write failed for %s",
                          resolved)
 
@@ -910,14 +993,14 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
     except OSError:
         resolved = str(run_dir)
     with _ledger_lock(pid):
-        records = _read_ledger(pid)
+        records, pins = _read_ledger_full(pid)
         hit = False
         for r in records:
             if (r["run_id"] == run_id and r["status"] == "running"
                     and r["run_dir"] == resolved):
                 r["status"] = status
                 hit = True
-        if hit and not _write_ledger(pid, records):
+        if hit and not _write_ledger(pid, records, pins):
             logger.debug("sessions: ledger finish write failed for %s",
                          run_dir)
 
@@ -936,6 +1019,39 @@ def ledger_record_resume(run_dir: str | os.PathLike[str],
     if prior_session_pid == resolved_own:
         return
     ledger_record_finish(run_dir, "interrupted", pid=prior_session_pid)
+
+
+def ledger_pin_witness(
+        run_dir: str | os.PathLike[str],
+        pid: int | None = None) -> tuple[bool, str | None]:
+    """The session ledger's pin witness for *run_dir*:
+    ``(found, project_or_None)``.
+
+    The witness is written at start by the (unsandboxed) owning
+    process into sessions.d — OUTSIDE any sandbox write grant — so a
+    privileged project-store writer can verify the run marker's pin
+    against it: a child that rewrote or deleted the marker cannot
+    touch this record. ``found=False`` (no session, pre-witness run,
+    cap-evicted) means unverifiable — callers keep their existing
+    posture. Best-effort: any failure reads as no witness.
+    """
+    if pid is None:
+        pid = resolve_session_pid()
+    if pid is None:
+        return False, None
+    try:
+        resolved = str(Path(run_dir).resolve())
+    except OSError:
+        return False, None
+    try:
+        _records, pins = _read_ledger_full(pid)
+    except Exception:  # noqa: BLE001 — witness is an aid, never a gate
+        return False, None
+    for p in reversed(pins):
+        if p["run_dir"] == resolved:
+            project = p["project"]
+            return True, None if project == NONE_SENTINEL else project
+    return False, None
 
 
 def ledger_runs(pid: int | None = None,

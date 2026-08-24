@@ -978,3 +978,93 @@ class LedgerHardeningTest(_RegistryCase):
         sessions.ledger_record_finish(d, "completed", pid=os.getpid())
         runs = sessions.ledger_runs(pid=os.getpid())
         self.assertEqual([r["status"] for r in runs], ["completed"])
+
+
+class SecondReviewRegressionTest(_RegistryCase):
+    """Second adversarial-review round: comm poisoning, sibling-record
+    erasure, pin witness, env-credential robustness."""
+
+    def _mk_run(self, name: str) -> Path:
+        d = Path(self._tmp.name) / "runs" / name
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        return d
+
+    def test_hostile_comm_bytes_never_crash_the_registry(self):
+        # A same-boot entry whose pid's comm decodes badly must not
+        # blow up read_sessions / session_binding with UnicodeDecodeError.
+        sessions.record_session("myapp", pid=os.getpid())
+        with patch.object(
+                sessions, "_comm",
+                lambda pid: "cl�aude"):  # replace-decoded hostile name
+            entries = sessions.read_sessions(prune=False)
+            self.assertIsInstance(entries, dict)
+            binding = sessions.session_binding(pid=os.getpid())
+            self.assertIsInstance(binding, tuple)
+
+    def test_same_basename_siblings_keep_both_records(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        a = Path(self._tmp.name) / "a" / "out"
+        b = Path(self._tmp.name) / "b" / "out"
+        for d in (a, b):
+            d.mkdir(parents=True)
+            (d / ".raptor-run.json").write_text(
+                '{"status": "running"}', encoding="utf-8")
+        sessions.ledger_record_start(a, pid=os.getpid())
+        sessions.ledger_record_start(b, pid=os.getpid())
+        dirs = {r["run_dir"] for r in sessions.ledger_runs(pid=os.getpid())}
+        self.assertEqual(dirs, {str(a.resolve()), str(b.resolve())})
+        sessions.ledger_record_finish(a, "completed", pid=os.getpid())
+        by_dir = {r["run_dir"]: r["status"]
+                  for r in sessions.ledger_runs(pid=os.getpid())}
+        self.assertEqual(by_dir[str(a.resolve())], "completed")
+        self.assertEqual(by_dir[str(b.resolve())], "running")
+
+    def test_pin_witness_roundtrip_and_survival(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_w")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="appx", record_pin=True)
+        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "appx")
+        # The witness survives the finish RMW.
+        sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "appx")
+
+    def test_pin_witness_projectless_sentinel(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_wn")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project=None, record_pin=True)
+        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertIsNone(project)
+
+    def test_no_witness_reads_as_not_found(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_nw")
+        sessions.ledger_record_start(d, pid=os.getpid())  # no pin line
+        found, _project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        self.assertFalse(found)
+
+    def test_malformed_env_credential_never_raises(self):
+        with patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: "²",       # unicode digit
+            sessions.ENV_SESSION_TOKEN: "tok\udcff",  # surrogate
+        }):
+            self.assertIsNone(sessions._env_session_pid())
+
+    def test_v1_upgrade_keeps_own_ledger(self):
+        # A live session upgrading from a v1 launcher entry must not
+        # wipe its own in-flight ledger (only positively-recycled v2
+        # stamps qualify).
+        self._write_v1(os.getpid(), "myapp")
+        d = self._mk_run("scan_v1")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)
+        sessions.record_session("myapp", pid=os.getpid())
+        self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)

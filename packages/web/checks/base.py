@@ -77,6 +77,13 @@ class Check(abc.ABC):
     # The scanner authorizes per check against the run's receipt and
     # skips checks the operator's approval level does not cover.
     risk: str = "passive"
+    # Set by the scanner when the run has a live OOB listener: a
+    # callable(OobContext) -> canary URL. Checks that inject the canary
+    # at URL-bearing positions get callback-verified evidence — the
+    # correlation and fresh-token replay happen in Phase 6o, never in
+    # the check itself. None when no listener is configured; checks
+    # must degrade to their reflection-grade logic silently.
+    oob_mint = None
 
     def __init__(self, llm: "LLMClient | None" = None) -> None:
         self.llm = llm

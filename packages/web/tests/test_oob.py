@@ -293,5 +293,94 @@ class TestListenerLifecycle(unittest.TestCase):
             finally:
                 sock.close()
 
+class _HeaderSsrfClient:
+    """Client double: the 'server' dereferences URL-bearing headers."""
+
+    def __init__(self, vulnerable: bool = True):
+        self.vulnerable = vulnerable
+        self.reveal_secrets = False
+        self.header_fetches: list[tuple[str, str]] = []
+
+    def get(self, url: str, params: dict | None = None,
+            headers: dict | None = None, **_kw):
+        if self.vulnerable:
+            for name, value in (headers or {}).items():
+                if str(value).startswith("http://"):
+                    self.header_fetches.append((name, str(value)))
+                    _fetch(str(value))
+        return MagicMock(status_code=200, content=b"", text="")
+
+
+class TestCallbackVerifiedHeaderSsrf(unittest.TestCase):
+    def _scanner(self, tmpdir: str) -> WebScanner:
+        with patch("packages.web.scanner.WebClient"), patch(
+            "packages.web.scanner.WebCrawler"
+        ):
+            scanner = WebScanner(
+                "https://target.example", None, Path(tmpdir),
+                oob_listen="127.0.0.1:0", oob_grace=0.3,
+            )
+        scanner.client = _HeaderSsrfClient()
+        return scanner
+
+    def test_check_plants_canaries_in_url_bearing_headers(self):
+        from packages.web.checks.ssrf import BlindSsrfHeaderCheck
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scanner = self._scanner(tmpdir)
+            check = scanner._instantiate_check(BlindSsrfHeaderCheck)
+            self.assertIsNotNone(check.oob_mint)
+
+            check.run(scanner.client, "https://target.example")
+
+            planted = {name for name, _ in scanner.client.header_fetches}
+            self.assertEqual(
+                planted, {"Referer", "X-Wap-Profile", "X-Callback-Url"},
+            )
+            self.assertGreaterEqual(
+                scanner.oob_listener.stats["tokens_minted"], 3,
+            )
+            scanner.oob_listener.stop()
+
+    def test_header_callback_replays_through_the_header_and_confirms(self):
+        from packages.web.checks.ssrf import BlindSsrfHeaderCheck
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scanner = self._scanner(tmpdir)
+            check = scanner._instantiate_check(BlindSsrfHeaderCheck)
+            check.run(scanner.client, "https://target.example")
+
+            findings = scanner._phase_oob()
+
+            self.assertEqual(len(findings), 3)
+            finding = findings[0]
+            self.assertEqual(finding.status, "confirmed")
+            self.assertEqual(finding.oracle_signal, "oob_callback_replayed")
+            self.assertIn("header", finding.description)
+            # The replay leg used header injection, not query params.
+            replayed = [
+                name for name, _ in scanner.client.header_fetches
+            ]
+            self.assertGreaterEqual(len(replayed), 6)  # plant + replay
+
+    def test_no_listener_means_no_mint_and_no_extra_requests(self):
+        from packages.web.checks.ssrf import BlindSsrfHeaderCheck
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("packages.web.scanner.WebClient"), patch(
+                "packages.web.scanner.WebCrawler"
+            ):
+                scanner = WebScanner(
+                    "https://target.example", None, Path(tmpdir),
+                )
+            scanner.client = _HeaderSsrfClient()
+            check = scanner._instantiate_check(BlindSsrfHeaderCheck)
+            self.assertIsNone(check.oob_mint)
+
+            check.run(scanner.client, "https://target.example")
+
+            self.assertEqual(scanner.client.header_fetches, [])
+
+
 if __name__ == "__main__":
     unittest.main()

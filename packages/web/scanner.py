@@ -621,7 +621,7 @@ class WebScanner:
 
         for cls in check_classes:
             try:
-                results = cls(llm=self.llm).run(
+                results = self._instantiate_check(cls).run(
                     self.client, self.base_url, session=None, discovery=discovery_ctx,
                 )
                 for r in results:
@@ -632,6 +632,24 @@ class WebScanner:
         logger.info("Phase 4 complete: %d findings", len(findings))
         self._phases_completed.append("passive_checks")
         return findings
+
+    def _instantiate_check(self, cls):
+        """Build a check, handing it the OOB canary mint when live."""
+        check = cls(llm=self.llm)
+        if self.oob_listener is not None:
+            check.oob_mint = self._oob_mint
+        return check
+
+    def _oob_mint(self, context):
+        """Lazy-start the listener and mint one canary URL.
+
+        Checks run before Phase 6, so the first check-side mint is what
+        brings the listener up; Phase 6o stops it as always.
+        """
+        if self.oob_listener is None:
+            return None
+        self.oob_listener.start()
+        return self.oob_listener.mint(context)
 
     def _authorized_checks(self, check_classes: list) -> list:
         """Checks the run's scope receipt covers, by declared risk tier.
@@ -683,7 +701,7 @@ class WebScanner:
 
         for cls in check_classes:
             try:
-                results = cls(llm=self.llm).run(
+                results = self._instantiate_check(cls).run(
                     self.client, self.base_url,
                     session=self.session, discovery=discovery_ctx,
                 )
@@ -1245,9 +1263,14 @@ class WebScanner:
                 ))
                 replay_hit: OobHit | None = None
                 try:
-                    self.client.get(
-                        context.url, params={context.param: fresh},
-                    )
+                    if context.kind == "ssrf_header":
+                        self.client.get(
+                            context.url, headers={context.param: fresh},
+                        )
+                    else:
+                        self.client.get(
+                            context.url, params={context.param: fresh},
+                        )
                     replay_hit = listener.wait_for(
                         token_of(fresh),
                         # Same patience as the operator's grace window,
@@ -1315,6 +1338,11 @@ class WebScanner:
     ) -> WebFinding:
         auth_ctx = "authenticated" if self.session else "unauthenticated"
         self._finding_counter += 1
+        position = (
+            f"header '{context.param}'"
+            if context.kind == "ssrf_header"
+            else f"parameter '{context.param}'"
+        )
         replay_note = (
             f"Replay with a fresh token called back from "
             f"{replay_hit.source_ip} (User-Agent: {replay_hit.user_agent})"
@@ -1331,7 +1359,7 @@ class WebScanner:
             status="confirmed" if verified else "needs_review",
             url=context.url,
             evidence=(
-                f"A canary URL injected into parameter '{context.param}' "
+                f"A canary URL injected into {position} "
                 f"was fetched out-of-band: {hit.method} {hit.path} from "
                 f"{hit.source_ip} (User-Agent: {hit.user_agent}). "
                 f"{replay_note}. The callback proves an agent observing "
@@ -1341,10 +1369,9 @@ class WebScanner:
                 "appliance/bot."
             ),
             description=(
-                f"Injecting a fresh canary URL into parameter "
-                f"'{context.param}' repeatably triggers an outbound HTTP "
-                "fetch of exactly that URL (server-side request forgery "
-                "class behavior)."
+                f"Injecting a fresh canary URL into {position} "
+                "repeatably triggers an outbound HTTP fetch of exactly "
+                "that URL (server-side request forgery class behavior)."
             ),
             recommendation=(
                 "Validate and allowlist outbound request destinations "

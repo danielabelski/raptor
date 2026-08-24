@@ -141,4 +141,24 @@ class BlindSsrfHeaderCheck(Check):
             except Exception:
                 continue
 
+        # Callback-verified leg: headers some backends DEREFERENCE
+        # (device-profile fetchers, callback registrations, unfurlers)
+        # take a full canary URL. A server-side fetch produces an
+        # exact-token callback; Phase 6o replays with a fresh token
+        # before anything is confirmed. Injection only — no conclusion
+        # is drawn here, and without a listener this leg is silent.
+        if self.oob_mint is not None:
+            from packages.web.oob import OobContext
+            for header in ("Referer", "X-Wap-Profile", "X-Callback-Url"):
+                try:
+                    canary = self.oob_mint(OobContext(
+                        url=target_url,
+                        param=header,
+                        kind="ssrf_header",
+                    ))
+                    if canary:
+                        client.get("/", headers={header: canary})
+                except Exception:
+                    continue
+
         return []

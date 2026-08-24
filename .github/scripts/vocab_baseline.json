@@ -2331,5 +2331,25 @@
     "count": 10,
     "kind": "literal",
     "note": "result-dict field names of the caller-contract digest (identity, render caps, enumeration-honesty fields), not an API-name vocabulary \u2014 call sites are enumerated from the call graph / tree scan, never name-matched against this list"
+  },
+  "core/inventory/binary_builder.py::build_binary_checklist": {
+    "count": 14,
+    "kind": "literal",
+    "note": "checklist JSON schema field names (mirrors core/inventory build_inventory output shape), not a name vocabulary"
+  },
+  "packages/ghidra/model.py::to_dict": {
+    "count": 13,
+    "kind": "literal",
+    "note": "REDatabase serialization field names (schema keys), not a name vocabulary"
+  },
+  "packages/ghidra/roundtrip.py::_STATUS_LABELS": {
+    "count": 10,
+    "kind": "literal",
+    "note": "annotation-status enum to human label map (core/annotations status values + understand roles), fixed taxonomy not target API names"
+  },
+  "packages/sca/parsers/binary_imports.py::_LIBRARY_SIGNATURES": {
+    "count": 12,
+    "kind": "literal",
+    "note": "seed signature sets mapping well-known exported symbols to library identities (zlib/openssl/sqlite etc.) for static-binary SCA hints; library taxonomy, not learned target vocabulary"
   }
 }

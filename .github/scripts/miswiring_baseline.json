@@ -648,6 +648,15 @@
     },
     "plumbing:orphan_config_field:packages/autonomous/planner.py:FuzzingState.last_coverage_increase": {
       "note": "kept: autonomous fuzzing loop feature seed (operator decision 2026-08-16; re-affirmed 2026-08-17 config-orphan pass — goal_progress and strategies_tried deleted as shadowed by Goal.progress / successful_strategies). This is the natural input the wired loop derives coverage_plateau_duration from."
+    },
+    "artifacts:orphan_reader::ghidra-export.json": {
+      "note": "written by the JVM, not Python: ExportRaptor.java (sandboxed analyzeHeadless post-script) writes this file; packages/ghidra bridge.import_project's headless fallback parses it via parser.parse_export"
+    },
+    "artifacts:write_only_artifact::ghidra-enrichments.json": {
+      "note": "read by the JVM, not Python: ImportRaptor.java (headless fallback) takes this file as its post-script argument and Gson-parses it; the pyghidra path applies the same dict in-memory and the file doubles as the writeback audit artifact"
+    },
+    "artifacts:write_only_artifact::re-database.json": {
+      "note": "read cross-module: the literal filename lives in packages/ghidra roundtrip.redb_cache_candidates and core/audit binary_context.find_redb; the open()/json.load sits in context_inject._load_cached_redb, binary_context.load_redb, and the libexec/raptor-ghidra decompile fallback — the artifact dataflow cannot connect them"
     }
   },
   "version": 1

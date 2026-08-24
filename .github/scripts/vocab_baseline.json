@@ -158,6 +158,16 @@
     "count": 13,
     "kind": "alternation"
   },
+  "core/audit/api_boundary.py::_CALLER_CONDITIONAL_RE": {
+    "count": 34,
+    "kind": "alternation",
+    "note": "English caller-conditional phrasing words (if/when/unless + caller-verb + twice/again forms) gating the widened CWE dispatch \u2014 natural-language classifier vocabulary, not project API names"
+  },
+  "core/audit/api_boundary.py::_INVOKE_TARGET_STOPWORDS": {
+    "count": 22,
+    "kind": "literal",
+    "note": "English pronoun/generic-noun stoplist for the invoked-twice target extractor (wrong-target defence) \u2014 a name in this set can never be a callee name; not an API vocabulary"
+  },
   "core/audit/asm_zero_len_loop.py::check_zero_length_loop_entry": {
     "count": 11,
     "kind": "literal",

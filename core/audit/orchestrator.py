@@ -14370,7 +14370,7 @@ def _hypothesis_to_tool_chain(
     seen_types: set = set()
 
     if cwe:
-        cwe_chain = _cwe_fallback_chain(cwe)
+        cwe_chain = _cwe_fallback_chain(cwe, hypothesis)
         for entry in cwe_chain:
             chain.append(entry)
             seen_types.add(entry["type"])
@@ -14402,17 +14402,25 @@ def _hypothesis_to_tool_chain(
         seen_types.add("smt")
 
     # Caller-contract hypotheses ("only reachable if an external API
-    # consumer passes NULL host…"): flow tools answer "no in-tree
-    # triggering path" and the claim dies speculative — the boundary
-    # channel instead checks the asserted obligation at every in-repo
-    # call site (external-only callers stay inconclusive-with-reason).
+    # consumer passes NULL host…") and single-call contracts ("double
+    # free if a caller invokes it twice"): flow tools answer "no
+    # in-tree triggering path" and the claim dies speculative — the
+    # boundary channel instead checks the asserted obligation at every
+    # in-repo call site (external-only callers stay
+    # inconclusive-with-reason).
     if "api_boundary" not in seen_types:
         try:
-            from .api_boundary import is_caller_contract_hypothesis
+            from .api_boundary import (
+                is_caller_contract_hypothesis,
+                is_single_call_hypothesis,
+            )
         except ImportError:
             pass
         else:
-            if is_caller_contract_hypothesis(hypothesis):
+            if (
+                is_caller_contract_hypothesis(hypothesis)
+                or is_single_call_hypothesis(hypothesis)
+            ):
                 chain.append({"type": "api_boundary", "config": {}})
                 seen_types.add("api_boundary")
 
@@ -14780,8 +14788,16 @@ def _warn_unmapped_cwe(cwe: str) -> None:
     )
 
 
-def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
-    """Generate tool chain from CWE dispatch when string matching fails."""
+def _cwe_fallback_chain(
+    cwe: str,
+    hypothesis: str = "",
+) -> list[dict[str, Any]]:
+    """Generate tool chain from CWE dispatch when string matching fails.
+
+    ``hypothesis`` gates the caller-conditional part of the
+    api_boundary dispatch (CWE-415/416/476 route to the channel only
+    when the phrasing conditions on caller behaviour).
+    """
     chain: list[dict[str, Any]] = []
     try:
         from .cwe_dispatch import (
@@ -14822,9 +14838,12 @@ def _cwe_fallback_chain(cwe: str) -> list[dict[str, Any]]:
         pass
     else:
         # Authenticity / boundary-obligation family (API_BOUNDARY_CWES
-        # — CWE-345): the channel checks the asserted caller obligation
-        # at every in-repo call site. Pure static analysis, cheap.
-        if api_boundary_applicable(cwe):
+        # — CWE-345, unconditional) plus the caller-conditional
+        # families (CALLER_CONDITIONAL_CWES — CWE-415/416/476, only
+        # when the hypothesis phrasing conditions on caller behaviour):
+        # the channel checks the asserted caller obligation at every
+        # in-repo call site. Pure static analysis, cheap.
+        if api_boundary_applicable(cwe, hypothesis):
             chain.append({"type": "api_boundary", "config": {}})
 
     try:

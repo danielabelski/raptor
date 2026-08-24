@@ -287,7 +287,14 @@ def build_caller_contract_digest(
         "sites": [],
         "declined": False,
         "enumeration": method,
-        "scan_capped": bool(report.get("scan_capped")),
+        # The enumerator caps total sites and skips oversized files;
+        # both mean the site list may be partial — folded into the
+        # same incompleteness flag the render already narrates.
+        "scan_capped": bool(
+            report.get("scan_capped")
+            or report.get("site_capped")
+            or report.get("size_skipped")
+        ),
         "scanned_files": int(report.get("scanned_files", 0)),
         "uncertain_callers": uncertain,
         "test_sites_excluded": test_excluded,

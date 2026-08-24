@@ -37,7 +37,7 @@ Output the result verbatim. Do not summarise.
 
 ## Options
 
-`--out DIR` — explicit output directory (default: active project's latest run)
+`--out DIR` — explicit output directory (default: this session's project's latest run)
 `--project DIR` — explicit project directory
 `--raw` — output raw JSON instead of formatted text
 

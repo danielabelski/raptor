@@ -25,7 +25,7 @@ Usage:
 
 Common options:
   --out DIR       Run output directory (default: active project's latest)
-  --project DIR   Project directory (default: from .active symlink)
+  --project DIR   Project directory (default: this session's project — binding, then the last-activated default)
   --target DIR    Source tree root (for stale detection)
   --raw           Output raw JSON instead of formatted text
 """

@@ -160,7 +160,7 @@ def format_read_tracking(status: dict[str, Any]) -> str | None:
         return ("  Read tracking: manifests captured but not yet converted "
                 f"({status['pending_manifests']} run(s))")
     return ("  Read tracking: no LLM reads recorded in any run — reads are "
-            "captured only in launcher sessions with an active project and "
+            "captured in launcher sessions with an active project and "
             "a running run")
 
 

@@ -74,7 +74,7 @@ clobber `source=human` notes.
 
 ## Common option
 
-`--base PATH` — annotation base directory. Defaults to the active project's
+`--base PATH` — annotation base directory. Defaults to this session's project's
 `<output_dir>/annotations`. Required if no project is active.
 
 ## Examples

@@ -283,7 +283,7 @@ class Project:
     settings: dict = field(default_factory=dict)
     # Creation-time auto-expiry marker (ISO timestamp), stamped ONLY by
     # machine creators (corpus runner) on MACHINE_PROJECT_PREFIXES
-    # names, consumed at .active resolution (ProjectManager.get_active)
+    # names, consumed at active-project resolution on both layers (ProjectManager.get_active)
     # — an expired machine project silently stops being the active
     # default target. Empty = never expires (every operator-created
     # project). Overridable: an explicit ``/project use <name>`` clears

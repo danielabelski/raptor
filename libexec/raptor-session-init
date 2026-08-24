@@ -13,7 +13,7 @@ assistant can render the banner directly without spending a second turn
 reading .startup-output back from disk. The file remains as a fallback for
 older Claude Code versions and direct/manual callers.
 
-No project env vars are set — the .active symlink is the only source of truth.
+The launcher seeds the session's project binding (sessions.d) and exports the session credential; the .active symlink is the last-activated default.
 """
 import sys
 from pathlib import Path

@@ -128,7 +128,7 @@ Homebrew. Run `raptor-sca health` to probe all ten in one shot.
 Repo trust is gated: on untrusted runs a repo-shipped suppression
 overlay (`.raptor-sca-suppress.yml`) and license-policy file are
 reported but ignored. Precedence: `--no-trust-repo` > `--trust-repo`
-> the active project's `config` trust marker > off.
+> the governing project's `config` trust marker (the run pin's project in-run, this session's project otherwise; one-target gated) > off.
 
 ---
 

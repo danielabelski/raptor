@@ -262,7 +262,7 @@ every file the LLM examined.  Use this to answer "what did the analysis
 actually look at?" and to find gaps:
 
 ```
-/project coverage              # summary for the active project
+/project coverage              # summary for this session's project
 /project coverage --detailed   # per-file table
 libexec/raptor-coverage-summary --gaps   # unreviewed functions
 ```

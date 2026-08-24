@@ -19,7 +19,8 @@ Manage projects — named workspaces that corral analysis runs into one director
 |---------|-------------|
 | `help [subcommand]` | Show help (detailed if subcommand given) |
 | `create <name> --target <path> [-d <desc>] [--output-dir <dir>] [--binary <path> ...] [--require-target-type <kind>]` | Create a new project |
-| `list` | Show all projects (* marks active) |
+| `list` | Show all projects (`*` = this session's project, `>` = last-activated default) |
+| `sessions` | Show live sessions and their project bindings (plus stale/foreign/advisory registry rows) |
 | `status [<name>]` | Show project summary with run history |
 | `coverage [<name>] [--detailed] [--fail-under <pct>]` | Show tool coverage summary (or per-file table; `--fail-under` gates CI) |
 | `binary <add\|remove\|list\|clear> [<path>]` | Manage persisted debug binaries for binary-oracle enrichment |
@@ -30,9 +31,9 @@ Manage projects — named workspaces that corral analysis runs into one director
 | `findings [<name>] [--detailed]` | Show merged findings (or per-finding detail) |
 | `annotations [<name>] [--status S] [--source S] [--file PATH] [--cwe X] [--rule-id P] [--grep T] [--since 7d]` | List annotations across all runs (project-level overrides run-level) |
 | `annotations-diff <run-a> <run-b>` | Compare annotation state between two runs |
-| `none` | Clear the active project |
-| `use [<name>]` | Set active project (no arg = show current, `none` = clear) |
-| `delete <name> [--purge] [--yes]` | Remove project (--purge also deletes output) |
+| `none` | Clear THIS SESSION's project (the last-activated default is untouched; from a bare shell it clears the default, loudly labelled) |
+| `use [<name>]` | Bind this session to a project AND update the last-activated default (no arg = report both layers, `none` = session-only clear) |
+| `delete <name> [--purge] [--yes] [--force]` | Remove project (--purge also deletes output; refused while live runs exist under it unless --force) |
 | `rename <old> <new>` | Rename a project |
 | `notes <name> [<text>] [--file <path>]` | View or update notes |
 | `add <name> <dir> [--target <path>]` | Add existing runs to a project (target-validated; journal index + coverage projections re-run) |

@@ -154,5 +154,5 @@ relying on the exit code.
 
 ## Output
 
-All results are written to `out/` (or the active project directory). The
+All results are written to `out/` (or this session's project directory). The
 structure varies by mode; see [architecture](architecture.md) for details.

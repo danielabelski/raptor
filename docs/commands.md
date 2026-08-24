@@ -7,7 +7,10 @@ a multi-step skill.  The [Python CLI](python-cli.md) documents the `raptor.py`
 modes directly; this page covers the slash-command surface.
 
 All path arguments respect the default target resolution order:
-active project target, then `$RAPTOR_CALLER_DIR`, then prompt.
+this session's project target (session binding first, then the
+last-activated default), then `$RAPTOR_CALLER_DIR`, then prompt.
+Analysis commands accept `--project <name>` to pin a single run
+(`--project -` = explicitly projectless).
 Flag tables are curated; the dispatch target's own `--help` is the
 authoritative, complete flag list for every command.  Output directories are managed by the [run
 lifecycle](architecture.md) unless noted otherwise.
@@ -794,6 +797,7 @@ Named workspaces that corral analysis runs into a shared directory.
 /project list
 /project status [<name>]
 /project use [<name>]
+/project sessions
 /project none
 /project delete <name> [--purge] [--yes]
 /project rename <old> <new>
@@ -833,8 +837,9 @@ Named workspaces that corral analysis runs into a shared directory.
 | `create` | Create a new project with a target path and optional `-d` description |
 | `list` | List all projects |
 | `status` | Show project status and run history |
-| `use` | Set the active project |
-| `none` | Clear the active project |
+| `use` | Bind this session to a project and update the last-activated default |
+| `sessions` | Show live sessions and their project bindings |
+| `none` | Clear this session's project (the default is untouched) |
 | `delete` | Delete a project (`--purge` removes output directory, `--yes` skips confirmation) |
 | `rename` | Rename a project |
 | `notes` | View or set project notes (inline text or `--file`) |

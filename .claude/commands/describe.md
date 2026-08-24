@@ -16,7 +16,7 @@ Tell me what THIS target is. **Read-only**: /describe inspects the tree and prin
 /describe <target> --json    Machine-readable JSON (for CI / dashboards)
 ```
 
-If `<target>` is omitted, the active project's target is used (see CLAUDE.md DEFAULT TARGET DIRECTORY).
+If `<target>` is omitted, this session's project target is used (see CLAUDE.md DEFAULT TARGET DIRECTORY).
 
 ## Execute
 
@@ -26,7 +26,7 @@ When invoked, run:
 libexec/raptor-describe --target <resolved_target> [--json]
 ```
 
-Resolve `<resolved_target>` per CLAUDE.md (active project → `$RAPTOR_CALLER_DIR` → ask). Pass through `--json` if the operator supplied it.
+Resolve `<resolved_target>` per CLAUDE.md (session project → `$RAPTOR_CALLER_DIR` → ask). Pass through `--json` if the operator supplied it.
 
 ## Example output
 

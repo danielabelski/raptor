@@ -172,6 +172,19 @@ Operators should know the honest residuals and compensate accordingly:
 
 ---
 
+### Degraded sandbox modes and machine-local state
+
+With operator-selected degraded modes (`--sandbox none`,
+`network-only`, profile `none`) target code runs with full filesystem
+access as the invoking user: it can write `~/.raptor/projects/*.json`
+(including trust markers), the `.active` bookmark, and the session
+registry under `~/.local/share/raptor/sessions.d/`. On engaged
+backends these trees are unreachable from sandboxed code (reads and
+writes both denied); the degraded-mode writability is a documented
+residual of choosing to run without the sandbox — project files carry
+no integrity protection, so treat degraded-mode runs of untrusted
+targets as able to assert their own trust.
+
 ## Agent Capabilities and the Rule of Two
 
 Every RAPTOR agent is audited against three axes: **(A)** reads

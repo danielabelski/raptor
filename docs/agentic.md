@@ -294,7 +294,7 @@ with a verdict naming the check, and per-check counters join the report:
 ## Output
 
 Everything lands in the run's output directory (`out/agentic_<target>_<timestamp>/`
-or the active project directory).
+or this session's project directory).
 
 | File | Contents |
 |------|----------|

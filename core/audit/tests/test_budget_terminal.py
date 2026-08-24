@@ -391,10 +391,23 @@ class TestBatchedPassBudgetTerminal:
     result.total_cost_usd and blinding the cost-cap rail itself."""
 
     def test_queued_batches_not_dispatched_after_exhaustion(
-        self, tmp_path: Path,
+        self, tmp_path: Path, monkeypatch,
     ):
         target, out, names = _setup_trivial_target(
             tmp_path, n_files=6, fns_per_file=4,
+        )
+        # Under test: batch dispatch vs the budget rails. The
+        # sandboxed mechanical-detector prep is incidental here and
+        # dominates wallclock (~40s of real detector runs on the
+        # fixture); the seam has its own wiring tests.
+        import core.audit.orchestrator as orch
+        monkeypatch.setattr(
+            orch, "_run_mechanical_detectors",
+            # Full variadic signature + the real (dict, set) return
+            # contract: a wrong-shaped stub dies inside the phase's
+            # blanket except and "works" by swallowed crash instead of
+            # by stubbing.
+            lambda *args, **kwargs: ({}, set()),
         )
         client = _FlippableBudgetClient()
         calls: list[str] = []

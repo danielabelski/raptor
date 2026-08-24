@@ -74,7 +74,27 @@ def _find_docker_run_cmd(mock_run: Any) -> list[str]:
     )
 
 
-@pytest.mark.slow  # real host-port inspect poll runs to _INSPECT_POLL_TIMEOUT_S (10s); nightly tier
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch):
+    """With subprocess mocked, the production wait constants are pure
+    sleep: launch_container's retry backoff (5s per failing attempt)
+    and the host-port inspect poll (10s to timeout, since the mock
+    never publishes a port). The logic under test is unchanged on a
+    compressed clock."""
+    import core.container.containers as containers
+    monkeypatch.setattr(containers, "_RETRY_BACKOFF_S", 0)
+    real_read_port = containers.read_allocated_host_port
+
+    def _fast_read_port(container_id, *, container_port, timeout_s=10.0):
+        return real_read_port(
+            container_id, container_port=container_port, timeout_s=0.2,
+        )
+
+    monkeypatch.setattr(
+        containers, "read_allocated_host_port", _fast_read_port,
+    )
+
+
 @patch("core.container.proc.subprocess.run")
 def test_docker_run_appends_pull_always_for_external_image(mock_run: Any) -> None:
     """External image (vulhub/openssl) → --pull always in argv."""
@@ -91,7 +111,6 @@ def test_docker_run_appends_pull_always_for_external_image(mock_run: Any) -> Non
     assert pull_idx < image_idx, f"--pull must come before image: {cmd}"
 
 
-@pytest.mark.slow  # real host-port inspect poll runs to _INSPECT_POLL_TIMEOUT_S (10s); nightly tier
 @patch("core.container.proc.subprocess.run")
 def test_docker_run_skips_pull_always_for_local_image(mock_run: Any) -> None:
     """Locally-built image (cve-X:build) → no --pull flag (no upstream)."""

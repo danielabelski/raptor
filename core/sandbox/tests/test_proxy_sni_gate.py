@@ -116,6 +116,17 @@ def _open_tunnel(proxy_port: int, target: str) -> socket.socket:
     return s
 
 
+@pytest.fixture(autouse=True)
+def _compressed_peek_deadline(monkeypatch):
+    """The peek deadline is what inconclusive/SNI-less flows wait out
+    before passing through. The DECISION logic is what these tests pin,
+    not the production constant's literal three seconds — on loopback
+    a complete ClientHello arrives in microseconds, so a compressed
+    deadline changes nothing but the clock (was 5s per pass-through
+    test)."""
+    monkeypatch.setattr(proxy_mod, "_TLS_PEEK_TIMEOUT_S", 0.5)
+
+
 def _recv_until_eof(s: socket.socket, timeout: float = 5.0) -> bytes:
     s.settimeout(timeout)
     out = b""
@@ -147,7 +158,7 @@ class TestSniMismatchDenied:
             s.close()
             events = proxy.unregister_sandbox(token)
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         # ...with a recorded denial event...
         denied = [e for e in events if e["result"] == "denied_sni"]
@@ -170,7 +181,7 @@ class TestSniMismatchDenied:
             assert s.recv(3) == b"SRV"
             s.close()
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         assert backend.received == hello
 
@@ -197,7 +208,7 @@ class TestPassThroughUnchanged:
                 deadline -= 1
             s.close()
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         assert backend.received == hello + b"MORE-APP-BYTES", (
             "peeked bytes were not forwarded byte-identically"
@@ -216,7 +227,7 @@ class TestPassThroughUnchanged:
             assert s.recv(8) == b"HTTP/1.0"
             s.close()
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         assert backend.received == payload
 
@@ -233,7 +244,7 @@ class TestPassThroughUnchanged:
             assert s.recv(2) == b"OK"
             s.close()
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         assert backend.received == hello
 
@@ -254,7 +265,7 @@ class TestPassThroughUnchanged:
             assert s.recv(3) == b"ACK"
             s.close()
         finally:
-            proxy.stop()
+            proxy.stop(drain_timeout=0)
             backend.close()
         assert backend.received == fragment
 

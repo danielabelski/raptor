@@ -1026,12 +1026,14 @@ class SecondReviewRegressionTest(_RegistryCase):
         d = self._mk_run("scan_w")
         sessions.ledger_record_start(d, pid=os.getpid(),
                                      pin_project="appx", record_pin=True)
-        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        found, project, _src = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
         self.assertTrue(found)
         self.assertEqual(project, "appx")
         # The witness survives the finish RMW.
         sessions.ledger_record_finish(d, "completed", pid=os.getpid())
-        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        found, project, _src = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
         self.assertTrue(found)
         self.assertEqual(project, "appx")
 
@@ -1040,7 +1042,8 @@ class SecondReviewRegressionTest(_RegistryCase):
         d = self._mk_run("scan_wn")
         sessions.ledger_record_start(d, pid=os.getpid(),
                                      pin_project=None, record_pin=True)
-        found, project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        found, project, _src = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
         self.assertTrue(found)
         self.assertIsNone(project)
 
@@ -1048,7 +1051,8 @@ class SecondReviewRegressionTest(_RegistryCase):
         sessions.record_session("myapp", pid=os.getpid())
         d = self._mk_run("scan_nw")
         sessions.ledger_record_start(d, pid=os.getpid())  # no pin line
-        found, _project = sessions.ledger_pin_witness(d, pid=os.getpid())
+        found, _project, _src = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
         self.assertFalse(found)
 
     def test_malformed_env_credential_never_raises(self):
@@ -1068,3 +1072,137 @@ class SecondReviewRegressionTest(_RegistryCase):
         self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)
         sessions.record_session("myapp", pid=os.getpid())
         self.assertEqual(len(sessions.ledger_runs(pid=os.getpid())), 1)
+
+
+class ThirdReviewRegressionTest(_RegistryCase):
+    """Round-3 findings: witness lifecycle, ledger budgets, corruption
+    fail-direction, reap/writer races."""
+
+    def _mk_run(self, name: str, status: str = "running") -> Path:
+        d = Path(self._tmp.name) / "runs" / name
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "%s"}' % status, encoding="utf-8")
+        return d
+
+    def test_resume_append_preserves_the_witness(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_rw")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="appx", record_pin=True,
+                                     pin_source="session")
+        # Resume re-appends WITHOUT a pin — the original witness must
+        # survive (it is the tamper defense for the whole run life).
+        sessions.ledger_record_start(d, pid=os.getpid())
+        found, project, source = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "appx")
+        self.assertEqual(source, "session")
+
+    def test_witness_rename_rewrite(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_rn")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="oldname",
+                                     record_pin=True, pin_source="argv")
+        sessions.ledger_rewrite_pin_project("oldname", "newname")
+        found, project, source = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "newname")
+        self.assertEqual(source, "argv")
+
+    def test_ledger_runs_pinned_to_finds_external_runs(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_ext")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="appy", record_pin=True)
+        recs = sessions.ledger_runs_pinned_to("appy")
+        self.assertEqual([r["run_dir"] for r in recs],
+                         [str(d.resolve())])
+        self.assertEqual(sessions.ledger_runs_pinned_to("other"), [])
+
+    def test_large_ledger_not_zeroed_and_budget_enforced(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        # Long parent paths: 40 finished + 1 running with witnesses
+        # once exceeded the old 64KB read cap and read as EMPTY.
+        deep = Path(self._tmp.name) / ("p" * 200) / ("q" * 200)
+        for i in range(40):
+            d = deep / f"run_{i}"
+            d.mkdir(parents=True)
+            (d / ".raptor-run.json").write_text(
+                '{"status": "completed"}', encoding="utf-8")
+            sessions.ledger_record_start(d, pid=os.getpid(),
+                                         pin_project="appz",
+                                         record_pin=True)
+            sessions.ledger_record_finish(d, "completed",
+                                          pid=os.getpid())
+        runs = sessions.ledger_runs(pid=os.getpid())
+        self.assertTrue(runs, "ledger must not read as empty")
+        size = (self.sessions_dir / f"{os.getpid()}.run").stat().st_size
+        self.assertLessEqual(size, sessions._MAX_LEDGER_BYTES)
+
+    def test_unknown_line_types_survive_rewrites(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        d = self._mk_run("scan_u")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        ledger = self.sessions_dir / f"{os.getpid()}.run"
+        with ledger.open("a", encoding="utf-8") as fh:
+            fh.write("futurekind 1 2 3 four\n")
+        sessions.ledger_record_finish(d, "completed", pid=os.getpid())
+        self.assertIn("futurekind 1 2 3 four",
+                      ledger.read_text(encoding="utf-8"))
+
+    def test_write_refused_once_entry_gone(self):
+        # The resurrection gate: entry removed → no writer may
+        # recreate the ledger, even one that passed the pre-lock gate.
+        sessions.record_session("myapp", pid=os.getpid())
+        records = [{"status": "running", "epoch": 1,
+                    "run_id": "r1", "run_dir": "/tmp/r1"}]
+        (self.sessions_dir / str(os.getpid())).unlink()
+        self.assertFalse(sessions._write_ledger(os.getpid(), records))
+        self.assertFalse(
+            (self.sessions_dir / f"{os.getpid()}.run").exists())
+
+    def test_stale_stamp_refuses_new_ledger_records(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        d = self._mk_run("scan_st")
+        sessions.ledger_record_start(d, pid=os.getpid())
+        self.assertFalse(
+            (self.sessions_dir / f"{os.getpid()}.run").exists(),
+            "records written over a stale stamp would be wiped by the "
+            "next refresh — refuse them up front")
+
+    def test_corrupt_entry_reads_as_authoritative_none(self):
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        entry = self.sessions_dir / str(os.getpid())
+        entry.write_bytes(b"\xff\xfe garbage \x00")
+        name, state = sessions.session_binding(pid=os.getpid())
+        self.assertIsNone(name)
+        self.assertEqual(state, "none")
+
+    def test_bom_entry_still_reads_v2(self):
+        sessions.record_session("myapp", pid=os.getpid())
+        entry = self.sessions_dir / str(os.getpid())
+        entry.write_bytes(b"\xef\xbb\xbf" + entry.read_bytes())
+        name, state = sessions.session_binding(pid=os.getpid())
+        self.assertEqual((name, state), ("myapp", "bound"))
+
+    def test_root_dir_refused_by_ledger(self):
+        self.assertFalse(sessions._valid_run_dir("/"))
+
+    def test_rebind_session_if_is_conditional(self):
+        sessions.record_session("appa", pid=os.getpid())
+        self.assertFalse(sessions.rebind_session_if(
+            os.getpid(), "other", "appb"))
+        self.assertTrue(sessions.rebind_session_if(
+            os.getpid(), "appa", "appb"))
+        self.assertEqual(sessions.session_binding(pid=os.getpid()),
+                         ("appb", "bound"))

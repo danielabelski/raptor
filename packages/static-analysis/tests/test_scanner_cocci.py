@@ -221,6 +221,7 @@ def test_run_cocci_emits_sarif_even_when_no_matches(tmp_path):
     not shutil.which("spatch"),
     reason="spatch not installed — skip real-spatch E2E",
 )
+@pytest.mark.slow  # genuine cost: full analyze()/spatch E2E through the sandbox exceeds the 10s default-tier budget; logic-level coverage stays default-tier
 def test_e2e_real_spatch_finds_missing_null_check(tmp_path):
     """End-to-end: real spatch executes the shipped
     ``missing_null_check`` rule against a tiny C fixture, the

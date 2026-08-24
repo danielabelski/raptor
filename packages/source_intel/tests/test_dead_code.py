@@ -208,6 +208,7 @@ def test_dead_code_skipped_when_pointer_referenced(tmp_path):
     not _spatch_meets_min(),
     reason="spatch >= 1.3 required for prereqs E2E",
 )
+@pytest.mark.slow  # genuine cost: full analyze()/spatch E2E through the sandbox exceeds the 10s default-tier budget; logic-level coverage stays default-tier
 def test_validator_verdict_dead_code_emits_not_exploitable(tmp_path):
     """Adapter integration: dead-code → NOT_EXPLOITABLE wins over
     other passes (it runs first)."""
@@ -229,6 +230,7 @@ def test_validator_verdict_dead_code_emits_not_exploitable(tmp_path):
     not _spatch_meets_min(),
     reason="spatch >= 1.3 required for prereqs E2E",
 )
+@pytest.mark.slow  # genuine cost: full analyze()/spatch E2E through the sandbox exceeds the 10s default-tier budget; logic-level coverage stays default-tier
 def test_validator_verdict_skips_dead_code_for_non_static(tmp_path):
     """A non-static unsafe function with no observed calls in the
     fixture — verdict must NOT be NOT_EXPLOITABLE.
@@ -257,3 +259,48 @@ def test_validator_verdict_skips_dead_code_for_non_static(tmp_path):
     assert verdict != ValidatorVerdict.NOT_EXPLOITABLE, (
         f"dead-code MUST NOT fire on non-static fn; got {verdict}"
     )
+
+
+def test_verdict_dead_code_branch_unit(tmp_path, monkeypatch):
+    """Default-tier twin of the spatch E2E verdict tests above: the
+    adapter's dead-code branch (dead → NOT_EXPLOITABLE, and it runs
+    before the exploitability axes) with the detection stubbed, so a
+    deleted branch fails every tier."""
+    import packages.source_intel.adapter as adapter_mod
+    from packages.source_intel.analyze import SourceIntelResult
+
+    analysis = SourceIntelResult()  # real empty result: axes stay quiet
+    monkeypatch.setattr(adapter_mod, "analyze", lambda target: analysis)
+
+    f = tmp_path / "x.c"
+    f.write_text(
+        "extern int strcpy(char *d, const char *s);\n"
+        "static int helper(const char *s) {\n"
+        "    char buf[16];\n"
+        "    strcpy(buf, s);\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    finding = _finding(str(f), 4, "cpp/unbounded-write")
+
+    monkeypatch.setattr(
+        adapter_mod, "_finding_in_dead_code", lambda fi, root: True,
+    )
+    v = SourceIntelValidator(repo_root=tmp_path)
+    assert v.validate(finding) == ValidatorVerdict.NOT_EXPLOITABLE
+
+    # Not dead: the branch must not fire; whatever the axes decide,
+    # NOT_EXPLOITABLE must come from evidence, not from this stub.
+    monkeypatch.setattr(
+        adapter_mod, "_finding_in_dead_code", lambda fi, root: False,
+    )
+    for helper in (
+        "_abort_dominates_finding",
+        "_privileged_capability_dominates",
+    ):
+        if hasattr(adapter_mod, helper):
+            monkeypatch.setattr(
+                adapter_mod, helper, lambda fi, res: False,
+            )
+    v2 = SourceIntelValidator(repo_root=tmp_path)
+    assert v2.validate(finding) != ValidatorVerdict.NOT_EXPLOITABLE

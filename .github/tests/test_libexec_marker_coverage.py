@@ -191,7 +191,6 @@ PROCESS_INIT = "import core.startup.process_init  # noqa: E402,F401"
 # exact sys.path.insert-carrying lines, stripped, in file order.
 SYSPATH_VARIANTS = {
     "raptor-audit": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
-    "raptor-binary-oracle-e2e": ("sys.path.insert(0, str(RAPTOR))",),
     "raptor-bq-query": ("sys.path.insert(0, str(_RAPTOR_ROOT))",),
     "raptor-cve-diff": (
         "sys.path.insert(0, str(_RAPTOR_DIR))",

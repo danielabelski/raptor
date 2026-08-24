@@ -16,7 +16,7 @@ full build_inventory pipeline.
 
 Usage::
 
-    libexec/raptor-binary-oracle-e2e
+    core/analysis/scripts/binary-oracle-e2e
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ if not (os.environ.get("CLAUDECODE")
 # fmt: on
 # ─── end trust-marker check ─────────────────────────────────
 
-RAPTOR = Path(__file__).resolve().parents[1]
+RAPTOR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(RAPTOR))
 import core.startup.process_init  # noqa: E402,F401
 

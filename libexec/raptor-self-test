@@ -825,7 +825,8 @@ def case_binary_oracle_e2e(ctx: Ctx) -> None:
     if shutil.which("gcc") is None:
         raise Skip("gcc not on PATH")
     ctx.run("binary-oracle-e2e", [
-        str(_RAPTOR_DIR / "libexec" / "raptor-binary-oracle-e2e"),
+        str(_RAPTOR_DIR / "core" / "analysis" / "scripts"
+            / "binary-oracle-e2e"),
     ], env=ctx.env_t0(), timeout=1800)
 
 

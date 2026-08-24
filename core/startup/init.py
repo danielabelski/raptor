@@ -861,7 +861,15 @@ def check_lang() -> tuple[str | None, list]:
 
 
 def check_active_project() -> str | None:
-    """Return a one-line project status string, or None if no active project."""
+    """Return a one-line project status string, or None if no active
+    project. Sourced from the LAYERED resolution (the session binding
+    post-seed; design §3.5): the auto-detect variant comes from the
+    session entry's ``seeded_by`` field (the retired machine-global
+    ``.auto`` marker raced concurrent launches — one launch clearing
+    another's — and could mislabel a later explicit activation), and
+    when the binding differs from the machine-wide bookmark (an
+    auto-detect launch) the line names both layers.
+    """
     try:
         from . import PROJECTS_DIR, get_active_name
         name = get_active_name()
@@ -872,25 +880,36 @@ def check_active_project() -> str | None:
         if not data:
             return None
         proj_target = data.get("target", "")
-        # Bounded read of the .auto marker. Pre-fix `read_text()`
-        # loaded the WHOLE file into memory before the strip+compare.
-        # The marker SHOULD only ever contain a project name (a few
-        # bytes) but if the file was malformed (a hostile sample, a
-        # corrupted sparse file, a symlink-to-/dev/zero) the unbounded
-        # read OOM-killed the entire startup banner. Read just enough
-        # bytes to compare against `name + 1` so any oversize file
-        # rejects via the comparison.
-        auto_marker = PROJECTS_DIR / ".auto"
-        if auto_marker.exists():
-            try:
-                cap = max(len(name) + 64, 256)
-                with auto_marker.open("rb") as fh:
-                    head = fh.read(cap)
-                if head.decode("utf-8", errors="replace").strip() == name:
-                    return f"Auto-activated project: {name} ({proj_target}) — `/project none` to clear"
-            except OSError:
-                pass
-        return f"Project: {name} ({proj_target}) — `/project none` to clear"
+
+        seeded_by = None
+        bookmark = None
+        try:
+            from core.project import sessions
+            pid = sessions.resolve_session_pid()
+            if pid is not None:
+                fields = sessions._parse_entry(
+                    sessions.SESSIONS_DIR / str(pid))
+                if fields.get("v") == sessions.ENTRY_VERSION:
+                    seeded_by = fields.get("seeded_by")
+            import os as _os
+            target = _os.readlink(PROJECTS_DIR / ".active")
+            if (target.endswith(".json") and "/" not in target
+                    and "\\" not in target):
+                bookmark = target[:-5]
+        except OSError:
+            pass
+        except Exception:  # noqa: BLE001 — banner is best-effort
+            pass
+
+        suffix = "`/project none` to clear for this session"
+        if seeded_by == "auto":
+            line = (f"Auto-detected project: {name} ({proj_target}) "
+                    f"— {suffix}")
+        else:
+            line = f"Project: {name} ({proj_target}) — {suffix}"
+        if bookmark and bookmark != name:
+            line += f" (default: {bookmark})"
+        return line
     except Exception:  # noqa: BLE001
         return None
 

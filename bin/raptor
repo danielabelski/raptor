@@ -317,10 +317,17 @@ USAGE
     exit 0
 fi
 
-# Route project subcommands directly (no Claude needed)
+# Route project subcommands directly (no Claude needed). Export the
+# trust marker + RAPTOR_DIR like the doctor/frida routes do — pre-fix
+# this route exported NOTHING, so every bare-shell `raptor project
+# <sub>` tripped the libexec trust preamble and exited 2 (the
+# bare-shell /project UX was unreachable through its documented entry
+# point).
 if [[ "${1:-}" == "project" ]]; then
     shift
     cd "$RAPTOR_DIR" || exit 1
+    export RAPTOR_DIR
+    export _RAPTOR_TRUSTED=1
     exec "$RAPTOR_DIR/libexec/raptor-project-manager" "$@"
 fi
 
@@ -490,55 +497,138 @@ fi
 
 cd "$RAPTOR_DIR" || { echo "raptor: cannot cd to $RAPTOR_DIR" >&2; exit 1; }
 
-# Pre-flight: auto-detect project, -p flag, mismatch prompt
-"$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}"
+# Pre-flight: auto-detect project, -p flag, mismatch prompt.
+# STDOUT is the machine channel (the seed sentinel; all human output —
+# the interactive mismatch menu included — arrives on stderr, and
+# stdin stays the tty so the prompt still works). The launcher seeds
+# the session entry from the sentinel and NEVER re-reads the symlink:
+# the pre-fix re-read raced concurrent symlink writers, so an explicit
+# -p could seed another session's project (design §3.5, conc-C1).
+_startup_out="$("$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}")" || {
+    echo "raptor: startup-check failed — this session starts projectless" >&2
+    _startup_out=""
+}
+_seed_proj="$(printf '%s\n' "$_startup_out" | _rp sed -n 's/^RAPTOR_RESOLVED_PROJECT=//p' | _rp tail -n 1)"
+_seed_by="$(printf '%s\n' "$_startup_out" | _rp sed -n 's/^RAPTOR_SEEDED_BY=//p' | _rp tail -n 1)"
+# Validate: the project-name character class, or the '-' sentinel.
+case "$_seed_proj" in
+    -) ;;
+    [A-Za-z0-9]*) case "$_seed_proj" in
+            *[!A-Za-z0-9._-]*) _seed_proj="-" ;;
+        esac ;;
+    *) _seed_proj="-" ;;
+esac
+case "$_seed_by" in
+    flag|auto|bookmark|use|create|adopt) ;;
+    *) _seed_by="bookmark" ;;
+esac
+if [ "$_seed_proj" = "-" ] && [ -z "$_startup_out" ]; then
+    _seed_by="bookmark"
+fi
 
-# Session-awareness registry (advisory, never lock-based):
-# ~/.local/share/raptor/sessions.d/<pid> binds this session ($$
-# survives the exec) to its active project; dead-pid entries prune at
-# read time. Runs AFTER startup-check so -p/auto-detect is what
-# registers. Format shared with core/project/sessions.py.
-# 0700: which project each session works on is not for other local
-# users; chmod tightens a dir an older writer created looser.
+# Session registry (AUTHORITATIVE v2 — design §3): sessions.d/<pid>
+# carries this session's project binding, identity-stamped so a
+# recycled pid (even another claude) can never inherit it, and
+# token-carrying so the env credential is unforgeable. $$ survives the
+# exec into claude; starttime is fork-time and survives too. The seed
+# is MANDATORY — 'project=-' when nothing resolved — so an
+# empty-bookmark launch is insulated from later bookmark moves.
+# Format/keys shared with core/project/sessions.py (ENTRY_KEYS).
 _sessions_dir="$HOME/.local/share/raptor/sessions.d"
+RAPTOR_SESSION_TOKEN=""
 if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
     _rp chmod 700 "$_sessions_dir" 2>/dev/null || true
-    _active_proj=""
-    _active_link="$(readlink "$HOME/.raptor/projects/.active" 2>/dev/null || true)"
-    case "$_active_link" in
-        */*|*'\'*) ;;  # path-shaped target — not a project name; skip
-        *.json) _active_proj="${_active_link%.json}" ;;
-    esac
+
+    # Identity stamps for $$ (sentinels off-Linux, matching the
+    # python reader's rules).
+    _starttime="0"
+    if [ -r "/proc/$$/stat" ]; then
+        _starttime="$(_rp awk '{match($0, /\) /); print substr($0, RSTART+2)}' "/proc/$$/stat" 2>/dev/null | _rp awk '{print $20}')"
+        [ -n "$_starttime" ] || _starttime="0"
+    fi
+    _bootid="none-$(uname -s 2>/dev/null | _rp tr 'A-Z' 'a-z' || echo unknown)"
+    if [ -r /proc/sys/kernel/random/boot_id ]; then
+        read -r _bootid < /proc/sys/kernel/random/boot_id || _bootid="none-linux"
+    fi
+    _pidns=""
+    if [ -e /proc/self/ns/pid ]; then
+        _pidns="$(_rp stat -Lc %i /proc/self/ns/pid 2>/dev/null || true)"
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        RAPTOR_SESSION_TOKEN="$(openssl rand -hex 16 2>/dev/null || true)"
+    fi
+    if [ -z "$RAPTOR_SESSION_TOKEN" ] && [ -r /dev/urandom ]; then
+        RAPTOR_SESSION_TOKEN="$(_rp od -An -N16 -tx1 /dev/urandom 2>/dev/null | _rp tr -d ' \n')"
+    fi
+
+    # Unconditional stale-state delete for $$ FIRST (a recycled pid
+    # must never expose a predecessor's binding or ledger).
+    rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" "$_sessions_dir/$$.run.lock" 2>/dev/null || true
+
+    # Prune + awareness pass. Prune predicate (design §3.3): only
+    # same-boot, same-pidns entries with a positively dead pid are
+    # removed; stamped-mismatch pruning is left to the python readers
+    # (richer checks), foreign entries are never touched.
     for _f in "$_sessions_dir"/*; do
         [ -f "$_f" ] || continue
         _fpid="${_f##*/}"
         case "$_fpid" in
             ''|*[!0-9]*) continue ;;  # not a pid-named entry — not ours
         esac
+        _fboot="$(_rp sed -n 's/^boot_id=//p' "$_f" 2>/dev/null | _rp head -n 1)"
+        _fns="$(_rp sed -n 's/^pidns=//p' "$_f" 2>/dev/null | _rp head -n 1)"
+        if [ -n "$_fboot" ] && [ "$_fboot" != "$_bootid" ]; then
+            continue  # foreign boot/machine — never prune here
+        fi
+        if [ -n "$_fns" ] && [ -n "$_pidns" ] && [ "$_fns" != "$_pidns" ]; then
+            continue  # foreign pid namespace — never prune here
+        fi
         if ! kill -0 "$_fpid" 2>/dev/null; then
-            rm -f -- "$_f"
+            rm -f -- "$_f" "$_sessions_dir/$_fpid.run" "$_sessions_dir/$_fpid.run.lock"
             continue
         fi
-        if [ "$_fpid" != "$$" ] && [ -n "$_active_proj" ]; then
+        if [ "$_fpid" != "$$" ] && [ "$_seed_proj" != "-" ]; then
             _fproj="$(_rp sed -n 's/^project=//p' "$_f" 2>/dev/null | _rp head -n 1)"
-            if [ "$_fproj" = "$_active_proj" ]; then
+            if [ "$_fproj" = "$_seed_proj" ]; then
                 _fsince="$(_rp sed -n 's/^since=//p' "$_f" 2>/dev/null | _rp head -n 1)"
                 # Entry fields are file content: strip non-printables
                 # and bound length (builtins) before echoing.
                 _fsince="${_fsince//[![:print:]]/}"
                 _fsince="${_fsince:0:64}"
-                echo "raptor: project $_active_proj is also active in session pid $_fpid (since ${_fsince:-unknown})" >&2
+                echo "raptor: project $_seed_proj is also active in session pid $_fpid (since ${_fsince:-unknown})" >&2
             fi
         fi
     done
-    if [ -n "$_active_proj" ]; then
-        printf 'project=%s\nsince=%s\n' "$_active_proj" \
-            "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
-            > "$_sessions_dir/$$" 2>/dev/null || true
+
+    # MANDATORY seed, atomic (tmp+rename): v2 entry keyed to $$.
+    _tmp_entry="$_sessions_dir/.$$.tmp.$$"
+    if {
+        printf 'v=2\nproject=%s\nsince=%s\nstarttime=%s\nboot_id=%s\n' \
+            "$_seed_proj" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+            "$_starttime" "$_bootid"
+        [ -n "$_pidns" ] && printf 'pidns=%s\n' "$_pidns"
+        [ -n "$RAPTOR_SESSION_TOKEN" ] && printf 'token=%s\n' "$RAPTOR_SESSION_TOKEN"
+        printf 'seeded_by=%s\n' "$_seed_by"
+    } > "$_tmp_entry" 2>/dev/null && mv -f "$_tmp_entry" "$_sessions_dir/$$" 2>/dev/null; then
+        _rp chmod 600 "$_sessions_dir/$$" 2>/dev/null || true
+    else
+        rm -f -- "$_tmp_entry" 2>/dev/null || true
+        if [ "$_seed_proj" != "-" ]; then
+            echo "raptor: WARNING: session binding write failed — this session follows the machine-wide default instead of '$_seed_proj'" >&2
+        fi
+        RAPTOR_SESSION_TOKEN=""
     fi
-    unset _f _fpid _fproj _fsince _active_proj _active_link
+    unset _f _fpid _fproj _fsince _fboot _fns _tmp_entry _starttime _bootid _pidns
 fi
-unset _sessions_dir
+# The env credential: pid + token, validated on every read against the
+# entry (design §4). Exported only when the seed landed with a token.
+if [ -n "$RAPTOR_SESSION_TOKEN" ]; then
+    export RAPTOR_SESSION_PID="$$"
+    export RAPTOR_SESSION_TOKEN
+else
+    unset RAPTOR_SESSION_TOKEN
+fi
+unset _sessions_dir _startup_out _seed_proj _seed_by
 
 # Load coverage tracking plugin if available
 PLUGIN_ARGS=()

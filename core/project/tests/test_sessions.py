@@ -763,3 +763,68 @@ class ProjectMutationHygieneTest(unittest.TestCase):
         # force overrides.
         self.mgr.delete("victim", purge=True, force=True)
         self.assertFalse(run.exists())
+
+
+@unittest.skipIf(sys.platform == "win32", "bash launcher")
+class LauncherSeedV2Test(LauncherAwarenessTest):
+    """The v2 mandatory seed (design §3.5): identity-stamped entry,
+    exported env credential, seed even with an empty bookmark."""
+
+    def test_seed_is_v2_with_identity_and_credential(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            home = root / "home"
+            home.mkdir()
+            tmpdir = root / "tmp"
+            tmpdir.mkdir()
+            mgr = ProjectManager(projects_dir=home / ".raptor" / "projects")
+            mgr.create("myapp", str(home),
+                       output_dir=str(root / "out" / "myapp"))
+            mgr.set_active("myapp")
+            # Stub claude echoes the exported credential.
+            r = self._launch(home, tmpdir)
+            self.assertIn("STUB_CLAUDE_RAN", r.stdout)
+            sessions_dir = home / ".local" / "share" / "raptor" / "sessions.d"
+            own = [f for f in sessions_dir.iterdir() if f.name.isdigit()]
+            self.assertEqual(len(own), 1, list(sessions_dir.iterdir()))
+            text = own[0].read_text(encoding="utf-8")
+            self.assertIn("v=2", text)
+            self.assertIn("project=myapp", text)
+            self.assertIn("seeded_by=bookmark", text)
+            self.assertIn("starttime=", text)
+            self.assertIn("boot_id=", text)
+            self.assertIn("token=", text)
+            self.assertEqual(own[0].stat().st_mode & 0o777, 0o600)
+
+    def test_empty_bookmark_seeds_projectless_sentinel(self):
+        """op-C1: a launch with NO active project still writes an
+        entry — 'project=-' — so the session is insulated from later
+        bookmark moves by other sessions."""
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            home = root / "home"
+            home.mkdir()
+            tmpdir = root / "tmp"
+            tmpdir.mkdir()
+            r = self._launch(home, tmpdir)
+            self.assertIn("STUB_CLAUDE_RAN", r.stdout,
+                          (r.stdout, r.stderr))
+            sessions_dir = home / ".local" / "share" / "raptor" / "sessions.d"
+            own = [f for f in sessions_dir.iterdir() if f.name.isdigit()]
+            self.assertEqual(len(own), 1)
+            text = own[0].read_text(encoding="utf-8")
+            self.assertIn("project=-", text)
+            self.assertIn("v=2", text)
+
+    def test_startup_check_sentinel_never_reaches_terminal_stdout(self):
+        """The launcher consumes startup-check stdout — the sentinel
+        line must not leak into what the operator sees."""
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            home = root / "home"
+            home.mkdir()
+            tmpdir = root / "tmp"
+            tmpdir.mkdir()
+            r = self._launch(home, tmpdir)
+            self.assertNotIn("RAPTOR_RESOLVED_PROJECT", r.stdout)
+            self.assertNotIn("RAPTOR_RESOLVED_PROJECT", r.stderr)

@@ -95,16 +95,18 @@ def test_codeql_build_env_blocks_raptor_vars():
 
 
 def test_context_seam_source_strips_by_default():
-    """The run() seam strips the SET (not the two legacy names) and
-    only the keep-dispatch control exempts it. Source-level pin: the
-    seam must consume the constant, not a hand-copied tuple."""
+    """The run() seam strips the SET (not the two legacy names), the
+    keep decision comes from the SANCTIONED call kwarg (never an
+    in-band env-key probe a poisoned caller env could set), and the
+    seam consumes the constant, not a hand-copied tuple."""
     src = (_REPO_ROOT / "core" / "sandbox" / "context.py").read_text(
         encoding="utf-8")
     assert "TARGET_ENV_STRIP_SET" in src
-    # The old opt-in literal must not survive as the seam's source of
-    # truth (the kwarg may remain for caller compat).
-    seam = src[src.index("_env_for_target = kwargs"):][:2000]
+    seam = src[src.index(
+        "_keep_for_dispatch = keep_trust_markers_for_dispatch"):][:2000]
     assert "TARGET_ENV_STRIP_SET" in seam or "_RC" in seam
+    # The in-band probe must not carry authority anywhere in the seam.
+    assert '"_RAPTOR_KEEP_TRUST_MARKERS" in kwargs' not in src
 
 
 @pytest.mark.integration

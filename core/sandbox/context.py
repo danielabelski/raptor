@@ -2696,10 +2696,23 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # marker-stripping is now a subset of the default, and the
         # flag additionally drops RAPTOR_DIR on untrusted-target
         # paths — so existing callers keep working unchanged.
-        _keep_for_dispatch = "_RAPTOR_KEEP_TRUST_MARKERS" in kwargs["env"]
-        _env_for_target = kwargs["env"]
-        _dispatch_keep = _keep_for_dispatch or keep_trust_markers_for_dispatch
-        if not _dispatch_keep:
+        # The keep decision comes from the SANCTIONED call kwarg only.
+        # Pre-fix this probed the in-band _RAPTOR_KEEP_TRUST_MARKERS
+        # env key: a poisoned caller-supplied env dict carrying it
+        # delivered the full strip set (trust markers AND the session
+        # credential) to sandboxed target code on the direct-exec
+        # backends — while the kwarg the design sanctions never
+        # reached this seam at all, so RAPTOR's own fork-backend
+        # dispatches LOST their markers. The env key is still
+        # stripped from the child env below (defense in depth), but
+        # it no longer carries authority.
+        _keep_for_dispatch = keep_trust_markers_for_dispatch
+        if _keep_for_dispatch:
+            _env_for_target = {
+                k: v for k, v in kwargs["env"].items()
+                if k != "_RAPTOR_KEEP_TRUST_MARKERS"
+            }
+        else:
             from core.config import RaptorConfig as _RC
             _strip_keys = set(_RC.TARGET_ENV_STRIP_SET)
             if strip_trust_markers:
@@ -2714,15 +2727,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _env_for_target = {
                 k: v for k, v in kwargs["env"].items()
                 if k not in _strip_keys
-            }
-        else:
-            # Internal control flag for the pid1 shim only (see
-            # run_untrusted_networked keep_trust_markers) — the shim
-            # reads it from kwargs["env"] on the unshare path; the
-            # direct-exec paths must not leak it to the child.
-            _env_for_target = {
-                k: v for k, v in kwargs["env"].items()
-                if k != "_RAPTOR_KEEP_TRUST_MARKERS"
+                and k != "_RAPTOR_KEEP_TRUST_MARKERS"
             }
         if _ENV_RESTORE_KEY in _env_for_target:
             # RAPTOR-minted quarantine payload key (see

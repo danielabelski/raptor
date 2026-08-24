@@ -122,6 +122,13 @@ def main():
             help="Queue behind an in-progress run on the same project "
                  "instead of refusing immediately",
         )
+        parser.add_argument(
+            "--project", default=None, metavar="NAME",
+            help="Pin this run to the named project (precedence over "
+                 "the session binding and the last-activated default); "
+                 "'-' = explicitly projectless. Invalid values are a "
+                 "hard error, never a fallback.",
+        )
         # `sys.argv[2:]` so the `start` subcommand isn't re-parsed.
         # On bad args argparse raises SystemExit after printing a
         # clean usage message to stderr.
@@ -132,6 +139,10 @@ def main():
         # Pre-fix the walker did "first one wins" via `or`, which is
         # ordering-dependent.
         target_path = args.target_flag or args.positional_target
+
+        if args.project is not None:
+            from core.run.pin import set_process_project
+            set_process_project(args.project)
 
         try:
             out_dir = get_output_dir(args.command, target_path=target_path,

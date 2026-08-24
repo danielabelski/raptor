@@ -39,6 +39,20 @@ class _FakeProjectManager:
     def find_project_for_target(self, _target):
         return self._project
 
+    def load(self, name):
+        return self._project if name == self._project.name else None
+
+
+def _pin_to(monkeypatch, project):
+    """The threat-model phase resolves its project through the RUN
+    PIN (owner rule); give the tests an authoritative pin naming the
+    fake project."""
+    from core.run.pin import RunPin
+    monkeypatch.setattr(
+        "core.run.pin.resolve_run_pin",
+        lambda _d: RunPin(project.name, "session", None, True, True),
+    )
+
 
 def test_unchecked_flows_become_candidate_sarif(tmp_path):
     sarif_path = tmp_path / "threat-model-candidates.sarif"
@@ -125,6 +139,7 @@ def test_threat_model_phase_preserves_existing_project_model_without_refresh(tmp
         "core.project.project.ProjectManager",
         lambda: _FakeProjectManager(project, projects_dir),
     )
+    _pin_to(monkeypatch, project)
 
     summary = _materialise_threat_model_phase(
         target=target,
@@ -177,6 +192,7 @@ def test_threat_model_phase_migrates_preserved_model_to_v2_ledger(tmp_path, monk
         "core.project.project.ProjectManager",
         lambda: _FakeProjectManager(project, projects_dir),
     )
+    _pin_to(monkeypatch, project)
 
     summary = _materialise_threat_model_phase(
         target=target,
@@ -220,6 +236,7 @@ def test_threat_model_phase_refresh_overwrites_existing_project_model(tmp_path, 
         "core.project.project.ProjectManager",
         lambda: _FakeProjectManager(project, projects_dir),
     )
+    _pin_to(monkeypatch, project)
 
     summary = _materialise_threat_model_phase(
         target=target,

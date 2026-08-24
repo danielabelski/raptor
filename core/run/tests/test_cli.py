@@ -40,16 +40,16 @@ def _setup_project_symlink(home_dir, project_dir):
     """Create a .active symlink in a temp home pointing to a project."""
     projects_dir = Path(home_dir) / ".raptor" / "projects"
     projects_dir.mkdir(parents=True, exist_ok=True)
-    project_json = projects_dir / "_test.json"
+    project_json = projects_dir / "testproj.json"
     project_json.write_text(json.dumps({
-        "name": "_test",
+        "name": "testproj",
         "target": "/tmp",
         "output_dir": str(project_dir),
     }))
     active = projects_dir / ".active"
     if active.is_symlink() or active.exists():
         active.unlink()
-    active.symlink_to("_test.json")
+    active.symlink_to("testproj.json")
 
 
 class TestRunLifecycle(unittest.TestCase):
@@ -181,9 +181,12 @@ class TestJournalIndexMerge(unittest.TestCase):
             self.assertTrue((Path(d) / INDEX_FILENAME).is_file(),
                             result.stderr)
 
-    def test_foreign_run_does_not_pollute_active_project(self):
-        """A run completed OUTSIDE the active project's dir must not
-        merge into that project's index."""
+    def test_pinned_out_run_merges_into_pinned_project(self):
+        """Under run pinning: a run PINNED to project P merges into
+        P's index wherever --out physically put it — the pin, not
+        directory topology, decides. (The pre-fix containment rule
+        protected against ambient pollution; the pin provides that
+        protection now, see the projectless companion below.)"""
         from core.coverage.journal import INDEX_FILENAME
         with TemporaryDirectory() as d, TemporaryDirectory() as home, \
                 TemporaryDirectory() as elsewhere:
@@ -194,6 +197,26 @@ class TestJournalIndexMerge(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self._journal_entry(out_dir)
 
+            result = _run("complete", str(out_dir), tmp_home=home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((Path(d) / INDEX_FILENAME).exists(),
+                            "pinned run's journal did not follow the pin")
+            self.assertFalse(
+                (Path(elsewhere) / INDEX_FILENAME).exists())
+
+    def test_projectless_pin_never_pollutes_active_project(self):
+        """`--project -` (or no resolution) pins null: the journal
+        merges NOWHERE, even though a project is active — the ambient
+        pollution the pre-fix containment rule guarded against."""
+        from core.coverage.journal import INDEX_FILENAME
+        with TemporaryDirectory() as d, TemporaryDirectory() as home, \
+                TemporaryDirectory() as elsewhere:
+            _setup_project_symlink(home, d)
+            out_dir = Path(elsewhere) / "audit-orphan"
+            result = _run("start", "audit", "--out", str(out_dir),
+                          "--project", "-", tmp_home=home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self._journal_entry(out_dir)
             result = _run("complete", str(out_dir), tmp_home=home)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((Path(d) / INDEX_FILENAME).exists())

@@ -1,4 +1,4 @@
-"""Graduated engine-rules directory resolution (design decision 15).
+"""Graduated engine-rules directory resolution.
 
 Graduation writes trusted engine config (Semgrep/Coccinelle rules that
 later runs LOAD AND EXECUTE), so WHERE it writes is a privilege

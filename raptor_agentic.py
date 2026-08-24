@@ -120,11 +120,39 @@ def _materialise_threat_model_phase(
         save_report,
     )
 
+    # OWNER RULE: the threat-model phase READS AND WRITES project
+    # state (model, report, project.json mutation, verified-outcome
+    # linking), so the project comes from the RUN PIN — and only when
+    # the pinned project's target actually matches this run's target.
+    # The pre-fix ``find_project_for_target`` was a FIRST-MATCH scan
+    # over all projects: with twin/machine projects sharing a target,
+    # a run pinned to A wrote its threat model into an arbitrary
+    # sibling B. A standalone (pin-null) run keeps only run-local
+    # artifacts — a projectless run must not refresh any project's
+    # model.
     project = None
     try:
         from core.project.project import ProjectManager
+        from core.run.pin import resolve_run_pin
         mgr = ProjectManager()
-        project = mgr.find_project_for_target(str(target))
+        pin = resolve_run_pin(out_dir)
+        if pin.project is not None and pin.writes_allowed:
+            candidate = mgr.load(pin.project)
+            if candidate is not None:
+                try:
+                    same = (Path(candidate.target).resolve()
+                            in [Path(target).resolve(),
+                                *Path(target).resolve().parents])
+                except OSError:
+                    same = False
+                if same:
+                    project = candidate
+                else:
+                    logger.warning(
+                        "threat model: pinned project '%s' does not own "
+                        "target %s — keeping run-local artifacts only",
+                        pin.project, target,
+                    )
     except Exception:  # noqa: BLE001
         mgr = None
 

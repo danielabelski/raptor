@@ -445,6 +445,11 @@ def find_engine_rules_base(
             proj = ProjectManager().load(project_name)
             if proj is not None and getattr(proj, "output_dir", ""):
                 candidates.append(Path(proj.output_dir) / "engine-rules")
+        # Target-keyed standalone locations — the corpus fixture trees
+        # are the "targets" here.
+        from core.audit.rules_dirs import standalone_read_candidates
+        for root in fixture_roots:
+            candidates.extend(standalone_read_candidates(root))
     except Exception:
         logger.debug(
             "graduated-rules: pinned-project lookup failed", exc_info=True,

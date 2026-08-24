@@ -1175,31 +1175,26 @@ def _stamp_findings_provenance(output_dir: Path) -> None:
 def _journal_project_dir(out_dir: Path) -> Path | None:
     """Project-level directory a run's journal should merge into.
 
-    ``.active`` is a symlink to the project's ``<name>.json`` FILE
-    (``ProjectManager.set_active``), so the project directory is the
-    JSON's ``output_dir`` field. Only returns the active project's dir
-    when *out_dir* actually lives under it — a standalone run
-    completed while some project is active must not pollute that
-    project's index. Falls back to the run's parent when it carries
-    the project store markers (matches ``_snapshot_run_coverage``'s
-    ``proj = run_dir.parent``, which is where the coverage snapshot
-    reads the index back from).
+    THE RUN PIN decides: a run pinned to project P merges into P's
+    index wherever the run dir physically sits; a standalone
+    (pin-null) run merges nowhere. The pre-fix ambient
+    ``get_active_name()`` read at COMPLETION time meant a mid-flight
+    ``/project use B`` (with B's dir an ancestor of the run) merged
+    the run's verdicts into B's index, which cross-run reuse then
+    silently trusted. The write requires an authoritative pin;
+    pre-series (pin-less) run dirs keep the legacy parent-marker probe
+    so their projections don't regress at landing.
     """
     try:
         out_res = Path(out_dir).resolve()
     except OSError:
         return None
     try:
-        from core.startup import PROJECTS_DIR, get_active_name
-        name = get_active_name()
-        if name:
-            data = load_json(PROJECTS_DIR / f"{name}.json")
-            if isinstance(data, dict) and data.get("output_dir"):
-                candidate = Path(data["output_dir"])
-                if candidate.is_dir():
-                    proj_res = candidate.resolve()
-                    if proj_res in out_res.parents:
-                        return proj_res
+        from core.run.pin import pin_project_dir, resolve_run_pin
+        pin = resolve_run_pin(out_res)
+        if pin.authoritative:
+            proj_dir = pin_project_dir(out_res, for_write=True)
+            return proj_dir.resolve() if proj_dir is not None else None
     except Exception:  # noqa: BLE001 — fall through to the marker probe
         pass
     parent = out_res.parent
@@ -1300,7 +1295,26 @@ def _snapshot_run_coverage(output_dir: Path) -> None:
     log = logging.getLogger(__name__)
     try:
         run_dir = Path(output_dir)
-        proj = run_dir.parent
+        # THE RUN PIN decides which project store receives the
+        # snapshot. Pre-fix `proj = run_dir.parent` + a
+        # checklist-marker probe: a standalone run whose parent
+        # happened to carry a checklist merged coverage into a
+        # pseudo-store there, and an --out run under a FOREIGN
+        # project's dir merged into that project. Pin-less legacy runs
+        # keep the parent-marker shape so their projections don't
+        # regress at landing.
+        proj = None
+        try:
+            from core.run.pin import pin_project_dir, resolve_run_pin
+            pin = resolve_run_pin(run_dir)
+            if pin.authoritative:
+                proj = pin_project_dir(run_dir, for_write=True)
+                if proj is None:
+                    return               # standalone by pin — no store
+        except Exception:  # noqa: BLE001 — fall to the legacy probe
+            pin = None
+        if proj is None:
+            proj = run_dir.parent
         checklist_path = proj / "checklist.json"
         if not checklist_path.exists():
             return                       # standalone run — no durable project store

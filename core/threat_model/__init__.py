@@ -984,16 +984,42 @@ def link_verified_outcomes(model: ThreatModel, outcomes: Iterable[Any]) -> Threa
 
 
 def load_for_target(target: Path) -> ThreatModel | None:
-    """Find the project-owned threat model for ``target`` if one exists."""
+    """Find the project-owned threat model for ``target`` if one exists.
+
+    OWNER RULE: when a governing project exists for this context — the
+    process pin override (run children/parents bootstrap it from the
+    run's pin) or the ambient layers — that project is the ONLY
+    candidate, and only when its target actually matches: a threat
+    model steers prompt attention (out-of-scope entries suppress
+    analysis), so the WRONG project's model is an analysis-steering
+    contamination. The pre-fix first-match ``find_project_for_target``
+    scan could return an arbitrary twin project sharing the target,
+    and re-ran PER PROMPT mid-run. The target-keyed scan survives only
+    for no-context callers (bare CLI).
+    """
     try:
         from core.project.project import ProjectManager
         mgr = ProjectManager()
-        project = mgr.find_project_for_target(str(target))
-        if project is None:
-            active = mgr.get_active()
-            candidate = mgr.load(active) if active else None
-            if candidate and _same_path(candidate.target, target):
-                project = candidate
+        project = None
+        governed = False
+        try:
+            from core.project.trust import _context_project_name
+            from core.run.pin import get_process_project
+            if get_process_project() is not None:
+                governed = True
+                name = _context_project_name()
+                candidate = mgr.load(name) if name else None
+                if candidate and _same_path(candidate.target, target):
+                    project = candidate
+        except Exception:  # noqa: BLE001 — fall to the legacy scan
+            governed = False
+        if not governed:
+            project = mgr.find_project_for_target(str(target))
+            if project is None:
+                active = mgr.get_active()
+                candidate = mgr.load(active) if active else None
+                if candidate and _same_path(candidate.target, target):
+                    project = candidate
         if project is None:
             return None
         json_path = _project_threat_model_json_path(project)

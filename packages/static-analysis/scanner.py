@@ -2023,16 +2023,21 @@ def find_engine_rules_dir(out_dir: Path, repo_path: Path) -> Path | None:
     candidates.append(out_resolved.parent / "engine-rules")
     candidates.append(out_resolved.parent.parent / "engine-rules")
     try:
-        from core.project.project import ProjectManager
-        mgr = ProjectManager()
-        active = mgr.get_active()
-        if active:
-            proj = mgr.load(active)
-            if proj is not None and getattr(proj, "output_dir", ""):
-                candidates.append(Path(proj.output_dir) / "engine-rules")
+        # Pin-governed project candidate + the target-keyed standalone
+        # location (core/audit/rules_dirs). The pre-fix third candidate
+        # read the ambient ACTIVE project mid-scan in a child process:
+        # a /project switch (or another session's bookmark move)
+        # swapped which project's rules ran as trusted engine config
+        # against this repo.
+        from core.audit.rules_dirs import standalone_read_candidates
+        from core.run.pin import pin_project_dir
+        proj_dir = pin_project_dir(out_resolved)
+        if proj_dir is not None:
+            candidates.append(proj_dir / "engine-rules")
+        candidates.extend(standalone_read_candidates(repo_resolved))
     except Exception:
         logger.debug(
-            "graduated-rules: active-project lookup failed", exc_info=True,
+            "graduated-rules: pinned-project lookup failed", exc_info=True,
         )
 
     for candidate in candidates:

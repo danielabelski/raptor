@@ -321,3 +321,39 @@ def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
         return
     set_process_project(pin.project if pin.project is not None
                         else ARGV_NONE)
+
+
+def pin_project_dir(out_dir: str | os.PathLike[str] | None,
+                    for_write: bool = False) -> Path | None:
+    """The pinned project's OUTPUT DIR for a run dir, or None.
+
+    The drop-in replacement for the ``out_dir.parent``-shape
+    heuristics: a run pinned to project P yields P's output dir
+    wherever the run dir physically sits (--out runs included); a
+    standalone run (pin null) yields None — containment must NOT
+    re-capture it. ``for_write=True`` additionally requires an
+    AUTHORITATIVE pin: the legacy containment fallback authorizes
+    reads only, so privilege-bearing writes (engine-rules graduation,
+    domain-model promotion, journal merges, threat-model writes) are
+    suppressed for pre-series run dirs.
+    """
+    if out_dir is None:
+        return None
+    pin = resolve_run_pin(out_dir)
+    if pin.project is None:
+        return None
+    if for_write and not pin.writes_allowed:
+        logger.info(
+            "pin: suppressing project-level write for %s — legacy "
+            "(pin-less) run dir; containment inference authorizes "
+            "reads only", out_dir)
+        return None
+    try:
+        from core.project.project import ProjectManager
+        project = ProjectManager().load(pin.project)
+        if project is None:
+            return None
+        return Path(project.output_dir)
+    except Exception:  # noqa: BLE001 — registry unreadable = standalone
+        logger.debug("pin: project dir lookup failed", exc_info=True)
+        return None

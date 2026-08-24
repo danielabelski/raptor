@@ -7492,8 +7492,17 @@ def _run_audit_body(
 
     if config.out_dir and checker_library.all_entries():
         try:
-            engine_rules_dir = config.out_dir.parent / "engine-rules"
-            graduated = checker_library.graduate(engine_rules_dir)
+            # Graduation writes TRUSTED engine config — the run pin
+            # (or the target-keyed standalone dir) decides where,
+            # never bare out_dir.parent topology: a standalone run
+            # graduating into the shared out/ root made its rules load
+            # as trusted config for every future standalone run of ANY
+            # target.
+            from core.audit.rules_dirs import graduation_dir
+            engine_rules_dir = graduation_dir(
+                config.out_dir, config.target_path)
+            graduated = (checker_library.graduate(engine_rules_dir)
+                         if engine_rules_dir is not None else [])
             if graduated:
                 logger.info(
                     "rule library: graduated %d rules to %s",

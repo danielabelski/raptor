@@ -527,7 +527,52 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestRunCoverageSnapshot(unittest.TestCase):
+
+
+class _ProjectRunCase(unittest.TestCase):
+    """Mixin: an isolated project REGISTRY for the whole test, plus
+    ``_as_project(dir)`` giving a fabricated project-shaped dir a real
+    project so runs started under it PIN to it — under run pinning a
+    pin-null run correctly refuses shape-inferred project stores, so
+    tests that mean 'a project run' must say so. The registry patch
+    spans the whole test (completion-time pin reads need it too)."""
+
+    def setUp(self):
+        super().setUp()
+        from tempfile import TemporaryDirectory
+        from unittest import mock
+        self._registry_tmp = TemporaryDirectory()
+        self.addCleanup(self._registry_tmp.cleanup)
+        self._registry = Path(self._registry_tmp.name) / "projects"
+        patcher = mock.patch("core.project.project.PROJECTS_DIR",
+                             self._registry)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        from core.run.pin import set_process_project
+        self.addCleanup(set_process_project, None)
+
+    def _as_project(self, project_dir):
+        import contextlib
+
+        from core.project.project import ProjectManager
+        from core.run.pin import set_process_project
+
+        mgr = ProjectManager(projects_dir=self._registry)
+        if mgr.load("snapproj") is None:
+            mgr.create("snapproj", str(project_dir),
+                       output_dir=str(project_dir))
+        set_process_project("snapproj")
+
+        @contextlib.contextmanager
+        def _ctx():
+            try:
+                yield
+            finally:
+                set_process_project(None)
+        return _ctx()
+
+
+class TestRunCoverageSnapshot(_ProjectRunCase):
     """complete_run folds a project run's coverage into the durable store
     (so it survives out-of-band deletion), and is a no-op for standalone runs."""
 
@@ -545,7 +590,8 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             proj = Path(d)
             (proj / "checklist.json").write_text(self._checklist())
             run = proj / "scan-20260526_120000"
-            start_run(run, "scan")
+            with self._as_project(proj):
+                start_run(run, "scan")
             (run / "coverage-semgrep.json").write_text(json.dumps(
                 {"tool": "semgrep", "files_examined": ["a.c"], "timestamp": "t"}))
             (run / "findings.json").write_text(json.dumps(
@@ -572,7 +618,8 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             proj = Path(d)
             (proj / "checklist.json").write_text(self._checklist())
             run = proj / "audit-20260821_120000"
-            start_run(run, "audit")
+            with self._as_project(proj):
+                start_run(run, "audit")
             entry = {"ts": "2026-08-21T00:00:00Z", "run_id": run.name,
                      "file": "a.c", "function": "f1", "verdict": "clean",
                      "source_hash": "abc123def456"}
@@ -596,7 +643,8 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             proj = Path(d)
             (proj / "checklist.json").write_text(self._checklist())
             run = proj / "audit-20260821_130000"
-            start_run(run, "audit")
+            with self._as_project(proj):
+                start_run(run, "audit")
             entry = {"ts": "2026-08-21T00:00:00Z", "run_id": run.name,
                      "file": "a.c", "function": "f1", "verdict": "clean",
                      "source_hash": "abc123def456"}
@@ -618,7 +666,9 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             proj = Path(d)
             (proj / "checklist.json").write_text(self._checklist())  # a.c, lines 50
             run = proj / "agentic-20260526_120000"
-            start_run(run, "agentic")
+            with self._as_project(proj):
+                with self._as_project(proj):
+                    start_run(run, "agentic")
             (run / ".reads-manifest").write_text("a.c\n")  # the LLM read a.c
             complete_run(run)
 
@@ -646,7 +696,8 @@ class TestRunCoverageSnapshot(unittest.TestCase):
                 proj = Path(d)
                 (proj / "checklist.json").write_text(self._checklist())
                 run = proj / "agentic-20260526_120000"
-                start_run(run, "agentic")
+                with self._as_project(proj):
+                    start_run(run, "agentic")
                 (run / ".reads-manifest").write_text("a.c\n")
                 ending(run)
                 self.assertTrue(
@@ -662,11 +713,13 @@ class TestRunCoverageSnapshot(unittest.TestCase):
             out = Path(d) / "out"
             out.mkdir()
             run = out / "scan-20260526_120000"
+            # Deliberately NO project: the run pins null and must not
+            # write any shape-inferred store.
             start_run(run, "scan")
             (run / "coverage-semgrep.json").write_text(json.dumps(
                 {"tool": "semgrep", "files_examined": ["a.c"], "timestamp": "t"}))
             complete_run(run)
-            # No project-level checklist in the parent -> no durable store written.
+            # No project pin -> no durable store written.
             self.assertFalse((out / "coverage.json").exists())
 
     def test_two_completions_accumulate_under_lock(self):
@@ -682,7 +735,8 @@ class TestRunCoverageSnapshot(unittest.TestCase):
                     {"name": "g1", "line_start": 1, "line_end": 10}]}]}))
             for nm, f in [("scan-20260526_01", "a.c"), ("codeql-20260526_02", "b.c")]:
                 run = proj / nm
-                start_run(run, nm.split("-")[0])
+                with self._as_project(proj):
+                    start_run(run, nm.split("-")[0])
                 (run / "coverage-semgrep.json").write_text(json.dumps(
                     {"tool": "semgrep", "files_examined": [f], "timestamp": "t"}))
                 complete_run(run)
@@ -1018,7 +1072,7 @@ class TestCorroborateTargetPath(unittest.TestCase):
             self.assertIsNone(corroborate_target_path(run_dir, ""))
 
 
-class TestCoverageProgress(unittest.TestCase):
+class TestCoverageProgress(_ProjectRunCase):
     _checklist = TestRunCoverageSnapshot._checklist
 
     def test_completion_appends_progress_row(self):
@@ -1028,7 +1082,8 @@ class TestCoverageProgress(unittest.TestCase):
             (proj / "checklist.json").write_text(self._checklist())
             for name in ("audit-1", "audit-2"):
                 run = proj / name
-                start_run(run, "audit")
+                with self._as_project(proj):
+                    start_run(run, "audit")
                 complete_run(run)
             progress = proj / "coverage-progress.jsonl"
             rows = [json.loads(x) for x in

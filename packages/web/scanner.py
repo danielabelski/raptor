@@ -2008,15 +2008,26 @@ class WebScanner:
         forms = crawl_data.get("discovered_forms", [])
         parameters = crawl_data.get("discovered_parameters", [])
 
+        # id/path/method are the fields the /diagram renderer labels
+        # nodes from; url/fields stay for the validate bridge.
         entry_points: list[dict[str, Any]] = [
-            {"type": "url", "url": url} for url in urls[:100]
+            {
+                "id": f"EP-{index + 1:03d}",
+                "type": "url",
+                "url": url,
+                "path": url,
+                "method": "GET",
+            }
+            for index, url in enumerate(urls[:100])
         ]
         entry_points.extend({
+            "id": f"EP-F{index + 1:02d}",
             "type": "form",
             "url": form.get("action", self.base_url),
+            "path": form.get("action", self.base_url),
             "method": form.get("method", "GET"),
             "fields": list((form.get("inputs") or {}).keys()),
-        } for form in forms[:50])
+        } for index, form in enumerate(forms[:50]))
 
         sinks = []
         for param in parameters:
@@ -2025,6 +2036,14 @@ class WebScanner:
                 sinks.append({"type": "injection_candidate", "parameter": param})
             if any(token in lower for token in ("url", "uri", "path", "file", "next", "redirect")):
                 sinks.append({"type": "ssrf_or_redirect_candidate", "parameter": param})
+        sink_details = [
+            {
+                "id": f"SINK-{index + 1:03d}",
+                "type": sink["type"],
+                "operation": f"parameter '{sink['parameter']}'",
+            }
+            for index, sink in enumerate(sinks)
+        ]
 
         return {
             "target": self.base_url,
@@ -2032,6 +2051,7 @@ class WebScanner:
             "entry_points": entry_points,
             "sources": [{"type": "http_parameter", "name": p} for p in parameters],
             "sinks": sinks,
+            "sink_details": sink_details,
             "trust_boundaries": [
                 {"name": "browser_to_server", "source": "client", "destination": "web_app"},
                 {"name": "unauthenticated_to_authenticated", "source": "anonymous", "destination": "session"},

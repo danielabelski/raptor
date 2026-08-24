@@ -199,3 +199,48 @@ class TestSurfaceCoverageArtifact(unittest.TestCase):
             )
             self.assertEqual(record["finding_paths"], ["/a"])
             self.assertIn("no knowable", record["note"])
+
+
+class TestContextMapRendererContract(unittest.TestCase):
+    def test_web_map_carries_the_fields_diagram_labels_from(self):
+        """/diagram labels entry points from id/path/method and sinks
+        from sink_details id/operation — without them the web map
+        rendered as '?' and 'unknown' nodes."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from packages.web.discovery import DiscoveryResult
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("packages.web.scanner.WebClient"), patch(
+                "packages.web.scanner.WebCrawler"
+            ):
+                from packages.web.scanner import WebScanner
+
+                scanner = WebScanner("https://t.example", None, Path(tmpdir))
+            cmap = scanner._build_web_context_map({
+                "discovered_urls": ["https://t.example/search?q=1"],
+                "discovered_forms": [{
+                    "action": "https://t.example/login", "method": "POST",
+                    "inputs": {"user": {"type": "text"}},
+                }],
+                "discovered_parameters": ["q"],
+            }, DiscoveryResult())
+
+        for ep in cmap["entry_points"]:
+            self.assertTrue(ep["id"].startswith("EP-"))
+            self.assertTrue(ep["path"])
+            self.assertIn(ep["method"], ("GET", "POST"))
+        self.assertEqual(
+            [s["id"] for s in cmap["sink_details"]], ["SINK-001"],
+        )
+        self.assertIn("parameter 'q'", cmap["sink_details"][0]["operation"])
+
+        from packages.diagram.context_map import generate
+
+        mermaid = generate(cmap)
+        self.assertIn('EP-001["GET https://t.example/search', mermaid)
+        self.assertIn("parameter 'q'", mermaid)
+        self.assertNotIn('"?', mermaid)
+        self.assertNotIn("unknown", mermaid)

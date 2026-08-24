@@ -319,9 +319,11 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Fail an otherwise-green session if any test overran the threshold
-    or mutated the ambient checkout's repo-level git config."""
+    """Fail an otherwise-green session if any test overran the threshold,
+    mutated the ambient checkout's repo-level git config, or leaked the
+    LLM-egress proxy env past the end of the session."""
     _check_git_config_drift(session)
+    _check_egress_leak(session)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     if session.exitstatus == 0:
@@ -388,9 +390,68 @@ def _git_config_drift_summary(terminalreporter):
     )
 
 
+# ---------------------------------------------------------------------------
+# LLM-egress leak guard (fails the session).
+#
+# enable_llm_egress (an LLMClient.__init__ side effect) points the
+# HTTP(S)_PROXY family at an in-process loopback proxy. A test that
+# constructs a real client without the shared reset fixture
+# (core.testing.reset_llm_egress_state) leaks that dead pointer into
+# every later suite in the same process — observed as sandbox proxy
+# tests tunnelling via a long-gone upstream and mocked-client tests
+# burning connect timeouts. The per-directory conftests fix known
+# constructors; this guard makes the NEXT uncovered directory fail
+# loudly at session end instead of poisoning combined runs. Under
+# xdist the leak is per-worker and worker exitstatus propagation is
+# weak, so workers still print the summary section unconditionally;
+# the controller enforces for non-distributed runs. Cost: one env
+# scan per session; core.llm.egress is looked up via sys.modules,
+# never imported, so sessions that never touch LLM code pay nothing.
+# ---------------------------------------------------------------------------
+
+_egress_leaks: "list[str]" = []
+
+
+def _check_egress_leak(session):
+    import sys as _sys
+
+    for key, value in os.environ.items():
+        if key.upper() in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY") \
+                and "127.0.0.1" in value:
+            _egress_leaks.append(f"{key}={value}")
+    egress_mod = _sys.modules.get("core.llm.egress")
+    if egress_mod is not None and getattr(egress_mod, "_enabled", False):
+        _egress_leaks.append("core.llm.egress._enabled is still True")
+    if not _egress_leaks:
+        return
+    if session.exitstatus == 0:
+        session.exitstatus = 1
+
+
+def _egress_leak_summary(terminalreporter):
+    if not _egress_leaks:
+        return
+    tr = terminalreporter
+    tr.section("LLM-egress hermeticity guard FAILED", red=True, bold=True)
+    tr.write_line(
+        "The in-process LLM egress proxy env leaked past session end — "
+        "some test constructed a real LLMClient (enable_llm_egress) in "
+        "a directory whose conftest does not wrap "
+        "core.testing.reset_llm_egress_state:"
+    )
+    for line in _egress_leaks:
+        tr.write_line(f"  {line}")
+    tr.write_line(
+        "Add the autouse reset fixture to that directory's conftest "
+        "(see core/llm/tests/conftest.py for the pattern). The session "
+        "exit status has been forced to 1."
+    )
+
+
 def pytest_terminal_summary(terminalreporter):
     _tree_drift_summary(terminalreporter)
     _git_config_drift_summary(terminalreporter)
+    _egress_leak_summary(terminalreporter)
     if _slow_test_threshold is None or not _slow_test_overruns:
         return
     tr = terminalreporter

@@ -534,3 +534,68 @@ class TestArtifactByteBudget:
         assert vb._load_json(p) is None
         monkeypatch.setattr(vb, "_MAX_ARTIFACT_BYTES", 1 << 20)
         assert vb._load_json(p) == {"target": "x" * 200}
+
+
+class TestLifecycleNamedSiblings:
+    """Incident regression: the run lifecycle names /validate runs
+    ``validate-<ts>-pid<pid>-<n>`` but the sibling search matched only
+    the long ``exploitability-validation`` prefix (and the global
+    fallback only the substring "validation") — a project's own
+    confirmed validate verdicts were invisible to the audit, so the
+    evidence merge and the SCORE_VALIDATE_CONFIRMED priority boost
+    never happened. Observed live: a function CONFIRMED by the
+    project's validate run scored -1 and ranked below leaf utilities."""
+
+    def test_lifecycle_named_project_sibling_found(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sibling = project_dir / "validate-20260822-203354-pid3201630-7117"
+        sibling.mkdir()
+        _write_manifest(sibling, target)
+        _write_validate_findings(sibling)
+        audit_dir = project_dir / "audit-rerun"
+        audit_dir.mkdir()
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.has_content, (
+            "lifecycle-named validate sibling must be found"
+        )
+        assert "sibling" in result.source_command
+
+    def test_legacy_underscore_named_sibling_found(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sibling = project_dir / "validate_20260710_120000"
+        sibling.mkdir()
+        _write_manifest(sibling, target)
+        _write_validate_findings(sibling)
+        audit_dir = project_dir / "audit_x"
+        audit_dir.mkdir()
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert result.has_content
+
+    def test_unrelated_sibling_still_ignored(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        sibling = project_dir / "scan-20260822-x"
+        sibling.mkdir()
+        _write_manifest(sibling, target)
+        _write_validate_findings(sibling)
+        audit_dir = project_dir / "audit_x"
+        audit_dir.mkdir()
+
+        result = import_validate_evidence(
+            audit_dir, target, project_dir=project_dir,
+        )
+        assert not result.has_content

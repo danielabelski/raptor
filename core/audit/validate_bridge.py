@@ -538,7 +538,17 @@ def import_validate_evidence(
         for sibling in sorted(project_dir.iterdir(), reverse=True):
             if not sibling.is_dir():
                 continue
-            if not sibling.name.startswith("exploitability-validation"):
+            # Both nomenclatures: the run lifecycle names validate
+            # runs ``validate-<ts>-pid<pid>-<n>`` (and legacy
+            # ``validate_<ts>``); orchestrated runs used the long
+            # ``exploitability-validation`` prefix. The old
+            # long-prefix-only filter made every lifecycle-named
+            # sibling invisible — a project's own confirmed /validate
+            # verdicts never reached the audit (no evidence merge, no
+            # SCORE_VALIDATE_CONFIRMED priority boost).
+            if not sibling.name.startswith(
+                ("exploitability-validation", "validate-", "validate_"),
+            ):
                 continue
             if not _check_target_match(sibling, target_path):
                 continue
@@ -574,7 +584,9 @@ def import_validate_evidence(
         for candidate in sorted(out_dir.iterdir(), reverse=True):
             if not candidate.is_dir():
                 continue
-            if "validation" not in candidate.name:
+            if "validation" not in candidate.name and not (
+                candidate.name.startswith(("validate-", "validate_"))
+            ):
                 continue
             if not _check_target_match(candidate, target_path):
                 continue

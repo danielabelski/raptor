@@ -63,6 +63,7 @@ sudo afl-system-config
 
 ## Important Notes
 
+- `--project <name>` pins the run to a named project (`-` = explicitly projectless); it wins over the session binding and the last-activated default, and an invalid name is a hard error, never a fallback.
 - Fuzzing can take a long time (hours) for good results
 - The binary should ideally be compiled with:
   - AFL instrumentation: `afl-clang-fast` or `afl-gcc`

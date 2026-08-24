@@ -27,6 +27,7 @@ python3 raptor.py codeql --repo <path> [options]
 | `--extended` | Use extended security suites (more rules, slower) |
 | `--force` | Force database recreation |
 | `--max-findings <n>` | Max findings to analyse (with `--analyze`) |
+| `--project <name>` | Pin the run to a named project (or `-` for explicitly projectless). Wins over the session binding and the last-activated default; invalid names are a hard error, never a fallback. |
 
 ## SMT Dataflow Pre-Check
 

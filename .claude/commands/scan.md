@@ -45,6 +45,7 @@ python3 raptor.py scan --repo /path/to/code --policy-groups secrets,injection
 
 ## Important Notes
 
+- `--project <name>` pins the run to a named project (`-` = explicitly projectless); it wins over the session binding and the last-activated default, and an invalid name is a hard error, never a fallback.
 - Always use absolute paths for repositories
 - The scan outputs go to `out/` directory
 - `/scan` itself is mechanical: SARIF files with findings, scan metrics,

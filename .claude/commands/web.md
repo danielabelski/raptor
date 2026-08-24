@@ -136,6 +136,7 @@ Operational notes:
 
 ## Important Notes
 
+- `--project <name>` pins the run to a named project (`-` = explicitly projectless); it wins over the session binding and the last-activated default, and an invalid name is a hard error, never a fallback.
 - Only scan applications you own or have permission to test
 - Web scanning looks for OWASP Top 10 vulnerabilities
 - Results are saved to `out/web_scan_<timestamp>/`

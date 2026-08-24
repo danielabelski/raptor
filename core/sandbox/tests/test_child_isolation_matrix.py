@@ -144,6 +144,30 @@ class TestLandlockReadGatePlumbing:
         assert got == [[str(tmp_path)]]
 
 
+class TestBindPinPlatformGate:
+    """Bind-source pinning is skipped where O_PATH does not exist."""
+
+    def test_spawn_not_refused_when_o_path_missing(
+            self, monkeypatch, tmp_path):
+        # Platforms without O_PATH (non-Linux) have neither the
+        # mount-ns tier the pin defends nor the Landlock fallback
+        # ladder it refuses to feed: the spawn must skip pinning
+        # there, not refuse every tier on the pin walk's ENOSYS.
+        from core.sandbox import _pathpin
+        from core.sandbox.errors import SandboxSetupError
+        monkeypatch.setattr(_pathpin, "_HAVE_O_PATH", False)
+        try:
+            run_sandboxed(["true"], **_spawn_kwargs(
+                tmp_path, writable_paths=[str(tmp_path)]))
+        except SandboxSetupError as e:
+            assert "validation pin" not in str(e), (
+                "pinning must be skipped, not fatal, where O_PATH "
+                "does not exist"
+            )
+        except Exception:  # noqa: BLE001, S110 — host-specific setup failures are fine
+            pass
+
+
 # Gate on the SAME probe production uses to pick the spawn backend
 # (check_mount_available: userns sysctls + a real unshare probe), not
 # just mount_ns_available (uidmap binaries present). On hosts whose

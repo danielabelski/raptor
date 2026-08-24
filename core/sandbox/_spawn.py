@@ -60,7 +60,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import state
+from . import _pathpin, state
 from ._fork_safe_warn import warn_post_fork
 from .landlock import _make_landlock_preexec
 from .mount_ns import _ESTALE as _PIN_TAMPER_ERRNO
@@ -1362,8 +1362,15 @@ def run_sandboxed(
         # (tamper); ENOENT is a required source that does not exist
         # at validation (caller-input error, same category as the
         # audit-target-dir gate) — both must fail loud, not degrade.
+        # Platforms without O_PATH (non-Linux) have neither the
+        # mount-ns tier this pin defends nor the Landlock-only
+        # fallback ladder it refuses to feed — skip pinning there
+        # instead of failing the spawn on the ENOSYS the pin walk
+        # raises. On Linux O_PATH always exists, so the required-pin
+        # posture below is unchanged where the threat is real.
         _bind_src_fds: dict[str, int] | None = None
-        if (target or output or rootfs) and not skip_mount_ns:
+        if ((target or output or rootfs) and not skip_mount_ns
+                and _pathpin._HAVE_O_PATH):
             try:
                 _bind_src_fds = _pin_bind_sources(
                     target, output, rootfs, readable_paths)

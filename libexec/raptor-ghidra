@@ -125,7 +125,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\x9b]")
+_CTRL_CHARS = re.compile(
+    r"[\x00-\x08\x0b-\x1f\x7f\x9b\u202a-\u202e\u2066-\u2069]"
+)
 
 
 def _safe_name(name: str) -> str:
@@ -368,13 +370,27 @@ def _cmd_decompile(args: argparse.Namespace) -> int:
         return 0
 
     code = None
-    try:
-        with GhidraSession() as session:
-            session.open(gpr, program_name=args.program)
-            code = session.decompile_function(func_id, timeout=args.timeout)
-    except GhidraSessionError as e:
-        print(f"note: in-process decompiler unavailable ({e}) — "
-              "trying disassembly fallback", file=sys.stderr)
+    from packages.ghidra.detect import prefer_in_process, pyghidra_available
+    if pyghidra_available() and not prefer_in_process():
+        # Sandboxed persistent server: JVM-quality decompilation on a
+        # hostile project without in-process exposure.
+        try:
+            from packages.ghidra.server import GhidraServer
+            with GhidraServer(gpr, program_name=args.program) as srv:
+                srv.open()
+                code = srv.decompile(func_id, timeout=args.timeout)
+        except Exception as e:  # noqa: BLE001 — fall to next engine
+            print(f"note: sandboxed decompile server failed ({e}) — "
+                  "trying next engine", file=sys.stderr)
+    if code is None and (prefer_in_process() or not pyghidra_available()):
+        try:
+            with GhidraSession() as session:
+                session.open(gpr, program_name=args.program)
+                code = session.decompile_function(
+                    func_id, timeout=args.timeout)
+        except GhidraSessionError as e:
+            print(f"note: in-process decompiler unavailable ({e}) — "
+                  "trying disassembly fallback", file=sys.stderr)
 
     if code is None:
         # Disassembly fallback: a cached re-database (fallback
@@ -411,7 +427,7 @@ def _cmd_decompile(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    from packages.ghidra.detect import pyghidra_available
+    from packages.ghidra.detect import prefer_in_process
     from packages.ghidra.session import GhidraSession
 
     gpr = args.gpr.resolve()
@@ -419,7 +435,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         print(f"error: project not found: {gpr}", file=sys.stderr)
         return 1
 
-    if not pyghidra_available():
+    if not prefer_in_process():
         # Filesystem scan of the .rep — no JVM needed.
         from packages.ghidra.detect import get_programs
         programs = get_programs(gpr)
@@ -427,8 +443,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
             print(f"{gpr.name}: no programs")
         else:
             print(f"{gpr.name}: {len(programs)} program(s)")
-            for name in programs:
+            for name in programs[:50]:
                 print(f"  {_safe_name(name)}")
+            if len(programs) > 50:
+                print(f"  … and {len(programs) - 50} more")
         return 0
 
     with GhidraSession() as session:

@@ -27,11 +27,15 @@ def _expired_light(name):
         expires = data.get("expires_at") if isinstance(data, dict) else None
         if not expires:
             return False
-        stamp = datetime.fromisoformat(expires)
+        # str() + TypeError in the net: fromisoformat(non-str) raises
+        # TypeError, which escaped and crashed every start_run on one
+        # corrupt project file — while get_active (str-coercing)
+        # reported the project healthy. The two must never disagree.
+        stamp = datetime.fromisoformat(str(expires))
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
         return stamp < datetime.now(timezone.utc)
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
 
 

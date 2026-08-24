@@ -5,6 +5,7 @@ No Claude Code, no LLM — pure Python.
 """
 
 import argparse
+import contextlib
 import os
 import stat as _stat
 import sys
@@ -602,7 +603,15 @@ def main() -> None:
         args.subcommand = "use"
         args.name = "none"
 
-    mgr = ProjectManager()
+    try:
+        mgr = ProjectManager()
+    except OSError as e:
+        # The constructor mkdirs the registry dir; a read-only or
+        # broken $HOME must yield one clear line, not a traceback —
+        # for EVERY subcommand including help/list.
+        print(f"Error: cannot access the project registry "
+              f"(~/.raptor/projects): {e}", file=sys.stderr)
+        sys.exit(1)
 
     _op_guard = None
     try:
@@ -641,6 +650,18 @@ def main() -> None:
                         f"Inspect target or list available types via "
                         f"the catalog YAMLs in core/run/target_types/."
                     ))
+                    # The mutation lock already mkdir'd the output dir
+                    # for its .op.lock — "refuses without leaving a
+                    # half-created project on disk" must include that:
+                    # a leftover dir reads as a project output dir to
+                    # is_project_output_dir. We hold the lock, so
+                    # removing our own lock file races nothing.
+                    _out = Path(args.output_dir or str(
+                        DEFAULT_OUTPUT_BASE / args.name))
+                    with contextlib.suppress(OSError):
+                        (_out / ".op.lock").unlink(missing_ok=True)
+                    with contextlib.suppress(OSError):
+                        _out.rmdir()
                     sys.exit(1)
             p = mgr.create(args.name, args.target,
                            description=args.description,
@@ -651,20 +672,28 @@ def main() -> None:
             # last-activated default — binding
             # first, bookmark second, same discipline as `use`.
             from .sessions import bind_session, resolve_session_pid
+            _bound_msg = None
             if resolve_session_pid() is not None:
                 if bind_session(p.name, seeded_by="create") is not None:
-                    print(f"  Active for this session; new sessions "
-                          f"will default to it.")
+                    _bound_msg = ("  Active for this session; new "
+                                  "sessions will default to it.")
                 else:
-                    print(f"  WARNING: session binding failed — this "
-                          f"session still follows its previous "
-                          f"project. Retry with 'raptor project use "
-                          f"{p.name}'. New sessions will default "
-                          f"to it.")
+                    _bound_msg = (
+                        f"  WARNING: session binding failed — this "
+                        f"session still follows its previous project. "
+                        f"Retry with 'raptor project use {p.name}'. "
+                        f"New sessions will default to it.")
             else:
-                print(f"  New sessions will default to it "
-                      f"(no session — no binding recorded).")
-            mgr.set_active(p.name)
+                _bound_msg = ("  New sessions will default to it "
+                              "(no session — no binding recorded).")
+            try:
+                mgr.set_active(p.name)
+            except OSError as e:
+                print(f"  WARNING: could not update the last-activated "
+                      f"default ({e}) — new sessions will NOT default "
+                      f"to '{p.name}'.")
+            else:
+                print(_bound_msg)
             _p_binaries = getattr(p, "binaries", None) or []
             if _p_binaries:
                 print(f"  binaries: {', '.join(_p_binaries)}")
@@ -795,8 +824,16 @@ def main() -> None:
                 else:
                     marker = "  "
                 any_marker = any_marker or marker != "  "
-                desc = f"  {p.description}" if p.description else ""
-                print(f"{marker}{p.name:<{col}s}{desc:30s}  {p.target}")
+                # description/target may arrive via a project-import
+                # zip — defang terminal escapes like every other
+                # untrusted-content print surface.
+                from core.security.log_sanitisation import (
+                    sanitise_for_terminal,
+                )
+                desc = (f"  {sanitise_for_terminal(p.description, max_len=60)}"
+                        if p.description else "")
+                tgt = sanitise_for_terminal(str(p.target or ""), max_len=120)
+                print(f"{marker}{p.name:<{col}s}{desc:30s}  {tgt}")
             if any_marker:
                 print("  (* this session's project; "
                       "> last-activated default)")
@@ -886,7 +923,15 @@ def main() -> None:
                 binding, state = session_binding()
                 bookmark = _read_bookmark(mgr)
                 if state == "bound":
-                    print(f"Session project: {binding}")
+                    if mgr.load(binding) is None:
+                        # Same existence vet get_active applies: the
+                        # bound project was deleted from elsewhere.
+                        print(f"Session project: none (bound project "
+                              f"'{binding}' no longer exists — "
+                              f"re-bind with 'raptor project use "
+                              f"<name>')")
+                    else:
+                        print(f"Session project: {binding}")
                 elif state == "none":
                     print("Session project: none (explicitly cleared)")
                 elif resolve_session_pid() is not None:
@@ -1896,7 +1941,9 @@ def _print_status(project) -> None:
 
     print(f"Project: {project.name}")
     if project.description:
-        print(f"Description: {project.description}")
+        from core.security.log_sanitisation import sanitise_for_terminal
+        print("Description: "
+              f"{sanitise_for_terminal(project.description, max_len=500)}")
     print(f"Target: {project.target}")
     print(f"Output: {project.output_dir}")
     print(f"Created: {project.created[:10] if project.created else 'unknown'}")
@@ -1912,7 +1959,8 @@ def _print_status(project) -> None:
     else:
         print("Threat model: not initialised")
     if project.notes:
-        print(f"Notes: {project.notes}")
+        from core.security.log_sanitisation import sanitise_for_terminal
+        print(f"Notes: {sanitise_for_terminal(project.notes, max_len=2000)}")
 
     # Trust block — trust state must never be invisible.
     from core.project.project import VALID_TRUST_MARKERS
@@ -2706,6 +2754,10 @@ def _do_merge(project, merge_type, yes) -> None:
                 "status": "completed",
                 "project": project.name,
                 "project_source": "merged",
+                # Recorded so merged runs keep passing the
+                # recorded-target gates (adoption refusal, sibling
+                # discovery, the one-target write gate).
+                "target_path": project.target,
                 "extra": {"merged_from": len(dirs), "unique_findings": stats["unique_findings"]},
             })
             from core.run.pin import freeze_run_pin

@@ -820,7 +820,12 @@ class ProjectManager:
             msg = f"Project '{name}' not found"
             raise ValueError(msg)
 
-        if purge and not force and project.output_path.exists():
+        # Live-run refusal applies to EVERY delete, not only purge:
+        # deleting the registry entry alone re-binds sessions to none
+        # and orphans the live run's pin ("pinned to missing project"),
+        # so its completion-time journal/coverage merges are silently
+        # suppressed. force=True overrides, as documented.
+        if not force and project.output_path.exists():
             from core.project.clean import split_live_runs
             run_dirs = [d for d in project.output_path.iterdir()
                         if d.is_dir() and not d.name.startswith((".", "_"))]
@@ -828,7 +833,7 @@ class ProjectManager:
             if live:
                 names = ", ".join(d.name for d in live[:3])
                 msg = (
-                    f"Refusing to purge '{name}': {len(live)} live "
+                    f"Refusing to delete '{name}': {len(live)} live "
                     f"run(s) under it ({names}{'…' if len(live) > 3 else ''}) "
                     f"— possibly another session's. Wait for them, or "
                     f"pass --force."
@@ -929,6 +934,21 @@ class ProjectManager:
             msg = f"Project '{new_name}' already exists"
             raise ValueError(msg)
 
+        # Refuse while runs are live: their owning processes hold the
+        # OLD name in their pin freeze caches, and a rewrite under
+        # them would drop their completion-time project writes.
+        try:
+            from core.project.clean import split_live_runs
+            _rest, live = split_live_runs(project.get_run_dirs())
+        except Exception:  # noqa: BLE001 — liveness probe best-effort
+            live = []
+        if live:
+            names = ", ".join(d.name for d in live[:3])
+            msg = (f"Project '{old_name}' has {len(live)} live run(s) "
+                   f"({names}...) — wait for them to finish before "
+                   "renaming")
+            raise ValueError(msg)
+
         # Update project
         project.name = new_name
 
@@ -970,6 +990,35 @@ class ProjectManager:
         # Re-point live session bindings: a session bound
         # to the old name must follow the rename, not dangle.
         self._rewrite_bindings(old_name, new_name)
+
+        # Re-point every run pin: a pin recording the old name would
+        # resolve as authoritatively-projectless forever ("pinned to
+        # missing project"), silently suppressing the whole renamed
+        # project's journal merges, coverage snapshots, and trust
+        # consumption. Best-effort per run — a failure names the dir.
+        try:
+            from core.json import load_json as _lj
+            from core.json import save_json as _sj
+            from core.run.metadata import RUN_METADATA_FILE as _MF
+            for run_dir in project.get_run_dirs():
+                marker = run_dir / _MF
+                try:
+                    meta = _lj(marker)
+                    if (isinstance(meta, dict)
+                            and meta.get("project") == old_name):
+                        meta["project"] = new_name
+                        _sj(marker, meta)
+                except Exception:  # noqa: BLE001 — leave a loud trail
+                    logger.warning(
+                        "rename: could not re-point the run pin in %s "
+                        "— edit its %s 'project' field to %r manually",
+                        run_dir, _MF, new_name, exc_info=True)
+        except Exception:  # noqa: BLE001 — enumeration failure
+            logger.warning(
+                "rename: could not enumerate runs under %s to re-point "
+                "their pins — runs pinned to %r will resolve "
+                "projectless until fixed manually",
+                project.output_path, old_name, exc_info=True)
 
         logger.info("Renamed project '%s' → '%s'", old_name, new_name)
         return project
@@ -1159,7 +1208,20 @@ class ProjectManager:
         # those legacy shapes; the import is gated by an explicit
         # operator action so the over-match risk is acceptable here
         # (unlike sweep / cleanup paths which run automatically).
-        if is_run_directory(src, strict=False):
+        # Container detection BEFORE the lenient single-run match: a
+        # project output dir carries checklist.json at its top level,
+        # so the lenient heuristic classified the WHOLE project dir as
+        # one run — the entire tree moved in as a single "run", the
+        # real runs nested a level down where get_run_dirs can't see
+        # them, and the source project's registry pointed at nothing.
+        _has_child_runs = any(
+            child.is_dir() and is_run_directory(child, strict=True)
+            for child in src.iterdir()
+        )
+        _is_container = ((src / "project.json").is_file()
+                         or (_has_child_runs
+                             and not is_run_directory(src, strict=True)))
+        if is_run_directory(src, strict=False) and not _is_container:
             # Single run directory
             if _adopt_one(src):
                 added = 1
@@ -1242,9 +1304,31 @@ class ProjectManager:
             msg = "--to is required: specify where to move the run"
             raise ValueError(msg)
 
+        # run_name must be a direct child NAME, never a path: the
+        # unvalidated join let "../victim" move an arbitrary directory
+        # out from under its owner (and stamp a pin file into it).
+        if (os.sep in run_name or (os.altsep and os.altsep in run_name)
+                or run_name in (".", "..") or not run_name):
+            msg = f"Invalid run name {run_name!r} — pass a run directory name, not a path"
+            raise ValueError(msg)
         run_dir = project.output_path / run_name
         if not run_dir.exists():
             msg = f"Run '{run_name}' not found in project '{name}'"
+            raise ValueError(msg)
+        # Never relocate a run in flight — same live-run protection
+        # clean/merge/delete have.
+        from core.run.metadata import (
+            STATUS_RUNNING,
+            _session_alive_for_meta,
+            load_run_metadata,
+        )
+        meta = load_run_metadata(run_dir) or {}
+        if (meta.get("status") == STATUS_RUNNING
+                and _session_alive_for_meta(meta)):
+            # Same session-liveness rule the other live-run guards use
+            # — a crashed run stuck at 'running' stays removable.
+            msg = (f"Run '{run_name}' is still running — wait for it "
+                   "to finish (or fail it) before removing")
             raise ValueError(msg)
 
         dest = Path(to_path)

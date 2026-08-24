@@ -348,3 +348,91 @@ class AdoptionPinRewriteTest(unittest.TestCase):
         meta = load_json(dest / "scan-legacy2" / ".raptor-run.json")
         self.assertIsNone(meta["project"])
         self.assertEqual(meta["project_source"], "none")
+
+
+class SecondReviewProjectTest(unittest.TestCase):
+    """Second review round: rename pin rewrite, container detection,
+    remove_run traversal, delete live-run guard."""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.projects_dir = Path(self.tmpdir.name) / "projects"
+        self.output_dir = str(Path(self.tmpdir.name) / "output")
+        self.target_code = str(Path(self.tmpdir.name) / "code")
+        Path(self.target_code).mkdir()
+        self.mgr = ProjectManager(projects_dir=self.projects_dir)
+        self.mgr.create("myapp", self.target_code,
+                        output_dir=self.output_dir)
+
+    def _completed_run(self, name: str, project: str = "myapp") -> Path:
+        from core.json import save_json
+        d = Path(self.output_dir) / name
+        d.mkdir(parents=True)
+        save_json(d / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+            "project": project, "project_source": "session",
+            "target_path": self.target_code,
+        })
+        return d
+
+    def test_rename_repoints_run_pins(self):
+        from core.json import load_json
+        self._completed_run("scan_1")
+        self._completed_run("scan_2")
+        self.mgr.rename("myapp", "newname")
+        for name in ("scan_1", "scan_2"):
+            meta = load_json(
+                Path(self.output_dir) / name / ".raptor-run.json")
+            self.assertEqual(meta["project"], "newname")
+
+    def test_rename_refuses_live_runs(self):
+        from unittest.mock import patch as _patch
+        d = self._completed_run("scan_live")
+        from core.json import load_json, save_json
+        meta = load_json(d / ".raptor-run.json")
+        meta["status"] = "running"
+        save_json(d / ".raptor-run.json", meta)
+        with _patch("core.project.clean.split_live_runs",
+                    return_value=([], [d])), \
+                self.assertRaises(ValueError):
+            self.mgr.rename("myapp", "newname")
+
+    def test_adopting_a_project_dir_takes_the_children(self):
+        # A source dir with a top-level checklist.json (every project
+        # dir has one) must be treated as a CONTAINER of runs, not
+        # swallowed whole as one run.
+        from core.json import save_json
+        src = Path(self.tmpdir.name) / "oldproj"
+        src.mkdir()
+        (src / "checklist.json").write_text("{}", encoding="utf-8")
+        for name in ("scan_a", "scan_b"):
+            d = src / name
+            d.mkdir()
+            save_json(d / ".raptor-run.json", {
+                "version": 2, "command": "scan", "status": "completed",
+                "target_path": self.target_code,
+            })
+        added = self.mgr.add_directory("myapp", str(src))
+        self.assertEqual(added, 2)
+        self.assertTrue((Path(self.output_dir) / "scan_a").is_dir())
+        self.assertFalse(
+            (Path(self.output_dir) / "oldproj").exists(),
+            "the container itself must not be adopted as a run")
+
+    def test_remove_run_rejects_path_shaped_names(self):
+        victim = Path(self.tmpdir.name) / "victim"
+        victim.mkdir()
+        for bad in ("../victim", "a/b", "..", "."):
+            with self.assertRaises(ValueError):
+                self.mgr.remove_run("myapp", bad,
+                                    to_path=str(Path(self.tmpdir.name) / "o"))
+        self.assertTrue(victim.exists())
+
+    def test_delete_without_purge_refuses_live_runs(self):
+        from unittest.mock import patch as _patch
+        d = self._completed_run("scan_live2")
+        with _patch("core.project.clean.split_live_runs",
+                    return_value=([], [d])), \
+                self.assertRaises(ValueError):
+            self.mgr.delete("myapp")

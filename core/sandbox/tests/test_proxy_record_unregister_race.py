@@ -57,7 +57,7 @@ class TestRecordUnregisterRace:
             with proxy._buffer_lock:
                 proxy._sandbox_buffers[token] = gated
                 proxy._sandbox_buffers_snapshot = tuple(
-                    (buf, proxy._sandbox_lane_subs[tok])
+                    (tok, buf, proxy._sandbox_lane_subs[tok])
                     for tok, buf in proxy._sandbox_buffers.items()
                 )
 

@@ -408,6 +408,40 @@ _PROXY_EVENT_RESULTS = frozenset({
     "bad_request",
     # Unhandled exception in tunnel handler
     "handler_error",
+    # Control-plane marker, one per overflowed registration buffer:
+    # the per-registration event cap was reached and subsequent
+    # events were trimmed (see _append_bounded_locked). Carries
+    # `cap`, `denial_reserve`, and live `dropped`/`dropped_denials`
+    # counters so consumers of the persisted event list can see the
+    # truncation — a capped buffer is never silent.
+    "buffer_overflow",
+})
+
+# Per-registration event-buffer bounds. The per-sandbox buffers exist
+# so a flood of allowed CONNECTs cannot push an earlier denied CONNECT
+# out of a shared ring (see the __init__ comment), but "grows
+# independently" was deliberately uncapped — ~300 bytes per event of
+# PARENT memory, attacker-paced: a hostile target spinning CONNECTs
+# for hours grew the orchestrator without bound. The cap is generous
+# (100k events ≈ 30 MB worst case per registration; legitimate runs
+# record per-CONNECT, not per-byte, and stay orders of magnitude
+# below). Past the cap, one explicit `buffer_overflow` marker record
+# is appended (never a silent trim) and further events are counted
+# into it rather than buffered — EXCEPT denial-class events, which
+# keep a bounded reserve so the flood-then-attack ordering (fill the
+# buffer with allowed CONNECTs, then hit a denied host) cannot push
+# the attack signal out of the persisted evidence either.
+_SANDBOX_BUFFER_MAX_EVENTS = 100_000
+_SANDBOX_BUFFER_DENIAL_RESERVE = 10_000
+
+# Denial-class results for the overflow reserve above: the events
+# triage and operators must never lose to a volume flood.
+_DENIAL_EVENT_RESULTS = frozenset({
+    "denied_host",
+    "would_deny_host",
+    "denied_resolved_ip",
+    "denied_sni",
+    "denied_port",
 })
 
 # Live-escalation: default distinct-denied-host threshold before the
@@ -1226,9 +1260,16 @@ class EgressProxy:
         # design: a child making 10 000 CONNECTs to allow-listed hosts
         # can no longer push an earlier denied CONNECT out of a shared
         # 1024-entry deque before the sandbox ends and flushes to file.
-        # Each sandbox's buffer grows independently. Memory cost is
-        # ~300 bytes per event per active sandbox.
+        # Each sandbox's buffer grows independently, bounded at
+        # _SANDBOX_BUFFER_MAX_EVENTS (~300 bytes per event); past the
+        # cap an explicit buffer_overflow marker is appended and
+        # denial-class events keep a bounded reserve — see
+        # _append_bounded_locked.
         self._sandbox_buffers: dict = {}
+        # Per-token overflow state, created lazily on the first trim:
+        # {"marker": <the in-buffer marker dict>, "denials_kept": int}.
+        # Guarded by _buffer_lock like the buffers themselves.
+        self._sandbox_buffer_overflow: dict = {}
         self._sandbox_labels: dict = {}
         # Per-token lane subscription (lane_id or None). None = the
         # run-global view: the buffer receives EVERY event (the
@@ -1741,7 +1782,7 @@ class EgressProxy:
             self._sandbox_labels[token] = caller_label
             self._sandbox_lane_subs[token] = lane_sub
             self._sandbox_buffers_snapshot = tuple(
-                (buf, self._sandbox_lane_subs[tok])
+                (tok, buf, self._sandbox_lane_subs[tok])
                 for tok, buf in self._sandbox_buffers.items()
             )
             state = self._live_recon.get(lane_sub)
@@ -1791,8 +1832,9 @@ class EgressProxy:
             events = self._sandbox_buffers.pop(token, [])
             label = self._sandbox_labels.pop(token, None)
             self._sandbox_lane_subs.pop(token, None)
+            self._sandbox_buffer_overflow.pop(token, None)
             self._sandbox_buffers_snapshot = tuple(
-                (buf, self._sandbox_lane_subs[tok])
+                (tok, buf, self._sandbox_lane_subs[tok])
                 for tok, buf in self._sandbox_buffers.items()
             )
             # Pre-fix the copy `[{**e, "caller": label} for e in events]`
@@ -1881,10 +1923,84 @@ class EgressProxy:
         """
         lane_id = event.get("lane_id")
         with self._buffer_lock:
-            for buf, sub in self._sandbox_buffers_snapshot:
+            for tok, buf, sub in self._sandbox_buffers_snapshot:
                 if sub is None or (lane_id is not None and sub == lane_id):
-                    buf.append(event)
+                    self._append_bounded_locked(tok, buf, event)
         self._live_escalate(event)
+
+    def _append_bounded_locked(self, token: int, buf: list,
+                               event: dict) -> None:
+        """Append one event to one registration's buffer, bounded.
+
+        MUST hold ``_buffer_lock`` (the caller does). Below
+        ``_SANDBOX_BUFFER_MAX_EVENTS`` this is a plain append. At the
+        cap, the first over-cap event appends an explicit
+        ``buffer_overflow`` marker record — a capped buffer is NEVER
+        silent: the marker rides the normal unregister copy into
+        proxy-events.jsonl and every other consumer of the event
+        list. Past the cap:
+
+          - denial-class events (``_DENIAL_EVENT_RESULTS``) are still
+            buffered, up to ``_SANDBOX_BUFFER_DENIAL_RESERVE`` per
+            registration, so a flood of allowed CONNECTs followed by
+            a denied one cannot push the attack signal out of the
+            evidence (the mirror image of the flood-masks-attack
+            ordering the per-sandbox buffers already defeat);
+          - everything else is counted into the marker's ``dropped``
+            (and ``dropped_denials`` once the reserve is spent too)
+            and not buffered.
+
+        The marker dict is mutated in place under the lock;
+        ``unregister_sandbox`` copies under the same lock, so readers
+        always see consistent counters. Per-buffer state, keyed by
+        registration token: the same event dict fans into several
+        buffers, each of which caps independently.
+        """
+        overflow = self._sandbox_buffer_overflow.get(token)
+        if overflow is None:
+            if len(buf) < _SANDBOX_BUFFER_MAX_EVENTS:
+                buf.append(event)
+                return
+            marker = {
+                "t": time.monotonic(),
+                "host": None, "port": None,
+                "result": "buffer_overflow",
+                "reason": (
+                    f"per-registration event cap "
+                    f"({_SANDBOX_BUFFER_MAX_EVENTS}) reached; "
+                    f"further events are trimmed and counted here "
+                    f"(denial-class events keep a "
+                    f"{_SANDBOX_BUFFER_DENIAL_RESERVE}-event "
+                    f"reserve)"),
+                "resolved_ip": None,
+                "lane": None, "lane_id": None,
+                "bytes_c2u": 0, "bytes_u2c": 0, "duration": 0.0,
+                "cap": _SANDBOX_BUFFER_MAX_EVENTS,
+                "denial_reserve": _SANDBOX_BUFFER_DENIAL_RESERVE,
+                "dropped": 0,
+                "dropped_denials": 0,
+            }
+            overflow = {"marker": marker, "denials_kept": 0}
+            self._sandbox_buffer_overflow[token] = overflow
+            buf.append(marker)
+            logger.warning(
+                "egress proxy: per-registration event buffer cap "
+                "(%d) reached — further events trimmed (denials keep "
+                "a %d-event reserve); buffer_overflow marker "
+                "appended.",
+                _SANDBOX_BUFFER_MAX_EVENTS,
+                _SANDBOX_BUFFER_DENIAL_RESERVE,
+            )
+        marker = overflow["marker"]
+        if (event.get("result") in _DENIAL_EVENT_RESULTS
+                and overflow["denials_kept"]
+                < _SANDBOX_BUFFER_DENIAL_RESERVE):
+            overflow["denials_kept"] += 1
+            buf.append(event)
+            return
+        marker["dropped"] += 1
+        if event.get("result") in _DENIAL_EVENT_RESULTS:
+            marker["dropped_denials"] += 1
 
     def _live_bucket_states(self, event: dict) -> list[dict]:
         """Return the active lane/global live-escalation buckets for event."""

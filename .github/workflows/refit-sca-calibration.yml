@@ -7,7 +7,7 @@ name: Refit SCA risk-score multipliers
 # Pipeline (per run):
 #   1. Validate the corpus — read latest verdict.
 #   2. If verdict is needs_retune (or workflow_dispatch invoked),
-#      run libexec/raptor-sca-refit-calibration --apply.
+#      run packages/sca/scripts/refit-calibration --apply.
 #   3. If risk.py changed, commit + open auto-PR with diff +
 #      report.
 #
@@ -141,7 +141,7 @@ jobs:
         # the report still ships.
         run: |
           set +e
-          libexec/raptor-sca-refit-calibration --apply
+          packages/sca/scripts/refit-calibration --apply
           rc=$?
           echo "refit exit: $rc"
           # Only exit 3 (genuine error) should fail the workflow.

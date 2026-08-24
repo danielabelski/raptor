@@ -30,7 +30,7 @@ stays ``earns_suppression=False`` and the live producer
 (:func:`core.dataflow.smt_barrier._record_value_bound_audit`) writes
 record-only evidence (``dropped: false``).
 
-Run via ``libexec/raptor-sanitizer-cut-precision``.
+Run via ``core/analysis/scripts/sanitizer-cut-precision``.
 """
 from __future__ import annotations
 

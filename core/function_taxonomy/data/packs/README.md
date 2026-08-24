@@ -29,7 +29,7 @@ Entry shape:
 
 Provenance values:
 
-* `cve-fix-diff` — harvested by `libexec/raptor-parser-pack-harvest`
+* `cve-fix-diff` — harvested by `core/dataflow/scripts/parser-pack-harvest`
   from CVE-referencing fix commits of the library's own history: the
   name is a public-API function that a security fix modified (hunk
   enclosing-context, filtered to the library's exported-namespace
@@ -42,7 +42,7 @@ Provenance values:
 ## Refreshing
 
 ```
-libexec/raptor-parser-pack-harvest --clone-root <dir-of-clones> [--dry-run]
+core/dataflow/scripts/parser-pack-harvest --clone-root <dir-of-clones> [--dry-run]
 ```
 
 Clone the libraries listed in `core/dataflow/data/parser_pack_sources.json`

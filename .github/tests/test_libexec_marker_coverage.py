@@ -203,7 +203,6 @@ SYSPATH_VARIANTS = {
     "raptor-enrich-context-map-frida": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
     "raptor-enrich-context-map-mitigation": ("sys.path.insert(0, str(_ROOT))",),
     "raptor-lifecycle-hook": ("sys.path.insert(0, str(REPO_ROOT))",),
-    "raptor-migrate-journal": ("sys.path.insert(0, str(REPO))",),
     "raptor-r2-sandboxed": ("sys.path.insert(0, str(_RAPTOR_DIR))",),
     "raptor-self-test": (
         "sys.path.insert(0, str(_RAPTOR_DIR))",
@@ -217,7 +216,6 @@ SYSPATH_VARIANTS = {
         'sys.path.insert(0, os.environ["RAPTOR_DIR"])',
     ),
     "raptor-run-sandboxed": ("sys.path.insert(0, raptor_dir)",),
-    "raptor-sca-refit-calibration": ("sys.path.insert(0, str(_REPO_ROOT))",),
     "raptor-sca-run": ("sys.path.insert(0, str(_REPO))",),
     "raptor-session-init": (
         "sys.path.insert(0, str(REPO_ROOT))",

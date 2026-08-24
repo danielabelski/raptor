@@ -22,8 +22,8 @@ Idempotent: re-running merges into the existing index without
 duplication (strict-monotone ``ts`` ensures no double-count).
 
 Usage:
-    libexec/raptor-migrate-journal <project>
-    libexec/raptor-migrate-journal <project> --skip-and-mark-inert
+    core/coverage/scripts/migrate-journal <project>
+    core/coverage/scripts/migrate-journal <project> --skip-and-mark-inert
 
 The second form is an escape hatch that writes an empty
 ``review-journal-index.json`` + a marker file
@@ -54,7 +54,7 @@ if not (os.environ.get("CLAUDECODE")
 # ─── end trust-marker check ─────────────────────────────────
 
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 import core.startup.process_init  # noqa: E402,F401
 

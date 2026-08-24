@@ -1,6 +1,6 @@
 """Tests for the learned-models wiring around the PR2a emitter:
 ``codeql_augmented_run.run_learned_models_measurement`` and the
-``raptor-emit-extension-pack`` libexec shim. CodeQL is never invoked;
+``core/iris/scripts/emit-extension-pack`` shim. CodeQL is never invoked;
 the fake runner writes minimal SARIF where ``--output=`` points."""
 
 from __future__ import annotations
@@ -85,7 +85,8 @@ class TestRunLearnedModelsMeasurement:
 # ---------------------------------------------------------------------
 
 
-_SHIM = Path(__file__).resolve().parents[3] / "libexec" / "raptor-emit-extension-pack"
+_SHIM = (Path(__file__).resolve().parents[3] / "core" / "iris"
+         / "scripts" / "emit-extension-pack")
 
 
 def _run_shim(*args):

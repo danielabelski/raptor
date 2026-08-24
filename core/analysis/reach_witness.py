@@ -223,7 +223,7 @@ VERDICTS: dict[str, VerdictSpec] = {
     # threat-model authority and line-carrying damage-gated records):
     #   * zero-false-suppress corpus clean at flip time: 239 fixtures
     #     (172 must-not-suppress), zero false suppressions, zero missed,
-    #     rule-of-three 95% UB 0.0174 (raptor-sanitizer-cut-precision,
+    #     rule-of-three 95% UB 0.0174 (sanitizer-cut-precision,
     #     report.json sha256 139a3f07fecade2b…50ee9a — recorded
     #     alongside this change per the protocol);
     #   * live evidence: zero true-finding damage across every

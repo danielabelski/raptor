@@ -456,9 +456,9 @@ The verdict flows through the existing reachability chokepoint: /codeql + /agent
 
 **E2E + precision verification**:
 - `core/analysis/scripts/binary-oracle-e2e` — single-invocation audit that builds a real C target and walks 14 consumer surfaces (~50 assertions). No LLM calls. Run with `CLAUDECODE=1 core/analysis/scripts/binary-oracle-e2e`. (Verification harnesses live in a `scripts/` subdirectory beside the code they audit — never on the `libexec/` LLM dispatch surface.)
-- `libexec/raptor-binary-oracle-precision --corpus <name>` — re-measure absent-precision on any corpus driver (synthetic/zlib/libsodium/snappy/leveldb/regex-rust/zstd_holdout). Report includes per-corpus cross-tab (classifier × gcov live/dead), aggregate with rule-of-three UB, n-concentration dominator detection, and the toolchain block (cc/gcov/llvm-cov versions) so the precision number is reproducible.
+- `core/analysis/scripts/binary-oracle-precision --corpus <name>` — re-measure absent-precision on any corpus driver (synthetic/zlib/libsodium/snappy/leveldb/regex-rust/zstd_holdout). Report includes per-corpus cross-tab (classifier × gcov live/dead), aggregate with rule-of-three UB, n-concentration dominator detection, and the toolchain block (cc/gcov/llvm-cov versions) so the precision number is reproducible.
 
-**Skill location**: `core/analysis/binary_oracle.py` (classifier), `core/analysis/binary_oracle_autodetect.py` (auto-detect), `core/analysis/binary_oracle_precision.py` (measurement harness — `libexec/raptor-binary-oracle-precision` CLI shim runs it). Design + validation writeup: `~/design/binary-oracle-reachability.md` §9-11.
+**Skill location**: `core/analysis/binary_oracle.py` (classifier), `core/analysis/binary_oracle_autodetect.py` (auto-detect), `core/analysis/binary_oracle_precision.py` (measurement harness — the `core/analysis/scripts/binary-oracle-precision` shim runs it). Design + validation writeup: `~/design/binary-oracle-reachability.md` §9-11.
 
 ---
 

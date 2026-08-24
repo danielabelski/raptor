@@ -295,7 +295,7 @@ def generate_manifests(spec: CvefixSpec) -> tuple[dict, dict]:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        prog="raptor-recall-measure cvefix-manifest",
+        prog="recall-measure cvefix-manifest",
         description=__doc__.splitlines()[0],
     )
     p.add_argument("--spec", type=Path, required=True,

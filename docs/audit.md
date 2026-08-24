@@ -246,7 +246,7 @@ never the code.
 |-------------|----------|-------------|
 | Checker vocab packs | `core/audit/data/vocab_packs/` (today: `linux_kernel.json` -- allocators, deallocators, lock pairs, callback register/cancel pairs, nullable returns, auth predicates, ...) | SMT condition vocabulary, prefilter, callback-lifetime checker.  Applied when the target is detected as a kernel tree |
 | Strategy signal packs | `core/audit/data/strategy_packs/` (today: `linux_kernel.json` -- per-strategy path and source tokens) | Per-function strategy inference |
-| Parser-API pack | `core/function_taxonomy/data/packs/parser_apis.json` (seed set + CVE-harvested names; refresh with `libexec/raptor-parser-pack-harvest`) | Function taxonomy (`PARSER_FUNCS`), binary-analysis surface classification, Frida hooks |
+| Parser-API pack | `core/function_taxonomy/data/packs/parser_apis.json` (seed set + CVE-harvested names; refresh with `core/dataflow/scripts/parser-pack-harvest`) | Function taxonomy (`PARSER_FUNCS`), binary-analysis surface classification, Frida hooks |
 | Crypto API packs | `engine/coccinelle/source_intel/crypto/packs/` (`openssl.json`, `kernel-crypto.json`, `libsodium.json`) | The `crypto_calls` Coccinelle rule and `/understand --map`'s crypto inventory |
 
 Adding a library is a data change: drop a new JSON pack in the family's

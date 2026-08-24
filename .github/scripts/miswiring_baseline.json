@@ -49,9 +49,6 @@
     "artifacts:orphan_reader::coverage-*.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },
-    "artifacts:orphan_reader::coverage-audit.json": {
-      "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
-    },
     "artifacts:orphan_reader::coverage-codeql.json": {
       "note": "artifact triaged at baseline cut: operator/LLM-facing output, externally produced input, or wiring pending"
     },

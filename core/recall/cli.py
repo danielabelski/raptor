@@ -1,4 +1,4 @@
-"""CLI for the recall-measurement harness (raptor-recall-measure)."""
+"""CLI for the recall-measurement harness (core/recall/scripts/recall-measure)."""
 
 from __future__ import annotations
 
@@ -310,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="[%(levelname)s] %(message)s")
     p = argparse.ArgumentParser(
-        prog="raptor-recall-measure",
+        prog="recall-measure",
         description=("End-to-end detector-recall measurement: run a "
                      "detection profile against a ground-truth target "
                      "and score found/expected per CWE. Reports are "

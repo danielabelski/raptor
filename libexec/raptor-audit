@@ -1824,9 +1824,9 @@ def _check_legacy_state(project_dir: Path) -> str | None:
         "unreviewed unless migrated.\n\n"
         "Legacy sources found:\n  - "
         + "\n  - ".join(legacy_sources)
-        + "\n\nTo migrate: libexec/raptor-migrate-journal "
+        + "\n\nTo migrate: core/coverage/scripts/migrate-journal "
         f"{project_dir}\n"
-        "To skip and mark inert: libexec/raptor-migrate-journal "
+        "To skip and mark inert: core/coverage/scripts/migrate-journal "
         f"{project_dir} --skip-and-mark-inert\n\n"
         "The migration is idempotent — running it twice is safe."
     )

@@ -1,4 +1,4 @@
-"""Tests for ``libexec/raptor-strategy-eval``.
+"""Tests for ``packages/strategy_eval/scripts/strategy-eval``.
 
 Drives the shim as a subprocess. Only the deterministic paths are
 exercised — selection mode and argument handling; efficacy mode makes
@@ -14,7 +14,8 @@ from pathlib import Path
 
 # parents[3] = packages/strategy_eval/tests -> strategy_eval -> packages -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SHIM = REPO_ROOT / "libexec" / "raptor-strategy-eval"
+SHIM = (REPO_ROOT / "packages" / "strategy_eval" / "scripts"
+        / "strategy-eval")
 
 
 def _run(*args, env_extra=None):

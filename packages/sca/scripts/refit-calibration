@@ -21,10 +21,10 @@ Exit codes:
 
 Usage:
 
-    libexec/raptor-sca-refit-calibration
-    libexec/raptor-sca-refit-calibration --corpus custom/dir
-    libexec/raptor-sca-refit-calibration --max-delta 0.05
-    libexec/raptor-sca-refit-calibration --apply
+    packages/sca/scripts/refit-calibration
+    packages/sca/scripts/refit-calibration --corpus custom/dir
+    packages/sca/scripts/refit-calibration --max-delta 0.05
+    packages/sca/scripts/refit-calibration --apply
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ if not (os.environ.get("CLAUDECODE")
 # fmt: on
 # ─── end trust-marker check ─────────────────────────────────
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT))
 import core.startup.process_init  # noqa: E402,F401
 

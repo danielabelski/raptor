@@ -12,5 +12,5 @@ and cost wildly different amounts:
     (strategy on vs off). Needs a labeled corpus and an LLM; not CI.
 
 See ``selection.py`` / ``efficacy.py``. Driven by
-``libexec/raptor-strategy-eval``.
+``packages/strategy_eval/scripts/strategy-eval``.
 """

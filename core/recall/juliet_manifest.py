@@ -215,7 +215,7 @@ def generate_manifest(clone_dir: Path, *, cwes: list[int] | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        prog="raptor-recall-measure juliet-manifest",
+        prog="recall-measure juliet-manifest",
         description=__doc__.splitlines()[0],
     )
     p.add_argument("--clone-dir", type=Path,

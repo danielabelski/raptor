@@ -1692,7 +1692,7 @@
   }
  ],
  "generated_at": "2026-08-16",
- "generated_by": "libexec/raptor-parser-pack-harvest",
+ "generated_by": "core/dataflow/scripts/parser-pack-harvest",
  "pack": "parser_apis",
  "schema": 1
 }

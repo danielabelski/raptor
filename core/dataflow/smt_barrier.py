@@ -929,7 +929,7 @@ def _record_value_bound_audit(finding, result) -> None:
 
     Always ``enforce=False``: the sanitizer-cut witness has not earned
     hard-suppression on the zero-false-suppress corpus
-    (``libexec/raptor-sanitizer-cut-precision``), so every record
+    (``core/analysis/scripts/sanitizer-cut-precision``), so every record
     carries ``dropped: false`` — evidence for the operator, never a
     drop. Best-effort: telemetry must not break a run.
     """

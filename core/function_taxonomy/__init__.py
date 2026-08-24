@@ -373,7 +373,7 @@ PROCESS_BOUNDARY_MARKERS: frozenset[str] = frozenset({
 # exemplars, one per format category) documenting the pattern; the
 # library catalog bulk lives in the CVE-corpus-derived data pack
 # ``data/packs/parser_apis.json`` (per-name library + CVE provenance),
-# refreshed by ``libexec/raptor-parser-pack-harvest`` — growing this
+# refreshed by ``core/dataflow/scripts/parser-pack-harvest`` — growing this
 # category means harvesting or editing pack DATA, never this literal.
 # ``PARSER_FUNCS`` is the seeds<pack union, so consumers keep a single
 # name for the whole category.

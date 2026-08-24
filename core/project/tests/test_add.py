@@ -668,3 +668,23 @@ class MarkerRemnantContainerTest(unittest.TestCase):
         self.assertFalse(
             (Path(self.output_dir) / "afl-out").exists(),
             "the plant must never be adopted as a run")
+
+    def test_unprefixed_name_never_reaches_the_child_import(self):
+        # A marker-destroyed dir whose NAME fails the lenient run-dir
+        # match (adopted --out runs keep operator-chosen names) fell
+        # through to the child-import loop and adopted the plant —
+        # the inside-project/remnant guards must route it to the
+        # single-run path unconditionally.
+        run = Path(self.output_dir) / "reuse0001"
+        plant = run / "afl-out"
+        plant.mkdir(parents=True)
+        from core.json import save_json
+        (run / ".raptor-run.json.lock").write_text("")
+        save_json(plant / ".raptor-run.json", {
+            "version": 2, "command": "scan", "status": "completed",
+        })
+        self.mgr.add_directory("victim", str(run))
+        self.assertTrue((run / "afl-out").is_dir())
+        self.assertFalse(
+            (Path(self.output_dir) / "afl-out").exists(),
+            "the plant must never be adopted as a run")

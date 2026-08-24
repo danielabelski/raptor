@@ -1393,7 +1393,14 @@ class ProjectManager:
                               or (_has_child_runs
                                   and not is_run_directory(
                                       src, strict=True))))
-        if is_run_directory(src, strict=False) and not _is_container:
+        # Inside-project and remnant-bearing dirs take the single-run
+        # (repair) path even when the lenient match fails — a
+        # marker-destroyed dir with an unprefixed name otherwise fell
+        # through to the child-import loop, and the planted subdir was
+        # adopted anyway.
+        if (_inside_project or _run_remnants
+                or (is_run_directory(src, strict=False)
+                    and not _is_container)):
             # Single run directory
             if _adopt_one(src):
                 added = 1

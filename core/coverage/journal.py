@@ -16,14 +16,13 @@ import contextlib
 import json
 import logging
 import os
-import tempfile
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json, loads
+from core.json import load_json, loads, save_json
 
 try:
     import fcntl
@@ -868,17 +867,7 @@ def _write_index(path: Path, entries: dict[str, dict[str, Any]]) -> None:
         "updated_at": now_iso(),
         "entries": entries,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(index_data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, str(path))
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    save_json(path, index_data)
 
 
 # ── Domain model hash ───────────────────────────────────────────────

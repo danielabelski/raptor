@@ -13,14 +13,13 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-import json
 import logging
 import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from core.json import dumps_display
+from core.json import dumps_display, save_json
 from core.llm.coerce import structured_result
 from core.paths import confine
 
@@ -84,10 +83,7 @@ def _quarantine_stale_prior(
             concept.provenance = TIER_LLM_SUMMARIZED
     try:
         stale_path = output_dir / "study-stale.json"
-        stale_path.write_text(
-            json.dumps({"stale_evidence": stale}, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(stale_path, {"stale_evidence": stale})
     except OSError:
         logger.debug("could not write study-stale.json", exc_info=True)
     if reading_list is not None:
@@ -3354,9 +3350,6 @@ def _record_discards(output_dir: Path, discards: list[dict]) -> None:
     """
     if not discards:
         return
-    import os
-    import tempfile
-
     path = output_dir / "study-discards.json"
     existing: list[dict] = []
     if path.is_file():
@@ -3369,17 +3362,7 @@ def _record_discards(output_dir: Path, discards: list[dict]) -> None:
         if (d.get("kind"), d.get("id")) not in seen:
             existing.append(d)
             seen.add((d.get("kind"), d.get("id")))
-    fd, tmp = tempfile.mkstemp(
-        dir=str(output_dir), suffix=".tmp", prefix="study-discards-",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"discarded": existing}, f, indent=2)
-            f.write("\n")
-        Path(tmp).rename(path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    save_json(path, {"discarded": existing})
 
 
 # ------------------------------------------------------------------
@@ -3798,10 +3781,7 @@ def run_study(
 
     if struct_annots:
         annots_path = output_dir / "struct-annotations.json"
-        annots_path.write_text(
-            json.dumps(struct_annots, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(annots_path, struct_annots)
 
     _promote_to_project(out_path, output_dir)
 

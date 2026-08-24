@@ -169,10 +169,8 @@ def _cached_cli_version(binary: str) -> str | None:
     ``~/.cache/raptor/``, alongside the sandbox calibration cache).
     Never raises; probe failures return None and are not cached.
     """
-    import json
     import re
     import subprocess
-    import tempfile
 
     path = shutil.which(binary)
     if not path:
@@ -188,7 +186,7 @@ def _cached_cli_version(binary: str) -> str | None:
         os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
     ) / "raptor"
     cache_file = cache_dir / "tool-versions.json"
-    from core.json import load_json
+    from core.json import load_json, save_json
 
     cache: dict = {}
     loaded = load_json(cache_file, max_bytes=_MAX_CACHE_BYTES)
@@ -218,21 +216,11 @@ def _cached_cli_version(binary: str) -> str | None:
         return None
     ver = m.group(0)
 
-    # Best-effort atomic cache write (tempfile + rename); losing the
-    # cache only costs the next banner one probe.
+    # Best-effort atomic cache write; losing the cache only costs the
+    # next banner one probe.
     cache[binary] = {"key": key, "version": ver}
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(cache, fh)
-            os.replace(tmp, cache_file)
-        except OSError:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        save_json(cache_file, cache)
     except OSError:
         pass
     return ver

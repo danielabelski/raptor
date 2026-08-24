@@ -47,12 +47,11 @@ standard). Only files matching the ``findings.json`` convention.
 
 from __future__ import annotations
 
-import json
 import unicodedata
 from pathlib import Path
 from typing import Any
 
-from core.json import loads
+from core.json import loads, save_json
 from core.logging import get_logger
 
 from .metadata import RUN_METADATA_FILE, load_run_metadata
@@ -173,10 +172,8 @@ def _stamp_file(path: Path, ref: dict[str, Any]) -> int:
     # Re-serialize ``data`` itself — the stamp mutated the findings
     # list by reference, so the container shape (top-level array vs
     # dict-wrapped) is preserved without shape-dependent branches.
-    out = json.dumps(data, indent=2, sort_keys=False, default=str) + "\n"
     try:
-        from core.atomic_fs import write_text_atomically
-        write_text_atomically(path, out)
+        save_json(path, data)
     except OSError as e:
         logger.warning("stamp_findings: write failed %s: %s", path, e)
         return -1

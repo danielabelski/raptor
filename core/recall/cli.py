@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import dumps_display, load_json
+from core.json import dumps_display, load_json, save_json
 from core.recall.manifest import PROFILES, ManifestError, load_manifest
 from core.recall.matcher import clean_region_hits, match_findings
 from core.recall.cvefix_manifest import main as cvefix_manifest_main
@@ -129,8 +128,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 report_dict, expected_dicts))
 
     json_path = out_dir / "report.json"
-    json_path.write_text(json.dumps(report_dict, indent=2) + "\n",
-                         encoding="utf-8")
+    save_json(json_path, report_dict)
     md = render_markdown(report)
     (out_dir / "report.md").write_text(md, encoding="utf-8")
     print(md)
@@ -186,8 +184,7 @@ def _cmd_census(args: argparse.Namespace) -> int:
     md = render_census_markdown(census)
     out_dir = args.out or args.report.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "census.json").write_text(
-        json.dumps(census, indent=2) + "\n", encoding="utf-8")
+    save_json(out_dir / "census.json", census)
     (out_dir / "census.md").write_text(md, encoding="utf-8")
     print(md)
     print(f"census: {out_dir / 'census.json'}")
@@ -218,8 +215,7 @@ def _fn_census(args: argparse.Namespace, report: dict) -> int:
     md = render_fn_census_markdown(census)
     out_dir = args.out or args.report.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "fn-census.json").write_text(
-        json.dumps(census, indent=2) + "\n", encoding="utf-8")
+    save_json(out_dir / "fn-census.json", census)
     (out_dir / "fn-census.md").write_text(md, encoding="utf-8")
     print(md)
     print(f"fn census: {out_dir / 'fn-census.json'}")
@@ -263,8 +259,7 @@ def _cmd_warm(args: argparse.Namespace) -> int:
     md = render_warm_markdown(warm)
     out_dir = args.out or args.report.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "warm.json").write_text(
-        json.dumps(warm, indent=2) + "\n", encoding="utf-8")
+    save_json(out_dir / "warm.json", warm)
     (out_dir / "warm.md").write_text(md, encoding="utf-8")
     print(md)
     return 0
@@ -290,8 +285,7 @@ def _cmd_verify_enforced(args: argparse.Namespace) -> int:
     md = render_verify_markdown(result)
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
-        (args.out / "verify-enforced.json").write_text(
-            json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        save_json(args.out / "verify-enforced.json", result)
         (args.out / "verify-enforced.md").write_text(
             md, encoding="utf-8")
     print(md)

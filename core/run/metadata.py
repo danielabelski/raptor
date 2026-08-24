@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.json import load_json, save_json
+from core.json import append_jsonl, load_json, save_json
 
 try:
     import fcntl
@@ -1253,8 +1253,7 @@ def _append_coverage_progress(proj: Path, run_dir: Path, store,
             "llm_reviewable": view.get("llm_reviewable", 0),
             "llm_reviewed": view.get("functions_reviewed", 0),
         }
-        with Path(proj / "coverage-progress.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row) + "\n")
+        append_jsonl(proj / "coverage-progress.jsonl", row)
     except Exception:
         logging.getLogger(__name__).debug(
             "coverage progress append failed for %s", run_dir, exc_info=True,

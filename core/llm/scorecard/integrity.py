@@ -65,7 +65,7 @@ import stat
 import time
 from pathlib import Path
 
-from core.json.utils import dumps_canonical
+from core.json.utils import dumps_canonical, save_json
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -299,9 +299,7 @@ def stamp_file(path: Path) -> bool:
     if token is None:
         return False
     data[TOKEN_KEY] = {"token": token}
-    path.write_text(
-        json.dumps(data, indent=2) + "\n", encoding="utf-8",
-    )
+    save_json(path, data)
     return True
 
 

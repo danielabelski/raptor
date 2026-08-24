@@ -15,14 +15,13 @@ or ``<project>/concepts/reading-list.json`` (per-project).
 from __future__ import annotations
 
 import dataclasses
-import json
-import os
-import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from core.json import save_json
 
 # ------------------------------------------------------------------
 # Priority
@@ -167,18 +166,7 @@ class ReadingList:
         if p is None:
             msg = "no path specified"
             raise ValueError(msg)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(p.parent), suffix=".tmp", prefix=".reading-list-",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"items": [asdict(i) for i in self.items]}, f, indent=2)
-                f.write("\n")
-            Path(tmp_name).rename(p)
-        except BaseException:
-            Path(tmp_name).unlink(missing_ok=True)
-            raise
+        save_json(p, {"items": [asdict(i) for i in self.items]})
         self._path = p
 
     @classmethod

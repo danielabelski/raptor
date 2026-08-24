@@ -551,7 +551,6 @@ def save_project_verbs(
     Writes ``verb-contracts.json`` so subsequent runs start with the
     project's learned vocabulary instead of re-discovering it.
     """
-    import json
     from pathlib import Path
 
     out = Path(path) / "verb-contracts.json"
@@ -577,8 +576,8 @@ def save_project_verbs(
     # Atomic replace: verb-contracts.json seeds every subsequent run's
     # vocabulary — a torn write would silently reset the project's
     # learned verbs (the loader treats unparseable JSON as absent).
-    from core.atomic_fs import write_text_atomically
-    write_text_atomically(out, json.dumps(data, indent=2))
+    from core.json import save_json
+    save_json(out, data)
 
 
 def _load_verbs_from_file(

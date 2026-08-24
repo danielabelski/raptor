@@ -16,7 +16,6 @@ dual control validation.  Only the prompt framing differs.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from core.concepts.model import CONFIDENCE_GRADES, DomainModel, Invariant
+from core.json import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -631,10 +631,6 @@ def compile_model(
     manifest_path = out_dir / "compiled-invariants.json"
     # Atomic replace: a crash mid-write must not leave a truncated
     # manifest for /review and later study passes to choke on.
-    from core.atomic_fs import write_text_atomically
-    write_text_atomically(
-        manifest_path,
-        json.dumps([r.to_dict() for r in results], indent=2) + "\n",
-    )
+    save_json(manifest_path, [r.to_dict() for r in results])
 
     return results

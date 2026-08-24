@@ -15,12 +15,11 @@ study artifacts in a run directory).
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from core.json import save_json
 
 ANSWERS_FILENAME = "study-answers.json"
 
@@ -93,19 +92,7 @@ def append_answers(out_dir: Path, answers: list[StudyAnswer]) -> int:
             added += 1
         else:
             existing[idx] = rec
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(
-        dir=str(out), suffix=".tmp", prefix="study-answers-",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"answers": existing}, f, indent=2)
-            f.write("\n")
-        Path(tmp).rename(_path(out))
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    save_json(_path(Path(out_dir)), {"answers": existing})
     return added
 
 

@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.json import dumps_display
+from core.json import dumps_artifact, dumps_display, save_json
 from core.security.prompt_output_sanitise import sanitise_code, sanitise_string
 
 if TYPE_CHECKING:
@@ -343,10 +343,7 @@ def export_findings_directory(
         json_path = bucket_dir / f"{stem}.json"
 
         markdown_path.write_text(render_finding_markdown(finding, index=index), encoding="utf-8")
-        json_path.write_text(
-            json.dumps(finding, indent=2, sort_keys=True, ensure_ascii=False, default=str) + "\n",
-            encoding="utf-8",
-        )
+        save_json(json_path, finding, sort_keys=True)
 
         record = {
             "id": finding.get("id") or finding.get("finding_id") or f"finding-{index:03d}",
@@ -360,13 +357,10 @@ def export_findings_directory(
         manifest["findings"].append(record)
         jsonl_records.append({**record, "finding": finding})
 
-    (findings_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False, default=str) + "\n",
-        encoding="utf-8",
-    )
+    save_json(findings_dir / "manifest.json", manifest, sort_keys=True)
     (findings_dir / "findings.jsonl").write_text(
         "".join(
-            json.dumps(record, sort_keys=True, ensure_ascii=False, default=str) + "\n"
+            dumps_artifact(record, indent=None, sort_keys=True) + "\n"
             for record in jsonl_records
         ),
         encoding="utf-8",

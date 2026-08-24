@@ -30,7 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-from core.json import dumps_display
+from core.json import dumps_artifact
 from core.llm.scorecard.scorecard import (
     ALL_EVENT_TYPES,
     EventType,
@@ -332,7 +332,7 @@ def render_markdown(report: AuditReport) -> str:
 
 def render_json(report: AuditReport) -> str:
     payload = asdict(report)
-    return dumps_display(payload, sort_keys=True)
+    return dumps_artifact(payload, sort_keys=True)
 
 
 # ---------------------------------------------------------------------------

@@ -47,14 +47,8 @@
   "raw_dumps_in_canonical_module:core/llm/multi_model/prompt_helpers.py:wrap_model_output": {
    "note": "prompt-embedded bytes hashed into the response-cache key (sort_keys, indent=2, strict no-default) — drift = fleet-wide cache miss — frozen"
   },
-  "raw_dumps_in_canonical_module:core/llm/scorecard/integrity.py:stamp_file": {
-   "note": "sidecar pretty-write; the MAC is recomputed from the PARSED dict so bytes are not integrity-consumed — an artifact-writer (save_json) migration candidate, frozen until that lands"
-  },
   "raw_dumps_in_canonical_module:core/project/report.py:_finding_fingerprint": {
    "note": "same site as its dumps_flows_to_hash twin — pinned ensure_ascii=False identity form"
-  },
-  "raw_dumps_in_canonical_module:core/project/report.py:export_findings_directory": {
-   "note": "findings.json/.jsonl artifact writers in a canonical module; bytes not integrity-consumed — artifact-writer (save_json/append_jsonl) migration candidates"
   },
   "raw_dumps_in_canonical_module:core/sandbox/_landlock_audit.py:_write_audit_config": {
    "note": "documented cache-identity contract (sort_keys) — must stay byte-identical to the inline twin in _spawn.py — frozen"

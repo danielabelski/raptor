@@ -17,22 +17,19 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core.evidence import EvidenceTier, TIER_RANK, stronger
-from core.json import load_json
+from core.json import dumps_artifact, load_json, save_json
 
 from .assumptions import (
     SafetyAssumption,
     assumptions_from_list,
 )
 from .specs import TaintSpec, _specs_from_list
-import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +241,16 @@ def save_specs(
     if target_path is not None:
         envelope["target_path"] = str(target_path.resolve())
 
+    # Normalise to JSON-native values BEFORE stamping: the token is
+    # minted over the canonical form of THIS dict, but readers verify
+    # against the canonical form of the PARSED file. A non-native
+    # value (e.g. a datetime smuggled in via history) would serialise
+    # one way in the written artifact (isoformat) and another in the
+    # minted canonical form (default=str), silently flooring every
+    # tier on the next read. Round-tripping through the artifact
+    # encoder makes mint-side and read-side see identical values.
+    envelope = json.loads(dumps_artifact(envelope, indent=None))
+
     # Provenance stamp over the whole envelope — readers floor every
     # stored tier to heuristic when it does not verify (see
     # core.iris.integrity). Unstampable environments persist
@@ -251,19 +258,7 @@ def save_specs(
     from . import integrity as _integrity
     _integrity.stamp(envelope)
 
-    fd, tmp = tempfile.mkstemp(
-        dir=str(store_dir),
-        prefix=".specs.tmp.",
-        suffix=".json",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(envelope, f, indent=2)
-        os.replace(tmp, str(dest))
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    save_json(dest, envelope)
 
     logger.info("iris.store: saved %d specs to %s", len(specs), dest)
     return dest

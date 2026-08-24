@@ -100,6 +100,34 @@ def test_own_write_round_trips_with_tier_intact(tmp_path: Path) -> None:
     assert specs[0].evidence_tier == EvidenceTier.XREF_BACKED
 
 
+def test_non_native_history_value_round_trips_verified(
+    tmp_path: Path,
+) -> None:
+    """A non-JSON-native value smuggled into the envelope (datetime in
+    a history row) must not fork the minted canonical form from what
+    readers re-canonicalise after parsing the file — the writer
+    normalises to JSON-native values BEFORE stamping, so the token
+    still verifies and stored tiers stay honoured."""
+    from datetime import datetime
+
+    proj, run, target = _project(tmp_path)
+    save_specs(
+        run,
+        [TaintSpec(function="clean_it", file="a.c", role="sanitiser",
+                   evidence_tier=EvidenceTier.XREF_BACKED)],
+        target_path=target,
+        history=[{"round": 1, "at": datetime(2026, 1, 2, 3, 4, 5)}],
+    )
+    data = json.loads((proj / "iris-specs" / "specs.json").read_text())
+    assert integrity.extract_token(data)
+    assert data["history"][0]["at"] == "2026-01-02T03:04:05"
+
+    # The provenance token must verify against the PARSED file — a
+    # mint/verify byte fork would silently floor the tier here.
+    specs = load_specs(run, target_path=target)
+    assert specs[0].evidence_tier == EvidenceTier.XREF_BACKED
+
+
 def test_verified_store_without_target_binding_floors(
     tmp_path: Path,
 ) -> None:

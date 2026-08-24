@@ -33,13 +33,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from core.atomic_fs import write_text_atomically
+from core.json import save_json
 from core.logging import get_logger as _get_logger
 
 from .registry import category_of
@@ -604,6 +603,5 @@ class CoverageStore:
         leave malformed JSON that fails to parse and blocks every
         subsequent read.
         """
-        payload = json.dumps(self.to_dict(), indent=2, sort_keys=True)
-        write_text_atomically(self.path, payload, tmp_prefix=".coverage-")
+        save_json(self.path, self.to_dict(), sort_keys=True)
         return self.path

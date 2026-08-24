@@ -18,13 +18,12 @@ and refuses to run against any other sha (labels are sha-bound).
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 from pathlib import Path
 
 from core.dataflow.owasp_corpus_generator import parse_expected_results
-
+from core.json import save_json
 from core.recall.manifest import SCHEMA_VERSION
 
 #: Must match core/dataflow/corpus/SOURCES.md.
@@ -179,9 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     except OwaspManifestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(manifest, indent=2) + "\n",
-                        encoding="utf-8")
+    save_json(args.out, manifest)
     print(f"manifest: {args.out} "
           f"({len(manifest['expected'])} expected, "
           f"{len(manifest['clean_regions'])} clean regions)")

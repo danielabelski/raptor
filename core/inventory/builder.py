@@ -9,7 +9,6 @@ needs a cached call-graph view of the project.
 import ast
 import fnmatch
 import hashlib
-import json
 import logging
 import os
 from concurrent.futures import (
@@ -26,7 +25,7 @@ from core.build.macro_config import extract_build_tus, extract_macro_config
 from core.build.rust_modules import extract_rust_crate_modules
 from core.config import RaptorConfig
 from core.hash import sha256_bytes
-from core.json import load_json
+from core.json import load_json, save_json
 
 from .build_membership import (
     crate_module_excluded,
@@ -669,8 +668,7 @@ def _write_inventory_diff(
             except Exception:
                 logger.debug("function-level diff failed", exc_info=True)
     try:
-        (output_path / 'inventory-diff.json').write_text(
-            json.dumps(payload, indent=2), encoding='utf-8')
+        save_json(output_path / 'inventory-diff.json', payload)
     except OSError:
         logger.debug("could not write inventory-diff.json", exc_info=True)
 

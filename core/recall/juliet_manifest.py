@@ -26,12 +26,12 @@ sha (labels are sha-bound like every recall corpus).
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from core.json import save_json
 from core.recall.manifest import SCHEMA_VERSION
 
 #: Public mirror of the NIST Juliet Java suite (v1.2 content).
@@ -238,9 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     except JulietManifestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(manifest, indent=2) + "\n",
-                        encoding="utf-8")
+    save_json(args.out, manifest)
     notes = manifest["notes"]
     if args.variant_b:
         print(f"manifest: {args.out} "

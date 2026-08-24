@@ -854,12 +854,9 @@ def merge_into_study_list(
     items actually added.  Creates a minimal skeleton when the file
     does not exist yet.
     """
-    import json
-    import os
-    import tempfile
     from dataclasses import asdict
 
-    from core.json import load_json
+    from core.json import load_json, save_json
 
     path = Path(study_list_path)
     data: dict = {"target": "", "source_root": "", "items": []}
@@ -899,18 +896,7 @@ def merge_into_study_list(
                 recs.append(r)
                 rec_names.add(r.get("name"))
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix="study-list-",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        Path(tmp_name).rename(path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    save_json(path, data)
     return added
 
 

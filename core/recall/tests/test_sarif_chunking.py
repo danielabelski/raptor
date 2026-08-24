@@ -112,6 +112,26 @@ class TestChunkedCollection:
         assert total == 101
         assert len(lines) == 101
 
+    def test_non_finite_float_degrades_instead_of_crashing(
+            self, tmp_path, monkeypatch, caplog):
+        """The stdlib parse accepts NaN/Infinity tokens the strict
+        chunk serialiser refuses — a tool SARIF carrying one must skip
+        with a loud undercount warning, like the over-cap path, not
+        crash the measurement."""
+        doc = _sarif_doc("CodeQL", 5)
+        doc["runs"][0]["results"][0]["properties"] = {
+            "score": float("nan")}
+        big = _write(tmp_path / "codeql_java.sarif", doc)
+        monkeypatch.setattr(runner_mod, "_SARIF_CHUNK_THRESHOLD",
+                            big.stat().st_size - 1)
+        monkeypatch.setattr(runner_mod, "_SARIF_CHUNK_TARGET",
+                            max(1, big.stat().st_size // 2))
+        with caplog.at_level("ERROR"):
+            chunks = runner_mod._chunk_oversized_sarif(big, tmp_path)
+        assert chunks == []
+        assert any("NOT collected" in r.getMessage()
+                   for r in caplog.records)
+
     def test_nonuniform_results_never_exceed_target(self, tmp_path,
                                                     monkeypatch):
         # One fat result (simulating codeFlows) among thin ones must

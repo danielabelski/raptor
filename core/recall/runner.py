@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from core.json import dumps_artifact
 from core.sarif.parser import parse_sarif_findings
 
 from core.recall.manifest import PROFILES, RecallManifest
@@ -193,6 +194,19 @@ _SARIF_CHUNK_CAP = 512 * 1024 * 1024
 _SARIF_CHUNK_TARGET = 80 * 1024 * 1024
 
 
+def _chunk_dumps(obj: Any) -> str:
+    """One serialised form for the SARIF chunker's budget AND its writes.
+
+    The chunker budgets by serialised size, so the accounting calls and
+    the chunk-file write must use the exact same byte form — a shape
+    mismatch would let an accounted-under-budget chunk exceed the
+    parser's guard on disk. ``ensure_ascii=True`` keeps every character
+    one byte, so ``len()`` of the string equals the on-disk byte count
+    the parser guard measures.
+    """
+    return dumps_artifact(obj, indent=None, ensure_ascii=True)
+
+
 def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
     """Split an over-guard SARIF into valid parseable chunk files.
 
@@ -215,6 +229,24 @@ def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
     runs = doc.get("runs")
     if not isinstance(runs, list):
         return []
+    try:
+        return _chunk_runs(doc, runs, path, tmpdir, size)
+    except ValueError as e:
+        # The stdlib parse above accepts non-finite tokens (NaN /
+        # Infinity) that the strict chunk serialiser refuses. A tool
+        # SARIF carrying one must degrade like the over-cap path —
+        # skip with a loud undercount warning — not crash the whole
+        # measurement.
+        logger.error(
+            "SARIF %s could not be re-serialised for chunking (%s); "
+            "its findings are NOT collected (recall will undercount)",
+            path, e)
+        return []
+
+
+def _chunk_runs(doc: dict, runs: list, path: Path, tmpdir: Path,
+                size: int) -> list[Path]:
+    """Serialise-and-slice loop of :func:`_chunk_oversized_sarif`."""
     chunks: list[Path] = []
     for ri, run in enumerate(runs):
         results = run.get("results")
@@ -230,7 +262,7 @@ def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
         def _base_bytes() -> int:
             probe = dict(doc)
             probe["runs"] = [dict(header, results=[])]
-            return len(json.dumps(probe))
+            return len(_chunk_dumps(probe))
 
         slack = max(1024, _SARIF_CHUNK_TARGET // 16)
         budget = _SARIF_CHUNK_TARGET - _base_bytes() - slack
@@ -263,12 +295,12 @@ def _chunk_oversized_sarif(path: Path, tmpdir: Path) -> list[Path]:
             chunk_doc["runs"] = [dict(header, results=batch)]
             out = tmpdir / f"{path.stem}.run{ri}.{ci:03d}.sarif"
             with open(out, "w", encoding="utf-8") as f:
-                json.dump(chunk_doc, f)
+                f.write(_chunk_dumps(chunk_doc))
             chunks.append(out)
             batch, batch_bytes, ci = [], 0, ci + 1
 
         for res in results:
-            res_bytes = len(json.dumps(res))
+            res_bytes = len(_chunk_dumps(res))
             if batch and batch_bytes + res_bytes > budget:
                 _flush()
             batch.append(res)

@@ -28,7 +28,6 @@ validates. No CVE id or no public fix commit → no corpus entry.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -36,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.git import get_safe_git_env, safe_git_readonly_command
+from core.json import save_json
 from core.recall.manifest import SCHEMA_VERSION
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
@@ -317,13 +317,11 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, CvefixManifestError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     slug = spec.cve_id.lower()
     pre = args.out_dir / f"{slug}-prefix.json"
     post = args.out_dir / f"{slug}-postfix.json"
-    pre.write_text(json.dumps(recall_m, indent=2) + "\n",
-                   encoding="utf-8")
-    post.write_text(json.dumps(twin, indent=2) + "\n", encoding="utf-8")
+    save_json(pre, recall_m)
+    save_json(post, twin)
     print(f"recall manifest: {pre} ({len(recall_m['expected'])} "
           f"candidate expected — hand-verify before gating)")
     print(f"fp-only twin:    {post} ({len(twin['clean_regions'])} "

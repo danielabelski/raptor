@@ -215,8 +215,10 @@ def compute_gaps(
         _sf = _site.get("file")
         _sfn = _site.get("function")
         if _sf and _sfn:
-            crypto_by_key.setdefault(f"{_sf}:{_sfn}", []).append(_site)
+            crypto_by_key.setdefault(
+                make_function_key(_sf, _sfn), []).append(_site)
     current_spans: dict[str, tuple] = {}
+    binary_hashes: dict[str, str] = {}
     # key → {line_start: (item, fp)}: same-named items (function +
     # prototype pairs, macro redefinitions, C++ overloads) share one
     # file:function key but live at different SITES with different
@@ -242,9 +244,21 @@ def compute_gaps(
                     le = ls
                 # First occurrence wins for same-named items — matches
                 # _consume_covered_key's one-suppression-per-key rule.
-                current_spans.setdefault(f"{fp}:{name}", (ls, le))
-                items_by_key.setdefault(f"{fp}:{name}", {}).setdefault(
+                current_spans.setdefault(
+                    make_function_key(fp, name), (ls, le))
+                items_by_key.setdefault(
+                    make_function_key(fp, name), {}).setdefault(
                     ls, (item, fp))
+            elif name and item.get("address") is not None:
+                # Binary items have no line spans; their staleness
+                # anchor is the binary's content hash + the function's
+                # address/size (same formula as the write side —
+                # core.audit.record.binary_item_hash).
+                from core.audit.record import binary_item_hash
+                bh = binary_item_hash(file_info, item)
+                if bh:
+                    binary_hashes.setdefault(
+                        make_function_key(fp, name), bh)
 
     def _current_strategies(key: str, line_start: int = 0) -> list | None:
         """CURRENT strategy inference for a checklist item, computed
@@ -295,6 +309,7 @@ def compute_gaps(
         project_dir,
         target_path=Path(target_path_str) if target_path_str else None,
         current_spans=current_spans,
+        binary_hashes=binary_hashes,
         reuse_sink=reuse_sink,
         credits=covered_credits,
         current_strategies_fn=_current_strategies,
@@ -426,14 +441,14 @@ def compute_gaps(
             sloc = (line_end - line_start + 1) if line_end else 0
 
             reachable_sinks = entry_point_sinks.get(
-                f"{file_path}:{name}"
+                make_function_key(file_path, name)
             )
 
             strategies = strategies_from_item(
                 item, file_path,
                 reachable_sinks=reachable_sinks,
                 crypto_inventory=crypto_by_key.get(
-                    f"{file_path}:{name}",
+                    make_function_key(file_path, name),
                 ),
                 target_path=target_path_str or None,
                 domain_vocab=gap_vocab,
@@ -1486,6 +1501,7 @@ def _fold_journal_into_covered(
     *,
     target_path: Path | None = None,
     current_spans: dict[str, tuple] | None = None,
+    binary_hashes: dict[str, str] | None = None,
     reuse_sink: dict | None = None,
     credits: dict | None = None,
     current_strategies_fn=None,
@@ -1559,6 +1575,7 @@ def _fold_journal_into_covered(
                     list(per_site.values()),
                     target_path=target_path,
                     current_spans=current_spans or {},
+                    binary_hashes=binary_hashes or {},
                     reuse_sink=reuse_sink,
                     credits=credits,
                     current_strategies_fn=current_strategies_fn,
@@ -1585,6 +1602,7 @@ def _fold_journal_into_covered(
                 covered, project_dir,
                 target_path=target_path,
                 current_spans=current_spans or {},
+                binary_hashes=binary_hashes or {},
                 reuse_sink=reuse_sink,
                 credits=credits,
                 current_strategies_fn=current_strategies_fn,
@@ -1752,6 +1770,7 @@ def _fold_project_index(
     *,
     target_path: Path | None,
     current_spans: dict[str, tuple],
+    binary_hashes: dict[str, str] | None = None,
     reuse_sink: dict | None = None,
     credits: dict | None = None,
     current_strategies_fn=None,
@@ -1813,6 +1832,7 @@ def _fold_project_index(
         list(latest_function_grade_index(project_dir).values()),
         target_path=target_path,
         current_spans=current_spans,
+        binary_hashes=binary_hashes,
         reuse_sink=reuse_sink,
         credits=credits,
         current_strategies_fn=current_strategies_fn,
@@ -1829,6 +1849,7 @@ def _verify_entries_fold(
     *,
     target_path: Path | None,
     current_spans: dict[str, tuple],
+    binary_hashes: dict[str, str] | None = None,
     reuse_sink: dict | None,
     credits: dict | None = None,
     current_strategies_fn,
@@ -1897,7 +1918,7 @@ def _verify_entries_fold(
             # reuse. Their own two-span staleness check lives in
             # edge_review.reviewed_edge_keys.
             continue
-        key = f"{entry.file}:{entry.function}"
+        key = make_function_key(entry.file, entry.function)
         # Row provenance (core.coverage.journal_mac): the journal is
         # target-writable during runs and import-restorable, so a
         # row's authority is tiered on its MAC. Verified rows keep
@@ -1934,6 +1955,28 @@ def _verify_entries_fold(
         cur = current_spans.get(key)
         if cur is not None and cur not in spans:
             spans.append(cur)
+        if entry.source_hash and entry.source_hash.startswith("bin:"):
+            # Binary items: the hash anchors the BINARY's content +
+            # the function's address/size. A rebuilt binary (or a
+            # relocated/resized function) mismatches — the review is
+            # stale and must NOT suppress the gap. A MISSING current
+            # anchor also resurfaces: binary checklists always stamp
+            # sha256+address, so its absence means the item vanished
+            # from the current inventory (renamed/removed function or
+            # unhashable binary) — crediting across that would keep a
+            # verdict alive over arbitrary rebuilds.
+            expected = (binary_hashes or {}).get(key)
+            if expected is not None and expected == entry.source_hash:
+                _credit(key, 0)
+            elif verified_row:
+                logger.debug(
+                    "journal-fold: %s bin-hash %s — resurfacing "
+                    "(verified row, stale/missing anchor)",
+                    key, "mismatch" if expected else "anchor missing",
+                )
+            else:
+                unstamped_unverifiable += 1
+            continue
         if not entry.source_hash or target_path is None or not spans:
             # No hash evidence to check. A VERIFIED row keeps the
             # historical suppression (this install's writer recorded
@@ -2124,7 +2167,8 @@ def _build_sink_reachability(
     for ep in context_map.get("entry_points", []):
         sinks = ep.get("reachable_sinks")
         if sinks:
-            key = f"{ep.get('file', '')}:{ep.get('name', '')}"
+            key = make_function_key(
+                ep.get('file', ''), ep.get('name', ''))
             result[key] = list(sinks)
 
     for sink in context_map.get("sinks", []):
@@ -2132,7 +2176,7 @@ def _build_sink_reachability(
         fn = sink.get("function", "")
         target = sink.get("target", "")
         if f and fn and target:
-            key = f"{f}:{fn}"
+            key = make_function_key(f, fn)
             result.setdefault(key, [])
             if target not in result[key]:
                 result[key].append(target)
@@ -2143,7 +2187,7 @@ def _build_sink_reachability(
         fn = tr.get("function", "")
         sinks = tr.get("reachable_sinks", [])
         if f and fn and sinks:
-            key = f"{f}:{fn}"
+            key = make_function_key(f, fn)
             result.setdefault(key, [])
             for s in sinks:
                 if s not in result[key]:

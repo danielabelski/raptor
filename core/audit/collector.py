@@ -101,13 +101,20 @@ def append_journal_for_outcome(
                     (callee_span[0], callee_span[1]),
                 )
         else:
-            from .record import _compute_hash
-            h = _compute_hash(
-                target_path,
-                outcome.file,
-                gap.get("line_start", 0),
-                gap.get("line_end"),
-            )
+            from core.inventory.binary_builder import BINARY_PATH_PREFIX
+            if outcome.file.startswith(BINARY_PATH_PREFIX):
+                from .record import binary_source_hash
+                h = binary_source_hash(
+                    out_dir, outcome.file, outcome.function,
+                )
+            else:
+                from .record import _compute_hash
+                h = _compute_hash(
+                    target_path,
+                    outcome.file,
+                    gap.get("line_start", 0),
+                    gap.get("line_end"),
+                )
             if h:
                 source_hash = h
     except (ImportError, OSError):

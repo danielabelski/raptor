@@ -55,3 +55,17 @@ class TestBinaryRanges:
         view = store_view(store, cl)
         assert view["functions_reviewed"] == 1
         assert view["functions_covered"] == 1
+
+    def test_finding_address_attributes_to_function(self, tmp_path):
+        from core.coverage.importer import import_findings
+        from core.coverage.store import CoverageStore
+
+        store = CoverageStore(tmp_path / "coverage.json")
+        n = import_findings(store, [{
+            "file": "binary:target", "address": 0x1010,
+            "id": "F-1", "issue": "overflow",
+        }])
+        assert n == 1
+        assert store.function_verdict(
+            "binary:target", 0x1000, 0x107f,
+        ) == "open"

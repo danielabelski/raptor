@@ -1241,6 +1241,11 @@ def run_orchestrator(
     if _caller_owns_joern:
         joern_server = config.joern_server
         _joern_lifecycle = False
+    elif config.target_path.is_file():
+        # Binary target: Joern builds CPGs from source trees — a
+        # compiled artifact has nothing for it to parse.
+        joern_server = None
+        _joern_lifecycle = False
     else:
         _joern_path = _joern_target(config)
         joern_server = _start_joern_server_raw(
@@ -3426,28 +3431,43 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
         logger.error("no checklist.json in %s", config.out_dir)
         return None
 
+    # Binary targets: the checklist speaks address space and the
+    # target is a compiled artifact — source-tree pre-passes (macro
+    # recovery, source call-graph enrichment, Joern CPG) have nothing
+    # to parse and are skipped explicitly rather than left to error
+    # into their fallbacks one by one.
+    binary_mode = checklist.get("target_kind") == "binary"
+    if binary_mode:
+        logger.info(
+            "audit prep: binary target — source-only pre-passes "
+            "skipped (macro recovery, source call edges, Joern)"
+        )
+
     # Fidelity-3 macro recovery: function definitions that only exist
     # post-expansion (DEFINE_HANDLER-style generators) are invisible to
     # the AST inventory — recover them so they reach the review loop.
     # Best-effort, bounded (textual prefilter + file cap inside).
-    try:
-        from .preprocessor_view import augment_checklist_with_macro_functions
+    if not binary_mode:
+        try:
+            from .preprocessor_view import (
+                augment_checklist_with_macro_functions,
+            )
 
-        augment_checklist_with_macro_functions(
-            checklist, config.target_path,
-            out_dir=config.out_dir, scope=config.scope,
-        )
-    except ImportError:
-        pass
-    except Exception:
-        logger.debug("macro-function recovery failed", exc_info=True)
+            augment_checklist_with_macro_functions(
+                checklist, config.target_path,
+                out_dir=config.out_dir, scope=config.scope,
+            )
+        except ImportError:
+            pass
+        except Exception:
+            logger.debug("macro-function recovery failed", exc_info=True)
 
     context_map = load_context_map(config.out_dir)
     if context_map is None:
         context_map = _try_understand_bridge(config)
     if context_map is None:
         context_map = {}
-    if "call_edges" not in context_map:
+    if "call_edges" not in context_map and not binary_mode:
         from core.orchestration.context_map_callgraph import enrich_with_call_edges
 
         edge_count = enrich_with_call_edges(

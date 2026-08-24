@@ -362,15 +362,45 @@ def cmd_record(args: argparse.Namespace) -> int:
     # masked their diagnostics.)
     if args.status == "finding":
         base_tool = (args.evidence_tool or "").split(":", 1)[0].strip().lower()
-        has_receipt = any(
-            e.get("action") == "sweep"
+        matching = [
+            e for e in audit_log
+            if e.get("action") == "sweep"
             and e.get("key") == func_key
             and (e.get("tool") or "").split(":", 1)[0].strip().lower()
                 == base_tool
             and e.get("outcome") == "confirmed"
             and e.get("rule_source") != "manual-attestation"
-            for e in audit_log
-        )
+        ]
+        # Role-split tools: a detection-grade receipt (e.g. bare
+        # symbolic-reach — guard-blind reachability) corroborates but
+        # may not ground a finding alone.
+        def _verification_grade(entry) -> bool:
+            rid = entry.get("rule_id") or ""
+            if not rid:
+                return True
+            try:
+                from core.audit.evidence_grade import (
+                    _channel_detection_classifier,
+                )
+                classify = _channel_detection_classifier(base_tool)
+                if classify is not None:
+                    return not classify(f"{base_tool}:{rid}")
+            except Exception:
+                pass
+            return True
+        has_receipt = any(_verification_grade(e) for e in matching)
+        if not has_receipt and matching:
+            print(
+                "error [G2 TOOL-GROUNDED]: the confirmed "
+                f"'{base_tool}' receipt(s) for {func_key} are "
+                "detection-grade (e.g. bare reachability) — they "
+                "corroborate but cannot ground --status finding "
+                "alone. Record as suspicious, or earn a "
+                "verification-grade receipt (crash replay / "
+                "PC-hijack / a second tool).",
+                file=sys.stderr,
+            )
+            return 1
         if not has_receipt:
             print(
                 "error [G2 TOOL-GROUNDED]: no executed confirmed "
@@ -537,9 +567,14 @@ def cmd_record(args: argparse.Namespace) -> int:
     if et_normalised and ":" not in et_normalised:
         et_normalised = f"{et_normalised}:cli"
 
-    source_hash = _compute_hash(
-        target_path, args.file, line_start or 0, line_end,
-    ) or ""
+    from core.inventory.binary_builder import BINARY_PATH_PREFIX as _BPP
+    if args.file.startswith(_BPP):
+        from core.audit.record import binary_source_hash
+        source_hash = binary_source_hash(out_dir, args.file, args.function) or ""
+    else:
+        source_hash = _compute_hash(
+            target_path, args.file, line_start or 0, line_end,
+        ) or ""
 
     hypotheses_list = []
     if args.hypothesis:
@@ -680,10 +715,12 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         _bin_tmp = None
         from core.inventory.binary_builder import BINARY_PATH_PREFIX
         if args.file.startswith(BINARY_PATH_PREFIX):
-            if tool != "semgrep":
+            if tool == "symbolic":
+                pass  # handled below — symbolic runs on the binary itself
+            elif tool != "semgrep":
                 print(
-                    f"error: {tool} needs source; only semgrep runs "
-                    "on decompiled bodies for binary targets",
+                    f"error: {tool} needs source; only semgrep and "
+                    "symbolic run on binary targets",
                     file=sys.stderr,
                 )
                 return 1
@@ -796,6 +833,37 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         if result.errors:
             for e in result.errors[:3]:
                 print(f"  error: {e}", file=sys.stderr)
+        return 0
+
+    # Auto-run mode: symbolic (angr) — binary items only
+    if tool == "symbolic":
+        from core.audit.sweep import run_symbolic_sweep
+        from core.project.trust import resolve_dynamic_validation
+
+        result = run_symbolic_sweep(
+            target_path=target_path,
+            file_path=args.file,
+            function_name=args.function,
+            out_dir=out_dir,
+            cwe=args.cwe or "",
+            replay=resolve_dynamic_validation(
+                None, target_path=target_path,
+            ),
+        )
+        entry = result.to_log_entry()
+        if result.details:
+            for k in ("mode", "target_address", "input_len",
+                      "solve_seconds", "witness_hash",
+                      "replay_outcome", "replay_signal"):
+                if result.details.get(k) is not None:
+                    entry[k] = result.details[k]
+        append_audit_log(out_dir, entry)
+        match_info = ""
+        if result.matches:
+            match_info = f" ({result.matches[0]['message']})"
+        print(f"sweep: {func_key} with symbolic → {result.outcome}{match_info}")
+        for e in result.errors[:3]:
+            print(f"  error: {e}", file=sys.stderr)
         return 0
 
     # Auto-run mode: SMT — verb + args instead of rule-file
@@ -1213,14 +1281,35 @@ def cmd_critique(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_binary_audit_target(target: Path) -> bool:
+    """Compiled artifact or Ghidra project — the binary audit mode."""
+    if target.suffix == ".gpr":
+        return True
+    try:
+        with open(target, "rb") as f:
+            magic = f.read(4)
+    except OSError:
+        return False
+    return magic in (
+        b"\x7fELF",
+        b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+        b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+    ) or magic[:2] == b"MZ"
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the full audit orchestrator with LLM review."""
     import subprocess
 
     target_path = Path(args.target).resolve()
     if not target_path.is_dir():
-        print(f"error: target not found: {target_path}", file=sys.stderr)
-        return 1
+        # Binary targets (ELF/PE/Mach-O or a Ghidra project) audit the
+        # compiled artifact: the checklist builder routes them and the
+        # orchestrator skips source-only pre-passes.
+        if not (target_path.is_file() and _is_binary_audit_target(target_path)):
+            print(f"error: target not found: {target_path}", file=sys.stderr)
+            return 1
 
     # --- lifecycle start ---
     # Explicit --out runs go through lifecycle start too. Pre-fix the
@@ -2230,7 +2319,8 @@ def main() -> int:
     p_sweep.add_argument("--file", required=True)
     p_sweep.add_argument("--function", required=True)
     p_sweep.add_argument("--tool", required=True,
-                         choices=["semgrep", "coccinelle", "codeql", "smt", "compilation"])
+                         choices=["semgrep", "coccinelle", "codeql", "smt",
+                                  "compilation", "symbolic"])
     p_sweep.add_argument("--rule", default=None, help="Rule ID or reference")
     p_sweep.add_argument("--rule-file", default=None,
                          help="Path to rule file — auto-runs the tool and logs results")
@@ -2238,6 +2328,10 @@ def main() -> int:
     p_sweep.add_argument("--result-file", default=None, help="Path to tool output")
     p_sweep.add_argument("--outcome", default=None,
                          choices=["confirmed", "refuted", "error", "inconclusive"])
+    p_sweep.add_argument("--cwe", default=None,
+                         help="CWE for the symbolic sweep's solve-mode "
+                              "selection (memory-corruption CWEs get the "
+                              "control-flow-hijack solve)")
     p_sweep.add_argument("--smt-verb", default=None,
                          choices=["check-overflow", "check-oob", "check-null-deref",
                                   "check-overflow-to-oob", "check-negative-bypass",

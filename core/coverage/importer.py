@@ -304,6 +304,11 @@ def import_findings(
         if inventory_paths:
             file = _to_inventory_path(file, inventory_paths, inv_index)   # match verdict's key
         line = _field(f, "line", "line_start", "start_line")
+        if not line and f.get("address") is not None:
+            # Binary findings: the store's intervals for binary:<stem>
+            # files live in address space — the finding's address IS
+            # its position, so function_verdict can attribute it.
+            line = f.get("address")
         # A stable, position-independent id so re-linking the same finding
         # (e.g. backfill then a clean snapshot's retained flip) targets the
         # SAME store entry rather than appending a duplicate. The list index

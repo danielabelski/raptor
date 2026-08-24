@@ -160,10 +160,25 @@ def _build_binary_checklist(target: Path, output_dir: Path) -> dict:
         with open(output_dir / "re-database.json", "w") as f:
             json.dump(db.to_dict(), f, indent=1)
 
+    # A prior /understand --map of the binary enriches priority
+    # scoring with entry-point and sink addresses.
+    context_map = None
+    for cand in (output_dir / "binary-context-map.json",
+                 output_dir / "context-map.json",
+                 output_dir.parent / "binary-context-map.json"):
+        if cand.is_file():
+            try:
+                context_map = json.loads(cand.read_text())
+                print(f"using context map: {cand}")
+                break
+            except (OSError, ValueError):
+                continue
+
     checklist = build_binary_checklist(
         db,
         binary_path=binary_path,
         include_auto_named=True,
+        context_map=context_map,
     )
     with open(output_dir / "checklist.json", "w") as f:
         json.dump(checklist, f, indent=2)

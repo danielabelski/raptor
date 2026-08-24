@@ -280,3 +280,63 @@ class TestSizeClamp:
         )
         items = {i["name"]: i for i in cl["files"][0]["items"]}
         assert items["decoy"]["size"] == 0x100
+
+
+class TestBinaryStaleness:
+    def test_item_hash_binds_binary_and_span(self):
+        from core.audit.record import binary_item_hash
+        fe = {"sha256": "ab" * 32}
+        item = {"address": 0x1000, "size": 0x40}
+        h = binary_item_hash(fe, item)
+        assert h == f"bin:{'ab' * 6}:1000:40"
+        # different binary content → different hash
+        assert binary_item_hash({"sha256": "cd" * 32}, item) != h
+        # moved function → different hash
+        assert binary_item_hash(fe, {"address": 0x2000, "size": 0x40}) != h
+
+    def test_fold_reopens_on_hash_mismatch(self, tmp_path):
+        import json
+
+        from core.audit.gaps import compute_gaps
+        from core.audit.journal import (
+            ReviewJournalEntry,
+            append_entry,
+            merge_into_index,
+            now_iso,
+        )
+        from core.audit.record import binary_item_hash
+
+        fe = {
+            "path": "binary:t", "language": "binary",
+            "sha256": "ab" * 32,
+            "items": [{"name": "f", "kind": "function",
+                       "address": 0x1000, "size": 0x40,
+                       "metadata": {"address": 0x1000, "size": 0x40}}],
+        }
+        cl = {"target_path": str(tmp_path), "files": [fe],
+              "target_kind": "binary"}
+        (tmp_path / "checklist.json").write_text(json.dumps(cl))
+
+        project = tmp_path / "project"
+        project.mkdir()
+        entry = ReviewJournalEntry(
+            ts=now_iso(), run_id="r1", file="binary:t", function="f",
+            verdict="clean",
+            source_hash=binary_item_hash(fe, fe["items"][0]),
+        )
+        append_entry(project, entry)
+        merge_into_index(project, project)
+
+        run = tmp_path / "run"
+        run.mkdir()
+        # matching hash → suppressed
+        gaps = compute_gaps(cl, [], out_dir=run, project_dir=project)
+        assert all(g["name"] != "f" for g in gaps)
+
+        # rebuilt binary (different sha) → re-opened
+        fe2 = dict(fe, sha256="cd" * 32)
+        cl2 = {"target_path": str(tmp_path), "files": [fe2],
+               "target_kind": "binary"}
+        (tmp_path / "checklist.json").write_text(json.dumps(cl2))
+        gaps2 = compute_gaps(cl2, [], out_dir=run, project_dir=project)
+        assert any(g["name"] == "f" for g in gaps2)

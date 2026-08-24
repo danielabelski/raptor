@@ -106,3 +106,46 @@ def _compute_hash(
     except Exception:  # noqa: BLE001 — best-effort: missing hash only widens review
         logger.debug("hash computation failed for %s:%d", file_path, line_start)
         return None
+
+def binary_item_hash(file_entry: dict, item: dict) -> str | None:
+    """Staleness anchor for a binary checklist item.
+
+    Binds the review to the BINARY's content (the file entry's
+    sha256, stamped at checklist build) and the function's
+    address/size — a rebuilt binary or a moved/resized function
+    invalidates the review instead of silently suppressing it.
+    Self-describing ``bin:`` prefix so the journal fold can route it.
+    """
+    sha = file_entry.get("sha256") or ""
+    addr = item.get("address")
+    if addr is None:
+        addr = (item.get("metadata") or {}).get("address")
+    if not sha or addr is None:
+        return None
+    size = item.get("size") or (item.get("metadata") or {}).get("size") or 0
+    return f"bin:{sha[:12]}:{addr:x}:{size:x}"
+
+
+def binary_source_hash(
+    out_dir: Path, file_path: str, function_name: str,
+) -> str | None:
+    """Write-time twin of :func:`binary_item_hash` — resolves the
+    item from the run's checklist."""
+    try:
+        from pathlib import Path as _Path
+
+        from core.audit.gaps import load_checklist
+        cl = load_checklist(_Path(out_dir))
+        for fe in (cl or {}).get("files", []):
+            if fe.get("path") != file_path:
+                continue
+            items = fe.get("items", fe.get("functions", [])) or []
+            for item in items:
+                if item.get("name") == function_name:
+                    return binary_item_hash(fe, item)
+    except Exception:  # noqa: BLE001 — missing hash only widens review
+        logger.debug(
+            "binary source hash failed for %s:%s",
+            file_path, function_name, exc_info=True,
+        )
+    return None

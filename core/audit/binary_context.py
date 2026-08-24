@@ -28,6 +28,109 @@ logger = logging.getLogger(__name__)
 #: functions parses the JSON once.
 _REDB_CACHE: Dict[str, Any] = {}
 
+#: One sandboxed GhidraServer per analysed binary, booted lazily the
+#: first time a checklist function has no cached decompilation and
+#: reused for the rest of the run (JVM boot ~4s once vs per call).
+_SERVER_CACHE: Dict[str, Any] = {}
+
+
+def _lazy_decompile(
+    binary_path: str, function_name: str, address,
+    out_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """On-demand decompilation through the persistent sandboxed
+    server. Availability-gated (pyghidra + a real project source);
+    any failure degrades to None and the stub text stands."""
+    try:
+        from packages.ghidra.detect import pyghidra_available
+        if not pyghidra_available():
+            return None
+        from packages.ghidra.server import GhidraServer
+    except ImportError:
+        return None
+    key = str(Path(binary_path).resolve())
+    srv = _SERVER_CACHE.get(key)
+    if srv is False:
+        return None  # previous BOOT failed — don't retry every call
+    if srv is None:
+        try:
+            gpr = _project_for_binary(Path(binary_path), out_dir)
+            if gpr is None:
+                _SERVER_CACHE[key] = False
+                return None
+            srv = GhidraServer(gpr)
+            srv.start()
+            import atexit
+            atexit.register(srv.stop)
+            srv.open()
+            _SERVER_CACHE[key] = srv
+        except Exception:  # noqa: BLE001 — boot failure poisons the cache
+            logger.debug(
+                "lazy decompile server boot failed for %s",
+                binary_path, exc_info=True,
+            )
+            _SERVER_CACHE[key] = False
+            return None
+    target = address if address is not None else function_name
+    try:
+        return srv.decompile(target)
+    except Exception as e:  # noqa: BLE001 — a per-function miss (unrecovered
+        # name, decompile timeout) must NOT poison the healthy server
+        # for every later function.
+        logger.debug(
+            "lazy decompile failed for %s", function_name, exc_info=True,
+        )
+        # A dead worker (watchdog self-kill on a wedged JVM call,
+        # crash) takes every LATER function with it unless replaced.
+        # One restart attempt; the poisoned function is not retried.
+        try:
+            from packages.ghidra.server import GhidraServerDied
+        except ImportError:
+            return None
+        if isinstance(e, GhidraServerDied):
+            try:
+                srv.restart()
+                logger.info(
+                    "lazy decompile server restarted after worker "
+                    "death on %s", function_name,
+                )
+            except Exception:  # noqa: BLE001 — restart failure poisons
+                logger.debug(
+                    "lazy decompile server restart failed",
+                    exc_info=True,
+                )
+                _SERVER_CACHE[key] = False
+        return None
+
+
+def _project_for_binary(
+    binary_path: Path, out_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """A Ghidra project for the binary — RAPTOR-owned locations ONLY.
+
+    The binary's own directory is attacker territory: a planted
+    ``.gpr`` there would substitute attacker-authored decompilation
+    into review context (and its clean verdicts would be staleness-
+    anchored to the REAL binary). Same rule as :func:`find_redb`.
+    """
+    import os
+    if binary_path.suffix == ".gpr":
+        return binary_path
+    candidates = []
+    if out_dir:
+        candidates.append(Path(out_dir) / f"{binary_path.stem}.gpr")
+    raptor_dir = os.environ.get("RAPTOR_DIR")
+    if raptor_dir:
+        candidates.append(
+            Path(raptor_dir) / "out"
+            / f"ghidra-import-{binary_path.stem}"
+            / f"{binary_path.stem}.gpr"
+        )
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
+
 
 def find_redb(out_dir: Optional[Path], target_path: Optional[Path]) -> Optional[Path]:
     """Locate the run's re-database.json.
@@ -139,7 +242,7 @@ def assemble_binary_context(
         "target_path": str(target_path),
     }
 
-    source, representation = _read_binary_source(func)
+    source, representation = _read_binary_source(func, target_path, out_dir)
     ctx["source"] = source
     ctx["representation"] = representation
 
@@ -245,12 +348,18 @@ def _find_item(checklist, file_path, function_name):
     return None
 
 
-def _read_binary_source(func):
+def _read_binary_source(func, target_path=None, out_dir=None):
     """Return (source_text, representation)."""
     if func is None:
         return "(function not found in the binary database)", "unknown"
     if func.decompilation:
         return func.decompilation, "decompilation"
+    if target_path is not None:
+        code = _lazy_decompile(
+            str(target_path), func.name, func.address, out_dir,
+        )
+        if code:
+            return code, "decompilation"
     return (
         "(no decompilation available for %s at 0x%x, size %d bytes — "
         "re-import with --decompile-all or use "

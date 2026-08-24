@@ -652,9 +652,15 @@ def main() -> None:
             # first, bookmark second, same discipline as `use`.
             from .sessions import bind_session, resolve_session_pid
             if resolve_session_pid() is not None:
-                bind_session(p.name)
-                print(f"  Active for this session; new sessions will "
-                      f"default to it.")
+                if bind_session(p.name, seeded_by="create") is not None:
+                    print(f"  Active for this session; new sessions "
+                          f"will default to it.")
+                else:
+                    print(f"  WARNING: session binding failed — this "
+                          f"session still follows its previous "
+                          f"project. Retry with 'raptor project use "
+                          f"{p.name}'. New sessions will default "
+                          f"to it.")
             else:
                 print(f"  New sessions will default to it "
                       f"(no session — no binding recorded).")
@@ -893,7 +899,12 @@ def main() -> None:
             if args.name == "none":
                 from .sessions import bind_session, resolve_session_pid
                 if resolve_session_pid() is not None:
-                    bind_session(None)
+                    if bind_session(None) is None:
+                        print("WARNING: could not record the "
+                              "bound-to-none binding — this session "
+                              "still follows its previous project. "
+                              "Retry 'raptor project none'.")
+                        return
                     prev_default = _read_bookmark(mgr)
                     default_note = (
                         f"Last-activated default "
@@ -941,9 +952,16 @@ def main() -> None:
             )
             prev_binding, prev_state = session_binding()
             in_session = resolve_session_pid() is not None
-            _own_pid = bind_session(args.name) if in_session else None
+            _own_pid = (bind_session(args.name, seeded_by="use")
+                        if in_session else None)
             mgr.set_active(args.name)
-            if in_session:
+            if in_session and _own_pid is None:
+                print(f"WARNING: session binding failed — this session "
+                      f"still follows its previous project. Retry "
+                      f"'raptor project use {p.name}'. Last-activated "
+                      f"default updated — new sessions will start on "
+                      f"'{p.name}'.")
+            elif in_session:
                 was = (prev_binding if prev_state == "bound"
                        else "none" if prev_state == "none" else "unset")
                 print(f"Session now on '{p.name}' (was: {was}). "
@@ -1147,12 +1165,24 @@ def main() -> None:
                     print("No project by that name, no --target, and no run "
                           "records a target — pass --target explicitly.")
                     return
+            existed_before = mgr.load(args.name) is not None
             total = 0
             for candidate in args.runs:
                 total += mgr.add_directory(args.name, candidate, target=target)
             if total:
                 print(f"Adopted {total} run(s) into project '{args.name}' "
                       "(journal index + coverage projections re-run)")
+                if not existed_before:
+                    # Adopt-that-creates activates for THIS SESSION
+                    # only — the machine-wide default is not moved
+                    # (same session-only semantics as launch-time
+                    # auto-detect; /project use bumps the bookmark).
+                    from .sessions import bind_session, resolve_session_pid
+                    if resolve_session_pid() is not None:
+                        if bind_session(args.name,
+                                        seeded_by="adopt") is not None:
+                            print(f"  Active for this session "
+                                  f"(last-activated default unchanged).")
             else:
                 print("No runs adopted (already present, target mismatch, "
                       "or no run directories found)")
@@ -1426,8 +1456,8 @@ def _print_sessions(mgr) -> None:
 
 def _get_active_project():
     """The active project for this context — layered resolution
-    (session binding first, then the last-activated symlink; design
-    §3) via ``ProjectManager.get_active()``."""
+    (session binding first, then the last-activated symlink) via
+    ``ProjectManager.get_active()``."""
     mgr = ProjectManager()
     return mgr.get_active()
 
@@ -2674,8 +2704,12 @@ def _do_merge(project, merge_type, yes) -> None:
                 "command": cmd_type,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "status": "completed",
+                "project": project.name,
+                "project_source": "merged",
                 "extra": {"merged_from": len(dirs), "unique_findings": stats["unique_findings"]},
             })
+            from core.run.pin import freeze_run_pin
+            freeze_run_pin(merged_dir, project.name, "merged")
         except Exception as e:  # noqa: BLE001 — abort delete, keep sources
             # Pre-fix this printed a warning and PROCEEDED to delete
             # source runs. The merged output then existed without

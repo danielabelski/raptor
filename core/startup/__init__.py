@@ -9,11 +9,18 @@ ACTIVE_LINK = PROJECTS_DIR / ".active"
 
 def _expired_light(name):
     """Light machine-project expiry probe (no ProjectManager import):
-    ``expires_at`` is only ever stamped on machine-generated projects
-    (the corpus runner; ``/project use`` clears it), so the field alone
-    is a faithful gate. Unparseable = not expired (fail open)."""
+    only machine-named projects (``is_machine_project_name``) can
+    expire — a hand-edited ``expires_at`` on an operator project must
+    never deactivate it here when ``get_active`` (which applies the
+    name gate) would keep it. Unparseable = not expired (fail open)."""
     import json
     from datetime import datetime, timezone
+    try:
+        from core.project.project import is_machine_project_name
+        if not is_machine_project_name(name):
+            return False
+    except Exception:  # noqa: BLE001 — predicate unavailable: fail open
+        return False
     try:
         data = json.loads((PROJECTS_DIR / f"{name}.json").read_text(
             encoding="utf-8"))
@@ -65,6 +72,8 @@ def get_active_name():
         return None
     if target.endswith(".json") and "/" not in target and "\\" not in target:
         name = target[:-5]
+        if not (PROJECTS_DIR / target).exists():
+            return None  # dangling bookmark — same answer get_active gives
         if _expired_light(name):
             return None
         return name

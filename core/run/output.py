@@ -71,7 +71,7 @@ def unique_run_suffix(separator: str = "_") -> str:
 def _resolve_active_project() -> tuple[str, str, str] | None:
     """Resolve the current active project.
 
-    Precedence (design §6): the process-scoped ``--project`` argv
+    Precedence: the process-scoped ``--project`` argv
     override first — ``-`` is the explicit bound-to-none value and
     resolves as "no project" — then the ambient chokepoint
     (``ProjectManager.get_active()``: session binding, then the

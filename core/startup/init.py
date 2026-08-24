@@ -863,7 +863,7 @@ def check_lang() -> tuple[str | None, list]:
 def check_active_project() -> str | None:
     """Return a one-line project status string, or None if no active
     project. Sourced from the LAYERED resolution (the session binding
-    post-seed; design §3.5): the auto-detect variant comes from the
+    post-seed; the layering contract): the auto-detect variant comes from the
     session entry's ``seeded_by`` field (the retired machine-global
     ``.auto`` marker raced concurrent launches — one launch clearing
     another's — and could mislabel a later explicit activation), and

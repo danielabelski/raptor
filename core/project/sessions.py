@@ -32,7 +32,7 @@ Authority demands what the advisory registry never needed:
   never pruned. Off-Linux there is no procfs identity: entries carry
   platform sentinels (``starttime=0``, ``boot_id=none-<platform>``) and
   are accepted on comm-checked liveness alone — a documented weaker
-  residual (design §3.4).
+  residual.
 * **Atomic, lock-disciplined writes.** Entry writes are tmp+rename;
   ledger read-modify-writes additionally hold a sibling ``.run.lock``
   flock (rename atomicity protects readers, not concurrent writers).
@@ -52,7 +52,7 @@ attribution; finished records give sibling discovery a "runs this
 session produced" tier. Run-dir paths are rejected if they contain any
 whitespace or non-printable character: ``str.splitlines`` splits on
 U+2028-class separators, so a crafted path could otherwise forge a
-second, clean-looking record (design §10.1).
+second, clean-looking record.
 """
 
 from __future__ import annotations
@@ -149,8 +149,7 @@ def _comm(pid: int) -> str | None:
 
 
 def _claude_shaped(comm: str | None) -> bool:
-    """ONE comm predicate for walker, liveness, and readers (design §4:
-    unified — the pre-series code had three different strictnesses)."""
+    """ONE comm predicate for walker, liveness, and readers."""
     return comm is not None and comm.startswith("claude")
 
 
@@ -190,7 +189,7 @@ def pidns_id() -> str | None:
 
     Two processes sharing a kernel but not a pid namespace must never
     prune or trust each other's entries — pid liveness is meaningless
-    across the boundary (design §3.2/§3.3, same-kernel containers).
+    across the boundary.
     """
     if sys.platform != "linux":
         return None
@@ -212,7 +211,7 @@ def _sentinel_stamp(fields: dict[str, str]) -> bool:
 
 def _foreign_entry(fields: dict[str, str]) -> bool:
     """Entry owned by a different boot, machine, or pid namespace —
-    never authoritative HERE, never pruned HERE (design §3.2).
+    never authoritative HERE, never pruned HERE.
 
     Also foreign: an entry carrying a REAL boot_id that this reader
     cannot verify (e.g. macOS reader, Linux-stamped entry).
@@ -253,7 +252,7 @@ def _identity_matches(pid: int, fields: dict[str, str]) -> bool:
     if not _pid_running(pid) or not _claude_shaped(_comm(pid)):
         return False
     if _sentinel_stamp(fields):
-        return True  # off-Linux: liveness-strength (design §3.4)
+        return True  # off-Linux: liveness-strength
     live_start = proc_starttime(pid)
     if live_start is None:
         return False  # identity unknown on a Linux reader → not proven
@@ -291,7 +290,7 @@ def _env_session_pid() -> int | None:
 def _walk_session_pid() -> int | None:
     """Tree walk: collect ALL claude-shaped ancestors; prefer the one
     whose entry PASSES IDENTITY MATCHING (a merely entry-bearing
-    recycled pid must not win — design §4), else the outermost.
+    recycled pid must not win), else the outermost.
 
     RAPTOR dispatches nested ``claude -p`` skill children; the nearest
     claude ancestor of a helper under one of those is the *subagent*,
@@ -417,7 +416,7 @@ def _identity_for(pid: int) -> dict[str, str] | None:
     Returns None on Linux when the pid's starttime is unreadable (pid
     gone, procfs race): an entry stamped without it could never pass an
     authoritative read — writers must refuse rather than write a doomed
-    entry (design §3.1: writers validate like readers).
+    entry.
     """
     start = proc_starttime(pid)
     boot = boot_id()
@@ -536,7 +535,7 @@ def session_binding(pid: int | None = None) -> tuple[str | None, str]:
 
 def _entry_state(pid: int, fields: dict[str, str]) -> str:
     """Classification for enumeration surfaces: live | stale | foreign
-    | advisory (design §11 /project sessions)."""
+    | advisory."""
     if _foreign_entry(fields):
         return "foreign"
     if fields.get("v") != ENTRY_VERSION:
@@ -548,7 +547,7 @@ def read_sessions(prune: bool = True,
                   include_stale: bool = False) -> dict[int, dict]:
     """Registered sessions, pruning dead entries on the way.
 
-    Prune predicate (design §3.3, normative): a v2 entry is pruned only
+    Prune predicate: a v2 entry is pruned only
     when it is NOT foreign AND (its pid is positively dead, or alive
     with a positively mismatching stamp). "Identity unknown" is never
     pruned. v1 entries keep the historical dead-pid prune, gated on
@@ -687,7 +686,7 @@ def _zombie_correct(records: list[dict]) -> None:
     dir is gone, or whose run metadata is terminal, is not running —
     without this, crashed runs' lines accumulate forever, the cap
     evicts all real history, and the 64KB read bound eventually zeroes
-    the ledger (design §10.1)."""
+    the ledger."""
     for r in records:
         if r["status"] != "running":
             continue
@@ -811,7 +810,7 @@ def ledger_record_finish(run_dir: str | os.PathLike[str], status: str,
 def ledger_record_resume(run_dir: str | os.PathLike[str],
                          prior_session_pid: int | None = None,
                          pid: int | None = None) -> None:
-    """Resume wiring (design §10.1): append a running record to the
+    """Resume wiring: append a running record to the
     RESUMING session's ledger, and CAS-mark the original owner's line
     ``interrupted`` so its session's hook stops attributing to a run it
     no longer owns."""

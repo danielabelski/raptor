@@ -2281,7 +2281,7 @@ Examples:
         # resolution to the run's recorded pin — a mid-session
         # /project switch must not move trust markers, IRIS stores,
         # exemplar pools, or threat models under an in-flight run
-        # (design §5). No-op when --project already set the override.
+        #. No-op when --project already set the override.
         from core.run.pin import bootstrap_process_pin
         bootstrap_process_pin(out_dir)
     except Exception as e:  # noqa: BLE001
@@ -3433,8 +3433,7 @@ Examples:
                         # consistently under the analysis-complete bullets.
                         print(f"  {line}")
 
-                # ZKPoX eligibility — FREE surfacing (design trigger
-                # model): classification only, no bundle assembly,
+                # ZKPoX eligibility — FREE surfacing: classification only, no bundle assembly,
                 # no execution. Shows how many witnesses are ZK-proof
                 # candidates.
                 from packages.zkpox import render_run_eligibility

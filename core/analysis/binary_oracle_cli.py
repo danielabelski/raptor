@@ -279,7 +279,7 @@ def _project_binaries(
     schema mismatch returns ``([], None)`` rather than crashing the
     run.
 
-    ONE-TARGET GATE (design §9): persisted binaries are an operator
+    ONE-TARGET GATE: persisted binaries are an operator
     assertion about ONE target, exactly like trust markers — which got
     this gate first while the binaries path stayed open. Without it,
     project X's binaries drove `absent` verdicts (pre-LLM

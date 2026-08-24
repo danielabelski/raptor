@@ -237,7 +237,7 @@ class SessionsRegistryTest(_RegistryCase):
 
 
 class SessionBindingTest(_RegistryCase):
-    """The authoritative binding state machine (design §3)."""
+    """The authoritative binding state machine."""
 
     def test_bound(self):
         sessions.record_session("myapp", pid=os.getpid())
@@ -316,14 +316,14 @@ class SessionBindingTest(_RegistryCase):
 
 class RunLedgerTest(_RegistryCase):
     """Ledger grammar, CAS finish, injection defense, zombie
-    correction, resume wiring (design §10.1)."""
+    correction, resume wiring."""
 
     def setUp(self):
         super().setUp()
         self.run_root = Path(self._tmp.name) / "runs"
         self.run_root.mkdir()
         # Ledger records belong to REGISTERED sessions only — give the
-        # test pids entries (the design's mandatory-seed invariant).
+        # test pids entries (mandatory-seed invariant).
         sessions.record_session("ledgerapp", pid=os.getpid())
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         (self.sessions_dir / "777777").write_text(
@@ -515,7 +515,7 @@ class UseCommandAwarenessTest(unittest.TestCase):
     def test_use_none_binds_sentinel_and_keeps_bookmark(self):
         """In-session `/project none` is a session-only clear: the entry
         binds the `-` sentinel (authoritatively projectless) and the
-        last-activated default is untouched (design decision 4)."""
+        last-activated default is untouched."""
         self._run("use", "myapp")
         code, out, _ = self._run("none")
         self.assertEqual(code, 0)
@@ -625,7 +625,7 @@ if __name__ == "__main__":
 
 
 class LayeredChokepointTest(unittest.TestCase):
-    """get_active() / get_active_name() layered resolution (design §3):
+    """get_active() / get_active_name() layered resolution:
     binding beats symlink, bound-to-none is authoritative, stale
     bindings never fall through, expiry remediation clears only the
     producing layer — and the two chokepoints always agree."""
@@ -689,7 +689,7 @@ class LayeredChokepointTest(unittest.TestCase):
         self.mgr._save(proj)
 
     def test_expired_binding_clears_binding_not_bookmark(self):
-        """op-C4/conc-C5: the expiry vet fired via a session binding
+        """a review finding/a review finding: the expiry vet fired via a session binding
         must never destroy the machine-wide bookmark."""
         self._make_expired_machine_project("corpus-999")
         sessions.record_session("corpus-999", pid=os.getpid())
@@ -712,7 +712,7 @@ class LayeredChokepointTest(unittest.TestCase):
 
 class ProjectMutationHygieneTest(unittest.TestCase):
     """delete/rename binding hygiene + the purge live-run guard
-    (design §3 / decision 14)."""
+   ."""
 
     def setUp(self):
         self._tmp = TemporaryDirectory()
@@ -767,7 +767,7 @@ class ProjectMutationHygieneTest(unittest.TestCase):
 
 @unittest.skipIf(sys.platform == "win32", "bash launcher")
 class LauncherSeedV2Test(LauncherAwarenessTest):
-    """The v2 mandatory seed (design §3.5): identity-stamped entry,
+    """The v2 mandatory seed: identity-stamped entry,
     exported env credential, seed even with an empty bookmark."""
 
     def test_seed_is_v2_with_identity_and_credential(self):
@@ -797,7 +797,7 @@ class LauncherSeedV2Test(LauncherAwarenessTest):
             self.assertEqual(own[0].stat().st_mode & 0o777, 0o600)
 
     def test_empty_bookmark_seeds_projectless_sentinel(self):
-        """op-C1: a launch with NO active project still writes an
+        """a review finding: a launch with NO active project still writes an
         entry — 'project=-' — so the session is insulated from later
         bookmark moves by other sessions."""
         with TemporaryDirectory() as d:

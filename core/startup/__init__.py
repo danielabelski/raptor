@@ -30,7 +30,7 @@ def _expired_light(name):
 
 def get_active_name():
     """The active project name for THIS context, or None — layered
-    like ``ProjectManager.get_active()`` (design §3): session binding
+    like ``ProjectManager.get_active()``: session binding
     first (authoritative, incl. bound-to-none and the stale-binding
     rule), then the last-activated ``.active`` symlink. Both layers
     get the machine-expiry vet, so the two chokepoints can never

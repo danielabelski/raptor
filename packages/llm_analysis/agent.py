@@ -3597,7 +3597,7 @@ def main() -> None:
         # Child of a run: adopt the owning run's pin as the process
         # override so every ambient consumer (trust resolvers, IRIS
         # store, exemplar pools, threat model, verified outcomes)
-        # follows it (design §5).
+        # follows it.
         from core.run.pin import bootstrap_process_pin
         bootstrap_process_pin(args.out)
         out_dir = Path(args.out).resolve()

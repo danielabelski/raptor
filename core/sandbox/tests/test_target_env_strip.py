@@ -1,4 +1,4 @@
-"""TARGET_ENV_STRIP_SET — the table-driven strip harness (design §8).
+"""TARGET_ENV_STRIP_SET — the table-driven strip harness.
 
 One constant defines what target-bound envs must never carry (trust
 markers + the session credential); these tests pin every consumer to
@@ -78,7 +78,7 @@ def test_frida_safe_env_excludes_the_set(monkeypatch):
 
 def test_codeql_build_env_blocks_raptor_vars():
     """Repo-supplied build metadata must not inject RAPTOR control
-    vars (sec-F7). Exercise the layering predicate exactly as
+    vars. Exercise the layering predicate exactly as
     database_manager applies it."""
     blocked = (set(RaptorConfig.DANGEROUS_ENV_VARS)
                | set(RaptorConfig.PROXY_ENV_VARS))

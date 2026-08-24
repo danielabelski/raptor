@@ -549,7 +549,7 @@ class RaptorConfig:
         #                    read as an enum (any other value → auto); no
         #                    injection surface.
         "RAPTOR_TARGET_KIND",
-        # Session identity credential (design §4): the launcher-exported
+        # Session identity credential: the launcher-exported
         # pid + token that lets deep children (skill dispatches, nested
         # claude subagents, PID-namespace-blind helpers) resolve their
         # owning session's project binding. Same contract as
@@ -567,9 +567,7 @@ class RaptorConfig:
     # scanned TARGET (build scripts, test suites, fuzz targets, frida
     # spawn-mode processes): trust markers a hostile child could
     # replay against the libexec trust gate, and the session
-    # credential (design §8 — stripped by DEFAULT at the sandbox env
-    # chokepoint; the keep-trust skill-dispatch path is the only
-    # exception). Consumed by core/sandbox/context.py,
+    # credential. Consumed by core/sandbox/context.py,
     # libexec/raptor-pid1-shim (keep the shim's tuple in sync — it
     # cannot import this module inside the namespace), and
     # packages/fuzzing/env_hygiene.py; the strip regression harness is

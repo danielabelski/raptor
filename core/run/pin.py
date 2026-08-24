@@ -1,4 +1,4 @@
-"""Run-scoped project pinning (design §5).
+"""Run-scoped project pinning.
 
 A run is pinned to one project IDENTITY for its whole lifetime: the
 resolved project name and the layer that produced it are recorded in
@@ -96,7 +96,7 @@ def set_process_project(value: str | None) -> None:
     """Record the entry point's ``--project`` argv (``'-'`` = explicit
     bound-to-none; None = flag not given). Validation against the
     project registry happens at resolution (hard error, never a
-    fallback — design §6)."""
+    fallback)."""
     global _process_project, _process_project_set
     _process_project = value
     _process_project_set = value is not None
@@ -108,7 +108,7 @@ def get_process_project() -> str | None:
 
 class ProjectArgvError(ValueError):
     """``--project`` revalidation failure — a hard error by contract
-    (design §6): never a fallback to any ambient layer."""
+   : never a fallback to any ambient layer."""
 
 
 def _project_exists(name: str) -> bool:
@@ -301,7 +301,7 @@ def _pin_from_marker(run_dir: Path) -> RunPin:
 
 
 def bootstrap_process_pin(out_dir: str | os.PathLike[str] | None) -> None:
-    """Child-process pin bootstrap (design §5, packages-C2): a run's
+    """Child-process pin bootstrap: a run's
     child process (scan/codeql/analysis workers spawned with an
     ``--out`` under the run dir) adopts the OWNING RUN's pin as its
     process-scoped project override, so every ambient consumer in the

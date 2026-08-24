@@ -2856,7 +2856,7 @@ def main() -> None:
         set_process_project(args.project)
     elif args.out:
         # Child of a run: adopt the owning run's pin as the process
-        # override so every ambient consumer follows it (design §5).
+        # override so every ambient consumer follows it.
         from core.run.pin import bootstrap_process_pin
         bootstrap_process_pin(args.out)
 

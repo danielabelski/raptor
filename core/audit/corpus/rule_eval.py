@@ -429,7 +429,7 @@ def find_engine_rules_base(
     # Project candidate via the RUN PIN / process override — never the
     # ambient active project. Pre-fix this read `mgr.get_active()`,
     # which only worked because the corpus runner flipped `.active` to
-    # the corpus project; with explicit threading (design §7) the
+    # the corpus project; with explicit threading the
     # ambient read would resolve the OPERATOR's project instead and
     # load its graduated rules as trusted engine config inside a
     # measurement run.

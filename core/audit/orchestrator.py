@@ -4572,7 +4572,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
                 context_map=context_map,
                 domain_model=prep_domain_model,
                 joern_server=joern_server,
-                # Interface-implementor parity (§3.8) consumes the
+                # Interface-implementor parity consumes the
                 # resolver's mechanical layers (L2 dispatch-site, L4
                 # type-cohort) — groups already built above.
                 peer_groups=peer_groups,
@@ -4601,7 +4601,7 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
     except Exception:
         logger.debug("consistency prepass failed", exc_info=True)
 
-    # Fail-open census pre-pass (design §6): detection-grade leg-1 x
+    # Fail-open census pre-pass: detection-grade leg-1 x
     # leg-2 sweep over the handler-outcome family; leads land on gap
     # dicts so the review prompt renders a hypothesize-or-discharge
     # obligation. The phase-1 field runs had a quiet fail_open tier —
@@ -5249,7 +5249,7 @@ def _bypass_findings_to_gaps(
 
 def _fail_open_adjudicated_sites(out_dir: Path | None) -> set:
     """(file, line) pairs the fail_open channel already adjudicated —
-    the CWE-252 premise-split dedup (§5.1): the census defers, the
+    the CWE-252 premise-split dedup: the census defers, the
     fail_open verdict wins (deeper role+fallibility receipts)."""
     sites: set = set()
     if not out_dir:
@@ -5340,7 +5340,7 @@ def _journal_undischarged_leads(
     outcomes: list[Any],
     out_dir: Path | None,
 ) -> None:
-    """``consistency_lead:undischarged`` telemetry (§2.4.2): leads
+    """``consistency_lead:undischarged`` telemetry: leads
     seeded onto gaps whose function never reached a review."""
     if not out_dir:
         return
@@ -5381,7 +5381,7 @@ def _journal_undischarged_fail_open_leads(
     outcomes: list[Any],
     out_dir: Path | None,
 ) -> None:
-    """``fail_open_lead:undischarged`` telemetry (design §6.4): census
+    """``fail_open_lead:undischarged`` telemetry: census
     leads seeded onto gaps whose function never reached a review —
     the negative-space-style absence-is-signal bookkeeping."""
     if not out_dir:
@@ -6098,7 +6098,7 @@ def _run_audit_body(
                      exc_info=True)
 
     # Pre-pass verdict counts surface in tier-diagnostics alongside the
-    # in-loop channel adjudications (§4.4).
+    # in-loop channel adjudications.
     try:
         for counts in (
             (consistency_prepass.get("telemetry") or {})

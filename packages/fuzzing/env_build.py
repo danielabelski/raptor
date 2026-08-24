@@ -79,7 +79,7 @@ def env_build_candidate(
     + docker presence. Runs nothing; returns ``(candidate, hint)``
     where *hint* explains a decline in operator terms. In-run callers
     pass *run_dir* so consent and the build command come from the RUN
-    PIN's project (design §5).
+    PIN's project.
     """
     repo = Path(repo)
     if not repo.is_dir():

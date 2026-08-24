@@ -151,7 +151,7 @@ def _resolve_repo_trust(target: Path | str | None = None) -> bool:
     markers, _name = active_project_trust()
     marker_set = "config" in markers
     if marker_set and target is not None:
-        # One-target rule (design §9 rider): the config marker is an
+        # One-target rule: the config marker is an
         # assertion about ONE tree — bump runs against arbitrary
         # --repo paths, and project A's marker must not relax vetting
         # for tree B (the same gate trust flags and persisted

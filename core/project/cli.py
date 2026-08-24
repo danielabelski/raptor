@@ -644,7 +644,7 @@ def main() -> None:
                            binaries=getattr(args, "binary", None))
             print(f"Created project '{p.name}' → {p.output_dir}")
             # Creation activates for the creating session and bumps the
-            # last-activated default (design decision 2) — binding
+            # last-activated default — binding
             # first, bookmark second, same discipline as `use`.
             from .sessions import bind_session, resolve_session_pid
             if resolve_session_pid() is not None:
@@ -854,7 +854,7 @@ def main() -> None:
 
         elif args.subcommand == "use":
             if args.name is None:
-                # No argument — report BOTH layers, labelled (design §11).
+                # No argument — report BOTH layers, labelled.
                 from .sessions import resolve_session_pid, session_binding
                 binding, state = session_binding()
                 bookmark = _read_bookmark(mgr)
@@ -884,7 +884,7 @@ def main() -> None:
                     print(f"Session project cleared. {default_note}")
                 else:
                     # Bare shell: act on the last-activated default,
-                    # loudly labelled (design §11).
+                    # loudly labelled.
                     prev = mgr.get_active()
                     mgr.set_active(None)
                     print("(no session — acting on the last-activated "
@@ -910,10 +910,7 @@ def main() -> None:
                     f"'{p.name}' — explicit use makes it "
                     f"operator-owned"
                 )
-            # Binding FIRST, bookmark second (design §3: a crash
-            # between the two must leave the session on its new
-            # project rather than moving the machine-wide default
-            # while the session stays behind). Success message only
+            # Binding FIRST, bookmark second. Success message only
             # after both writes.
             from .sessions import (
                 awareness_lines,

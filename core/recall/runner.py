@@ -105,7 +105,7 @@ def build_pipeline_argv(manifest: RecallManifest, target: Path,
         raise RunnerError(msg)
     if pipeline_out is not None:
         argv += ["--out", str(pipeline_out)]
-    # Explicitly projectless (design §7): measurement children must not
+    # Explicitly projectless: measurement children must not
     # inherit the operator's session binding — without this, the
     # launcher-exported session credential (or the claude-ancestor
     # walk) would pin these runs to the operator's project, and the

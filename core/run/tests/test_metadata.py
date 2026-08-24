@@ -342,7 +342,7 @@ class TestFindClaudeAncestor(unittest.TestCase):
         """Beneath a nested ``claude -p`` subagent, the shared resolver
         picks the OUTERMOST claude ancestor (the session), not the
         nearest (the subagent) — one logical session, one identity
-        (design §4). ``_find_claude_ancestor`` itself stays
+       . ``_find_claude_ancestor`` itself stays
         nearest-first for its remaining boolean consumers."""
         from core.project.sessions import resolve_session_pid
         from core.run.metadata import (
@@ -1050,7 +1050,7 @@ class TestCoverageProgress(unittest.TestCase):
 
 
 class TestSessionIdentityStamp(unittest.TestCase):
-    """Run-metadata identity stamps (design §19.4→v5 §5.1/§12): a
+    """Run-metadata identity stamps: a
     recycled claude PID must not keep a dead session's runs alive, a
     resumed run must carry the RESUMING session's stamp, and unstamped
     legacy metadata keeps the fail-open comm check."""

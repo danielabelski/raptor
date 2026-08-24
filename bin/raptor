@@ -503,7 +503,7 @@ cd "$RAPTOR_DIR" || { echo "raptor: cannot cd to $RAPTOR_DIR" >&2; exit 1; }
 # stdin stays the tty so the prompt still works). The launcher seeds
 # the session entry from the sentinel and NEVER re-reads the symlink:
 # the pre-fix re-read raced concurrent symlink writers, so an explicit
-# -p could seed another session's project (design §3.5, conc-C1).
+# -p could seed another session's project.
 _startup_out="$("$RAPTOR_DIR/libexec/raptor-startup-check" "${STARTUP_ARGS[@]}")" || {
     echo "raptor: startup-check failed — this session starts projectless" >&2
     _startup_out=""
@@ -526,7 +526,7 @@ if [ "$_seed_proj" = "-" ] && [ -z "$_startup_out" ]; then
     _seed_by="bookmark"
 fi
 
-# Session registry (AUTHORITATIVE v2 — design §3): sessions.d/<pid>
+# Session registry (AUTHORITATIVE v2): sessions.d/<pid>
 # carries this session's project binding, identity-stamped so a
 # recycled pid (even another claude) can never inherit it, and
 # token-carrying so the env credential is unforgeable. $$ survives the
@@ -565,7 +565,7 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
     # must never expose a predecessor's binding or ledger).
     rm -f -- "$_sessions_dir/$$" "$_sessions_dir/$$.run" "$_sessions_dir/$$.run.lock" 2>/dev/null || true
 
-    # Prune + awareness pass. Prune predicate (design §3.3): only
+    # Prune + awareness pass. Prune predicate: only
     # same-boot, same-pidns entries with a positively dead pid are
     # removed; stamped-mismatch pruning is left to the python readers
     # (richer checks), foreign entries are never touched.
@@ -621,7 +621,7 @@ if _rp mkdir -p -m 700 "$_sessions_dir" 2>/dev/null; then
     unset _f _fpid _fproj _fsince _fboot _fns _tmp_entry _starttime _bootid _pidns
 fi
 # The env credential: pid + token, validated on every read against the
-# entry (design §4). Exported only when the seed landed with a token.
+# entry. Exported only when the seed landed with a token.
 if [ -n "$RAPTOR_SESSION_TOKEN" ]; then
     export RAPTOR_SESSION_PID="$$"
     export RAPTOR_SESSION_TOKEN

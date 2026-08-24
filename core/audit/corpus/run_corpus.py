@@ -202,7 +202,7 @@ def _corpus_project_context(run_tag: str):
                 + timedelta(hours=_CORPUS_PROJECT_TTL_HOURS)
             ).isoformat()
             mgr._save(project)
-        # EXPLICIT threading (design §7): the corpus project is a
+        # EXPLICIT threading: the corpus project is a
         # process-scoped --project override, never a mutation of the
         # machine-wide bookmark or any session binding. Pre-fix this
         # flipped `.active` for the whole run — every other session's

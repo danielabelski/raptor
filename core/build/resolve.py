@@ -71,7 +71,7 @@ def _build_command_slots(
 ) -> dict[str, Any]:
     """The ``build-command`` slot dict, honouring the one-target rule.
     In-run callers pass *run_dir* so the setting comes from the RUN
-    PIN's project (design §5), never a mid-run ambient re-read."""
+    PIN's project, never a mid-run ambient re-read."""
     if settings is not None:
         raw = settings.get("build-command")
         return raw if isinstance(raw, dict) else {}

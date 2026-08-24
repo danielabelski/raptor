@@ -1,4 +1,4 @@
-"""Run-scoped project pinning (design §5) — start-time precedence,
+"""Run-scoped project pinning — start-time precedence,
 write-once, the in-run state table, walk-up safety, and the lifecycle
 ledger wiring."""
 
@@ -272,7 +272,7 @@ if __name__ == "__main__":
 
 class PinConsumerMigrationTest(_PinCase):
     """Wave-1 consumers follow the RUN PIN, not the ambient layers
-    (design §5.3 items 4/5): trust markers, persisted binaries, and
+   : trust markers, persisted binaries, and
     the child-process pin bootstrap."""
 
     def _pinned_run(self, project: str | None) -> Path:
@@ -314,7 +314,7 @@ class PinConsumerMigrationTest(_PinCase):
             target_path=self.root / "elsewhere", run_dir=run))
 
     def test_project_binaries_one_target_gate(self):
-        """sec-F3: project X's binaries must never drive absent
+        """a security-review finding: project X's binaries must never drive absent
         verdicts for tree Y."""
         binary = self.root / "code" / "app.bin"
         binary.write_bytes(b"\x7fELF")

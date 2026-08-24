@@ -36,7 +36,7 @@ from core.project.project import VALID_TRUST_MARKERS
 
 
 def _context_project_name(run_dir: str | Path | None = None) -> str | None:
-    """The project whose state governs THIS context (design §5):
+    """The project whose state governs THIS context:
     inside a run, the RUN PIN (resolved by walking up from *run_dir*)
     — a mid-session /project switch must never move an in-flight
     run's trust posture; outside a run, the layered ambient

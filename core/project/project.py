@@ -879,7 +879,7 @@ class ProjectManager:
         if active_link.is_symlink() and os.readlink(active_link) == f"{name}.json":
             active_link.unlink(missing_ok=True)
 
-        # Session-binding hygiene (design §3): live sessions bound to
+        # Session-binding hygiene: live sessions bound to
         # the deleted project are re-bound to none — a dangling binding
         # must never fall through to the bookmark layer's (unrelated)
         # project. Warn about each; other sessions get the loud
@@ -964,7 +964,7 @@ class ProjectManager:
         if active_link.is_symlink() and os.readlink(active_link) == f"{old_name}.json":
             self.set_active(new_name)
 
-        # Re-point live session bindings (design §3): a session bound
+        # Re-point live session bindings: a session bound
         # to the old name must follow the rename, not dangle.
         self._rewrite_bindings(old_name, new_name)
 
@@ -1296,7 +1296,7 @@ class ProjectManager:
             active_link.unlink(missing_ok=True)
 
     def get_active(self) -> str | None:
-        """The active project for THIS context — layered (design §3).
+        """The active project for THIS context — layered.
 
         1. **Session binding** (authoritative v2 registry entry): the
            session's own project. Bound-to-none is authoritative — it

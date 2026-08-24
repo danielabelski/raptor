@@ -2678,7 +2678,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # Target-bound env view — the ONE seam every direct-exec
         # backend (fork, seatbelt, Landlock-only subprocess) hands to
         # the child, and the named extension point for the sandbox
-        # re-anonymisation follow-up (design §8/§20). The
+        # re-anonymisation follow-up. The
         # TARGET_ENV_STRIP_SET (trust markers + the session
         # credential) is stripped by DEFAULT: the pre-fix strip was
         # opt-in per caller, and its only setters were run_untrusted*

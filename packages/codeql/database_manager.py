@@ -1186,7 +1186,7 @@ class DatabaseManager:
         if build_system and build_system.env_vars:
             # Filter build env vars through the same blocklist — a malicious
             # repo's build config could try to re-inject LD_PRELOAD, BASH_ENV, etc.
-            # RAPTOR_*-prefixed names are blocked wholesale (sec-F7):
+            # RAPTOR_*-prefixed names are blocked wholesale:
             # repo content must never set the session credential, the
             # out-dir override, or any other RAPTOR control var.
             blocked = set(RaptorConfig.DANGEROUS_ENV_VARS) | set(RaptorConfig.PROXY_ENV_VARS)

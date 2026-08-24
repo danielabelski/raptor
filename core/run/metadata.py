@@ -628,7 +628,7 @@ def start_run(output_dir: Path, command: str,
         if target:
             metadata["target_path"] = str(target)
 
-        # Project pin — WRITE-ONCE (design §5.1). A start_run on a dir
+        # Project pin — WRITE-ONCE. A start_run on a dir
         # whose metadata is already status=running (the documented
         # re-entrant flows: the raptor.py wrapper followed by
         # raptor_agentic's own start; /understand→/validate sharing an
@@ -684,7 +684,7 @@ def start_run(output_dir: Path, command: str,
         save_json(output_dir / RUN_METADATA_FILE, metadata)
     set_active_run_dir(output_dir)
     _setup_checklist_symlink(output_dir)
-    # Session run ledger (design §10.1): the record drives exact
+    # Session run ledger: the record drives exact
     # coverage-hook attribution and sibling-discovery tier 0.
     # Best-effort by contract — never lifecycle-critical.
     if session_pid is not None:
@@ -1530,7 +1530,7 @@ def resume_run(output_dir: Path, note: str | None = None) -> int:
     # tracking attach to the resumed segment.
     from core.sandbox.summary import set_active_run_dir
     set_active_run_dir(Path(output_dir))
-    # Ledger (design §10.1): the RESUMING session gains a running
+    # Ledger: the RESUMING session gains a running
     # record (else every read in the resumed segment is unattributable)
     # and the original owner's line is CAS-marked interrupted so its
     # session's hook stops attributing to a run it no longer owns.

@@ -11,7 +11,7 @@ Called by bin/raptor before exec claude. Handles:
     THIS SESSION only; the machine-wide bookmark is NOT moved
   - Mismatch: if the bookmark's target differs from caller dir, prompt
 
-OUTPUT CONTRACT (design §3.5): every human-facing line — the
+OUTPUT CONTRACT: every human-facing line — the
 interactive mismatch menu included — goes to STDERR. Stdout carries
 machine lines only, the LAST being the seed sentinel the launcher
 parses:
@@ -171,7 +171,7 @@ def _check_mismatch(caller_dir):
             return other
         return active["name"]
     if choice == "3":
-        # Session-only clear (design decision 17): the machine-wide
+        # Session-only clear: the machine-wide
         # bookmark is untouched — other sessions and future launches
         # keep their default. The launcher seeds '-' for THIS session.
         print("  No project for this session "
@@ -216,8 +216,8 @@ def main():
         else:
             active = _load_active()
             if not active and caller_dir:
-                # Auto-detect resolves for THIS SESSION ONLY (design
-                # decision 9): the machine-wide bookmark is NOT moved —
+                # Auto-detect resolves for THIS SESSION ONLY: the
+                # machine-wide bookmark is NOT moved —
                 # one session launching inside a project tree must not
                 # re-default every other no-entry session and future
                 # launch on the machine.
@@ -245,7 +245,7 @@ def main():
         # the sentinel carries ('-' unless resolution got further).
         print(f"  Startup check warning: {e}", file=sys.stderr)
     finally:
-        # THE machine contract (design §3.5): the launcher parses the
+        # THE machine contract: the launcher parses the
         # LAST stdout line; everything human went to stderr above.
         print(f"RAPTOR_SEEDED_BY={seeded_by}")
         print(f"RAPTOR_RESOLVED_PROJECT={resolved}")

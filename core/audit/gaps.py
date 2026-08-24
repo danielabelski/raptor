@@ -1899,11 +1899,24 @@ def _fold_project_index(
     known_run_ids: set[str] | None = None
     try:
         # The project's recorded runs corroborate unstamped rows: run
-        # dirs under the project, plus session-ledger records pinned
-        # to it (external --out runs).
+        # dirs under the project, plus session-ledger pins naming it
+        # (external --out runs, whose ids are not in the dir listing).
         known_run_ids = {
             d.name for d in Path(project_dir).iterdir() if d.is_dir()
         }
+        try:
+            from core.project.project import ProjectManager
+            from core.project.sessions import ledger_pinned_dirs
+            _resolved = Path(project_dir).resolve()
+            for _proj in ProjectManager().list_projects():
+                if Path(_proj.output_dir).resolve() == _resolved:
+                    known_run_ids.update(
+                        rec["run_id"]
+                        for rec in ledger_pinned_dirs(_proj.name))
+                    break
+        except Exception:  # noqa: BLE001 — ledger leg best-effort
+            logger.debug("journal-fold: ledger corroboration "
+                         "unavailable", exc_info=True)
     except Exception:  # noqa: BLE001 — corroboration unavailable
         known_run_ids = None
 
@@ -2167,12 +2180,15 @@ def _verify_entries_fold(
                 continue
             if not verified_row:
                 # Unstamped row, hash checks out: the historical
-                # suppression (legacy tolerance) — but the source hash
-                # is NOT evidence against a same-repo attacker (they
-                # compute it trivially), so the row's run_id must also
-                # name a run the project actually recorded. No known
-                # set = no corroboration possible = keep legacy
-                # behaviour (same-run folds, standalone dirs).
+                # suppression (legacy tolerance). The run_id check
+                # bounds FOREIGN-run injection (adopted/merged journal
+                # rows naming runs the project never had); it is NOT a
+                # defense against a hostile run of this project itself
+                # — such a run's own id is always known, and its rows
+                # are unstamped-creditable by the legacy tolerance.
+                # Stamped (MAC) rows are the real bar; new writes
+                # stamp. No known set = no corroboration possible =
+                # keep legacy behaviour (same-run folds, standalone).
                 if (known_run_ids is not None
                         and getattr(entry, "run_id", None)
                         not in known_run_ids):

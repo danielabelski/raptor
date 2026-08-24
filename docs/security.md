@@ -285,8 +285,9 @@ same repository trust each other's artifacts by design: a hostile run
 on your target can steer a later run's prioritisation (sink
 priorities, checklist ordering, exploit goals) through the same
 import channels a legitimate sibling uses. Verdict-grade state is
-held to a higher bar (MAC-stamped journal rows for $0 reuse;
-run-id-corroborated rows for suppression credit; pin + ledger-witness
+held to a higher bar (MAC-stamped journal rows for $0 reuse —
+unstamped rows retain legacy suppression credit within their own
+project, bounded to project-recorded run ids; pin + ledger-witness
 gates on every project-store write), and imported free text is
 defanged and stamped untrusted — but sibling STEERING within one
 target is an accepted posture. Do not run analyses you do not trust

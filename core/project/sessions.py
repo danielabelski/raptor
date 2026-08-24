@@ -539,8 +539,9 @@ def _record_session_locked(project: str, pid: int,
         fields.pop("seeded_by", None)
         env_pid = os.environ.get(ENV_SESSION_PID, "")
         env_tok = os.environ.get(ENV_SESSION_TOKEN, "")
-        if (env_tok and env_pid.isascii() and env_pid.isdigit()
-                and int(env_pid) == pid):
+        _own_repair = (env_tok and env_pid.isascii() and env_pid.isdigit()
+                       and int(env_pid) == pid)
+        if _own_repair:
             # The caller IS this session (its own env credential names
             # this pid): restore credential continuity — the drop is
             # for DEAD predecessors' tokens, not the live session
@@ -552,10 +553,14 @@ def _record_session_locked(project: str, pid: int,
         # sibling-discovery history. ONLY a positively-recycled v2
         # entry qualifies — a v1 entry has no stamp, so this same live
         # session upgrading from a v1 launcher would wipe its own
-        # in-flight ledger. Cleared under the ledger lock (a
-        # straggling finisher of the old session may be mid-CAS); the
-        # lock FILE stays — unlinking a held lock splits it.
-        if (fields.get("v") == ENTRY_VERSION
+        # in-flight ledger; and a live session repairing ITS OWN
+        # corrupt entry (env credential names this pid) keeps its
+        # records and pin witnesses — the same evidence that re-mints
+        # the token above. Cleared under the ledger lock (a straggling
+        # finisher of the old session may be mid-CAS); the lock FILE
+        # stays — unlinking a held lock splits it.
+        if (not _own_repair
+                and fields.get("v") == ENTRY_VERSION
                 and (SESSIONS_DIR / f"{pid}.run").exists()):
             # Caller already holds this pid's ledger lock.
             with contextlib.suppress(OSError):
@@ -1100,6 +1105,11 @@ def _write_ledger(pid: int, records: list[dict],
     # Pin eviction is status-aware: a LIVE run's witness is the
     # tamper defense — evict finished/record-less pins first, oldest
     # first, and a running record's witness only as the last resort.
+    # (Liveness here comes from the zombie-corrected records, which
+    # trust the run marker's status — an in-grant zombie-flip can
+    # demote a live run's witness into the evict-first class, but the
+    # BYTE PRESSURE itself cannot be attacker-created: the ledger is
+    # outside the write grant.)
     _running = {(r["run_id"], r["run_dir"]) for r in records
                 if r["status"] == "running"}
     while _over() and pins:
@@ -1417,6 +1427,8 @@ def ledger_pinned_dirs(project: str) -> list[dict]:
         stem = f.name[:-len(".run")]
         if not stem.isdigit() or stem != str(int(stem)):
             continue
+        if not (SESSIONS_DIR / stem).exists():
+            continue  # orphan ledger — never steers discovery
         try:
             _records, pins, _unknown = _read_ledger_full(int(stem))
         except Exception:  # noqa: BLE001
@@ -1467,8 +1479,8 @@ def ledger_repair_witnesses_for_dir(run_dir, new_project: str,
                 if hit:
                     _write_ledger(pid, records, pins, unknown)
                     logger.info(
-                        "sessions: repaired %d stale witness(es) for "
-                        "%s (now %r)", 1, resolved, new_project)
+                        "sessions: repaired stale witness(es) for "
+                        "%s (now %r)", resolved, new_project)
         except Exception:  # noqa: BLE001 — per-ledger best-effort
             logger.debug("sessions: witness repair failed for pid %s",
                          stem, exc_info=True)

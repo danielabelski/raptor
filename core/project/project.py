@@ -1044,11 +1044,6 @@ class ProjectManager:
         try:
             from core.project.sessions import ledger_rewrite_pin_project
             ledger_rewrite_pin_project(old_name, new_name)
-            # One retry: a briefly-held ledger lock (a run finishing
-            # right now) has usually been released by the time the
-            # marker loop below completes; a witness left on the old
-            # name suppresses that run's projections as tamper.
-            ledger_rewrite_pin_project(old_name, new_name)
         except Exception:  # noqa: BLE001 — witnesses are best-effort
             logger.warning(
                 "rename: could not re-point ledger pin witnesses from "
@@ -1105,6 +1100,18 @@ class ProjectManager:
                 "their pins — runs pinned to %r will resolve "
                 "projectless until fixed manually",
                 project.output_path, old_name, exc_info=True)
+
+        # Retry the witness rewrite now that the marker loop has run:
+        # a ledger lock briefly held during the first pass (a run
+        # finishing) has had the loop's duration to be released; a
+        # witness left on the old name suppresses that run's
+        # projections as tamper.
+        try:
+            from core.project.sessions import ledger_rewrite_pin_project
+            ledger_rewrite_pin_project(old_name, new_name)
+        except Exception:  # noqa: BLE001 — best-effort retry
+            logger.debug("rename: witness rewrite retry failed",
+                         exc_info=True)
 
         logger.info("Renamed project '%s' → '%s'", old_name, new_name)
         return project

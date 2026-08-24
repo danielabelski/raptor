@@ -1273,3 +1273,39 @@ class LedgerBudgetDisciplineTest(_RegistryCase):
         import time as _t
         for r in sessions.ledger_runs(pid=os.getpid()):
             self.assertLessEqual(r["epoch"], int(_t.time()) + 86400)
+
+
+class OwnRepairContinuityTest(_RegistryCase):
+    def test_own_env_credential_repair_keeps_the_ledger(self):
+        # A live session repairing its OWN corrupt entry (env
+        # credential names this pid) keeps records AND pin witnesses —
+        # the wipe is for dead predecessors.
+        sessions.record_session("myapp", pid=os.getpid(),
+                                token="cd" * 16)
+        d = Path(self._tmp.name) / "runs" / "scan_keep"
+        d.mkdir(parents=True)
+        (d / ".raptor-run.json").write_text(
+            '{"status": "running"}', encoding="utf-8")
+        sessions.ledger_record_start(d, pid=os.getpid(),
+                                     pin_project="myapp",
+                                     record_pin=True)
+        entry = self.sessions_dir / str(os.getpid())
+        fields = sessions._parse_entry(entry)
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                f"starttime={fields['starttime']}", "starttime=1"),
+            encoding="utf-8")
+        from unittest.mock import patch as _patch
+        with _patch.dict(os.environ, {
+            sessions.ENV_SESSION_PID: str(os.getpid()),
+            sessions.ENV_SESSION_TOKEN: "cd" * 16,
+        }):
+            sessions.record_session("myapp", pid=os.getpid())
+        self.assertTrue(sessions.ledger_runs(pid=os.getpid()),
+                        "own-repair must keep the ledger")
+        found, project, _s = sessions.ledger_pin_witness(
+            d, pid=os.getpid())
+        self.assertTrue(found)
+        self.assertEqual(project, "myapp")
+        self.assertEqual(
+            sessions._parse_entry(entry).get("token"), "cd" * 16)

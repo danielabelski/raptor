@@ -243,10 +243,20 @@ def main() -> None:
     # built from real files, so the downstream lookup against
     # `symlink_to_handler.py` returned no match and the coverage
     # mark was lost. Recording the realpath fixes the join.
+    # Parity with the bash hook's realpath: it FAILS (drops the read)
+    # when a PARENT component is missing — recording such paths made
+    # phantom manifest entries the inventory join then discarded.
+    try:
+        _resolved_fp = os.path.realpath(file_path)
+        if not os.path.isdir(os.path.dirname(_resolved_fp) or "/"):
+            return
+    except (OSError, ValueError):
+        return
+
     if target:
         try:
             # Resolve symlinks and check proper path containment
-            resolved = os.path.realpath(file_path)
+            resolved = _resolved_fp
             resolved_target = os.path.realpath(target)
             prefix = resolved_target + os.sep
             if not resolved.startswith(prefix) and resolved != resolved_target:

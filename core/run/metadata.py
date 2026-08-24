@@ -721,23 +721,32 @@ def start_run(output_dir: Path, command: str,
                 logger.debug("pin witness check failed", exc_info=True)
             if (prior_pin is not None and not _witness_found):
                 # No witness and no freeze: the disk pin is
-                # UNCORROBORATED. It stands only when it AGREES with
-                # what this start would resolve anyway — a marker
-                # PLANTED in a pre-existing --out dir must not become
-                # the run's first pin and seed the first witness with
-                # an attacker-chosen project. (Sessioned reuse flows
-                # always have a witness; this narrows only the
-                # sessionless residual.)
+                # UNCORROBORATED (the witness lives in the STARTING
+                # session's ledger, so a legitimate reuse across a
+                # claude relaunch arrives here too — the dead
+                # session's ledger is pruned). It stands when it
+                # AGREES with start-time resolution; on DISAGREEMENT
+                # neither side may elect silently — a planted marker
+                # in a reused --out dir must not become the first pin
+                # and seed the first witness, and a legitimate
+                # restart-reuse must not lose its pin to whatever the
+                # session ambient happens to be. The operator
+                # disambiguates.
                 _fresh_project, _fresh_source = resolve_pin_for_start()
                 if _fresh_project != prior_pin[0]:
-                    logger.warning(
-                        "run pin in %s (%r) has no corroborating "
-                        "witness and disagrees with start-time "
-                        "resolution (%r) — using start-time "
-                        "resolution; a pre-existing marker in a "
-                        "reused --out dir does not elect a project",
-                        output_dir, prior_pin[0], _fresh_project)
-                    prior_pin = (_fresh_project, _fresh_source)
+                    _keep = prior_pin[0] if prior_pin[0] else "-"
+                    _fresh = _fresh_project if _fresh_project else "-"
+                    msg = (
+                        f"the run dir {output_dir} carries an "
+                        f"uncorroborated pin to "
+                        f"{prior_pin[0] or 'no project'!r} (no ledger "
+                        f"witness — reused across a relaunch, or a "
+                        f"pre-existing marker), while this start "
+                        f"resolves to {_fresh_project or 'no project'!r}."
+                        f" Pass --project {_keep} to keep the dir's "
+                        f"pin, or --project {_fresh} to re-pin it."
+                    )
+                    raise ProjectArgvError(msg)
         if prior_pin is not None:
             pin_project, pin_source = prior_pin
             override = get_process_project()

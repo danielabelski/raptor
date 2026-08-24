@@ -615,6 +615,8 @@ class TestTrackReadHook(unittest.TestCase):
             # Build both from the same scratch root so the path-containment
             # check passes without hardcoding /tmp.
             target = str(Path(d) / "src")
+            Path(target).mkdir()   # bash realpath (and the twin's
+            # parity check) drop paths whose parent doesn't exist
             file_path = target + "/auth.py"
             self._run_hook(file_path, project_dir, run_dir, target=target)
             manifest = run_dir / READS_MANIFEST

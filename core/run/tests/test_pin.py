@@ -433,11 +433,14 @@ class PinFreezeCacheTest(_PinCase):
         start_run(d, "validate", target=str(self.root / "code"))
         self.assertEqual(load_run_metadata(d)["project"], "pinned")
 
-    def test_uncorroborated_planted_marker_does_not_elect(self):
-        # A marker planted in a pre-existing --out dir (no witness,
-        # no freeze) must not become the run's first pin.
+    def test_uncorroborated_disagreement_is_a_hard_error(self):
+        # A disagreeing pin with NO witness (planted marker — or a
+        # legitimate reuse across a relaunch, indistinguishable) must
+        # not silently elect EITHER side: the operator disambiguates
+        # via --project.
         from core.json import save_json as _sj
-        from core.run.metadata import load_run_metadata, start_run
+        from core.run.metadata import start_run
+        from core.run.pin import ProjectArgvError, set_process_project
         d = self.root / "out" / "reused"
         d.mkdir(parents=True)
         _sj(d / RUN_METADATA_FILE, {
@@ -447,8 +450,29 @@ class PinFreezeCacheTest(_PinCase):
         self.mgr.create("ambient3", str(self.root / "code"),
                         output_dir=str(self.root / "out" / "ambient3"))
         self.mgr.set_active("ambient3")
+        with self.assertRaises(ProjectArgvError):
+            start_run(d, "scan", target=str(self.root / "code"))
+        # Explicit --project resolves the ambiguity either way.
+        set_process_project("pinned")
+        try:
+            start_run(d, "scan", target=str(self.root / "code"))
+        finally:
+            set_process_project(None)
+        from core.run.metadata import load_run_metadata
+        self.assertEqual(load_run_metadata(d)["project"], "pinned")
+
+    def test_uncorroborated_agreement_stands_silently(self):
+        from core.json import save_json as _sj
+        from core.run.metadata import load_run_metadata, start_run
+        d = self.root / "out" / "reused2"
+        d.mkdir(parents=True)
+        _sj(d / RUN_METADATA_FILE, {
+            "status": "completed", "project": "pinned",
+            "project_source": "session",
+        })
+        self.mgr.set_active("pinned")
         start_run(d, "scan", target=str(self.root / "code"))
-        self.assertEqual(load_run_metadata(d)["project"], "ambient3")
+        self.assertEqual(load_run_metadata(d)["project"], "pinned")
 
 
 class OutermostMarkerTest(_PinCase):

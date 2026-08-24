@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import threading
 import time
@@ -240,8 +241,25 @@ def _attach_or_spawn(_frida_mod: Any, device: Any, cfg: RunConfig
     if t.binary or cfg.spawn:
         # Spawn: argv0 = binary. No further args supported in v1 -
         # operator can wrap with a shell script if they need them.
+        # env: the spawned process is TARGET code — subtract the
+        # target-facing strip set (trust markers + session credential)
+        # the frida DRIVER itself legitimately carries. frida's spawn
+        # inherits the driver env unless told otherwise.
         binary = t.binary or t.raw
-        pid = device.spawn([binary])
+        child_env = dict(os.environ)
+        try:
+            from core.config import RaptorConfig as _RC
+            for _k in _RC.TARGET_ENV_STRIP_SET:
+                child_env.pop(_k, None)
+        except Exception:  # noqa: BLE001 — strip set unavailable
+            for _k in ("CLAUDECODE", "_RAPTOR_TRUSTED",
+                       "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN"):
+                child_env.pop(_k, None)
+        try:
+            pid = device.spawn([binary], env=child_env)
+        except TypeError:
+            # Older frida bindings without the env kwarg.
+            pid = device.spawn([binary])
         session = device.attach(pid)
         return session, pid
     if t.pid is not None:

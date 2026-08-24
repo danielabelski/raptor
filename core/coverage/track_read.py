@@ -66,20 +66,31 @@ def _find_session_run(session_pid):
     try:
         ledger = (Path.home() / ".local" / "share" / "raptor"
                   / "sessions.d" / f"{session_pid}.run")
+        if ledger.stat().st_size > 512 * 1024:
+            return None, None  # over the reader budget — like sessions
         text = ledger.read_text(encoding="utf-8")
     except OSError:
         return None, None
     candidates = []
     for line in text.splitlines():
+        if "\r" in line:
+            continue  # CRLF lines: the bash twin drops them too
         parts = line.split(" ", 3)
         if len(parts) != 4 or parts[0] != "running":
             continue
         epoch, run_dir = parts[1], parts[3]
         if (not run_dir.startswith("/") or not run_dir.isprintable()
-                or not epoch.isdigit()):
+                or not epoch.isascii() or not epoch.isdigit()):
             continue
-        candidates.append((int(epoch), run_dir))
-    for _epoch, run_dir in sorted(candidates, reverse=True):
+        epoch_i = int(epoch)
+        if epoch_i >= 2 ** 63:
+            continue  # the bash twin's integer test rejects these
+        candidates.append((epoch_i, run_dir))
+    # Newest first; ties keep FILE ORDER (stable sort on the epoch
+    # key only) — the bash twin takes the first-listed record on
+    # equal epochs, and two runs in one wall-clock second are real.
+    candidates.sort(key=lambda c: -c[0])
+    for _epoch, run_dir in candidates:
         d = Path(run_dir)
         try:
             meta_path = d / ".raptor-run.json"
@@ -94,7 +105,9 @@ def _find_session_run(session_pid):
         # stringifies session_pid must not diverge the two consumers.
         if str(meta.get("session_pid")) != str(session_pid):
             continue  # resumed by (or belonging to) another session
-        target = meta.get("target_path") or ""
+        target = meta.get("target_path")
+        if not isinstance(target, str):
+            target = ""  # typed corruption: attribute without a filter
         return str(d), target
     return None, None
 

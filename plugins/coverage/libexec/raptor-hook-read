@@ -64,7 +64,15 @@ case "$_SESSION_PID" in
 esac
 if [ -n "$_SESSION_PID" ]; then
     _LEDGER="$HOME/.local/share/raptor/sessions.d/$_SESSION_PID.run"
-    if [ -f "$_LEDGER" ]; then
+    # Size guard matching the python reader's ledger budget: an
+    # over-budget ledger reads as empty there, and the two consumers
+    # must not diverge on the same file.
+    _LSIZE=$(stat -c %s "$_LEDGER" 2>/dev/null || stat -f %z "$_LEDGER" 2>/dev/null || echo 0)
+    case "$_LSIZE" in ''|*[!0-9]*) _LSIZE=0 ;; esac
+    if [ "$_LSIZE" -gt 524288 ]; then
+        _LEDGER=""
+    fi
+    if [ -n "$_LEDGER" ] && [ -f "$_LEDGER" ]; then
         BEST_EPOCH=0
         while IFS=' ' read -r _st _epoch _rid _rdir; do
             [ "$_st" = "running" ] || continue
@@ -90,7 +98,7 @@ if [ -n "$_SESSION_PID" ]; then
             if [ "$HAVE_JQ" = "1" ]; then
                 _status=$(jq -r '.status // empty' "$_rdir/.raptor-run.json" 2>/dev/null || true)
                 _owner=$(jq -r '.session_pid // empty' "$_rdir/.raptor-run.json" 2>/dev/null || true)
-                _tgt=$(jq -r '.target_path // empty' "$_rdir/.raptor-run.json" 2>/dev/null || true)
+                _tgt=$(jq -r '(.target_path // empty) | strings' "$_rdir/.raptor-run.json" 2>/dev/null || true)
             else
                 _status=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" status 2>/dev/null || true)
                 _owner=$(python3 "$HELPER" get "$_rdir/.raptor-run.json" session_pid 2>/dev/null || true)
@@ -188,7 +196,15 @@ if [ -d "$FILE_PATH" ]; then
     exit 0
 fi
 _EXT="${FILE_PATH##*.}"
-_EXT="${_EXT,,}"    # case-insensitive: the twin lowercases too
+# Case-insensitive like the twin — ${var,,} is bash>=4 only and macOS
+# system bash is 3.2 (this script already carries the BSD stat
+# fallback), so guard it; without bash 4 or tr the match stays
+# case-sensitive, the pre-fix behavior.
+if [ -n "${BASH_VERSINFO:-}" ] && [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+    _EXT="${_EXT,,}"
+elif command -v tr >/dev/null 2>&1; then
+    _EXT=$(printf '%s' "$_EXT" | tr 'A-Z' 'a-z')
+fi
 case "$_EXT" in
     py|js|ts|jsx|tsx|c|h|cpp|hpp|cc|cxx|java|go|rs|rb|php|cs|swift|kt|scala|sh|bash|zsh|zig|nim|cr|sol|dart|m|mm|lua|pl|pm|jl|ex|exs|erl|hrl|fs|fsi|fsx|ml|mli|clj|cljs|cljc|groovy|gradle|r|hs|elm|vue|svelte|astro|tf|tofu|nix) ;;
     *) exit 0 ;;
@@ -202,7 +218,13 @@ esac
 # Resolve symlinks before prefix check to prevent traversal
 FILE_PATH=$(realpath "$FILE_PATH" 2>/dev/null) || exit 0
 if [ -n "$PROJECT_TARGET" ]; then
-    PROJECT_TARGET=$(realpath "$PROJECT_TARGET" 2>/dev/null) || exit 0
+    # An unresolvable target (deleted tree, typed corruption that
+    # slipped the strings filter) clears the FILTER — the python twin
+    # attributes unfiltered too; exiting here silently ended all
+    # attribution for the run.
+    PROJECT_TARGET=$(realpath "$PROJECT_TARGET" 2>/dev/null) || PROJECT_TARGET=""
+fi
+if [ -n "$PROJECT_TARGET" ]; then
     # Path-separator-anchored prefix match. Pre-fix the bare
     # `"$PROJECT_TARGET"*` glob matched any path starting with the
     # target STRING — so:

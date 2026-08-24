@@ -184,7 +184,8 @@ API_KEY_HINT = re.compile(r"_(API_KEY|API_TOKEN|ACCESS_KEY|SECRET)S?$")
 
 # Bash names that are shell builtins / runtime state, never env config.
 BASH_NOISE = frozenset({
-    "BASH_SOURCE", "BASH_REMATCH", "BASH_VERSION", "BASHPID",
+    "BASH_SOURCE", "BASH_REMATCH", "BASH_VERSION", "BASH_VERSINFO",
+    "BASHPID",
     "FUNCNAME", "LINENO", "PIPESTATUS", "PPID", "RANDOM", "SECONDS",
     "REPLY", "OPTARG", "OPTIND", "EUID", "UID", "OSTYPE", "MACHTYPE",
     "HOSTTYPE", "SHELLOPTS", "GLOBIGNORE", "EPOCHSECONDS",

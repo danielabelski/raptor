@@ -515,6 +515,7 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
     # is the first writer and has to gate too — start_run below would
     # otherwise create .raptor-run.json along an attacker symlink.
     out_dir.parent.mkdir(parents=True, exist_ok=True)
+    _dir_preexisted = out_dir.exists()
     safe_run_mkdir(out_dir)
 
     # Archive target: unpack into the content-addressed shared cache
@@ -530,7 +531,8 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
                 # Extraction failed (message printed); no run sealed
                 # yet — remove the pre-created dir so nothing later
                 # JIT-promotes a metadata-less orphan to a phantom run.
-                _cleanup_refused_run_dir(out_dir)
+                if not _dir_preexisted:
+                    _cleanup_refused_run_dir(out_dir)
                 return 1
             args, target_identity = res
             # args now points at the extracted directory; update the local
@@ -549,7 +551,12 @@ def _run_with_lifecycle(command: str, script_path: Path, args: list,
         start_run(out_dir, command, target=target,
                   target_identity=target_identity)
     except (OpLockContention, ProjectArgvError) as e:
-        _cleanup_refused_run_dir(out_dir)
+        # Only remove what THIS invocation created: a refused start
+        # against a pre-existing shared --out dir (the documented
+        # /understand → /validate reuse) must not strip that dir's
+        # legitimate _source symlink.
+        if not _dir_preexisted:
+            _cleanup_refused_run_dir(out_dir)
         print(f"✗ {e}", file=sys.stderr)
         return 1
 

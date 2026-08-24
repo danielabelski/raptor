@@ -264,6 +264,28 @@ class TestForwarderStop:
         with pytest.raises(OSError):
             _uds_client(path, timeout=2)
 
+    def test_track_after_stop_refuses_and_closes(self, uds_dir):
+        # A connection accepted just before stop() can reach _track
+        # just after stop()'s sweep of the active set; it must be
+        # refused and closed, not registered where no sweep will ever
+        # reach it (the peer would hang to its own timeout).
+        upstream = _EchoServer()
+        fwd, _path = _forwarder_to(upstream.port, uds_dir)
+        fwd.stop()
+        upstream.close()
+        a, b = socket.socketpair()
+        try:
+            with pytest.raises(OSError):
+                fwd._track(a)
+            b.settimeout(2)
+            assert b.recv(1) == b""  # refused socket was closed: EOF
+        finally:
+            for s in (a, b):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
     def test_stop_closes_inflight_connections(self, uds_dir):
         upstream = _EchoServer()
         fwd, path = _forwarder_to(upstream.port, uds_dir)

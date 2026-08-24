@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import os
 import shutil
@@ -226,7 +227,20 @@ class Forwarder:
             self._accept_thread = None
 
     def _track(self, sock: socket.socket) -> None:
+        # Registration and stop()'s sweep share one lock, and stop()
+        # sets ``_stopping`` before it sweeps: a socket registering
+        # here either lands before the sweep (and gets shut down) or
+        # observes ``_stopping`` and refuses. Without the check, a
+        # connection accepted just before stop() but tracked just
+        # after its sweep joins a set nobody sweeps again — the peer
+        # then hangs until its own timeout instead of seeing EOF.
         with self._active_lock:
+            if self._stopping.is_set():
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
+                with contextlib.suppress(OSError):
+                    sock.close()
+                raise OSError(errno.EPIPE, "forwarder is stopping")
             self._active.add(sock)
 
     def _untrack(self, sock: socket.socket) -> None:

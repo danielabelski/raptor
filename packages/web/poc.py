@@ -94,6 +94,56 @@ def _comment_text(value: object) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", " ", str(value))
 
 
+_OOB_VECTORS = ("oob_callback", "oob_callback_header")
+
+# The operator substitutes their own listener at run time; the shell
+# parameter guard makes the script refuse to run without one instead
+# of silently curling a placeholder.
+_CALLBACK_EXPANSION = (
+    '"${RAPTOR_CALLBACK_URL:?set to a URL you control,'
+    ' then watch it for the fetch}"'
+)
+
+
+def _oob_reproducer(data: dict) -> str:
+    """Reproducer for callback-verified SSRF: re-inject a URL the
+    operator controls and watch their listener. No response matcher
+    exists for these (the evidence IS the callback), which is also why
+    they get no nuclei replay template."""
+    target = str(data.get("target_url") or data.get("url") or "")
+    params = list(data.get("affected_parameters") or [])
+    position = params[0] if params else ""
+    header = _comment_text(
+        f"{data.get('finding_id')}: {data.get('title')}",
+    )
+    if data.get("attack_vector") == "oob_callback_header":
+        # shlex.quote yields '-H '"'"'Referer: '"'"'' style singles;
+        # the env expansion is appended OUTSIDE the quoted prefix so
+        # the shell still expands it: -H 'Referer: '"${...}".
+        curl = (
+            f"curl -sk -X GET {shlex.quote(target)} "
+            f"-H {shlex.quote(position + ': ')}{_CALLBACK_EXPANSION}"
+        )
+    else:
+        curl = (
+            f"curl -sk -X GET "
+            f"{shlex.quote(_url_with_param(target, position, ''))}"
+            f"{_CALLBACK_EXPANSION}"
+        )
+    return (
+        "#!/bin/sh\n"
+        f"# RAPTOR reproducer — {header}\n"
+        f"# Class: {_comment_text(data.get('vuln_type'))} "
+        f"({_comment_text(data.get('cwe_id'))})\n"
+        "# Evidence is OUT OF BAND: start an HTTP listener you control,\n"
+        "# export RAPTOR_CALLBACK_URL to point at it, run this, and\n"
+        "# watch the listener for the fetch. Confirmation at scan time\n"
+        "# used a fresh-token replay through the same position.\n"
+        "# Live-target replay requires fresh operator authorisation.\n"
+        + curl + "\n"
+    )
+
+
 def build_reproducer(finding: WebFinding) -> str | None:
     """A curl reproducer script for one oracle-proven finding.
 
@@ -107,6 +157,8 @@ def build_reproducer(finding: WebFinding) -> str | None:
     data = finding.to_dict()
     if not has_exploit_oracle_evidence(data):
         return None
+    if data.get("attack_vector") in _OOB_VECTORS:
+        return _oob_reproducer(data)
     method, url, body = _confirmation_request(finding)
     curl = ["curl", "-sk", "-X", shlex.quote(method), shlex.quote(url)]
     if body is not None:
@@ -136,6 +188,11 @@ def build_nuclei_template(finding: WebFinding) -> str | None:
     """
     data = finding.to_dict()
     if not has_exploit_oracle_evidence(data):
+        return None
+    if data.get("attack_vector") in _OOB_VECTORS:
+        # No response marker exists for callback-verified findings —
+        # a template would fabricate a matcher. The reproducer script
+        # is the replay artifact for these.
         return None
     vuln_type = str(data.get("vuln_type") or "")
     method, url, body = _confirmation_request(finding)

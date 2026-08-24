@@ -1397,7 +1397,10 @@ class WebScanner:
             response_evidence=(
                 f"callback from {hit.source_ip}: {hit.method} {hit.path}"
             ),
-            attack_vector="oob_callback",
+            attack_vector=(
+                "oob_callback_header"
+                if context.kind == "ssrf_header" else "oob_callback"
+            ),
             method=context.method,
             affected_parameters=[context.param],
             oracle_signal=(

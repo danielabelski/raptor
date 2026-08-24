@@ -156,3 +156,49 @@ def test_reproducer_shell_quotes_hostile_values():
             check=False,
         )
         assert not Path(marker).exists()
+
+
+def _oob_finding(vector: str, position: str) -> "WebFinding":
+    return _proven(
+        title="Blind SSRF -- out-of-band fetch",
+        vuln_type="ssrf", cwe_id="CWE-918",
+        confirmation_payload="oob-canary-url",
+        response_evidence="callback from 10.0.0.5",
+        oracle_signal="oob_callback_replayed",
+        attack_vector=vector,
+        affected_parameters=[position],
+        target_url="https://example.test/api?x=1",
+    )
+
+
+def test_oob_reproducer_requires_operator_callback_url():
+    """Callback findings can't replay against a placeholder: the script
+    demands a listener the operator controls, in both positions."""
+    import shlex
+
+    param_script = build_reproducer(_oob_finding("oob_callback", "url"))
+    assert param_script is not None
+    command = param_script.rstrip().rsplit("\n", 1)[-1]
+    assert "${RAPTOR_CALLBACK_URL:?" in command
+    assert "oob-canary-url" not in command  # never the recorded literal
+    # With the variable set, the command parses to a clean argv.
+    words = shlex.split(command.replace(
+        '"${RAPTOR_CALLBACK_URL:?set to a URL you control,'
+        ' then watch it for the fetch}"',
+        "http://cb.example/tok",
+    ))
+    assert words[0] == "curl"
+    assert words[-1].endswith("&url=http://cb.example/tok")
+
+    header_script = build_reproducer(
+        _oob_finding("oob_callback_header", "Referer"),
+    )
+    assert header_script is not None
+    assert "-H 'Referer: '" in header_script
+
+
+def test_oob_findings_get_no_fabricated_nuclei_matcher():
+    assert build_nuclei_template(_oob_finding("oob_callback", "url")) is None
+    assert build_nuclei_template(
+        _oob_finding("oob_callback_header", "Referer"),
+    ) is None

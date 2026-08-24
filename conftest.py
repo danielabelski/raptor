@@ -265,6 +265,36 @@ def _binary_cache_in_tmp(tmp_path_factory):
 # walk) explicitly, as the registry suites already do.
 
 @pytest.fixture(autouse=True)
+def _llm_egress_env_hermetic():
+    """Restore the process proxy env after any test that enabled the
+    in-process LLM egress chokepoint.
+
+    ``LLMClient.__init__`` → ``enable_llm_egress`` points
+    HTTP(S)_PROXY at the loopback chokepoint PROCESS-WIDE by design.
+    In a test process that mutation outlives the test: every later
+    subprocess that honours proxy env and phones a host outside the
+    LLM allowlist (observed: ``semgrep --validate``'s version check →
+    ``semgrep.dev`` → proxy DENY → ~90s of retries → non-zero exit)
+    inherits a chokepoint meant only for the SDKs. Snapshot the proxy
+    vars up front; after each test that flipped the enable flag,
+    restore them and reset the flag. The proxy thread itself is
+    harmless once nothing routes through it.
+    """
+    import os as _os
+    from core.llm import egress as _egress
+    before = {k: _os.environ.get(k) for k in _egress._PROXY_VAR_NAMES}
+    enabled_before = _egress._enabled
+    yield
+    if _egress._enabled and not enabled_before:
+        for k, v in before.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+        _egress._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _sessions_registry_in_tmp(tmp_path, monkeypatch):
     from core.project import sessions as _sessions
     monkeypatch.setattr(_sessions, "SESSIONS_DIR", tmp_path / "sessions.d")

@@ -15,6 +15,7 @@ Steps:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -168,6 +169,49 @@ def _resolve_model_label(model: str) -> str:
             "model resolution failed for %r", model, exc_info=True,
         )
         return ""
+
+
+def _label_files_sha256(labels_dir: Path | None = None) -> str:
+    """Content hash of the loaded label set (the overlay identity).
+
+    SHA-256 over every ``*.label.json`` under the labels directory,
+    keyed by relative path, with each file's JSON parsed and
+    re-serialized canonically (sorted keys, minimal separators) so
+    formatting-only differences don't change the hash.  Selection
+    filters (``--class`` / ``--label``) deliberately do NOT affect it:
+    the hash identifies WHICH label overlay was on disk, while
+    ``selection`` in the history header records what subset ran.
+    Stamped into results meta and the history header so any archived
+    results file or history row can be tied to its exact overlay.
+    Returns ``""`` when no label files exist.
+    """
+    base = labels_dir if labels_dir is not None else LABELS_DIR
+    try:
+        files = sorted(base.rglob("*.label.json"))
+    except OSError:
+        return ""
+    if not files:
+        return ""
+    h = hashlib.sha256()
+    for path in files:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            canonical = json.dumps(
+                loads(raw), sort_keys=True, separators=(",", ":"),
+            )
+        except ValueError:
+            # Unparseable file: hash its raw text — the loader will
+            # fail loudly on it anyway, but the hash must still be
+            # deterministic over whatever was on disk.
+            canonical = raw
+        h.update(path.relative_to(base).as_posix().encode("utf-8"))
+        h.update(b"\0")
+        h.update(canonical.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 # Wall-clock segment sidecar, one record per process segment of a
@@ -3207,6 +3251,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f" (ids: {len(args.label_ids)})", end="")
     print()
 
+    # Overlay identity: which label files (by canonical content) this
+    # run loaded.  Stamped into meta + history so archives are always
+    # attributable to their exact label set.
+    labels_content_hash = _label_files_sha256()
+
     # Resolve and state the transport BEFORE any prep or spend: the
     # first provider line used to appear only once group 1 started
     # (after pin verification and Joern startup), so a gated launch
@@ -3522,6 +3571,10 @@ def main(argv: list[str] | None = None) -> int:
         # record only "default".
         "model_resolved": ", ".join(model_labels),
         "count": len(results),
+        # Content hash of the loaded label overlay (canonicalized
+        # label files) — ties this results file to its exact label
+        # set; also stamped into the history run header.
+        "label_files_sha256": labels_content_hash,
         # The knowledge profile the run was invoked with (probe mode
         # skips the orchestrator, so there it only labels the rows).
         "profile": args.profile,

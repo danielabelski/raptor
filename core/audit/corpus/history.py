@@ -187,6 +187,12 @@ def build_run_record(
     misread a 3-label refire as a full-run regression. The label-set
     hash already reflects the subset; this field records the
     operator's intent. Absent on pre-selection records.
+
+    ``label_files_sha256`` (read from meta) is the content hash of
+    the label overlay the run loaded — the runner stamps it into
+    results meta, so both fresh recordings and back-imports of a
+    meta-carrying results.json tie the row to its exact overlay.
+    Empty on records whose results predate the field.
     """
     reviewed = [r for r in results if not r.get("skipped")]
     return {
@@ -198,6 +204,7 @@ def build_run_record(
         "selection": selection if selection is not None else "full",
         "config": dict(config),
         "label_set_hash": labels_hash,
+        "label_files_sha256": meta.get("label_files_sha256", ""),
         "gates": _gate_outcomes(results),
         "totals": {
             "labels": len(results),

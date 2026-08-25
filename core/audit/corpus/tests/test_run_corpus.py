@@ -2397,3 +2397,57 @@ class TestWallSegments:
         assert len(meta["wall_segments"]) == 1
         assert meta["wall_s"] < 100.0
 
+
+
+class TestLabelOverlayHash:
+    """The run stamps a content hash of the loaded label files into
+    meta and the history header, so any archived results file or
+    history row can be tied to its exact label overlay."""
+
+    def _labels_dir(self, tmp_path):
+        d = tmp_path / "labels" / "auth"
+        d.mkdir(parents=True)
+        (d / "one.label.json").write_text(
+            json.dumps({"function_id": "a.c:f", "expected": "clean"}),
+        )
+        (d / "two.label.json").write_text(
+            json.dumps({"function_id": "b.c:g", "expected": "finding"}),
+        )
+        return tmp_path / "labels"
+
+    def test_meta_and_history_stamp_overlay_hash(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.corpus.history as history_mod
+
+        labels_dir = self._labels_dir(tmp_path)
+        monkeypatch.setattr(run_corpus, "LABELS_DIR", labels_dir)
+        rc, out, history_path = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+        )
+        assert rc == 0
+        expected = run_corpus._label_files_sha256(labels_dir)
+        assert expected
+        assert _meta_of(out)["label_files_sha256"] == expected
+        runs, _ = history_mod.load_store(history_path)
+        assert runs, "run was not recorded in history"
+        assert runs[-1]["label_files_sha256"] == expected
+
+    def test_hash_is_content_canonical_not_formatting(self, tmp_path):
+        labels_dir = self._labels_dir(tmp_path)
+        before = run_corpus._label_files_sha256(labels_dir)
+        target = labels_dir / "auth" / "one.label.json"
+        # Reformat only: same JSON content, different bytes.
+        target.write_text(json.dumps(
+            {"expected": "clean", "function_id": "a.c:f"}, indent=4,
+        ))
+        assert run_corpus._label_files_sha256(labels_dir) == before
+        # A content change must move the hash.
+        target.write_text(json.dumps(
+            {"function_id": "a.c:f", "expected": "finding"},
+        ))
+        assert run_corpus._label_files_sha256(labels_dir) != before
+
+    def test_hash_empty_when_no_label_files(self, tmp_path):
+        assert run_corpus._label_files_sha256(tmp_path) == ""

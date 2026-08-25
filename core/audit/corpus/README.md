@@ -90,6 +90,45 @@ labels and follows this shape:
 the clone, for repos whose labelled paths live under a subtree such as
 `src/`.
 
+`--dry-run` verifies labels AND fixture sources: it prints a per-label
+source status, a `Sources: N/M present` census, and exits 1 when any
+source is missing (pins can verify against git history while zero
+fixtures are checked out — fetch with `--fetch`). Exit 0 means a run
+launched now would find every labelled file.
+
+## Run telemetry, resume, and provenance
+
+The first lines of every run state the resolved transport
+(`Primary model: <provider>/<model>`), resolved through the run's own
+default-resolution path — never an explicit-override probe that can
+resolve differently. Meta records it as `model_resolved` alongside the
+requested `model`.
+
+Three spend figures are recorded under distinct meta names because
+they legitimately disagree (2-3x observed):
+
+- `label_attributed_usd` (legacy alias `cost_usd`) — per-label review
+  spend summed from result rows; the only defensible cross-run cost
+  comparison. Its running total prints at every group boundary — the
+  figure a mid-run cost-ceiling decision must compare against.
+- `total_spend_usd` — telemetry-ledger total, money actually spent.
+- `infra_usd` — the difference: study, prep, spec/checker synthesis,
+  summaries, non-label review overheads.
+
+Resume (requires a stable `--out`): each pass checkpoints per group
+(`checkpoint-*-groups.json`) as groups finish, so a mid-pass stop
+loses at most the in-flight group; a resume replays checkpointed
+rows exactly once (never re-spending) and re-runs a group whose
+checkpointed label set no longer matches. Wall time is accounted per
+process segment in `wall-segments.json`; meta `wall_s` is the sum
+across all segments of the run, with `wall_s_segment` (this process)
+and `wall_segments` (per-segment detail) alongside.
+
+Provenance: meta `label_files_sha256` is a canonical content hash of
+every loaded label file — the overlay identity — also stamped into
+the history run header, so any archived results file or history row
+ties to its exact label set.
+
 ## Scoring
 
 Three layers, all emitted by the run summary and recomputable offline
@@ -178,7 +217,10 @@ from), the knowledge **profile** (`cold` / `deployed`; records
 predating the field read as `deployed`), the **selection** (`full`
 or the `--class`/`--label` refire subset), config (mode / triage /
 prefilter / model / scope / splice), a hash of the label set (sorted
-`function_id:span_sha`), recomputed gate outcomes, totals, and cost.
+`function_id:span_sha`), the label overlay's content hash
+(`label_files_sha256`, from results meta — back-imports of a
+meta-carrying results.json keep it), recomputed gate outcomes,
+totals, and cost.
 Label records carry expected/actual status, match, the attribution
 cell, observed mechanisms, error_reason, cost, and duration.
 Stability grouping keys on (tree, profile, config) — a cold run

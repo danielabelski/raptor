@@ -106,11 +106,15 @@ class TestLoadJsonBounded:
 
 
 def test_lazy_reexport_surface() -> None:
+    # Resolve both sides at call time — module-level imports go stale
+    # when a sibling test (test_f046_lazy_reexports) resets
+    # sys.modules, splitting the identity under shuffled orders.
     import core.json as cj
+    import core.json.bounded as b
 
-    assert cj.loads_bounded is loads_bounded
-    assert cj.load_json_bounded is load_json_bounded
-    assert cj.JsonBudgetExceededError is JsonBudgetExceededError
+    assert cj.loads_bounded is b.loads_bounded
+    assert cj.load_json_bounded is b.load_json_bounded
+    assert cj.JsonBudgetExceededError is b.JsonBudgetExceededError
     assert "loads_bounded" in cj.__all__
     assert "load_json_bounded" in cj.__all__
     assert "JsonBudgetExceededError" in cj.__all__

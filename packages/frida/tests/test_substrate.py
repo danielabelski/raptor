@@ -522,3 +522,123 @@ class TestSandboxedHookSourcePaths:
         sinks.write_text("[]", encoding="utf-8")
         tool_paths = self._run_main([f"--sink-watch={sinks}"])
         assert str(sinks.parent.resolve()) in tool_paths
+
+
+class TestSandboxedTargetPath:
+    def test_spawn_target_parent_is_readable(self, tmp_path):
+        """A spawn-target binary outside the default read set died with
+        PermissionDeniedError before the hook could load; the wrapper
+        must grant the binary's directory (which also covers sibling
+        libraries it may dlopen)."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
+
+        from packages.frida import sandboxed
+
+        target = tmp_path / "build" / "victim"
+        target.parent.mkdir()
+        target.write_bytes(b"\x7fELF")
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        mock_run = MagicMock(return_value=fake_result)
+        with mock_patch.object(sandboxed, "sys") as mock_sys, \
+             mock_patch("packages.frida.sandboxed._find_frida_site",
+                        return_value=None), \
+             mock_patch(
+                 "core.sandbox.python_paths.python_runtime_tool_paths",
+                 return_value=[]), \
+             mock_patch.dict("packages.frida.sandboxed.os.environ",
+                             {"RAPTOR_DIR": ""}, clear=False), \
+             mock_patch("core.sandbox.run", mock_run):
+            mock_sys.argv = ["sandboxed", "--out", "/tmp/run", "--",
+                             "python3", "-m", "packages.frida.cli",
+                             "--target", str(target),
+                             "--template", "api-trace"]
+            rc = sandboxed.main()
+        assert rc == 0
+        assert (str(target.parent.resolve())
+                in mock_run.call_args[1]["tool_paths"])
+
+    def test_non_path_target_grants_nothing(self, tmp_path):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
+
+        from packages.frida import sandboxed
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        mock_run = MagicMock(return_value=fake_result)
+        with mock_patch.object(sandboxed, "sys") as mock_sys, \
+             mock_patch("packages.frida.sandboxed._find_frida_site",
+                        return_value=None), \
+             mock_patch(
+                 "core.sandbox.python_paths.python_runtime_tool_paths",
+                 return_value=[]), \
+             mock_patch.dict("packages.frida.sandboxed.os.environ",
+                             {"RAPTOR_DIR": ""}, clear=False), \
+             mock_patch("core.sandbox.run", mock_run):
+            mock_sys.argv = ["sandboxed", "--out", "/tmp/run", "--",
+                             "python3", "-m", "packages.frida.cli",
+                             "--target", "1234",
+                             "--template", "api-trace"]
+            rc = sandboxed.main()
+        assert rc == 0
+        # A PID target must not resolve to a cwd grant.
+        assert mock_run.call_args[1]["tool_paths"] in ([], None)
+
+
+class TestWrapperTargetAbsolutization:
+    """The sandboxed CLI's cwd is the output dir, so relative paths the
+    operator typed stop resolving there — the wrapper must absolutize
+    existing relative file paths (and nothing else) before forwarding.
+    Runs the wrapper's REAL abs_if_file, extracted verbatim."""
+
+    def _run_helper(self, fn: str, value: str, cwd) -> str:
+        import subprocess
+        script_path = (Path(__file__).resolve().parents[3]
+                       / "libexec" / "raptor-frida")
+        text = script_path.read_text(encoding="utf-8")
+        snippet = ""
+        for name in ("abs_if_file", "abs_target"):
+            start = text.index(name + "() {")
+            end = text.index("\n}", start) + 2
+            snippet += text[start:end] + "\n"
+        snippet += f'{fn} "$1"\n'
+        r = subprocess.run(
+            ["bash", "-c", snippet, "_", value],
+            cwd=str(cwd), capture_output=True, text=True,
+            timeout=5, check=False,
+        )
+        assert r.returncode == 0, r.stderr
+        return r.stdout.strip()
+
+    def _abs_if_file(self, value: str, cwd) -> str:
+        return self._run_helper("abs_target", value, cwd)
+
+    def test_relative_existing_file_becomes_absolute(self, tmp_path):
+        (tmp_path / "victim").write_bytes(b"\x7fELF")
+        assert (self._abs_if_file("./victim", tmp_path)
+                == str(tmp_path / "victim"))
+
+    def test_absolute_path_unchanged(self, tmp_path):
+        target = tmp_path / "victim"
+        target.write_bytes(b"\x7fELF")
+        assert self._abs_if_file(str(target), tmp_path) == str(target)
+
+    def test_process_name_unchanged(self, tmp_path):
+        assert self._abs_if_file("nginx", tmp_path) == "nginx"
+
+    def test_pid_unchanged_even_with_colliding_file(self, tmp_path):
+        # parse_target classifies pure digits as a PID before checking
+        # the filesystem; the wrapper must not promote a digit-named
+        # file into a spawn target.
+        (tmp_path / "1234").write_bytes(b"\x7fELF")
+        assert self._run_helper("abs_target", "1234", tmp_path) == "1234"
+
+    def test_digit_named_hook_file_still_absolutizes(self, tmp_path):
+        # The PID guard is --target semantics only; --script and
+        # --sink-watch values are always file paths.
+        (tmp_path / "1234").write_text("[]", encoding="utf-8")
+        assert (self._run_helper("abs_if_file", "1234", tmp_path)
+                == str(tmp_path / "1234"))

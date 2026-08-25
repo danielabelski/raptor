@@ -141,15 +141,21 @@ def main() -> int:
         if p not in tool_paths:
             tool_paths.append(p)
 
-    # Operator-supplied hook sources (--script JS, --sink-watch
-    # sinks/attack-paths JSON) live at arbitrary paths outside the
+    # Operator-supplied inputs live at arbitrary paths outside the
     # default readable set; under restrict_reads the CLI would fail
-    # with an "unreadable file" error before any hook loads.
-    for flag in ("--script", "--sink-watch"):
+    # before any hook loads: hook sources (--script JS, --sink-watch
+    # sinks/attack-paths JSON) with an "unreadable file" error, and a
+    # spawn-target binary (--target /path/to/bin) with frida's
+    # PermissionDeniedError. Grant each file's parent directory — the
+    # target may also dlopen sibling libraries.
+    for flag in ("--script", "--sink-watch", "--target"):
         value = _flag_value(cmd, flag)
         if not value:
             continue
-        parent = str(Path(value).resolve().parent)
+        value_path = Path(value)
+        if flag == "--target" and not value_path.is_file():
+            continue  # PID / process name / bundle id, not a path
+        parent = str(value_path.resolve().parent)
         if parent not in tool_paths:
             tool_paths.append(parent)
 

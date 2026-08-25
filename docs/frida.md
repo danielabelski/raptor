@@ -423,5 +423,7 @@ Contents:
 | `Failed to enumerate processes: unable to connect to remote frida-server` | frida-server bound to localhost only -- re-launch with `-l 0.0.0.0:27042` or SSH-forward 27042. |
 | `failed to enumerate processes: timeout` | Network filter/firewall between host and target. |
 | Empty `events.jsonl` | Script did not hook anything that fired during the window; raise `--duration` or check `metadata.json` for an error. |
+| `PermissionDeniedError: unable to access executable at ...` (wrapper spawn) | The sandbox read allowlist does not cover the target's path — the wrapper grants the `--target` file's directory automatically; if you see this, the target argument is likely not the real binary path (symlink chain outside the granted tree, or a name that shadows a file). |
+| `Error sending credentials` / `ProcessNotRespondingError: unexpected early end-of-stream` (wrapper spawn) | Frida's agent-injection channel blocked by the sandbox on this host. Pre-flight the target with the raw CLI (`python3 -m packages.frida.cli ...`) to distinguish sandbox friction from a target problem. |
 | frida-server killed by SELinux (Android-flavoured Linux) | Run `setenforce 0` while researching, or label the binary appropriately. |
 | No provisioning profile / arch mismatch (macOS) | Old Intel frida-server binary on Apple Silicon; match host and target architectures. |

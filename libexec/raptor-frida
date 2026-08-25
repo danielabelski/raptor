@@ -84,6 +84,32 @@ done
 
 # ─── extract --target and --out from args for lifecycle setup ───────
 # We can't trust positional order - pull them out of the argv carefully.
+
+# Absolutize an existing RELATIVE file path. The sandboxed CLI runs
+# with its cwd moved to the output dir, so a relative path stops
+# resolving there: a relative --target gets misclassified as a process
+# name (ProcessNotFoundError), and the read grant plus the wrapper's
+# own spawn detection both key off an absolute file path. Names,
+# bundle ids, and absolute paths pass through unchanged.
+abs_if_file() {
+    if [ -f "$1" ] && [ "${1#/}" = "$1" ]; then
+        realpath -- "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+# --target only: pure-digit values are PIDs (the CLI's parse_target
+# classifies digits before checking the filesystem) and must never be
+# promoted to a colliding digit-named file. --script/--sink-watch
+# values are always file paths, so they use abs_if_file directly.
+abs_target() {
+    case "$1" in
+        (*[!0-9]*) abs_if_file "$1" ;;
+        (*) printf '%s\n' "$1" ;;
+    esac
+}
+
 TARGET=""
 OUT=""
 PASS_ARGS=()
@@ -95,12 +121,23 @@ while [ $i -lt ${#ARGS[@]} ]; do
     case "$a" in
         --target)
             i=$((i + 1))
-            TARGET="${ARGS[$i]:-}"
+            TARGET="$(abs_target "${ARGS[$i]:-}")"
             PASS_ARGS+=("--target" "$TARGET")
             ;;
         --target=*)
-            TARGET="${a#--target=}"
+            TARGET="$(abs_target "${a#--target=}")"
             PASS_ARGS+=("--target=$TARGET")
+            ;;
+        --script|--sink-watch)
+            HOOK_FLAG="$a"
+            i=$((i + 1))
+            PASS_ARGS+=("$HOOK_FLAG" "$(abs_if_file "${ARGS[$i]:-}")")
+            ;;
+        --script=*)
+            PASS_ARGS+=("--script=$(abs_if_file "${a#--script=}")")
+            ;;
+        --sink-watch=*)
+            PASS_ARGS+=("--sink-watch=$(abs_if_file "${a#--sink-watch=}")")
             ;;
         --out)
             i=$((i + 1))
@@ -143,9 +180,11 @@ for a in "${PASS_ARGS[@]}"; do
         --usb)           IS_REMOTE=1 ;;
     esac
 done
-# Binary-path target implies spawn even without --spawn.
-# Use absolute path check to avoid CWD-relative file collision
-# (e.g., a file named "nginx" in CWD when attaching to the nginx process).
+# Binary-path target implies spawn even without --spawn. TARGET is
+# already absolutized for existing relative files (abs_if_file), so
+# this check now agrees with the CLI's parse_target classification —
+# the spawn/attach decision and the network policy can no longer
+# diverge between wrapper and CLI.
 if [[ "$TARGET" == /* ]] && [ -f "$TARGET" ]; then
     IS_SPAWN=1
 fi

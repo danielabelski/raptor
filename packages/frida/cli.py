@@ -148,7 +148,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"frida: ok - {result.events_captured} events captured in "
           f"{result.duration_actual_sec:.1f}s → {args.out}")
     _maybe_harvest_seeds(Path(args.out))
+    _maybe_correlate_io(Path(args.out))
     return 0
+
+
+def _maybe_correlate_io(out_dir: Path) -> None:
+    """Join ingest payloads with later event arguments after a run.
+
+    Only produces output when the session captured BOTH families
+    (e.g. --template seed-harvest+exec-and-load). Additive: a
+    correlation failure never fails a completed run.
+    """
+    try:
+        from .correlate import correlate_run
+
+        manifest = correlate_run(out_dir)
+    except Exception as e:  # noqa: BLE001 — correlation is additive
+        print(f"frida: io-correlation skipped: {e}", file=sys.stderr)
+        return
+    if manifest["match_count"]:
+        print(f"frida: {manifest['match_count']} I/O correlation(s) — "
+              "external input reappeared in later call arguments → "
+              f"{out_dir / 'io-correlation.json'}")
 
 
 def _maybe_harvest_seeds(out_dir: Path) -> None:

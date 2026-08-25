@@ -106,6 +106,7 @@ def _print_run_header(
     labels: list[Any],
     args: Any,
     models: list[str],
+    resolved_models: list[str] | None = None,
 ) -> None:
     """One header stating the run's configuration up front.
 
@@ -115,12 +116,16 @@ def _print_run_header(
     """
     from .history import pipeline_tree_sha
 
+    resolved = resolved_models or [""] * len(models)
+    shown = [
+        res or (m or "default") for m, res in zip(models, resolved)
+    ]
     tree = pipeline_tree_sha() or "unknown"
     groups = sorted({lb.source.repo for lb in labels})
     print(f"[{_ts()}] Corpus run starting", flush=True)
     print(
         f"  profile={args.profile} mode={args.mode} "
-        f"model={', '.join(m or 'default' for m in models)} "
+        f"model={', '.join(shown)} "
         f"triage={args.triage} prefilter={args.prefilter} "
         f"scope={args.scope}",
         flush=True,
@@ -130,6 +135,37 @@ def _print_run_header(
         f"groups={len(groups)} ({', '.join(groups)})",
         flush=True,
     )
+
+
+def _resolve_model_label(model: str) -> str:
+    """Resolve the ``provider/model_name`` the run will actually use.
+
+    Deliberately follows the run's OWN resolution path — the config's
+    default primary for an empty *model*, ``config_for_model`` for an
+    explicit one — never an explicit-override probe path, which can
+    resolve differently and pass a transport smoke test the run then
+    contradicts.  A misconfigured entry that silently demotes to the
+    CLI transport must be visible before any group starts, not
+    hundreds of lines into the log.  Returns the CLI-transport
+    sentinel when no API-served model resolves, and ``""`` when
+    resolution itself fails (banner/meta then fall back to the
+    requested name — never fatal).
+    """
+    try:
+        from core.llm.config import CLAUDECODE_SESSION_MODEL, LLMConfig
+
+        cfg = LLMConfig()
+        mc = cfg.config_for_model(model) if model else cfg.primary_model
+        if mc is not None:
+            return f"{mc.provider}/{mc.model_name}"
+        # Nothing API-served resolves — the pipeline will fall back
+        # to the claude CLI transport.
+        return f"claudecode/{CLAUDECODE_SESSION_MODEL}"
+    except Exception:  # noqa: BLE001 — banner/meta enrichment only
+        logger.debug(
+            "model resolution failed for %r", model, exc_info=True,
+        )
+        return ""
 
 
 # Pipeline gates the cold profile turns OFF (--profile cold, the
@@ -2995,6 +3031,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f" (ids: {len(args.label_ids)})", end="")
     print()
 
+    # Resolve and state the transport BEFORE any prep or spend: the
+    # first provider line used to appear only once group 1 started
+    # (after pin verification and Joern startup), so a gated launch
+    # ("verify transport before the first label") had nothing early
+    # to gate on — and meta recorded model="default".
+    models = args.model or [""]
+    resolved_models = [_resolve_model_label(m) for m in models]
+    model_labels = [
+        res or (m or "default")
+        for m, res in zip(models, resolved_models)
+    ]
+    primary_line = f"Primary model: {model_labels[0]}"
+    if models[0]:
+        primary_line += f" (requested: {models[0]})"
+    else:
+        primary_line += " (default resolution)"
+    print(primary_line, flush=True)
+    for extra in model_labels[1:]:
+        print(f"Additional model: {extra}", flush=True)
+
     source_dirs = _resolve_source_dirs(labels, do_fetch=args.fetch)
     errors = _verify_labels(labels, source_dirs)
     if errors:
@@ -3101,9 +3157,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Quick scope: {len(labels)} label(s) remaining "
               f"({len(skipped_repos)} repo(s) skipped)")
 
-    models = args.model or [""]
-
-    _print_run_header(labels, args, models)
+    _print_run_header(labels, args, models, resolved_models)
 
     run_tag = str(int(time.time()))
     excerpt_dirs = None
@@ -3211,6 +3265,10 @@ def main(argv: list[str] | None = None) -> int:
         "llm_s": round(total_llm_s, 1),
         "cost_usd": round(sum(r.get("cost_usd", 0.0) for r in results), 4),
         "model": ", ".join(m or "default" for m in models),
+        # The RESOLVED provider/model actually used (falls back to
+        # the requested name when resolution failed) — meta used to
+        # record only "default".
+        "model_resolved": ", ".join(model_labels),
         "count": len(results),
         # The knowledge profile the run was invoked with (probe mode
         # skips the orchestrator, so there it only labels the rows).
@@ -3264,6 +3322,7 @@ def main(argv: list[str] | None = None) -> int:
                 "triage": None if args.probe else args.triage,
                 "prefilter": None if args.probe else args.prefilter,
                 "model": meta["model"],
+                "model_resolved": meta["model_resolved"],
                 "scope": args.scope,
                 "splice": str(args.splice) if args.splice else None,
                 "llm_cache": meta["llm_cache"],
@@ -3336,7 +3395,7 @@ def main(argv: list[str] | None = None) -> int:
         _save_debug(results, run_dirs, args.output)
 
     print()
-    model_label = meta["model"]
+    model_label = meta["model_resolved"]
     return _emit_summary(
         results, wall_s, model_label, args.output, spend=spend,
     )

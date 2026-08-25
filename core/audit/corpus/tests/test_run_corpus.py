@@ -1852,3 +1852,116 @@ class TestExcerptTreeKeepalive:
         for d in dirs.values():
             assert str(d) not in scratch_mod._keepalive_paths
             assert not d.exists()
+
+def _stub_main_run(
+    tmp_path,
+    monkeypatch,
+    *,
+    rows=None,
+    run_dirs=None,
+    argv=None,
+    source_present=True,
+):
+    """Drive main() with the LLM run stubbed out.
+
+    Sets up one label (a.c:f in repo "test"), a fake project context,
+    stubbed pin verification, and an isolated history store; the
+    ensemble stub returns *rows* and *run_dirs*.  Returns
+    ``(rc, results_path, history_path)``.
+    """
+    from contextlib import contextmanager
+
+    import core.audit.corpus.history as history_mod
+    import core.audit.corpus.label as label_mod
+    import core.audit.corpus.lint as lint_mod
+
+    @contextmanager
+    def fake_project(run_tag):
+        yield f"corpus-{run_tag}"
+
+    src = tmp_path / "repo"
+    if source_present:
+        src.mkdir(exist_ok=True)
+        (src / "a.c").write_text(
+            "int f(void) { return 0; }\n"
+            "int pad1;\nint pad2;\nint pad3;\nint pad4;\n",
+        )
+    labels = [_mk_label("a.c:f")]
+    monkeypatch.setattr(
+        label_mod, "load_all_labels",
+        lambda bug_class=None: labels,
+    )
+    monkeypatch.setattr(
+        run_corpus, "_resolve_source_dirs",
+        lambda labels, do_fetch=False: {"test": src},
+    )
+    monkeypatch.setattr(
+        run_corpus, "_corpus_project_context", fake_project,
+    )
+    monkeypatch.setattr(
+        lint_mod, "verify_pins",
+        lambda pairs, **kw: [
+            lint_mod.PinCheck(
+                label=lb, path=None, outcome="no-fixture", detail="",
+            )
+            for _, lb in pairs
+        ],
+    )
+    monkeypatch.setattr(
+        run_corpus, "_run_ensemble_audit",
+        lambda labels, dirs, **kw: (
+            list(rows or []), list(run_dirs or []),
+        ),
+    )
+    history_path = tmp_path / "history.jsonl"
+    monkeypatch.setenv(history_mod.HISTORY_ENV, str(history_path))
+    out = tmp_path / "results.json"
+    rc = run_corpus.main(["--output", str(out), *(argv or [])])
+    return rc, out, history_path
+
+
+def _meta_of(results_path):
+    data = json.loads(results_path.read_text())
+    assert isinstance(data, dict), "results file has no meta wrapper"
+    return data["meta"]
+
+
+class TestResolvedModelBanner:
+    """The transport actually used must be stated before any prep or
+    spend, and recorded resolved in meta — the first provider line
+    used to appear only once group 1 started, and meta said
+    model="default"."""
+
+    def test_resolved_model_printed_early_and_recorded_in_meta(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(
+            run_corpus, "_resolve_model_label",
+            lambda m: "prov/model-x", raising=False,
+        )
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+        )
+        assert rc == 0
+        stdout = capsys.readouterr().out
+        banner = "Primary model: prov/model-x (default resolution)"
+        assert banner in stdout
+        assert stdout.index(banner) < stdout.index("Pin verification")
+        assert _meta_of(out)["model_resolved"] == "prov/model-x"
+
+    def test_resolution_failure_falls_back_to_requested_name(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(
+            run_corpus, "_resolve_model_label",
+            lambda m: "", raising=False,
+        )
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+        )
+        assert rc == 0
+        assert "Primary model: default" in capsys.readouterr().out
+        assert _meta_of(out)["model_resolved"] == "default"
+

@@ -39,7 +39,7 @@ libexec/raptor-frida --target ... --template ...
 | Name | Purpose |
 |------|---------|
 | `api-trace` | libc/syscall surface: `open`, `read`, `write`, `connect`, `fork`, `execve`, etc. |
-| `ssl-unpin` | iOS/macOS Security.framework, OpenSSL `SSL_get_verify_result`, Android `X509TrustManager`. |
+| `ssl-unpin` | iOS/macOS Security.framework, OpenSSL `SSL_get_verify_result`; Android `X509TrustManager` needs the Java bridge (inactive on Frida 17 via the runner). |
 | `bb-coverage` | Basic-block coverage collection. |
 | `binary-flow-trace` | Flow tracing used by `/binary runtime`. |
 | `seed-harvest` | Dump received input buffers; auto-distilled into a `--corpus`-ready seed dir for `/fuzz`. |

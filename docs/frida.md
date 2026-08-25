@@ -198,6 +198,13 @@ Bypasses SSL/TLS certificate pinning for common frameworks and
 libraries. Useful for intercepting HTTPS traffic from mobile
 applications during security assessment.
 
+Coverage caveat: the Android `X509TrustManager` bypass needs the Java
+bridge, which Frida 17 unbundled — loaded through RAPTOR's runner it
+is INACTIVE on current Frida (the run says so in a `_meta` event; the
+OpenSSL and Security.framework hooks are unaffected). For Android
+unpinning on Frida 17, use a frida-compiled agent that bundles
+frida-java-bridge.
+
 ```bash
 raptor frida --target com.example.app --template ssl-unpin --usb --spawn
 ```

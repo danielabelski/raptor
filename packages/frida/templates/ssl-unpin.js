@@ -27,6 +27,20 @@ function emit(category, fn, detail) {
 
 // ─── Security.framework (iOS / macOS) ───────────────────────────────
 (function patchSecurityFramework() {
+  // Frida 17 removed the static two-arg Module.findExportByName; use
+  // the module-instance method when the static form is gone.
+  function findModuleExport(moduleName, name) {
+    try {
+      const m = Process.findModuleByName(moduleName);
+      if (m !== null && typeof m.findExportByName === 'function') {
+        return m.findExportByName(name);
+      }
+    } catch (_e) {}
+    if (typeof Module.findExportByName === 'function') {
+      try { return Module.findExportByName(moduleName, name); } catch (_e) { return null; }
+    }
+    return null;
+  }
   const symbols = [
     // newer API, returns bool
     { name: 'SecTrustEvaluateWithError', retType: 'bool' },
@@ -34,7 +48,7 @@ function emit(category, fn, detail) {
     { name: 'SecTrustEvaluate', retType: 'OSStatus' },
   ];
   for (const sym of symbols) {
-    const addr = Module.findExportByName('Security', sym.name);
+    const addr = findModuleExport('Security', sym.name);
     if (addr === null) continue;
     Interceptor.attach(addr, {
       onLeave: function (retval) {
@@ -105,6 +119,15 @@ if (typeof Java !== 'undefined' && Java.available) {
       emit('ssl-unpin', '_hook_failed', { err: String(e) });
     }
   });
+} else {
+  // Frida 17 unbundled the Java bridge, and RAPTOR loads scripts
+  // unbundled via create_script — so on current Frida this branch is
+  // the NORMAL Android outcome. Say so loudly: a silent no-op here
+  // reads as "pinning was bypassed" when the TrustManager layer was
+  // never touched.
+  send({ _meta: 'ssl-unpin: Java bridge unavailable (Frida 17 unbundled '
+                + 'it) — Android X509TrustManager unpinning INACTIVE; '
+                + 'OpenSSL/Security.framework hooks unaffected' });
 }
 
 send({ _meta: 'ssl-unpin loaded' });

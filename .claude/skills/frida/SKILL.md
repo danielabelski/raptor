@@ -48,7 +48,7 @@ raptor frida --list-templates
 | Name | Purpose |
 |------|---------|
 | `api-trace` | Hooks `open`/`read`/`write`/`connect`/`fork`/`execve` etc. Most useful default. |
-| `ssl-unpin` | Bypasses iOS/macOS Security.framework, OpenSSL `SSL_get_verify_result`, and Android `X509TrustManager`. |
+| `ssl-unpin` | Bypasses iOS/macOS Security.framework and OpenSSL `SSL_get_verify_result`; the Android `X509TrustManager` layer needs the Java bridge (unbundled on Frida 17 — inactive via RAPTOR's runner, reported in `_meta`). |
 | `bb-coverage` | Basic-block coverage via Stalker; drcov output feeds the coverage store. |
 | `binary-flow-trace` | Input/parser callsite evidence for `/binary` investigations. |
 | `seed-harvest` | Dumps received input buffers; auto-distilled into `<out>/seeds/` for `raptor fuzz --corpus`. |

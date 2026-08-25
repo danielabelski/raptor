@@ -773,6 +773,9 @@ PROTOCOL_NAMES = {
     "setup_class", "teardown_class",
     "setup_method", "teardown_method",
     "do_GET", "do_POST", "do_HEAD", "do_PUT", "do_CONNECT",
+    # socketserver hooks: dispatched by name from the stdlib serve loop
+    "process_request", "process_request_thread", "finish_request",
+    "verify_request", "handle_timeout", "shutdown_request",
     "log_message", "log_error", "log_request",
     "default", "emit", "filter", "format", "handle", "handle_error",
     "run", "close", "flush", "readable", "writable", "seekable",
@@ -902,6 +905,14 @@ def find_dead(idx: RepoIndex):
                 continue
             if cname in idx.text_idents:
                 sup["text_corpus_reference"] += 1
+                continue
+            # Mirror the function loop's gate: a decorated registration
+            # (e.g. @registry.register(...)) consumes the class as a
+            # registry VALUE — its name never appears as a load/string/
+            # import even though every scan run instantiates it.
+            if any(h in (d or "") for d in ci.decorators
+                   for h in REGISTRATION_DECORATOR_HINTS):
+                sup["registration_decorator"] += 1
                 continue
             findings.append({
                 "kind": "dead_class", "file": str(mod.path), "line": ci.node.lineno,

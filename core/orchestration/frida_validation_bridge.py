@@ -11,6 +11,7 @@ Pattern follows understand_bridge.py -- discovers output from a prior
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,8 @@ def collect_runtime_evidence(
         trace_id = str(ev.run_dir)
         target_name = (Path(ev.target_binary).name
                        if ev.target_binary else None)
+        target_dir = (str(Path(ev.target_binary).parent)
+                      if ev.target_binary else None)
 
         # Per-run counters: track call_count within this run, then take
         # the max across runs (represents the hottest single run).
@@ -101,7 +104,8 @@ def collect_runtime_evidence(
                 # seed-harvest (ingest) exists to produce seeds and
                 # emits no callsite; jni maps registration, not calls.
                 continue
-            if not _attributed_to_target(payload, target_name):
+            if not _attributed_to_target(payload, target_name,
+                                          target_dir):
                 dropped_unattributed += 1
                 caller = payload.get("caller_module")
                 if isinstance(caller, str) and caller:
@@ -288,13 +292,18 @@ _MAX_ATTRIBUTION_FRAMES = 16
 _MAX_ALIASES = 8
 
 
-def _attributed_to_target(payload: dict, target_name: str | None) -> bool:
+def _attributed_to_target(payload: dict, target_name: str | None,
+                          target_dir: str | None) -> bool:
     """True when this event may count as runtime evidence.
 
     The target's code must appear at the call site OR anywhere on the
     captured backtrace: real projects ship the vulnerable code in
     their own libraries and call sinks through wrappers, so requiring
-    the immediate caller alone would silently drop that evidence.
+    the immediate caller alone would silently drop that evidence. A
+    caller module whose on-disk PATH lives under the target binary's
+    directory tree also attributes — that covers project-shipped
+    libraries whose call chains never touch the main binary (plugin
+    callbacks, dlopen'd codecs) without admitting system libraries.
     """
     if payload.get("category") not in _TARGET_ATTRIBUTED_CATEGORIES:
         return True
@@ -305,6 +314,18 @@ def _attributed_to_target(payload: dict, target_name: str | None) -> bool:
     caller = payload.get("caller_module")
     if isinstance(caller, str) and caller == target_name:
         return True
+    caller_path = payload.get("caller_module_path")
+    if (isinstance(caller_path, str) and target_dir
+            and caller_path.startswith("/")):
+        # realpath BOTH normalizes ".." segments and resolves symlink
+        # traversals: the loader reports the path the target dlopen'd
+        # (possibly through a symlinked project dir), while target_dir
+        # comes from parse_target's RESOLVED binary path — comparing
+        # the raw forms silently no-ops in exactly the symlinked-tree
+        # case this rule exists for.
+        resolved = os.path.realpath(caller_path)
+        if resolved.startswith(target_dir + "/"):
+            return True
     frames = payload.get("backtrace_frames")
     if isinstance(frames, list):
         for frame in frames[:_MAX_ATTRIBUTION_FRAMES]:

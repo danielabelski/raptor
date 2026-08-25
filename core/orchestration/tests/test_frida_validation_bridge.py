@@ -656,3 +656,100 @@ class TestDropDiagnosticLevel:
             assert collect_runtime_evidence([tmp_path]) == {}
         assert any("NO evidence was collected" in r.message
                    for r in caplog.records)
+
+
+class TestCallerPathAttribution:
+    def test_project_shipped_library_by_path_counts(self, tmp_path):
+        # A caller module living under the target binary's directory
+        # tree attributes even with no target frame on the stack —
+        # plugin callbacks and dlopen'd codecs never touch main.
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libfoo.so",
+                "caller_module_path": str(tmp_path / "libfoo.so"),
+                "backtrace_frames": [
+                    {"address": "0x1", "module": "libfoo.so"},
+                    {"address": "0x2", "module": "libc.so.6"},
+                ],
+                "args": {"n": 64}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert "memcpy" in collect_runtime_evidence([tmp_path])
+
+    def test_system_library_path_does_not_count(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libc.so.6",
+                "caller_module_path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                "backtrace_frames": [
+                    {"address": "0x1", "module": "libc.so.6"},
+                ],
+                "args": {"n": 64}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+    def test_prefix_cousin_directory_does_not_count(self, tmp_path):
+        # /opt/app2/lib must not attribute for a target in /opt/app
+        # (string-prefix cousins).
+        run = tmp_path / "run"
+        cousin = str(tmp_path) + "-cousin/libx.so"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libx.so",
+                "caller_module_path": cousin,
+                "args": {"n": 64}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+    def test_symlinked_project_dir_still_attributes(self, tmp_path):
+        # The loader reports the dlopen'd (symlinked) path; the
+        # metadata binary path is resolved — raw string comparison
+        # would silently no-op in exactly the motivating scenario.
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "libleaf.so").write_bytes(b"")
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "load", "fn": "dlopen",
+                "caller_module": "libleaf.so",
+                "caller_module_path": str(link / "libleaf.so"),
+                "args": {"path": "x"}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(real / "srv"))
+        assert "dlopen" in collect_runtime_evidence([tmp_path])
+
+    def test_dotdot_escape_normalized_out(self, tmp_path):
+        # <target_dir>/../elsewhere must not pass the prefix check.
+        run = tmp_path / "run"
+        target_dir = tmp_path / "app"
+        target_dir.mkdir()
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libx.so",
+                "caller_module_path": str(target_dir / ".." / "evil"
+                                          / "libx.so"),
+                "args": {"n": 4}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(target_dir / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}

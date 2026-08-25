@@ -114,6 +114,7 @@ function callsite(context, returnAddress) {
     if (module !== null) {
       moduleInfo = {
         caller_module: module.name,
+        caller_module_path: module.path || null,
         caller_module_base: module.base.toString(),
         caller_offset: returnAddress.sub(module.base).toString(),
       };

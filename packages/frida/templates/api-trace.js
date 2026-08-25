@@ -26,9 +26,20 @@ function safeStr(ptr, maxLen) {
   // NULL or unreadable pointers return '<null>' / '<unreadable>'
   // rather than crashing the agent. Defensive because attacker-
   // controlled input is reaching libc here.
+  //
+  // NUL-terminated read with output-side truncation: an explicit
+  // length argument over-decodes past the terminator on Frida 17
+  // (throws on interior NUL bytes), and Memory.readUtf8String was
+  // removed in the 17.0 cleanup — probe for the instance method
+  // first, fall back for older runtimes.
   if (ptr.isNull()) return '<null>';
+  var max = maxLen || 256;
   try {
-    return Memory.readUtf8String(ptr, maxLen || 256);
+    var s = (typeof ptr.readUtf8String === 'function')
+      ? ptr.readUtf8String()
+      : Memory.readUtf8String(ptr);
+    if (s === null) return '<null>';
+    return s.length > max ? s.slice(0, max) : s;
   } catch (_e) {
     return '<unreadable>';
   }

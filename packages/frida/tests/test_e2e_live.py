@@ -187,6 +187,15 @@ class TestLiveE2E:
             f"no file paths from real events: "
             f"read={profile.paths_read}, write={profile.paths_written}, "
             f"stat={profile.paths_stat}")
+        # STRING CONTENT, not just presence: string reads regressed to
+        # '<unreadable>' once before (Memory.readUtf8String removed in
+        # Frida 17) and this assertion was the only live surface that
+        # could have caught it — but it passed vacuously on placeholder
+        # values. The victim opens /etc/hostname by literal path.
+        all_paths = (profile.paths_read + profile.paths_written
+                     + profile.paths_stat)
+        assert "/etc/hostname" in all_paths, (
+            f"expected a real decoded path, got: {all_paths}")
 
     def test_validation_bridge_full_pipeline(self, victim_binary, run_dir):
         """Full pipeline: real events → collect_runtime_evidence → annotate."""

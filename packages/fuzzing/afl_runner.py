@@ -216,6 +216,16 @@ class AFLRunner:
 
     # AFL++ power schedules: explore (default), exploit, coe, fast, lin, quad,
     # rare. See docs/AFLplusplus/docs/power_schedules.md.
+    # Binary-only instrumentation modes for uninstrumented targets:
+    # 'auto' probes what this AFL++ install ships (QEMU first — the
+    # long-standing default — then FRIDA); explicit values force one
+    # tracer and fail with install guidance when it is absent.
+    _VALID_BINARY_ONLY_MODES: ClassVar[set[str]] = {"auto", "qemu", "frida"}
+    # Class-level defaults so partially-constructed runners (the
+    # established __init__-bypass test pattern) behave like mode=auto.
+    binary_only_mode: str = "auto"
+    _binary_only_support_dir: str | None = None
+
     _VALID_POWER_SCHEDULES: ClassVar[set[str]] = {
         "explore", "exploit", "coe", "fast", "lin", "quad", "rare", "seek",
     }
@@ -237,6 +247,7 @@ class AFLRunner:
         custom_mutator: Path | None = None,
         seed_profile: str = "default",
         extra_afl_flags: list[str] | None = None,
+        binary_only_mode: str = "auto",
         sandbox_rootfs: Path | str | None = None,
         binary_in_rootfs: str | None = None,
         afl_fuzz_path: str | None = None,
@@ -306,6 +317,23 @@ class AFLRunner:
         if self.custom_mutator and not self.custom_mutator.exists():
             msg = f"Custom mutator not found: {custom_mutator}"
             raise FileNotFoundError(msg)
+
+        # Binary-only instrumentation mode for uninstrumented targets:
+        # auto (probe QEMU then FRIDA support), or an explicit tracer.
+        # Resolution happens at campaign start, not here — probing the
+        # install for a target that turns out to be instrumented would
+        # be wasted work and noise.
+        if binary_only_mode not in self._VALID_BINARY_ONLY_MODES:
+            msg = (
+                f"Invalid binary-only mode '{binary_only_mode}'. "
+                f"Choose from: {sorted(self._VALID_BINARY_ONLY_MODES)}"
+            )
+            raise ValueError(msg)
+        self.binary_only_mode = binary_only_mode
+        # Directory of the resolved tracer artifact, exported as
+        # AFL_PATH so afl-fuzz finds a tracer that does not live next
+        # to its own binary (e.g. /usr/lib/afl).
+        self._binary_only_support_dir: str | None = None
 
         # Telemetry: instantiated lazily by run() to avoid creating
         # the events file when callers only build commands for tests.
@@ -497,7 +525,7 @@ class AFLRunner:
         except subprocess.TimeoutExpired:
             logger.warning(
                 "strings %s exceeded 60s — assuming not "
-                "AFL-instrumented (treat as needs-QEMU)",
+                "AFL-instrumented (treat as needs a binary-only mode)",
                 self.binary,
             )
             return False
@@ -509,9 +537,77 @@ class AFLRunner:
         else:
             logger.warning("⚠ Binary does not appear to be AFL-instrumented")
             logger.warning("  Consider recompiling with afl-gcc/afl-clang for better results")
-            logger.warning("  Using QEMU mode for non-instrumented binary")
+            logger.warning("  Falling back to a binary-only mode (QEMU/FRIDA)")
 
         return is_instrumented
+
+    def _resolve_binary_only_mode(self) -> str:
+        """Pick the tracer for an uninstrumented target: 'qemu' or 'frida'.
+
+        Probes the AFL++ install for the requested (or, under 'auto',
+        any) binary-only tracer and records its directory in
+        ``self._binary_only_support_dir`` for the AFL_PATH export.
+        Raises RuntimeError with install guidance when the campaign
+        cannot run — failing here with a clear message beats afl-fuzz
+        dying instance-by-instance with its own late error.
+
+        Rootfs campaigns keep the historical QEMU behaviour: the
+        tracers live inside the image, unreachable by host probing.
+        """
+        if self.sandbox_rootfs is not None:
+            if self.binary_only_mode == "frida":
+                logger.warning(
+                    "--afl-mode frida is unavailable for rootfs campaigns "
+                    "(tracers live inside the image, not on the host); "
+                    "keeping QEMU")
+            return "qemu"
+
+        from packages.fuzzing.capability import find_afl_support_file
+
+        qemu = find_afl_support_file("afl-qemu-trace", self.afl_fuzz)
+        frida = find_afl_support_file("afl-frida-trace.so", self.afl_fuzz)
+
+        if self.binary_only_mode == "qemu":
+            if not qemu:
+                msg = (
+                    "AFL++ QEMU mode requested but afl-qemu-trace was not "
+                    "found. Build it (qemu_mode/build_qemu_support.sh in "
+                    "the AFLplusplus tree) or install an AFL++ package "
+                    "with QEMU support — or use frida mode instead."
+                )
+                raise RuntimeError(msg)
+            chosen, path = "qemu", qemu
+        elif self.binary_only_mode == "frida":
+            if not frida:
+                msg = (
+                    "AFL++ FRIDA mode requested but afl-frida-trace.so was "
+                    "not found. Build it (make -C frida_mode in the "
+                    "AFLplusplus tree) or install an AFL++ package with "
+                    "FRIDA mode support — or use qemu mode instead."
+                )
+                raise RuntimeError(msg)
+            chosen, path = "frida", frida
+        elif qemu:
+            chosen, path = "qemu", qemu
+        elif frida:
+            chosen, path = "frida", frida
+        else:
+            msg = (
+                "Binary is not AFL-instrumented and this AFL++ install "
+                "ships neither QEMU mode (afl-qemu-trace) nor FRIDA mode "
+                "(afl-frida-trace.so) for binary-only fuzzing. Recompile "
+                "the target with afl-cc (see --recompile-guide), or build "
+                "a binary-only tracer in the AFLplusplus tree "
+                "(qemu_mode/build_qemu_support.sh or make -C frida_mode)."
+            )
+            raise RuntimeError(msg)
+
+        self._binary_only_support_dir = str(Path(path).parent)
+        logger.info(
+            "Binary is not AFL-instrumented — using AFL++ %s mode (%s)",
+            chosen.upper(), path,
+        )
+        return chosen
 
     def _check_afl_compatibility(self) -> None:
         """Check if the system is compatible with AFL++."""
@@ -677,8 +773,12 @@ class AFLRunner:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check instrumentation
+        # Check instrumentation; uninstrumented targets need a
+        # binary-only tracer resolved up front (clear failure with
+        # install guidance beats per-instance afl-fuzz deaths).
         is_instrumented = self.check_binary_instrumentation()
+        binary_mode = (None if is_instrumented
+                       else self._resolve_binary_only_mode())
 
         # Additional checks if requested
         if self.check_sanitizers:
@@ -705,6 +805,13 @@ class AFLRunner:
         else:
             readable_paths = [str(self.binary.parent), str(self.corpus_dir)]
             readable_paths.extend(str(Path(extra).parent) for extra in (self.dict_path, self.cmplog_binary, self.custom_mutator) if extra)
+            # Binary-only campaigns exec the resolved tracer
+            # (afl-qemu-trace / afl-frida-trace.so); for installs
+            # outside the sandbox's system read set (/opt, source
+            # builds under a home dir) the campaign would die at
+            # startup without this.
+            if self._binary_only_support_dir:
+                readable_paths.append(self._binary_only_support_dir)
 
         try:
             for job_id in range(parallel_jobs):
@@ -715,7 +822,7 @@ class AFLRunner:
                     instance_name=instance_name,
                     is_main=is_main,
                     timeout_ms=timeout_ms,
-                    use_qemu=not is_instrumented,
+                    binary_mode=binary_mode,
                     duration=duration,
                 )
 
@@ -769,6 +876,13 @@ class AFLRunner:
                 afl_env.setdefault("AFL_NO_AFFINITY", "1")
                 afl_env.setdefault("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES", "1")
                 afl_env.setdefault("AFL_FORKSRV_INIT_TMOUT", "10000")
+                if self._binary_only_support_dir:
+                    # afl-fuzz resolves its binary-only tracer via
+                    # AFL_PATH when it is not adjacent to the afl-fuzz
+                    # binary itself (e.g. distro installs under
+                    # /usr/lib/afl).
+                    afl_env.setdefault(
+                        "AFL_PATH", self._binary_only_support_dir)
                 if self.sandbox_rootfs is not None:
                     # Host PATH/HOME point at directories that do not
                     # exist inside the image rootfs.
@@ -1156,13 +1270,15 @@ class AFLRunner:
         instance_name: str,
         is_main: bool,
         timeout_ms: int,
-        use_qemu: bool = False,
+        binary_mode: str | None = None,
         duration: int | None = None,
     ) -> list[str]:
         """Build AFL command line.
 
         Wires up advanced AFL++ features when configured:
           -p <schedule>        power schedule (default: fast)
+          -Q / -O              binary-only tracing (QEMU / FRIDA) for
+                               uninstrumented targets
           -c <cmplog_binary>   CmpLog binary for input-to-state guidance
           -d                   deterministic mutations off (faster startup)
           -X <mutator.so>      custom mutator library
@@ -1206,9 +1322,12 @@ class AFLRunner:
         # uncovered branches.
         cmd.extend(["-p", self.power_schedule])
 
-        # QEMU mode if not instrumented
-        if use_qemu:
+        # Binary-only instrumentation for uninstrumented targets, as
+        # resolved by _resolve_binary_only_mode.
+        if binary_mode == "qemu":
             cmd.append("-Q")
+        elif binary_mode == "frida":
+            cmd.append("-O")
 
         # Skip deterministic mutations unless explicitly requested.
         # Modern AFL++ guidance is to skip determinism on the main fuzzer

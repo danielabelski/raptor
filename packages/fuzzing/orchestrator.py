@@ -316,6 +316,7 @@ class FuzzingOrchestrator:
         keep_env_rootfs: bool = False,
         env_sanitizer: str = "",
         env_cmplog: bool = False,
+        afl_binary_mode: str = "auto",
     ) -> dict[str, Any]:
         """Execute a planned campaign. Raises if plan.can_run is False.
 
@@ -433,7 +434,8 @@ class FuzzingOrchestrator:
             try:
                 result = self._run_afl(
                     plan, out_dir, duration_seconds, corpus_dir, dict_path,
-                    env_build=env_build, env_target=env_target)
+                    env_build=env_build, env_target=env_target,
+                    afl_binary_mode=afl_binary_mode)
             finally:
                 _discard_env_rootfs()
             if env_build is not None:
@@ -590,6 +592,7 @@ class FuzzingOrchestrator:
         dict_path: Path | None,
         env_build=None,
         env_target: str | None = None,
+        afl_binary_mode: str = "auto",
     ) -> dict[str, Any]:
         from packages.fuzzing.afl_runner import AFLRunner
         from packages.fuzzing.telemetry import FuzzingTelemetry
@@ -614,6 +617,7 @@ class FuzzingOrchestrator:
                 cmplog_in_rootfs=getattr(env_build, "cmplog_binaries",
                                          {}).get(rel),
                 extra_afl_flags=extra_flags or None,
+                binary_only_mode=afl_binary_mode,
             )
             telemetry_target = f"{plan.target.path} :: {rel} (env-built)"
         else:
@@ -624,6 +628,7 @@ class FuzzingOrchestrator:
                 dict_path=dict_path,
                 check_sanitizers=True,
                 use_showmap=True,
+                binary_only_mode=afl_binary_mode,
             )
             telemetry_target = str(plan.target.path)
         runner.telemetry = FuzzingTelemetry(

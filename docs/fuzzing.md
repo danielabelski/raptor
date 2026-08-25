@@ -39,8 +39,20 @@ The primary engine on Linux.  RAPTOR wraps `afl-fuzz` with support for:
 
 For best results, compile the target with AFL instrumentation
 (`afl-clang-fast` or `afl-clang-lto`) and AddressSanitizer
-(`-fsanitize=address`).  Uninstrumented binaries work via QEMU mode but are
-significantly slower.
+(`-fsanitize=address`).  Uninstrumented binaries work through a
+binary-only tracer — QEMU mode (`-Q`) or FRIDA mode (`-O`) — at a
+significant speed cost.
+
+RAPTOR resolves the tracer at campaign start: `--afl-mode auto` (the
+default) probes the AFL++ install and picks QEMU, then FRIDA, from
+whatever is actually built; `--afl-mode qemu` / `--afl-mode frida`
+force one and fail up front with install guidance when that tracer is
+absent (`qemu_mode/build_qemu_support.sh` or `make -C frida_mode` in
+the AFLplusplus tree).  Exception: env-build rootfs campaigns always
+use QEMU — their tracers live inside the image, so `--afl-mode frida`
+is downgraded with a warning.  Not every distro package ships either
+mode — the capability report (`capability_report.json`) records what
+was found in its `afl_qemu_trace` / `afl_frida_trace` fields.
 
 ### libFuzzer
 
@@ -168,6 +180,7 @@ python3 raptor.py fuzz --binary <path> [flags]
 
 | Flag | Description |
 |------|-------------|
+| `--afl-mode <auto\|qemu\|frida>` | Binary-only tracer for uninstrumented targets (default: auto — QEMU, then FRIDA, from what the AFL++ install ships) |
 | `--check-sanitizers` | Check if the binary is compiled with sanitisers |
 | `--recompile-guide` | Print a guide for recompiling with AFL instrumentation and sanitisers |
 | `--use-showmap` | Run `afl-showmap` after fuzzing for coverage analysis |

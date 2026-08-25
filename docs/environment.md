@@ -542,6 +542,7 @@ the JVM-installer caveat.
 | `OLLAMA_HOST` | See the LLM section above (re-read per access, remote hosts redacted in logs). |
 | `PYTEST_CURRENT_TEST` | Detection only: suppresses the probe warm and attributes live-API leaks to test contexts. Never set manually. |
 | `ASAN_OPTIONS`, `UBSAN_OPTIONS`, `AFL_INPUT_FILE` | Written by RAPTOR into fuzzing/crash-verification child envs (sanitizer contracts); operator values are not consumed. |
+| `AFL_PATH` | Read when probing for AFL++ binary-only tracers (`afl-qemu-trace`, `afl-frida-trace.so`); also set in the campaign child env (setdefault) to the resolved tracer's directory so `afl-fuzz -Q`/`-O` finds a tracer that is not adjacent to the afl-fuzz binary. |
 | `CONDA_DEFAULT_ENV`, `VIRTUAL_ENV` | Read only to phrase install hints for missing tools. |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Pinned by RAPTOR in child envs for internal git operations (deterministic identity); operator values are not consumed. |
 | `GOPATH`, `GOCACHE`, `TMPDIR` | Redirected by RAPTOR into per-run scratch space when spawning build/tool children (Go builds in cvefix/dark-verify, the run-scoped `TMPDIR` in `core.run.scratch`) so untrusted builds cannot write into the operator's real caches. |

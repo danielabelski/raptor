@@ -13,6 +13,7 @@ job rather than failing mid-campaign with a cryptic error.
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -45,6 +46,12 @@ class CapabilityReport:
     afl_cmin: str | None = None
     afl_tmin: str | None = None
     afl_cov: str | None = None
+
+    # Binary-only instrumentation support (uninstrumented targets):
+    # path to the QEMU tracer (-Q) / FRIDA tracer library (-O), or
+    # None when that mode is not built into this AFL++ install.
+    afl_qemu_trace: str | None = None
+    afl_frida_trace: str | None = None
 
     clang: str | None = None
     clang_xx: str | None = None
@@ -107,6 +114,9 @@ class CapabilityReport:
             + (f" -- {self.macos_afl_warning}" if self.macos_afl_warning else ""),
             f"  libFuzzer (clang):    {'yes' if self.has_clang_fuzzer() else 'no'}"
             + (f" ({self.clang_version})" if self.clang_version else ""),
+            "  AFL++ binary-only:    "
+            f"qemu={'yes' if self.afl_qemu_trace else 'no'} "
+            f"frida={'yes' if self.afl_frida_trace else 'no'}",
             "",
             "Sanitisers:",
             f"  AddressSanitizer:     {'yes' if self.has_address_sanitizer else 'no'}",
@@ -215,9 +225,13 @@ def probe() -> CapabilityReport:
     report.has_r2pipe = bool(r2_cap.get("has_r2pipe"))
     report.has_r2ghidra = bool(r2_cap.get("has_r2ghidra"))
 
-    # AFL++ version probe
+    # AFL++ version probe + binary-only instrumentation support
     if report.afl_fuzz:
         report.afl_version = _probe_version(report.afl_fuzz, ["--help"])
+        report.afl_qemu_trace = find_afl_support_file(
+            "afl-qemu-trace", report.afl_fuzz)
+        report.afl_frida_trace = find_afl_support_file(
+            "afl-frida-trace.so", report.afl_fuzz)
 
     # Clang sanitiser support
     if report.clang:
@@ -298,6 +312,65 @@ def probe() -> CapabilityReport:
 
     logger.info("Capability probe: %s", report.summary().splitlines()[0])
     return report
+
+
+# Conventional install locations for AFL++ helper artifacts. afl-fuzz
+# itself resolves helpers via $AFL_PATH, the directory containing its
+# own binary, and its compile-time helper dir; probing the same places
+# (plus PATH for executables) keeps the report honest about what a
+# campaign would actually find.
+_AFL_SUPPORT_DIRS = (
+    "/usr/local/lib/afl",
+    "/usr/lib/afl",
+    "/usr/local/share/afl",
+)
+
+
+def find_afl_support_file(name: str, afl_fuzz: str | None = None) -> str | None:
+    """Locate an AFL++ support artifact by name.
+
+    Used for the binary-only tracers (``afl-qemu-trace``,
+    ``afl-frida-trace.so``). Search order pairs the tracer with the
+    afl-fuzz that will run it — a tracer from a DIFFERENT install can
+    be shmem-protocol incompatible — so the *afl_fuzz*-adjacent dirs
+    come first, then ``$AFL_PATH``, then PATH (executables only), then
+    the conventional helper install dirs. Returns the path, or None
+    when this AFL++ install does not ship the artifact.
+    """
+    candidates: list[Path] = []
+    if afl_fuzz:
+        parent = Path(afl_fuzz).parent
+        candidates.append(parent)
+        # A symlinked afl-fuzz (source builds shimmed onto PATH) keeps
+        # its tracers next to the REAL binary; afl-fuzz itself finds
+        # them via its compile-time BIN_PATH, so probe there too.
+        try:
+            resolved_parent = Path(afl_fuzz).resolve().parent
+        except OSError:
+            resolved_parent = parent
+        if resolved_parent != parent:
+            candidates.append(resolved_parent)
+    afl_path = os.environ.get("AFL_PATH")
+    if afl_path:
+        candidates.append(Path(afl_path))
+    for directory in candidates:
+        candidate = directory / name
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which(name)
+    if found:
+        found_path = Path(found)
+        # which() honours relative PATH entries and returns relative
+        # paths for them; the result feeds an AFL_PATH export that the
+        # campaign child resolves against ITS cwd (the output dir), so
+        # pin it to an absolute path here.
+        return str(found_path if found_path.is_absolute()
+                   else found_path.resolve())
+    for support_dir in _AFL_SUPPORT_DIRS:
+        candidate = Path(support_dir) / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _probe_version(binary: str, args: list[str]) -> str:

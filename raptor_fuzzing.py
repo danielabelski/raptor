@@ -192,6 +192,17 @@ Examples:
     )
     ap.add_argument("--input-mode", choices=["stdin", "file"], default="stdin", help="Input mode: stdin (default) or file (uses @@)")
     ap.add_argument(
+        "--afl-mode",
+        choices=["auto", "qemu", "frida"],
+        default="auto",
+        help="Binary-only instrumentation for targets that are not "
+             "AFL-instrumented: auto (default) picks QEMU then FRIDA "
+             "from what this AFL++ install ships; qemu/frida force "
+             "-Q/-O and fail with install guidance when that tracer "
+             "is absent. Ignored for instrumented targets; env-build "
+             "rootfs campaigns always use QEMU (in-image tracers).",
+    )
+    ap.add_argument(
         "--env-build", action="store_true", default=None,
         help="Authorise building a source-tree target AFL-instrumented "
              "in the pinned AFL++ image for this run (default: defer "
@@ -537,6 +548,7 @@ Examples:
                 keep_env_rootfs=args.keep_env_rootfs,
                 env_sanitizer="asan" if args.env_asan else "",
                 env_cmplog=args.env_cmplog,
+                afl_binary_mode=args.afl_mode,
             )
         except KeyboardInterrupt:
             print("\nCampaign interrupted by user.")
@@ -707,9 +719,12 @@ Examples:
     # ========================================================================
     # PHASE 1: FUZZING WITH AFL++
     # ========================================================================
+    # flush: the banner goes to buffered stdout while an early
+    # binary-only-mode refusal prints to stderr — without a flush the
+    # operator sees the failure FOLLOWED by a dangling phase header.
     print("\n" + "=" * 70)
     print("PHASE 1: AFL++ FUZZING")
-    print("=" * 70)
+    print("=" * 70, flush=True)
 
     try:
         afl_runner = AFLRunner(
@@ -723,6 +738,7 @@ Examples:
             use_showmap=args.use_showmap,
             seed_profile=args.seed_profile,
             extra_afl_flags=sage_afl_flags or None,
+            binary_only_mode=args.afl_mode,
         )
 
         # With --rank-crashes the campaign runs to a 3x-cap pool so

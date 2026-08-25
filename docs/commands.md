@@ -265,6 +265,7 @@ Coverage-guided fuzzing with automatic harness generation.
 | `--seed-include-lockfiles` | Include lockfiles in seed corpus |
 | `--dict <path>` | Fuzzer dictionary file (when omitted, an audit-generated `fuzz.dict` is auto-discovered from the run's own or newest sibling run directory) |
 | `--input-mode {stdin,file}` | How to feed input to the target |
+| `--afl-mode {auto,qemu,frida}` | Binary-only tracer for uninstrumented targets (auto probes the AFL++ install: QEMU, then FRIDA; env-build rootfs campaigns always use QEMU) |
 
 **Env build-on-demand** (source-tree targets; see the
 [fuzzing guide](fuzzing.md#env-build-on-demand-source-trees))

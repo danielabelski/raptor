@@ -371,3 +371,288 @@ class TestAnnotateAttackPaths:
         ])]
         result = annotate_attack_paths(paths, evidence)
         assert result[0]["frida_trace_id"] == "/run/first"
+
+
+# ---------------------------------------------------------------------------
+# Target attribution, alias crediting, args bounding
+# ---------------------------------------------------------------------------
+
+
+def _sink_event(fn: str, caller_module: str | None = None, **extra) -> dict:
+    payload = {
+        "category": "sink",
+        "fn": fn,
+        "args": {"dst": "0x1", "src": "0x2", "n": 512},
+        "tid": 7,
+    }
+    if caller_module is not None:
+        payload["caller_module"] = caller_module
+    payload.update(extra)
+    return {"ts": 1.0, "type": "send", "payload": payload}
+
+
+class TestTargetAttribution:
+    """Sink/exec/load/ingest events count only when the target's own
+    code made the call — library sinks fire constantly from libc
+    internals, and crediting those floors proximity on unrelated
+    findings."""
+
+    def test_target_called_sink_counts(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [_sink_event("memcpy", caller_module="srv")])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        evidence = collect_runtime_evidence([tmp_path])
+        assert "memcpy" in evidence
+
+    def test_library_internal_sink_ignored(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [_sink_event("memcpy", caller_module="libc.so.6")])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+    def test_unattributable_sink_ignored(self, tmp_path):
+        # No caller_module at all, or an attach-by-name run with no
+        # binary to attribute against.
+        run = tmp_path / "run"
+        _write_events(run, [_sink_event("memcpy")])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+        run2 = tmp_path / "run2"
+        _write_events(run2, [_sink_event("memcpy", caller_module="srv")])
+        _write_metadata(run2, target_name="srv")
+        assert collect_runtime_evidence([run2]) == {}
+
+    def test_legacy_categories_keep_semantics(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {"category": "file", "fn": "open",
+                        "args": {"path": "/etc/hosts"}, "tid": 1},
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert "open" in collect_runtime_evidence([tmp_path])
+
+    def test_meta_markers_never_count(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {"_meta": "sink-watch cap reached",
+                        "fn": "memcpy", "cap": 500},
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+
+class TestAliasCrediting:
+    def test_alias_group_credits_every_name(self, tmp_path):
+        # glibc resolves memcpy/memmove to one implementation; the
+        # hook cannot know which name the call site used, so a finding
+        # naming either must see the evidence.
+        run = tmp_path / "run"
+        _write_events(run, [
+            _sink_event("memcpy", caller_module="srv",
+                        aliases=["memmove"]),
+        ])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        evidence = collect_runtime_evidence([tmp_path])
+        assert evidence["memcpy"].call_count == 1
+        assert evidence["memmove"].call_count == 1
+        assert evidence["memmove"].observed_args is not None
+
+
+class TestObservedArgsBounds:
+    def test_data_hex_never_reaches_observed_args(self, tmp_path):
+        # Top-level AND nested data_hex (a custom script may reuse the
+        # convention inside a sub-object).
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {"category": "sink", "fn": "recv",
+                        "caller_module": "srv",
+                        "args": {"fd": 5, "len": 8192,
+                                 "data_hex": "41" * 8192,
+                                 "detail": {"data_hex": "42" * 8192}},
+                        "tid": 1},
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        evidence = collect_runtime_evidence([tmp_path])
+        serialized = json.dumps(evidence["recv"].observed_args)
+        assert "4141" not in serialized
+        assert "4242" not in serialized
+        assert len(serialized) < 2048
+
+    def test_long_strings_truncated_and_list_capped(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {"category": "exec", "fn": "system",
+                        "caller_module": "srv",
+                        "args": {"command": "x" * 5000,
+                                 **{f"a{i}": i for i in range(20)}},
+                        "tid": 1},
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        args = collect_runtime_evidence([tmp_path])["system"].observed_args
+        assert len(args) <= 8
+        assert all(not (isinstance(a, str) and len(a) > 200) for a in args)
+
+
+class TestBacktraceAttribution:
+    """The target on the CALL STACK attributes an event — real projects
+    ship vulnerable code in their own libraries and call sinks through
+    wrappers, so the immediate caller alone is not enough."""
+
+    def test_shipped_library_call_with_target_on_stack_counts(self, tmp_path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libfoo.so",
+                "backtrace_frames": [
+                    {"address": "0x1", "module": "libfoo.so"},
+                    {"address": "0x2", "module": "srv"},
+                    {"address": "0x3", "module": "libc.so.6"},
+                ],
+                "args": {"n": 64}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert "memcpy" in collect_runtime_evidence([tmp_path])
+
+    def test_pure_library_stack_still_dropped_with_warning(
+            self, tmp_path, caplog):
+        import logging
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": "libc.so.6",
+                "backtrace_frames": [
+                    {"address": "0x1", "module": "libc.so.6"},
+                    {"address": "0x2", "module": "ld-linux-x86-64.so.2"},
+                ],
+                "args": {"n": 64}, "tid": 1,
+            },
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        with caplog.at_level(logging.WARNING):
+            assert collect_runtime_evidence([tmp_path]) == {}
+        # Attribution loss must never look like "no sink calls
+        # occurred".
+        assert any("failed target attribution" in r.message
+                   and "libc.so.6" in r.message
+                   for r in caplog.records)
+
+
+class TestEvidenceExcludedCategories:
+    def test_ingest_and_jni_never_count(self, tmp_path):
+        # seed-harvest produces seeds (no callsite is captured); jni
+        # maps registrations. Neither is call evidence.
+        run = tmp_path / "run"
+        _write_events(run, [
+            {"ts": 1.0, "type": "send",
+             "payload": {"category": "ingest", "fn": "read",
+                         "args": {"len": 4, "data_hex": "41414141"},
+                         "tid": 1}},
+            {"ts": 1.0, "type": "send",
+             "payload": {"category": "jni", "fn": "RegisterNatives",
+                         "caller_module": "srv",
+                         "args": {"method": "doIt"}, "tid": 1}},
+        ])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path]) == {}
+
+
+class TestObservedArgsNestedBounds:
+    def test_argv_list_is_bounded(self, tmp_path):
+        run = tmp_path / "run"
+        argv = ["x" * 256 for _ in range(33)]
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {"category": "exec", "fn": "execve",
+                        "caller_module": "srv",
+                        "args": {"path": "/bin/sh", "argv": argv},
+                        "tid": 1},
+        }])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        serialized = json.dumps(
+            collect_runtime_evidence([tmp_path])["execve"].observed_args)
+        assert len(serialized) < 2048
+
+
+class TestSelfAliasDedup:
+    def test_alias_repeating_fn_counts_once(self, tmp_path):
+        # The same fn watched plain and module-scoped resolves to one
+        # address; the event's alias group repeating the primary name
+        # must not double-count.
+        run = tmp_path / "run"
+        _write_events(run, [_sink_event(
+            "memcpy", caller_module="srv", aliases=["memcpy"])])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        assert collect_runtime_evidence([tmp_path])["memcpy"].call_count == 1
+
+
+class TestTraceIdCoherence:
+    def test_trace_id_follows_the_max_count_run(self, tmp_path):
+        # Newest-first discovery: the newer run has 1 call, the older
+        # run has 3 — the record must cite the run that showed 3.
+        import os
+        import time
+        newer = tmp_path / "run_newer"
+        _write_events(newer, [_sink_event("memcpy", caller_module="srv")])
+        _write_metadata(newer, target_binary=str(tmp_path / "srv"))
+        older = tmp_path / "run_older"
+        _write_events(older, [
+            _sink_event("memcpy", caller_module="srv") for _ in range(3)])
+        _write_metadata(older, target_binary=str(tmp_path / "srv"))
+        old_time = time.time() - 1000
+        os.utime(older / "metadata.json", (old_time, old_time))
+
+        evidence = collect_runtime_evidence([tmp_path])
+        assert evidence["memcpy"].call_count == 3
+        assert evidence["memcpy"].trace_id == str(older)
+
+
+class TestAliasBounds:
+    def test_forged_alias_flood_is_bounded(self, tmp_path):
+        # The agent runs inside the target process; one forged event
+        # must not mint evidence for thousands of names.
+        run = tmp_path / "run"
+        _write_events(run, [_sink_event(
+            "memcpy", caller_module="srv",
+            aliases=[f"fn_{i}" for i in range(1000)] + ["x" * 4096])])
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        evidence = collect_runtime_evidence([tmp_path])
+        assert len(evidence) <= 9   # fn + at most 8 aliases
+
+
+class TestDropDiagnosticLevel:
+    def _events(self, tmp_path, extra):
+        run = tmp_path / "run"
+        _write_events(run, [
+            _sink_event("memcpy", caller_module="libc.so.6"),
+        ] + extra)
+        _write_metadata(run, target_binary=str(tmp_path / "srv"))
+        return run
+
+    def test_healthy_run_with_evidence_does_not_warn(self, tmp_path, caplog):
+        # A few pre-main libc startup calls drop on EVERY healthy spawn
+        # run; warning each time would train operators to ignore it.
+        import logging
+        self._events(tmp_path, [_sink_event("memcpy", caller_module="srv")])
+        with caplog.at_level(logging.WARNING):
+            evidence = collect_runtime_evidence([tmp_path])
+        assert "memcpy" in evidence
+        assert not any("failed target attribution" in r.message
+                       for r in caplog.records)
+
+    def test_zero_evidence_run_warns(self, tmp_path, caplog):
+        import logging
+        self._events(tmp_path, [])
+        with caplog.at_level(logging.WARNING):
+            assert collect_runtime_evidence([tmp_path]) == {}
+        assert any("NO evidence was collected" in r.message
+                   for r in caplog.records)

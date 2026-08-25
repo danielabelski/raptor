@@ -305,6 +305,29 @@ exact shape the validation bridge counts, so the observed arguments
 ("the tainted length reached the memcpy") flow into `/validate`'s
 `runtime_evidence` annotations with no extra wiring.
 
+Evidence is target-attributed: a call counts when the target binary
+appears at the call site or anywhere on the captured backtrace.
+Consequences worth knowing, in both directions. Calls with no target
+frame anywhere on the stack — pre-main libc startup activity, calls
+made entirely inside shipped libraries, a watched `main` invoked from
+`__libc_start_main` — record events but yield no evidence; when a
+collection pass yields nothing, the dropped events are reported with
+their caller modules as a warning (routine startup drops on
+evidence-bearing runs log at debug). Conversely, hot libc sinks
+(`memcpy` and friends) WILL attribute from any I/O the target
+performs — `printf` reaches libc-internal `memcpy` with the target on
+the stack — so treat `function_observed` on a ubiquitous sink as
+reachability corroboration, not proof that the finding's specific
+call site ran; each event carries `caller_module`/`caller_offset` for
+precise callsite matching when that distinction matters. Spawn a
+binary target to get attributable evidence; attach-by-name sessions
+still record sink events for the operator but yield no `/validate`
+evidence. Aliased sinks that share one implementation address (glibc
+`memcpy`/`memmove`) are hooked once and credited under every watched
+name, and `seed-harvest`/`jni-trace` runs never feed `/validate`
+evidence at all — their outputs are seeds and boundary mappings, not
+call proof.
+
 ### jni-trace
 
 Maps the Java↔native boundary on ART (Android) targets by hooking

@@ -118,6 +118,13 @@ Frida output is automatically consumed by downstream pipelines when evidence exi
 | `/understand --map` context bridge | `events.jsonl` file operations | `ObserveProfile` merged into context map (read/write/stat/connect paths) |
 | Coverage store | `coverage.drcov` (bb-coverage template) | Function-level coverage marks via existing `import_drcov` pipeline |
 
+Evidence caveat: sink/exec/load events count only when the target
+binary is on the call stack (spawn-mode binary targets); `seed-harvest`
+and `jni-trace` runs feed NO runtime evidence — their outputs are the
+seed corpus and the JNI mapping. A collection pass that yields zero
+evidence reports its unattributable events (with caller modules) as a
+warning; routine startup drops on evidence-bearing runs log at debug.
+
 No flags needed — consumers discover evidence via `packages.frida.evidence.discover_evidence()` and gate on `packages.frida.available()`.
 
 ### Programmatic API (for orchestration scripts)

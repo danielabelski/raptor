@@ -167,6 +167,7 @@ def list_templates() -> list[str]:
 # template valid JS (empty list) rather than a ReferenceError.
 _PARSER_HOOKS_SLOT = "/*__PARSER_HOOKS__*/ []"
 _INGEST_HOOKS_SLOT = "/*__INGEST_HOOKS__*/ []"
+_EXEC_HOOKS_SLOT = "/*__EXEC_HOOKS__*/ []"
 
 
 def _taxonomy_ingest_names() -> list[str]:
@@ -195,6 +196,11 @@ def _render_template_slots(source: str) -> str:
     if _INGEST_HOOKS_SLOT in source:
         source = source.replace(
             _INGEST_HOOKS_SLOT, json.dumps(_taxonomy_ingest_names()))
+    if _EXEC_HOOKS_SLOT in source:
+        from core.function_taxonomy import EXEC_FUNCS
+
+        source = source.replace(
+            _EXEC_HOOKS_SLOT, json.dumps(sorted(EXEC_FUNCS)))
     return source
 
 

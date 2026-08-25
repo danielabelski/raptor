@@ -42,6 +42,7 @@ libexec/raptor-frida --target ... --template ...
 | `bb-coverage` | Basic-block coverage collection. |
 | `binary-flow-trace` | Flow tracing used by `/binary runtime`. |
 | `seed-harvest` | Dump received input buffers; auto-distilled into a `--corpus`-ready seed dir for `/fuzz`. |
+| `exec-and-load` | Command execution (argv + caller module/offset) and `dlopen` activity. |
 
 List dynamically: `raptor frida --list-templates`.
 

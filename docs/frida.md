@@ -253,6 +253,28 @@ Seeds are the raw bytes the target received — decrypted TLS payloads
 harvested corpus as potentially secret-bearing and review it before
 sharing or committing it anywhere.
 
+### exec-and-load
+
+Records command execution (`system`, `popen`, the `exec` family,
+`posix_spawn`) with the resolved argv, and dynamic-loader activity
+(`dlopen`, `dlmopen`, `android_dlopen_ext`) — each event annotated
+with the calling module, offset, and backtrace. Answers "did that
+command-injection sink actually fire, and from where?" and enumerates
+runtime-loaded libraries/plugins that static import tables miss.
+
+```bash
+raptor frida --target ./app --template exec-and-load --duration 60
+```
+
+Events are captured on function entry: `execve` does not return on
+success, so exit-side hooks would miss exactly the interesting calls.
+
+The session traces one process: a plain `fork()` child is outside it
+(child gating is not enabled), so the fork()+exec pattern emits
+nothing even though the exec fired. Treat the *absence* of an exec
+event as unknown, never as proof the sink did not fire;
+`system`/`popen`/`posix_spawn` in the traced process are captured.
+
 ---
 
 ## Pipeline Integration

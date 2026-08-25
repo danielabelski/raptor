@@ -51,6 +51,7 @@ raptor frida --list-templates
 | `bb-coverage` | Basic-block coverage via Stalker; drcov output feeds the coverage store. |
 | `binary-flow-trace` | Input/parser callsite evidence for `/binary` investigations. |
 | `seed-harvest` | Dumps received input buffers; auto-distilled into `<out>/seeds/` for `raptor fuzz --corpus`. |
+| `exec-and-load` | Command execution (argv + caller) and dlopen activity — confirms injection sinks firing, maps runtime-loaded plugins. |
 
 Operator-supplied scripts via `--script ./hook.js` - same `send(...)` capture path.
 

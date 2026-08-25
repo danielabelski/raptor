@@ -32,6 +32,7 @@ class WebFinding:
     asvs_category: str      # e.g. "V14.4"
     check_id: str           # e.g. "V14.4.3"
     auth_context: str = "unauthenticated"
+    asvs_ref: str | None = None  # precise ASVS 5.0 reference from the check
     cwe_id: str | None = None
     cvss_score_estimate: float | None = None
     confirmed: bool | None = None
@@ -58,13 +59,3 @@ class WebFinding:
         return d
 
 
-@dataclass
-class ScanTarget:
-    """Resolved target for a web scan."""
-
-    base_url: str
-    auth_mode: str = "none"   # none | form | bearer | cookie | basic
-    max_depth: int = 3
-    max_pages: int = 100
-    verify_ssl: bool = True
-    reveal_secrets: bool = False

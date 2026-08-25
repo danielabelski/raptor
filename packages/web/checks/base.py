@@ -5,7 +5,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Type
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Type
 
 if TYPE_CHECKING:
     from packages.web.client import WebClient
@@ -198,10 +198,6 @@ class CheckRegistry:
 
     def all(self) -> List[Type[Check]]:
         return list(self._checks.values())
-
-    def for_categories(self, categories: Iterable[CheckCategory]) -> List[Type[Check]]:
-        cats = set(categories)
-        return [c for c in self._checks.values() if c.category in cats]
 
     def unauthenticated(self) -> List[Type[Check]]:
         return [c for c in self._checks.values() if not c.requires_auth]

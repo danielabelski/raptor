@@ -2696,6 +2696,7 @@ class WebScanner:
             asvs_category=result.category.value,
             check_id=result.check_id,
             auth_context=auth_context,
+            asvs_ref=result.asvs_ref or None,
         )
 
     def _empty_result(self, reason: str) -> dict[str, Any]:

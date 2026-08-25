@@ -127,10 +127,6 @@ _ADAPTERS: tuple[WebToolAdapter, ...] = (
 )
 
 
-def all_web_tool_adapters() -> tuple[WebToolAdapter, ...]:
-    return _ADAPTERS
-
-
 def web_tool_adapter(tool_id: str) -> WebToolAdapter:
     for adapter in _ADAPTERS:
         if adapter.id == tool_id:

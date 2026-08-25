@@ -778,6 +778,7 @@ Dynamic instrumentation via Frida.  Skill-dispatched.
 | `--duration <secs>` | Instrumentation duration |
 | `--spawn` | Spawn the target (rather than attach) |
 | `--unsafe-attach` | Attach without safety checks |
+| `--follow-children` | Trace fork()/exec() children too (child gating) |
 | `--list-templates` | List available bundled templates |
 
 **Bundled templates:** `api-trace`, `ssl-unpin`, `binary-flow-trace`,

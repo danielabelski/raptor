@@ -17,12 +17,12 @@
 // resolve. dlopen/dlmopen/android_dlopen_ext are hooked locally -
 // loader entry points, not execution sinks, so outside EXEC_FUNCS.
 //
-// LIMITATION: the session traces ONE process. A plain fork() child is
-// outside it (the runner does not enable Frida child gating), so the
-// fork()+exec pattern emits nothing even though the exec fired -
-// treat the ABSENCE of an exec event as unknown, never as "the sink
-// did not fire". system()/popen()/posix_spawn() in the traced process
-// are captured.
+// LIMITATION: by default the session traces ONE process, so a plain
+// fork() child is outside it and the fork()+exec pattern emits
+// nothing. Run with --follow-children to trace children too (Frida
+// child gating); without it, treat the ABSENCE of an exec event as
+// unknown, never as "the sink did not fire". system()/popen()/
+// posix_spawn() in the traced process are always captured.
 
 'use strict';
 

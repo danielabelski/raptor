@@ -62,6 +62,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         help=("Required for templates / attach modes needing "
                               "PTRACE_ATTACH or task_for_pid. Logged in "
                               "metadata."))
+    parser.add_argument("--follow-children", action="store_true",
+                        help=("Trace fork()/exec() children too (Frida "
+                              "child gating): each child gets the same "
+                              "hook script; events land in the same "
+                              "events.jsonl."))
     parser.add_argument("--list-templates", action="store_true",
                         help="Print bundled template names and exit.")
     return parser
@@ -124,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         use_usb=args.usb,
         spawn=args.spawn,
         unsafe_attach=args.unsafe_attach,
+        follow_children=args.follow_children,
     )
 
     try:

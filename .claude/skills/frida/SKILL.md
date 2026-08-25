@@ -34,6 +34,7 @@ libexec/raptor-frida --target <pid|name|bundle-id|binary>
                      (--template <name> | --script <path> | --sink-watch <file>)
                      [--host HOST[:PORT]] [--usb]
                      [--duration N] [--spawn] [--unsafe-attach]
+                     [--follow-children]
 ```
 
 Equivalent CLI without a Claude session: `raptor frida ...`.

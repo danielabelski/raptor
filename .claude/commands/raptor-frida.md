@@ -14,6 +14,7 @@ Runtime instrumentation substrate. Attach to (or spawn) a target, load a hook sc
               (--template <name> | --script <path> | --sink-watch <file>)
               [--host HOST[:PORT]] [--usb]
               [--duration N] [--spawn] [--unsafe-attach]
+              [--follow-children]
 ```
 
 Equivalent shell:

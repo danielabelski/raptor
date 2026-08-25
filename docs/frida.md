@@ -150,6 +150,7 @@ raptor frida --target <target> --template <name> --duration <seconds>
 | `--duration <seconds>` | Seconds to run before detaching. Default 60. |
 | `--spawn` | Force spawn-and-attach. Implied when `--target` is an existing file path. |
 | `--unsafe-attach` | Required for templates/modes needing `PTRACE_ATTACH` or `task_for_pid`. Logged in metadata. |
+| `--follow-children` | Trace fork()/exec() children too (Frida child gating); children get the same hook script, events land in the same `events.jsonl`. |
 | `--list-templates` | Print bundled template names and exit. |
 
 ### Examples
@@ -270,11 +271,13 @@ raptor frida --target ./app --template exec-and-load --duration 60
 Events are captured on function entry: `execve` does not return on
 success, so exit-side hooks would miss exactly the interesting calls.
 
-The session traces one process: a plain `fork()` child is outside it
-(child gating is not enabled), so the fork()+exec pattern emits
-nothing even though the exec fired. Treat the *absence* of an exec
-event as unknown, never as proof the sink did not fire;
-`system`/`popen`/`posix_spawn` in the traced process are captured.
+By default the session traces one process, so a plain `fork()` child
+is outside it and the fork()+exec pattern emits nothing. Pass
+`--follow-children` to trace children too (Frida child gating): each
+fork/exec child is attached, gets the same hook script, and its
+events land in the same `events.jsonl` — the child's `execv` shows up
+with full argv. Without the flag, treat the *absence* of an exec
+event as unknown, never as proof the sink did not fire.
 
 ### sink-watch
 
@@ -319,7 +322,11 @@ performs — `printf` reaches libc-internal `memcpy` with the target on
 the stack — so treat `function_observed` on a ubiquitous sink as
 reachability corroboration, not proof that the finding's specific
 call site ran; each event carries `caller_module`/`caller_offset` for
-precise callsite matching when that distinction matters. Spawn a
+precise callsite matching when that distinction matters. A caller
+module whose on-disk path lives under the target binary's directory
+also attributes — project-shipped libraries whose call chains never
+touch the main binary (plugin callbacks, dlopen'd codecs) — without
+admitting system libraries. Spawn a
 binary target to get attributable evidence; attach-by-name sessions
 still record sink events for the operator but yield no `/validate`
 evidence. Aliased sinks that share one implementation address (glibc

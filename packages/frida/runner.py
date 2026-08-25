@@ -115,6 +115,13 @@ class RunConfig:
     use_usb: bool = False
     spawn: bool = False
     unsafe_attach: bool = False         # informational; logged in metadata
+    # Trace fork()/exec() children too (Frida child gating): each
+    # gated child is attached, gets the same hook script, and is
+    # resumed; its events land in the same events.jsonl. Without this
+    # a fork()+exec pattern emits nothing (the session traces ONE
+    # process), which downstream readers can misread as "the sink
+    # never fired".
+    follow_children: bool = False
 
 
 @dataclass
@@ -129,6 +136,7 @@ class RunResult:
     resolved_pid: int | None = None
     device_id: str | None = None
     host_info: HostInfo | None = None
+    children_observed: int = 0          # gated children instrumented
 
 
 def resolve_template(name: str) -> Path:
@@ -383,6 +391,8 @@ def run(cfg: RunConfig,
     device = None
     pid: int | None = None
     spawned = False
+    child_sessions: list[Any] = []
+    child_handler: Any = None
 
     try:
         device = _resolve_device(frida_mod, cfg)
@@ -394,6 +404,55 @@ def run(cfg: RunConfig,
         script = session.create_script(cfg.script_source)
         script.on("message", _message_cb)
         script.load()
+
+        if cfg.follow_children:
+            def _instrument_child(child_pid: int) -> None:
+                # The gated child arrives SUSPENDED. Instrument it,
+                # then ALWAYS resume — a leaked suspension hangs the
+                # target's own control flow.
+                try:
+                    child_session = device.attach(child_pid)
+                    # Grandchildren gate too.
+                    try:
+                        child_session.enable_child_gating()
+                    except Exception:
+                        logger.debug("child gating on child failed",
+                                     exc_info=True)
+                    child_script = child_session.create_script(
+                        cfg.script_source)
+                    child_script.on("message", _message_cb)
+                    child_script.load()
+                    with events_lock:
+                        child_sessions.append(child_session)
+                        result.children_observed += 1
+                except Exception:  # best-effort: never wedge the child
+                    logger.debug("child instrumentation failed",
+                                 exc_info=True)
+                finally:
+                    try:
+                        device.resume(child_pid)
+                    except Exception:
+                        logger.debug("child resume failed", exc_info=True)
+
+            def _on_child_added(child: Any) -> None:
+                # The signal fires on frida's runtime event thread;
+                # blocking device calls (attach) there DEADLOCK the
+                # runtime. Instrument on a worker thread instead — the
+                # child stays gated (suspended) until that thread
+                # resumes it.
+                threading.Thread(
+                    target=_instrument_child,
+                    args=(child.pid,),
+                    name="frida-child-instrument",
+                    daemon=True,
+                ).start()
+
+            # Handler BEFORE gating, gating BEFORE resume: a child
+            # forked in the target's first instructions must find both
+            # in place.
+            device.on("child-added", _on_child_added)
+            child_handler = _on_child_added
+            session.enable_child_gating()
 
         # If we spawned, the process is suspended pre-load. Resume it
         # AFTER load so hooks are in place before main() runs.
@@ -427,6 +486,41 @@ def run(cfg: RunConfig,
         result.ok = False
         result.error = f"{type(e).__name__}: {e}"
     finally:
+        if child_handler is not None and device is not None:
+            try:
+                device.off("child-added", child_handler)
+            except Exception:  # best-effort cleanup
+                logger.debug("child-added handler removal failed",
+                             exc_info=True)
+        if child_sessions:
+            # frida-python's detach has NO timeout, and a frida-core
+            # race (children dying concurrently with detach) can block
+            # it unboundedly — which would wedge the run AFTER a
+            # successful capture and lose metadata.json (evidence
+            # discovery discards runs without it). Bound the child
+            # cleanup; frida's own teardown resumes/kills gated
+            # children when the controller exits.
+            with events_lock:
+                sessions_snapshot = list(child_sessions)
+
+            def _detach_children() -> None:
+                for child_session in sessions_snapshot:
+                    try:
+                        child_session.detach()
+                    except Exception:  # best-effort cleanup
+                        logger.debug("child session detach failed",
+                                     exc_info=True)
+
+            detacher = threading.Thread(
+                target=_detach_children,
+                name="frida-child-detach", daemon=True)
+            detacher.start()
+            detacher.join(timeout=5.0)
+            if detacher.is_alive():
+                logger.warning(
+                    "child session detach did not complete within 5s; "
+                    "continuing teardown (frida cleans up gated "
+                    "children when the controller exits)")
         try:
             if session is not None:
                 session.detach()
@@ -481,6 +575,8 @@ def _write_metadata(cfg: RunConfig, result: RunResult) -> None:
         },
         "spawn": cfg.spawn or bool(cfg.target.binary),
         "unsafe_attach": cfg.unsafe_attach,
+        "follow_children": cfg.follow_children,
+        "children_observed": result.children_observed,
         "resolved_pid": result.resolved_pid,
     }
     save_json(cfg.out_dir / "metadata.json", payload)

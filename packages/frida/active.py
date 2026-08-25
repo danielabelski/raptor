@@ -131,7 +131,10 @@ def observe_target(
                   result.returncode, stderr_tail)
         return None
 
-    run_dir = _extract_output_dir(result.stdout)
+    # The wrapper echoes the lifecycle output — the only OUTPUT_DIR=
+    # line — to STDERR (operator visibility); scan both streams.
+    run_dir = (_extract_output_dir(result.stdout)
+               or _extract_output_dir(result.stderr or ""))
     if run_dir and run_dir.is_dir() and (run_dir / "metadata.json").is_file():
         log.info("observation complete: %s", run_dir)
         return run_dir

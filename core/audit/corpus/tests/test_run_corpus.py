@@ -2070,6 +2070,8 @@ class TestSpendMetaBreakdown:
         # clamp against the merged 102.
         assert meta["label_attributed_usd"] == 102.0
         assert meta["infra_usd"] == 3.0
+        # The refire's own attributed spend is recorded explicitly.
+        assert meta["label_attributed_fresh_usd"] == 2.0
 
     def test_group_progress_prints_attributed_running_total(
         self, tmp_path, monkeypatch, capsys,

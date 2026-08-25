@@ -113,6 +113,10 @@ they legitimately disagree (2-3x observed):
   agrees with the running total that prints at every group boundary —
   the figure a mid-run cost-ceiling decision must compare against.
 - `total_spend_usd` — telemetry-ledger total, money actually spent.
+  Under `--splice` the headline attributed figure covers the merged
+  set (legacy `cost_usd` semantics); `label_attributed_fresh_usd`
+  then records the refire's own rows, and `infra_usd` is derived
+  from them (this run's telemetry minus this run's attributed rows).
 - `infra_usd` — the difference: study, prep, spec/checker synthesis,
   summaries, non-label review overheads.
 

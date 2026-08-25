@@ -3820,6 +3820,13 @@ def main(argv: list[str] | None = None) -> int:
     if spliced_ids:
         meta["spliced_from"] = str(args.splice)
         meta["new_count"] = len(spliced_ids)
+        # The headline attributed figure keeps its documented
+        # merged-set semantics (legacy cost_usd); record the refire's
+        # OWN rows separately so the splice never obscures what this
+        # run actually spent on its labels.
+        meta["label_attributed_fresh_usd"] = round(
+            fresh_attributed_usd, 4,
+        )
     _write_results(results, args.output, meta=meta)
     print(f"\nResults written to {args.output}")
 

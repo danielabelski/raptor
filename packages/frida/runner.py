@@ -168,6 +168,7 @@ def list_templates() -> list[str]:
 _PARSER_HOOKS_SLOT = "/*__PARSER_HOOKS__*/ []"
 _INGEST_HOOKS_SLOT = "/*__INGEST_HOOKS__*/ []"
 _EXEC_HOOKS_SLOT = "/*__EXEC_HOOKS__*/ []"
+_SINK_WATCH_SLOT = "/*__SINK_WATCH__*/ []"
 
 
 def _taxonomy_ingest_names() -> list[str]:
@@ -201,6 +202,21 @@ def _render_template_slots(source: str) -> str:
 
         source = source.replace(
             _EXEC_HOOKS_SLOT, json.dumps(sorted(EXEC_FUNCS)))
+    if _SINK_WATCH_SLOT in source:
+        # Default sink vocabulary for plain `--template sink-watch`.
+        # `--sink-watch <file>` renders a finding-specific list via
+        # packages.frida.sink_watch instead.
+        from core.function_taxonomy import (
+            EXEC_FUNCS,
+            FORMAT_STRING_FUNCS,
+            MEMORY_COPY_FUNCS,
+            STRING_OVERFLOW_FUNCS,
+        )
+
+        names = sorted(MEMORY_COPY_FUNCS | STRING_OVERFLOW_FUNCS
+                       | FORMAT_STRING_FUNCS | EXEC_FUNCS)
+        source = source.replace(
+            _SINK_WATCH_SLOT, json.dumps([{"fn": n} for n in names]))
     return source
 
 

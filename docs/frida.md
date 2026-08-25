@@ -142,8 +142,9 @@ raptor frida --target <target> --template <name> --duration <seconds>
 | Flag | Purpose |
 |------|---------|
 | `--target <target>` | Required. PID (digits), process name, bundle ID, or path to a binary to spawn. |
-| `--template <name>` | Bundled hook template name. Mutually exclusive with `--script`. |
-| `--script <path>` | Path to an operator-supplied JS hook file. Mutually exclusive with `--template`. |
+| `--template <name>` | Bundled hook template name. Mutually exclusive with `--script` / `--sink-watch`. |
+| `--script <path>` | Path to an operator-supplied JS hook file. Mutually exclusive with `--template` / `--sink-watch`. |
+| `--sink-watch <file>` | Watch a finding-specific sink list: a sinks JSON or a validation run's `attack-paths.json`. Mutually exclusive with `--template` / `--script`. |
 | `--host <host[:port]>` | Connect to a remote frida-server. Default port 27042. Mutually exclusive with `--usb`. |
 | `--usb` | Connect to the first USB-attached device. Mutually exclusive with `--host`. |
 | `--duration <seconds>` | Seconds to run before detaching. Default 60. |
@@ -274,6 +275,35 @@ The session traces one process: a plain `fork()` child is outside it
 nothing even though the exec fired. Treat the *absence* of an exec
 event as unknown, never as proof the sink did not fire;
 `system`/`popen`/`posix_spawn` in the traced process are captured.
+
+### sink-watch
+
+Records every call to a configured list of dangerous sinks with its
+arguments and full callsite. Two modes:
+
+- `--template sink-watch` watches the default sink vocabulary from the
+  central function taxonomy (memory-copy, string-overflow,
+  format-string, and exec sinks).
+- `--sink-watch <file>` watches a finding-specific list — either a
+  hand-written sinks JSON (`["memcpy", {"fn": "SSL_write", "module":
+  "libssl.so.3"}]`) or a validation run's `attack-paths.json`, from
+  which every step function is derived mechanically.
+
+Per-sink resolution tries module-scoped exports, global exports, then
+`DebugSymbol` — the fallback rescues project-internal sink wrappers on
+targets that ship symbols. Unresolved sinks are listed in the `_meta`
+event, and hot sinks are capped at 500 events each with a loud cap
+marker.
+
+```bash
+# Run the PoC input while watching exactly the finding's sinks:
+raptor frida --target ./srv --sink-watch out/validate_<ts>/attack-paths.json --duration 60
+```
+
+Sink events carry `category=sink` and the function name in `fn` — the
+exact shape the validation bridge counts, so the observed arguments
+("the tainted length reached the memcpy") flow into `/validate`'s
+`runtime_evidence` annotations with no extra wiring.
 
 ---
 

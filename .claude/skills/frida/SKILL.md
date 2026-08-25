@@ -31,7 +31,7 @@ The slash command surfaces the libexec wrapper; run it as Bash. Lifecycle (outpu
 
 ```
 libexec/raptor-frida --target <pid|name|bundle-id|binary>
-                     (--template <name> | --script <path>)
+                     (--template <name> | --script <path> | --sink-watch <file>)
                      [--host HOST[:PORT]] [--usb]
                      [--duration N] [--spawn] [--unsafe-attach]
 ```
@@ -52,6 +52,7 @@ raptor frida --list-templates
 | `binary-flow-trace` | Input/parser callsite evidence for `/binary` investigations. |
 | `seed-harvest` | Dumps received input buffers; auto-distilled into `<out>/seeds/` for `raptor fuzz --corpus`. |
 | `exec-and-load` | Command execution (argv + caller) and dlopen activity — confirms injection sinks firing, maps runtime-loaded plugins. |
+| `sink-watch` | Argument-level evidence at dangerous sinks; `--sink-watch <attack-paths.json>` derives the watch list from a finding. |
 
 Operator-supplied scripts via `--script ./hook.js` - same `send(...)` capture path.
 

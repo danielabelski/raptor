@@ -11,7 +11,7 @@ Runtime instrumentation substrate. Attach to (or spawn) a target, load a hook sc
 
 ```
 /raptor-frida --target <pid|name|bundle-id|binary>
-              (--template <name> | --script <path>)
+              (--template <name> | --script <path> | --sink-watch <file>)
               [--host HOST[:PORT]] [--usb]
               [--duration N] [--spawn] [--unsafe-attach]
 ```
@@ -43,6 +43,7 @@ libexec/raptor-frida --target ... --template ...
 | `binary-flow-trace` | Flow tracing used by `/binary runtime`. |
 | `seed-harvest` | Dump received input buffers; auto-distilled into a `--corpus`-ready seed dir for `/fuzz`. |
 | `exec-and-load` | Command execution (argv + caller module/offset) and `dlopen` activity. |
+| `sink-watch` | Argument-level sink evidence; parameterize with `--sink-watch <sinks.json|attack-paths.json>` instead of `--template`. |
 
 List dynamically: `raptor frida --list-templates`.
 

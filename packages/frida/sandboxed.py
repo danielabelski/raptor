@@ -76,6 +76,18 @@ def _find_frida_site() -> str | None:
     return None
 
 
+def _flag_value(cmd: list[str], flag: str) -> str | None:
+    """Last value of *flag* in argv, accepting both ``--flag value``
+    and ``--flag=value`` (argparse takes the last occurrence)."""
+    value: str | None = None
+    for i, token in enumerate(cmd):
+        if token == flag and i + 1 < len(cmd):
+            value = cmd[i + 1]
+        elif token.startswith(flag + "="):
+            value = token.split("=", 1)[1]
+    return value
+
+
 def main() -> int:
     argv = sys.argv[1:]
 
@@ -128,6 +140,18 @@ def main() -> int:
     for p in python_runtime_tool_paths():
         if p not in tool_paths:
             tool_paths.append(p)
+
+    # Operator-supplied hook sources (--script JS, --sink-watch
+    # sinks/attack-paths JSON) live at arbitrary paths outside the
+    # default readable set; under restrict_reads the CLI would fail
+    # with an "unreadable file" error before any hook loads.
+    for flag in ("--script", "--sink-watch"):
+        value = _flag_value(cmd, flag)
+        if not value:
+            continue
+        parent = str(Path(value).resolve().parent)
+        if parent not in tool_paths:
+            tool_paths.append(parent)
 
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),

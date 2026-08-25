@@ -41,6 +41,10 @@ def _build_parser() -> argparse.ArgumentParser:
                            "to see options."))
     src.add_argument("--script", metavar="PATH",
                      help="Path to an operator-supplied JS hook file.")
+    src.add_argument("--sink-watch", metavar="FILE",
+                     help=("Watch a finding-specific sink list: a sinks "
+                           "JSON (names or {fn, module} objects) or a "
+                           "validation run's attack-paths.json."))
 
     dev = parser.add_mutually_exclusive_group()
     dev.add_argument("--host", metavar="HOST[:PORT]",
@@ -93,7 +97,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        source, origin = load_script_source(args.template, args.script)
+        if args.sink_watch:
+            from json import JSONDecodeError
+
+            from .sink_watch import render_sink_watch, specs_from_file
+
+            try:
+                source = render_sink_watch(specs_from_file(args.sink_watch))
+            except (OSError, JSONDecodeError) as e:
+                msg = f"unreadable --sink-watch file: {e}"
+                raise ValueError(msg) from e
+            origin = f"sink-watch:{Path(args.sink_watch).resolve()}"
+        else:
+            source, origin = load_script_source(args.template, args.script)
     except (FileNotFoundError, ValueError) as e:
         print(f"frida: {e}", file=sys.stderr)
         return 2

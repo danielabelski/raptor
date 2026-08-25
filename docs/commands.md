@@ -772,6 +772,7 @@ Dynamic instrumentation via Frida.  Skill-dispatched.
 | `--target <target>` | Process ID, name, bundle ID, or binary path |
 | `--template <name>` | Use a bundled template |
 | `--script <path>` | Use a custom Frida script |
+| `--sink-watch <file>` | Watch a finding-specific sink list (sinks JSON or a validation run's `attack-paths.json`) |
 | `--host <host[:port]>` | Remote Frida server |
 | `--usb` | Connect via USB |
 | `--duration <secs>` | Instrumentation duration |

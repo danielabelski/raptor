@@ -27,6 +27,7 @@ __all__ = [
     "RuntimeEvidence",
     "annotate_attack_paths",
     "collect_runtime_evidence",
+    "extract_step_function_name",
 ]
 
 PROXIMITY_FLOOR = 6
@@ -228,6 +229,15 @@ def _extract_function_name(step: dict) -> str | None:
             return last_match
 
     return None
+
+
+# Public name: packages.frida.sink_watch derives watch lists from
+# attack-path steps with the same extraction rules Stage B uses, so
+# the two surfaces cannot drift.
+def extract_step_function_name(step: dict) -> str | None:
+    """Extract a function name from an attack path step (public form
+    of :func:`_extract_function_name`)."""
+    return _extract_function_name(step)
 
 
 def _strip_parens(name: str) -> str:

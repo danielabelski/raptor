@@ -470,3 +470,55 @@ class TestLibexecSandboxFlags:
     def test_unsafe_attach_detected(self):
         vals = self._detect_flags(["--unsafe-attach", "--template", "api-trace"])
         assert vals["UNSAFE"] == 1
+
+
+class TestSandboxedHookSourcePaths:
+
+    def _run_main(self, argv_tail: list[str]):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
+
+        from packages.frida import sandboxed
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        mock_run = MagicMock(return_value=fake_result)
+
+        with mock_patch.object(sandboxed, "sys") as mock_sys, \
+             mock_patch("packages.frida.sandboxed._find_frida_site",
+                        return_value=None), \
+             mock_patch(
+                 "core.sandbox.python_paths.python_runtime_tool_paths",
+                 return_value=[]), \
+             mock_patch.dict("packages.frida.sandboxed.os.environ",
+                             {"RAPTOR_DIR": ""}, clear=False), \
+             mock_patch("core.sandbox.run", mock_run):
+            mock_sys.argv = ["sandboxed", "--out", "/tmp/run", "--",
+                             "python3", "-m", "packages.frida.cli",
+                             "--target", "1234"] + argv_tail
+            rc = sandboxed.main()
+        assert rc == 0
+        return mock_run.call_args[1]["tool_paths"]
+
+    def test_sink_watch_file_parent_is_readable(self, tmp_path):
+        """restrict_reads would otherwise reject the operator's sinks
+        file before any hook loads."""
+        sinks = tmp_path / "findings" / "sinks.json"
+        sinks.parent.mkdir()
+        sinks.write_text("[]", encoding="utf-8")
+        tool_paths = self._run_main(["--sink-watch", str(sinks)])
+        assert str(sinks.parent.resolve()) in tool_paths
+
+    def test_script_file_parent_is_readable(self, tmp_path):
+        hook = tmp_path / "hooks" / "my.js"
+        hook.parent.mkdir()
+        hook.write_text("// hook", encoding="utf-8")
+        tool_paths = self._run_main(["--script", str(hook)])
+        assert str(hook.parent.resolve()) in tool_paths
+
+    def test_equals_form_flag_is_granted(self, tmp_path):
+        sinks = tmp_path / "findings" / "sinks.json"
+        sinks.parent.mkdir()
+        sinks.write_text("[]", encoding="utf-8")
+        tool_paths = self._run_main([f"--sink-watch={sinks}"])
+        assert str(sinks.parent.resolve()) in tool_paths

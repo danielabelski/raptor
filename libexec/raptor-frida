@@ -12,7 +12,8 @@
 #
 # Usage:
 #   libexec/raptor-frida --target <pid|name|binary> --template <name>
-#                         [--script <path>] [--host HOST[:PORT]]
+#                         [--script <path>] [--sink-watch <file>]
+#                         [--host HOST[:PORT]]
 #                         [--usb] [--duration N] [--spawn]
 #                         [--unsafe-attach] [--out DIR]
 #

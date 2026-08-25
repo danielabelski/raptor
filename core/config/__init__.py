@@ -1021,6 +1021,15 @@ class RaptorConfig:
             if _userbase is not None:
                 env["PYTHONUSERBASE"] = _userbase
         env["PYTHONUNBUFFERED"] = "1"
+        # Semgrep phones home on ANY invocation (version check against
+        # semgrep.dev, anonymous metrics) unless told not to — under
+        # the network-denied sandbox that is proxy-DENY noise plus up
+        # to ~90s of connect retries per invocation, and the argv
+        # flags (--disable-version-check, --metrics off) only cover
+        # subcommands that accept them (--version and --validate do
+        # not). The env pair covers every invocation shape.
+        env["SEMGREP_ENABLE_VERSION_CHECK"] = "0"
+        env["SEMGREP_SEND_METRICS"] = "off"
         # Git config isolation for EVERY subprocess (inert for non-git
         # tools). Without this, any internal or sandboxed git invocation
         # reads the operator's ~/.gitconfig and /etc/gitconfig: a

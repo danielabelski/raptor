@@ -118,9 +118,10 @@ def collect_toolchain() -> dict[str, str]:
         if shutil.which(argv[0]) is None:
             continue
         try:
+            from core.config import RaptorConfig
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=30,
-                check=False,
+                check=False, env=RaptorConfig.get_safe_env(),
             )
             out = (proc.stdout or proc.stderr).strip().splitlines()
             if out:

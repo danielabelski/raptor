@@ -75,6 +75,14 @@ os.environ.setdefault(
     str(Path(_conftest_dir) / ".pytest-no-operator-models.json"),
 )
 
+# Semgrep phones home on any invocation (semgrep.dev version check,
+# anonymous metrics) unless suppressed; tests that shell out to a real
+# semgrep — directly or through libexec — otherwise burn connect
+# retries against the egress deny and trip the session-end leak
+# tripwire. Production spawns get the same pair from get_safe_env().
+os.environ.setdefault("SEMGREP_ENABLE_VERSION_CHECK", "0")
+os.environ.setdefault("SEMGREP_SEND_METRICS", "off")
+
 # Put the repo root on sys.path so ``from core.X import Y`` and
 # ``from packages.Y.Z import W`` resolve during pytest collection.
 # pytest.ini's ``pythonpath`` only lists a handful of package-standalone

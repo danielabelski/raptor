@@ -732,6 +732,12 @@
     },
     "dead:dead_method:packages/web/checks/base.py:Check._llm_analyse": {
       "note": "kept: feature seed \u2014 enveloped-LLM analysis leg for checks (the scanner already hands llm= to every check via _instantiate_check; no check consumes it yet)"
+    },
+    "plumbing:orphan_env_var::SEMGREP_ENABLE_VERSION_CHECK": {
+      "note": "external consumer by design: the variable is semgrep's own phone-home suppression switch, exported into every child env so any invocation shape (including subcommands without the argv flags) stays offline"
+    },
+    "plumbing:orphan_env_var::SEMGREP_SEND_METRICS": {
+      "note": "external consumer by design: the variable is semgrep's own phone-home suppression switch, exported into every child env so any invocation shape (including subcommands without the argv flags) stays offline"
     }
   },
   "version": 1

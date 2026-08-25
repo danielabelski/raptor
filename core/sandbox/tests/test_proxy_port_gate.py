@@ -34,6 +34,24 @@ def reset_proxy():
     proxy_mod._reset_for_tests()
 
 
+@pytest.fixture
+def unresolvable_fast(monkeypatch):
+    """The admitted-past-the-gate tests only need resolution of the
+    reserved test name to FAIL; a live getaddrinfo can block past the
+    client's recv timeout on resolvers with slow negative lookups
+    (the proxy then answers after the client has given up). Fail it
+    instantly instead; every other name resolves normally."""
+    real = socket.getaddrinfo
+
+    def _fail_fast(host, *args, **kwargs):
+        if host == _HOST:
+            raise socket.gaierror(
+                socket.EAI_NONAME, "unresolvable test host")
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fail_fast)
+
+
 def _connect_tcp(port: int, target: str, timeout: float = 5.0) -> int:
     s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
     try:
@@ -71,7 +89,8 @@ class TestLanePortAllowlist:
         finally:
             proxy.stop()
 
-    def test_declared_port_admitted_past_the_gate(self, reset_proxy):
+    def test_declared_port_admitted_past_the_gate(
+            self, reset_proxy, unresolvable_fast):
         proxy = proxy_mod.EgressProxy(allowed_hosts={_HOST})
         try:
             port = proxy.bind_tcp_lane(label="untrusted-networked",
@@ -82,7 +101,8 @@ class TestLanePortAllowlist:
         finally:
             proxy.stop()
 
-    def test_lane_without_port_contract_unchanged(self, reset_proxy):
+    def test_lane_without_port_contract_unchanged(
+            self, reset_proxy, unresolvable_fast):
         proxy = proxy_mod.EgressProxy(allowed_hosts={_HOST})
         try:
             port = proxy.bind_tcp_lane(label="legacy")

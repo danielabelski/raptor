@@ -109,8 +109,9 @@ they legitimately disagree (2-3x observed):
 
 - `label_attributed_usd` (legacy alias `cost_usd`) — per-label review
   spend summed from result rows; the only defensible cross-run cost
-  comparison. Its running total prints at every group boundary — the
-  figure a mid-run cost-ceiling decision must compare against.
+  comparison. Ensemble rows carry BOTH passes' review spend, so this
+  agrees with the running total that prints at every group boundary —
+  the figure a mid-run cost-ceiling decision must compare against.
 - `total_spend_usd` — telemetry-ledger total, money actually spent.
 - `infra_usd` — the difference: study, prep, spec/checker synthesis,
   summaries, non-label review overheads.

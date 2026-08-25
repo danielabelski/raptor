@@ -2451,3 +2451,50 @@ class TestLabelOverlayHash:
 
     def test_hash_empty_when_no_label_files(self, tmp_path):
         assert run_corpus._label_files_sha256(tmp_path) == ""
+
+
+class TestEnsembleAttributedConsistency:
+    """The final attributed figure equals the running total the run
+    printed: ensemble rows carry BOTH passes' review spend — the
+    losing pass's cost is attributed money, not infra, and a ceiling
+    enforced against the printed total must match what meta records."""
+
+    def test_merged_rows_carry_both_passes_spend(
+        self, tmp_path, monkeypatch,
+    ):
+        def fake_run_audit(
+            labels, dirs, *, mode=None, attributed_start=0.0, **kw,
+        ):
+            return (
+                [
+                    dict(
+                        _result_row(lb.function_id, actual="suspicious"),
+                        model="", cost_usd=1.0, duration_s=2.0,
+                    )
+                    for lb in labels
+                ],
+                [],
+            )
+
+        monkeypatch.setattr(run_corpus, "_run_audit", fake_run_audit)
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_run_phase2_classify",
+            lambda findings, model="": 0.0,
+        )
+        (tmp_path / "r1").mkdir()
+        labels = [
+            _mk_label("a.c:f", repo="r1"),
+            _mk_label("a.c:g", repo="r1"),
+        ]
+        merged, _ = run_corpus._run_ensemble_audit(
+            labels, {"r1": tmp_path / "r1"}, out_dir=tmp_path / "out",
+        )
+        # Each label was reviewed by both passes at $1.00/2.0s each.
+        assert sorted(r["cost_usd"] for r in merged) == [2.0, 2.0]
+        assert sorted(r["duration_s"] for r in merged) == [4.0, 4.0]
+        # Run-level attributed sum == what the running total printed
+        # (security $2.00 seed + bug_first $2.00).
+        assert sum(r["cost_usd"] for r in merged) == 4.0

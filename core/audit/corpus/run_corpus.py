@@ -2501,7 +2501,8 @@ def _run_ensemble_audit(
     """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
 
     Improvements over naive sequential:
-    - Both passes run in parallel (ThreadPoolExecutor), halving wall time
+    - Conditional pass-2 skip: confident-clean security-pass rows
+      (no evidence, no substantive counter-hypothesis) skip bug_first
     - Shared Joern server across both passes
     - Checkpoints after each stage AND after each group within a pass
       (``checkpoint-*-groups.json``), so a mid-pass stop loses at most
@@ -2717,6 +2718,23 @@ def _run_ensemble_audit(
                 winner["security_actual"] = sec_r["actual"]
                 winner["bug_first_actual"] = bf_r["actual"]
                 winner["mode"] = "ensemble"
+
+                # Attributed spend/time for a label is what BOTH
+                # passes spent reviewing it — the losing pass's cost
+                # is real attributed money, not infra.  Keeping only
+                # the winner's figure under-recorded ensemble spend
+                # by up to 2x and made the final meta figure disagree
+                # with the mid-run running total (which accumulates
+                # per pass) — the exact number a cost ceiling is
+                # enforced against.
+                winner["cost_usd"] = (
+                    sec_r.get("cost_usd", 0.0)
+                    + bf_r.get("cost_usd", 0.0)
+                )
+                winner["duration_s"] = (
+                    sec_r.get("duration_s", 0.0)
+                    + bf_r.get("duration_s", 0.0)
+                )
 
                 winner["match"] = _status_matches(
                     winner["expected"], winner["actual"],

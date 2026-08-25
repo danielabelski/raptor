@@ -180,7 +180,12 @@ class TestBridgeOrchestration:
             "close": lambda self: None,
         })()
 
-        with patch("packages.ghidra.bridge.pyghidra_available", return_value=True), \
+        # Pin the in-process route: import_project routes through
+        # prefer_in_process(), and the default (headless subprocess)
+        # requires a real analyzeHeadless on PATH — this test exercises
+        # the PyGhidra session path with the session mocked.
+        with patch("packages.ghidra.detect.prefer_in_process", return_value=True), \
+             patch("packages.ghidra.bridge.pyghidra_available", return_value=True), \
              patch("packages.ghidra.bridge.GhidraSession", return_value=mock_session):
             from packages.ghidra.bridge import GhidraBridge
             bridge = GhidraBridge(gpr_project)

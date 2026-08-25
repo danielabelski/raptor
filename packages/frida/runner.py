@@ -230,14 +230,40 @@ def _render_template_slots(source: str) -> str:
 
 def load_script_source(template: str | None,
                       script_path: str | None) -> tuple[str, str]:
-    """Return (source, origin_label). Exactly one input must be set."""
+    """Return (source, origin_label). Exactly one input must be set.
+
+    ``--template a+b`` combines bundled templates into one session:
+    each is wrapped in an IIFE (templates share top-level names like
+    ``hooks``; concatenating them raw is a redeclaration SyntaxError)
+    and all hooks fire into the same events.jsonl. The combination
+    that motivated this is ``seed-harvest+exec-and-load`` — one run
+    capturing both ingest payloads and exec argv, which the
+    io-correlation post-processor joins.
+    """
     if bool(template) == bool(script_path):
         msg = "specify exactly one of --template or --script"
         raise ValueError(msg)
     if template:
-        path = resolve_template(template)
-        source = _render_template_slots(path.read_text(encoding="utf-8"))
-        return source, f"template:{template}"
+        names = template.split("+")
+        if (not names or any(not n for n in names)
+                or len(set(names)) != len(names)):
+            msg = (f"invalid template combination: {template!r} "
+                   "(empty or duplicate member)")
+            raise ValueError(msg)
+        if len(names) == 1:
+            path = resolve_template(names[0])
+            source = _render_template_slots(
+                path.read_text(encoding="utf-8"))
+            return source, f"template:{names[0]}"
+        parts = []
+        for name in names:
+            path = resolve_template(name)
+            rendered = _render_template_slots(
+                path.read_text(encoding="utf-8"))
+            parts.append(
+                f"// ─── combined template: {name} ───\n"
+                f";(function () {{\n{rendered}\n}})();\n")
+        return "\n".join(parts), f"template:{'+'.join(names)}"
     assert script_path is not None
     p = Path(script_path).resolve()
     if not p.is_file():

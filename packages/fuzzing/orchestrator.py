@@ -140,6 +140,8 @@ class FuzzingOrchestrator:
 
         if kind in {"elf-linux", "macho"}:
             plan.fuzzer = self._pick_for_unix_binary(caps, target.path)
+            if plan.fuzzer == "afl":
+                self._hint_binary_only_gap(plan, caps, target.path)
         elif kind in ("pe-exe", "pe-dll"):
             plan.fuzzer = "winafl" if caps.platform == "Windows" else None
             if not plan.fuzzer:
@@ -268,6 +270,40 @@ class FuzzingOrchestrator:
         if caps.has_afl():
             return "afl"
         return None
+
+    @staticmethod
+    def _hint_binary_only_gap(plan: "CampaignPlan", caps: CapabilityReport,
+                              binary: Path) -> None:
+        """Plan-time visibility for the uninstrumented-binary gap.
+
+        The campaign refuses at start when the binary carries no AFL
+        instrumentation and the install ships no binary-only tracer —
+        but --plan-only never reached that check, so the operator saw a
+        runnable plan that could not run. A hint, not a blocker: the
+        strings heuristic has false negatives and the operator may
+        install a tracer before executing.
+        """
+        if caps.afl_qemu_trace or caps.afl_frida_trace:
+            return
+        if not shutil.which("strings"):
+            return
+        try:
+            result = _run_trusted(
+                ["strings", str(binary)],
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception:  # noqa: BLE001 — probe is best-effort
+            return
+        out = result.stdout or ""
+        if "__AFL" in out or "afl" in out.lower():
+            return
+        plan.hints.append(
+            "Binary appears un-instrumented and this AFL++ install ships "
+            "no binary-only tracer (afl-qemu-trace / afl-frida-trace.so): "
+            "the campaign will refuse at start. Recompile with afl-cc, or "
+            "build a tracer (qemu_mode/build_qemu_support.sh or "
+            "make -C frida_mode in the AFLplusplus tree)."
+        )
 
     @staticmethod
     def _is_libfuzzer_instrumented(target_path: Path) -> bool:

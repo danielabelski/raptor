@@ -301,3 +301,42 @@ class TestRunnerPathResolution:
         assert runner.corpus_dir.is_absolute()
         assert runner.output_dir == (tmp_path / "out/run").resolve()
 
+class TestPlanTimeTracerHint:
+    def test_uninstrumented_binary_without_tracers_gets_hint(
+            self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        import packages.fuzzing.orchestrator as orch_mod
+        from packages.fuzzing.orchestrator import FuzzingOrchestrator
+
+        binary = tmp_path / "plain"
+        binary.write_bytes(b"\x7fELF-no-markers-here")
+        caps = SimpleNamespace(afl_qemu_trace=None, afl_frida_trace=None)
+        fake = SimpleNamespace(stdout="printable strings only", stderr="")
+        monkeypatch.setattr(orch_mod, "_run_trusted",
+                            lambda *a, **k: fake)
+        plan = SimpleNamespace(hints=[])
+        FuzzingOrchestrator._hint_binary_only_gap(plan, caps, binary)
+        assert any("binary-only tracer" in h for h in plan.hints)
+
+    def test_tracer_present_or_instrumented_stays_quiet(
+            self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        import packages.fuzzing.orchestrator as orch_mod
+        from packages.fuzzing.orchestrator import FuzzingOrchestrator
+
+        binary = tmp_path / "plain"
+        binary.write_bytes(b"x")
+        plan = SimpleNamespace(hints=[])
+        caps_with_tracer = SimpleNamespace(
+            afl_qemu_trace="/usr/bin/afl-qemu-trace", afl_frida_trace=None)
+        FuzzingOrchestrator._hint_binary_only_gap(
+            plan, caps_with_tracer, binary)
+        assert plan.hints == []
+
+        caps_none = SimpleNamespace(afl_qemu_trace=None, afl_frida_trace=None)
+        fake = SimpleNamespace(stdout="__AFL_SHM_ID present", stderr="")
+        monkeypatch.setattr(orch_mod, "_run_trusted", lambda *a, **k: fake)
+        FuzzingOrchestrator._hint_binary_only_gap(plan, caps_none, binary)
+        assert plan.hints == []

@@ -1965,3 +1965,34 @@ class TestResolvedModelBanner:
         assert "Primary model: default" in capsys.readouterr().out
         assert _meta_of(out)["model_resolved"] == "default"
 
+
+class TestDryRunSourceCensus:
+    """--dry-run must account for fixture sources explicitly: pins can
+    verify against git history while zero fixtures are checked out, and
+    a "verified, exit 0" dry run invites launching a run in which every
+    missing-source label scores error."""
+
+    def test_missing_sources_exit_nonzero_and_point_at_fetch(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        rc, _, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            argv=["--dry-run"], source_present=False,
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Sources: 0/1 present, 1 missing" in captured.out
+        assert "--fetch" in captured.err
+        assert "1/1 label source(s) missing" in captured.err
+
+    def test_present_sources_keep_verified_exit_zero(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        rc, _, _ = _stub_main_run(
+            tmp_path, monkeypatch, argv=["--dry-run"],
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Sources: 1/1 present, 0 missing" in out
+        assert "labels verified" in out
+

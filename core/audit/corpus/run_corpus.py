@@ -2833,13 +2833,16 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "exit codes:\n"
             "  0  run completed and every calibration gate passed\n"
-            "     (--dry-run: labels verified)\n"
+            "     (--dry-run: labels verified AND every label's "
+            "source\n"
+            "     is present)\n"
             "  1  run failed: bad arguments, label verification "
             "errors,\n"
             "     no labels, a conservation violation (a label lost\n"
             "     without landing in a reviewed/skipped/error "
             "bucket),\n"
-            "     or a summary/scoring crash\n"
+            "     a summary/scoring crash, or --dry-run with missing\n"
+            "     fixture sources (fetch them with --fetch)\n"
             "  2  run completed but at least one calibration gate "
             "failed\n"
             "     (trap, precision floor, class recall, error "
@@ -3125,7 +3128,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.dry_run:
-        print("Dry run — labels verified, not running audit.")
+        missing_sources = 0
         for label in labels:
             status, detail = _label_source_status(label, source_dirs)
             if status == "ok":
@@ -3133,9 +3136,27 @@ def main(argv: list[str] | None = None) -> int:
             elif status == "prefix":
                 src_note = f"source: found at {detail} — suggest correction"
             else:
+                missing_sources += 1
                 src_note = f"source: MISSING ({detail})"
             print(f"  {label.function_id} ({label.bug_class}) "
                   f"expected={label.expected_status} [{src_note}]")
+        present = len(labels) - missing_sources
+        print(f"Sources: {present}/{len(labels)} present, "
+              f"{missing_sources} missing")
+        if missing_sources:
+            # Pin verification can pass against git history while
+            # zero fixtures are checked out — a dry run that then
+            # declared "verified, exit 0" invited launching a run in
+            # which every missing-source label scores error.  Source
+            # availability is part of the dry-run verdict.
+            print(
+                f"DRY RUN: {missing_sources}/{len(labels)} label "
+                f"source(s) missing — fetch pinned sources with "
+                f"--fetch before running",
+                file=sys.stderr, flush=True,
+            )
+            return 1
+        print("Dry run — labels verified, not running audit.")
         return 0
 
     # --- scope filtering ---

@@ -2376,5 +2376,95 @@
     "count": 10,
     "kind": "literal",
     "note": "lifecycle state-file field names (pid/comm/port/heap/credential/socket_path keys of joern-server.json), not name vocabulary \u2014 same class as the to_dict field-name entries"
+  },
+  "core/sandbox/proxy.py::marker": {
+    "count": 15,
+    "kind": "literal",
+    "note": "proxy event-record field names (schema keys), not a name vocabulary"
+  },
+  "packages/web/api_testing.py::run_graphql_probes": {
+    "count": 14,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/auth.py::known": {
+    "count": 10,
+    "kind": "literal",
+    "note": "well-known session-cookie names (public fixed taxonomy: jsessionid, asp.net_sessionid, ...), not learned target vocabulary"
+  },
+  "packages/web/checks/ssrf.py::_URL_PARAM_NAMES": {
+    "count": 30,
+    "kind": "literal",
+    "note": "generic-web seed prior (universal parameter/cookie/path tokens, not learned target vocabulary); candidate for data-pack migration with the web scanner owner"
+  },
+  "packages/web/discovery/fingerprint.py::_COOKIE_SIGNALS": {
+    "count": 11,
+    "kind": "literal",
+    "note": "well-known framework cookie names (public fixed taxonomy), not learned target vocabulary"
+  },
+  "packages/web/discovery/param_mining.py::DEFAULT_PARAM_SEEDS": {
+    "count": 100,
+    "kind": "literal",
+    "note": "generic-web seed prior (universal parameter/cookie/path tokens, not learned target vocabulary); candidate for data-pack migration with the web scanner owner"
+  },
+  "packages/web/evidence.py::build_web_evidence_ledger": {
+    "count": 11,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/fuzzer.py::_test_json_payload": {
+    "count": 17,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/fuzzer.py::_test_payload": {
+    "count": 16,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/research_landscape.py::assess_research_landscape": {
+    "count": 10,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/scanner.py::HIGH_RISK_PATH_TOKENS": {
+    "count": 14,
+    "kind": "literal",
+    "note": "generic-web seed prior (universal parameter/cookie/path tokens, not learned target vocabulary); candidate for data-pack migration with the web scanner owner"
+  },
+  "packages/web/scanner.py::HIGH_RISK_WEB_PARAMS": {
+    "count": 26,
+    "kind": "literal",
+    "note": "generic-web seed prior (universal parameter/cookie/path tokens, not learned target vocabulary); candidate for data-pack migration with the web scanner owner"
+  },
+  "packages/web/scanner.py::_empty_result": {
+    "count": 10,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/scanner.py::_record": {
+    "count": 12,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/scanner.py::_web_finding_to_agentic_result": {
+    "count": 19,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/scanner.py::result": {
+    "count": 18,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/tool_adapters.py::to_dict": {
+    "count": 12,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "packages/web/verified_outcomes.py::evidence": {
+    "count": 15,
+    "kind": "literal",
+    "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
   }
 }

@@ -38,7 +38,7 @@ _DEAD_VERDICTS = frozenset({
 # Verdicts that mean "reachable / has a live path".
 _LIVE_VERDICTS = frozenset({
     "reachable", "framework_callable", "registered_via_call", "called",
-    "frida_runtime_trace",
+    "frida_runtime_trace", "frida_call_edge",
 })
 # "uncertain" is neither — the substrate declines to claim.
 
@@ -86,6 +86,14 @@ def _stage_module_aborts(ctx: _ClassifyCtx, R) -> str | None:
 def _stage_lexical_dead(ctx: _ClassifyCtx, R) -> str | None:
     if R.is_lexically_dead(ctx.inventory, ctx.file_path, ctx.name, ctx.line):
         return "lexical_dead"
+    return None
+
+
+def _stage_frida_call_edge(ctx: _ClassifyCtx, R) -> str | None:
+    """Promote if frida observed a call INTO the function at runtime."""
+    if R.frida_call_edge_present(ctx.inventory, ctx.file_path, ctx.name,
+                                 ctx.line):
+        return "frida_call_edge"
     return None
 
 
@@ -215,6 +223,7 @@ PRECEDENCE = (
     # MUST precede _stage_binary_oracle_absent so runtime evidence
     # vetoes a stale/wrong "absent" verdict from nm+DWARF.
     _stage_frida_runtime_trace,
+    _stage_frida_call_edge,
     # binary_oracle absent is mechanically derivable from nm + DWARF —
     # stronger than build_excluded (build-config parsing heuristic), so
     # checked first among C/C++/Rust/Go dead witnesses. SOUND +

@@ -363,6 +363,35 @@ RAPTOR loads scripts unbundled via `create_script`, so on current
 Frida expect the raw `jclass` handle per registration batch (the
 method/signature/module mapping is unaffected).
 
+### call-edges
+
+Collects the dynamic call graph via Stalker and emits one
+`category=call_edge` event per unique caller→callee pair whose CALLEE
+is target-owned (the main binary or a library in its directory). The
+`/agentic` reachability prepass turns these into `frida_call_edge`
+REACHABLE witnesses — the dynamic complement to `--binary-edges`: an
+indirect call or vtable dispatch the static graph cannot resolve is
+ground truth here, because the call executed.
+
+```bash
+raptor frida --target ./app --template call-edges --duration 60
+```
+
+System libraries are excluded from stalking (edges from target code
+are captured; callbacks invoked from inside excluded libraries are
+not), callee names resolve via DebugSymbol (symbol-bearing builds
+give the best coverage), and emission is driven by the controller's
+flush clock — in-agent timers are not dependable across frida
+installs, so the runner calls the script's exported `flush()` after
+resume, every 0.3s early on, then every ~2s, and before teardown.
+
+Experimental: CAPTURE is best-effort — Stalker thread-following is
+flaky on some frida builds (a run may follow nothing; check
+`followed_threads` in the summary `_meta` and re-run). Teardown is
+always safe: the run cannot hang or lose its metadata, and because
+`frida_call_edge` only ever PROMOTES reachability, a capture-less run
+costs nothing while a captured one rescues functions.
+
 ---
 
 ## Pipeline Integration

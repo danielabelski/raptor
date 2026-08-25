@@ -2479,6 +2479,47 @@ def frida_runtime_trace_present(
     return False
 
 
+def frida_call_edge_present(
+    inventory: dict[str, Any],
+    file_path: str,
+    name: str,
+    line: int = 0,
+) -> bool:
+    """True when frida observed a call INTO this function at runtime.
+
+    Checks for ``metadata.frida_call_edge.observed`` on the inventory
+    item. The enrichment pipeline sets this when the function appears
+    as a call-edge CALLEE in a call-edges frida run — the dynamic
+    complement to ``binary_call_edge``: indirect calls and vtable
+    dispatch the static graph cannot resolve are ground truth here,
+    because the call executed.
+
+    SOUND, earns_suppression=False (promotes reachable, never
+    suppresses).
+    """
+    if not file_path or not name:
+        return False
+    normalised = file_path.replace("\\", "/")
+    idx = _get_bo_item_index(inventory)
+    by_name = idx.get(normalised)
+    if not by_name:
+        return False
+    candidates = by_name.get(name)
+    if not candidates:
+        return False
+    candidates = _select_item_by_line(candidates, line)
+    for item in candidates:
+        meta = item.get("metadata")
+        if not isinstance(meta, dict):
+            continue
+        edge = meta.get("frida_call_edge")
+        if not isinstance(edge, dict):
+            continue
+        if edge.get("observed"):
+            return True
+    return False
+
+
 def binary_oracle_absent(
     inventory: dict[str, Any],
     file_path: str,
@@ -4137,6 +4178,7 @@ __all__ = [
     "entry_reachability",
     "forward_closure",
     "frida_runtime_trace_present",
+    "frida_call_edge_present",
     "function_called",
     "is_framework_callable",
     "is_lexically_dead",

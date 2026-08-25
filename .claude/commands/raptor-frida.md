@@ -46,6 +46,7 @@ libexec/raptor-frida --target ... --template ...
 | `exec-and-load` | Command execution (argv + caller module/offset) and `dlopen` activity. |
 | `sink-watch` | Argument-level sink evidence; parameterize with `--sink-watch <sinks.json|attack-paths.json>` instead of `--template`. |
 | `jni-trace` | Android/ART RegisterNatives mapping: Java method → native module + offset. |
+| `call-edges` | Dynamic call-graph edges (Stalker) → `frida_call_edge` reachability witness. |
 
 List dynamically: `raptor frida --list-templates`.
 

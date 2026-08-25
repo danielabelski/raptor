@@ -783,7 +783,8 @@ Dynamic instrumentation via Frida.  Skill-dispatched.
 
 **Bundled templates:** `api-trace`, `ssl-unpin`, `binary-flow-trace`,
 `bb-coverage`, `seed-harvest`, `exec-and-load`, `sink-watch`,
-`jni-trace` (authoritative list: `--list-templates`).
+`jni-trace`, `call-edges` (authoritative list: `--list-templates`;
+combine with `--template a+b`).
 
 See the [Frida guide](frida.md) for installation and platform-specific
 setup.

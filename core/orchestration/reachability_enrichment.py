@@ -42,6 +42,13 @@ from core.paths import path_to_module
 
 logger = logging.getLogger(__name__)
 
+# Native-language file suffixes: frida evidence only ever concerns
+# compiled code, so enrichment skips non-native checklist entries.
+_NATIVE_SUFFIXES = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp",
+    ".rs", ".go", ".s", ".S", ".asm",
+})
+
 
 def mark_unreachable_low_priority(
     checklist: dict[str, Any],
@@ -349,10 +356,6 @@ def enrich_with_frida_traces(
     if not evidence_map:
         return 0
 
-    _NATIVE_SUFFIXES = frozenset({
-        ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp",
-        ".rs", ".go", ".s", ".S", ".asm",
-    })
 
     annotated = 0
     files = checklist.get("files")
@@ -420,8 +423,141 @@ def enrich_with_frida_traces(
     return annotated
 
 
+def _collect_frida_call_edges(
+    search_dirs: list,
+    target_path: str,
+) -> dict[str, dict]:
+    """Gather call-edge CALLEES from call-edges frida runs.
+
+    Returns {callee_name: {"callers": [...], "call_count": n,
+    "trace_id": run_dir}}. Ownership is enforced HOST-SIDE on top of
+    the template's own filter (events come from inside the target
+    process): the callee module must be the run's target binary or
+    live under its directory.
+    """
+    try:
+        from packages.frida import parse_events
+        from packages.frida.evidence import discover_evidence
+    except ImportError:
+        return {}
+
+    from pathlib import Path as _Path
+
+    edges: dict[str, dict] = {}
+    for ev in discover_evidence(
+            [_Path(d) for d in search_dirs], target_path=target_path):
+        if not ev.has_events or not ev.target_binary:
+            continue
+        target_name = _Path(ev.target_binary).name
+        target_dir = str(_Path(ev.target_binary).parent)
+        for record in parse_events(ev.run_dir / "events.jsonl"):
+            if record.get("type") != "send":
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict) or "_meta" in payload:
+                continue
+            if payload.get("category") != "call_edge":
+                continue
+            fn = payload.get("fn")
+            if not isinstance(fn, str) or not fn:
+                continue
+            callee_module = payload.get("callee_module")
+            callee_path = payload.get("callee_module_path")
+            owned = callee_module == target_name or (
+                isinstance(callee_path, str)
+                and callee_path.startswith(target_dir + "/"))
+            if not owned:
+                continue
+            entry = edges.setdefault(fn, {
+                "callers": [], "call_count": 0,
+                "trace_id": str(ev.run_dir),
+            })
+            count = payload.get("count")
+            if not (isinstance(count, int) and 0 < count < 1_000_000_000):
+                count = 1
+            entry["call_count"] += count
+            caller = payload.get("caller")
+            if (isinstance(caller, str) and caller
+                    and caller not in entry["callers"]
+                    and len(entry["callers"]) < 8):
+                entry["callers"].append(caller[:128])
+    return edges
+
+
+def enrich_with_frida_call_edges(
+    checklist: dict[str, Any],
+    target_path: Path,
+    *,
+    search_dirs: list | None = None,
+    inventory: dict[str, Any] | None = None,
+) -> int:
+    """Annotate functions observed as call-edge CALLEES at runtime.
+
+    Sets ``metadata.frida_call_edge`` on checklist (and inventory)
+    items whose name appears as an owned callee in a call-edges frida
+    run — the dynamic complement to the r2 binary_call_edge witness:
+    an indirect call or vtable dispatch the static graph cannot
+    resolve is ground truth here, because the call executed. Returns
+    the count of annotated items. Best-effort: any failure returns 0.
+    """
+    if search_dirs is None:
+        search_dirs = []
+    try:
+        edge_map = _collect_frida_call_edges(search_dirs, str(target_path))
+    except Exception:  # noqa: BLE001 — enrichment is additive
+        logger.debug("frida call-edge collection failed", exc_info=True)
+        return 0
+    if not edge_map:
+        return 0
+
+    def _annotate_items(files: list) -> int:
+        n = 0
+        for file_entry in files:
+            if not isinstance(file_entry, dict):
+                continue
+            fpath = file_entry.get("path", "")
+            if not any(fpath.endswith(s) for s in _NATIVE_SUFFIXES):
+                continue
+            items = file_entry.get("items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                fn_name = item.get("name", "")
+                edge = edge_map.get(fn_name) if fn_name else None
+                if edge is None:
+                    continue
+                meta = item.setdefault("metadata", {})
+                meta["frida_call_edge"] = {
+                    "observed": True,
+                    "call_count": edge["call_count"],
+                    "callers": edge["callers"],
+                    "trace_id": edge["trace_id"],
+                }
+                n += 1
+        return n
+
+    annotated = 0
+    files = checklist.get("files")
+    if isinstance(files, list):
+        annotated = _annotate_items(files)
+    if inventory and isinstance(inventory, dict):
+        inv_files = inventory.get("files")
+        if isinstance(inv_files, list):
+            _annotate_items(inv_files)
+
+    if annotated:
+        logger.info(
+            "reachability_enrichment: annotated %d function(s) with "
+            "frida call-edge evidence", annotated,
+        )
+    return annotated
+
+
 __all__ = [
     "enrich_with_caller_context",
+    "enrich_with_frida_call_edges",
     "enrich_with_frida_traces",
     "mark_unreachable_low_priority",
 ]

@@ -275,9 +275,12 @@ _TARGET_ATTRIBUTED_CATEGORIES = frozenset({"sink", "exec", "load"})
 
 # Categories that never count as call evidence: seed-harvest's ingest
 # events exist to produce seeds (no callsite is captured, so they can
-# never attribute), and jni events map RegisterNatives registrations,
-# not calls to a finding's function.
-_EVIDENCE_EXCLUDED_CATEGORIES = frozenset({"ingest", "jni"})
+# never attribute); jni events map RegisterNatives registrations, not
+# calls to a finding's function; call_edge events feed the
+# frida_call_edge reachability witness through their own collector
+# (counting them here would double-dip aggregated edge counts into
+# per-call evidence).
+_EVIDENCE_EXCLUDED_CATEGORIES = frozenset({"ingest", "jni", "call_edge"})
 
 # Observed-args bounds: a template may embed captured payload bytes in
 # its args (an execve argv is 30+ target-controlled strings; custom

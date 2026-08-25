@@ -272,6 +272,37 @@ def load_script_source(template: str | None,
     return p.read_text(encoding="utf-8"), f"file:{p}"
 
 
+def _bounded_frida_call(fn, timeout_s: float, what: str) -> bool:
+    """Run a blocking frida call with a hard time bound.
+
+    frida-python's rpc/detach/load primitives park on events with NO
+    timeout; a frida-core race can block them unboundedly, and any
+    unbounded call sitting before the metadata write destroys the
+    run's evidence (this arc has now hit that three separate ways).
+    Returns True when the call completed in time. On timeout the
+    daemon worker is abandoned and the caller must degrade — never
+    wait.
+    """
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            fn()
+        except Exception:
+            logger.debug("frida %s failed", what, exc_info=True)
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"frida-{what}").start()
+    if not done.wait(timeout_s):
+        logger.warning(
+            "frida %s did not complete within %ss; continuing without "
+            "it", what, timeout_s)
+        return False
+    return True
+
+
 def _import_frida():
     """Late-bind frida-python with a useful error.
 
@@ -429,7 +460,11 @@ def run(cfg: RunConfig,
 
         script = session.create_script(cfg.script_source)
         script.on("message", _message_cb)
-        script.load()
+        # Stalker-heavy templates have wedged load() on a suspended
+        # spawn; a wedged load must fail the run, not hang it.
+        if not _bounded_frida_call(script.load, 30.0, "script-load"):
+            msg = "script load did not complete within 30s"
+            raise RuntimeError(msg)
 
         if cfg.follow_children:
             def _instrument_child(child_pid: int) -> None:
@@ -480,10 +515,51 @@ def run(cfg: RunConfig,
             child_handler = _on_child_added
             session.enable_child_gating()
 
+        # Controller-driven flushing: a script may export flush() to
+        # emit batched evidence (call-edges does). Timers inside the
+        # agent are NOT dependable — empirically setInterval/setTimeout
+        # never fire on some frida 17 installs — so the controller is
+        # the clock: flush right after resume (spawn-mode scripts load
+        # while the process is suspended, so thread-following can only
+        # start once the target exists), every ~2s during the run, and
+        # once more before teardown while the session can still
+        # deliver messages.
+        script_has_flush = False
+        lister = getattr(script, "list_exports_sync", None)
+        if callable(lister):
+            listed: list = []
+
+            def _list_exports() -> None:
+                listed.extend(lister() or [])
+
+            if _bounded_frida_call(_list_exports, 5.0, "export-listing"):
+                script_has_flush = "flush" in listed
+
+        flush_state = {"wedged": False}
+
+        def _script_flush() -> None:
+            # One wedged flush disables the rest: each timed-out call
+            # abandons a daemon worker, and piling those up helps
+            # nobody. The evidence emitted so far is already on disk.
+            if flush_state["wedged"]:
+                return
+
+            def _call() -> None:
+                exports = getattr(script, "exports_sync", None)
+                if exports is None:
+                    exports = getattr(script, "exports", None)
+                if exports is not None:
+                    exports.flush()
+
+            if not _bounded_frida_call(_call, 5.0, "script-flush"):
+                flush_state["wedged"] = True
+
         # If we spawned, the process is suspended pre-load. Resume it
         # AFTER load so hooks are in place before main() runs.
         if spawned:
             device.resume(pid)
+        if script_has_flush:
+            _script_flush()
 
         # Sleep loop with SIGINT trap so Ctrl-C in the operator's shell
         # terminates the run cleanly rather than orphaning the script.
@@ -499,8 +575,23 @@ def run(cfg: RunConfig,
             signal_installed = False
         try:
             deadline = started + cfg.duration_sec
+            last_flush = time.monotonic()
+            # Fast cadence for the first two seconds: the immediate
+            # post-resume flush races the target's threads becoming
+            # enumerable, and a spawn-mode target's interesting
+            # activity often happens in its first second — the next
+            # flush must not be 2s away.
+            early_deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline and not stop.is_set():
                 time.sleep(0.1)
+                interval = (0.3 if time.monotonic() < early_deadline
+                            else 2.0)
+                if (script_has_flush
+                        and time.monotonic() - last_flush >= interval):
+                    _script_flush()
+                    last_flush = time.monotonic()
+            if script_has_flush:
+                _script_flush()
         finally:
             if signal_installed:
                 signal.signal(signal.SIGINT, prev_handler)
@@ -547,18 +638,13 @@ def run(cfg: RunConfig,
                     "child session detach did not complete within 5s; "
                     "continuing teardown (frida cleans up gated "
                     "children when the controller exits)")
-        try:
-            if session is not None:
-                session.detach()
-        except Exception:  # best-effort cleanup on an already-failed path
-            logger.debug("frida session detach failed", exc_info=True)
+        if session is not None:
+            _bounded_frida_call(session.detach, 10.0, "session-detach")
         # Kill the spawned process so it does not remain permanently
         # suspended when attach/create_script/load/resume failed.
         if spawned and device is not None and pid is not None:
-            try:
-                device.kill(pid)
-            except Exception:  # best-effort cleanup on an already-failed path
-                logger.debug("frida spawned-process kill failed", exc_info=True)
+            _bounded_frida_call(lambda: device.kill(pid), 5.0,
+                                "spawned-process-kill")
         result.duration_actual_sec = round(time.monotonic() - started, 3)
         result.events_captured = event_count["n"]
         _write_metadata(cfg, result)

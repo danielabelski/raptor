@@ -58,7 +58,9 @@ def observation_capable(script_origin: str | None) -> bool:
     if script_origin is None:
         return True
     if script_origin.startswith("template:"):
-        return script_origin.split(":", 1)[1] in _OBSERVATION_TEMPLATES
+        # Combined templates (a+b) are capable when ANY member is.
+        names = script_origin.split(":", 1)[1].split("+")
+        return any(n in _OBSERVATION_TEMPLATES for n in names)
     if script_origin.startswith("sink-watch:"):
         return False
     return True

@@ -845,6 +845,7 @@ def run_reachability_prepass(
         from core.inventory import update_checklist
         from core.orchestration.reachability_enrichment import (
             enrich_with_caller_context,
+            enrich_with_frida_call_edges,
             enrich_with_frida_traces,
             mark_unreachable_low_priority,
         )
@@ -867,6 +868,11 @@ def run_reachability_prepass(
                 allow_unreachable=allow_unreachable,
             )
             enriched_frida = enrich_with_frida_traces(
+                current, target,
+                search_dirs=[agentic_out_dir, agentic_out_dir.parent],
+                inventory=inventory,
+            )
+            enriched_frida += enrich_with_frida_call_edges(
                 current, target,
                 search_dirs=[agentic_out_dir, agentic_out_dir.parent],
                 inventory=inventory,

@@ -227,3 +227,59 @@ class TestLiveE2E:
         step_ev = result[0]["steps"][0]["runtime_evidence"]
         assert step_ev["function_observed"] is True
         assert step_ev["call_count"] >= 1
+
+
+class TestWrapperLiveE2E:
+    """The surface every doc example points at — libexec/raptor-frida
+    with the sandbox engaged — previously had no live coverage at all;
+    the raw-CLI tests above cannot catch wrapper/sandbox regressions
+    (read grants, relative-path absolutization, spawn detection)."""
+
+    # Documented host friction: some sandboxes block frida's
+    # agent-injection channel. That is a host property, not a wrapper
+    # regression — skip on its signature, fail on anything else.
+    _INJECTION_BLOCKED = (
+        "Error sending credentials",
+        "ProcessNotRespondingError",
+        "unexpected early end-of-stream",
+    )
+
+    def test_wrapper_spawn_relative_target(self, victim_binary, tmp_path):
+        import subprocess
+
+        run_dir = tmp_path / "wrap_run"
+        env = os.environ.copy()
+        env["CLAUDECODE"] = "1"
+        env.pop("_RAPTOR_TRUSTED", None)
+        # Relative ./victim from the binary's own directory — the form
+        # every doc example uses.
+        result = subprocess.run(
+            [str(RAPTOR_DIR / "libexec" / "raptor-frida"),
+             "--target", f"./{victim_binary.name}",
+             "--template", "api-trace",
+             "--duration", "3",
+             "--out", str(run_dir)],
+            cwd=str(victim_binary.parent),
+            capture_output=True, text=True, timeout=90, env=env,
+        )
+        combined = result.stdout + result.stderr
+
+        # Wrapper-side handling must have worked regardless of the
+        # sandbox outcome: the target was absolutized and classified
+        # as a binary (metadata is written even for failed runs).
+        meta_path = run_dir / "metadata.json"
+        assert meta_path.is_file(), combined[-2000:]
+        meta = json.loads(meta_path.read_text())
+        assert meta["target"]["kind"] == "binary"
+        assert meta["target"]["binary"] == str(victim_binary)
+
+        if result.returncode != 0:
+            if any(sig in combined for sig in self._INJECTION_BLOCKED):
+                pytest.skip("sandbox blocks frida agent injection on "
+                            "this host (documented friction)")
+            raise AssertionError(
+                f"wrapper run failed (rc={result.returncode}):\n"
+                f"{combined[-2000:]}")
+
+        assert meta["ok"] is True
+        assert meta["events_captured"] > 0

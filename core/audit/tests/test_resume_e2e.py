@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import contextlib
 import subprocess
 import sys
 import textwrap
@@ -112,11 +113,70 @@ _DRIVER = textwrap.dedent("""\
 """) % {"cost": _COST_PER_REVIEW, "cap": _ORIGINAL_CAP_USD}
 
 
-def _env():
-    return dict(
+def _home(base: Path) -> Path:
+    """Isolated HOME for a spawned segment: a fresh interpreter derives
+    both the projects registry (~/.raptor/projects) and the sessions
+    registry (~/.local/share/raptor/sessions.d) from Path.home() at
+    import, so the redirect keeps a child from adopting whatever
+    project the box's live claude session has active."""
+    home = Path(base) / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _env(home: Path):
+    env = dict(
         os.environ, CLAUDECODE="1", _RAPTOR_TRUSTED="1",
-        PYTHONPATH=str(_RAPTOR_DIR),
+        PYTHONPATH=str(_RAPTOR_DIR), HOME=str(home),
+        # Explicit, not HOME-derived: an exported XDG_DATA_HOME in the
+        # ambient env would otherwise still point the child at the
+        # real install's row-provenance key — segment 2 must verify
+        # the child's journal tokens against the SAME key.
+        XDG_DATA_HOME=str(home / ".local" / "share"),
     )
+    # The launcher's session env would let the child token-verify into
+    # the operator's live session registry even under the HOME
+    # redirect above.
+    env.pop("RAPTOR_SESSION_PID", None)
+    env.pop("RAPTOR_SESSION_TOKEN", None)
+    return env
+
+
+@contextlib.contextmanager
+def _isolated_registries(home: Path):
+    """In-process twin of _env()'s HOME redirect for the module-scoped
+    fixtures: they call start_run and the resume orchestration in THIS
+    process, outside the per-test conftest isolation, and the layered
+    active-project resolution would otherwise walk to the box's live
+    claude session and adopt the operator's binding / .active project
+    — the sealed run pin then folds a foreign project's journal index
+    into the test run."""
+    from core.project import project as _project
+    from core.project import sessions as _sessions
+    from core.run import pin as _pin
+    mp = pytest.MonkeyPatch()
+    try:
+        # The pid walk stays LIVE: the child segment records its run
+        # ledger under the walked session pid in the redirected
+        # registry, and the in-process resume discovers the prior
+        # segment through that same ledger — disabling the walk here
+        # severs the linkage and re-import finds nothing. The
+        # redirect alone is the isolation: the operator's binding
+        # lives in the real registry this never reads.
+        mp.setattr(_sessions, "SESSIONS_DIR",
+                   home / ".local" / "share" / "raptor" / "sessions.d")
+        mp.setattr(_project, "PROJECTS_DIR", home / ".raptor" / "projects")
+        # Same key as the child segments: journal row-provenance
+        # tokens verify against the XDG-resolved per-install key, and
+        # a key mismatch demotes every prior row to the no-reuse tier.
+        mp.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+        mp.delenv(_sessions.ENV_SESSION_PID, raising=False)
+        mp.delenv(_sessions.ENV_SESSION_TOKEN, raising=False)
+        _pin._frozen_pins.clear()
+        yield
+    finally:
+        mp.undo()
+        _pin._frozen_pins.clear()
 
 
 def _journal_entries(out_dir: Path) -> list[dict]:
@@ -147,10 +207,11 @@ def killed_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("resume_e2e")
     target = _make_target(root)
     out = root / "audit-run"
+    home = _home(root)
 
     r = subprocess.run(
         [sys.executable, _CHECKLIST_CLI, str(target), str(out)],
-        env=_env(), capture_output=True, text=True, check=False,
+        env=_env(home), capture_output=True, text=True, check=False,
     )
     assert r.returncode == 0, f"build-checklist failed: {r.stderr}"
 
@@ -158,7 +219,8 @@ def killed_run(tmp_path_factory):
     # the resolved run config (the resume contract's two inputs).
     from core.audit.resume import save_run_config
     from core.run import start_run
-    start_run(out, "audit", target=str(target))
+    with _isolated_registries(home):
+        start_run(out, "audit", target=str(target))
     save_run_config(out, {
         "version": 1,
         "target_path": str(target),
@@ -174,7 +236,7 @@ def killed_run(tmp_path_factory):
     child = subprocess.Popen(
         [sys.executable, str(driver), str(target), str(out),
          str(_RAPTOR_DIR)],
-        env=_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=_env(home), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
     # Record the child as the run's worker — in production the
@@ -272,8 +334,9 @@ def resumed_run(killed_run):
     run_cfg = load_run_config(out)
     remaining = remaining_budget_usd(run_cfg["max_cost_usd"], booked)
 
-    segment = resume_run(out, note="e2e resume")
-    append_resume_markers(out, segment)
+    with _isolated_registries(_home(out.parent)):
+        segment = resume_run(out, note="e2e resume")
+        append_resume_markers(out, segment)
 
     seg2_calls: list[str] = []
 
@@ -305,7 +368,8 @@ def resumed_run(killed_run):
         prior_cost_breakdown={"totals": {"total_spend_usd": booked}},
         resume_segment=segment,
     )
-    result = run_orchestrator(config, review_fn)
+    with _isolated_registries(_home(out.parent)):
+        result = run_orchestrator(config, review_fn)
     return {
         "out": out,
         "result": result,
@@ -416,7 +480,7 @@ class TestResumedSegment:
 class TestResumeCliGates:
     """`raptor-audit resume` refusal gates (no LLM plumbing reached)."""
 
-    def test_refuses_completed_run(self, resumed_run):
+    def test_refuses_completed_run(self, resumed_run, tmp_path):
         # Complete the run HERE rather than relying on
         # test_lifecycle_completes_with_segment_history having run
         # first — under randomised test order (the nightly sets
@@ -440,7 +504,7 @@ class TestResumeCliGates:
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume",
              str(resumed_run["out"])],
-            env=_env(), capture_output=True, text=True, timeout=120,
+            env=_env(_home(tmp_path)), capture_output=True, text=True, timeout=120,
             check=False,
         )
         assert r.returncode == 1
@@ -450,7 +514,7 @@ class TestResumeCliGates:
     def test_refuses_non_run_directory(self, tmp_path):
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume", str(tmp_path)],
-            env=_env(), capture_output=True, text=True, timeout=120,
+            env=_env(_home(tmp_path)), capture_output=True, text=True, timeout=120,
             check=False,
         )
         assert r.returncode == 1
@@ -463,7 +527,7 @@ class TestResumeCliGates:
         interrupt_run(out, "test")
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume", str(out)],
-            env=_env(), capture_output=True, text=True, timeout=120,
+            env=_env(_home(tmp_path)), capture_output=True, text=True, timeout=120,
             check=False,
         )
         assert r.returncode == 1
@@ -507,7 +571,7 @@ class TestResumeCliGates:
 
         r = subprocess.run(
             [sys.executable, _AUDIT_CLI, "resume", str(out)],
-            env=_env(), capture_output=True, text=True, timeout=120,
+            env=_env(_home(tmp_path)), capture_output=True, text=True, timeout=120,
             check=False,
         )
         assert r.returncode == 1

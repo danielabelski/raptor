@@ -3655,6 +3655,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
+    # Attributed spend of THIS run's fresh rows, captured before any
+    # --splice merges prior rows in: total_spend_usd covers only this
+    # run's telemetry ledgers, so the infra derivation must subtract
+    # this run's attributed rows, never the merged set's (which
+    # would clamp infra_usd to a meaningless floor).
+    fresh_attributed_usd = sum(r.get("cost_usd", 0.0) for r in results)
+
     spliced_ids: set = set()
     if args.splice:
         results, spliced_ids = _splice_results(results, args.splice)
@@ -3712,9 +3719,10 @@ def main(argv: list[str] | None = None) -> int:
         #   total_spend_usd — telemetry-ledger total for the whole
         #     run (money actually spent, set below when ledgers
         #     exist);
-        #   infra_usd — total minus attributed: study, prep, spec/
-        #     checker synthesis, summaries, non-label review
-        #     overheads (set below with total_spend_usd).
+        #   infra_usd — total minus THIS run's attributed rows
+        #     (pre-splice): study, prep, spec/checker synthesis,
+        #     summaries, non-label review overheads (set below with
+        #     total_spend_usd).
         "cost_usd": label_attributed_usd,
         "label_attributed_usd": label_attributed_usd,
         "model": ", ".join(m or "default" for m in models),
@@ -3739,7 +3747,7 @@ def main(argv: list[str] | None = None) -> int:
     if spend:
         meta["total_spend_usd"] = round(spend["total_usd"], 4)
         meta["infra_usd"] = round(
-            max(spend["total_usd"] - label_attributed_usd, 0.0), 4,
+            max(spend["total_usd"] - fresh_attributed_usd, 0.0), 4,
         )
     if not args.probe:
         # Audit modes only — probe never consults the triage pipeline

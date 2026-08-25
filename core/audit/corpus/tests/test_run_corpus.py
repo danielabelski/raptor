@@ -2027,6 +2027,36 @@ class TestSpendMetaBreakdown:
         assert meta["total_spend_usd"] == 5.0
         assert meta["infra_usd"] == 3.0
 
+    def test_infra_measures_this_runs_rows_under_splice(
+        self, tmp_path, monkeypatch,
+    ):
+        # --splice merges prior rows (with their costs) into the
+        # headline attributed figure, but this run's telemetry only
+        # covers this run's calls: infra must subtract the FRESH
+        # rows, not the merged set.
+        gdir = tmp_path / "run" / "test"
+        gdir.mkdir(parents=True)
+        (gdir / "llm-telemetry.jsonl").write_text(
+            json.dumps({"cost_usd": 5.0, "call_class": "review"}) + "\n",
+        )
+        prior = tmp_path / "prior.json"
+        prior.write_text(json.dumps([
+            dict(_result_row("z.c:old"), model="", cost_usd=100.0),
+        ]))
+        rows = [dict(_result_row("a.c:f"), model="", cost_usd=2.0)]
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=rows, run_dirs=[tmp_path / "run"],
+            argv=["--splice", str(prior)],
+        )
+        assert rc == 0
+        meta = _meta_of(out)
+        # Headline attributed keeps its documented merged-set
+        # semantics; infra reflects this run only (5 - 2), not a
+        # clamp against the merged 102.
+        assert meta["label_attributed_usd"] == 102.0
+        assert meta["infra_usd"] == 3.0
+
     def test_group_progress_prints_attributed_running_total(
         self, tmp_path, monkeypatch, capsys,
     ):

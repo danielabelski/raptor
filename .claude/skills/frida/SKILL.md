@@ -53,6 +53,7 @@ raptor frida --list-templates
 | `seed-harvest` | Dumps received input buffers; auto-distilled into `<out>/seeds/` for `raptor fuzz --corpus`. |
 | `exec-and-load` | Command execution (argv + caller) and dlopen activity — confirms injection sinks firing, maps runtime-loaded plugins. |
 | `sink-watch` | Argument-level evidence at dangerous sinks; `--sink-watch <attack-paths.json>` derives the watch list from a finding. |
+| `jni-trace` | Android/ART: RegisterNatives mapping — native method name/signature → native module + offset (bridges jadx to native analysis; class names need the Java bridge, unbundled on Frida 17). |
 
 Operator-supplied scripts via `--script ./hook.js` - same `send(...)` capture path.
 

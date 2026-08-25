@@ -44,6 +44,7 @@ libexec/raptor-frida --target ... --template ...
 | `seed-harvest` | Dump received input buffers; auto-distilled into a `--corpus`-ready seed dir for `/fuzz`. |
 | `exec-and-load` | Command execution (argv + caller module/offset) and `dlopen` activity. |
 | `sink-watch` | Argument-level sink evidence; parameterize with `--sink-watch <sinks.json|attack-paths.json>` instead of `--template`. |
+| `jni-trace` | Android/ART RegisterNatives mapping: Java method → native module + offset. |
 
 List dynamically: `raptor frida --list-templates`.
 
@@ -100,7 +101,7 @@ Read `metadata.json` first. Common patterns:
 
 ## Status
 
-Alpha. Four templates ship; richer set in progress (collab with @Splinters-io after his abandoned PR #57). Integration into `/validate --runtime` and `/crash-analysis` on macOS is planned.
+Alpha. Bundled templates: see the table above (authoritative list via `--list-templates`). Integration into `/validate` is automatic (Stage B collects runtime evidence via the validation bridge; sink/exec/load evidence is target-attributed). `/crash-analysis` integration on macOS is planned; richer template set in progress (collab with @Splinters-io after his abandoned PR #57).
 
 The runner wraps frida in `core/sandbox/` by default (spawn-mode runs execute inside the sandbox envelope). `--unsafe-attach` opts out with a "running WITHOUT sandbox" warning — required for templates and attach modes that need `PTRACE_ATTACH` / `task_for_pid`.
 

@@ -305,6 +305,27 @@ exact shape the validation bridge counts, so the observed arguments
 ("the tainted length reached the memcpy") flow into `/validate`'s
 `runtime_evidence` annotations with no extra wiring.
 
+### jni-trace
+
+Maps the Java↔native boundary on ART (Android) targets by hooking
+`RegisterNatives` (every `art::JNI<...>` instantiation, CheckJNI twin
+excluded): one event per registered native method with the method
+name, JNI signature, and the native implementation's module + offset.
+This bridges jadx-level Java analysis to native-code analysis — jadx
+shows which class declares a `native` method with that name and
+signature; the emitted offset says which native function backs it.
+
+```bash
+raptor frida --target com.example.app --template jni-trace --usb --spawn --duration 30
+```
+
+On a non-ART process the template loads, reports the miss in a
+`_meta` event, and hooks nothing. Class names resolve only when the
+Java bridge is present in the agent — Frida 17 unbundled it, and
+RAPTOR loads scripts unbundled via `create_script`, so on current
+Frida expect the raw `jclass` handle per registration batch (the
+method/signature/module mapping is unaffected).
+
 ---
 
 ## Pipeline Integration

@@ -443,7 +443,7 @@ class TestEndToEndReconciliation:
         # unattributed label.
         assert "failed/timed-out" not in line
         other_s = f"${client.total_cost - 0.5:.2f}"
-        assert f"{other_s} on unattributed calls" in line
+        assert f"{other_s} unattributed (see cost-breakdown.json)" in line
 
 
 class TestCostSummaryAttribution:

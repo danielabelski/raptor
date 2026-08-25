@@ -226,30 +226,41 @@ _WALL_SEGMENTS_NAME = "wall-segments.json"
 
 def _wall_segment_open(
     out_dir: Path | None,
+    stamp: dict[str, Any] | None = None,
 ) -> tuple[Path | None, list[dict[str, Any]]]:
     """Start this process's wall segment; load any prior segments.
 
     Returns ``(sidecar_path, segments)`` — the new segment is already
     appended (end == start until touched).  Without an out dir there
     is nothing to resume from, so the segment list is in-memory only.
+
+    Prior segments are adopted only when the sidecar's run *stamp*
+    matches this run's: segments left behind by a crashed DIFFERENT
+    run reusing the same ``--out`` must not inflate this run's
+    headline wall time.
     """
     path = out_dir / _WALL_SEGMENTS_NAME if out_dir else None
     segments: list[dict[str, Any]] = []
     if path is not None:
         data = load_json(path, max_bytes=_MAX_SIDECAR_BYTES)
-        if isinstance(data, dict) and isinstance(data.get("segments"), list):
+        if (
+            isinstance(data, dict)
+            and data.get("stamp") == stamp
+            and isinstance(data.get("segments"), list)
+        ):
             segments = [
                 dict(s) for s in data["segments"] if isinstance(s, dict)
             ]
     now = time.time()
     segments.append({"start": now, "end": now})
-    _wall_segment_touch(path, segments)
+    _wall_segment_touch(path, segments, stamp)
     return path, segments
 
 
 def _wall_segment_touch(
     path: Path | None,
     segments: list[dict[str, Any]],
+    stamp: dict[str, Any] | None = None,
 ) -> None:
     """Stamp the current segment's end and persist the sidecar.
 
@@ -265,7 +276,7 @@ def _wall_segment_touch(
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        save_json(path, {"segments": segments})
+        save_json(path, {"stamp": stamp, "segments": segments})
     except OSError:
         logger.debug("wall segment write failed", exc_info=True)
 
@@ -2580,6 +2591,45 @@ def _pass_checkpoint_valid(
     return all((r.get("model") or "") == (model or "") for r in rows)
 
 
+def _read_pass_checkpoint(
+    path: Path,
+    labels: list[Any],
+    model: str,
+    stamp: dict[str, Any],
+    *,
+    require_all: bool,
+    name: str,
+) -> list[dict[str, Any]] | None:
+    """Read one pass-level checkpoint, validated against this run.
+
+    Envelope: ``{"stamp": {...}, "rows": [...]}`` — the stamp carries
+    the run config (model, profile, triage, prefilter, plus caller
+    axes such as scope and the resolved default model), the same
+    guard the per-group checkpoints have.  Without it, a
+    kill-after-pass-1 resume with any flipped knob adopted the old
+    regime's whole pass and merged it into a run recorded under the
+    new one.  Pre-envelope bare-list checkpoints carry no stamp and
+    are discarded the same way.  Returns the rows, or None (printing
+    a notice when a file existed but did not match).
+    """
+    data = _checkpoint_read(path)
+    if data is None:
+        return None
+    rows: Any = None
+    if isinstance(data, dict) and data.get("stamp") == stamp:
+        rows = data.get("rows")
+    if rows is not None and _pass_checkpoint_valid(
+        rows, labels, model, require_all=require_all,
+    ):
+        return rows
+    print(
+        f"  {name} checkpoint does not match this run's "
+        f"config/labels/model — re-running",
+        flush=True,
+    )
+    return None
+
+
 def _run_ensemble_audit(
     labels: list[Any],
     source_dirs: dict[str, Path],
@@ -2619,6 +2669,17 @@ def _run_ensemble_audit(
     sec_groups_ckpt = base_out / "checkpoint-sec-groups.json"
     bf_groups_ckpt = base_out / "checkpoint-bf-groups.json"
 
+    # Config stamp shared by the three pass-level checkpoints (mode
+    # is implied by the file).  Same axes the per-group stamps carry.
+    pass_stamp: dict[str, Any] = {
+        "model": model or "",
+        "profile": profile,
+        "triage": triage,
+        "prefilter": prefilter,
+    }
+    if checkpoint_extra:
+        pass_stamp.update(checkpoint_extra)
+
     # --- Shared Joern server (read-only, thread-safe over HTTP) ---
     joern_srv = _start_shared_joern(
         [d for d in source_dirs.values() if d.is_dir()],
@@ -2634,26 +2695,14 @@ def _run_ensemble_audit(
 
     try:
         # --- Pass 1: security mode, full workers ---
-        sec_results = _checkpoint_read(sec_ckpt)
-        bf_results = _checkpoint_read(bf_ckpt)
-        if sec_results is not None and not _pass_checkpoint_valid(
-            sec_results, labels, model, require_all=True,
-        ):
-            print(
-                "  Security pass checkpoint does not match this "
-                "run's labels/model — re-running the pass",
-                flush=True,
-            )
-            sec_results = None
-        if bf_results is not None and not _pass_checkpoint_valid(
-            bf_results, labels, model, require_all=False,
-        ):
-            print(
-                "  Bug-first pass checkpoint does not match this "
-                "run's labels/model — re-running the pass",
-                flush=True,
-            )
-            bf_results = None
+        sec_results = _read_pass_checkpoint(
+            sec_ckpt, labels, model, pass_stamp,
+            require_all=True, name="Security pass",
+        )
+        bf_results = _read_pass_checkpoint(
+            bf_ckpt, labels, model, pass_stamp,
+            require_all=False, name="Bug-first pass",
+        )
 
         if sec_results is not None and bf_results is not None:
             print("  Resuming from checkpoints (both passes cached)",
@@ -2678,7 +2727,10 @@ def _run_ensemble_audit(
                     checkpoint_stamp=checkpoint_extra,
                     heartbeat=heartbeat,
                 )
-                _checkpoint_write(sec_ckpt, sec_results)
+                _checkpoint_write(
+                    sec_ckpt,
+                    {"stamp": pass_stamp, "rows": sec_results},
+                )
                 print(f"  Security pass complete "
                       f"({len(sec_results)} results, checkpointed)",
                       flush=True)
@@ -2749,7 +2801,10 @@ def _run_ensemble_audit(
                           flush=True)
                     bf_results = []
                     bf_dirs = []
-                _checkpoint_write(bf_ckpt, bf_results)
+                _checkpoint_write(
+                    bf_ckpt,
+                    {"stamp": pass_stamp, "rows": bf_results},
+                )
                 print(f"  Bug-first pass complete "
                       f"({len(bf_results)} results, checkpointed)",
                       flush=True)
@@ -2763,16 +2818,10 @@ def _run_ensemble_audit(
         _stop_shared_joern(joern_srv)
 
     # --- Merge at the result level ---
-    merged_cached = _checkpoint_read(merged_ckpt)
-    if merged_cached is not None and not _pass_checkpoint_valid(
-        merged_cached, labels, model, require_all=True,
-    ):
-        print(
-            "  Merge checkpoint does not match this run's "
-            "labels/model — re-merging",
-            flush=True,
-        )
-        merged_cached = None
+    merged_cached = _read_pass_checkpoint(
+        merged_ckpt, labels, model, pass_stamp,
+        require_all=True, name="Merge",
+    )
     if merged_cached is not None:
         print("  Resuming from merge checkpoint", flush=True)
         merged_results = merged_cached
@@ -2880,7 +2929,10 @@ def _run_ensemble_audit(
         print(f"  Security cost: ${sec_cost:.4f}", flush=True)
         print(f"  Bug-first cost: ${bf_cost:.4f}", flush=True)
 
-        _checkpoint_write(merged_ckpt, merged_results)
+        _checkpoint_write(
+            merged_ckpt,
+            {"stamp": pass_stamp, "rows": merged_results},
+        )
 
     # --- Phase 2: classify security impact ---
     findings = [r for r in merged_results
@@ -3550,12 +3602,23 @@ def main(argv: list[str] | None = None) -> int:
     # with --out — resume needs a stable directory anyway).  Touched
     # at every group boundary via the heartbeat, so a killed process
     # still leaves an accurate-to-the-last-group segment behind.
+    # The run stamp keeps a crashed DIFFERENT run's leftover segments
+    # (same --out, any knob changed) out of this run's wall figure.
+    run_stamp = {
+        "mode": "probe" if args.probe else args.mode,
+        "model": ", ".join(m or "default" for m in models),
+        "model_resolved": model_labels[0],
+        "profile": args.profile,
+        "triage": args.triage,
+        "prefilter": args.prefilter,
+        "scope": args.scope,
+    }
     wall_path, wall_segments = _wall_segment_open(
-        None if args.probe else args.out,
+        None if args.probe else args.out, run_stamp,
     )
 
     def _heartbeat() -> None:
-        _wall_segment_touch(wall_path, wall_segments)
+        _wall_segment_touch(wall_path, wall_segments, run_stamp)
 
     with _corpus_project_context(run_tag):
         if args.probe:
@@ -3682,7 +3745,7 @@ def main(argv: list[str] | None = None) -> int:
     # the sum across every stop/resume segment of the run, not just
     # the final process (a resumed run's meta used to under-report
     # its real wall by the length of every earlier segment).
-    _wall_segment_touch(wall_path, wall_segments)
+    _wall_segment_touch(wall_path, wall_segments, run_stamp)
     wall_total_s = _wall_total_s(wall_segments)
 
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)

@@ -1861,13 +1861,15 @@ def _stub_main_run(
     run_dirs=None,
     argv=None,
     source_present=True,
+    resolve=lambda m: "",
 ):
     """Drive main() with the LLM run stubbed out.
 
     Sets up one label (a.c:f in repo "test"), a fake project context,
-    stubbed pin verification, and an isolated history store; the
-    ensemble stub returns *rows* and *run_dirs*.  Returns
-    ``(rc, results_path, history_path)``.
+    stubbed pin verification, deterministic model resolution
+    (*resolve*, so run stamps never depend on the host's LLM config),
+    and an isolated history store; the ensemble stub returns *rows*
+    and *run_dirs*.  Returns ``(rc, results_path, history_path)``.
     """
     from contextlib import contextmanager
 
@@ -1899,6 +1901,9 @@ def _stub_main_run(
         run_corpus, "_corpus_project_context", fake_project,
     )
     monkeypatch.setattr(
+        run_corpus, "_resolve_model_label", resolve, raising=False,
+    )
+    monkeypatch.setattr(
         lint_mod, "verify_pins",
         lambda pairs, **kw: [
             lint_mod.PinCheck(
@@ -1920,6 +1925,21 @@ def _stub_main_run(
     return rc, out, history_path
 
 
+def _run_stamp(**overrides):
+    """The run stamp main() derives under _stub_main_run's defaults."""
+    stamp = {
+        "mode": "ensemble",
+        "model": "default",
+        "model_resolved": "default",
+        "profile": "cold",
+        "triage": "off",
+        "prefilter": "off",
+        "scope": "excerpt",
+    }
+    stamp.update(overrides)
+    return stamp
+
+
 def _meta_of(results_path):
     data = json.loads(results_path.read_text())
     assert isinstance(data, dict), "results file has no meta wrapper"
@@ -1935,13 +1955,10 @@ class TestResolvedModelBanner:
     def test_resolved_model_printed_early_and_recorded_in_meta(
         self, tmp_path, monkeypatch, capsys,
     ):
-        monkeypatch.setattr(
-            run_corpus, "_resolve_model_label",
-            lambda m: "prov/model-x", raising=False,
-        )
         rc, out, _ = _stub_main_run(
             tmp_path, monkeypatch,
             rows=[dict(_result_row("a.c:f"), model="")],
+            resolve=lambda m: "prov/model-x",
         )
         assert rc == 0
         stdout = capsys.readouterr().out
@@ -1953,13 +1970,10 @@ class TestResolvedModelBanner:
     def test_resolution_failure_falls_back_to_requested_name(
         self, tmp_path, monkeypatch, capsys,
     ):
-        monkeypatch.setattr(
-            run_corpus, "_resolve_model_label",
-            lambda m: "", raising=False,
-        )
         rc, out, _ = _stub_main_run(
             tmp_path, monkeypatch,
             rows=[dict(_result_row("a.c:f"), model="")],
+            resolve=lambda m: "",
         )
         assert rc == 0
         assert "Primary model: default" in capsys.readouterr().out
@@ -2404,7 +2418,10 @@ class TestWallSegments:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         (out_dir / "wall-segments.json").write_text(json.dumps(
-            {"segments": [{"start": 1000.0, "end": 1100.0}]},
+            {
+                "stamp": _run_stamp(),
+                "segments": [{"start": 1000.0, "end": 1100.0}],
+            },
         ))
         rc, out, _ = _stub_main_run(
             tmp_path, monkeypatch,
@@ -2422,6 +2439,29 @@ class TestWallSegments:
         # The run finalized: its resume state (sidecar included) is
         # cleared — the accumulated record lives on in meta.
         assert not (out_dir / "wall-segments.json").exists()
+
+    def test_foreign_run_segments_not_inherited(
+        self, tmp_path, monkeypatch,
+    ):
+        # A crashed DIFFERENT run (any knob changed) left segments in
+        # the same --out: this run's wall must not absorb them.
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "wall-segments.json").write_text(json.dumps(
+            {
+                "stamp": _run_stamp(profile="deployed"),
+                "segments": [{"start": 1000.0, "end": 1100.0}],
+            },
+        ))
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+            argv=["--out", str(out_dir)],
+        )
+        assert rc == 0
+        meta = _meta_of(out)
+        assert len(meta["wall_segments"]) == 1
+        assert meta["wall_s"] < 100.0
 
     def test_single_process_run_records_one_segment(
         self, tmp_path, monkeypatch,
@@ -2643,11 +2683,21 @@ class TestCheckpointConfigStamp:
 
 class TestPassCheckpointGuards:
     """Pass-level checkpoints (checkpoint-sec/bf/merged.json) get the
-    same foreign-row defence as group checkpoints: a resume with a
-    different model or label selection re-runs the pass instead of
-    adopting rows that would mislabel the measurement."""
+    same defence as group checkpoints: a config stamp on the envelope
+    plus label-set and per-row model guards. A resume with any
+    flipped knob re-runs the pass instead of adopting rows that
+    would mislabel the measurement."""
 
-    def _run(self, tmp_path, monkeypatch, labels):
+    @staticmethod
+    def _envelope(rows, **overrides):
+        stamp = {
+            "model": "", "profile": "deployed",
+            "triage": True, "prefilter": True,
+        }
+        stamp.update(overrides)
+        return {"stamp": stamp, "rows": rows}
+
+    def _run(self, tmp_path, monkeypatch, labels, **ensemble_kw):
         modes = []
 
         def fake_run_audit(
@@ -2669,6 +2719,7 @@ class TestPassCheckpointGuards:
         (tmp_path / "r1").mkdir(exist_ok=True)
         run_corpus._run_ensemble_audit(
             labels, {"r1": tmp_path / "r1"}, out_dir=tmp_path / "out",
+            **ensemble_kw,
         )
         return modes
 
@@ -2678,7 +2729,9 @@ class TestPassCheckpointGuards:
         out = tmp_path / "out"
         out.mkdir()
         (out / "checkpoint-sec.json").write_text(json.dumps(
-            [dict(_result_row("a.c:f"), model="other-model")],
+            self._envelope(
+                [dict(_result_row("a.c:f"), model="other-model")],
+            ),
         ))
         modes = self._run(
             tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
@@ -2691,7 +2744,7 @@ class TestPassCheckpointGuards:
         out = tmp_path / "out"
         out.mkdir()
         (out / "checkpoint-sec.json").write_text(json.dumps(
-            [dict(_result_row("a.c:OTHER"), model="")],
+            self._envelope([dict(_result_row("a.c:OTHER"), model="")]),
         ))
         modes = self._run(
             tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
@@ -2704,15 +2757,50 @@ class TestPassCheckpointGuards:
         out = tmp_path / "out"
         out.mkdir()
         (out / "checkpoint-sec.json").write_text(json.dumps(
-            [dict(_result_row("a.c:f"), model="")],
+            self._envelope([dict(_result_row("a.c:f"), model="")]),
         ))
         (out / "checkpoint-bf.json").write_text(json.dumps(
-            [dict(_result_row("a.c:f"), model="")],
+            self._envelope([dict(_result_row("a.c:f"), model="")]),
         ))
         modes = self._run(
             tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
         )
         assert modes == [], "valid pass checkpoints were not resumed"
+
+    def test_config_flip_on_pass_checkpoint_reruns(
+        self, tmp_path, monkeypatch,
+    ):
+        # Kill-after-pass-1, resume with a flipped knob: the whole
+        # security pass must re-run, not merge deployed-regime rows
+        # into a cold measurement.
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "checkpoint-sec.json").write_text(json.dumps(
+            self._envelope(
+                [dict(_result_row("a.c:f"), model="")],
+                profile="deployed",
+            ),
+        ))
+        modes = self._run(
+            tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
+            profile="cold",
+        )
+        assert "security" in modes, "deployed pass rows adopted cold"
+
+    def test_legacy_bare_list_pass_checkpoint_discarded(
+        self, tmp_path, monkeypatch,
+    ):
+        # A pre-envelope checkpoint carries no config stamp — there
+        # is no way to tell which regime produced it, so it re-runs.
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "checkpoint-sec.json").write_text(json.dumps(
+            [dict(_result_row("a.c:f"), model="")],
+        ))
+        modes = self._run(
+            tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
+        )
+        assert "security" in modes
 
 
 class TestResumeStateClearedOnCompletion:

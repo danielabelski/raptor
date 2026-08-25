@@ -124,7 +124,9 @@ checkpoint no longer matches the run — the label set, the model
 (requested and resolved), and the config stamp (mode, profile,
 triage, prefilter, scope) all have to agree, at the group and the
 pass level, so rows measured under one regime can never be resumed
-into another's results. Wall time is accounted per
+into another's results. Once a run finalizes its results, the resume
+state is cleared: re-invoking the same `--out` is a fresh run, not a
+free replay that would record duplicate spend. Wall time is accounted per
 process segment in `wall-segments.json`; meta `wall_s` is the sum
 across all segments of the run, with `wall_s_segment` (this process)
 and `wall_segments` (per-segment detail) alongside.

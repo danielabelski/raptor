@@ -2515,6 +2515,36 @@ def _checkpoint_read(path: Path) -> Any | None:
     return load_json(path, max_bytes=_MAX_RESULTS_BYTES)
 
 
+def _clear_resume_state(out_dir: Path) -> None:
+    """Remove resume sidecars once a run's results are finalized.
+
+    Checkpoints and wall segments exist for INTERRUPTED runs.  Left
+    behind after completion, a re-invocation in the same ``--out``
+    replayed the entire run for free and appended a second, full-cost
+    history record indistinguishable from real spend, while its meta
+    inherited the finished run's wall segments.  Once results.json is
+    written and recorded, the run is over: the next invocation is a
+    fresh run.  Best-effort — cleanup must never fail the run.
+    """
+    names = [
+        "checkpoint-sec.json",
+        "checkpoint-bf.json",
+        "checkpoint-merged.json",
+        _WALL_SEGMENTS_NAME,
+    ]
+    try:
+        paths = list(out_dir.glob("checkpoint-*-groups.json"))
+    except OSError:
+        paths = []
+    paths.extend(out_dir / name for name in names)
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("resume-state cleanup failed for %s", path,
+                         exc_info=True)
+
+
 def _pass_checkpoint_valid(
     rows: Any,
     labels: list[Any],
@@ -3796,6 +3826,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(delta)
         except Exception:
             logger.debug("history delta report failed", exc_info=True)
+
+    # Results are on disk and recorded: this run is finalized, so its
+    # resume state must go — a later invocation of the same --out is
+    # a fresh run, never a free replay that would append a duplicate
+    # full-cost history record and inherit stale wall segments.
+    if args.out and not args.probe:
+        _clear_resume_state(args.out)
 
     _print_accounting(
         violations, census, len(selected_labels), len(account_models),

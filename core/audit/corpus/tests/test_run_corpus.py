@@ -2389,11 +2389,9 @@ class TestWallSegments:
         # This process alone stays visible, and is clearly shorter
         # than the accumulated figure.
         assert meta["wall_s_segment"] < 100.0
-        # The sidecar now records both segments for the next resume.
-        saved = json.loads(
-            (out_dir / "wall-segments.json").read_text(),
-        )
-        assert len(saved["segments"]) == 2
+        # The run finalized: its resume state (sidecar included) is
+        # cleared — the accumulated record lives on in meta.
+        assert not (out_dir / "wall-segments.json").exists()
 
     def test_single_process_run_records_one_segment(
         self, tmp_path, monkeypatch,
@@ -2669,3 +2667,63 @@ class TestPassCheckpointGuards:
             tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
         )
         assert modes == [], "valid pass checkpoints were not resumed"
+
+
+class TestResumeStateClearedOnCompletion:
+    """Checkpoints and wall segments exist for interrupted runs; once
+    results.json is finalized and recorded, they must go — otherwise a
+    re-invocation of the same --out replays the run for free and
+    appends a duplicate full-cost history record."""
+
+    def test_completed_run_clears_checkpoints_and_segments(
+        self, tmp_path, monkeypatch,
+    ):
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        for name in (
+            "checkpoint-sec.json",
+            "checkpoint-bf.json",
+            "checkpoint-merged.json",
+            "checkpoint-sec-groups.json",
+            "wall-segments.json",
+        ):
+            (out_dir / name).write_text("{}")
+        rc, _, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+            argv=["--out", str(out_dir)],
+        )
+        assert rc == 0
+        leftovers = sorted(
+            p.name for p in out_dir.iterdir()
+            if p.name.startswith("checkpoint-")
+            or p.name == "wall-segments.json"
+        )
+        assert leftovers == [], f"resume state left behind: {leftovers}"
+
+    def test_reinvocation_records_fresh_spend_not_a_replay(
+        self, tmp_path, monkeypatch,
+    ):
+        import core.audit.corpus.history as history_mod
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        rc1, _, history_path = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="", cost_usd=2.0)],
+            argv=["--out", str(out_dir)],
+        )
+        rc2, _, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="", cost_usd=2.0)],
+            argv=["--out", str(out_dir)],
+        )
+        assert (rc1, rc2) == (0, 0)
+        runs, _ = history_mod.load_store(history_path)
+        assert len(runs) == 2
+        # Each record carries its own single-invocation wall — the
+        # second run does not inherit the first's segments.
+        for rec in runs:
+            assert len(rec["totals"]) >= 1
+        metas = [rec["cost_usd"] for rec in runs]
+        assert metas == [2.0, 2.0]

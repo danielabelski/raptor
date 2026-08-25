@@ -177,8 +177,7 @@ raptor frida --target Safari --script ./my-hook.js --duration 30
 
 ## Bundled Templates
 
-Four JavaScript hook templates are included. Use `--list-templates` to
-see the current set.
+Use `--list-templates` to see the current set.
 
 ### api-trace
 
@@ -227,6 +226,32 @@ coverage of specific inputs or comparing coverage between test cases.
 ```bash
 raptor frida --target ./app --template bb-coverage --duration 30
 ```
+
+### seed-harvest
+
+Dumps the input buffers the target actually received (`read`, `recv`,
+`recvfrom`, `SSL_read`, `fread`, `fgets`, `getline`, ...) and distills
+them into a fuzz-ready seed corpus. After the session the CLI writes
+one file per unique payload into `<out>/seeds/` plus a
+`seeds-manifest.json` sibling with per-function counts.
+
+Observing a network daemon or file parser under real traffic for a
+minute yields protocol-realistic seeds — usually the hardest part of
+fuzzing a binary-only target.
+
+```bash
+raptor frida --target ./daemon --template seed-harvest --duration 60
+raptor fuzz --binary ./daemon --corpus out/frida_<ts>/seeds
+```
+
+Captures are capped (8 KiB per buffer, 2048 events per hooked
+function) and deduplicated in-process; caps are reported in the event
+stream and manifest, never applied silently.
+
+Seeds are the raw bytes the target received — decrypted TLS payloads
+(`SSL_read`), file contents, anything on its sockets. Treat a
+harvested corpus as potentially secret-bearing and review it before
+sharing or committing it anywhere.
 
 ---
 
@@ -289,6 +314,7 @@ Contents:
 | `metadata.json` | Target, host info, timings, errors, ptrace_scope (Linux). |
 | `script.js` | Copy of the hook that executed. |
 | `frida-report.md` | Short human-readable summary. |
+| `seeds/` + `seeds-manifest.json` | Fuzz-ready corpus distilled from data-carrying events (only when the script emitted `args.data_hex` payloads, e.g. seed-harvest). |
 
 ---
 

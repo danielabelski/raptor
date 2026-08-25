@@ -125,7 +125,32 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"frida: ok - {result.events_captured} events captured in "
           f"{result.duration_actual_sec:.1f}s → {args.out}")
+    _maybe_harvest_seeds(Path(args.out))
     return 0
+
+
+def _maybe_harvest_seeds(out_dir: Path) -> None:
+    """Distill data-carrying events into a seed corpus after a run.
+
+    Any template or operator script that emits ``args.data_hex``
+    payloads (seed-harvest ships this convention) gets its unique
+    buffers written as individual seed files. Additive: a harvest
+    failure never fails a completed run.
+    """
+    try:
+        from .seeds import extract_seeds
+
+        manifest = extract_seeds(out_dir)
+    except Exception as e:  # noqa: BLE001 — harvest is additive
+        print(f"frida: seed harvest skipped: {e}", file=sys.stderr)
+        return
+    if manifest["seed_count"]:
+        print(f"frida: {manifest['seed_count']} unique seeds harvested → "
+              f"{manifest['out_dir']}")
+        print("frida: fuzz them with: raptor fuzz --binary <target> "
+              f"--corpus {manifest['out_dir']}")
+        print("frida: note: seeds are raw bytes the target received "
+              "(may include secrets) — review before sharing")
 
 
 if __name__ == "__main__":

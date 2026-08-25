@@ -48,6 +48,9 @@ raptor frida --list-templates
 |------|---------|
 | `api-trace` | Hooks `open`/`read`/`write`/`connect`/`fork`/`execve` etc. Most useful default. |
 | `ssl-unpin` | Bypasses iOS/macOS Security.framework, OpenSSL `SSL_get_verify_result`, and Android `X509TrustManager`. |
+| `bb-coverage` | Basic-block coverage via Stalker; drcov output feeds the coverage store. |
+| `binary-flow-trace` | Input/parser callsite evidence for `/binary` investigations. |
+| `seed-harvest` | Dumps received input buffers; auto-distilled into `<out>/seeds/` for `raptor fuzz --corpus`. |
 
 Operator-supplied scripts via `--script ./hook.js` - same `send(...)` capture path.
 
@@ -132,4 +135,4 @@ run_dir = auto_observe("/path/to/binary", search_dirs=[out_dir])
 
 ## Status
 
-Alpha. Four templates ship (`api-trace`, `bb-coverage`, `ssl-unpin`, `binary-flow-trace`); richer set in progress (collab with @Splinters-io). Integration into `/validate` is automatic (Stage B collects runtime evidence via `frida_validation_bridge`). `/crash-analysis` integration on macOS is planned. The autonomous LLM-guided mode from the abandoned PR #57 is intentionally **not** in this slice.
+Alpha. Bundled templates: see the table above (authoritative list via `raptor frida --list-templates`); richer set in progress (collab with @Splinters-io). Integration into `/validate` is automatic (Stage B collects runtime evidence via `frida_validation_bridge`). `/crash-analysis` integration on macOS is planned. The autonomous LLM-guided mode from the abandoned PR #57 is intentionally **not** in this slice.

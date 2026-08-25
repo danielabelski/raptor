@@ -166,20 +166,35 @@ def list_templates() -> list[str]:
 # so any template can opt in; the slot syntax keeps an unrendered
 # template valid JS (empty list) rather than a ReferenceError.
 _PARSER_HOOKS_SLOT = "/*__PARSER_HOOKS__*/ []"
+_INGEST_HOOKS_SLOT = "/*__INGEST_HOOKS__*/ []"
+
+
+def _taxonomy_ingest_names() -> list[str]:
+    from core.function_taxonomy import (
+        NETWORK_INGEST_FUNCS,
+        STREAM_INPUT_FUNCS,
+    )
+
+    return sorted(NETWORK_INGEST_FUNCS | STREAM_INPUT_FUNCS)
 
 
 def _render_template_slots(source: str) -> str:
     """Fill generated-vocabulary slots in a bundled template.
 
-    The parser hook-name list is generated from the central function
-    taxonomy (``core.function_taxonomy.PARSER_FUNCS``) so the JS never
-    carries a hand-copied mirror of it.
+    Hook-name lists are generated from the central function taxonomy
+    (``core.function_taxonomy``) so the JS never carries a hand-copied
+    mirror of it. Templates keep their per-function argument readers
+    inline (arg-position knowledge, not name vocabulary) and skip
+    rendered names they have no reader for.
     """
     if _PARSER_HOOKS_SLOT in source:
         from core.function_taxonomy import PARSER_FUNCS
 
         payload = json.dumps(sorted(PARSER_FUNCS))
         source = source.replace(_PARSER_HOOKS_SLOT, payload)
+    if _INGEST_HOOKS_SLOT in source:
+        source = source.replace(
+            _INGEST_HOOKS_SLOT, json.dumps(_taxonomy_ingest_names()))
     return source
 
 

@@ -109,6 +109,9 @@
     "artifacts:orphan_reader::study-discards.json": {
       "note": "writer exists (core/concepts/study.py writes it via save_json; core/audit/orchestrator.py reads) \u2014 the artifact indexer does not resolve the substrate writer call through the path variable, so the read looks orphaned"
     },
+    "artifacts:write_only_artifact::-manifest.json": {
+      "note": "seed-harvest corpus manifest (packages/frida/seeds.py writes <seeds>-manifest.json): operator-facing harvest accounting, deliberately written NEXT TO the corpus dir so AFL never ingests it as a seed; consumed by the operator reviewing a harvest, production code uses extract_seeds' return value"
+    },
     "artifacts:write_only_artifact::-postfix.json": {
       "note": "raptor-recall-measure cvefix-manifest output: generated fp-only twin manifest ({cve}-postfix.json); same operator hand-off as the -prefix recall manifest \u2014 consumed via the --manifest path flag, no literal filename at the read site"
     },

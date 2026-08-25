@@ -273,3 +273,31 @@ class TestOrchestratorThreading:
         orch._run_afl(plan, tmp_path, 1, None, None,
                       afl_binary_mode="frida")
         assert captured.get("binary_only_mode") == "frida"
+
+
+class TestRunnerPathResolution:
+    def test_relative_out_and_corpus_resolved(self, tmp_path, monkeypatch):
+        # The sandboxed afl-fuzz children run with a different cwd; a
+        # relative --out/--corpus dies there ("Unable to create <dir>")
+        # while looking valid from the parent.
+        binary = tmp_path / "t"
+        binary.write_bytes(b"\x7fELF")
+        binary.chmod(0o755)
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "seed").write_bytes(b"a")
+        import packages.fuzzing.afl_runner as afl_runner_mod
+        monkeypatch.setattr(
+            afl_runner_mod.shutil, "which", lambda _n: "/usr/bin/afl-fuzz")
+        monkeypatch.setattr(
+            AFLRunner, "_validate_afl_command", lambda _self: None)
+        monkeypatch.chdir(tmp_path)
+        runner = AFLRunner(
+            binary_path="t",
+            corpus_dir="corpus",
+            output_dir="out/run",
+        )
+        assert runner.output_dir.is_absolute()
+        assert runner.corpus_dir.is_absolute()
+        assert runner.output_dir == (tmp_path / "out/run").resolve()
+

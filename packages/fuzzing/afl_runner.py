@@ -283,15 +283,21 @@ class AFLRunner:
         # project's run dir (or DEFAULT_OUTPUT_BASE when no
         # project is active) per the standard run-lifecycle
         # rule.
+        # resolve(): the campaign's afl-fuzz children run inside the
+        # sandbox with a different cwd, so a relative --out/--corpus
+        # from the operator dies there with "Unable to create <dir>"
+        # while looking perfectly valid from the parent process.
         if output_dir:
-            self.output_dir = Path(output_dir)
+            self.output_dir = Path(output_dir).resolve()
         else:
             from core.config import RaptorConfig
-            self.output_dir = RaptorConfig.get_out_dir() / f"fuzz_{self.binary.stem}"
+            self.output_dir = (RaptorConfig.get_out_dir()
+                               / f"fuzz_{self.binary.stem}").resolve()
         # Resolve corpus AFTER output_dir so the default-corpus
         # path can anchor under output_dir (rather than CWD).
-        self.corpus_dir = Path(corpus_dir) if corpus_dir else self._create_default_corpus()
-        self.dict_path = Path(dict_path) if dict_path else None
+        self.corpus_dir = (Path(corpus_dir).resolve() if corpus_dir
+                           else self._create_default_corpus())
+        self.dict_path = Path(dict_path).resolve() if dict_path else None
         self.input_mode = input_mode
         self.check_sanitizers = check_sanitizers
         self.recompile_guide = recompile_guide
@@ -995,16 +1001,23 @@ class AFLRunner:
                             inst.name, inst.timeout_s,
                         )
                     stderr_str = self._tail_file(inst.stderr_path)
+                    # afl-fuzz prints its fatal SYSTEM ERROR / PROGRAM
+                    # ABORT banners to STDOUT; surfacing only stderr
+                    # left the operator with an empty tail and the real
+                    # cause buried in the log file.
+                    stdout_str = self._tail_file(inst.stdout_path)
+                    detail = "\n".join(s for s in (stderr_str, stdout_str) if s)
                     if exit_code == 0:
                         logger.info("AFL instance %s completed (exit 0)", inst.name)
-                    elif stderr_str:
+                    elif detail:
                         logger.error("AFL instance %s exited with code %s", inst.name, exit_code)
-                        logger.error("AFL stderr saved to: %s", inst.stderr_path)
-                        logger.error("AFL stderr tail:\n%s", stderr_str)
-                        self._log_common_afl_startup_error(stderr_str)
+                        logger.error("AFL logs saved to: %s / %s",
+                                     inst.stderr_path, inst.stdout_path)
+                        logger.error("AFL output tail:\n%s", detail)
+                        self._log_common_afl_startup_error(detail)
                         if self.telemetry:
                             self.telemetry.record_error(
-                                f"AFL {inst.name} exited {exit_code}: {stderr_str[-500:]}"
+                                f"AFL {inst.name} exited {exit_code}: {detail[-500:]}"
                             )
                     else:
                         logger.warning(
@@ -1217,6 +1230,19 @@ class AFLRunner:
                 "The target did not enter AFL's forkserver quickly enough. "
                 "Try a non-ASAN AFL build for discovery, increase "
                 "AFL_FORKSRV_INIT_TMOUT, or replay crashes under ASAN later."
+            )
+            logger.error("=" * 70)
+        elif ("unable to create" in lowered
+              or "not found or not executable" in lowered):
+            logger.error("=" * 70)
+            logger.error("AFL PATH NOT VISIBLE INSIDE THE CAMPAIGN SANDBOX")
+            logger.error("=" * 70)
+            logger.error(
+                "afl-fuzz could not see a path that exists on the host. "
+                "The campaign runs in a mount namespace with a fresh /tmp "
+                "and its own cwd — use absolute paths for the binary, "
+                "corpus, and output dir, and avoid staging targets under "
+                "/tmp outside the run's own output directory."
             )
             logger.error("=" * 70)
 

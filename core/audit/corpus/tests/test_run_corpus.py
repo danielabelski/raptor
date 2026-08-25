@@ -2140,3 +2140,170 @@ class TestRunLevelRunningTotal:
         )
         assert starts[0] == ("security", 0.0)
         assert starts[1] == ("bug_first", 6.0)
+
+
+class TestPerGroupCheckpoint:
+    """A mid-pass stop loses at most the in-flight group: completed
+    groups are checkpointed as they finish, and a resume replays their
+    rows exactly once (no re-run, no double-counted spend)."""
+
+    def _labels(self):
+        return [
+            _mk_label("a.c:f", repo="r1"),
+            _mk_label("b.c:g", file="b.c", repo="r2"),
+        ]
+
+    def _dirs(self, tmp_path):
+        (tmp_path / "r1").mkdir(exist_ok=True)
+        (tmp_path / "r2").mkdir(exist_ok=True)
+        return {"r1": tmp_path / "r1", "r2": tmp_path / "r2"}
+
+    @staticmethod
+    def _ckpt_row(fid, cost=2.0):
+        return dict(
+            _result_row(fid), model="", cost_usd=cost, duration_s=1.0,
+        )
+
+    def test_resume_skips_checkpointed_group_and_counts_rows_once(
+        self, tmp_path, monkeypatch,
+    ):
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps(
+            {"groups": {"r1": [self._ckpt_row("a.c:f")]}},
+        ))
+        ran = []
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            ran.append(repo_labels[0].source.repo)
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        results, _ = run_corpus._run_audit(
+            self._labels(), self._dirs(tmp_path),
+            joern_server=object(), checkpoint=ckpt,
+        )
+        assert ran == ["r2"], "checkpointed group was re-run"
+        fids = [r["function_id"] for r in results]
+        assert sorted(fids) == ["a.c:f", "b.c:g"]
+        # Resumed spend enters exactly once, at its original figure.
+        assert sum(r["cost_usd"] for r in results) == 2.5
+        # The checkpoint now covers both groups.
+        saved = json.loads(ckpt.read_text())
+        assert sorted(saved["groups"]) == ["r1", "r2"]
+
+    def test_checkpoint_persists_after_each_group(
+        self, tmp_path, monkeypatch,
+    ):
+        ckpt = tmp_path / "ckpt.json"
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            if repo_labels[0].source.repo == "r2":
+                raise RuntimeError("simulated mid-pass stop")
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        with pytest.raises(RuntimeError):
+            run_corpus._run_audit(
+                self._labels(), self._dirs(tmp_path),
+                joern_server=object(), checkpoint=ckpt,
+            )
+        saved = json.loads(ckpt.read_text())
+        assert list(saved["groups"]) == ["r1"]
+        assert saved["groups"]["r1"][0]["function_id"] == "a.c:f"
+
+    def test_stale_checkpoint_with_different_label_set_reruns(
+        self, tmp_path, monkeypatch,
+    ):
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps(
+            {"groups": {"r1": [self._ckpt_row("a.c:OTHER")]}},
+        ))
+        ran = []
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            ran.append(repo_labels[0].source.repo)
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        results, _ = run_corpus._run_audit(
+            self._labels(), self._dirs(tmp_path),
+            joern_server=object(), checkpoint=ckpt,
+        )
+        assert ran == ["r1", "r2"], "stale checkpoint was trusted"
+        fids = sorted(r["function_id"] for r in results)
+        assert fids == ["a.c:f", "b.c:g"]
+
+
+class TestCheckpointModelGuard:
+    """A checkpoint written under a different --model must never be
+    resumed: its rows would mislabel another model's verdicts as this
+    run's measurements."""
+
+    def test_checkpoint_from_different_model_is_not_resumed(
+        self, tmp_path, monkeypatch,
+    ):
+        (tmp_path / "r1").mkdir()
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps({"groups": {"r1": [
+            dict(_result_row("a.c:f"), model="other-model", cost_usd=9.0),
+        ]}}))
+        ran = []
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            ran.append(repo_labels[0].source.repo)
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        results, _ = run_corpus._run_audit(
+            [_mk_label("a.c:f", repo="r1")],
+            {"r1": tmp_path / "r1"},
+            joern_server=object(), checkpoint=ckpt,
+        )
+        assert ran == ["r1"], "foreign-model checkpoint was resumed"
+        assert results[0]["model"] == ""
+        assert results[0]["cost_usd"] == 0.5
+

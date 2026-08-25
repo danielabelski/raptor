@@ -739,6 +739,7 @@ def _run_audit(
     triage: bool = True,
     prefilter: bool = True,
     profile: str = "deployed",
+    checkpoint: Path | None = None,
     attributed_start: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run /audit's orchestrator against labeled functions.
@@ -749,6 +750,16 @@ def _run_audit(
 
     When *joern_server* is provided the caller owns its lifecycle;
     otherwise a server is started and stopped internally.
+
+    *checkpoint* names a per-group resume file: each completed
+    group's scored rows are persisted as soon as the group finishes,
+    and a rerun skips any group whose checkpointed rows cover exactly
+    the same label set — a mid-pass stop then loses at most the
+    in-flight group, not the whole pass (pass-end checkpoints made a
+    cost ceiling unsafe to enforce: an abort forfeited everything
+    since the last pass boundary).  Resumed rows re-enter the result
+    set exactly once, with their originally attributed costs — the
+    group is not re-run, so no spend recurs or double-counts.
 
     *attributed_start* seeds the printed label-attributed running
     total with spend already attributed by earlier passes of the same
@@ -789,6 +800,22 @@ def _run_audit(
         else joern_server
     )
 
+    # Per-group resume state: rows already scored by a previous
+    # (stopped) process of the same pass.  A checkpointed group is
+    # trusted only when its rows cover exactly the current group's
+    # label set — a changed selection re-runs the group instead of
+    # silently reusing stale rows.
+    ckpt_groups: dict[str, list[dict[str, Any]]] = {}
+    if checkpoint is not None:
+        ckpt_data = _checkpoint_read(checkpoint)
+        if isinstance(ckpt_data, dict) and isinstance(
+            ckpt_data.get("groups"), dict,
+        ):
+            ckpt_groups = {
+                k: v for k, v in ckpt_data["groups"].items()
+                if isinstance(v, list)
+            }
+
     results: list[dict[str, Any]] = []
     run_dirs: list[Path] = []
     attributed_total = attributed_start
@@ -816,6 +843,32 @@ def _run_audit(
                 f"{mode or 'security'})",
                 flush=True,
             )
+            cached_rows = ckpt_groups.get(repo_key)
+            if cached_rows is not None and (
+                {r.get("function_id") for r in cached_rows}
+                == {lb.function_id for lb in repo_labels}
+            ) and all(
+                # A checkpoint written under a different --model must
+                # never be resumed silently: the rows would mislabel
+                # another model's verdicts as this run's.
+                (r.get("model") or "") == (model or "")
+                for r in cached_rows
+            ):
+                results.extend(cached_rows)
+                group_cost = sum(
+                    r.get("cost_usd", 0.0) for r in cached_rows
+                )
+                attributed_total += group_cost
+                print(
+                    f"  [{_ts()}] Group resumed from checkpoint "
+                    f"({len(cached_rows)} row(s), not re-run)",
+                    flush=True,
+                )
+                _print_attributed(group_cost)
+                resumed_out = out_dir / repo_key if out_dir else None
+                if resumed_out is not None and resumed_out.is_dir():
+                    run_dirs.append(resumed_out)
+                continue
             src_dir = source_dirs.get(repo_key)
             if src_dir is None or not src_dir.is_dir():
                 results.extend({
@@ -979,6 +1032,9 @@ def _run_audit(
             group_cost = sum(r.get("cost_usd", 0.0) for r in group_rows)
             attributed_total += group_cost
             _print_attributed(group_cost)
+            if checkpoint is not None:
+                ckpt_groups[repo_key] = group_rows
+                _checkpoint_write(checkpoint, {"groups": ckpt_groups})
     finally:
         if own_joern:
             _stop_shared_joern(joern_srv)
@@ -2328,7 +2384,9 @@ def _run_ensemble_audit(
     Improvements over naive sequential:
     - Both passes run in parallel (ThreadPoolExecutor), halving wall time
     - Shared Joern server across both passes
-    - Checkpoints after each stage for crash resilience
+    - Checkpoints after each stage AND after each group within a pass
+      (``checkpoint-*-groups.json``), so a mid-pass stop loses at most
+      the in-flight group
     - max_workers halved per pass to avoid overwhelming the LLM
 
     Returns (scored_results, run_dirs) — same shape as _run_audit.
@@ -2343,6 +2401,8 @@ def _run_ensemble_audit(
     sec_ckpt = base_out / "checkpoint-sec.json"
     bf_ckpt = base_out / "checkpoint-bf.json"
     merged_ckpt = base_out / "checkpoint-merged.json"
+    sec_groups_ckpt = base_out / "checkpoint-sec-groups.json"
+    bf_groups_ckpt = base_out / "checkpoint-bf-groups.json"
 
     # --- Shared Joern server (read-only, thread-safe over HTTP) ---
     joern_srv = _start_shared_joern(
@@ -2381,6 +2441,7 @@ def _run_ensemble_audit(
                     triage=triage,
                     prefilter=prefilter,
                     profile=profile,
+                    checkpoint=sec_groups_ckpt,
                 )
                 _checkpoint_write(sec_ckpt, sec_results)
                 print(f"  Security pass complete "
@@ -2437,6 +2498,7 @@ def _run_ensemble_audit(
                         triage=triage,
                         prefilter=prefilter,
                         profile=profile,
+                        checkpoint=bf_groups_ckpt,
                         # Seed the running attributed total with the
                         # security pass's spend: mid-pass-2 progress
                         # lines state the run-level figure a cost
@@ -3267,6 +3329,10 @@ def main(argv: list[str] | None = None) -> int:
                         triage=args.triage == "on",
                         prefilter=args.prefilter == "on",
                         profile=args.profile,
+                        checkpoint=(
+                            args.out / f"checkpoint-{mode}-groups.json"
+                            if args.out else None
+                        ),
                     )
             finally:
                 if excerpt_dirs:

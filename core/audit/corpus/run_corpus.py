@@ -739,6 +739,7 @@ def _run_audit(
     triage: bool = True,
     prefilter: bool = True,
     profile: str = "deployed",
+    attributed_start: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run /audit's orchestrator against labeled functions.
 
@@ -748,6 +749,12 @@ def _run_audit(
 
     When *joern_server* is provided the caller owns its lifecycle;
     otherwise a server is started and stopped internally.
+
+    *attributed_start* seeds the printed label-attributed running
+    total with spend already attributed by earlier passes of the same
+    run (the ensemble's bug_first pass passes in the security pass's
+    total), so a mid-run ceiling decision always sees the RUN-level
+    attributed figure, never a per-pass fragment.
 
     *triage* False disables the triage-classifier SKIP shortcut in the
     pipeline AND the runner's own inventoried-but-unreviewed fallback,
@@ -784,7 +791,21 @@ def _run_audit(
 
     results: list[dict[str, Any]] = []
     run_dirs: list[Path] = []
+    attributed_total = attributed_start
     n_groups = len(by_repo)
+
+    def _print_attributed(group_cost: float) -> None:
+        # The attributed running total DURING the run: the number a
+        # cost ceiling must be compared against mid-run (telemetry
+        # totals run up to 3x higher and nothing else prints the
+        # attributed figure until the final summary).
+        print(
+            f"  [{_ts()}] Label-attributed cost: ${group_cost:.4f} "
+            f"this group, ${attributed_total:.4f} running total "
+            f"(mode {mode or 'security'})",
+            flush=True,
+        )
+
     try:
         for group_idx, (repo_key, repo_labels) in enumerate(
             by_repo.items(), start=1,
@@ -837,6 +858,7 @@ def _run_audit(
 
             inventoried = _load_inventoried_functions(audit_dir)
 
+            group_rows: list[dict[str, Any]] = []
             for label in repo_labels:
                 outcome = outcomes.get(label.function_id)
                 if outcome is None:
@@ -929,7 +951,7 @@ def _run_audit(
                 counter_hyp = ""
                 if outcome is not None:
                     counter_hyp = outcome.get("counter_hypothesis", "")
-                results.append({
+                group_rows.append({
                     "function_id": label.function_id,
                     "bug_class": label.bug_class,
                     "expected": expected,
@@ -952,6 +974,11 @@ def _run_audit(
                     "duration_s": dur,
                     "error_reason": error_reason,
                 })
+
+            results.extend(group_rows)
+            group_cost = sum(r.get("cost_usd", 0.0) for r in group_rows)
+            attributed_total += group_cost
+            _print_attributed(group_cost)
     finally:
         if own_joern:
             _stop_shared_joern(joern_srv)
@@ -2410,6 +2437,13 @@ def _run_ensemble_audit(
                         triage=triage,
                         prefilter=prefilter,
                         profile=profile,
+                        # Seed the running attributed total with the
+                        # security pass's spend: mid-pass-2 progress
+                        # lines state the run-level figure a cost
+                        # ceiling compares against.
+                        attributed_start=sum(
+                            r.get("cost_usd", 0.0) for r in sec_results
+                        ),
                     )
                 else:
                     print("  All functions confident clean — skipping pass 2",
@@ -3281,10 +3315,25 @@ def main(argv: list[str] | None = None) -> int:
             logger.debug("spend aggregation failed", exc_info=True)
 
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
+    label_attributed_usd = round(
+        sum(r.get("cost_usd", 0.0) for r in results), 4,
+    )
     meta = {
         "wall_s": round(wall_s, 1),
         "llm_s": round(total_llm_s, 1),
-        "cost_usd": round(sum(r.get("cost_usd", 0.0) for r in results), 4),
+        # Three spend figures, distinct by name — they can disagree
+        # by 2-3x and were conflated before:
+        #   cost_usd / label_attributed_usd — per-label review spend
+        #     summed from the result rows (cost_usd is the legacy
+        #     name; the only defensible cross-run cost comparison);
+        #   total_spend_usd — telemetry-ledger total for the whole
+        #     run (money actually spent, set below when ledgers
+        #     exist);
+        #   infra_usd — total minus attributed: study, prep, spec/
+        #     checker synthesis, summaries, non-label review
+        #     overheads (set below with total_spend_usd).
+        "cost_usd": label_attributed_usd,
+        "label_attributed_usd": label_attributed_usd,
         "model": ", ".join(m or "default" for m in models),
         # The RESOLVED provider/model actually used (falls back to
         # the requested name when resolution failed) — meta used to
@@ -3302,6 +3351,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     if spend:
         meta["total_spend_usd"] = round(spend["total_usd"], 4)
+        meta["infra_usd"] = round(
+            max(spend["total_usd"] - label_attributed_usd, 0.0), 4,
+        )
     if not args.probe:
         # Audit modes only — probe never consults the triage pipeline
         # or the mechanical prefilter.

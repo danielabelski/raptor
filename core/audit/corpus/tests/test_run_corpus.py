@@ -1996,3 +1996,147 @@ class TestDryRunSourceCensus:
         assert "Sources: 1/1 present, 0 missing" in out
         assert "labels verified" in out
 
+
+class TestSpendMetaBreakdown:
+    """meta carries all three spend figures under distinct names:
+    label-attributed (row sums), telemetry total (money actually
+    spent), and infra (their difference) — they can disagree by 3x
+    and a ceiling decision needs to know which one it is comparing."""
+
+    def test_meta_records_attributed_infra_total(
+        self, tmp_path, monkeypatch,
+    ):
+        gdir = tmp_path / "run" / "test"
+        gdir.mkdir(parents=True)
+        telemetry = gdir / "llm-telemetry.jsonl"
+        telemetry.write_text(
+            json.dumps({"cost_usd": 2.5, "call_class": "review"}) + "\n"
+            + json.dumps({"cost_usd": 2.5, "call_class": "study"}) + "\n",
+        )
+        rows = [
+            dict(_result_row("a.c:f"), model="", cost_usd=2.0),
+        ]
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=rows, run_dirs=[tmp_path / "run"],
+        )
+        assert rc == 0
+        meta = _meta_of(out)
+        assert meta["label_attributed_usd"] == 2.0
+        assert meta["cost_usd"] == 2.0  # legacy name, same figure
+        assert meta["total_spend_usd"] == 5.0
+        assert meta["infra_usd"] == 3.0
+
+    def test_group_progress_prints_attributed_running_total(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        (tmp_path / "r1").mkdir()
+        (tmp_path / "r2").mkdir()
+        labels = [
+            _mk_label("a.c:f", repo="r1"),
+            _mk_label("b.c:g", file="b.c", repo="r2"),
+        ]
+        costs = {"r1": 1.5, "r2": 1.0}
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            cost = costs[repo_labels[0].source.repo]
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean",
+                        "cost_usd": cost,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {},
+                None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        run_corpus._run_audit(
+            labels,
+            {"r1": tmp_path / "r1", "r2": tmp_path / "r2"},
+            joern_server=object(),
+        )
+        stdout = capsys.readouterr().out
+        assert "$1.5000 this group, $1.5000 running total" in stdout
+        assert "$1.0000 this group, $2.5000 running total" in stdout
+
+
+class TestRunLevelRunningTotal:
+    """The printed attributed running total is RUN-level: pass 2 of
+    the ensemble seeds it with pass 1's spend, so a mid-pass-2 cost
+    ceiling decision never compares against a per-pass fragment."""
+
+    def test_attributed_start_seeds_running_total(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        (tmp_path / "r1").mkdir()
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 1.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        run_corpus._run_audit(
+            [_mk_label("a.c:f", repo="r1")],
+            {"r1": tmp_path / "r1"},
+            joern_server=object(), attributed_start=10.0,
+        )
+        stdout = capsys.readouterr().out
+        assert "$1.5000 this group, $11.5000 running total" in stdout
+
+    def test_ensemble_seeds_pass2_with_pass1_spend(
+        self, tmp_path, monkeypatch,
+    ):
+        starts = []
+
+        def fake_run_audit(
+            labels, dirs, *, mode=None, attributed_start=0.0, **kw,
+        ):
+            starts.append((mode, attributed_start))
+            return (
+                [
+                    dict(
+                        _result_row(lb.function_id, actual="suspicious"),
+                        model="", cost_usd=3.0,
+                    )
+                    for lb in labels
+                ],
+                [],
+            )
+
+        monkeypatch.setattr(run_corpus, "_run_audit", fake_run_audit)
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_run_phase2_classify",
+            lambda findings, model="": 0.0,
+        )
+        (tmp_path / "r1").mkdir()
+        (tmp_path / "r2").mkdir()
+        labels = [
+            _mk_label("a.c:f", repo="r1"),
+            _mk_label("b.c:g", file="b.c", repo="r2"),
+        ]
+        run_corpus._run_ensemble_audit(
+            labels,
+            {"r1": tmp_path / "r1", "r2": tmp_path / "r2"},
+            out_dir=tmp_path / "out",
+        )
+        assert starts[0] == ("security", 0.0)
+        assert starts[1] == ("bug_first", 6.0)

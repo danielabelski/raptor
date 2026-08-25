@@ -13,6 +13,7 @@ from core.coverage.journal import (  # noqa: F401
     entry_producer,
     flush_journal,
     is_function_grade,
+    is_mechanical_echo,
     latest_entries,
     latest_function_grade_index,
     load_domain_model,

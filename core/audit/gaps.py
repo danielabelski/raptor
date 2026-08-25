@@ -1784,7 +1784,7 @@ def _strategy_backfill_from(
     """
     from core.coverage import journal_mac
 
-    from .journal import is_function_grade
+    from .journal import is_function_grade, is_mechanical_echo
 
     by_site: dict[tuple, list] = {}
     for e in entries:
@@ -1793,6 +1793,12 @@ def _strategy_backfill_from(
         if getattr(e, "edge_callee", None):
             continue
         if not (e.strategies or []):
+            continue
+        # A mechanical echo row is not a briefing: its tag would both
+        # poison the backfilled comparison (``post-loop-mechanical``
+        # never matches a current inference) and, being the newest
+        # row at its site, shadow the real populated sibling.
+        if is_mechanical_echo(e):
             continue
         site = (e.file, e.function, getattr(e, "line_start", 0) or 0)
         by_site.setdefault(site, []).append(e)

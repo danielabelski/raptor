@@ -470,3 +470,21 @@ class TestCorrectiveStrategyInheritance:
         self._write(tmp_path, {"line_start": 50}, status="clean",
                     function="login")
         assert load_entries(tmp_path)[-1].strategies == ["memory"]
+
+    def test_mechanical_echo_never_donates(self, tmp_path: Path) -> None:
+        # A post-loop mechanical echo row's ``post-loop-mechanical``
+        # tag is a row-kind marker, not a review briefing — inheriting
+        # it turns the corrective row itself into a mechanical echo
+        # for every is_mechanical_echo consumer (dropped from reviewed
+        # counts, refused by cross-run reuse as strategy_changed).
+        from core.coverage.journal import is_mechanical_echo, load_entries
+        self._write(
+            tmp_path,
+            {"line_start": 0, "strategies": ["post-loop-mechanical"]},
+            status="suspicious", body="[mechanical] pattern hit",
+        )
+        self._write(tmp_path, {"line_start": 10}, status="clean",
+                    body="[resolution] corrective")
+        entry = load_entries(tmp_path)[-1]
+        assert entry.strategies == []
+        assert not is_mechanical_echo(entry)

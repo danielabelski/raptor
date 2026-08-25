@@ -2376,6 +2376,64 @@ class TestRejournalFinalStatuses:
         assert entry.line_start == 1
         assert entry.line_end == 1
 
+    def test_echo_drift_corrective_carries_the_review_not_the_echo(
+        self, tmp_path: Path,
+    ):
+        # A post-loop mechanical echo is routinely the newest journal
+        # row for exactly the function being corrected — the echo's
+        # verdict IS the drift the corrective row resolves. The
+        # corrective row must carry the REVIEW's span and strategy
+        # record: adopting the echo's fields stamps the function's
+        # final verdict as a mechanical echo, so every
+        # is_mechanical_echo consumer drops it — the report's
+        # reviewed/clean counts lose the function (a resumed run's
+        # report no longer covered its own segment's verdicts) and
+        # cross-run reuse refuses it as strategy_changed.
+        from core.audit.collector import append_journal_for_outcome
+        from core.audit.journal import (
+            is_mechanical_echo,
+            latest_entries,
+            make_function_key,
+        )
+        from core.audit.orchestrator import _rejournal_final_statuses
+
+        config = self._setup(tmp_path)
+        review = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="reviewed clean", hypothesis="auth bypass", line=1,
+        )
+        append_journal_for_outcome(
+            out_dir=config.out_dir, target_path=config.target_path,
+            run_id="run-1", outcome=review,
+            gap={"line_start": 1, "line_end": 1,
+                 "strategies": ["auth", "general"]},
+        )
+        echo = ReviewOutcome(
+            file="a.c", function="f", status="suspicious",
+            body="[mechanical] pattern hit", line=0,
+        )
+        append_journal_for_outcome(
+            out_dir=config.out_dir, target_path=config.target_path,
+            run_id="run-1", outcome=echo,
+            gap={"line_start": 0,
+                 "strategies": ["post-loop-mechanical"]},
+        )
+
+        final = ReviewOutcome(
+            file="a.c", function="f", status="clean",
+            body="resolved clean", hypothesis="auth bypass", line=1,
+        )
+        result = OrchestratorResult()
+        result.outcomes = [final]
+
+        assert _rejournal_final_statuses(result, config) == 1
+        entry = latest_entries(config.out_dir)[make_function_key("a.c", "f")]
+        assert entry.verdict == "clean"
+        assert not is_mechanical_echo(entry)
+        assert entry.strategies == ["auth", "general"]
+        assert entry.line_start == 1
+        assert entry.line_end == 1
+
 
 class TestPostLoopReceiptRescue:
     """Post-loop structural receipts re-drive the anti-self-refutation

@@ -21842,13 +21842,37 @@ def _rejournal_final_statuses(
         return 0
     try:
         from .collector import append_journal_for_outcome
-        from .journal import latest_entries, make_function_key
+        from .journal import (
+            is_mechanical_echo,
+            load_entries,
+            make_function_key,
+        )
     except ImportError:
         return 0
     try:
-        entries = latest_entries(config.out_dir)
+        # Two collapses over one journal read: the latest entry per
+        # key (any kind) decides WHETHER the final status drifted and
+        # needs a corrective row; the latest NON-echo entry per key is
+        # the field DONOR. A post-loop mechanical echo is routinely
+        # the newest row for exactly the keys being corrected (the
+        # echo's verdict IS the drift), and adopting its fields
+        # stamped the corrective row with the ``post-loop-mechanical``
+        # tag and an echo-shaped span — every ``is_mechanical_echo``
+        # consumer then read the function's final verdict as a
+        # non-review (dropped from the report's reviewed/clean counts,
+        # excluded from gap coverage, refused by cross-run reuse).
+        entries: dict[str, Any] = {}
+        donors: dict[str, Any] = {}
+        for e in load_entries(config.out_dir):
+            prev = entries.get(e.key)
+            if prev is None or e.ts > prev.ts:
+                entries[e.key] = e
+            if not is_mechanical_echo(e):
+                prev = donors.get(e.key)
+                if prev is None or e.ts > prev.ts:
+                    donors[e.key] = e
     except Exception:
-        logger.debug("re-journal: latest_entries failed", exc_info=True)
+        logger.debug("re-journal: journal load failed", exc_info=True)
         return 0
 
     updated = 0
@@ -21866,18 +21890,23 @@ def _rejournal_final_statuses(
         # handed cross-run verdict reuse an empty strategy set for a
         # fully-briefed review, refusing it as strategy_changed on
         # every later run, and the one-line hash weakened staleness
-        # evidence to near nothing. Same-named siblings: only adopt
-        # the prior row's fields when it describes the SAME site —
+        # evidence to near nothing. The donor is the latest NON-echo
+        # row (see the collapse above): the corrective row describes
+        # the REVIEW's final status, never the mechanical echo that
+        # triggered the correction. Same-named siblings: only adopt
+        # the donor row's fields when it describes the SAME site —
         # a mismatched sibling keeps the minimal-gap behaviour
         # (the collector's sibling-inheritance fallback still fills
         # strategies when it can).
+        donor = donors.get(key)
         gap: dict[str, Any] = {"line_start": outcome.line or 0}
-        if not outcome.line or (prior.line_start or 0) in (
-                0, outcome.line):
+        if donor is not None and (
+                not outcome.line
+                or (donor.line_start or 0) in (0, outcome.line)):
             gap = {
-                "line_start": prior.line_start or (outcome.line or 0),
-                "line_end": prior.line_end,
-                "strategies": list(prior.strategies or []),
+                "line_start": donor.line_start or (outcome.line or 0),
+                "line_end": donor.line_end,
+                "strategies": list(donor.strategies or []),
             }
         try:
             append_journal_for_outcome(

@@ -444,6 +444,32 @@ class TestCorrectiveStrategyBackfill:
         assert sink == {}
         assert "auth.c:check_pw" in _gap_keys(gaps)
 
+    def test_mechanical_echo_sibling_never_donates(self, tmp_path):
+        # When a post-loop pattern hit triggered the correction, the
+        # newest populated row at the site is the mechanical echo —
+        # its ``post-loop-mechanical`` tag is a row-kind marker, not
+        # a briefing, and never matches a current inference. The
+        # backfill must reach past it to the real review row, or the
+        # corrected function is refused as strategy_changed forever.
+        target = _write_target(tmp_path)
+        original = _entry(target, verdict="suspicious")
+        echo = _entry(
+            target, verdict="suspicious",
+            strategies=["post-loop-mechanical"],
+            body="[mechanical] pattern hit", line_end=None,
+        )
+        corrective = self._corrective(target)
+        project = self._project_with_history(
+            tmp_path, original, echo, corrective)
+        sink: dict = {}
+        gaps = compute_gaps(
+            _checklist(target), [], project_dir=project,
+            reuse_sink=sink, current_model="model-a",
+        )
+        assert "auth.c:check_pw" in sink
+        assert sink["auth.c:check_pw"].verdict == "clean"
+        assert "auth.c:check_pw" not in _gap_keys(gaps)
+
 
 class TestOutcomeFromEntry:
     def test_fields(self, tmp_path):

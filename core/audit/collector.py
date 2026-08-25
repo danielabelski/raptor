@@ -53,13 +53,25 @@ def _build_strategy_snapshot(out_dir: Path) -> dict[tuple, list[str]]:
     try:
         from core.coverage import journal_mac
 
-        from .journal import is_function_grade, load_entries
+        from .journal import (
+            is_function_grade,
+            is_mechanical_echo,
+            load_entries,
+        )
         for e in load_entries(out_dir):
             if e.verdict == "error" or not is_function_grade(e):
                 continue
             if getattr(e, "edge_callee", None):
                 continue
             if not (e.strategies or []):
+                continue
+            # Mechanical echo rows are not reviews: their
+            # ``post-loop-mechanical`` tag is a row-kind marker, not
+            # a briefing, and donating it turns the corrective row
+            # itself into an echo for every is_mechanical_echo
+            # consumer (dropped from reviewed counts, refused by
+            # cross-run reuse as strategy_changed).
+            if is_mechanical_echo(e):
                 continue
             # The journal lives in a target-writable run dir: only
             # rows this install's writer stamped may donate a

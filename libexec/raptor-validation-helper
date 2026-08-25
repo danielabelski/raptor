@@ -850,7 +850,20 @@ def prepare_B(workdir, target=None):
         evidence_map = collect_runtime_evidence(
             [wdir, wdir.parent], target_path=target)
         if evidence_map and attack_paths:
-            attack_paths = annotate_attack_paths(attack_paths, evidence_map)
+            # finding id → (file, line) lets the bridge upgrade
+            # function_observed to callsite_match when a resolved
+            # call site lands on the finding's own location.
+            finding_locations = {
+                f["id"]: (f["file"], f["line"])
+                for f in findings
+                if isinstance(f, dict)
+                and isinstance(f.get("id"), str)
+                and isinstance(f.get("file"), str)
+                and isinstance(f.get("line"), int)
+            }
+            attack_paths = annotate_attack_paths(
+                attack_paths, evidence_map,
+                finding_locations=finding_locations)
             _save_artifact(wdir / "attack-paths.json", attack_paths)
             print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
 

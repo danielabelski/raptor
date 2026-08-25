@@ -328,8 +328,14 @@ evidence-bearing runs log at debug). Conversely, hot libc sinks
 performs — `printf` reaches libc-internal `memcpy` with the target on
 the stack — so treat `function_observed` on a ubiquitous sink as
 reachability corroboration, not proof that the finding's specific
-call site ran; each event carries `caller_module`/`caller_offset` for
-precise callsite matching when that distinction matters. A caller
+call site ran; each event carries `caller_module`/`caller_offset`, and the
+validation bridge resolves target-binary call sites to source
+(`observed_callsites`, sandboxed `addr2line` on debug-built targets;
+a binary directly under `/tmp` is masked by the sandbox and cannot
+resolve) and marks `callsite_match: true` when an observed call lands
+on the finding's own location — site-level proof, not just
+function-level. The key is absent when nothing resolved (unknown) and
+`false` only when resolved sites landed elsewhere. A caller
 module whose on-disk path lives under the target binary's directory
 also attributes — project-shipped libraries whose call chains never
 touch the main binary (plugin callbacks, dlopen'd codecs) — without

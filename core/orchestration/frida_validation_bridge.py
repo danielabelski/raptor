@@ -39,6 +39,10 @@ class RuntimeEvidence:
     call_count: int = 0
     observed_args: list | None = None
     trace_id: str = ""
+    # Source-resolved call sites: [{"module", "offset", "source"}]
+    # where source is "file:line" (addr2line on the run's target
+    # binary) or None when unresolvable. Bounded, deduped.
+    observed_callsites: list | None = None
 
 
 def collect_runtime_evidence(
@@ -83,6 +87,7 @@ def collect_runtime_evidence(
         # the max across runs (represents the hottest single run).
         run_counts: dict[str, int] = {}
         run_first_args: dict[str, list | None] = {}
+        run_callsites: dict[str, list[dict]] = {}
 
         for record in parse_events(events_path):
             if not isinstance(record, dict):
@@ -131,10 +136,18 @@ def collect_runtime_evidence(
             names = list(dict.fromkeys(names))
 
             args = payload.get("args")
+            callsite = _event_callsite(payload)
             for name in names:
                 run_counts[name] = run_counts.get(name, 0) + 1
                 if run_first_args.get(name) is None:
                     run_first_args[name] = _sanitize_observed_args(args)
+                if callsite is not None:
+                    sites = run_callsites.setdefault(name, [])
+                    if (len(sites) < _MAX_CALLSITES
+                            and callsite not in sites):
+                        sites.append(callsite)
+
+        _resolve_run_callsites(run_callsites, ev.target_binary)
 
         for fn, count in run_counts.items():
             if fn in result:
@@ -149,11 +162,15 @@ def collect_runtime_evidence(
                     new_count, new_trace = count, trace_id
                 else:
                     new_count, new_trace = existing.call_count, existing.trace_id
+                new_sites = existing.observed_callsites
+                if not new_sites:
+                    new_sites = run_callsites.get(fn)
                 result[fn] = RuntimeEvidence(
                     function_observed=True,
                     call_count=new_count,
                     observed_args=new_args,
                     trace_id=new_trace,
+                    observed_callsites=new_sites,
                 )
             else:
                 result[fn] = RuntimeEvidence(
@@ -161,6 +178,7 @@ def collect_runtime_evidence(
                     call_count=count,
                     observed_args=run_first_args.get(fn),
                     trace_id=trace_id,
+                    observed_callsites=run_callsites.get(fn),
                 )
 
     log.info("collected runtime evidence: %d functions from %d runs",
@@ -194,6 +212,7 @@ def collect_runtime_evidence(
 def annotate_attack_paths(
     attack_paths: list[dict],
     evidence_map: dict[str, RuntimeEvidence],
+    finding_locations: dict[str, tuple[str, int]] | None = None,
 ) -> list[dict]:
     """Annotate attack paths with runtime_evidence from frida.
 
@@ -237,12 +256,21 @@ def annotate_attack_paths(
             has_evidence = True
             if first_trace_id is None:
                 first_trace_id = ev.trace_id
-            step["runtime_evidence"] = {
+            runtime_evidence: dict = {
                 "function_observed": ev.function_observed,
                 "call_count": ev.call_count,
                 "observed_args": ev.observed_args,
                 "trace_id": ev.trace_id,
             }
+            if ev.observed_callsites:
+                runtime_evidence["observed_callsites"] = [
+                    dict(s) for s in ev.observed_callsites]
+                match = _callsite_match(
+                    ev.observed_callsites, step,
+                    finding_locations, path.get("finding"))
+                if match is not None:
+                    runtime_evidence["callsite_match"] = match
+            step["runtime_evidence"] = runtime_evidence
 
         if has_evidence:
             path["runtime_evidence_available"] = True
@@ -256,6 +284,73 @@ def annotate_attack_paths(
                 path["proximity"] = PROXIMITY_FLOOR
 
     return result
+
+
+# Line tolerance when matching a resolved call site against a step or
+# finding location: the caller offset resolves to the CALL line, which
+# sits at or near the location a finding/step names.
+_STEP_LINE_TOLERANCE = 2
+_FINDING_LINE_TOLERANCE = 5
+
+_LOCATION_RE = re.compile(r"^(.*):(\d+)$")
+
+
+def _callsite_match(
+    callsites: list[dict],
+    step: dict,
+    finding_locations: dict[str, tuple[str, int]] | None,
+    finding_id: object,
+) -> bool | None:
+    """True/False when a comparison was possible, None when the step
+    and finding carry no usable location.
+
+    True upgrades ``function_observed`` from "this function ran" to
+    "this SPECIFIC call site ran" — the distinction that matters for
+    ubiquitous sinks, which attribute from any target I/O.
+    """
+    expectations: list[tuple[str, int, int]] = []
+    for key, tolerance in (("call_site", _STEP_LINE_TOLERANCE),
+                           ("definition", _STEP_LINE_TOLERANCE)):
+        value = step.get(key)
+        if isinstance(value, str):
+            m = _LOCATION_RE.match(value.strip())
+            if m:
+                expectations.append((m.group(1), int(m.group(2)),
+                                     tolerance))
+    if finding_locations and isinstance(finding_id, str):
+        loc = finding_locations.get(finding_id)
+        if loc and isinstance(loc[0], str) and isinstance(loc[1], int):
+            expectations.append((loc[0], loc[1],
+                                 _FINDING_LINE_TOLERANCE))
+    if not expectations:
+        return None
+
+    # No comparison is possible when nothing resolved to source
+    # (release builds, library callsites, addr2line unavailable) —
+    # that is None, never False: False must always mean "resolved to
+    # a DIFFERENT call site".
+    if not any(isinstance(s.get("source"), str) for s in callsites):
+        return None
+
+    for site in callsites:
+        source = site.get("source")
+        if not isinstance(source, str):
+            continue
+        m = _LOCATION_RE.match(source)
+        if not m:
+            continue
+        src_path, src_line = m.group(1), int(m.group(2))
+        for want_path, want_line, tolerance in expectations:
+            if abs(src_line - want_line) > tolerance:
+                continue
+            # Resolved paths are compile-dir absolute; step/finding
+            # paths are repo-relative — compare by suffix on whole
+            # path components.
+            if (src_path == want_path
+                    or src_path.endswith("/" + want_path)
+                    or want_path.endswith("/" + src_path)):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +388,11 @@ _MAX_ATTRIBUTION_FRAMES = 16
 # An IFUNC alias group has 2-3 members in practice; anything larger is
 # a forged event.
 _MAX_ALIASES = 8
+
+# Callsite bounds: unique call sites kept per function, and unique
+# addresses resolved per run (one sandboxed addr2line batch per run).
+_MAX_CALLSITES = 8
+_MAX_RESOLVE_ADDRS = 128
 
 
 def _attributed_to_target(payload: dict, target_name: str | None,
@@ -336,6 +436,147 @@ def _attributed_to_target(payload: dict, target_name: str | None,
                     and frame.get("module") == target_name):
                 return True
     return False
+
+
+def _event_callsite(payload: dict) -> dict | None:
+    """Extract a resolvable call site from an event payload."""
+    module = payload.get("caller_module")
+    offset = payload.get("caller_offset")
+    if not (isinstance(module, str) and module
+            and isinstance(offset, str) and offset):
+        return None
+    site: dict = {"module": module[:128], "offset": offset[:32],
+                  "source": None}
+    base = payload.get("caller_module_base")
+    if isinstance(base, str) and base:
+        site["_base"] = base[:32]
+    path = payload.get("caller_module_path")
+    if isinstance(path, str) and path:
+        site["_path"] = path[:512]
+    return site
+
+
+def _resolve_run_callsites(run_callsites: dict[str, list[dict]],
+                           target_binary: str | None) -> None:
+    """Resolve call sites in the run's TARGET BINARY to file:line.
+
+    Mutates the site dicts in place: fills ``source`` and strips the
+    private working keys. Only sites whose caller module is the run's
+    target binary are resolvable (that is the binary we have); library
+    callsites keep source=None. Best-effort — a resolution failure
+    leaves the raw module+offset, which is still evidence.
+    """
+    try:
+        _do_resolve_run_callsites(run_callsites, target_binary)
+    except Exception:  # noqa: BLE001 — resolution is additive
+        log.debug("callsite resolution failed", exc_info=True)
+    finally:
+        for sites in run_callsites.values():
+            for site in sites:
+                site.pop("_base", None)
+                site.pop("_path", None)
+
+
+def _do_resolve_run_callsites(run_callsites: dict[str, list[dict]],
+                              target_binary: str | None) -> None:
+    if not target_binary or not run_callsites:
+        return
+    binary = Path(target_binary)
+    if not binary.is_file():
+        return
+    target_name = binary.name
+
+    # Unique candidate addresses across the run. Dual-candidate PIE
+    # handling (same trick as the drcov import): resolve the offset
+    # both as a PIE file-vaddr (offset itself) and as base+offset;
+    # the wrong interpretation yields ?? and drops out.
+    wanted: list[tuple[dict, int, int | None]] = []
+    addrs: set[int] = set()
+    for sites in run_callsites.values():
+        for site in sites:
+            if site["module"] != target_name:
+                continue
+            try:
+                offset = int(site["offset"], 16)
+            except (TypeError, ValueError):
+                continue
+            absolute: int | None = None
+            base_raw = site.get("_base")
+            if isinstance(base_raw, str):
+                try:
+                    absolute = int(base_raw, 16) + offset
+                except ValueError:
+                    absolute = None
+            wanted.append((site, offset, absolute))
+            addrs.add(offset)
+            if absolute is not None:
+                addrs.add(absolute)
+            if len(addrs) >= _MAX_RESOLVE_ADDRS:
+                break
+        if len(addrs) >= _MAX_RESOLVE_ADDRS:
+            break
+    if not wanted:
+        return
+
+    resolved = _addr2line_batch(binary, sorted(addrs))
+    if not resolved:
+        # Routine for release builds (no DWARF) — but also the shape a
+        # sandbox-unreadable binary produces (a binary directly under
+        # /tmp is masked by the sandbox's fresh tmpfs). Say so once.
+        log.info(
+            "0/%d callsites resolved for %s (no debug info, addr2line "
+            "unavailable, or binary unreadable inside the sandbox — "
+            "binaries directly under /tmp are masked)",
+            len(addrs), binary)
+        return
+    for site, offset, absolute in wanted:
+        source = resolved.get(offset)
+        if source is None and absolute is not None:
+            source = resolved.get(absolute)
+        if source is not None:
+            site["source"] = source
+
+
+def _addr2line_batch(binary: Path, addrs: list[int]) -> dict[int, str]:
+    """Resolve addresses to "file:line" via sandboxed addr2line.
+
+    Returns only real resolutions (?? and line 0 dropped). The binary
+    is operator/target-supplied: binutils DWARF parsers have a CVE
+    history, so the invocation runs inside the sandbox with the
+    binary's directory as the readable target (the binary_oracle
+    convention).
+    """
+    import shutil as _shutil
+
+    if not addrs or _shutil.which("addr2line") is None:
+        return {}
+    from core.sandbox import run as _sandbox_run
+
+    out: dict[int, str] = {}
+    argv = (["addr2line", "-e", str(binary)]
+            + [hex(a) for a in addrs])
+    try:
+        proc = _sandbox_run(
+            argv,
+            block_network=True,
+            target=str(binary.resolve().parent),
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:  # noqa: BLE001 — resolution is additive
+        log.debug("addr2line invocation failed", exc_info=True)
+        return {}
+    if proc.returncode != 0:
+        return {}
+    lines = (proc.stdout or "").splitlines()
+    # addr2line emits exactly one line per input address, in order.
+    for addr, line in zip(addrs, lines):
+        path, sep, rest = line.rpartition(":")
+        if not sep or not path or path.startswith("??"):
+            continue
+        num = rest.split()[0] if rest else ""
+        if num.isdigit() and int(num) > 0:
+            out[addr] = f"{path}:{num}"
+    return out
 
 
 def _bound_value(value: object, depth: int = 0) -> object:

@@ -753,3 +753,144 @@ class TestCallerPathAttribution:
         }])
         _write_metadata(run, target_binary=str(target_dir / "srv"))
         assert collect_runtime_evidence([tmp_path]) == {}
+
+
+class TestObservedCallsites:
+    def _run(self, tmp_path, payload_extra: dict, binary: Path):
+        run = tmp_path / "run"
+        _write_events(run, [{
+            "ts": 1.0, "type": "send",
+            "payload": {
+                "category": "sink", "fn": "memcpy",
+                "caller_module": binary.name,
+                "args": {"n": 4}, "tid": 1,
+                **payload_extra,
+            },
+        }])
+        _write_metadata(run, target_binary=str(binary))
+        return run
+
+    def test_callsites_captured_and_bounded(self, tmp_path):
+        binary = tmp_path / "srv"          # not a real file: no resolve
+        run = tmp_path / "run"
+        events = []
+        for i in range(20):
+            events.append({
+                "ts": 1.0, "type": "send",
+                "payload": {"category": "sink", "fn": "memcpy",
+                            "caller_module": "srv",
+                            "caller_offset": hex(0x1000 + i),
+                            "args": {"n": 4}, "tid": 1},
+            })
+        _write_events(run, events)
+        _write_metadata(run, target_binary=str(binary))
+        ev = collect_runtime_evidence([tmp_path])["memcpy"]
+        assert ev.observed_callsites is not None
+        assert len(ev.observed_callsites) <= 8
+        site = ev.observed_callsites[0]
+        assert site["module"] == "srv"
+        assert site["source"] is None          # nothing to resolve
+        assert "_base" not in site             # working keys stripped
+
+    def test_real_binary_resolves_to_source(self, tmp_path):
+        import shutil as sh
+        import subprocess
+        if not (sh.which("gcc") and sh.which("addr2line")):
+            import pytest
+            pytest.skip("gcc/addr2line unavailable")
+        src = tmp_path / "victim.c"
+        src.write_text(
+            "#include <string.h>\n"
+            "char d[64], s[64];\n"
+            "int main(void) {\n"
+            "    memcpy(d, s, 32);\n"        # line 4
+            "    return 0;\n"
+            "}\n", encoding="utf-8")
+        binary = tmp_path / "victim"
+        subprocess.run(["gcc", "-O0", "-g", "-no-pie", "-o",
+                        str(binary), str(src)],
+                       check=True, capture_output=True, timeout=30)
+        # Find the call instruction's address from the symbol table:
+        # use the main symbol's address + a small scan is overkill —
+        # instead resolve main's address and let the dual-candidate
+        # logic prove the plumbing: emit a callsite whose offset IS
+        # main's vaddr (non-PIE → file vaddr == runtime address).
+        nm = subprocess.run(["nm", str(binary)], capture_output=True,
+                            text=True, timeout=10, check=True)
+        main_addr = next(int(line.split()[0], 16)
+                         for line in nm.stdout.splitlines()
+                         if line.strip().endswith(" T main"))
+        run = self._run(
+            tmp_path,
+            {"caller_offset": hex(main_addr),
+             "caller_module_base": "0x0"},
+            binary)
+        ev = collect_runtime_evidence([run])["memcpy"]
+        sites = ev.observed_callsites
+        assert sites and sites[0]["source"] is not None
+        assert sites[0]["source"].endswith((".c:3", ".c:4"))
+
+
+class TestCallsiteMatch:
+    def _evidence(self, source: str | None):
+        return {"memcpy": RuntimeEvidence(
+            function_observed=True, call_count=1,
+            observed_callsites=[{"module": "srv", "offset": "0x10",
+                                 "source": source}])}
+
+    def test_step_call_site_match(self):
+        paths = [{"steps": [{"function": "memcpy",
+                             "call_site": "src/parse.c:48"}],
+                  "proximity": 1}]
+        out = annotate_attack_paths(
+            paths, self._evidence("/build/src/parse.c:49"))
+        re_dict = out[0]["steps"][0]["runtime_evidence"]
+        assert re_dict["callsite_match"] is True
+        assert re_dict["observed_callsites"][0]["source"].endswith(
+            "parse.c:49")
+
+    def test_mismatch_is_false_not_missing(self):
+        paths = [{"steps": [{"function": "memcpy",
+                             "call_site": "src/parse.c:48"}],
+                  "proximity": 1}]
+        out = annotate_attack_paths(
+            paths, self._evidence("/build/src/other.c:200"))
+        assert out[0]["steps"][0]["runtime_evidence"][
+            "callsite_match"] is False
+
+    def test_no_location_no_verdict(self):
+        paths = [{"steps": [{"function": "memcpy"}], "proximity": 1}]
+        out = annotate_attack_paths(paths, self._evidence("/x/y.c:1"))
+        assert "callsite_match" not in out[0]["steps"][0][
+            "runtime_evidence"]
+
+    def test_finding_location_join(self):
+        paths = [{"finding": "F-1",
+                  "steps": [{"function": "memcpy"}], "proximity": 1}]
+        out = annotate_attack_paths(
+            paths, self._evidence("/build/src/parse.c:50"),
+            finding_locations={"F-1": ("src/parse.c", 48)})
+        assert out[0]["steps"][0]["runtime_evidence"][
+            "callsite_match"] is True
+
+    def test_basename_collision_rejected(self):
+        # other/parse.c must not match src/parse.c (whole-component
+        # suffix comparison).
+        paths = [{"steps": [{"function": "memcpy",
+                             "call_site": "src/parse.c:48"}],
+                  "proximity": 1}]
+        out = annotate_attack_paths(
+            paths, self._evidence("/build/other/parse.c:48"))
+        assert out[0]["steps"][0]["runtime_evidence"][
+            "callsite_match"] is False
+
+    def test_unresolved_callsites_yield_no_verdict(self):
+        # Release builds / library callsites resolve nothing — that is
+        # UNKNOWN, never a mismatch.
+        paths = [{"steps": [{"function": "memcpy",
+                             "call_site": "src/parse.c:48"}],
+                  "proximity": 1}]
+        out = annotate_attack_paths(paths, self._evidence(None))
+        re_dict = out[0]["steps"][0]["runtime_evidence"]
+        assert "callsite_match" not in re_dict
+        assert re_dict["observed_callsites"][0]["source"] is None

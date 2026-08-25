@@ -43,8 +43,16 @@ def enrich_context_map_with_frida(
         return context_map
 
     # discover_evidence returns newest-first; cap to prevent performance
-    # degradation with many old runs.
-    evidence_list = evidence_list[:_MAX_EVIDENCE_FILES]
+    # degradation with many old runs. Observation-capable runs first —
+    # a burst of newer sink-watch/seed-harvest runs (whose categories
+    # the profile adapter ignores) must not crowd an older api-trace
+    # run out of the cap window.
+    from .evidence import observation_capable
+
+    evidence_list = sorted(
+        evidence_list,
+        key=lambda ev: 0 if observation_capable(ev.script_origin) else 1,
+    )[:_MAX_EVIDENCE_FILES]
 
     result = context_map
 

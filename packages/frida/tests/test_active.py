@@ -483,3 +483,52 @@ class TestAutoObserve:
                 staleness_s=3600,
             )
         assert result == new_run
+
+
+class TestAutoObserveTemplateAwareness:
+    def test_non_observation_run_does_not_suppress(self, tmp_path, monkeypatch):
+        """A fresh sink-watch run emits categories the observe profile
+        ignores; it must not satisfy auto_observe's freshness check."""
+        import json
+
+        from packages.frida import active
+
+        run = tmp_path / "frida_run"
+        run.mkdir()
+        (run / "metadata.json").write_text(json.dumps({
+            "ok": True,
+            "target": {"raw": "/bin/t", "kind": "binary",
+                       "binary": "/bin/t"},
+            "script_origin": "template:sink-watch",
+        }), encoding="utf-8")
+
+        launched = {}
+
+        def fake_observe_target(**kwargs):
+            launched.update(kwargs)
+            return tmp_path / "new_run"
+
+        monkeypatch.setattr(active, "observe_target", fake_observe_target)
+        result = active.auto_observe("/bin/t", [tmp_path])
+        assert result == tmp_path / "new_run"
+        assert launched["template"] == "api-trace"
+
+    def test_fresh_observation_run_still_suppresses(self, tmp_path, monkeypatch):
+        import json
+
+        from packages.frida import active
+
+        run = tmp_path / "frida_run"
+        run.mkdir()
+        (run / "metadata.json").write_text(json.dumps({
+            "ok": True,
+            "target": {"raw": "/bin/t", "kind": "binary",
+                       "binary": "/bin/t"},
+            "script_origin": "template:api-trace",
+        }), encoding="utf-8")
+
+        def boom(**_kwargs):
+            raise AssertionError("fresh api-trace evidence must suppress")
+
+        monkeypatch.setattr(active, "observe_target", boom)
+        assert active.auto_observe("/bin/t", [tmp_path]) is None

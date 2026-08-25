@@ -305,7 +305,15 @@ def auto_observe(
     Pipeline integration hook: /agentic and /validate can call this to
     get frida evidence on-demand without duplicate runs.
     """
-    existing = discover_evidence(search_dirs, target_path=target_path)
+    from .evidence import observation_capable
+
+    # Only observation-capable runs (api-trace/binary-flow-trace or
+    # unknown operator scripts) count as existing evidence here — a
+    # fresh sink-watch/seed-harvest/jni-trace run emits categories the
+    # observe profile ignores and must not suppress a real observation.
+    existing = [ev for ev in
+                discover_evidence(search_dirs, target_path=target_path)
+                if observation_capable(ev.script_origin)]
     if existing:
         newest = existing[0]
         meta_path = newest.run_dir / "metadata.json"

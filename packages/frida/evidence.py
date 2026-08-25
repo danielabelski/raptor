@@ -19,7 +19,12 @@ from core.logging import get_logger
 
 log = get_logger("frida.evidence")
 
-__all__ = ["FridaEvidence", "discover_evidence", "match_target"]
+__all__ = [
+    "FridaEvidence",
+    "discover_evidence",
+    "match_target",
+    "observation_capable",
+]
 
 _MAX_METADATA_SIZE = 10 * 1024 * 1024  # 10MB sanity cap
 _MAX_SCAN_CHILDREN = 500  # cap on iterdir results per search dir
@@ -32,6 +37,31 @@ class FridaEvidence:
     target_binary: str | None = None
     has_drcov: bool = False
     has_events: bool = False
+    script_origin: str | None = None    # "template:<name>" / "file:<path>" / "sink-watch:<path>"
+
+
+# Bundled templates whose events feed the observe profile
+# (file/network categories). The other templates emit their own
+# categories (ingest/exec/load/sink/jni) that the profile adapter
+# deliberately ignores — a run of those is NOT a substitute for an
+# observation run.
+_OBSERVATION_TEMPLATES = frozenset({"api-trace", "binary-flow-trace"})
+
+
+def observation_capable(script_origin: str | None) -> bool:
+    """True when a run's events can yield an observe profile.
+
+    Legacy runs (no recorded origin) and operator ``file:`` scripts
+    count — their content is unknown, so assume capable. Bundled
+    templates are known: only the observation templates qualify.
+    """
+    if script_origin is None:
+        return True
+    if script_origin.startswith("template:"):
+        return script_origin.split(":", 1)[1] in _OBSERVATION_TEMPLATES
+    if script_origin.startswith("sink-watch:"):
+        return False
+    return True
 
 
 def _load_metadata(run_dir: Path) -> dict | None:
@@ -93,12 +123,14 @@ def match_target(metadata: dict, target_path: str) -> bool:
 def _build_evidence(run_dir: Path, metadata: dict) -> FridaEvidence:
     target = metadata.get("target", {})
     binary = target.get("binary") if isinstance(target, dict) else None
+    origin = metadata.get("script_origin")
     return FridaEvidence(
         run_dir=run_dir,
         metadata=metadata,
         target_binary=binary if isinstance(binary, str) and binary else None,
         has_drcov=(run_dir / "coverage.drcov").is_file(),
         has_events=_has_nonempty_events(run_dir / "events.jsonl"),
+        script_origin=origin if isinstance(origin, str) and origin else None,
     )
 
 

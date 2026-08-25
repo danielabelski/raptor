@@ -141,3 +141,51 @@ class TestEnrichEmptyEvents:
         ctx = _make_context_map()
         result = enrich_context_map_with_frida(ctx, [tmp_path])
         assert "runtime_observation" not in result
+
+
+class TestObservationCapablePreference:
+    def test_older_observation_run_survives_the_cap(self, tmp_path):
+        """A burst of newer non-observation runs (sink-watch etc.) must
+        not crowd an older api-trace run out of the 5-dir cap window."""
+        import json
+        import os
+        import time
+
+        from packages.frida.context_bridge import enrich_context_map_with_frida
+
+        target = str(tmp_path / "t")
+
+        def _mk_run(name: str, origin: str, events: list[dict],
+                    age_s: float) -> None:
+            run = tmp_path / name
+            run.mkdir()
+            (run / "metadata.json").write_text(json.dumps({
+                "ok": True,
+                "target": {"raw": target, "kind": "binary",
+                           "binary": target},
+                "script_origin": origin,
+            }), encoding="utf-8")
+            lines = [json.dumps(e) for e in events]
+            (run / "events.jsonl").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
+            mtime = time.time() - age_s
+            os.utime(run / "metadata.json", (mtime, mtime))
+
+        sink_event = {"ts": 1.0, "type": "send",
+                      "payload": {"category": "sink", "fn": "memcpy",
+                                  "args": {}, "tid": 1}}
+        file_event = {"ts": 1.0, "type": "send",
+                      "payload": {"category": "file", "fn": "open",
+                                  "args": {"path": "/etc/hosts",
+                                           "flags": 0}, "tid": 1}}
+        for i in range(6):
+            _mk_run(f"sw_{i}", "template:sink-watch", [sink_event],
+                    age_s=10 + i)
+        _mk_run("api", "template:api-trace", [file_event], age_s=1000)
+
+        context_map = {"entry_points": [], "sinks": []}
+        result = enrich_context_map_with_frida(
+            context_map, [tmp_path], target_path=target)
+        # The api-trace run's observation must have been merged
+        # (enrich returns a NEW dict when evidence merged).
+        assert result is not context_map

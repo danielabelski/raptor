@@ -161,3 +161,30 @@ def test_discover_malformed_binary_field(tmp_path):
     results = discover_evidence([tmp_path])
     assert len(results) == 1
     assert results[0].target_binary is None
+
+
+class TestObservationCapable:
+    def test_classification(self):
+        from packages.frida.evidence import observation_capable
+        assert observation_capable(None) is True                 # legacy
+        assert observation_capable("template:api-trace") is True
+        assert observation_capable("template:binary-flow-trace") is True
+        assert observation_capable("template:seed-harvest") is False
+        assert observation_capable("template:sink-watch") is False
+        assert observation_capable("template:jni-trace") is False
+        assert observation_capable("template:exec-and-load") is False
+        assert observation_capable("sink-watch:/tmp/sinks.json") is False
+        assert observation_capable("file:/home/op/hook.js") is True
+
+    def test_script_origin_populated_from_metadata(self, tmp_path):
+        import json
+        from packages.frida.evidence import discover_evidence
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "metadata.json").write_text(json.dumps({
+            "ok": True,
+            "target": {"raw": "./t", "kind": "binary", "binary": "./t"},
+            "script_origin": "template:sink-watch",
+        }), encoding="utf-8")
+        ev = discover_evidence([tmp_path])[0]
+        assert ev.script_origin == "template:sink-watch"

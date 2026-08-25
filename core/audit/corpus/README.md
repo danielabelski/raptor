@@ -119,8 +119,12 @@ they legitimately disagree (2-3x observed):
 Resume (requires a stable `--out`): each pass checkpoints per group
 (`checkpoint-*-groups.json`) as groups finish, so a mid-pass stop
 loses at most the in-flight group; a resume replays checkpointed
-rows exactly once (never re-spending) and re-runs a group whose
-checkpointed label set no longer matches. Wall time is accounted per
+rows exactly once (never re-spending) and re-runs anything whose
+checkpoint no longer matches the run — the label set, the model
+(requested and resolved), and the config stamp (mode, profile,
+triage, prefilter, scope) all have to agree, at the group and the
+pass level, so rows measured under one regime can never be resumed
+into another's results. Wall time is accounted per
 process segment in `wall-segments.json`; meta `wall_s` is the sum
 across all segments of the run, with `wall_s_segment` (this process)
 and `wall_segments` (per-segment detail) alongside.

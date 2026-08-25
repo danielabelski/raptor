@@ -852,6 +852,7 @@ def _run_audit(
     prefilter: bool = True,
     profile: str = "deployed",
     checkpoint: Path | None = None,
+    checkpoint_stamp: dict[str, Any] | None = None,
     heartbeat: Callable[[], None] | None = None,
     attributed_start: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -873,6 +874,13 @@ def _run_audit(
     since the last pass boundary).  Resumed rows re-enter the result
     set exactly once, with their originally attributed costs — the
     group is not re-run, so no spend recurs or double-counts.
+
+    *checkpoint_stamp* adds resume-guard axes only the caller knows
+    (e.g. scope, the resolved default model) on top of the built-in
+    stamp (mode, requested model, profile, triage, prefilter): a
+    checkpoint whose stamp does not match the current run is ignored
+    wholesale, so a config flip between segments can never smuggle
+    rows measured under one regime into another's results.
 
     *heartbeat* is invoked after every completed group (progress
     callback for the caller's wall-segment accounting).
@@ -918,19 +926,37 @@ def _run_audit(
 
     # Per-group resume state: rows already scored by a previous
     # (stopped) process of the same pass.  A checkpointed group is
-    # trusted only when its rows cover exactly the current group's
-    # label set — a changed selection re-runs the group instead of
-    # silently reusing stale rows.
+    # trusted only when the whole checkpoint's config stamp matches
+    # this run AND its rows cover exactly the current group's label
+    # set — anything else re-runs instead of silently reusing rows
+    # measured under a different regime.
+    stamp: dict[str, Any] = {
+        "mode": mode or "security",
+        "model": model or "",
+        "profile": profile,
+        "triage": triage,
+        "prefilter": prefilter,
+    }
+    if checkpoint_stamp:
+        stamp.update(checkpoint_stamp)
     ckpt_groups: dict[str, list[dict[str, Any]]] = {}
     if checkpoint is not None:
         ckpt_data = _checkpoint_read(checkpoint)
         if isinstance(ckpt_data, dict) and isinstance(
             ckpt_data.get("groups"), dict,
         ):
-            ckpt_groups = {
-                k: v for k, v in ckpt_data["groups"].items()
-                if isinstance(v, list)
-            }
+            if ckpt_data.get("stamp") == stamp:
+                ckpt_groups = {
+                    k: v for k, v in ckpt_data["groups"].items()
+                    if isinstance(v, list)
+                }
+            elif ckpt_data["groups"]:
+                print(
+                    f"  [{_ts()}] Group checkpoint stamp does not "
+                    f"match this run's config — re-running all "
+                    f"groups",
+                    flush=True,
+                )
 
     results: list[dict[str, Any]] = []
     run_dirs: list[Path] = []
@@ -1150,7 +1176,10 @@ def _run_audit(
             _print_attributed(group_cost)
             if checkpoint is not None:
                 ckpt_groups[repo_key] = group_rows
-                _checkpoint_write(checkpoint, {"groups": ckpt_groups})
+                _checkpoint_write(
+                    checkpoint,
+                    {"stamp": stamp, "groups": ckpt_groups},
+                )
             if heartbeat is not None:
                 heartbeat()
     finally:
@@ -2486,6 +2515,38 @@ def _checkpoint_read(path: Path) -> Any | None:
     return load_json(path, max_bytes=_MAX_RESULTS_BYTES)
 
 
+def _pass_checkpoint_valid(
+    rows: Any,
+    labels: list[Any],
+    model: str,
+    *,
+    require_all: bool,
+) -> bool:
+    """Whether a pass-level checkpoint may stand in for this run's pass.
+
+    Every row must have been produced under the same requested model,
+    and the rows must cover exactly the selected label set (security /
+    merged passes, ``require_all``) or a subset of it (bug_first,
+    whose eligible set is recomputed from the security rows).
+    Anything else — a different ``--label`` selection, another model's
+    rows — re-runs the pass rather than silently adopting foreign
+    rows that would only surface later as conservation violations
+    (or worse, not at all).
+    """
+    if not isinstance(rows, list) or not all(
+        isinstance(r, dict) for r in rows
+    ):
+        return False
+    fids = {r.get("function_id") for r in rows}
+    label_fids = {lb.function_id for lb in labels}
+    if require_all:
+        if fids != label_fids:
+            return False
+    elif not fids <= label_fids:
+        return False
+    return all((r.get("model") or "") == (model or "") for r in rows)
+
+
 def _run_ensemble_audit(
     labels: list[Any],
     source_dirs: dict[str, Path],
@@ -2497,6 +2558,7 @@ def _run_ensemble_audit(
     prefilter: bool = True,
     profile: str = "deployed",
     heartbeat: Callable[[], None] | None = None,
+    checkpoint_extra: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
 
@@ -2541,6 +2603,24 @@ def _run_ensemble_audit(
         # --- Pass 1: security mode, full workers ---
         sec_results = _checkpoint_read(sec_ckpt)
         bf_results = _checkpoint_read(bf_ckpt)
+        if sec_results is not None and not _pass_checkpoint_valid(
+            sec_results, labels, model, require_all=True,
+        ):
+            print(
+                "  Security pass checkpoint does not match this "
+                "run's labels/model — re-running the pass",
+                flush=True,
+            )
+            sec_results = None
+        if bf_results is not None and not _pass_checkpoint_valid(
+            bf_results, labels, model, require_all=False,
+        ):
+            print(
+                "  Bug-first pass checkpoint does not match this "
+                "run's labels/model — re-running the pass",
+                flush=True,
+            )
+            bf_results = None
 
         if sec_results is not None and bf_results is not None:
             print("  Resuming from checkpoints (both passes cached)",
@@ -2562,6 +2642,7 @@ def _run_ensemble_audit(
                     prefilter=prefilter,
                     profile=profile,
                     checkpoint=sec_groups_ckpt,
+                    checkpoint_stamp=checkpoint_extra,
                     heartbeat=heartbeat,
                 )
                 _checkpoint_write(sec_ckpt, sec_results)
@@ -2620,6 +2701,7 @@ def _run_ensemble_audit(
                         prefilter=prefilter,
                         profile=profile,
                         checkpoint=bf_groups_ckpt,
+                        checkpoint_stamp=checkpoint_extra,
                         heartbeat=heartbeat,
                         # Seed the running attributed total with the
                         # security pass's spend: mid-pass-2 progress
@@ -2649,6 +2731,15 @@ def _run_ensemble_audit(
 
     # --- Merge at the result level ---
     merged_cached = _checkpoint_read(merged_ckpt)
+    if merged_cached is not None and not _pass_checkpoint_valid(
+        merged_cached, labels, model, require_all=True,
+    ):
+        print(
+            "  Merge checkpoint does not match this run's "
+            "labels/model — re-merging",
+            flush=True,
+        )
+        merged_cached = None
     if merged_cached is not None:
         print("  Resuming from merge checkpoint", flush=True)
         merged_results = merged_cached
@@ -3464,6 +3555,14 @@ def main(argv: list[str] | None = None) -> int:
                 excerpt_dirs = _build_excerpt_tree(labels, source_dirs)
                 audit_dirs = excerpt_dirs
 
+            # Resume-stamp axes only this layer knows: scope changes
+            # the audited tree, and a drifted default-model
+            # resolution is invisible in the requested name.
+            ckpt_stamp_extra = {
+                "scope": args.scope,
+                "model_resolved": model_labels[0],
+            }
+
             t0 = time.monotonic()
             try:
                 if mode == "ensemble":
@@ -3475,6 +3574,7 @@ def main(argv: list[str] | None = None) -> int:
                         prefilter=args.prefilter == "on",
                         profile=args.profile,
                         heartbeat=_heartbeat,
+                        checkpoint_extra=ckpt_stamp_extra,
                     )
                 else:
                     results, run_dirs = _run_audit(
@@ -3489,6 +3589,7 @@ def main(argv: list[str] | None = None) -> int:
                             args.out / f"checkpoint-{mode}-groups.json"
                             if args.out else None
                         ),
+                        checkpoint_stamp=ckpt_stamp_extra,
                         heartbeat=_heartbeat,
                     )
             finally:

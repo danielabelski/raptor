@@ -2142,6 +2142,19 @@ class TestRunLevelRunningTotal:
         assert starts[1] == ("bug_first", 6.0)
 
 
+def _stamped_ckpt(groups, **overrides):
+    """Checkpoint payload carrying the default _run_audit stamp
+    (mode security, default model, deployed profile, triage and
+    prefilter on) — what a prior segment of the same run would have
+    written."""
+    stamp = {
+        "mode": "security", "model": "", "profile": "deployed",
+        "triage": True, "prefilter": True,
+    }
+    stamp.update(overrides)
+    return {"stamp": stamp, "groups": groups}
+
+
 class TestPerGroupCheckpoint:
     """A mid-pass stop loses at most the in-flight group: completed
     groups are checkpointed as they finish, and a resume replays their
@@ -2169,7 +2182,7 @@ class TestPerGroupCheckpoint:
     ):
         ckpt = tmp_path / "ckpt.json"
         ckpt.write_text(json.dumps(
-            {"groups": {"r1": [self._ckpt_row("a.c:f")]}},
+            _stamped_ckpt({"r1": [self._ckpt_row("a.c:f")]}),
         ))
         ran = []
 
@@ -2238,7 +2251,7 @@ class TestPerGroupCheckpoint:
     ):
         ckpt = tmp_path / "ckpt.json"
         ckpt.write_text(json.dumps(
-            {"groups": {"r1": [self._ckpt_row("a.c:OTHER")]}},
+            _stamped_ckpt({"r1": [self._ckpt_row("a.c:OTHER")]}),
         ))
         ran = []
 
@@ -2277,9 +2290,9 @@ class TestCheckpointModelGuard:
     ):
         (tmp_path / "r1").mkdir()
         ckpt = tmp_path / "ckpt.json"
-        ckpt.write_text(json.dumps({"groups": {"r1": [
+        ckpt.write_text(json.dumps(_stamped_ckpt({"r1": [
             dict(_result_row("a.c:f"), model="other-model", cost_usd=9.0),
-        ]}}))
+        ]})))
         ran = []
 
         def fake_target_run(target_dir, repo_labels, **kw):
@@ -2498,3 +2511,161 @@ class TestEnsembleAttributedConsistency:
         # Run-level attributed sum == what the running total printed
         # (security $2.00 seed + bug_first $2.00).
         assert sum(r["cost_usd"] for r in merged) == 4.0
+
+
+class TestCheckpointConfigStamp:
+    """A checkpoint written under a different run configuration
+    (profile, triage, prefilter, mode, scope, resolved model) must be
+    ignored wholesale — a config flip between segments must never
+    smuggle rows measured under one regime into another's results."""
+
+    def _fake_target_run(self, ran):
+        def fake(target_dir, repo_labels, **kw):
+            ran.append(repo_labels[0].source.repo)
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.5,
+                        "duration_s": 0.1,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+        return fake
+
+    def test_profile_flip_invalidates_group_checkpoint(
+        self, tmp_path, monkeypatch,
+    ):
+        (tmp_path / "r1").mkdir()
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps(_stamped_ckpt(
+            {"r1": [dict(_result_row("a.c:f"), model="")]},
+            profile="deployed",
+        )))
+        ran = []
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target",
+            self._fake_target_run(ran),
+        )
+        run_corpus._run_audit(
+            [_mk_label("a.c:f", repo="r1")],
+            {"r1": tmp_path / "r1"},
+            joern_server=object(), checkpoint=ckpt, profile="cold",
+        )
+        assert ran == ["r1"], "deployed-profile checkpoint resumed cold"
+
+    def test_caller_stamp_axes_guard_resume(self, tmp_path, monkeypatch):
+        (tmp_path / "r1").mkdir()
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps(_stamped_ckpt(
+            {"r1": [dict(_result_row("a.c:f"), model="")]},
+            scope="excerpt",
+        )))
+        ran = []
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target",
+            self._fake_target_run(ran),
+        )
+        run_corpus._run_audit(
+            [_mk_label("a.c:f", repo="r1")],
+            {"r1": tmp_path / "r1"},
+            joern_server=object(), checkpoint=ckpt,
+            checkpoint_stamp={"scope": "full"},
+        )
+        assert ran == ["r1"], "excerpt-scope checkpoint resumed as full"
+
+    def test_matching_stamp_resumes(self, tmp_path, monkeypatch):
+        (tmp_path / "r1").mkdir()
+        ckpt = tmp_path / "ckpt.json"
+        ckpt.write_text(json.dumps(_stamped_ckpt(
+            {"r1": [dict(_result_row("a.c:f"), model="")]},
+            scope="full",
+        )))
+        ran = []
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target",
+            self._fake_target_run(ran),
+        )
+        results, _ = run_corpus._run_audit(
+            [_mk_label("a.c:f", repo="r1")],
+            {"r1": tmp_path / "r1"},
+            joern_server=object(), checkpoint=ckpt,
+            checkpoint_stamp={"scope": "full"},
+        )
+        assert ran == []
+        assert [r["function_id"] for r in results] == ["a.c:f"]
+
+
+class TestPassCheckpointGuards:
+    """Pass-level checkpoints (checkpoint-sec/bf/merged.json) get the
+    same foreign-row defence as group checkpoints: a resume with a
+    different model or label selection re-runs the pass instead of
+    adopting rows that would mislabel the measurement."""
+
+    def _run(self, tmp_path, monkeypatch, labels):
+        modes = []
+
+        def fake_run_audit(
+            labels, dirs, *, mode=None, attributed_start=0.0, **kw,
+        ):
+            modes.append(mode)
+            return (
+                [
+                    dict(_result_row(lb.function_id), model="")
+                    for lb in labels
+                ],
+                [],
+            )
+
+        monkeypatch.setattr(run_corpus, "_run_audit", fake_run_audit)
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        (tmp_path / "r1").mkdir(exist_ok=True)
+        run_corpus._run_ensemble_audit(
+            labels, {"r1": tmp_path / "r1"}, out_dir=tmp_path / "out",
+        )
+        return modes
+
+    def test_foreign_model_pass_checkpoint_reruns(
+        self, tmp_path, monkeypatch,
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "checkpoint-sec.json").write_text(json.dumps(
+            [dict(_result_row("a.c:f"), model="other-model")],
+        ))
+        modes = self._run(
+            tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
+        )
+        assert "security" in modes, "foreign-model pass rows adopted"
+
+    def test_label_selection_change_reruns_pass(
+        self, tmp_path, monkeypatch,
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "checkpoint-sec.json").write_text(json.dumps(
+            [dict(_result_row("a.c:OTHER"), model="")],
+        ))
+        modes = self._run(
+            tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
+        )
+        assert "security" in modes
+
+    def test_matching_pass_checkpoint_still_resumes(
+        self, tmp_path, monkeypatch,
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "checkpoint-sec.json").write_text(json.dumps(
+            [dict(_result_row("a.c:f"), model="")],
+        ))
+        (out / "checkpoint-bf.json").write_text(json.dumps(
+            [dict(_result_row("a.c:f"), model="")],
+        ))
+        modes = self._run(
+            tmp_path, monkeypatch, [_mk_label("a.c:f", repo="r1")],
+        )
+        assert modes == [], "valid pass checkpoints were not resumed"

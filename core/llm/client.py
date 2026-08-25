@@ -1172,12 +1172,59 @@ class LLMClient:
         if not availability.external_llm and not _transport_banner_shown():
             primary = self.config.primary_model
             if primary is not None and primary.provider.startswith("claudecode"):
-                logger.info(
-                    "No external LLM configured — using the claude CLI "
-                    "transport (provider %s). Slower than SDK access; "
-                    "configure models.json for direct API calls.",
-                    primary.provider,
+                # Say WHY the CLI transport won. "No external LLM
+                # configured" is technically true even when a models
+                # config file exists but yields nothing — which reads
+                # as an intentional setup and hides the misconfig
+                # (observed: a {"models": []} stub silently degraded a
+                # run to the CLI transport). Name the file state and
+                # its path so the operator can act on it.
+                from core.security.log_sanitisation import (
+                    escape_nonprintable,
                 )
+
+                from .detection import models_config_status
+                status, cfg_path = models_config_status()
+                cfg_display = escape_nonprintable(str(cfg_path))
+                if status == "empty":
+                    logger.warning(
+                        "models config at %s lists no models — using "
+                        "the claude CLI transport (provider %s). Add "
+                        "model entries for direct API calls, or delete "
+                        "the file if the CLI transport is intended.",
+                        cfg_display, primary.provider,
+                    )
+                elif status == "unparseable":
+                    logger.warning(
+                        "models config at %s could not be parsed as a "
+                        "models config (invalid JSON or wrong shape) — "
+                        "using the claude CLI transport (provider %s). "
+                        "Fix the file for direct API calls, or delete "
+                        "it if the CLI transport is intended.",
+                        cfg_display, primary.provider,
+                    )
+                elif status == "external":
+                    logger.warning(
+                        "models config at %s lists models but none are "
+                        "usable in this environment (missing API keys, "
+                        "credentials, or SDKs; unreachable services; "
+                        "or malformed entries) — using the claude CLI "
+                        "transport (provider %s).",
+                        cfg_display, primary.provider,
+                    )
+                else:
+                    # "absent" (nothing configured), "cli_only" (the
+                    # config explicitly declares the CLI transport),
+                    # or "other_schema" (an analysis-settings file —
+                    # the config reader already logged a precise
+                    # error naming it; repeating a vaguer message
+                    # here would only contradict it).
+                    logger.info(
+                        "No external LLM configured — using the claude CLI "
+                        "transport (provider %s). Slower than SDK access; "
+                        "configure models.json for direct API calls.",
+                        primary.provider,
+                    )
             elif availability.claude_code:
                 logger.info(
                     "No external LLM configured; Claude Code is available "

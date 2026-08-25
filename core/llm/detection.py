@@ -537,6 +537,78 @@ def _warn_analysis_settings_mismatch(config_path: Path) -> None:
     )
 
 
+def _models_config_path() -> Path:
+    """Resolved models config path: ``$RAPTOR_CONFIG`` when set,
+    otherwise ``~/.config/raptor/models.json``."""
+    config_path_str = os.getenv('RAPTOR_CONFIG')
+    if config_path_str:
+        return Path(config_path_str).resolve()
+    return Path.home() / ".config/raptor/models.json"
+
+
+# Provider spellings that declare the claude CLI transport — the same
+# aliases ``create_provider`` accepts. A config listing only these has
+# explicitly chosen the CLI transport; anything else in the list means
+# the operator configured something beyond it.
+_CLI_TRANSPORT_PROVIDERS = frozenset({
+    "claudecode", "claudecode-resumable",
+    "claude-code", "claude-code-resumable", "claude_code",
+})
+
+
+def models_config_status() -> tuple[str, Path]:
+    """Classify the operator's models config file for diagnostics.
+
+    Consumed by the no-external-LLM transport banner so it can say
+    WHY the run is on the CLI transport instead of the blanket "No
+    external LLM configured" — a ``{"models": []}`` stub or an
+    unparseable file otherwise reads as an intentional setup.
+
+    Returns ``(status, path)`` where status is one of:
+
+    * ``"absent"``       — no file at the resolved path
+    * ``"unparseable"``  — file exists but doesn't parse as a models
+      config (bad JSON or wrong shape)
+    * ``"other_schema"`` — the file is an analysis-settings config
+      (``_read_config_models`` already logs a precise error for it)
+    * ``"empty"``        — file parses but lists zero model entries
+    * ``"cli_only"``     — every listed entry explicitly declares the
+      claude CLI transport (an intentional setup, not a misconfig)
+    * ``"external"``     — anything else is listed (including
+      malformed non-dict entries, which route nowhere)
+    """
+    path = _models_config_path()
+    if not path.exists():
+        return ("absent", path)
+    try:
+        from core.json import load_json_with_comments
+
+        data = load_json_with_comments(path)
+        if data is None:
+            return ("unparseable", path)
+        if isinstance(data, dict):
+            if looks_like_analysis_settings(data):
+                return ("other_schema", path)
+            model_list = data.get("models", [])
+            if not isinstance(model_list, list):
+                return ("unparseable", path)
+        elif isinstance(data, list):
+            model_list = data
+        else:
+            return ("unparseable", path)
+    except Exception:  # noqa: BLE001 — diagnostics must never raise
+        return ("unparseable", path)
+
+    if not model_list:
+        return ("empty", path)
+    external = any(
+        not (isinstance(entry, dict)
+             and entry.get("provider") in _CLI_TRANSPORT_PROVIDERS)
+        for entry in model_list
+    )
+    return ("external" if external else "cli_only", path)
+
+
 def _read_config_models() -> list:
     """Read model entries from RAPTOR config file.
 
@@ -559,11 +631,7 @@ def _read_config_models() -> list:
     try:
         from core.json import load_json_with_comments
 
-        config_path_str = os.getenv('RAPTOR_CONFIG')
-        if config_path_str:
-            config_path = Path(config_path_str).resolve()
-        else:
-            config_path = Path.home() / ".config/raptor/models.json"
+        config_path = _models_config_path()
 
         data = load_json_with_comments(config_path)
         if data is None:

@@ -1279,6 +1279,7 @@ Send a free-form prompt to any configured LLM model and print the response.  Dev
 /ask --model gemini-2.5-pro "Why did you classify this function as suspicious?"
 /ask --model claude-opus-4-7 --file context.txt "Summarise this"
 /ask --model gemini-2.5-pro --system "You are a code auditor" < prompt.txt
+/ask --show-primary
 ```
 
 | Flag | Default | Description |
@@ -1292,8 +1293,20 @@ Send a free-form prompt to any configured LLM model and print the response.  Dev
 | `--system-file PATH` | *(none)* | Load system prompt from a file |
 | `--raw` | off | Print response text only (compact JSON for structured output) |
 | `--debug` | off | Show model metadata, cost, and provider logging |
+| `--show-primary` | off | Print the default primary model (`provider/model`) a run without `--model` resolves, then exit without sending a prompt |
 
 By default only the model's response text is printed — no logging, no scorecard line, no metadata.  Pass `--debug` to see the full diagnostic output.
+
+`--show-primary` exercises the same default-primary resolution path a
+pipeline run uses (an explicit `--model` probe resolves through the
+override path instead, so it can succeed while a run routes elsewhere).
+Use it to verify the transport before launching a run.  It ignores
+prompt-shaping flags, rejects `--model`, and keeps configuration
+warnings (empty or unparseable `models.json`, unknown `role` values)
+visible on stderr while stdout stays a single machine-parseable line.
+Resolution behaves exactly like a run's — a keyed Anthropic entry has
+its model alias resolved against the live model inventory — but no
+prompt is ever sent.
 
 When no positional prompt is given and stdin is a pipe, stdin is the prompt.
 Multiple `--file` flags concatenate in order, followed by the prompt text.

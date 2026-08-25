@@ -10,10 +10,20 @@ Usage:
     raptor-llm-ask --model gemini-2.5-pro "Why did you classify this as suspicious?"
     raptor-llm-ask --model gemini-2.5-pro --system "You are a code auditor" < prompt.txt
     raptor-llm-ask --model claude-opus-4-7 --file context.txt "Summarise this"
+    raptor-llm-ask --show-primary
 
 The prompt is built from positional arguments (joined by spaces) plus any
 --file contents prepended as context.  If no positional args and stdin is
 a pipe, stdin is the prompt.
+
+--show-primary prints the default primary model (provider/model) that a
+run without --model resolves — through the same LLMClient resolution
+path a pipeline run uses — and exits without sending a prompt.  Use it
+to smoke-test what a run will actually route to; an explicit --model
+probe resolves through the override path and can pass while the run's
+default resolution routes elsewhere.  Resolution itself behaves exactly
+like a run's (e.g. a keyed Anthropic entry has its model alias resolved
+against the live model inventory); no prompt is ever sent.
 """
 import argparse
 import logging
@@ -84,36 +94,56 @@ def main() -> int:
         help="Show model metadata, cost, and provider logging",
     )
     parser.add_argument(
+        "--show-primary", action="store_true",
+        help="Resolve and print the default primary model "
+             "(provider/model) a run without --model would use, then "
+             "exit without sending a prompt",
+    )
+    parser.add_argument(
         "prompt", nargs="*",
         help="Prompt text (reads stdin if omitted and stdin is a pipe)",
     )
     args = parser.parse_args()
+
+    if args.show_primary and args.model:
+        # --model resolves through the explicit-override path; the
+        # probe exists precisely to exercise the OTHER path (the
+        # run's default resolution). Combining them would answer a
+        # different question than the one asked.
+        print("error: --show-primary reports the default-primary "
+              "resolution a run without --model uses; omit --model",
+              file=sys.stderr)
+        return 2
 
     quiet = not args.debug
     if quiet:
         os.environ["RAPTOR_LLM_QUIET"] = "1"
 
     # --- build prompt ---
-    parts = []
-    for fpath in args.file:
-        if not fpath.is_file():
-            print(f"error: file not found: {fpath}", file=sys.stderr)
+    prompt = ""
+    if not args.show_primary:
+        parts = []
+        for fpath in args.file:
+            if not fpath.is_file():
+                print(f"error: file not found: {fpath}", file=sys.stderr)
+                return 1
+            parts.append(fpath.read_text(encoding="utf-8", errors="replace"))
+
+        if args.prompt:
+            parts.append(" ".join(args.prompt))
+        elif not sys.stdin.isatty():
+            parts.append(sys.stdin.read())
+
+        prompt = "\n\n".join(parts).strip()
+        if not prompt:
+            print("error: no prompt provided", file=sys.stderr)
             return 1
-        parts.append(fpath.read_text(encoding="utf-8", errors="replace"))
-
-    if args.prompt:
-        parts.append(" ".join(args.prompt))
-    elif not sys.stdin.isatty():
-        parts.append(sys.stdin.read())
-
-    prompt = "\n\n".join(parts).strip()
-    if not prompt:
-        print("error: no prompt provided", file=sys.stderr)
-        return 1
 
     # --- resolve system prompt ---
     system_prompt = args.system
-    if args.system_file:
+    if args.system_file and not args.show_primary:
+        # The probe ignores prompt-shaping flags entirely (same
+        # posture as --file / positional prompt / --json-schema).
         if not args.system_file.is_file():
             print(f"error: system file not found: {args.system_file}",
                   file=sys.stderr)
@@ -125,14 +155,27 @@ def main() -> int:
     from core.llm.client import LLMClient
 
     if quiet:
+        # The probe's whole point is diagnosing a misrouted default
+        # resolution, so config-state warnings (empty models.json,
+        # unknown roles, ...) must stay visible on stderr; ordinary
+        # asks keep the fully quiet stdout-only contract.
+        floor = logging.WARNING if args.show_primary else logging.CRITICAL
         for name in ("", "raptor", "httpx", "httpcore"):
             lg = logging.getLogger(name)
-            lg.setLevel(logging.CRITICAL)
+            lg.setLevel(floor)
             for h in lg.handlers:
-                h.setLevel(logging.CRITICAL)
+                h.setLevel(floor)
 
     try:
-        client = LLMClient()
+        if args.show_primary:
+            # Same default resolution a run performs (primary and
+            # fallbacks resolve in LLMConfig's field factories), but
+            # with response caching off so a probe never creates
+            # cache directories in the operator's cwd.
+            from core.llm.config import LLMConfig
+            client = LLMClient(LLMConfig(enable_caching=False))
+        else:
+            client = LLMClient()
     except Exception as exc:
         print(f"error: could not create LLM client: {exc}", file=sys.stderr)
         return 1
@@ -156,6 +199,16 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+    if args.show_primary:
+        # Resolution above went through the run's own path
+        # (LLMClient → config.primary_model); print the answer and
+        # stop before any dispatcher bring-up or provider call.
+        print(f"{model_config.provider}/{model_config.model_name}")
+        if args.debug:
+            print(f"--- fallbacks={len(client.config.fallback_models)} ---",
+                  file=sys.stderr)
+        return 0
 
     # Bedrock is dispatcher-only (this process holds the AWS
     # credentials; the SDK client itself never does). Pipeline runs

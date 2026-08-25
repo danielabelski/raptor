@@ -609,6 +609,68 @@ def models_config_status() -> tuple[str, Path]:
     return ("external" if external else "cli_only", path)
 
 
+# Roles recognised only by the thinking-model scorer
+# (``_get_best_thinking_model`` boosts entries tagged thinking /
+# reasoning). They are not in ``VALID_ROLES`` but do change selection,
+# so they must not trip the unknown-role warning below.
+_SCORER_HINT_ROLES = frozenset({"thinking", "reasoning"})
+
+# (config path, entry name, role repr) triples already warned about —
+# ``_read_config_models`` runs many times per process and the warning
+# must print once per offending entry, not once per read.
+_warned_unknown_roles: set[tuple[str, str, str]] = set()
+
+
+def _warn_unknown_roles(model_list: list, config_path: Path) -> None:
+    """Warn once per config entry whose ``role`` is not a known value.
+
+    An unknown role (e.g. ``"primary"``) is a trap wherever roles are
+    consulted: multi-model role resolution rejects it via ConfigError,
+    and Bedrock default-primary selection skips the entry — so a
+    config error that *names* the operator's intent ("primary") can
+    silently produce the opposite (the run falls through to the CLI
+    transport). Paths that don't consult roles still pick the entry,
+    so the warning states the role does nothing rather than claiming
+    the entry is dead. This is the single load chokepoint every
+    consumer reads through, so the warning fires no matter which
+    resolution path runs. Diagnostics must never break config reads —
+    any internal failure degrades to a debug line.
+    """
+    try:
+        # Lazy import: core.llm.config imports this module at load
+        # time, and VALID_ROLES stays authoritative there.
+        from .config import VALID_ROLES
+        from core.security.log_sanitisation import escape_nonprintable
+        for entry in model_list:
+            if not isinstance(entry, dict):
+                continue
+            role = entry.get("role")
+            if role is None or role == "":
+                continue
+            if isinstance(role, str) and (
+                role in VALID_ROLES or role in _SCORER_HINT_ROLES
+            ):
+                continue
+            name = str(
+                entry.get("model") or entry.get("provider") or "<unnamed>")
+            key = (str(config_path), name, repr(role))
+            if key in _warned_unknown_roles:
+                continue
+            _warned_unknown_roles.add(key)
+            logger.warning(
+                "models config %s: entry %r has unknown role %r — "
+                "the role is never honoured: where roles are "
+                "consulted, multi-model role resolution rejects it "
+                "and Bedrock default-primary selection skips the "
+                "entry. Valid roles: %s; omit 'role' to make the "
+                "entry a default-primary candidate.",
+                escape_nonprintable(str(config_path)), name, role,
+                ", ".join(sorted(VALID_ROLES)),
+            )
+    except Exception as e:  # noqa: BLE001 — diagnostics never block reads
+        logger.debug("unknown-role check skipped: %s", e)
+
+
 def _read_config_models() -> list:
     """Read model entries from RAPTOR config file.
 
@@ -650,6 +712,7 @@ def _read_config_models() -> list:
         else:
             return []
 
+        _warn_unknown_roles(model_list, config_path)
         return _apply_anthropic_resolution(model_list)
     except Exception as e:  # noqa: BLE001
         logger.debug("detection: model list parse failed, returning []: %s", e)

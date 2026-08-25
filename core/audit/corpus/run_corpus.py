@@ -23,6 +23,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +168,72 @@ def _resolve_model_label(model: str) -> str:
             "model resolution failed for %r", model, exc_info=True,
         )
         return ""
+
+
+# Wall-clock segment sidecar, one record per process segment of a
+# stop/resume run (requires --out, like every resume artifact).  A
+# resumed run's meta used to report only the FINAL process's wall
+# time — a multi-segment run looked 2-3x faster than it was.
+_WALL_SEGMENTS_NAME = "wall-segments.json"
+
+
+def _wall_segment_open(
+    out_dir: Path | None,
+) -> tuple[Path | None, list[dict[str, Any]]]:
+    """Start this process's wall segment; load any prior segments.
+
+    Returns ``(sidecar_path, segments)`` — the new segment is already
+    appended (end == start until touched).  Without an out dir there
+    is nothing to resume from, so the segment list is in-memory only.
+    """
+    path = out_dir / _WALL_SEGMENTS_NAME if out_dir else None
+    segments: list[dict[str, Any]] = []
+    if path is not None:
+        data = load_json(path, max_bytes=_MAX_SIDECAR_BYTES)
+        if isinstance(data, dict) and isinstance(data.get("segments"), list):
+            segments = [
+                dict(s) for s in data["segments"] if isinstance(s, dict)
+            ]
+    now = time.time()
+    segments.append({"start": now, "end": now})
+    _wall_segment_touch(path, segments)
+    return path, segments
+
+
+def _wall_segment_touch(
+    path: Path | None,
+    segments: list[dict[str, Any]],
+) -> None:
+    """Stamp the current segment's end and persist the sidecar.
+
+    Called at every group boundary (and at run end), so a killed
+    process's segment is accurate to its last completed group —
+    a segment can never record time the process did not live.
+    Best-effort: wall accounting must never fail a run.
+    """
+    if not segments:
+        return
+    segments[-1]["end"] = time.time()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(path, {"segments": segments})
+    except OSError:
+        logger.debug("wall segment write failed", exc_info=True)
+
+
+def _wall_total_s(segments: list[dict[str, Any]]) -> float:
+    """Sum of per-segment wall durations (clock-skew clamped at 0)."""
+    total = 0.0
+    for s in segments:
+        try:
+            total += max(
+                float(s.get("end", 0.0)) - float(s.get("start", 0.0)), 0.0,
+            )
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 # Pipeline gates the cold profile turns OFF (--profile cold, the
@@ -740,6 +808,7 @@ def _run_audit(
     prefilter: bool = True,
     profile: str = "deployed",
     checkpoint: Path | None = None,
+    heartbeat: Callable[[], None] | None = None,
     attributed_start: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run /audit's orchestrator against labeled functions.
@@ -760,6 +829,9 @@ def _run_audit(
     since the last pass boundary).  Resumed rows re-enter the result
     set exactly once, with their originally attributed costs — the
     group is not re-run, so no spend recurs or double-counts.
+
+    *heartbeat* is invoked after every completed group (progress
+    callback for the caller's wall-segment accounting).
 
     *attributed_start* seeds the printed label-attributed running
     total with spend already attributed by earlier passes of the same
@@ -1035,6 +1107,8 @@ def _run_audit(
             if checkpoint is not None:
                 ckpt_groups[repo_key] = group_rows
                 _checkpoint_write(checkpoint, {"groups": ckpt_groups})
+            if heartbeat is not None:
+                heartbeat()
     finally:
         if own_joern:
             _stop_shared_joern(joern_srv)
@@ -2378,6 +2452,7 @@ def _run_ensemble_audit(
     triage: bool = True,
     prefilter: bool = True,
     profile: str = "deployed",
+    heartbeat: Callable[[], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Path]]:
     """Run dual-mode ensemble: security + bug_first, merge, Phase 2 + 2b.
 
@@ -2442,6 +2517,7 @@ def _run_ensemble_audit(
                     prefilter=prefilter,
                     profile=profile,
                     checkpoint=sec_groups_ckpt,
+                    heartbeat=heartbeat,
                 )
                 _checkpoint_write(sec_ckpt, sec_results)
                 print(f"  Security pass complete "
@@ -2499,6 +2575,7 @@ def _run_ensemble_audit(
                         prefilter=prefilter,
                         profile=profile,
                         checkpoint=bf_groups_ckpt,
+                        heartbeat=heartbeat,
                         # Seed the running attributed total with the
                         # security pass's spend: mid-pass-2 progress
                         # lines state the run-level figure a cost
@@ -3278,6 +3355,17 @@ def main(argv: list[str] | None = None) -> int:
 
     run_tag = str(int(time.time()))
     excerpt_dirs = None
+    # Wall accounting across stop/resume segments (persisted only
+    # with --out — resume needs a stable directory anyway).  Touched
+    # at every group boundary via the heartbeat, so a killed process
+    # still leaves an accurate-to-the-last-group segment behind.
+    wall_path, wall_segments = _wall_segment_open(
+        None if args.probe else args.out,
+    )
+
+    def _heartbeat() -> None:
+        _wall_segment_touch(wall_path, wall_segments)
+
     with _corpus_project_context(run_tag):
         if args.probe:
             t0 = time.monotonic()
@@ -3319,6 +3407,7 @@ def main(argv: list[str] | None = None) -> int:
                         triage=args.triage == "on",
                         prefilter=args.prefilter == "on",
                         profile=args.profile,
+                        heartbeat=_heartbeat,
                     )
                 else:
                     results, run_dirs = _run_audit(
@@ -3333,6 +3422,7 @@ def main(argv: list[str] | None = None) -> int:
                             args.out / f"checkpoint-{mode}-groups.json"
                             if args.out else None
                         ),
+                        heartbeat=_heartbeat,
                     )
             finally:
                 if excerpt_dirs:
@@ -3380,12 +3470,38 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             logger.debug("spend aggregation failed", exc_info=True)
 
+    # Close this process's wall segment: the headline wall time is
+    # the sum across every stop/resume segment of the run, not just
+    # the final process (a resumed run's meta used to under-report
+    # its real wall by the length of every earlier segment).
+    _wall_segment_touch(wall_path, wall_segments)
+    wall_total_s = _wall_total_s(wall_segments)
+
     total_llm_s = sum(r.get("duration_s", 0.0) for r in results)
     label_attributed_usd = round(
         sum(r.get("cost_usd", 0.0) for r in results), 4,
     )
     meta = {
-        "wall_s": round(wall_s, 1),
+        # Wall time, accumulated across stop/resume segments.
+        # wall_s_segment is this process alone; wall_segments carries
+        # the per-segment detail.
+        "wall_s": round(wall_total_s, 1),
+        "wall_s_segment": round(wall_s, 1),
+        "wall_segments": [
+            {
+                "start": datetime.fromtimestamp(
+                    float(s.get("start", 0.0)), tz=timezone.utc,
+                ).isoformat(),
+                "wall_s": round(
+                    max(
+                        float(s.get("end", 0.0))
+                        - float(s.get("start", 0.0)),
+                        0.0,
+                    ), 1,
+                ),
+            }
+            for s in wall_segments
+        ],
         "llm_s": round(total_llm_s, 1),
         # Three spend figures, distinct by name — they can disagree
         # by 2-3x and were conflated before:
@@ -3536,7 +3652,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     model_label = meta["model_resolved"]
     return _emit_summary(
-        results, wall_s, model_label, args.output, spend=spend,
+        results, wall_total_s, model_label, args.output, spend=spend,
     )
 
 

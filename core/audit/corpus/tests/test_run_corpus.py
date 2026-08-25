@@ -2307,3 +2307,93 @@ class TestCheckpointModelGuard:
         assert results[0]["model"] == ""
         assert results[0]["cost_usd"] == 0.5
 
+
+
+class TestGroupHeartbeat:
+    """The runner signals every completed group so the caller's
+    wall-segment accounting stays accurate to the last group even
+    when the process is killed mid-pass."""
+
+    def _labels(self):
+        return [
+            _mk_label("a.c:f", repo="r1"),
+            _mk_label("b.c:g", file="b.c", repo="r2"),
+        ]
+
+    def _dirs(self, tmp_path):
+        (tmp_path / "r1").mkdir(exist_ok=True)
+        (tmp_path / "r2").mkdir(exist_ok=True)
+        return {"r1": tmp_path / "r1", "r2": tmp_path / "r2"}
+
+    def test_heartbeat_invoked_per_group(self, tmp_path, monkeypatch):
+        beats = []
+
+        def fake_target_run(target_dir, repo_labels, **kw):
+            return (
+                {
+                    lb.function_id: {
+                        "status": "clean", "cost_usd": 0.0,
+                        "duration_s": 0.0,
+                    }
+                    for lb in repo_labels
+                },
+                {}, None,
+            )
+
+        monkeypatch.setattr(
+            run_corpus, "_run_audit_on_target", fake_target_run,
+        )
+        run_corpus._run_audit(
+            self._labels(), self._dirs(tmp_path),
+            joern_server=object(),
+            heartbeat=lambda: beats.append(1),
+        )
+        assert len(beats) == 2
+
+
+class TestWallSegments:
+    """meta wall time accumulates across stop/resume segments — a
+    resumed run used to report only the final process's wall."""
+
+    def test_wall_accumulates_across_resume_segments(
+        self, tmp_path, monkeypatch,
+    ):
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "wall-segments.json").write_text(json.dumps(
+            {"segments": [{"start": 1000.0, "end": 1100.0}]},
+        ))
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+            argv=["--out", str(out_dir)],
+        )
+        assert rc == 0
+        meta = _meta_of(out)
+        assert meta["wall_s"] >= 100.0
+        assert len(meta["wall_segments"]) == 2
+        assert meta["wall_segments"][0]["wall_s"] == 100.0
+        # This process alone stays visible, and is clearly shorter
+        # than the accumulated figure.
+        assert meta["wall_s_segment"] < 100.0
+        # The sidecar now records both segments for the next resume.
+        saved = json.loads(
+            (out_dir / "wall-segments.json").read_text(),
+        )
+        assert len(saved["segments"]) == 2
+
+    def test_single_process_run_records_one_segment(
+        self, tmp_path, monkeypatch,
+    ):
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        rc, out, _ = _stub_main_run(
+            tmp_path, monkeypatch,
+            rows=[dict(_result_row("a.c:f"), model="")],
+            argv=["--out", str(out_dir)],
+        )
+        assert rc == 0
+        meta = _meta_of(out)
+        assert len(meta["wall_segments"]) == 1
+        assert meta["wall_s"] < 100.0
+

@@ -2463,6 +2463,22 @@ class TestLabelOverlayHash:
     def test_hash_empty_when_no_label_files(self, tmp_path):
         assert run_corpus._label_files_sha256(tmp_path) == ""
 
+    def test_non_utf8_label_file_hashes_without_crashing(
+        self, tmp_path,
+    ):
+        # A single undecodable byte anywhere under labels/ must not
+        # kill the run at startup — the loader reports it properly;
+        # the hash covers the raw bytes deterministically.
+        labels_dir = self._labels_dir(tmp_path)
+        bad = labels_dir / "auth" / "bad.label.json"
+        bad.write_bytes(b"\xff\xfe{not json}")
+        first = run_corpus._label_files_sha256(labels_dir)
+        assert first and first == run_corpus._label_files_sha256(
+            labels_dir,
+        )
+        bad.write_bytes(b"\xff\xfe{changed}")
+        assert run_corpus._label_files_sha256(labels_dir) != first
+
 
 class TestEnsembleAttributedConsistency:
     """The final attributed figure equals the running total the run

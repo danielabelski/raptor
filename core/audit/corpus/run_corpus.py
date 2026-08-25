@@ -195,21 +195,24 @@ def _label_files_sha256(labels_dir: Path | None = None) -> str:
     h = hashlib.sha256()
     for path in files:
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_bytes()
         except OSError:
             continue
         try:
             canonical = json.dumps(
-                loads(raw), sort_keys=True, separators=(",", ":"),
-            )
+                loads(raw.decode("utf-8")),
+                sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
         except ValueError:
-            # Unparseable file: hash its raw text — the loader will
-            # fail loudly on it anyway, but the hash must still be
-            # deterministic over whatever was on disk.
+            # Unparseable or non-UTF8 file (UnicodeDecodeError is a
+            # ValueError): hash its raw bytes — the loader will fail
+            # loudly on it anyway, but the hash must never crash the
+            # run and must stay deterministic over whatever was on
+            # disk.
             canonical = raw
         h.update(path.relative_to(base).as_posix().encode("utf-8"))
         h.update(b"\0")
-        h.update(canonical.encode("utf-8"))
+        h.update(canonical)
         h.update(b"\0")
     return h.hexdigest()
 

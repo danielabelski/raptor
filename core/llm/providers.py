@@ -81,6 +81,38 @@ def _instructor_refusal_stop(exc: Exception) -> str | None:
             return "refusal"
     return None
 
+
+def _instructor_truncation_stop(exc: Exception) -> str | None:
+    """Stop reason when an instructor failure is really output truncation.
+
+    Instructor raises ``IncompleteOutputException`` when the completion
+    ends with ``stop_reason="max_tokens"``: the tool-use args were cut
+    mid-JSON by the output token budget, not malformed by the model.
+    Left in the generic funnel, that read as instructor unreliability —
+    a strike toward the instructor-disable cap (three truncations in a
+    row disabled instructor for the session) plus a JSON-fallback
+    re-send of the same content at the SAME ``max_tokens``, which
+    re-truncates deterministically: one more paid call whose failure
+    then surfaced as a parse/validation error instead of the real
+    condition. Same detection contract as
+    :func:`_instructor_refusal_stop` — probe the raw completions riding
+    the exception (``last_completion`` +
+    ``failed_attempts[*].completion``) for a length-limit stop reason;
+    ``getattr``-probed so non-instructor exceptions fall through
+    untouched. The exception type itself is a definitional truncation
+    signal, so it matches even when no completion is attached.
+    """
+    completions = [getattr(exc, "last_completion", None)]
+    completions.extend(getattr(attempt, "completion", None) for attempt in getattr(exc, "failed_attempts", None) or ())
+    for completion in completions:
+        stop = getattr(completion, "stop_reason", None)
+        if stop in ("max_tokens", "length"):
+            return str(stop)
+    if type(exc).__name__ == "IncompleteOutputException":
+        return "max_tokens"
+    return None
+
+
 _TEMPERATURE_DEPRECATED_FROM = (4, 7)
 _CLAUDE_VERSION_RE = re.compile(r"claude-[a-z]+-(\d+)(?:-(\d+))?")
 
@@ -2827,6 +2859,34 @@ class AnthropicProvider(LLMProvider):
                         "Anthropic model refused request "
                         f"(stop_reason={refusal}, instructor tool-use "
                         "leg — tool args empty)"
+                    )
+                    raise RuntimeError(msg) from e
+                truncation = _instructor_truncation_stop(e)
+                if truncation is not None:
+                    # Output budget exhausted mid-tool-call. Not
+                    # instructor unreliability — no strike toward the
+                    # disable cap — and not worth the JSON fallback:
+                    # an identical re-send at the same max_tokens
+                    # re-truncates deterministically, buying a second
+                    # paid call for a guaranteed failure. The message
+                    # keeps the "truncated (output token limit"
+                    # phrasing the audit orchestrator's _classify_error
+                    # keys on (class "truncation" — retried there at
+                    # reduced context), matching the Gemini native
+                    # structured guard and the JSON fallback's own
+                    # truncation guard.
+                    logger.warning(
+                        "Structured response truncated for %s/%s "
+                        "(stop_reason=%s) — output token limit hit on "
+                        "the instructor tool-use leg; skipping JSON "
+                        "fallback re-send",
+                        self.config.provider, self.config.model_name,
+                        truncation,
+                    )
+                    msg = (
+                        "Structured response truncated (output token "
+                        f"limit reached, stop_reason={truncation}, "
+                        "instructor tool-use leg)"
                     )
                     raise RuntimeError(msg) from e
                 route = self._instructor_exception_route(e)

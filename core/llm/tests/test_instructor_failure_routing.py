@@ -258,6 +258,178 @@ def test_fallback_truncation_classifies_as_truncation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Truncation on the instructor tool-use leg (anthropic/bedrock shape)
+# ---------------------------------------------------------------------------
+
+
+class _FakeIncompleteOutput(Exception):
+    """Shape-compatible stand-in for instructor's
+    ``IncompleteOutputException``: same message, with the partial
+    completion (``stop_reason="max_tokens"``) riding on
+    ``last_completion``."""
+
+    def __init__(self, last_completion=None):
+        super().__init__(
+            "The output is incomplete due to a max_tokens length limit.")
+        self.last_completion = last_completion
+
+
+class _FakeValidationError(ValueError):
+    """Validation-shaped instructor failure carrying raw completions."""
+
+    def __init__(self, last_completion=None, failed_attempts=()):
+        super().__init__("1 validation error for Model")
+        self.last_completion = last_completion
+        self.failed_attempts = list(failed_attempts)
+
+
+def _truncated_completion(stop_reason: str = "max_tokens") -> SimpleNamespace:
+    return SimpleNamespace(
+        stop_reason=stop_reason,
+        content=[],
+        usage=SimpleNamespace(input_tokens=100, output_tokens=8192),
+    )
+
+
+def _anthropic_provider(monkeypatch, exc: Exception,
+                        provider_name: str = "anthropic",
+                        model_name: str = "claude-sonnet-4-6"):
+    pytest.importorskip("anthropic")
+    from core.llm.providers import AnthropicProvider
+    monkeypatch.delenv("RAPTOR_LLM_SOCKET", raising=False)
+    provider = AnthropicProvider(ModelConfig(
+        provider=provider_name, model_name=model_name,
+        api_key="sk-ant-test", timeout=1,
+    ))
+    fake_instructor = MagicMock()
+    fake_instructor.messages.create_with_completion.side_effect = exc
+    provider.instructor_client = fake_instructor
+    fallback_calls: list = []
+    monkeypatch.setattr(
+        provider, "_structured_fallback",
+        lambda *a, **k: fallback_calls.append(a))
+    return provider, fallback_calls
+
+
+class TestInstructorTruncationStop:
+    """Unit: probing an instructor-funnel exception for a length-limit
+    stop reason (same contract as ``_instructor_refusal_stop``)."""
+
+    def test_max_tokens_on_last_completion(self) -> None:
+        from core.llm.providers import _instructor_truncation_stop
+        exc = _FakeIncompleteOutput(
+            last_completion=_truncated_completion())
+        assert _instructor_truncation_stop(exc) == "max_tokens"
+
+    def test_length_stop_on_earlier_attempt(self) -> None:
+        from core.llm.providers import _instructor_truncation_stop
+        exc = _FakeValidationError(failed_attempts=[
+            SimpleNamespace(completion=_truncated_completion("length")),
+        ])
+        assert _instructor_truncation_stop(exc) == "length"
+
+    def test_incomplete_output_type_matches_without_completion(self) -> None:
+        """The exception type is a definitional truncation signal even
+        when no completion rides on it."""
+        pytest.importorskip("instructor")
+        from instructor.exceptions import IncompleteOutputException
+
+        from core.llm.providers import _instructor_truncation_stop
+        exc = IncompleteOutputException(last_completion=None)
+        assert _instructor_truncation_stop(exc) == "max_tokens"
+
+    def test_complete_stop_is_not_truncation(self) -> None:
+        from core.llm.providers import _instructor_truncation_stop
+        exc = _FakeValidationError(
+            last_completion=SimpleNamespace(stop_reason="end_turn"))
+        assert _instructor_truncation_stop(exc) is None
+
+    def test_non_instructor_exception(self) -> None:
+        from core.llm.providers import _instructor_truncation_stop
+        assert _instructor_truncation_stop(RuntimeError("boom")) is None
+
+
+def test_anthropic_truncation_skips_fallback_and_names_condition(
+        monkeypatch, caplog) -> None:
+    """A structured response cut by the output token budget must be
+    detected on the instructor leg itself: no strike toward the
+    instructor-disable cap (a model output-budget boundary is not
+    instructor unreliability), no JSON fallback re-send (an identical
+    re-send at the same max_tokens re-truncates deterministically —
+    one more paid call for a guaranteed failure), and a log line that
+    names the condition."""
+    provider, fallback_calls = _anthropic_provider(
+        monkeypatch,
+        _FakeIncompleteOutput(last_completion=_truncated_completion()),
+    )
+    with caplog.at_level("WARNING", logger="core.llm.providers"):  # noqa: SIM117
+        with pytest.raises(RuntimeError) as excinfo:
+            provider.generate_structured("p", _SCHEMA)
+    # The audit orchestrator's _classify_error keys on this phrasing.
+    assert "truncated (output token limit" in str(excinfo.value)
+    assert fallback_calls == []
+    assert provider._instructor_consec_failures == 0
+    assert provider.instructor_client is not None
+    assert any(
+        "truncated" in r.getMessage()
+        and "stop_reason=max_tokens" in r.getMessage()
+        for r in caplog.records
+    ), "no log line naming the truncation condition"
+
+
+def test_bedrock_truncation_classifies_truncation_for_retry(
+        monkeypatch) -> None:
+    """Bedrock rides the Anthropic provider. Its truncation error must
+    reach the audit orchestrator's classifier as "truncation" (retried
+    there at reduced context), not masquerade as a schema/parse error
+    out of a fallback re-send — and must not be retried in place by
+    the client (same max_tokens re-truncates deterministically, like
+    the Gemini native guard)."""
+    from core.audit.orchestrator import _classify_error
+    from core.llm.client import _is_retryable_error
+    provider, fallback_calls = _anthropic_provider(
+        monkeypatch,
+        _FakeIncompleteOutput(last_completion=_truncated_completion()),
+        provider_name="bedrock",
+        model_name="anthropic.claude-sonnet-5",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        provider.generate_structured("p", _SCHEMA)
+    assert _classify_error(excinfo.value) == "truncation"
+    assert not _is_retryable_error(excinfo.value)
+    assert fallback_calls == []
+    assert provider._instructor_consec_failures == 0
+
+
+def test_real_instructor_incomplete_output_detected(monkeypatch) -> None:
+    """The real instructor exception (as raised by its Anthropic
+    handler on stop_reason="max_tokens") takes the truncation path."""
+    pytest.importorskip("instructor")
+    from instructor.exceptions import IncompleteOutputException
+    provider, fallback_calls = _anthropic_provider(
+        monkeypatch,
+        IncompleteOutputException(
+            last_completion=_truncated_completion()),
+    )
+    with pytest.raises(RuntimeError, match="truncated"):
+        provider.generate_structured("p", _SCHEMA)
+    assert fallback_calls == []
+    assert provider._instructor_consec_failures == 0
+
+
+def test_validation_flake_without_truncation_still_falls_back(
+        monkeypatch) -> None:
+    """An ordinary validation failure (completion ran to end_turn) must
+    keep the existing route: JSON fallback plus an instructor strike."""
+    exc = _FakeValidationError(
+        last_completion=SimpleNamespace(stop_reason="end_turn"))
+    provider, fallback_calls = _anthropic_provider(monkeypatch, exc)
+    provider.generate_structured("p", _SCHEMA)
+    assert len(fallback_calls) == 1
+    assert provider._instructor_consec_failures == 1
+
+
+# ---------------------------------------------------------------------------
 # Gemini structured: safety block raises, no silent fallback
 # ---------------------------------------------------------------------------
 

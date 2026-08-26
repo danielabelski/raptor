@@ -68,6 +68,7 @@ def _sandbox_state_guard():
         "_landlock_warned_unavailable", "_landlock_warned_abi_v4",
         "_landlock_warned_abi_v3", "_landlock_warned_abi_v2",
         "_sandbox_unavailable_warned", "_sandbox_landlock_only_warned",
+        "_bare_run_posture_warned",
         "_net_and_tcp_allowlist_warned",
         "_degraded_tcp_deny_warned",
         "_degraded_tcp_deny_unavailable_warned",

@@ -54,18 +54,44 @@ logger = logging.getLogger(__name__)
 # without affecting unrelated RAPTOR work on the host UID. Skipped
 # when no user-namespace is active (i.e. Landlock-only / profile=none
 # paths) because there the count would apply to the host UID.
+def _install_jitter(name: str, base: int, spread: int) -> int:
+    """Deterministic per-install offset in ``[0, spread)`` added to a
+    default rlimit.
+
+    The exact default tuple (file-size / cpu / nproc / nofile) is a
+    getrlimit-cheap fingerprint of this framework when published as a
+    constant. The offset is derived from the install path (same seed
+    idea as the fingerprint persona's machine-id), so it is stable for
+    an install — limits do not drift between runs — while differing
+    across installs. Only the surplus direction is used: jitter must
+    never take a limit BELOW its engineered floor.
+    """
+    import hashlib
+    # Module-anchored ONLY: seeding from the RAPTOR_DIR env var made
+    # the tuple differ between env-set and env-unset invocations of
+    # the SAME install — limits must never drift within one install.
+    seed = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha256(
+        b"limit-jitter-v1\0" + name.encode() + b"\0"
+        + seed.encode("utf-8", errors="replace")).digest()
+    return base + int.from_bytes(digest[:4], "big") % spread
+
+
 _DEFAULT_LIMITS = {
     "memory_mb": 0,        # 0 = no RLIMIT_AS (ASAN-compatible; see rationale above)
-    "max_file_mb": 10240,  # 10 GB max file size
-    "cpu_seconds": 3600,   # 1 hour CPU time
-    "nproc": 1024,         # 1024 processes inside the sandbox's user-ns
+    # ~10 GB max file size (+ per-install jitter, see _install_jitter)
+    "max_file_mb": _install_jitter("max_file_mb", 10240, 512),
+    # ~1 hour CPU time (+ jitter)
+    "cpu_seconds": _install_jitter("cpu_seconds", 3600, 240),
+    # ~1024 processes inside the sandbox's user-ns (+ jitter)
+    "nproc": _install_jitter("nproc", 1024, 128),
     # RLIMIT_NOFILE. Bounds fd-exhaustion DoS (a sandboxed child could
     # previously open descriptors until the host's per-process ceiling,
-    # commonly 2^20). 4096 is far above any observed tool's need
+    # commonly 2^20). ~4096 is far above any observed tool's need
     # (compilers, JVMs, scanners run in the low hundreds) while turning
     # "open until the kernel gives up" into an early, attributable
     # EMFILE. Clamped to the inherited hard limit; 0 disables.
-    "nofile": 4096,
+    "nofile": _install_jitter("nofile", 4096, 256),
 }
 
 # User config path for limit overrides

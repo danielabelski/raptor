@@ -1183,6 +1183,16 @@ class DatabaseManager:
                 cached=False,
             )
         env = RaptorConfig.get_safe_env()
+        # The build subprocess executes TARGET-supplied build scripts,
+        # and this call engages the anti-fingerprint persona below —
+        # but an explicit env= bypasses run()'s identity scrub, so the
+        # operator's login name and host layout would ride into the
+        # very build the persona is disguising. Align the env with the
+        # persona's neutral identity (HOME stays: codeql's pack cache
+        # and lock files legitimately live under it).
+        for _ident in ("USER", "LOGNAME", "HOSTNAME", "PWD", "OLDPWD"):
+            env.pop(_ident, None)
+        env["USER"] = env["LOGNAME"] = "sandbox"
         if build_system and build_system.env_vars:
             # Filter build env vars through the same blocklist — a malicious
             # repo's build config could try to re-inject LD_PRELOAD, BASH_ENV, etc.

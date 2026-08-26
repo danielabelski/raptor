@@ -91,7 +91,11 @@ namespaces the entry points **fail closed** with a
 case-insensitive) is the explicit operator acceptance of
 Landlock/seccomp-only containment on that host; every waived run
 emits a loud warning that same-UID `/proc` credential reads are not
-blocked in this mode.
+blocked in this mode. The waived posture also leaves the HOST
+process table readable, including the command lines of any running
+RAPTOR orchestrator — a framework-attribution channel no
+anti-fingerprint masking can close while the host `/proc` is
+visible.
 
 The same override also waives the **fresh-procfs requirement** on
 namespace-capable hosts: untrusted runs mount a pid-namespace-local
@@ -612,7 +616,7 @@ seam and scanned for drift.
 
 - **`SAFE_ENV_ALLOWLIST` + `SAFE_ENV_PREFIXES`** — the primary,
   default-deny subprocess filter (`get_safe_env()`): only ~30 named
-  variables (`PATH`, `HOME`, `USER`, `PWD`, locale/terminal — `LANG`,
+  variables (`PATH`, `HOME`, `USER`, `LOGNAME`, `PWD`, locale/terminal — `LANG`,
   `TERM` —, the `XDG_*` set, `DEBIAN_FRONTEND`, `PYTHONUNBUFFERED`,
   trust markers, `RAPTOR_OUT_DIR`/`RAPTOR_DIR`/`RAPTOR_TARGET_KIND`)
   plus the `LC_*` prefix survive. Unknown variables never flow to

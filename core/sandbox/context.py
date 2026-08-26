@@ -1798,6 +1798,22 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             "disabled=True or profile='none'.",
         )
 
+    # Bare-run posture, named once per process: with NO target/output/
+    # rootfs there is nothing for the mount namespace or Landlock to
+    # anchor on, so the call gets network/rlimit/seccomp containment
+    # and UNRESTRICTED filesystem access. Legitimate for network-only
+    # tool invocations (pack downloads, wrapper probes); a caller
+    # expecting filesystem confinement must pass target= or output=.
+    if (use_sandbox and not use_seatbelt
+            and not (target or output or rootfs)
+            and state.warn_once("_bare_run_posture_warned")):
+        logger.warning(
+            "sandbox: run() without target=/output=/rootfs= applies "
+            "no filesystem confinement (network/seccomp/rlimits only). "
+            "Pass target= or output= if this call handles untrusted "
+            "bytes. (Warned once per process.)"
+        )
+
     # Degraded-mode network fallback. block_network=True is normally
     # enforced by the network namespace; when no namespace backend is
     # available (use_sandbox False — AppArmor userns sysctl, SELinux,

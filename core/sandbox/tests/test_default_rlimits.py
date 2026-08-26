@@ -4,7 +4,7 @@ no-namespace path).
 Battery shapes pinned here:
 - fd exhaustion: a sandboxed child could previously open descriptors
   up to the host's per-process ceiling (commonly 2^20) — RLIMIT_NOFILE
-  now defaults to 4096.
+  now defaults to 4096 plus a per-install jitter offset.
 - fork storm on the Landlock-only path: with no user namespace there
   was NO process bound at all (a flat RLIMIT_NPROC would count the
   operator's unrelated same-uid processes). The child now gets an
@@ -54,8 +54,15 @@ class TestNofileDefault(unittest.TestCase):
         limits = _child_limits(output=self.out)
         soft, _hard = limits["nofile"]
         host_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-        want = 4096 if host_hard == resource.RLIM_INFINITY else min(
-            4096, host_hard)
+        from core.sandbox.preexec import _DEFAULT_LIMITS
+        _nofile_default = _DEFAULT_LIMITS["nofile"]
+        # The default carries a deterministic per-install jitter (the
+        # exact tuple must not be a published constant) — recompute
+        # the expectation from the live default instead of hardcoding.
+        assert 4096 <= _nofile_default < 4096 + 256
+        want = (_nofile_default
+                if host_hard == resource.RLIM_INFINITY
+                else min(_nofile_default, host_hard))
         self.assertEqual(soft, want,
                          "sandboxed child must get the RLIMIT_NOFILE "
                          "default cap")
@@ -133,10 +140,12 @@ class TestHostNprocCapOnNoNamespacePath(unittest.TestCase):
                         count += 1
             except (OSError, ValueError, IndexError):
                 continue
-        self.assertLess(soft, count + 1024 + 512,
+        from core.sandbox.preexec import _DEFAULT_LIMITS
+        _nproc_default = _DEFAULT_LIMITS["nproc"]
+        self.assertLess(soft, count + _nproc_default + 512,
                         "nproc ceiling should track same-uid task "
                         "count + configured headroom")
-        self.assertGreater(soft, 1024 - 1,
+        self.assertGreater(soft, _nproc_default - 1,
                            "headroom must not starve legitimate work")
 
 

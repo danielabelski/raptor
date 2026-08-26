@@ -139,6 +139,7 @@ _unix_scope_unavailable_warned = False
 # level mount probe); this flag is for the user-facing warning emitted from
 # the public sandbox() path that names the practical posture and remediation.
 _sandbox_landlock_only_warned = False
+_bare_run_posture_warned = False
 _net_and_tcp_allowlist_warned = False
 # Degraded-mode Landlock TCP-connect deny (block_network without a
 # namespace backend): engaged / cannot-engage one-shot warnings.

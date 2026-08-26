@@ -55,7 +55,9 @@ process.
    `/proc/<pid>/environ` credential reads. The fresh mount is
    mandatory for untrusted runs: if it fails, the run aborts rather
    than exposing the host-pid process table (override with
-   `RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1`).
+   `RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1`). The spawn chain additionally
+   zeroes credential values out of its own environment image, so
+   even a host-procfs-visible degrade has nothing to read.
 4. **IPC namespace** -- isolates SysV shm/sem/message queues.
 5. **Mount namespace** -- per-sandbox `/tmp` and `/run`, host system
    dirs bind-mounted read-only, target and output bind-mounted at

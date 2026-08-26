@@ -2791,6 +2791,22 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 if k != _ENV_RESTORE_KEY
             }
 
+        def _shim_hop_env() -> dict:
+            # Env for the unshare/prlimit/pid1-shim BOOTSTRAP hops on
+            # the no-mount-ns fallback lane. Those processes' execve-
+            # time environ is readable by the target (host procfs is
+            # visible on that lane and the hops share the target's
+            # user namespace), so the pre-strip kwargs["env"] must
+            # never ride them — the session credential would be one
+            # /proc read away from any sandboxed payload. Hand the
+            # already-stripped target view plus the single constant
+            # the shim's trust gate requires (a public marker, not a
+            # secret). Dispatch runs keep the real markers because
+            # their _env_for_target retains them by contract.
+            if keep_trust_markers_for_dispatch:
+                return dict(_env_for_target)
+            return {**_env_for_target, "_RAPTOR_TRUSTED": "1"}
+
         # Force FD close at fork. Python defaults close_fds=True on POSIX
         # but we reject explicit overrides — inheriting FDs from RAPTOR
         # into a sandboxed child is a capability leak (the child can read
@@ -4380,7 +4396,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     # to the target, so hand it the
                                     # stripped view.
                                     env=(_quarantine_loader_env(
-                                            kwargs["env"])
+                                            _shim_hop_env())
                                          if need_unshare
                                          else _env_for_target),
                                     # Orphan-teardown parity with the
@@ -4564,7 +4580,12 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             # vars so LD_*/DYLD_* apply to the target
                             # (the shim re-injects them at exec), not
                             # to the unshare/prlimit/shim bootstrap.
-                            _denv = _quarantine_loader_env(_denv_base)
+                            # _denv_base only feeds the invariant
+                            # check above; the hop env itself is the
+                            # minimal shim view (see _shim_hop_env —
+                            # the hops' environ is target-readable on
+                            # this lane).
+                            _denv = _quarantine_loader_env(_shim_hop_env())
                             _denv["_RAPTOR_DEATH_FD"] = str(_death_r)
                             _dk["env"] = _denv
                             try:

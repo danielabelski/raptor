@@ -8,12 +8,18 @@ Three properties, each independently load-bearing:
    the target on every Landlock-capable host).
 2. Untrusted runs refuse the degraded host-procfs posture (status byte
    'F') unless the operator explicitly accepts it.
+3. The spawn chain's un-exec'd forks scrub the sensitive values from
+   their inherited environ image — the image is the orchestrator's
+   full pre-strip environment, and same-userns readers pass the
+   kernel's ptrace gate on any lane where host procfs stays visible.
 """
 
 import os
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +33,51 @@ def test_f_status_byte_roundtrip():
     from core.sandbox._spawn import _parse_setup_status
     parsed = _parse_setup_status(b"F:fresh procfs mount failed")
     assert parsed == ("F", "fresh procfs mount failed")
+
+
+def test_scrub_env_image_values_zeroes_only_named_values():
+    """The helper zeroes the named variables' VALUES in the execve-time
+    environ image (what /proc/<pid>/environ serves) and touches nothing
+    else. Runs in a subprocess so the image is fully controlled."""
+    code = textwrap.dedent("""
+        import os, sys
+        sys.path.insert(0, %r)
+        from core.sandbox._spawn import _scrub_env_image_values
+        _scrub_env_image_values((b"SCRUB_ME", b"SCRUB_ME_TOO"))
+        img = open("/proc/self/environ", "rb").read()
+        entries = [e for e in img.split(b"\\0") if e]
+        by_name = dict(e.split(b"=", 1) for e in entries if b"=" in e)
+        assert by_name[b"SCRUB_ME"].strip(b"\\0") == b"", by_name[b"SCRUB_ME"]
+        assert by_name[b"SCRUB_ME_TOO"].strip(b"\\0") == b""
+        assert by_name[b"KEEP_ME"] == b"keep-value"
+        # PATH must survive untouched — libc consumers keep working.
+        assert by_name.get(b"PATH"), "PATH was damaged by the scrub"
+        print("scrub-ok")
+    """) % str(_REPO_ROOT)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "SCRUB_ME": "secret-one",
+        "SCRUB_ME_TOO": "secret-two",
+        "KEEP_ME": "keep-value",
+        "RAPTOR_DIR": str(_REPO_ROOT),
+    }
+    r = subprocess.run(
+        [sys.executable, "-c", code], env=env,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "scrub-ok" in r.stdout
+
+
+def test_scrub_names_cover_credentials_and_provider_keys():
+    """Source pin: the pre-fork scrub-name computation covers the
+    target strip set, the LLM provider credentials, and RAPTOR_DIR."""
+    src = (_REPO_ROOT / "core" / "sandbox" / "_spawn.py").read_text(
+        encoding="utf-8")
+    block = src[src.index("_env_image_scrub_names = tuple"):][:400]
+    assert "TARGET_ENV_STRIP_SET" in block
+    assert "LLM_API_KEY_VARS" in block
+    assert '"RAPTOR_DIR"' in block
 
 
 def test_layer_install_ordering_source_pin():
@@ -161,6 +212,70 @@ def test_untrusted_cannot_read_spawn_chain_credentials(tmp_path):
     assert marker.read_text(encoding="utf-8").strip() == "0", (
         "a sandboxed payload can read the session credential out of a "
         "spawn-chain process's environ image")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
+def test_spawn_chain_environ_image_is_scrubbed(tmp_path):
+    """Mid-run, every beacon-carrying process inside a FOREIGN user
+    namespace (= the class a sandboxed same-userns reader could reach)
+    must show a ZEROED session-token value in its /proc/<pid>/environ.
+
+    Carriers still in OUR user namespace are excluded: the driver
+    itself, pre-unshare setup-child snapshots, and transient
+    capability-probe forks are only readable here because this test
+    runs unsandboxed — a sandboxed payload is denied their environ by
+    the kernel's cross-userns ptrace gate, so they are out of scope
+    for the scrub (which runs immediately AFTER unshare, before the
+    process becomes same-userns-readable to any target)."""
+    import uuid
+    beacon = f"SBX_CHAIN_SCRUB_BEACON_{uuid.uuid4().hex[:8].upper()}"
+    decoy = _decoy_value()
+    my_userns = os.readlink("/proc/self/ns/user")
+    seen: dict[str, tuple[str, bytes]] = {}
+    stop = threading.Event()
+
+    def watcher() -> None:
+        me = str(os.getpid())
+        while not stop.is_set():
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit() or pid == me:
+                    continue
+                try:
+                    with open(f"/proc/{pid}/environ", "rb") as f:
+                        img = f.read()
+                    userns = os.readlink(f"/proc/{pid}/ns/user")
+                except OSError:
+                    continue
+                if beacon.encode() + b"=1" in img:
+                    # Keep the LAST snapshot per pid — the scrub runs
+                    # moments after fork+unshare.
+                    seen[pid] = (userns, img)
+            time.sleep(0.005)
+
+    t = threading.Thread(target=watcher)
+    t.start()
+    try:
+        r = _drive_run_in_subprocess(
+            tmp_path, beacon, "sleep 1.5", decoy_value=decoy,
+            timeout=150)
+    finally:
+        stop.set()
+        t.join()
+    if "RC=0" not in r.stdout:
+        pytest.skip(f"sandbox unavailable: {r.stdout} {r.stderr[-300:]}")
+    foreign = {pid: img for pid, (ns, img) in seen.items()
+               if ns != my_userns}
+    if not foreign:
+        pytest.skip("no foreign-userns chain process observed")
+    leaky = sorted(pid for pid, img in foreign.items()
+                   if b"RAPTOR_SESSION_TOKEN=" + decoy.encode() in img)
+    assert not leaky, (
+        f"spawn-chain forks readable from inside the sandbox still "
+        f"publish the session credential: {leaky}")
+    for img in foreign.values():
+        assert b"RAPTOR_SESSION_TOKEN=" in img, (
+            "scrub should empty the value, not remove the name")
 
 
 _FORCED_MOUNT_FAIL_PRELUDE = """

@@ -105,6 +105,58 @@ CLONE_NEWPID  = getattr(os, "CLONE_NEWPID",  0x20000000)
 CLONE_NEWNET  = getattr(os, "CLONE_NEWNET",  0x40000000)
 
 
+def _scrub_env_image_values(names: Iterable[bytes]) -> None:
+    """Zero the VALUES of the named variables in this process's
+    execve-time environment image (``mm->env_start..env_end``).
+
+    ``fork()`` copies the parent's environ image verbatim and
+    ``/proc/<pid>/environ`` serves exactly that region — so every
+    un-exec'd process in the spawn chain re-publishes the invoking
+    orchestrator's FULL environment (session credential included) to
+    any reader the kernel's ptrace gate admits. Host processes proper
+    are unreadable from the sandbox user namespace, but the spawn
+    chain's own processes share that namespace, so on any lane where
+    host procfs is visible (skip_pid_ns, operator-accepted degrades)
+    the image is one ``/proc`` read away from the target.
+
+    Values are zeroed in place; names survive, so ``getenv()`` of a
+    scrubbed name returns the empty string and everything else is
+    untouched. Best-effort by design: on any failure the image stays
+    as-is — the fresh-procfs contract is the primary defense, this is
+    depth for the shapes that retain host procfs.
+    """
+    try:
+        import ctypes
+        with open("/proc/self/stat", "rb") as _f:
+            _fields = _f.read().rsplit(b") ", 1)[1].split()
+        # proc(5): env_start / env_end are stat fields 50 / 51
+        # (1-indexed); after splitting off "pid (comm) " the state
+        # field is index 0, so 50 -> 47 and 51 -> 48.
+        env_start, env_end = int(_fields[47]), int(_fields[48])
+        if env_start <= 0 or env_end <= env_start:
+            return
+        _size = env_end - env_start
+        _buf = ctypes.string_at(env_start, _size)
+        for _name in names:
+            _probe = _name + b"="
+            _off = 0
+            while True:
+                _i = _buf.find(_probe, _off)
+                if _i < 0:
+                    break
+                if _i == 0 or _buf[_i - 1] == 0:
+                    _end = _buf.find(b"\0", _i)
+                    if _end < 0:
+                        _end = _size
+                    _vstart = _i + len(_probe)
+                    if _end > _vstart:
+                        ctypes.memset(env_start + _vstart, 0,
+                                      _end - _vstart)
+                _off = _i + 1
+    except Exception:  # noqa: BLE001 — dying-child-adjacent, never raise
+        return
+
+
 def _write_setup_status(fd: int, category: bytes, reason: str = "") -> None:
     """Fork-safe write of a typed setup-failure status to the exec-status
     pipe.
@@ -1609,6 +1661,27 @@ def run_sandboxed(
                 _run_bridges as _proxy_forwarder_fn,
             )
 
+        # Names whose values the child zeroes from its inherited
+        # environ image (see _scrub_env_image_values): the target-env
+        # strip set (trust markers + session credential), RAPTOR_DIR,
+        # and every LLM provider credential the orchestrator may
+        # carry — none of these is consumed via getenv() anywhere in
+        # the spawn chain, so emptying the image values is free.
+        # Computed PRE-FORK — the child must not import post-pivot,
+        # and the config module is already loaded here.
+        from core.config import RaptorConfig as _RC_scrub
+        _env_image_scrub_names = tuple(
+            n.encode() for n in
+            (*_RC_scrub.TARGET_ENV_STRIP_SET,
+             *_RC_scrub.LLM_API_KEY_VARS,
+             "RAPTOR_DIR",
+             # Endpoint-locating values: the LLM backend location and
+             # proxy URLs (which may embed credentials) identify the
+             # deployment even when every key is elsewhere.
+             "OLLAMA_HOST",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+             "http_proxy", "https_proxy", "all_proxy"))
+
         # Suppress Python 3.12+ DeprecationWarning about multi-threaded
         # fork(). Our post-fork code does namespace setup via ctypes
         # syscalls + Landlock + seccomp + execvp — no Python objects,
@@ -1797,6 +1870,14 @@ def run_sandboxed(
                 # actual sethostname call lives after step 7.
                 ns_flags |= CLONE_NEWUTS
             os.unshare(ns_flags)
+
+            # The child (and every un-exec'd fork it makes: the proxy
+            # forwarder, the intermediate pid-ns init) carries the
+            # ORCHESTRATOR's environ image, readable by same-userns
+            # processes wherever host procfs stays visible. Zero the
+            # sensitive values before anything target-adjacent can
+            # exist; forks below inherit the scrubbed image.
+            _scrub_env_image_values(_env_image_scrub_names)
 
             # Step 3.5: bring lo up in the fresh netns. A new netns has
             # loopback DOWN — bind() works but self-connect fails

@@ -314,6 +314,23 @@ class TestSingleCallClassifier:
             "idempotency is guaranteed by the NULL check at entry",
         )
 
+    def test_gap_tokens_are_identifier_shaped(self):
+        # The conditional-gap token class admits identifier-ish
+        # tokens (p->next, *ptr, re-invoked) but not arbitrary
+        # punctuation-joined expressions.
+        assert is_single_call_hypothesis(
+            "double free if p->owner frees it again",
+        )
+        assert is_single_call_hypothesis(
+            "crashes when *ctx is re-invoked twice",
+        )
+        assert not is_single_call_hypothesis(
+            "if x=y invokes it twice",
+        )
+        assert not is_single_call_hypothesis(
+            "when a/b calls it again",
+        )
+
     def test_declarative_in_body_claims_do_not_match(self):
         # An in-body double-call is a defect INSIDE the reviewed
         # function; adjudicating its callers tests the wrong

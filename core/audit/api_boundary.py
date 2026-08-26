@@ -107,9 +107,9 @@ _UNSIGNED_VALUED_RE = re.compile(
 # / "idempotency is guaranteed" are safety assertions, not contracts
 # on the callers.
 _SINGLE_CALL_RE = re.compile(
-    r"(?:(?:if|when|unless|should)\s+(?:[\w'`*->]+\s+){0,4}?"
+    r"(?:(?:if|when|unless|should)\s+(?:[\w'`*>-]+\s+){0,4}?"
     r"(?:call(?:s|ed)?|invoke[sd]?|re-?invoke[sd]?|frees?|freed|"
-    r"releases?[d]?|destroy(?:s|ed)?)\s+(?:[\w'`*->]+\s+){0,3}?"
+    r"releases?[d]?|destroy(?:s|ed)?)\s+(?:[\w'`*>-]+\s+){0,3}?"
     r"(?:twice|again|more\s+than\s+once|a\s+second\s+time|"
     r"multiple\s+times|repeatedly)"
     r"|exactly\s+once"

@@ -133,6 +133,25 @@ class TestMaxWorkersPropagation:
 # ── Ensemble checkpoint resume ─────────────────────────────────────
 
 
+
+def _stamped(rows):
+    """Envelope a planted pass checkpoint with the stamp
+    _run_ensemble_audit builds for this suite's calls — a bare row
+    list is the legacy format and is discarded by design, as is a
+    checkpoint whose rows fail the model/label-coverage validation."""
+    return {
+        "stamp": {"model": "test", "profile": "deployed",
+                  "triage": True, "prefilter": True},
+        "rows": rows,
+    }
+
+
+def _label_for_fakes():
+    """A label whose identity matches the fake rows: pass validation
+    covers exactly the selected label set and the rows' model."""
+    from types import SimpleNamespace
+    return SimpleNamespace(function_id="a.c:foo")
+
 class TestEnsembleCheckpointResume:
     """Verify ensemble skips completed passes when checkpoints exist."""
 
@@ -171,11 +190,11 @@ class TestEnsembleCheckpointResume:
         base.mkdir()
         sec_ckpt = base / "checkpoint-sec.json"
         bf_ckpt = base / "checkpoint-bf.json"
-        _checkpoint_write(sec_ckpt, self._fake_results("security"))
-        _checkpoint_write(bf_ckpt, self._fake_results("bug_first"))
+        _checkpoint_write(sec_ckpt, _stamped(self._fake_results("security")))
+        _checkpoint_write(bf_ckpt, _stamped(self._fake_results("bug_first")))
 
         results, _dirs = _run_ensemble_audit(
-            [], {}, out_dir=base,
+            [_label_for_fakes()], {}, out_dir=base, model="test",
         )
 
         mock_audit.assert_not_called()
@@ -202,13 +221,13 @@ class TestEnsembleCheckpointResume:
         base = tmp_path / "ensemble"
         base.mkdir()
         sec_ckpt = base / "checkpoint-sec.json"
-        _checkpoint_write(sec_ckpt, self._fake_results("security"))
+        _checkpoint_write(sec_ckpt, _stamped(self._fake_results("security")))
 
         bf_out = Path(str(base) + "-bf")
         mock_audit.return_value = (self._fake_results("bug_first"), [bf_out])
 
         _results, _dirs = _run_ensemble_audit(
-            [], {}, out_dir=base,
+            [_label_for_fakes()], {}, out_dir=base, model="test",
         )
 
         mock_audit.assert_called_once()

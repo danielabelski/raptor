@@ -2575,6 +2575,80 @@ class TestPostLoopReceiptRescue:
         assert flipped == 0
         assert outcome.status == "clean"
 
+    def test_same_named_methods_use_their_own_span(self, tmp_path: Path):
+        """A file with several same-named functions (Go methods named
+        after their interface) must hand each outcome ITS OWN span:
+        the old (file, name) keying gave every outcome the first gap's
+        body, so the gate's mechanical probes ran on the wrong
+        function and re-floored discharges the mid-loop gate had
+        accepted with the right source."""
+        pytest.importorskip("tree_sitter_go")
+        from core.audit.orchestrator import _post_loop_receipt_rescue
+
+        config = self._setup(tmp_path)
+        # The goconc discharge only runs under the operator's
+        # repo-trust assertion (synthetic fixture — asserted here).
+        config.repo_trusted = True
+        src_file = config.target_path / "store.go"
+        src_file.write_text(
+            "package store\n\n"                            # 1-2
+            "type Rows struct{ done chan struct{} }\n\n"   # 3-4
+            "func (rs *Rows) awaitDone() {\n"              # 5
+            "\t<-rs.done\n"
+            "}\n\n"
+            "func (rs *Rows) init() {\n"                   # 9
+            "\tgo rs.awaitDone()\n"
+            "}\n\n"
+            "func (rs *Rows) Scan(v string) error {\n"     # 13
+            "\treturn nil\n"
+            "}\n\n"
+            "type Null struct{ Valid bool }\n\n"           # 17-18
+            "func (n *Null) Scan(v string) error {\n"      # 19
+            "\tn.Valid = true\n"
+            "\treturn nil\n"
+            "}\n",
+        )
+        outcome = ReviewOutcome(
+            file="store.go", function="Scan", status="clean",
+            body="reviewed clean", line=19,
+            hypotheses=[{
+                "mechanism": (
+                    "CWE-362 data race: a package-internal goroutine "
+                    "could write n.Valid concurrently with Scan"
+                ),
+                "confidence": "refuted",
+                "counter": (
+                    "no internal goroutine in the package touches "
+                    "scan receivers"
+                ),
+            }],
+        )
+        result = OrchestratorResult()
+        result.outcomes = [outcome]
+        detectors = {
+            "store.go:Scan": [{
+                "file": "store.go", "function": "Scan",
+                "detector": "typestate", "line": 20,
+                "description": "unsynchronised field write",
+            }],
+        }
+        gaps = [
+            {"file": "store.go", "name": "Scan",
+             "line_start": 13, "line_end": 15},
+            {"file": "store.go", "name": "Scan",
+             "line_start": 19, "line_end": 22},
+        ]
+        flipped = _post_loop_receipt_rescue(
+            result, [], config,
+            mechanical_findings=detectors, gaps=gaps,
+        )
+        # With ITS OWN span the goconc witness discharges the Null
+        # receiver's dismissal; with the first gap's span (a *Rows
+        # method — the package spawns a Rows-receiver goroutine) it
+        # would refuse and this pass would re-floor.
+        assert flipped == 0
+        assert outcome.status == "clean"
+
     def test_non_structural_receipt_ignored(self, tmp_path: Path):
         from core.audit.orchestrator import _post_loop_receipt_rescue
 

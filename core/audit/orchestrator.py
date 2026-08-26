@@ -21918,13 +21918,26 @@ def _post_loop_receipt_rescue(
 
     from .refutation import rescue_self_refuted
 
-    spans_by_fn: dict[tuple[str, str], tuple[int, int]] = {}
+    # Keyed by line as well: a file can hold several same-named
+    # functions (Go methods named after their interface — five
+    # receivers each defining Scan is the canonical shape), and a
+    # (file, name) key silently handed every one of them the FIRST
+    # gap's span — the gate's mechanical probes then ran on the wrong
+    # function body and re-floored discharges the mid-loop gate had
+    # accepted with the right source in hand.  The bare (file, name)
+    # fallback below stays for outcomes without a line, but only when
+    # the name is unambiguous in that file.
+    spans_by_line: dict[tuple[str, str, int], tuple[int, int]] = {}
+    spans_by_fn: dict[tuple[str, str], tuple[int, int] | None] = {}
     for g in gaps or []:
         gf, gn = g.get("file", ""), g.get("name", "")
         if gf and gn and g.get("line_start"):
-            spans_by_fn.setdefault(
-                (gf, gn), (g["line_start"], g.get("line_end") or 0),
-            )
+            span = (g["line_start"], g.get("line_end") or 0)
+            spans_by_line.setdefault((gf, gn, g["line_start"]), span)
+            if (gf, gn) in spans_by_fn:
+                spans_by_fn[(gf, gn)] = None  # ambiguous — never guess
+            else:
+                spans_by_fn[(gf, gn)] = span
 
     flipped = 0
     for outcome in result.outcomes:
@@ -21941,7 +21954,9 @@ def _post_loop_receipt_rescue(
         # teardown) cannot run, so this backstop RE-FLOORED exactly the
         # self-refutations the mid-loop gate had accepted with source
         # in hand.
-        _span = spans_by_fn.get((outcome.file, outcome.function))
+        _span = spans_by_line.get(
+            (outcome.file, outcome.function, outcome.line or 0),
+        ) or spans_by_fn.get((outcome.file, outcome.function))
         _rescue_src = (
             _read_raw_source(
                 config.target_path, outcome.file, _span[0],

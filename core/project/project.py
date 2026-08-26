@@ -45,7 +45,15 @@ except Exception:  # noqa: BLE001 — invalid RAPTOR_OUT_DIR
     DEFAULT_OUTPUT_BASE = RaptorConfig.BASE_OUT_DIR / "projects"
 
 
-_PROJECT_SCHEMA_VERSION = 4
+_PROJECT_SCHEMA_VERSION = 5
+
+#: Generated (non-run) directories that live directly inside a
+#: project output dir. Every run-dir enumeration must skip them —
+#: `findings` is the merge fold's output; `ghidra-attach` holds
+#: attached-.gpr database caches and cannot be dot-prefixed (Ghidra
+#: refuses project paths containing hidden elements, and the
+#: attach-time headless import works inside the cache dir).
+GENERATED_PROJECT_DIRS = frozenset({"findings", "ghidra-attach"})
 
 # URL-shaped targets (/web scans) are stored and matched as opaque
 # strings, never Path-resolved. Same pattern as core/run/output.py.
@@ -270,7 +278,11 @@ class Project:
     # set) and ``settings`` (registry-validated key/value config).
     # Older files still load with both defaulted; the next write
     # upgrades them.
-    version: int = 4
+    #
+    # v5 adds ``ghidra_projects`` — operator-attached Ghidra .gpr
+    # paths for bidirectional RE sync. Older files still load with
+    # the list defaulted; the next write upgrades them.
+    version: int = 5
     # Operator-supplied debug binaries for binary_oracle reachability
     # enrichment. Persisted across runs so the operator doesn't re-pass
     # ``--binary`` every invocation. List for ``--target-kind=hybrid``
@@ -278,6 +290,13 @@ class Project:
     # into ``RaptorConfig.BINARY_ORACLE_PATHS`` at /agentic / /codeql
     # start; explicit ``--binary`` on the CLI is additive.
     binaries: list[str] = field(default_factory=list)
+    # v5: operator-attached Ghidra projects (.gpr paths) for
+    # bidirectional sync — review context injection reads their
+    # cached REDatabases; /ghidra sync exports findings back into
+    # working copies. Managed via ``/project ghidra add|remove`` and
+    # ``raptor-ghidra attach|detach``; never auto-populated from the
+    # scanned repo.
+    ghidra_projects: list[str] = field(default_factory=list)
     threat_model_path: str = ""
     threat_model_updated: str = ""
     # v4: operator trust markers — marker name → ISO timestamp when the
@@ -308,6 +327,7 @@ class Project:
             "description": self.description,
             "notes": self.notes,
             "binaries": list(self.binaries),
+            "ghidra_projects": list(self.ghidra_projects),
             "threat_model_path": self.threat_model_path,
             "threat_model_updated": self.threat_model_updated,
             "trust": dict(self.trust),
@@ -323,6 +343,9 @@ class Project:
         binaries = data.get("binaries") or []
         if not isinstance(binaries, list):
             binaries = []
+        ghidra_projects = data.get("ghidra_projects") or []
+        if not isinstance(ghidra_projects, list):
+            ghidra_projects = []
         try:
             version = int(data.get("version", _PROJECT_SCHEMA_VERSION))
         except (TypeError, ValueError):
@@ -346,6 +369,8 @@ class Project:
             notes=data.get("notes", ""),
             version=version,
             binaries=[str(b) for b in binaries if isinstance(b, str)],
+            ghidra_projects=[str(g) for g in ghidra_projects
+                             if isinstance(g, str)],
             threat_model_path=str(data.get("threat_model_path") or ""),
             threat_model_updated=str(data.get("threat_model_updated") or ""),
             trust=cls._parse_trust(data.get("trust")),
@@ -568,11 +593,10 @@ class Project:
         """List run directories (unsorted). Shared by get_run_dirs and sweep."""
         if not self.output_path.exists():
             return []
-        generated_dirs = {"findings"}
         return [d for d in self.output_path.iterdir()
                 if d.is_dir()
                 and not d.name.startswith((".", "_"))
-                and d.name not in generated_dirs]
+                and d.name not in GENERATED_PROJECT_DIRS]
 
     def get_run_dirs(self, sweep: bool=False) -> list[Path]:
         """List run directories sorted newest-first.

@@ -94,6 +94,9 @@ Activate with `/project use <name>` in-session, or at launch with `-p <name>` (a
 /project binary list           # list persisted binaries on the active project
 /project binary remove <path>  # remove one
 /project binary clear          # clear all
+/project ghidra add <path.gpr> # register a Ghidra project (then `raptor-ghidra attach` imports the cache that context injection + finding sync read)
+/project ghidra list           # list attached Ghidra projects
+/project ghidra remove <path>  # detach one; `clear` detaches all
 /project trust                 # list trust assertions (markers + binaries count)
 /project trust <marker>        # set a trust marker: config | build | dynamic
 /project untrust <marker>      # remove a trust marker

@@ -4,8 +4,10 @@ Two-phase pattern (mirrors source_intel_inject.py):
 
 1. :func:`prepare_ghidra_context` — called once per run to load
    REDatabases from the project's ghidra_projects list.  Prefers
-   cached ``re-database.json`` from a prior ``/ghidra import``; falls
-   back to live PyGhidra import when no cache exists.
+   cached ``re-database.json`` from a prior ``/ghidra import``; the
+   live PyGhidra import fallback applies to EXPLICITLY passed lists
+   only — auto-resolved attachments are cache-only (the sandboxed
+   import happens at attach time, never unprompted at run start).
 
 2. :func:`ghidra_blocks_for_finding` — called per-finding to produce
    :class:`UntrustedBlock` entries with decompilation, type info, and
@@ -18,7 +20,6 @@ loaded REDatabases.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from pathlib import Path
@@ -29,6 +30,26 @@ from core.security.prompt_envelope import UntrustedBlock
 from .model import REDatabase, REFunction
 
 logger = logging.getLogger(__name__)
+
+#: Prompt-budget clipping for injected blocks — mirrors the sibling
+#: injectors' discipline (flow-context clips fields, source-intel
+#: caps lines). Attacker-authored .gpr content must not be able to
+#: inflate every finding's prompt.
+_MAX_DECOMP_LINES = 200
+_MAX_DECOMP_CHARS = 16 * 1024
+_MAX_COMMENT_CHARS = 300
+#: Every other cache-derived text field is clipped too — the decomp
+#: cap alone left signature/name/binary_path/type-field inflation
+#: routes that reached the prompt (or forced all-or-nothing block
+#: shedding) unbounded.
+_MAX_SIG_CHARS = 512
+_MAX_NAME_CHARS = 200
+_MAX_TYPE_FIELDS = 20
+#: Callers/callees COLLECTION cap (display shows 15) — collection
+#: itself must stay bounded on xref floods.
+_MAX_XREF_SCAN = 64
+#: Cache-file read ceiling (parity with the 64MiB report readers).
+_MAX_CACHE_BYTES = 64 * 1024 * 1024
 
 _GHIDRA_CACHE: Dict[str, List[REDatabase]] = {}
 _GHIDRA_FUNC_INDEX: Dict[str, Dict[str, List[REFunction]]] = {}
@@ -42,8 +63,14 @@ def _load_cached_redb(gpr_path: Path) -> Optional[REDatabase]:
     for candidate in redb_cache_candidates(gpr_path):
         if candidate.is_file():
             try:
-                with open(candidate) as f:
-                    data = json.load(f)
+                from core.json import load_json
+                # Bounded: the cache is RAPTOR-written but its SIZE
+                # is attacker-influenced (decompilation volume of a
+                # hostile binary) and the auto path reads it at every
+                # run start.
+                data = load_json(candidate, max_bytes=_MAX_CACHE_BYTES)
+                if data is None:
+                    continue
                 db = REDatabase.from_dict(data)
                 logger.debug(
                     "loaded cached REDatabase from %s (%d functions)",
@@ -65,9 +92,8 @@ def _live_import(gpr_path: Path) -> Optional[REDatabase]:
     import tempfile
     try:
         with tempfile.TemporaryDirectory(prefix="raptor-ghidra-ctx-") as td:
-            bridge = GhidraBridge(gpr_path)
-            db = bridge.import_project(Path(td))
-            bridge.close()
+            with GhidraBridge(gpr_path) as bridge:
+                db = bridge.import_project(Path(td))
             logger.info(
                 "live-imported Ghidra project %s (%d functions)",
                 gpr_path.name, len(db.functions),
@@ -96,29 +122,57 @@ def _build_func_index(
 def _resolve_ghidra_projects(repo_path: Path) -> List[str]:
     """Auto-resolve the project-persisted .gpr list for *repo_path*.
 
-    DEFERRED: project-persisted Ghidra bindings follow the
-    projects-schema rework (attach follow-up). Until then callers
-    pass ``ghidra_projects`` explicitly; this resolver honestly
-    returns an empty list.
+    Reads the active project's ``ghidra_projects`` attachments —
+    operator-registered .gpr paths, never harvested from the scanned
+    repo. Failures resolve to an empty list: context injection is an
+    enrichment, not a dependency.
     """
     del repo_path
-    return []
+    try:
+        from .attach import get_attached_projects
+        return get_attached_projects()
+    except Exception:  # noqa: BLE001 — projects substrate unavailable
+        logger.debug("ghidra project resolution failed", exc_info=True)
+        return []
 
 def prepare_ghidra_context(
     repo_path: Path,
     ghidra_projects: Optional[List[str]] = None,
+    refresh: bool = False,
 ) -> None:
     """Pre-seed the Ghidra REDatabase cache for a run.
 
     When *ghidra_projects* is None, auto-resolves from the active
-    project's ``ghidra_projects`` list. Loads each .gpr from cached
-    JSON or live import. Builds a function-name index for fast
-    per-finding lookup.
+    project's ``ghidra_projects`` attachments and loads CACHED
+    databases only — the auto path runs on every analysis start with
+    no operator action, and a live import there would parse the
+    attacker-controlled project unprompted (worse, in-process when
+    analyzeHeadless is absent). ``raptor-ghidra attach`` is where the
+    sandboxed import happens. Explicitly-passed lists keep the
+    cache-or-live behaviour: the caller chose those projects NOW.
 
     Best-effort: individual project failures are logged and skipped.
     """
-    if ghidra_projects is None:
+    # Callers pass both Path and str (the orchestrator holds
+    # repo_path as str) — a str here reached `repo_path.resolve()`
+    # below as AttributeError, which the callers' blanket except
+    # swallowed into silently-disabled injection.
+    repo_path = Path(repo_path)
+    auto_resolved = ghidra_projects is None
+    if auto_resolved:
         ghidra_projects = _resolve_ghidra_projects(repo_path)
+    if refresh:
+        # Long-lived interpreters (multi-model orchestration, API
+        # consumers) otherwise carry a stale — possibly empty — cache
+        # entry across logical runs: an attachment added between runs
+        # would stay invisible until process restart.
+        try:
+            key = str(Path(repo_path).resolve())
+            with _GHIDRA_LOCK:
+                _GHIDRA_CACHE.pop(key, None)
+                _GHIDRA_FUNC_INDEX.pop(key, None)
+        except (OSError, ValueError):
+            pass
     if not ghidra_projects:
         return
 
@@ -143,8 +197,14 @@ def prepare_ghidra_context(
             continue
 
         db = _load_cached_redb(gpr_path)
-        if db is None:
+        if db is None and not auto_resolved:
             db = _live_import(gpr_path)
+        elif db is None:
+            logger.info(
+                "attached ghidra project %s has no cached database — "
+                "run 'raptor-ghidra attach' to import it; skipping "
+                "for this run", gpr_path,
+            )
         if db is not None:
             databases.append(db)
 
@@ -191,7 +251,10 @@ def ghidra_blocks_for_finding(
     Otherwise returns a 1-tuple with decompilation, types, and xrefs.
     """
     repo_raw = finding.get("repo_path")
-    if not repo_raw:
+    # Wrong-typed finding fields must degrade to (), not raise into
+    # the callers' blanket excepts (which read as silently-disabled
+    # injection): findings arrive from operator-supplied SARIF too.
+    if not repo_raw or not isinstance(repo_raw, (str, Path)):
         return ()
     try:
         key = str(Path(repo_raw).resolve())
@@ -205,13 +268,16 @@ def ghidra_blocks_for_finding(
     if not func_index or not databases:
         return ()
 
+    metadata = finding.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
     function_name = (
-        (finding.get("metadata") or {}).get("name")
+        metadata.get("name")
         or finding.get("function")
         or finding.get("function_name")
         or ""
     )
-    if not function_name:
+    if not isinstance(function_name, str) or not function_name:
         return ()
 
     matches = func_index.get(function_name)
@@ -225,10 +291,69 @@ def ghidra_blocks_for_finding(
     if not parts:
         return ()
 
+    # Identify WHICH binary this context came from in the body, not
+    # just the envelope origin: with two attached versions defining
+    # the same function, a reviewer reading v1's decompilation for a
+    # v2 finding is misdirected analysis. Multiple matches get an
+    # explicit ambiguity note rather than a silent first-pick.
+    header = "## Ghidra context source\n\nbinary: %s" % (
+        str(owning_db.binary_path or "unknown")[:_MAX_NAME_CHARS]
+    )
+    if len(matches) > 1:
+        # Split on DATABASE IDENTITY, not binary_path equality — two
+        # attachments can import the same binary (snapshots of one
+        # target), and calling their duplicates "this same database"
+        # is literally false while a binary_path-set difference would
+        # do exactly that.
+        own_bin = owning_db.binary_path or "unknown"
+        other_dbs = []
+        seen_ids = {id(owning_db)}
+        for m in matches[1:]:
+            db_m = _find_owning_db(databases, m)
+            # Dedup by IDENTITY: dataclass value-equality would
+            # collapse two identical snapshot attachments into one
+            # (and deep-compare whole databases per finding).
+            if id(db_m) not in seen_ids:
+                seen_ids.add(id(db_m))
+                other_dbs.append(db_m)
+        n_other = len(matches) - 1
+        if other_dbs:
+            labels = []
+            for db_m in other_dbs[:3]:
+                b = db_m.binary_path or "unknown"
+                # "(same binary)" only when both paths are KNOWN and
+                # equal — unknown == unknown proves nothing.
+                same = (bool(db_m.binary_path)
+                        and bool(owning_db.binary_path)
+                        and b == own_bin)
+                labels.append(str(b)[:_MAX_NAME_CHARS]
+                              + (" (same binary)" if same else ""))
+            if len(other_dbs) > 3:
+                labels.append("…")
+            header += (
+                "\n\nNOTE: %s has %d other definition(s), including "
+                "in %d other attached database(s) (%s) — this "
+                "context shows only the database named above; "
+                "verify it matches the finding's target."
+                % (function_name, n_other, len(other_dbs),
+                   ", ".join(labels))
+            )
+        else:
+            # All duplicates live in THIS database (e.g. two static
+            # functions from different CUs) — naming the same binary
+            # as "another database" would contradict the header line.
+            header += (
+                "\n\nNOTE: %s has %d other definition(s) in this "
+                "same database — this context shows only the first "
+                "match; verify the address matches the finding's "
+                "target." % (function_name, n_other)
+            )
+    parts.insert(0, header)
+
     content = "\n\n".join(parts)
     origin = "ghidra:%s:%s" % (
-        owning_db.binary_path or "unknown",
-        matched.name,
+        str(owning_db.binary_path or "unknown")[:_MAX_NAME_CHARS],
+        str(matched.name)[:_MAX_NAME_CHARS],
     )
 
     logger.debug(
@@ -249,13 +374,11 @@ def ghidra_blocks_for_finding(
 def _find_owning_db(
     databases: List[REDatabase], func: REFunction,
 ) -> REDatabase:
-    """Find which database owns a function (by address match)."""
+    """Find which database owns a function (by identity)."""
     for db in databases:
-        if db.function_by_address(func.address) is func:
+        _starts, _ordered, _by_addr, ids = db._addr_index()
+        if id(func) in ids:
             return db
-        for f in db.functions:
-            if f is func:
-                return db
     return databases[0]
 
 
@@ -267,25 +390,48 @@ def _render_function_context(
     parts: List[str] = []
 
     if func.decompilation:
+        decomp = func.decompilation
+        # Clip like the sibling injectors (flow-context 160-char
+        # fields, source-intel 12 lines): one giant function must not
+        # blow the whole finding's prompt budget, and shed_blocks is
+        # all-or-nothing far too late.
+        lines = decomp.splitlines()
+        if len(lines) > _MAX_DECOMP_LINES:
+            decomp = "\n".join(lines[:_MAX_DECOMP_LINES]) + (
+                "\n/* ... truncated: %d more lines ... */"
+                % (len(lines) - _MAX_DECOMP_LINES)
+            )
+        # The char cap applies UNCONDITIONALLY after the line clip:
+        # an elif here let 200 retained lines of unbounded length
+        # bypass the byte budget entirely (200 x 1MB lines = 200MB
+        # rendered — the exact inflation the caps exist to prevent).
+        if len(decomp) > _MAX_DECOMP_CHARS:
+            decomp = decomp[:_MAX_DECOMP_CHARS] + (
+                "\n/* ... truncated ... */"
+            )
         parts.append(
             "## Ghidra Decompilation: %s\n\n```c\n%s\n```"
-            % (func.name, func.decompilation)
+            % (str(func.name)[:_MAX_NAME_CHARS], decomp)
         )
 
     if func.signature:
-        parts.append("## Function Signature\n\n`%s`" % func.signature)
+        parts.append("## Function Signature\n\n`%s`"
+                     % str(func.signature)[:_MAX_SIG_CHARS])
 
-    callers = [
-        x for x in db.xrefs
-        if x.to_addr == func.address and x.kind == "call"
-    ]
-    callees = []
+    callers: List = []
+    callees: List = []
     for x in db.xrefs:
         if x.kind != "call":
             continue
-        owner = db.function_containing_address(x.from_addr)
-        if owner is not None and owner.address == func.address:
-            callees.append(x)
+        if x.to_addr == func.address and len(callers) < _MAX_XREF_SCAN:
+            callers.append(x)
+        if len(callees) < _MAX_XREF_SCAN:
+            owner = db.function_containing_address(x.from_addr)
+            if owner is not None and owner.address == func.address:
+                callees.append(x)
+        if (len(callers) >= _MAX_XREF_SCAN
+                and len(callees) >= _MAX_XREF_SCAN):
+            break
 
     if callers or callees:
         xref_lines = []
@@ -305,23 +451,28 @@ def _render_function_context(
     if related_types:
         type_lines = []
         for t in related_types[:5]:
-            header = "%s %s" % (t.kind, t.name)
-            if t.size is not None:
+            header = "%s %s" % (str(t.kind)[:_MAX_NAME_CHARS],
+                                str(t.name)[:_MAX_NAME_CHARS])
+            if isinstance(t.size, int):
                 header += " (size: %d)" % t.size
             if t.fields:
                 field_strs = []
-                for fld in t.fields:
+                for fld in t.fields[:_MAX_TYPE_FIELDS]:
                     offset = fld.get("offset")
-                    fname = fld.get("name", "?")
-                    ftype = fld.get("type", "?")
+                    fname = str(fld.get("name", "?"))[:_MAX_NAME_CHARS]
+                    ftype = str(fld.get("type", "?"))[:_MAX_NAME_CHARS]
                     fsize = fld.get("size")
                     if isinstance(offset, int):
                         s = "  offset 0x%x: %s %s" % (offset, ftype, fname)
                     else:
                         s = "  %s %s" % (ftype, fname)
-                    if fsize:
+                    if isinstance(fsize, int) and fsize:
                         s += " (%d bytes)" % fsize
                     field_strs.append(s)
+                if len(t.fields) > _MAX_TYPE_FIELDS:
+                    field_strs.append(
+                        "  ... %d more field(s) ..."
+                        % (len(t.fields) - _MAX_TYPE_FIELDS))
                 header += "\n" + "\n".join(field_strs)
             type_lines.append(header)
         parts.append(
@@ -334,7 +485,8 @@ def _render_function_context(
     ]
     if comments:
         comment_lines = [
-            "[%s] %s" % (c.kind, c.text) for c in comments[:10]
+            "[%s] %s" % (c.kind, c.text[:_MAX_COMMENT_CHARS])
+            for c in comments[:10]
         ]
         parts.append(
             "## Ghidra project comments (untrusted)\n\n" + "\n".join(comment_lines)
@@ -347,7 +499,11 @@ def _resolve_name(db: REDatabase, addr: int) -> str:
     """Resolve an instruction address to its containing function's name."""
     func = db.function_containing_address(addr)
     if func is not None:
-        return func.name
+        # Clipped: hostile symbol names are a no-plant inflation
+        # vector (they arrive via the binary itself).
+        return str(func.name)[:_MAX_NAME_CHARS]
+    if not isinstance(addr, int) or isinstance(addr, bool):
+        return "sub_?"
     return "sub_%x" % addr
 
 

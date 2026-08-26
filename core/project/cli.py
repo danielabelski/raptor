@@ -255,6 +255,26 @@ def main() -> None:
         help="Project name (default: active)")
     p_bin.add_argument("--wait", action="store_true", help=_WAIT_HELP)
 
+    # ghidra — per-project attached Ghidra projects
+    p_ghidra = sub.add_parser(
+        "ghidra",
+        help=("Manage per-project attached Ghidra .gpr projects "
+              "(review-context injection + finding sync)"),
+        usage=("raptor project ghidra <add|remove|list|clear> [args] "
+               "[<name>]"),
+        **_F,
+    )
+    p_ghidra.add_argument(
+        "action", choices=("add", "remove", "list", "clear"),
+        help="Action: add <path.gpr>, remove <path.gpr>, list, or clear")
+    p_ghidra.add_argument(
+        "path", nargs="?", default=None,
+        help=".gpr path (required for add/remove)")
+    p_ghidra.add_argument(
+        "name", nargs="?", default=None,
+        help="Project name (default: active)")
+    p_ghidra.add_argument("--wait", action="store_true", help=_WAIT_HELP)
+
     # trust / untrust — per-project trust markers
     p_trust = sub.add_parser(
         "trust",
@@ -798,6 +818,126 @@ def main() -> None:
                     p.binaries = []
                     save_json(project_file, p.to_dict())
                 print(_green(f"Cleared binaries for '{name}'"))
+
+        elif args.subcommand == "ghidra":
+            import re as _re
+            from core.json import save_json
+            # C0 controls + DEL + CSI + bidi overrides/isolates
+            # (raptor-ghidra strips the same set, minus tab/newline
+            # which its decompilation output keeps) — bidi characters
+            # can visually reverse a printed path, disguising WHICH
+            # .gpr is attached.
+            _strip_ctrl = lambda t: _re.sub(  # noqa: E731
+                "[\x00-\x1f\x7f\x9b"
+                "\u202a-\u202e\u2066-\u2069]",
+                "", str(t))
+            # list / clear don't take a path — same positional shuffle
+            # as the binary handler.
+            if (args.action in ("list", "clear")
+                    and args.path and not args.name):
+                args.name, args.path = args.path, None
+            name = args.name or _get_active_project()
+            if not name:
+                print(_red("No project specified. "
+                          "Use: raptor project ghidra <action> [args] "
+                          "<name>, or set an active project first."))
+                return
+            gproj = mgr.load(name)
+            if not gproj:
+                print(_red(f"Project '{name}' not found."))
+                return
+            project_file = mgr.projects_dir / f"{name}.json"
+            if args.action == "list":
+                if not gproj.ghidra_projects:
+                    print(f"Project '{name}': no Ghidra projects "
+                          "attached.")
+                else:
+                    print(f"Project '{name}' attached Ghidra projects "
+                          f"({len(gproj.ghidra_projects)}):")
+                    for g in gproj.ghidra_projects:
+                        marker = "" if Path(g).is_file() else "  (missing)"
+                        # Length-bounded: a hand-corrupted registry
+                        # entry must not emit a multi-MB echo line.
+                        shown = _strip_ctrl(g)
+                        if len(shown) > 500:
+                            shown = shown[:500] + "…"
+                        print(f"  {shown}{marker}")
+            elif args.action == "add":
+                if not args.path:
+                    print(_red("add requires a <path.gpr> argument"))
+                    return
+                if any(ord(c) < 0x20 or c == "\x7f" or c == "\x9b"
+                       or "\u202a" <= c <= "\u202e"
+                       or "\u2066" <= c <= "\u2069"
+                       for c in str(args.path)):
+                    # Same class as library attach(): C0/C1 controls
+                    # plus bidi overrides/isolates, which visually
+                    # reverse the echoed path.
+                    print(_red("add: control characters in the .gpr "
+                               "path — refused (status/list surfaces "
+                               "echo the stored path)"))
+                    return
+                resolved_path = Path(args.path).expanduser().resolve()
+                if (resolved_path.suffix != ".gpr"
+                        or not resolved_path.is_file()):
+                    # Reject at add-time so the operator sees the typo
+                    # NOW, not weeks later as silently-empty review
+                    # context (same rule as binary add).
+                    print(_red(
+                        f"add: not an existing .gpr file: {args.path} "
+                        f"(resolved to {resolved_path})"
+                    ))
+                    return
+                resolved = str(resolved_path)
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    gproj = mgr.load(name)
+                    if not gproj:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    if resolved in gproj.ghidra_projects:
+                        print(f"Already attached: {_strip_ctrl(resolved)}")
+                    else:
+                        gproj.ghidra_projects.append(resolved)
+                        save_json(project_file, gproj.to_dict())
+                        print(_green(f"Attached: {_strip_ctrl(resolved)}"))
+                        print("  Run 'raptor-ghidra attach' to import "
+                              "and cache its database — runs read the "
+                              "CACHE only (no unprompted import of "
+                              "the bundle).")
+            elif args.action == "remove":
+                if not args.path:
+                    print(_red("remove requires a <path.gpr> argument"))
+                    return
+                resolved = str(Path(args.path).expanduser().resolve())
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    gproj = mgr.load(name)
+                    if not gproj:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    # Match the raw form too (parity with library
+                    # detach()): legacy or hand-edited registrations
+                    # may be stored unresolved.
+                    keep = [g for g in gproj.ghidra_projects
+                            if g != resolved and g != str(args.path)]
+                    if len(keep) == len(gproj.ghidra_projects):
+                        print(f"Not attached: {_strip_ctrl(resolved)}")
+                    else:
+                        gproj.ghidra_projects = keep
+                        save_json(project_file, gproj.to_dict())
+                        print(_green(f"Detached: {_strip_ctrl(resolved)}"))
+            elif args.action == "clear":
+                from .project import project_file_lock
+                with project_file_lock(project_file):
+                    gproj = mgr.load(name)
+                    if not gproj:
+                        print(_red(f"Project '{name}' not found."))
+                        return
+                    gproj.ghidra_projects = []
+                    save_json(project_file, gproj.to_dict())
+                print(_green(f"Detached all Ghidra projects for "
+                             f"'{name}'"))
 
         elif args.subcommand in ("trust", "untrust"):
             _handle_trust(mgr, args)
@@ -1411,7 +1551,7 @@ def _mutation_lock_target(mgr, args: argparse.Namespace):
             (DEFAULT_OUTPUT_BASE / args.name).resolve())
         return Path(out), "project create"
     name = getattr(args, "name", None)
-    if sc == "binary":
+    if sc in ("binary", "ghidra"):
         if args.action not in ("add", "remove", "clear"):
             return None
         # Same positional shuffle the handler applies for

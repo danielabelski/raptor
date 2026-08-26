@@ -4,7 +4,7 @@
 """Operator CLI for Ghidra RE bridge operations.
 
 Usage:
-    libexec/raptor-ghidra attach <project.gpr> [--out <dir>]
+    libexec/raptor-ghidra attach <project.gpr>
     libexec/raptor-ghidra detach
     libexec/raptor-ghidra import <project.gpr> [--out <dir>] [--enrich]
     libexec/raptor-ghidra diff <old.gpr> <new.gpr> [--out <dir>]
@@ -43,7 +43,8 @@ import re  # noqa: E402
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="raptor-ghidra",
-        description="Ghidra RE bridge — attach, import, diff, decompile, list.",
+        description="Ghidra RE bridge — attach, detach, status, "
+                    "import, diff, decompile, list, export.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -53,20 +54,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Bind a Ghidra project to the active RAPTOR project (bidirectional sync)",
     )
     p_attach.add_argument("gpr", type=Path, help=".gpr project file")
-    p_attach.add_argument("--out", type=Path, help="Output directory")
     p_attach.add_argument("--enrich", action="store_true", help="Merge r2 analysis on import")
     p_attach.add_argument("--decompile-all", action="store_true", help="Decompile every function")
     p_attach.add_argument("--program", default=None, help="Program name in multi-binary project")
     p_attach.add_argument("--binary", type=Path, help="Binary path for r2 enrichment")
+    p_attach.add_argument(
+        "--wait", action="store_true",
+        help="Block on a busy project lock instead of failing fast",
+    )
 
     # detach — release the active Ghidra project
     p_detach = sub.add_parser(
         "detach",
-        help="Release attached Ghidra project(s) (stop auto-sync)",
+        help="Release attached Ghidra project(s)",
     )
     p_detach.add_argument(
         "gpr", nargs="?", type=Path, default=None,
         help=".gpr to detach (default: detach all)",
+    )
+    p_detach.add_argument(
+        "--wait", action="store_true",
+        help="Block on a busy project lock instead of failing fast",
     )
 
     # status — show attached projects
@@ -113,12 +121,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("out_dir", type=Path, help="RAPTOR output directory")
     p_export.add_argument(
         "--to", type=Path, dest="gpr",
-        help=".gpr project to write to (required until project "
-             "binding lands)",
+        help=".gpr project to write to (default: every project "
+             "attached to the active RAPTOR project)",
     )
     p_export.add_argument(
         "--target", type=Path,
-        help="Target path (for project lookup when --to is not given)",
+        help="Target path (reserved for per-target attachment "
+             "filtering; currently unused)",
     )
 
     return p
@@ -132,6 +141,18 @@ _CTRL_CHARS = re.compile(
 def _safe_name(name: str) -> str:
     """Strip terminal control characters from attacker-chosen names."""
     return _CTRL_CHARS.sub("", str(name))
+
+
+def _safe_line(name: str, limit: int = 500) -> str:
+    """One-LINE echo: scrub, flatten newlines/tabs (a hand-edited
+    registry path containing a newline otherwise injects fake status
+    lines — _safe_name deliberately passes them for decompile
+    output), and bound the length."""
+    flat = _safe_name(name).replace("\n", " ").replace("\r", " ") \
+        .replace("\t", " ")
+    if len(flat) > limit:
+        flat = flat[:limit] + "…"
+    return flat
 
 
 def _print_db_summary(db, out_dir: Path) -> None:
@@ -152,61 +173,206 @@ def _do_import(gpr: Path, args: argparse.Namespace, out_dir: Path):
     """Shared import logic for attach and import subcommands."""
     from packages.ghidra.bridge import GhidraBridge
 
-    bridge = GhidraBridge(gpr, program_name=args.program)
-
-    if args.enrich:
-        db = bridge.import_and_enrich(
-            out_dir,
-            binary_path=args.binary.resolve() if args.binary else None,
-        )
-    else:
-        db = bridge.import_project(out_dir, decompile=args.decompile_all)
-
-    bridge.close()
+    with GhidraBridge(gpr, program_name=args.program) as bridge:
+        if args.enrich:
+            db = bridge.import_and_enrich(
+                out_dir,
+                binary_path=args.binary.resolve() if args.binary else None,
+            )
+        else:
+            db = bridge.import_project(
+                out_dir, decompile=args.decompile_all)
     return db
 
 
 def _cmd_attach(args: argparse.Namespace) -> int:
-    # Persistent project binding is deferred: core/project is under
-    # active rewrite; the attach lifecycle lands as a follow-up
-    # against the new schema. Everything else works with explicit
-    # --gpr paths (import/export/diff/decompile/list).
-    print(
-        "ghidra attach: persistent attach/detach/status is not "
-        "available yet — pass the .gpr explicitly to "
-        "'raptor-ghidra import/export/diff' instead "
-        "(project binding follows the projects-schema rework)",
-        file=sys.stderr,
-    )
-    return 2
+    gpr = args.gpr.resolve()
+    from packages.ghidra.attach import attach
+
+    # Registration first (validates the path + active project), then
+    # the import via the shared path so --enrich/--decompile-all/
+    # --binary behave exactly like a one-shot import.
+    # The import runs inside attach()'s project op lock via the
+    # callback — a concurrent /project clean cannot interleave with
+    # the cache write. Import failures surface but keep the
+    # registration (re-running attach refreshes the cache).
+    import_error = []
+
+    def _locked_import(cache_dir):
+        if not args.decompile_all:
+            n_decomp = _cached_decompilation_count(cache_dir)
+            if n_decomp:
+                # A refresh is otherwise a silent enrichment
+                # downgrade: the previous attach cached decompilation
+                # that /agentic prompts inject, and this re-import
+                # discards it.
+                print(
+                    f"warning: the existing cache holds decompilation "
+                    f"for {n_decomp} function(s); re-importing WITHOUT "
+                    "--decompile-all discards it — pass "
+                    "--decompile-all to keep decompilation in the "
+                    "refreshed cache", file=sys.stderr,
+                )
+        try:
+            return _do_import(gpr, args, cache_dir)
+        except Exception as e:  # noqa: BLE001 — surface, keep registration
+            import_error.append(e)
+            return None
+
+    try:
+        # attach() returns (cache_dir, import result) when import_fn
+        # is given — narrow the union for the type checker.
+        res = attach(
+            gpr, program_name=args.program, import_fn=_locked_import,
+            wait=args.wait,
+        )
+        assert isinstance(res, tuple)
+        cache_dir, db = res
+    except ValueError as e:
+        print(f"error: {_safe_name(str(e))}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # Registration may already be persisted (the save is atomic
+        # and precedes cache-dir setup) — say so instead of a raw
+        # traceback that hides the half-done state.
+        print(
+            f"error: attach failed on a filesystem operation: "
+            f"{_safe_name(str(e))}\n"
+            "check 'raptor-ghidra status' — the registration may "
+            "already be in place; re-run attach after fixing the "
+            "cause", file=sys.stderr,
+        )
+        return 1
+    except Exception as e:
+        if type(e).__name__ == "OpLockContention":
+            print(
+                f"error: the project is busy ({_safe_name(str(e))}) — "
+                "a run or another project operation holds the lock; "
+                "retry when it finishes", file=sys.stderr,
+            )
+            return 1
+        raise
+
+    if import_error or db is None:
+        detail = _safe_name(str(import_error[0])) if import_error \
+            else "no database produced"
+        print(
+            f"attached (registered on the project), but the import "
+            f"failed: {detail}\n"
+            "re-run 'raptor-ghidra attach' after fixing the cause; "
+            "the registration is already in place",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"attached: {_safe_line(str(gpr))}")
+    print(f"database cached under {_safe_line(str(cache_dir))}")
+    _print_db_summary(db, cache_dir)
+    _warn_oversize_cache(cache_dir)
+    return 0
+
+
+def _cached_decompilation_count(cache_dir: Path) -> int:
+    """Functions with decompilation in an existing cache (0 if none
+    or unreadable — same degradation as every other cache reader)."""
+    path = cache_dir / "re-database.json"
+    if not path.is_file():
+        return 0
+    try:
+        from core.json import load_json
+        from packages.ghidra.context_inject import _MAX_CACHE_BYTES
+        data = load_json(path, max_bytes=_MAX_CACHE_BYTES)
+    except Exception:  # noqa: BLE001 — corrupt cache, refresh proceeds
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    funcs = data.get("functions")
+    if not isinstance(funcs, list):
+        # Same degradation as every other cache reader — a truthy
+        # non-list must not traceback out of the op-locked import.
+        return 0
+    return sum(1 for f in funcs
+               if isinstance(f, dict) and f.get("decompilation"))
+
+
+def _warn_oversize_cache(cache_dir: Path) -> None:
+    """Warn when the written cache exceeds the readers' size ceiling.
+
+    Every reader (status, context injection, sync) rejects caches
+    over the bound — without this warning the operator lands in a
+    'run attach to import' loop that re-writes the same oversize
+    file.
+    """
+    from packages.ghidra.context_inject import _MAX_CACHE_BYTES
+    path = cache_dir / "re-database.json"
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size > _MAX_CACHE_BYTES:
+        print(
+            f"warning: the cached database is {size} bytes, over the "
+            f"{_MAX_CACHE_BYTES}-byte read ceiling — status and "
+            "context injection will treat this attachment as having "
+            "no cache; re-attach without --decompile-all to shrink "
+            "it", file=sys.stderr,
+        )
 
 def _cmd_detach(args: argparse.Namespace) -> int:
-    # Persistent project binding is deferred: core/project is under
-    # active rewrite; the attach lifecycle lands as a follow-up
-    # against the new schema. Everything else works with explicit
-    # --gpr paths (import/export/diff/decompile/list).
-    print(
-        "ghidra detach: persistent attach/detach/status is not "
-        "available yet — pass the .gpr explicitly to "
-        "'raptor-ghidra import/export/diff' instead "
-        "(project binding follows the projects-schema rework)",
-        file=sys.stderr,
-    )
-    return 2
+    from packages.ghidra.attach import detach
+    try:
+        removed = detach(args.gpr, wait=args.wait)
+    except OSError as e:
+        print(f"error: detach failed: {_safe_name(str(e))}",
+              file=sys.stderr)
+        return 1
+    except Exception as e:
+        if type(e).__name__ == "OpLockContention":
+            print(
+                f"error: the project is busy ({_safe_name(str(e))}) — "
+                "retry when the current operation finishes",
+                file=sys.stderr,
+            )
+            return 1
+        raise
+    if removed == 0:
+        print("nothing detached (no matching attachment on the "
+              "active project)", file=sys.stderr)
+        return 1
+    what = str(args.gpr) if args.gpr else f"all ({removed})"
+    print(f"detached: {what}")
+    return 0
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    # Persistent project binding is deferred: core/project is under
-    # active rewrite; the attach lifecycle lands as a follow-up
-    # against the new schema. Everything else works with explicit
-    # --gpr paths (import/export/diff/decompile/list).
-    print(
-        "ghidra status: persistent attach/detach/status is not "
-        "available yet — pass the .gpr explicitly to "
-        "'raptor-ghidra import/export/diff' instead "
-        "(project binding follows the projects-schema rework)",
-        file=sys.stderr,
+    del args
+    from packages.ghidra.attach import (
+        _load_attached_db,
+        get_attached_projects,
     )
-    return 2
+    attached = get_attached_projects()
+    if not attached:
+        print("no Ghidra projects attached to the active project")
+        return 0
+    print(f"attached Ghidra projects ({len(attached)}):")
+    for gpr_str in attached:
+        gpr_path = Path(gpr_str)
+        missing = "" if gpr_path.is_file() else "  [MISSING]"
+        # Load the cache regardless of the .gpr's presence — the
+        # cache is a derived artifact that outlives the file, and
+        # "no cached db (run attach)" is doubly wrong when the .gpr
+        # is gone: the db may exist, and attach on a missing file
+        # can only fail.
+        db = _load_attached_db(gpr_path)
+        if db is not None and missing:
+            cache = (f"cached db: {len(db.functions)} functions, "
+                     "but the .gpr is gone — restore it or detach")
+        elif db is not None:
+            cache = f"cached db: {len(db.functions)} functions"
+        elif missing:
+            cache = "no cached db (restore the .gpr, then run attach)"
+        else:
+            cache = "no cached db (run attach to import)"
+        print(f"  {_safe_line(gpr_str)}{missing} — {cache}")
+    return 0
 
 def _import_binary_fallback(binary: Path, out_dir: Path) -> int:
     """Engine-fallback import for a RAW BINARY (no .gpr): r2 first,
@@ -365,7 +531,11 @@ def _cmd_decompile(args: argparse.Namespace) -> int:
                 func = f
                 break
     if func is not None and func.decompilation:
-        print(func.decompilation)
+        # The cached database is derived from an attacker-controlled
+        # bundle — scrub terminal-control characters before echoing
+        # decompilation to the operator's TTY, like every other
+        # attacker-influenced print in this CLI.
+        print(_safe_name(func.decompilation))
         return 0
 
     code = None
@@ -410,8 +580,8 @@ def _cmd_decompile(args: argparse.Namespace) -> int:
             if contained and binary.is_file():
                 print("decompiler unavailable — objdump disassembly "
                       f"for {func.name}:", file=sys.stderr)
-                print(disassemble_function(
-                    binary, func.address, func.size))
+                print(_safe_name(disassemble_function(
+                    binary, func.address, func.size)))
                 return 0
             if binary.is_file():
                 print(f"error: cached binary path {binary} is outside "
@@ -421,7 +591,7 @@ def _cmd_decompile(args: argparse.Namespace) -> int:
         print(f"error: function not found or decompilation failed: {args.function}", file=sys.stderr)
         return 1
 
-    print(code)
+    print(_safe_name(code))
     return 0
 
 
@@ -483,17 +653,40 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"error: output directory not found: {out_dir}", file=sys.stderr)
         return 1
 
-    # Resolving the .gpr from the active project's persisted binding
-    # is deferred until the projects-schema rework lands (attach
-    # follow-up) — until then --to is required.
+    # No --to: export to every ATTACHED project on the active
+    # RAPTOR project (the persistent binding).
     if not args.gpr:
-        print(
-            "error: no Ghidra project given. Pass --to "
-            "<project.gpr> (persistent project binding follows "
-            "the projects-schema rework)",
-            file=sys.stderr,
+        from packages.ghidra.attach import (
+            get_attached_projects,
+            sync_findings_to_attached,
         )
-        return 1
+        if not get_attached_projects():
+            print(
+                "error: no Ghidra project given and none attached. "
+                "Pass --to <project.gpr>, or attach one with "
+                "'raptor-ghidra attach'",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            result = sync_findings_to_attached(out_dir,
+                                               target_path=args.target)
+        except Exception as e:  # noqa: BLE001 — honest failure, no traceback
+            # Source gathering happens before the per-attachment
+            # guards — malformed run artifacts must surface as an
+            # actionable message, same posture as the --to path.
+            print(f"error: export failed while gathering findings: "
+                  f"{_safe_name(str(e)[:300])}", file=sys.stderr)
+            return 1
+        print(
+            f"{int(result)} submission(s) across "
+            f"{result.attachments} attached project(s)"
+        )
+        for gpr_failed in result.failed:
+            print(f"FAILED: {_safe_line(gpr_failed)} — see the log; "
+                  "the deliverable for this attachment is NOT "
+                  "enriched", file=sys.stderr)
+        return 1 if result.failed else 0
     gpr_str = str(args.gpr.resolve())
     if not Path(gpr_str).exists():
         print(f"error: project not found: {gpr_str}", file=sys.stderr)
@@ -501,16 +694,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     gpr_path = Path(gpr_str)
 
-    results = []
-    agentic_json = out_dir / "orchestrated_report.json"
-    if agentic_json.is_file():
-        try:
-            report = json.loads(agentic_json.read_text())
-            if isinstance(report, dict):
-                results = report.get("results", [])
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"warning: could not read orchestrated_report.json: {e}",
-                  file=sys.stderr)
+    # Same reader as the attached-sync path: analysed_results.json
+    # first, orchestrated_report.json's results second — the two
+    # export forms must not see different agentic sets for one run.
+    from packages.ghidra.attach import _read_analysed_results
+    results = _read_analysed_results(out_dir)
 
     # One combined apply pass: each apply re-copies the project into
     # the export dir, so per-source passes would clobber each other.
@@ -518,7 +706,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         counts = export_all_to_ghidra(out_dir, gpr_path, results)
     except Exception as e:
-        print(f"error: export failed: {e}", file=sys.stderr)
+        print(f"error: export failed: {_safe_name(str(e)[:1600])}",
+              file=sys.stderr)
         return 1
 
     for source, label in (
@@ -561,7 +750,12 @@ def main() -> int:
         from packages.ghidra.headless import GhidraError
         from packages.ghidra.session import GhidraSessionError
         if isinstance(e, (GhidraError, GhidraSessionError)):
-            print(f"error: {e}", file=sys.stderr)
+            # GhidraError embeds analyzeHeadless stderr/stdout tails —
+            # attacker-influenced (the JVM echoes bundle-internal
+            # names) — so it passes the same scrub as every other
+            # hostile-derived print.
+            print(f"error: {_safe_name(str(e)[:1600])}",
+                  file=sys.stderr)
             return 1
         if not isinstance(e, ImportError):
             raise

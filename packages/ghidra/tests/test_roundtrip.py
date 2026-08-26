@@ -146,6 +146,8 @@ class TestExportAll:
         out.mkdir()
 
         mock_bridge = MagicMock()
+        # the apply path enters the bridge as a context manager
+        mock_bridge.__enter__.return_value = mock_bridge
         mock_bridge.export_enrichments.return_value = tmp_path / "e.gpr"
 
         with patch(

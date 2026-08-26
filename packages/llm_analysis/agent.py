@@ -1141,6 +1141,19 @@ class AutonomousSecurityAgentV2:
             }))
         except Exception as exc:  # noqa: BLE001
             logger.debug("flow-context injection failed: %s", exc)
+        # Attached-Ghidra RE context (decompilation/types/xrefs for
+        # the finding's function, cached by prepare_ghidra_context at
+        # run start). () when nothing is attached or nothing matches.
+        try:
+            from packages.ghidra.context_inject import (
+                ghidra_blocks_for_finding,
+            )
+            extra_blocks.extend(ghidra_blocks_for_finding({
+                "repo_path": str(vuln.repo_path),
+                "metadata": meta,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ghidra context injection failed: %s", exc)
         extra_blocks.extend(extra_context_blocks)
 
         # Filled by the bundle builder when L3-retrieved exemplars land
@@ -2549,6 +2562,23 @@ class AutonomousSecurityAgentV2:
                 "(is_prep_only=%s, repo_path=%s)",
                 is_prep_only, self.repo_path,
             )
+
+        # Attached-Ghidra databases (cache-only): the sequential path
+        # runs in its own subprocess, so the orchestrator's prime is
+        # invisible here — without this, per-finding injection never
+        # fires in sequential mode.
+        if self.repo_path:
+            try:
+                from packages.ghidra.context_inject import (
+                    prepare_ghidra_context,
+                )
+                prepare_ghidra_context(Path(self.repo_path))
+            except Exception as e:  # noqa: BLE001
+                logger.info(
+                    "agent.py: prepare_ghidra_context(%s) failed: %s — "
+                    "continuing without Ghidra context",
+                    self.repo_path, e,
+                )
 
         results = []
         analyzed = 0

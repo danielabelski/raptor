@@ -219,15 +219,16 @@ def _human_grade_note_count(output_dir) -> int:
     root_base = output_dir / "annotations"
     if root_base.is_dir() and not root_base.is_symlink():
         bases.append(root_base)
+    from core.project.project import GENERATED_PROJECT_DIRS
     scanned_dirs = 0
     for child in sorted(output_dir.iterdir()):
         if scanned_dirs >= _ADVISORY_MAX_RUN_DIRS:
             break
         if child.is_symlink() or not child.is_dir():
             continue
-        if child.name.startswith((".", "_")) or child.name in (
-            "annotations", "findings",
-        ):
+        if (child.name.startswith((".", "_"))
+                or child.name == "annotations"
+                or child.name in GENERATED_PROJECT_DIRS):
             continue
         scanned_dirs += 1
         if (child / IMPORTED_RUN_MARKER_FILE).is_file():

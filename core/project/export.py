@@ -257,6 +257,23 @@ def export_project(project_output_dir: Path, dest_path: Path,
     with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for dirpath, dirnames, filenames in os.walk(project_output_dir, followlinks=False):
             dirnames[:] = [d for d in dirnames if not Path(dirpath, d).is_symlink()]
+            if Path(dirpath) == project_output_dir:
+                # Ghidra attach/import caches never ship: the cached
+                # re-database.json is the trust-bearing artifact
+                # context injection and `raptor-ghidra decompile`
+                # read FIRST, and an unsigned archive restoring it
+                # byte-identical would hand the archive author the
+                # "derived" database (attacker-chosen decompilation,
+                # addresses that anchor sync comments). Same stance
+                # as binaries/trust markers: machine-local, derived,
+                # recomputable by re-attach — not archive content.
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d != "ghidra-attach"
+                    and not (d.startswith("ghidra-")
+                             and Path(dirpath, d,
+                                      "re-database.json").is_file())
+                ]
             for fname in filenames:
                 item = Path(dirpath, fname)
                 if item.is_symlink():
@@ -264,6 +281,13 @@ def export_project(project_output_dir: Path, dest_path: Path,
                     continue
                 if _is_transient_artefact(item):
                     logger.debug("Skipping transient artefact: %s", item)
+                    continue
+                if (Path(dirpath) == project_output_dir
+                        and fname == "ghidra-attach"):
+                    # Reserved cache-dir name shipped as a FILE would
+                    # block every attach on the restored project
+                    # (cache mkdir fails on the name collision).
+                    logger.debug("Skipping reserved-name file: %s", item)
                     continue
                 arcname = f"{project_output_dir.name}/{item.relative_to(project_output_dir)}"
                 zf.write(item, arcname)
@@ -447,7 +471,7 @@ def _mark_imported_runs(output_dir: Path, archive_sha256: str) -> None:
     attacker-selected statuses from an unsigned archive from
     dominating locally-produced ones. Run-dir candidates mirror
     ``Project._list_run_dirs``'s enumeration (top-level dirs, no
-    dot/underscore prefix, not the generated ``findings`` dir).
+    dot/underscore prefix, none of ``GENERATED_PROJECT_DIRS``).
     """
     from datetime import datetime, timezone
 
@@ -460,10 +484,12 @@ def _mark_imported_runs(output_dir: Path, archive_sha256: str) -> None:
     }
     root = Path(output_dir)
     save_json(root / IMPORTED_RUN_MARKER_FILE, payload)
+    from core.project.project import GENERATED_PROJECT_DIRS
     for child in root.iterdir():
         if child.is_symlink() or not child.is_dir():
             continue
-        if child.name.startswith((".", "_")) or child.name == "findings":
+        if (child.name.startswith((".", "_"))
+                or child.name in GENERATED_PROJECT_DIRS):
             continue
         save_json(child / IMPORTED_RUN_MARKER_FILE, payload)
         _namespace_imported_provenance_refs(child)
@@ -499,12 +525,22 @@ _PRIVILEGED_FILE_NAMES = frozenset({
     "review-journal-index.json",      # project journal index
     "verified-outcomes.jsonl",        # oracle-verified outcome sidecar
     "iris-taint-specs-refined.json",  # per-run IRIS refined specs
+    # Cached Ghidra database: the FIRST candidate context injection,
+    # status, sync address anchoring, and decompile read. Export
+    # never ships the attach/legacy cache slots (run-dir copies of
+    # the artifact do ship), but a crafted archive can carry one at
+    # the attach slot or the stem-keyed legacy slot — restored in
+    # place it hands the archive author the "derived" database.
+    # Derived + recomputable by re-attach, so quarantining costs
+    # nothing.
+    "re-database.json",
 })
 
 _PRIVILEGED_DIR_NAMES = frozenset({
     "witnesses",          # WitnessStore roots (manifests + blobs)
     "iris-specs",         # project IRIS spec store
     "labeled_attempts",   # project exemplar pool
+    "ghidra-attach",      # attach cache slots (see re-database.json)
 })
 
 
@@ -544,7 +580,13 @@ def _quarantine_imported_privileged_artifacts(output_dir: Path) -> list[str]:
                 dirnames.remove(name)
                 moved.append(str(rel))
         for name in filenames:
-            if name in _PRIVILEGED_FILE_NAMES:
+            # A FILE carrying a privileged DIR name is quarantined
+            # too: a crafted archive shipping a plain file named
+            # `ghidra-attach` restores in place and bricks every
+            # later attach (cache mkdir hits the name collision) —
+            # the export-side skip does not bind an archive author.
+            if (name in _PRIVILEGED_FILE_NAMES
+                    or name in _PRIVILEGED_DIR_NAMES):
                 src = dp / name
                 rel = src.relative_to(root)
                 dest = _quarantine_dest(qroot, rel)
@@ -589,7 +631,14 @@ def import_project(zip_path: Path, projects_dir: Path,
     zip_path = Path(zip_path)
     projects_dir = Path(projects_dir)
     if output_base is None:
-        output_base = Path("out/projects")
+        # Parity with ProjectManager.create(): the cwd-relative
+        # Path("out/projects") minted RELATIVE output_dirs — the
+        # restored project landed wherever the process's cwd was
+        # (not under RAPTOR_OUT_DIR), and JVM-facing paths derived
+        # from the registration later resolved against the
+        # sandbox's private scratch cwd instead of the project.
+        from core.project.project import DEFAULT_OUTPUT_BASE
+        output_base = DEFAULT_OUTPUT_BASE
 
     if not zip_path.exists():
         msg = f"Zip file not found: {zip_path}"

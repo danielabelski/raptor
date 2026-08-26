@@ -77,6 +77,155 @@ class TestImportedRunMarker(unittest.TestCase):
             self.assertTrue(
                 run_is_imported(imported_root / "scan_20260101-000000"))
 
+    def test_generated_dirs_not_stamped_as_runs(self):
+        """`findings` and `ghidra-attach` are generated project dirs,
+        not runs — stamping them plants an imported marker (and
+        namespaces provenance refs) inside the merge fold output /
+        the attach caches."""
+        with TemporaryDirectory() as td:
+            d = Path(td)
+            src = d / "src" / "myproj"
+            run = src / "scan_20260101-000000"
+            run.mkdir(parents=True)
+            (run / "findings.json").write_text('{"findings": []}')
+            for gen in ("findings", "ghidra-attach"):
+                (src / gen).mkdir()
+                (src / gen / "keep.json").write_text("{}")
+            imported_root = _import_archive(d, src)
+            for gen in ("findings", "ghidra-attach"):
+                self.assertFalse(
+                    (imported_root / gen
+                     / IMPORTED_RUN_MARKER_FILE).exists(),
+                    f"generated dir {gen} stamped as an imported run")
+            self.assertTrue(
+                (imported_root / "scan_20260101-000000"
+                 / IMPORTED_RUN_MARKER_FILE).is_file())
+
+    def test_ghidra_caches_never_ship_in_archives(self):
+        """The cached re-database.json is the trust-bearing artifact
+        context injection and decompile read FIRST — an unsigned
+        archive restoring it byte-identical would hand the archive
+        author the "derived" database. Caches are machine-local and
+        recomputable by re-attach; a run dir that merely starts with
+        "ghidra-" (no re-database.json) still ships."""
+        with TemporaryDirectory() as td:
+            d = Path(td)
+            src = d / "src" / "myproj"
+            run = src / "scan_20260101-000000"
+            run.mkdir(parents=True)
+            (run / "findings.json").write_text('{"findings": []}')
+            slot = src / "ghidra-attach" / "fw-abcd1234"
+            slot.mkdir(parents=True)
+            (slot / "re-database.json").write_text('{"poisoned": 1}')
+            legacy = src / "ghidra-fw"
+            legacy.mkdir()
+            (legacy / "re-database.json").write_text('{"poisoned": 2}')
+            lookalike = src / "ghidra-notes"
+            lookalike.mkdir()
+            (lookalike / "readme.txt").write_text("keep me")
+            imported_root = _import_archive(d, src)
+            assert not (imported_root / "ghidra-attach").exists()
+            assert not (imported_root / "ghidra-fw").exists()
+            assert (imported_root / "ghidra-notes"
+                    / "readme.txt").is_file()
+            assert (imported_root
+                    / "scan_20260101-000000").is_dir()
+
+    def test_crafted_archive_caches_quarantined_on_import(self):
+        """Export pruning does not bind an archive AUTHOR — a crafted
+        zip can still carry re-database.json at the attach slot or
+        the stem-keyed legacy slot, and restored in place it becomes
+        the FIRST cache candidate injection/status/sync/decompile
+        read. Import must quarantine it like the other trust-bearing
+        artifact families."""
+        import zipfile
+
+        from core.project.export import (
+            _QUARANTINE_DIR_NAME,
+            import_project,
+        )
+        with TemporaryDirectory() as td:
+            d = Path(td)
+            zip_path = d / "crafted.zip"
+            meta = json.dumps({
+                "name": "crafted", "target": str(d / "t"),
+                "output_dir": str(d / "ignored"),
+            })
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("crafted/.project.json", meta)
+                zf.writestr(
+                    "crafted/scan_20260101-000000/findings.json",
+                    '{"findings": []}')
+                zf.writestr(
+                    "crafted/ghidra-attach/fw-deadbeef/"
+                    "re-database.json", '{"planted": "attach-slot"}')
+                zf.writestr(
+                    "crafted/ghidra-fw/re-database.json",
+                    '{"planted": "legacy-slot"}')
+            result = import_project(zip_path, d / "projects",
+                                    output_base=d / "imported")
+            root = Path(result["output_dir"])
+            assert not (root / "ghidra-attach").exists()
+            assert not (root / "ghidra-fw"
+                        / "re-database.json").exists()
+            q = root / _QUARANTINE_DIR_NAME
+            assert (q / "ghidra-attach").exists() or list(
+                q.rglob("re-database.json")), (
+                "planted caches neither at canonical paths nor "
+                "quarantined")
+
+    def test_crafted_ghidra_attach_file_quarantined(self):
+        """A plain FILE named ghidra-attach restored in place bricks
+        every later attach (cache mkdir hits the name collision) —
+        the export-side skip does not bind an archive author."""
+        import zipfile
+
+        from core.project.export import import_project
+        with TemporaryDirectory() as td:
+            d = Path(td)
+            zip_path = d / "crafted.zip"
+            meta = json.dumps({
+                "name": "crafted2", "target": str(d / "t"),
+                "output_dir": str(d / "ignored"),
+            })
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("crafted2/.project.json", meta)
+                zf.writestr("crafted2/ghidra-attach", "not a dir")
+            result = import_project(zip_path, d / "projects",
+                                    output_base=d / "imported")
+            root = Path(result["output_dir"])
+            assert not (root / "ghidra-attach").exists()
+
+    def test_default_output_base_is_absolute(self):
+        """The cwd-relative Path("out/projects") default minted
+        RELATIVE output_dirs on CLI import — the restored project
+        landed in whatever cwd the process had, outside
+        RAPTOR_OUT_DIR, and derived JVM-facing paths later resolved
+        against the sandbox scratch cwd (create() was fixed for this
+        long ago; import kept the old minting)."""
+        import zipfile
+        from unittest import mock
+
+        import core.project.project as project_mod
+        from core.project.export import import_project
+        with TemporaryDirectory() as td:
+            d = Path(td)
+            zip_path = d / "a.zip"
+            meta = json.dumps({
+                "name": "absbase", "target": str(d / "t"),
+                "output_dir": str(d / "ignored"),
+            })
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("absbase/.project.json", meta)
+                zf.writestr("absbase/scan_20260101-000000/x.json",
+                            "{}")
+            with mock.patch.object(project_mod, "DEFAULT_OUTPUT_BASE",
+                                   d / "outbase"):
+                result = import_project(zip_path, d / "projects")
+            out = Path(result["output_dir"])
+            self.assertTrue(out.is_absolute())
+            self.assertEqual(out, d / "outbase" / "absbase")
+
     def test_local_runs_are_not_marked(self):
         with TemporaryDirectory() as td:
             run = Path(td) / "scan_20260101-000000"

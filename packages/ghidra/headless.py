@@ -130,6 +130,34 @@ def _project_process_args(
     return f"{project_name}/{folder}", ["-process", parts[-1]]
 
 
+def _refuse_hidden_path_elements(path: Path, what: str) -> None:
+    """Fail fast when *path* contains a dot-prefixed element.
+
+    Ghidra's ProjectLocator rejects any project path with a
+    dot-prefixed element ("Path element starting with '.' is not
+    permitted"), and the working copy analyzeHeadless opens lives
+    under *path* — but the JVM-side failure is cryptic and surfaces
+    only after a full launch. Refuse here with an actionable message
+    instead.
+
+    Validates the TEXTUAL absolute form (os.path.abspath — no
+    symlink dereference): that is the string the JVM receives.
+    resolve() would both falsely refuse a visible symlink into a
+    hidden real directory (which Ghidra opens fine) and falsely pass
+    a textual .hidden element whose final component symlinks to a
+    visible directory (which Ghidra rejects).
+    """
+    hidden = [p for p in Path(os.path.abspath(str(path))).parts
+              if p.startswith(".") and p not in (".", "..")]
+    if hidden:
+        raise GhidraError(
+            f"cannot place the Ghidra {what} under {path}: path "
+            f"element(s) {hidden!r} start with '.' and Ghidra "
+            "refuses project paths containing hidden directories — "
+            "use an output location without dot-prefixed components"
+        )
+
+
 def export_project(
     gpr_path: Path,
     output_path: Path,
@@ -158,6 +186,7 @@ def export_project(
     Raises:
         GhidraError: If Ghidra is not installed or the export fails.
     """
+    _refuse_hidden_path_elements(output_path.parent, "working copy")
     headless = _find_headless()
     project_name_str, process_args = _project_process_args(
         get_project_name(gpr_path), program_name,
@@ -344,6 +373,7 @@ def import_enrichments(
                     "a working copy you just prepared"
                 )
 
+    _refuse_hidden_path_elements(dst_dir, "enriched project copy")
     headless = _find_headless()
     if not copy_prepared:
         dst_dir.mkdir(parents=True, exist_ok=True)

@@ -675,6 +675,16 @@ def orchestrate(
     except Exception as e:  # noqa: BLE001
         logger.debug("flow-context pre-seed failed (%s); continuing", e)
 
+    # Pre-seed attached Ghidra databases (operator-registered .gpr
+    # attachments on the active project) for per-finding RE context.
+    # Cache-only on this auto path: the sandboxed import happened at
+    # attach time, never unprompted at run start.
+    try:
+        from packages.ghidra.context_inject import prepare_ghidra_context
+        prepare_ghidra_context(repo_path, refresh=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("ghidra pre-seed failed (%s); continuing", e)
+
     # Optional rank-then-spend: reorder BEFORE the cap below so a
     # max_findings / max_cost truncation drops the least promising
     # tail rather than an arbitrary suffix of scan order.

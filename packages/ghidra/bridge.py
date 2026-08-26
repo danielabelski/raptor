@@ -498,8 +498,13 @@ class GhidraBridge:
         except OSError:
             logger.debug("could not hash %s", db.binary_path, exc_info=True)
         out_path = output_dir / "re-database.json"
-        with open(out_path, "w") as f:
-            json.dump(doc, f, indent=2)
+        # Atomic replace: attach graduated this file from one-shot
+        # import output to long-lived shared state that concurrent
+        # runs read lock-free — a truncate-in-place write gives a
+        # reader the empty window and the run negative-caches "no
+        # Ghidra context" for its whole lifetime.
+        from core.json import save_json
+        save_json(out_path, doc)
         logger.info("wrote %s (%d functions)", out_path, len(db.functions))
 
 

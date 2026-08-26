@@ -56,12 +56,18 @@ class REFunction:
             name=str(d.get("name", "")),
             address=int(d.get("address", 0)),
             size=int(d.get("size", 0)),
-            signature=d.get("signature"),
+            # str-coerced like ``name``: a wrong-typed value in a
+            # planted cache otherwise trips the renderers'
+            # AttributeError, silently disabling injection for the
+            # function via the callers' blanket excepts.
+            signature=(None if d.get("signature") is None
+                       else str(d.get("signature"))),
             calling_convention=d.get("calling_convention"),
             is_auto_named=bool(d.get("is_auto_named", False)),
             is_thunk=bool(d.get("is_thunk", False)),
             is_external=bool(d.get("is_external", False)),
-            decompilation=d.get("decompilation"),
+            decompilation=(None if d.get("decompilation") is None
+                           else str(d.get("decompilation"))),
             source_tool=str(d.get("source_tool", "")),
         )
 
@@ -117,11 +123,23 @@ class REType:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> REType:
+        # size/fields are type-gated like the function text fields: a
+        # planted cache carrying a prose size or fields crashed the
+        # renderer's %d / .get, silently disabling injection via the
+        # callers' blanket excepts.
+        size = d.get("size")
+        if isinstance(size, bool) or not isinstance(size, int):
+            size = None
+        fields = d.get("fields")
+        if isinstance(fields, list):
+            fields = [f for f in fields if isinstance(f, dict)]
+        else:
+            fields = None
         return cls(
             name=str(d.get("name", "")),
             kind=str(d.get("kind", "")),
-            size=d.get("size"),
-            fields=d.get("fields"),
+            size=size,
+            fields=fields,
             source_tool=str(d.get("source_tool", "")),
         )
 
@@ -220,22 +238,72 @@ class REDatabase:
         auto = sum(1 for f in self.functions if f.is_auto_named)
         return auto / len(self.functions)
 
-    def function_by_address(self, addr: int) -> Optional[REFunction]:
-        """Look up a function by address. Linear scan — callers doing
-        bulk lookups should build an index."""
+    def _addr_index(self):
+        """(starts, functions-sorted-by-address, first-by-exact-addr,
+        function-identity set) — built lazily, invalidated when the
+        function count changes (the enrich path appends functions).
+
+        Per-lookup linear scans made every xref resolution
+        O(xrefs x functions) PER RENDERED FINDING on the prompt
+        assembly hot path — a cost a large real binary pays in
+        minutes and an attacker-authored cache maximizes for free
+        within the 64MiB read ceiling.
+        """
+        cached = getattr(self, "_addr_index_cache", None)
+        if cached is not None and cached[0] == len(self.functions):
+            return cached[1:]
+        # Only SIZED functions join the containment ladder: size-0
+        # entries (nm-fallback symbols without .size, ARM mapping
+        # symbols) can never satisfy the containment predicate but
+        # would consume the bounded walk-back budget — dozens of them
+        # inside one large function's range silently turned real
+        # containment hits into misses. Exact-address lookups are
+        # served by by_addr, which keeps every function.
+        ordered = sorted(
+            (f for f in self.functions
+             if isinstance(f.address, int)
+             and isinstance(f.size, int) and f.size > 0),
+            key=lambda f: f.address,
+        )
+        starts = [f.address for f in ordered]
+        by_addr: Dict[int, REFunction] = {}
         for f in self.functions:
-            if f.address == addr:
-                return f
-        return None
+            if isinstance(f.address, int):
+                # setdefault keeps the FIRST list entry — parity with
+                # the pre-index linear scan on duplicate addresses.
+                by_addr.setdefault(f.address, f)
+        ids = {id(f) for f in self.functions}
+        self._addr_index_cache = (
+            len(self.functions), starts, ordered, by_addr, ids)
+        return starts, ordered, by_addr, ids
+
+    def function_by_address(self, addr: int) -> Optional[REFunction]:
+        """Look up a function by address (indexed)."""
+        _starts, _ordered, by_addr, _ids = self._addr_index()
+        try:
+            return by_addr.get(addr)
+        except TypeError:  # unhashable junk addr
+            return None
 
     def function_containing_address(self, addr: int) -> Optional[REFunction]:
         """Find the function whose body contains *addr*.
 
         Returns the function where ``f.address <= addr < f.address + f.size``,
         or falls back to exact-match via :meth:`function_by_address`.
+        Indexed: bisect to the nearest preceding start, then a short
+        bounded walk-back (real layouts don't overlap; a hostile cache
+        with deeply overlapping ranges degrades to a miss rather than
+        restoring the quadratic scan).
         """
-        for f in self.functions:
-            if f.size > 0 and f.address <= addr < f.address + f.size:
+        if not isinstance(addr, int) or isinstance(addr, bool):
+            return None
+        import bisect
+        starts, ordered, _by_addr, _ids = self._addr_index()
+        i = bisect.bisect_right(starts, addr) - 1
+        for j in range(i, max(-1, i - 64), -1):
+            f = ordered[j]
+            if (isinstance(f.size, int) and f.size > 0
+                    and f.address <= addr < f.address + f.size):
                 return f
         return self.function_by_address(addr)
 
@@ -384,6 +452,10 @@ class REDatabase:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> REDatabase:
+        if not isinstance(d, dict):
+            raise ValueError(
+                f"REDatabase document must be a dict, got {type(d).__name__}"
+            )
         return cls(
             source_tool=str(d.get("source_tool", "")),
             binary_path=d.get("binary_path"),

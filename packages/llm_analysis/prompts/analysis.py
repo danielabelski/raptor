@@ -43,6 +43,7 @@ _ANALYSIS_BLOCK_PRIORITIES: dict[str, int] = {
     "source-intel-evidence": 1,
     "flow-trace-context": 2,
     "caller-call-sites": 2,
+    "ghidra-context": 2,
     "verified-exemplars": 2,
     "sage-historical-context": 3,
 }
@@ -900,6 +901,16 @@ def build_analysis_prompt_bundle_from_finding(
         )
     except Exception:
         logger.debug("flow-context injection failed", exc_info=True)
+    # Attached-Ghidra RE context (decompilation/types/xrefs, cached by
+    # prepare_ghidra_context at run start). This builder serves the
+    # ORCHESTRATED dispatch path — without the injection here the
+    # parent-process prime is never consumed by any real prompt.
+    try:
+        from packages.ghidra.context_inject import ghidra_blocks_for_finding
+        extra_blocks = tuple(extra_blocks) + tuple(
+            ghidra_blocks_for_finding(finding))
+    except Exception:
+        logger.debug("ghidra context injection failed", exc_info=True)
     return build_analysis_prompt_bundle(
         rule_id=finding.get("rule_id", "unknown"),
         level=finding.get("level", "warning"),

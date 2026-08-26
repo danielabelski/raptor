@@ -42,14 +42,14 @@ def test_warn_post_fork_writes_prefixed_line():
     try:
         os.dup2(w, 2)
         os.close(w)
-        warn_post_fork(b"RAPTOR: landlock: SYS_create returned -1\n")
+        warn_post_fork(b"sandbox: landlock: SYS_create returned -1\n")
     finally:
         os.dup2(saved, 2)
         os.close(saved)
 
     out = _read_fd(r)
     os.close(r)
-    assert out == b"RAPTOR: landlock: SYS_create returned -1\n"
+    assert out == b"sandbox: landlock: SYS_create returned -1\n"
 
 
 def test_warn_post_fork_auto_prepends_prefix_when_missing():
@@ -67,7 +67,7 @@ def test_warn_post_fork_auto_prepends_prefix_when_missing():
 
     out = _read_fd(r)
     os.close(r)
-    assert out == b"RAPTOR: bare_event\n"
+    assert out == b"sandbox: bare_event\n"
 
 
 def test_warn_post_fork_no_double_prefix():
@@ -78,14 +78,17 @@ def test_warn_post_fork_no_double_prefix():
     try:
         os.dup2(w, 2)
         os.close(w)
-        warn_post_fork(b"RAPTOR: already_prefixed\n")
+        warn_post_fork(b"RAPTOR: legacy_prefixed\n")
     finally:
         os.dup2(saved, 2)
         os.close(saved)
 
     out = _read_fd(r)
     os.close(r)
-    assert out.count(b"RAPTOR: ") == 1
+    # A legacy-branded message is rewritten: the framework
+    # name must not reach the target-visible stream.
+    assert out == b"sandbox: legacy_prefixed\n"
+    assert b"RAPTOR" not in out
 
 
 def test_warn_post_fork_silent_when_fd2_closed():
@@ -111,7 +114,7 @@ def test_warn_post_fork_silent_when_fd2_closed():
 def test_warn_post_fork_callable_from_preexec_fn():
     def preexec():
         from core.sandbox._fork_safe_warn import warn_post_fork
-        warn_post_fork(b"RAPTOR: preexec_test: from forked child\n")
+        warn_post_fork(b"sandbox: preexec_test: from forked child\n")
 
     proc = subprocess.run(
         [sys.executable, "-c", "pass"],

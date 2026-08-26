@@ -293,7 +293,7 @@ def test_required_sanitisation_refuses_speculative_cache_demotion(
 def test_persona_tmpdir_cleaned_up_on_exit(monkeypatch):
     """The tmpdir created for persona files in sandbox() must be
     removed on context exit. Catches a class of bug where a long-lived
-    parent process accumulates /tmp/raptor-persona-* over many runs."""
+    parent process accumulates /tmp/.fp-* over many runs."""
     import os
     from core.sandbox import sandbox
 
@@ -315,7 +315,7 @@ def test_persona_tmpdir_cleaned_up_on_exit(monkeypatch):
         prefix = kw.get("prefix")
         if prefix is None and len(args) >= 2:
             prefix = args[1]
-        if prefix and str(prefix).startswith("raptor-persona-"):
+        if prefix and str(prefix).startswith(".fp-"):
             seen_dirs.append(d)
         return d
 

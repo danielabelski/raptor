@@ -39,8 +39,8 @@ def try_write(tag, path):
         os.unlink(path)
     except OSError as e:
         res[tag] = "denied:%d" % (e.errno or 0)
-try_write("host_tmp", "/tmp/.raptor-scratch-test-%d" % os.getpid())
-try_write("dev_shm", "/dev/shm/.raptor-scratch-test-%d" % os.getpid())
+try_write("host_tmp", "/tmp/.scr-test-%d" % os.getpid())
+try_write("dev_shm", "/dev/shm/.scr-test-%d" % os.getpid())
 try_write("target", os.path.join(__TARGET__, "planted.txt"))
 try_write("scratch", os.path.join(os.environ.get("TMPDIR", "/tmp"),
                                   "scratch-ok.txt"))
@@ -102,7 +102,7 @@ class TestRestrictedLandlockOnlyScratch(unittest.TestCase):
                          f"private scratch must be writable: {res}")
         self.assertEqual(res["output"], "written",
                          f"output dir must stay writable: {res}")
-        self.assertIn(".raptor-scratch-", res["tmpdir"] or "",
+        self.assertIn(".scr-", res["tmpdir"] or "",
                       "TMPDIR must steer tools to the private scratch")
         self.assertTrue(r.sandbox_info.get("private_scratch"),
                         "sandbox_info must stamp the private-scratch posture")

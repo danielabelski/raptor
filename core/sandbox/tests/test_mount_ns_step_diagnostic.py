@@ -103,7 +103,7 @@ def test_outer_except_diagnostic_uses_step_variable():
     # the step-aware diagnostic was reverted to the original
     # always-says-bind form.
     assert (
-        'b"RAPTOR: mount_ns: extra_ro_paths bind failed for "' not in block
+        'b"sandbox: mount_ns: extra_ro_paths bind failed for "' not in block
     ), (
         "outer OSError handler still uses the pre-fix 'bind failed' "
         "literal; the step-aware diagnostic was reverted"

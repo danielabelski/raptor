@@ -167,7 +167,7 @@ class TestLandlockOnlyWarningRouting:
                             lambda b: f"/usr/bin/{b}")
         condition, _ = probes.mount_unavailable_reason()
         warning = (
-            f"RAPTOR: sandbox running in Landlock-only mode — "
+            f"sandbox: running in Landlock-only mode — "
             f"{condition}. Credential exfil ..."
         )
         assert "apparmor" not in warning.lower()

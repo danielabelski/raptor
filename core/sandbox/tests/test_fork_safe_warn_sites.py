@@ -85,7 +85,7 @@ def test_landlock_sys_create_failure_exits_126():
         f"expected exit 126, got {proc.returncode}; "
         f"stderr={proc.stderr!r}"
     )
-    assert b"RAPTOR: landlock: SYS_landlock_create_ruleset" in proc.stderr
+    assert b"sandbox: landlock: SYS_landlock_create_ruleset" in proc.stderr
 
 
 @linux_only
@@ -134,7 +134,7 @@ def test_mount_ns_extra_ro_paths_bind_failure_exits_126():
                 try:
                     os.write(
                         2,
-                        b"RAPTOR: mount_ns: extra_ro_paths bind failed for "
+                        b"sandbox: mount_ns: extra_ro_paths bind failed for "
                         + _path_b
                         + b" (errno=%d), exiting\\n" % (exc.errno or 0),
                     )
@@ -149,7 +149,7 @@ def test_mount_ns_extra_ro_paths_bind_failure_exits_126():
         f"expected exit 126, got {proc.returncode}; "
         f"stderr={proc.stderr!r}"
     )
-    assert b"RAPTOR: mount_ns: extra_ro_paths bind failed" in proc.stderr
+    assert b"sandbox: mount_ns: extra_ro_paths bind failed" in proc.stderr
 
 
 @linux_only
@@ -195,4 +195,4 @@ def test_preexec_rlimit_core_failure_exits_99():
         f"expected exit 99, got {proc.returncode}; "
         f"stderr={proc.stderr!r}"
     )
-    assert b"RAPTOR: preexec: RLIMIT_CORE setrlimit failed" in proc.stderr
+    assert b"sandbox: preexec: RLIMIT_CORE setrlimit failed" in proc.stderr

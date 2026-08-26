@@ -679,7 +679,7 @@ def run_sandboxed(cmd: list[str], *,
                 # docstring already documents this as soft posture;
                 # emit a fork-safe warning so operators can observe
                 # when the documented-soft bound becomes a silent no-op.
-                warn_post_fork(b"RAPTOR: _macos_spawn RLIMIT_NPROC setrlimit failed -- documented soft posture became silent no-op\n")
+                warn_post_fork(b"sandbox: _macos_spawn RLIMIT_NPROC setrlimit failed -- documented soft posture became silent no-op\n")
     else:
         preexec = base_preexec
 

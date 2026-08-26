@@ -591,7 +591,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                 # child would proceed without filesystem-write or net-bind
                 # restrictions. Fail-closed: the parent expected an enforced
                 # sandbox, so silently downgrading is a contract violation.
-                _os_write(2, b"RAPTOR: landlock: SYS_landlock_create_ruleset failed post-fork\n")
+                _os_write(2, b"sandbox: landlock: SYS_landlock_create_ruleset failed post-fork\n")
                 os._exit(SANDBOX_EXIT_LANDLOCK_DOWNGRADE)
 
             try:
@@ -623,11 +623,11 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                             ret = libc.syscall(SYS_add_rule, fd, RULE_PATH_BENEATH,
                                                ctypes.byref(rule), 0)
                             if ret < 0:
-                                _os_write(2, b"RAPTOR: Landlock add_rule failed for a writable path\n")
+                                _os_write(2, b"sandbox: Landlock add_rule failed for a writable path\n")
                         finally:
                             _os_close(dir_fd)
                     except (OSError, ValueError):
-                        _os_write(2, b"RAPTOR: Landlock writable path could not be opened\n")
+                        _os_write(2, b"sandbox: Landlock writable path could not be opened\n")
 
                 # Writable device files — /dev/null is the bit-bucket that
                 # shell scripts universally use (`cmd >/dev/null 2>&1`).
@@ -678,7 +678,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                             ret = libc.syscall(SYS_add_rule, fd, RULE_PATH_BENEATH,
                                                ctypes.byref(rule), 0)
                             if ret < 0:
-                                _os_write(2, b"RAPTOR: Landlock add_rule failed for a writable device\n")
+                                _os_write(2, b"sandbox: Landlock add_rule failed for a writable device\n")
                         finally:
                             _os_close(dev_fd)
                     except OSError:
@@ -748,13 +748,13 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                                 ret = libc.syscall(SYS_add_rule, fd, RULE_PATH_BENEATH,
                                                    ctypes.byref(rule), 0)
                                 if ret < 0:
-                                    _os_write(2, b"RAPTOR: Landlock add_rule failed for a readable path\n")
+                                    _os_write(2, b"sandbox: Landlock add_rule failed for a readable path\n")
                             finally:
                                 _os_close(path_fd)
                         except (OSError, ValueError):
                             # Read path may not exist on all hosts (e.g.
                             # /sbin on usrmerge systems) — non-fatal.
-                            _os_write(2, b"RAPTOR: Landlock readable path could not be opened (skipped)\n")
+                            _os_write(2, b"sandbox: Landlock readable path could not be opened (skipped)\n")
 
                 # Network rules: allow TCP connect to specified ports only (ABI v4+)
                 if ports is not None and _net_access > 0:
@@ -764,7 +764,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                         ret = libc.syscall(SYS_add_rule, fd, RULE_NET_PORT,
                                            ctypes.byref(rule), 0)
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: Landlock TCP port allow-rule failed\n")
+                            _os_write(2, b"sandbox: Landlock TCP port allow-rule failed\n")
 
                 # prctl(PR_SET_NO_NEW_PRIVS, 1) -- required before restrict_self.
                 # NO_NEW_PRIVS is a hard prereq; if it fails, so will
@@ -774,7 +774,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                 # the child without isolation.
                 prctl_ret = libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
                 if prctl_ret < 0:
-                    _os_write(2, b"RAPTOR: prctl(PR_SET_NO_NEW_PRIVS) failed -- aborting sandboxed exec\n")
+                    _os_write(2, b"sandbox: prctl(PR_SET_NO_NEW_PRIVS) failed -- aborting sandboxed exec\n")
                     os._exit(126)
                 result = libc.syscall(SYS_restrict, fd, 0)
                 if result < 0:
@@ -783,7 +783,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
                     # expected. os.write + os._exit are async-signal-
                     # safe; Python logging is NOT safe here because a
                     # parent thread may hold logging locks at fork time.
-                    _os_write(2, b"RAPTOR: Landlock restrict_self failed -- aborting sandboxed exec\n")
+                    _os_write(2, b"sandbox: Landlock restrict_self failed -- aborting sandboxed exec\n")
                     os._exit(126)
             finally:
                 # os._exit skips finally, so this only runs on the
@@ -793,7 +793,7 @@ def _make_landlock_preexec(writable_paths: list, allowed_tcp_ports: list | None 
             # Any unexpected exception during Landlock installation
             # means the caller's isolation guarantee is broken; abort
             # rather than run without Landlock.
-            _os_write(2, b"RAPTOR: Landlock enforcement failed -- aborting sandboxed exec\n")
+            _os_write(2, b"sandbox: Landlock enforcement failed -- aborting sandboxed exec\n")
             os._exit(126)
 
     return _apply_landlock

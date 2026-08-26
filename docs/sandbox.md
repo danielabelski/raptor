@@ -74,7 +74,7 @@ to "no isolation".
 **Landlock is fail-closed.** If installing the Landlock ruleset fails
 in the child (kernel drift, ABI mismatch), the child exits 126 rather
 than continue unsandboxed; the parent sees a non-zero return code plus
-a `RAPTOR: Landlock ...` line on stderr explaining which step failed.
+a `sandbox: Landlock ...` line on stderr explaining which step failed.
 
 **Untrusted runs refuse to degrade silently.** On Linux hosts without
 unprivileged user namespaces, untrusted execution fails closed with a

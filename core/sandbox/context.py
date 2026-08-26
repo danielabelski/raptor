@@ -8,6 +8,7 @@ to each result.
 
 import errno
 import logging
+import re
 import os
 import shutil
 import signal
@@ -94,6 +95,15 @@ def spawn_backend_available() -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+# Framework-named temp paths (the launcher's per-session scratch
+# <base>/raptor-<uid>/session-<pid>-<rand>, harness session dirs,
+# any /tmp component naming the framework). Values matching it are
+# rewritten out of target-bound envs and skipped by the mount-ns
+# temp-dir re-creation — the NAME is the leak (framework, uid, host
+# pid), and re-creating it plants the same name inside the target's
+# private /tmp. Keep in sync with core/sandbox/mount_ns.py.
+_BRANDED_TMP_RE = re.compile(r"/[^/]*raptor[^/]*(/|$)", re.IGNORECASE)
 
 
 def _audit_degrade_reason(b_fallback_reason, b_fallback_instr,
@@ -1308,6 +1318,30 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 os.makedirs(fake_home_env[xdg_dir], mode=0o700, exist_ok=True)
             except OSError:
                 pass
+
+    # The launcher's per-session temp dir names the framework AND the
+    # host (<base>/raptor-<uid>/session-<pid>-<rand>): a target that
+    # reads $TMPDIR learns all three in one getenv, and the mount-ns
+    # setup would even re-create that branded path inside the private
+    # tmpfs. Point the temp vars at a run-scoped neutral dir instead
+    # (mirrors the fake-home pattern; the output path is target-visible
+    # by definition). Any framework-named /tmp//var/tmp value is
+    # rewritten (an operator dir that happens to carry the name is
+    # rewritten too — the NAME is the leak regardless of who minted
+    # it); unbranded operator TMPDIRs pass through so nested test
+    # harnesses that share temp files with the child keep working.
+    for _tv in ("TMPDIR", "TEMP", "TMP"):
+        _tval = os.environ.get(_tv, "")
+        if (_tval.startswith(("/tmp/", "/var/tmp/"))
+                and _BRANDED_TMP_RE.search(_tval)):
+            # "/tmp" is the semantics the value would have had with no
+            # override at all: the mount-ns lane serves a private
+            # tmpfs there (where the unix-scope supervisor's pinned
+            # device set expects pathname sockets like the Python
+            # forkserver's to live), and the restricted Landlock-only
+            # posture re-steers the temp vars to its private scratch
+            # dir further down regardless.
+            fake_home_env[_tv] = "/tmp"
     _use_proxy_netns = False
     _proxy_tcp_lane_port = None
     _proxy_unix_path: str | None = None
@@ -1921,7 +1955,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             from .probes import mount_unavailable_reason
             _condition, _ = mount_unavailable_reason()
             logger.warning(
-                "RAPTOR: sandbox running in Landlock-only mode — "
+                "sandbox: running in Landlock-only mode — "
                 "%s. Credential exfil is bounded only by Landlock; "
                 "callers that dispatch LLM-driven sub-agents on "
                 "hostile source should set restrict_reads=True. "
@@ -1992,7 +2026,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             writable_paths = []
         elif _use_private_scratch:
             _private_scratch_dir = _tempfile.mkdtemp(
-                prefix=".raptor-scratch-")
+                prefix=".scr-")
             writable_paths = [_private_scratch_dir]
         else:
             writable_paths = [_tempfile.gettempdir()]
@@ -2017,7 +2051,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # Absolutize: a relative path like "out/foo" fails Landlock
             # open in the mount-ns child after pivot_root (the new
             # rootfs has no `out/` directory) and triggers the
-            # "RAPTOR: Landlock writable path could not be opened"
+            # "sandbox: Landlock writable path could not be opened"
             # stderr line. The bind-mount fallback masks the failure
             # as a silent enforcement gap on writes to `output`.
             writable_paths.append(os.path.abspath(output))
@@ -2303,7 +2337,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         else:
             import shutil as _shutil
             import tempfile as _tf
-            _persona_tmpdir = _tf.mkdtemp(prefix="raptor-persona-")
+            _persona_tmpdir = _tf.mkdtemp(prefix=".fp-")
             _effective_cpu_count = cpu_count if cpu_count is not None else 4
             try:
                 # strict rides ON the persona: apply_overlay (in the
@@ -3656,6 +3690,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                         for _tp in (tool_paths or []):
                             if _tp and _tp not in _readable_with_tools:
                                 _readable_with_tools.append(_tp)
+                        # The pid1-shim read grant exists for the
+                        # UNSHARE fallback lane only (Landlock must
+                        # allow exec of the shim there). The mount-ns
+                        # spawn lane never runs the shim, and binding
+                        # it would materialise the RAPTOR checkout
+                        # path (parent-directory skeleton included)
+                        # inside the target's mount view — a pure
+                        # framework/install-location tell.
+                        _readable_with_tools = [
+                            _p for _p in _readable_with_tools
+                            if not _p.endswith("/libexec/raptor-pid1-shim")
+                        ]
                         # Audit mode: thread audit_mode + audit_run_dir
                         # through to _spawn so the seccomp filter uses
                         # SCMP_ACT_TRACE and the tracer subprocess runs.
@@ -4211,7 +4257,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                     if restrict_reads and not exclude_tmp_baseline:
                         import tempfile as _tempfile_dem
                         _demoted_scratch = _tempfile_dem.mkdtemp(
-                            prefix=".raptor-scratch-")
+                            prefix=".scr-")
                         _demoted_scratch_dirs.append(_demoted_scratch)
                         _shared_scratch = {
                             "/tmp", "/dev/shm",

@@ -101,6 +101,23 @@ def test_layer_install_ordering_source_pin():
     assert "seccomp_fn()" not in pre_fork_region
 
 
+def test_branded_tmp_regex_copies_in_sync():
+    """The branded-temp matcher exists in context.py AND mount_ns.py
+    (the mount-ns child cannot import context) — a drift between them
+    re-opens either the env value or the replanted directory name."""
+    ctx = (_REPO_ROOT / "core" / "sandbox" / "context.py").read_text(
+        encoding="utf-8")
+    mns = (_REPO_ROOT / "core" / "sandbox" / "mount_ns.py").read_text(
+        encoding="utf-8")
+    import re as _re
+    pat = _re.compile(r"_BRANDED_TMP_RE = re\.compile\((.+)\)")
+    m_ctx = pat.search(ctx)
+    m_mns = pat.search(mns)
+    assert m_ctx and m_mns, "matcher missing from one of the copies"
+    assert m_ctx.group(1) == m_mns.group(1), (
+        "context.py and mount_ns.py branded-temp matchers drifted")
+
+
 # --------------------------------------------------- integration tier
 
 def _run_untrusted_or_skip(cmd, tmp_path, **kw):
@@ -464,3 +481,47 @@ def test_no_mount_ns_host_refuses_untrusted_run(tmp_path):
         pytest.skip(f"override lane unavailable: {r.stdout} "
                     f"{r.stderr[-200:]}")
     assert "NO-RAISE rc=0" in r.stdout
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
+def test_no_branded_names_in_target_view(tmp_path):
+    """The target's mount view and env must not name the framework:
+    no launcher session-scratch dir replanted in the private /tmp, no
+    RAPTOR checkout path bound in (the pid1-shim grant is an
+    unshare-lane Landlock rule, not a mount-ns bind), and no
+    framework-identity env values."""
+    import re as _re
+    marker = tmp_path / "brand-probe"
+    _run_untrusted_or_skip(
+        ["sh", "-c",
+         f"{{ ls -a /tmp; echo ---MI---; "
+         f"grep -io 'raptor[^ ]*' /proc/self/mountinfo; "
+         f"echo ---ENV---; env; }} > {marker}"],
+        tmp_path,
+    )
+    if not marker.exists():
+        pytest.skip("probe produced no output")
+    text = marker.read_text(encoding="utf-8")
+    listing, _, rest = text.partition("---MI---")
+    mi_block, _, envblock = rest.partition("---ENV---")
+    # The caller-chosen target/output ancestry is target-visible by
+    # definition (here: pytest's own basetemp components) — only
+    # entries OUTSIDE that ancestry count as leaks.
+    own_components = set(tmp_path.parts) | set(Path(__file__).parts)
+    hits = [ln for ln in listing.split()
+            if _re.search(r"raptor", ln, _re.IGNORECASE)
+            and ln not in own_components]
+    assert not hits, (
+        f"framework-named entries visible in the sandbox /tmp: {hits}")
+    mi_hits = [ln for ln in mi_block.split()
+               if ln and ln not in own_components
+               and not any(c in ln for c in own_components
+                           if "raptor" in c.lower())]
+    assert not mi_hits, (
+        f"framework-named mount sources visible in mountinfo: "
+        f"{mi_hits[:6]}")
+    for name in ("RAPTOR_DIR=", "RAPTOR_OUT_DIR=", "RAPTOR_TARGET_KIND=",
+                 "_RAPTOR_", "CLAUDECODE="):
+        assert name not in envblock, (
+            f"framework-identity env reached the target: {name}")

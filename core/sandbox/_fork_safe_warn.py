@@ -26,21 +26,29 @@ intent above.
 
 import os
 
-_PREFIX = b"RAPTOR: "
+# Neutral on purpose: these warnings can reach the TARGET-visible
+# stderr stream (fork-safe writes from a dying child), and a branded
+# prefix hands any payload one strcmp's worth of "I am being analysed
+# by RAPTOR" attribution. Operators grep for "sandbox:" instead.
+_PREFIX = b"sandbox: "
+_LEGACY_PREFIX = b"RAPTOR: "
 
 
 def warn_post_fork(message: bytes) -> None:
     r"""Emit a fork-safe degraded-mode warning to stderr.
 
     `message` must be `bytes` (already encoded; no f-strings). The
-    `RAPTOR: ` prefix is prepended automatically unless `message`
-    already starts with it. The caller should include a trailing
-    `\n` in `message`.
+    neutral `sandbox: ` prefix is prepended automatically (a legacy
+    `RAPTOR: ` prefix on the message is rewritten — the framework
+    name must not reach a target-visible stream). The caller should
+    include a trailing `\n` in `message`.
 
     Errors are swallowed — stderr may be closed/redirected in a
     sandboxed child; the alternative is letting preexec_fn raise,
     which is worse than a silent fail for a defense-in-depth signal.
     """
+    if message.startswith(_LEGACY_PREFIX):
+        message = message[len(_LEGACY_PREFIX):]
     if not message.startswith(_PREFIX):
         message = _PREFIX + message
     try:

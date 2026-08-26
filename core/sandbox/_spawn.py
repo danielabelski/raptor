@@ -382,17 +382,17 @@ def _set_rlimits(limits: dict) -> None:
         try:
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except (ValueError, OSError):
-            warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_AS setrlimit failed -- memory cap not applied\n")
+            warn_post_fork(b"sandbox: _set_rlimits RLIMIT_AS setrlimit failed -- memory cap not applied\n")
     if file_mb > 0:
         try:
             resource.setrlimit(resource.RLIMIT_FSIZE, (file_bytes, file_bytes))
         except (ValueError, OSError):
-            warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_FSIZE setrlimit failed -- file-size cap not applied\n")
+            warn_post_fork(b"sandbox: _set_rlimits RLIMIT_FSIZE setrlimit failed -- file-size cap not applied\n")
     if cpu > 0:
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))
         except (ValueError, OSError):
-            warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_CPU setrlimit failed -- cpu cap not applied\n")
+            warn_post_fork(b"sandbox: _set_rlimits RLIMIT_CPU setrlimit failed -- cpu cap not applied\n")
     if nofile > 0:
         try:
             # Clamp to the inherited hard limit — raising it needs
@@ -402,7 +402,7 @@ def _set_rlimits(limits: dict) -> None:
                     else min(nofile, _hard))
             resource.setrlimit(resource.RLIMIT_NOFILE, (_eff, _eff))
         except (ValueError, OSError):
-            warn_post_fork(b"RAPTOR: _set_rlimits RLIMIT_NOFILE setrlimit failed -- fd-exhaustion bound not applied\n")
+            warn_post_fork(b"sandbox: _set_rlimits RLIMIT_NOFILE setrlimit failed -- fd-exhaustion bound not applied\n")
     # RLIMIT_CORE is unconditional — coredumps are always suppressed.
     # Fail-closed: without RLIMIT_CORE=0 the kernel may write a core
     # dump containing the full address-space (including secrets the
@@ -412,7 +412,7 @@ def _set_rlimits(limits: dict) -> None:
     except (ValueError, OSError) as exc:
         _errno = getattr(exc, "errno", 0) or 0
         try:
-            os.write(2, b"RAPTOR: _spawn: RLIMIT_CORE setrlimit failed "
+            os.write(2, b"sandbox: _spawn: RLIMIT_CORE setrlimit failed "
                      b"(errno=%d), exiting\n" % _errno)
         except OSError:
             pass
@@ -1772,7 +1772,7 @@ def run_sandboxed(
                     continue
                 if _redir == subprocess.PIPE:
                     try:
-                        os.write(2, b"RAPTOR sandbox: %s=subprocess."
+                        os.write(2, b"sandbox: %s=subprocess."
                                     b"PIPE not supported via the "
                                     b"mount-ns path; falling back to "
                                     b"/dev/null.\n" % _label)
@@ -1815,7 +1815,7 @@ def run_sandboxed(
         if _use_devnull:
             if stdin == subprocess.PIPE:
                 try:
-                    os.write(2, b"RAPTOR sandbox: stdin=subprocess.PIPE "
+                    os.write(2, b"sandbox: stdin=subprocess.PIPE "
                                 b"not supported via the mount-ns path; "
                                 b"use `input=` or an explicit fd. "
                                 b"Falling back to /dev/null.\n")
@@ -2143,7 +2143,7 @@ def run_sandboxed(
                 except OSError as e:
                     try:
                         os.write(2,
-                            f"RAPTOR sandbox: cwd={cwd!r} unusable inside "
+                            f"sandbox: cwd={cwd!r} unusable inside "
                             f"sandbox ({e.__class__.__name__}: {e}); "
                             f"aborting.\n".encode())
                     except OSError:
@@ -2392,7 +2392,7 @@ def run_sandboxed(
                         resource.setrlimit(resource.RLIMIT_NPROC,
                                            (nproc_limit, nproc_limit))
                     except (ValueError, OSError):
-                        warn_post_fork(b"RAPTOR: _spawn grandchild RLIMIT_NPROC setrlimit failed -- fork-bomb bound not applied\n")
+                        warn_post_fork(b"sandbox: _spawn grandchild RLIMIT_NPROC setrlimit failed -- fork-bomb bound not applied\n")
                 import resource as _resource
                 try:
                     _soft_nofile = _resource.getrlimit(_resource.RLIMIT_NOFILE)[0]
@@ -2533,7 +2533,7 @@ def run_sandboxed(
             )
             # os.write to a possibly-closed/broken stderr → OSError.
             with contextlib.suppress(OSError):
-                os.write(2, f"RAPTOR sandbox child failure:\n{traceback.format_exc()}\n".encode())
+                os.write(2, f"sandbox child failure:\n{traceback.format_exc()}\n".encode())
             os._exit(126)
 
     # ================ PARENT ================
@@ -3181,12 +3181,12 @@ def run_sandboxed(
                 _cap_mib = _CAPTURE_CAP // (1024 * 1024)
                 if _truncated[1]:
                     stdout_buf += (
-                        b"\n[RAPTOR sandbox: stdout capture truncated "
+                        b"\n[sandbox: stdout capture truncated "
                         b"at %d MiB]\n" % _cap_mib
                     )
                 if _truncated[2]:
                     stderr_buf += (
-                        b"\n[RAPTOR sandbox: stderr capture truncated "
+                        b"\n[sandbox: stderr capture truncated "
                         b"at %d MiB]\n" % _cap_mib
                     )
             finally:

@@ -40,12 +40,16 @@ skipped — the per-ns mount already serves them.
 
 import ctypes
 import os
+import re
 import stat as stat_module
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
 from ._fork_safe_warn import warn_post_fork
 from .exit_codes import SANDBOX_EXIT_MOUNT_NS_BIND_FAIL
+
+# See core/sandbox/context.py (_BRANDED_TMP_RE) — same shape.
+_BRANDED_TMP_RE = re.compile(r"/[^/]*raptor[^/]*(/|$)", re.IGNORECASE)
 
 if TYPE_CHECKING:
     # Avoid runtime circular import: fingerprint.apply_overlay imports
@@ -638,7 +642,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                             os.close(fd)
                     except OSError as exc:
                         warn_post_fork(
-                            b"RAPTOR: mount_ns: etc_overlay pre-create "
+                            b"sandbox: mount_ns: etc_overlay pre-create "
                             b"failed (errno=%d)\n" % (exc.errno or 0,)
                         )
             _mount("tmpfs", inside, None,
@@ -689,13 +693,25 @@ def setup_mount_ns(target: str | None, output: str | None,
         if not _val:
             continue
         _norm = os.path.normpath(_val)
+        if (_norm.startswith(("/tmp/", "/var/tmp/"))
+                and _BRANDED_TMP_RE.search(_norm)):
+            # Framework-named temp path (launcher session scratch,
+            # harness session dirs): the target env no longer
+            # references it (context rewrites the temp vars away),
+            # so re-creating it would only replant the framework-
+            # naming directory into the target-visible private
+            # tmpfs. Keep in sync with core/sandbox/context.py.
+            continue
         if not _norm.startswith("/tmp/"):
+            # Re-creation stays /tmp-anchored (the per-ns tmpfs);
+            # /var/tmp sits under the read-only /var bind where a
+            # makedirs would only warn-spam.
             continue
         try:
             os.makedirs(f"{root}{_norm}", mode=0o1777, exist_ok=True)
         except OSError as exc:
             warn_post_fork(
-                b"RAPTOR: mount_ns: temp-env dir re-create failed "
+                b"sandbox: mount_ns: temp-env dir re-create failed "
                 b"(errno=%d)\n" % (exc.errno or 0)
             )
 
@@ -790,7 +806,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         except OSError as exc:
             if exc.errno in (_ELOOP, 20):  # ELOOP / ENOTDIR
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: refusing evidence-dir shadow "
+                    b"sandbox: mount_ns: refusing evidence-dir shadow "
                     b"- .audit is a symlink or non-directory "
                     b"(hostile-tree shape); relying on evidence-file "
                     b"inode verification\n"
@@ -801,7 +817,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                    MS_RDONLY, "mode=700")
         except OSError as exc:
             warn_post_fork(
-                b"RAPTOR: mount_ns: evidence-dir shadow mount failed "
+                b"sandbox: mount_ns: evidence-dir shadow mount failed "
                 b"(errno=%d); relying on evidence-file inode "
                 b"verification\n" % (exc.errno or 0)
             )
@@ -1023,7 +1039,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                 try:
                     os.write(
                         2,
-                        b"RAPTOR: mount_ns: extra_ro_paths "
+                        b"sandbox: mount_ns: extra_ro_paths "
                         + _step
                         + b" failed for "
                         + _path_b
@@ -1064,7 +1080,7 @@ def setup_mount_ns(target: str | None, output: str | None,
         for ns_target, host_source in etc_overlay.items():
             if not isinstance(ns_target, str) or not isinstance(host_source, str):
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: etc_overlay entry skipped - "
+                    b"sandbox: mount_ns: etc_overlay entry skipped - "
                     b"both keys and values must be str paths\n"
                 )
                 continue
@@ -1078,14 +1094,14 @@ def setup_mount_ns(target: str | None, output: str | None,
                     or os.path.normpath(ns_target) != ns_target
                     or ns_target == "/"):
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: etc_overlay entry skipped - "
+                    b"sandbox: mount_ns: etc_overlay entry skipped - "
                     b"key must be a normalized absolute path\n"
                 )
                 continue
             inside = f"{root}{ns_target}"
             if not os.path.exists(host_source):
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: etc_overlay source missing; "
+                    b"sandbox: mount_ns: etc_overlay source missing; "
                     b"skipping bind\n"
                 )
                 continue
@@ -1108,7 +1124,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                         os.close(fd)
                 except OSError:
                     warn_post_fork(
-                        b"RAPTOR: mount_ns: etc_overlay could not "
+                        b"sandbox: mount_ns: etc_overlay could not "
                         b"create in-sandbox target; skipping bind\n"
                     )
                     continue
@@ -1121,7 +1137,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                 # /etc view — never "host /etc" as the old message
                 # claimed.
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: etc_overlay bind failed; "
+                    b"sandbox: mount_ns: etc_overlay bind failed; "
                     b"overlay entry absent - target sees the "
                     b"un-overlaid view of this path\n"
                 )
@@ -1140,7 +1156,7 @@ def setup_mount_ns(target: str | None, output: str | None,
             except OSError as exc:
                 _umount(inside, MNT_DETACH)
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: etc_overlay remount-ro failed "
+                    b"sandbox: mount_ns: etc_overlay remount-ro failed "
                     b"(errno=%d); overlay entry withdrawn "
                     b"(fail-closed)\n" % (exc.errno or 0)
                 )
@@ -1151,13 +1167,13 @@ def setup_mount_ns(target: str | None, output: str | None,
         for stage_target, stage_content in stage_files.items():
             if not isinstance(stage_target, str) or not stage_target.startswith("/"):
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: stage_files target must be an "
+                    b"sandbox: mount_ns: stage_files target must be an "
                     b"absolute path str; skipping\n"
                 )
                 continue
             if not isinstance(stage_content, (bytes, bytearray)):
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: stage_files content must be "
+                    b"sandbox: mount_ns: stage_files content must be "
                     b"bytes; skipping\n"
                 )
                 continue
@@ -1179,7 +1195,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                 except Exception:  # noqa: BLE001
                     _target_b = b"<unencodable>"
                 warn_post_fork(
-                    b"RAPTOR: mount_ns: stage_files failed for "
+                    b"sandbox: mount_ns: stage_files failed for "
                     + _target_b
                     + b" (errno=%d); target will not see this file\n"
                     % (exc.errno or 0)

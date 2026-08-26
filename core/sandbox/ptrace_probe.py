@@ -212,7 +212,7 @@ def _run_probe() -> bool:
             # If we get here, the parent successfully resumed us. Exit clean.
             os._exit(0)
         except BaseException:  # noqa: BLE001 — catch SystemExit too in child
-            os.write(2, b"RAPTOR: ptrace probe child unexpected exception\n")
+            os.write(2, b"sandbox: ptrace probe child unexpected exception\n")
             os._exit(1)
 
     # Parent: wait for the child to stop, attempt PTRACE_CONT, then reap.

@@ -375,7 +375,7 @@ def _make_preexec_fn(limits: dict, writable_paths: list | None = None,
             try:
                 os.write(
                     2,
-                    b"RAPTOR: preexec: RLIMIT_CORE setrlimit failed "
+                    b"sandbox: preexec: RLIMIT_CORE setrlimit failed "
                     b"(errno=%d), exiting\n" % _errno,
                 )
             except OSError:
@@ -569,7 +569,7 @@ def _sweeper_main(payload_pid: int, death_fd) -> None:
         time.sleep(0.02)
     if swept_any:
         try:
-            os.write(2, b"RAPTOR sandbox: teardown sweep killed "
+            os.write(2, b"sandbox: teardown sweep killed "
                         b"surviving descendants (no-namespace path)\n")
         except OSError:
             pass

@@ -692,7 +692,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     def _apply_seccomp():
         try:
             if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
-                _os_write(2, b"RAPTOR: prctl(PR_SET_NO_NEW_PRIVS) failed -- "
+                _os_write(2, b"sandbox: prctl(PR_SET_NO_NEW_PRIVS) failed -- "
                              b"seccomp filter cannot be installed\n")
                 os._exit(126)
 
@@ -703,7 +703,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                 # asking for one. Match the policy at seccomp_load:
                 # a security layer that the operator requested but
                 # failed to install MUST NOT silently degrade.
-                _os_write(2, b"RAPTOR: seccomp_init failed -- "
+                _os_write(2, b"sandbox: seccomp_init failed -- "
                              b"refusing to exec without filter\n")
                 os._exit(126)
             try:
@@ -718,7 +718,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                 ret = lib.seccomp_attr_set(ctx, _SCMP_FLTATR_ACT_BADARCH,
                                           _SCMP_ACT_KILL_PROCESS)
                 if ret < 0:
-                    _os_write(2, b"RAPTOR: seccomp BADARCH attr_set failed -- "
+                    _os_write(2, b"sandbox: seccomp BADARCH attr_set failed -- "
                                  b"refusing to exec without filter\n")
                     os._exit(126)
 
@@ -753,7 +753,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     null_args = ctypes.POINTER(_ScmpArgCmp)()
                     ret = lib.seccomp_rule_add_array(ctx, act, num, 0, null_args)
                     if ret < 0:
-                        _os_write(2, b"RAPTOR: seccomp add_rule failed -- "
+                        _os_write(2, b"sandbox: seccomp add_rule failed -- "
                                      b"refusing to exec without filter\n")
                         os._exit(126)
 
@@ -772,7 +772,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, trace_act, num, 0, null_args,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp audit rule failed -- "
+                            _os_write(2, b"sandbox: seccomp audit rule failed -- "
                                          b"refusing to exec without filter\n")
                             os._exit(126)
 
@@ -795,7 +795,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, hard_deny, socket_num, 1, arg_arr,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp socket family rule failed"
+                            _os_write(2, b"sandbox: seccomp socket family rule failed"
                                          b" -- refusing to exec without filter\n")
                             os._exit(126)
 
@@ -817,7 +817,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         ctx, hard_deny, socket_num, 1, arg_arr,
                     )
                     if ret < 0:
-                        _os_write(2, b"RAPTOR: seccomp SOCK_RAW rule failed -- "
+                        _os_write(2, b"sandbox: seccomp SOCK_RAW rule failed -- "
                                      b"refusing to exec without filter\n")
                         os._exit(126)
 
@@ -842,7 +842,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, hard_deny, socket_num, 1, arg_arr,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp SCTP-family "
+                            _os_write(2, b"sandbox: seccomp SCTP-family "
                                          b"protocol rule failed -- refusing"
                                          b" to exec without filter\n")
                             os._exit(126)
@@ -866,7 +866,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                                 ctx, hard_deny, socket_num, 2, args,
                             )
                             if ret < 0:
-                                _os_write(2, b"RAPTOR: seccomp SCTP-family"
+                                _os_write(2, b"sandbox: seccomp SCTP-family"
                                              b" type rule failed -- "
                                              b"refusing to exec without "
                                              b"filter\n")
@@ -884,7 +884,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                 # are SOCK_STREAM / socketpair).
                 if unix_scope_export_sock is not None:
                     if connect_num < 0:
-                        _os_write(2, b"RAPTOR: seccomp connect scoping "
+                        _os_write(2, b"sandbox: seccomp connect scoping "
                                      b"requested but connect() is "
                                      b"unresolved -- refusing to exec\n")
                         os._exit(126)
@@ -893,7 +893,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         ctx, _SCMP_ACT_NOTIFY, connect_num, 0, null_args,
                     )
                     if ret < 0:
-                        _os_write(2, b"RAPTOR: seccomp connect NOTIFY "
+                        _os_write(2, b"sandbox: seccomp connect NOTIFY "
                                      b"rule failed -- refusing to exec\n")
                         os._exit(126)
                     if socket_num >= 0:
@@ -909,7 +909,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, deny, socket_num, 2, args,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp AF_UNIX DGRAM"
+                            _os_write(2, b"sandbox: seccomp AF_UNIX DGRAM"
                                          b" rule failed -- refusing to "
                                          b"exec\n")
                             os._exit(126)
@@ -928,7 +928,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     # unresolved on this arch). Silently skipping would
                     # let DNS/UDP exfil through despite the operator
                     # selecting the hardened mode.
-                    _os_write(2, b"RAPTOR: seccomp block_udp requested but "
+                    _os_write(2, b"sandbox: seccomp block_udp requested but "
                                  b"socket() syscall unresolved -- refusing to "
                                  b"exec without UDP filter\n")
                     os._exit(126)
@@ -956,7 +956,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, hard_deny, socket_num, 2, args,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp UDP block rule failed"
+                            _os_write(2, b"sandbox: seccomp UDP block rule failed"
                                          b" -- refusing to exec without filter\n")
                             os._exit(126)
 
@@ -994,7 +994,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         ctx, hard_deny, socketpair_num, 2, args,
                     )
                     if ret < 0:
-                        _os_write(2, b"RAPTOR: seccomp socketpair DGRAM"
+                        _os_write(2, b"sandbox: seccomp socketpair DGRAM"
                                      b" rule failed -- refusing to exec"
                                      b" without filter\n")
                         os._exit(126)
@@ -1026,7 +1026,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         ctx, hard_deny, _sf_num, 1, _sf_arr,
                     )
                     if ret < 0:
-                        _os_write(2, b"RAPTOR: seccomp MSG_FASTOPEN rule"
+                        _os_write(2, b"sandbox: seccomp MSG_FASTOPEN rule"
                                      b" failed -- refusing to exec"
                                      b" without filter\n")
                         os._exit(126)
@@ -1054,7 +1054,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                             ctx, hard_deny, ioctl_num, 1, arg_arr,
                         )
                         if ret < 0:
-                            _os_write(2, b"RAPTOR: seccomp ioctl rule failed -- "
+                            _os_write(2, b"sandbox: seccomp ioctl rule failed -- "
                                          b"refusing to exec without filter\n")
                             os._exit(126)
 
@@ -1067,7 +1067,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     # filter would hang the child forever instead).
                     _nfd = lib.seccomp_notify_fd(ctx)
                     if _nfd < 0:
-                        _os_write(2, b"RAPTOR: seccomp_notify_fd failed"
+                        _os_write(2, b"sandbox: seccomp_notify_fd failed"
                                      b" -- refusing to exec\n")
                         os._exit(126)
                     try:
@@ -1105,7 +1105,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         unix_scope_export_sock.close()
                         os.close(_nfd)
                     except OSError:
-                        _os_write(2, b"RAPTOR: seccomp notify fd export "
+                        _os_write(2, b"sandbox: seccomp notify fd export "
                                      b"failed -- refusing to exec\n")
                         os._exit(126)
                 if ret < 0:
@@ -1115,7 +1115,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                     # Match Landlock's posture: a security layer that
                     # the operator asked for but fails to install MUST
                     # NOT silently degrade enforcement.
-                    _os_write(2, b"RAPTOR: seccomp_load failed -- "
+                    _os_write(2, b"sandbox: seccomp_load failed -- "
                                  b"refusing to exec without filter\n")
                     os._exit(126)
             finally:
@@ -1125,7 +1125,7 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
             # BaseException so SystemExit / KeyboardInterrupt also
             # route through the safe-exit path rather than letting
             # the child continue with no seccomp.
-            _os_write(2, b"RAPTOR: seccomp enforcement failed -- "
+            _os_write(2, b"sandbox: seccomp enforcement failed -- "
                          b"refusing to exec without filter\n")
             os._exit(126)
 

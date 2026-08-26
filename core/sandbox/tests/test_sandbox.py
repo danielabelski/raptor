@@ -580,7 +580,7 @@ class TestLandlockEnforcement(unittest.TestCase):
     def test_relative_output_path_does_not_break_landlock(self):
         """Regression: a relative output= (e.g. 'out/scan_xxx') used to
         fail Landlock open in the mount-ns child after pivot_root,
-        printing 'RAPTOR: Landlock writable path could not be opened'
+        printing 'sandbox: Landlock writable path could not be opened'
         on stderr and silently disabling the writable rule for output.
         Discovered via E2E scan against /tmp/vulns where scanner.py
         passes a relative out_dir into sandbox_run().

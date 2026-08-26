@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -803,6 +804,190 @@ _INT_FAMILY_HYP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Demotion gates whose refuting fact is proof-grade (mechanically true
+# regardless of interpretation). Membership here IS the dominance
+# authority: the receipt-floor probe consults ONLY these gates, so a
+# heuristic gate firing at probe time can never masquerade as a
+# proof-grade refuter. Today that is the known-return-type table;
+# an SMT-unsat-backed refuter would join it.
+_PROOF_GATES = (_refute_by_known_return_type,)
+
+
+def _bounded_name_near_overflow_claim(mechanism_lower: str) -> bool:
+    """A known-bounded function name must sit NEXT TO the overflow
+    claim it refutes (~100 chars). Gate 4 waives its own proximity
+    check when a CWE is established — including CWEs merely INFERRED
+    from overflow keywords — which is fine for demoting a live
+    hypothesis but too loose to override a receipt: an incidental
+    mention of ntohs() three sentences away from an unrelated
+    overflow claim must not read as a range proof for that claim."""
+    for func_name in _KNOWN_RETURN_BOUNDS:
+        pos = mechanism_lower.find(func_name)
+        if pos < 0:
+            continue
+        window = mechanism_lower[max(0, pos - 100):pos + 100]
+        if _OVERFLOW_KW.search(window):
+            return True
+    return False
+
+
+def _probe_proof_refuter(outcome, hypothesis) -> RefutationVerdict | None:
+    """Ask the proof-grade demotion gates whether they refute a
+    hypothesis the reviewer raised then dismissed.
+
+    The dismissed hypothesis never went through the demotion gates
+    (they run on finding/suspicious outcomes only), so the receipt
+    floor used to weigh the receipt against nothing but the LLM's
+    unverified dismissal. This probe supplies the missing refuter
+    side: a synthetic outcome carrying the hypothesis mechanism is
+    run through the PROOF gates alone, and only a proof-grade verdict
+    with a confident clean target counts. Probe context is TIGHTER
+    than the live gates: the refuting fact must sit next to the claim
+    it refutes (see :func:`_bounded_name_near_overflow_claim`).
+    """
+    if not isinstance(hypothesis, dict):
+        return None
+    mechanism = hypothesis.get("mechanism") or ""
+    if not mechanism:
+        return None
+    if not _bounded_name_near_overflow_claim(mechanism.lower()):
+        return None
+    explicit = _CWE_ID_RE.findall(
+        (hypothesis.get("cwe") or "") + " " + mechanism,
+    )
+    probe = SimpleNamespace(
+        file=getattr(outcome, "file", ""),
+        function=getattr(outcome, "function", ""),
+        hypothesis=mechanism,
+        review_result={"cwe": explicit[0]} if explicit else {},
+        evidence_tool="",
+    )
+    for gate_fn in _PROOF_GATES:
+        try:
+            v = gate_fn(probe, None)
+        except Exception:
+            logger.debug("proof-refuter probe failed", exc_info=True)
+            continue
+        if (
+            v is not None
+            and v.refuter_grade == "proof"
+            and v.demote_to == "clean"
+        ):
+            return v
+    return None
+
+
+# Receipt names a Gate-4 (return-range) refuter may dominate: only
+# integer-family receipts corroborate the claim the range fact
+# refutes. A receipt from another family (uninitialised return, auth
+# registration, shared-writer race, ...) corroborates an aspect the
+# range argument says nothing about — no dominance across families.
+_INT_RECEIPT_TOKEN_RE = re.compile(
+    r"(?:^|[_\-: ])(?:int(?:eger)?|overflow|narrow\w*|truncat\w*|"
+    r"wrap\w*|width)(?:$|[_\-: ])",
+    re.IGNORECASE,
+)
+
+
+def _refuter_covers_receipt(
+    refuter: RefutationVerdict, receipt: str,
+) -> bool:
+    """Family alignment for dominance: the proof gate must refute the
+    same claim family the receipt corroborates. Unknown gates default
+    to False — a proof gate gains dominance only by declaring which
+    receipt families its refuting fact covers."""
+    if refuter.gate == "input_bound_t0":
+        return bool(_INT_RECEIPT_TOKEN_RE.search(receipt or ""))
+    return False
+
+
+def _dominating_refuter(
+    outcome, hypothesis, receipt: str,
+) -> RefutationVerdict | None:
+    """Proof-grade refuter that refutes the dismissed hypothesis AND
+    covers the receipt's claim family, or None (floor stands)."""
+    refuter = _probe_proof_refuter(outcome, hypothesis)
+    if refuter is None:
+        return None
+    if not _refuter_covers_receipt(refuter, receipt):
+        logger.debug(
+            "proof refuter %s fired but does not cover receipt "
+            "family %s — floor stands", refuter.gate, receipt,
+        )
+        return None
+    return refuter
+
+
+def _record_floor_dominance(
+    outcome,
+    config,
+    *,
+    refuter: RefutationVerdict,
+    receipt: str,
+    floor_gate: str,
+    verdict: str = "refuter_dominates_receipt",
+    reason: str | None = None,
+) -> bool:
+    """Demote-with-record: persist the overridden detection receipt.
+
+    A refuter overriding a receipt floor must never be silent — the
+    receipt that would have held the function at suspicious goes
+    through the suppressions.jsonl single-writer chokepoint with
+    ``dropped: false`` and a reason naming the dominance decision.
+    Record-or-refuse: returns True only when the record call
+    completed; the caller refuses the dominance on False — the floor
+    stands, because an unrecorded override would be silent.
+    (``record_suppression`` itself swallows pure IO errors by its
+    single-writer contract; this guard covers a missing sink and
+    unexpected failures.)
+    """
+    out_dir = getattr(config, "out_dir", None) if config else None
+    if not out_dir:
+        logger.debug(
+            "floor dominance for %s:%s refused (no out_dir to record)",
+            getattr(outcome, "file", "?"), getattr(outcome, "function", "?"),
+        )
+        return False
+    try:
+        from pathlib import Path
+
+        from core.analysis.reach_chokepoint import record_suppression
+
+        line = getattr(outcome, "line", 0) or 0
+        fpath = getattr(outcome, "file", "")
+        func = getattr(outcome, "function", "")
+        record_suppression(
+            Path(out_dir),
+            finding={
+                "finding_id": f"audit-refutation:{fpath}:{func}:{line}",
+                "rule_id": "audit:receipt-floor-dominance",
+                "file_path": fpath,
+                "line": line,
+                "function": func,
+            },
+            verdict=verdict,
+            reason=reason or (
+                f"receipt floor overridden: {refuter.gate} refutes the "
+                f"dismissed hypothesis with proof-grade evidence "
+                f"({refuter.reason}); the {receipt} receipt is "
+                f"detection-grade and does not outrank a mechanical "
+                f"refutation — the full demote stands"
+            ),
+            dropped=False,
+            extra={
+                "stage": "refutation-floor",
+                "floor_gate": floor_gate,
+                "refuter_gate": refuter.gate,
+                "refuter_grade": refuter.refuter_grade,
+                "receipt": receipt,
+            },
+        )
+        return True
+    except Exception:
+        logger.debug("floor-dominance record failed", exc_info=True)
+        return False
+
+
 def rescue_self_refuted(
     outcome,
     *,
@@ -840,6 +1025,25 @@ def rescue_self_refuted(
     DISMISSED at low confidence, the detector receipt outranks the
     dismissal — the reviewer named the mechanical finding's exact
     defect and talked itself out of it without tool evidence.
+
+    RECEIPT-FLOOR DOMINANCE: both receipt floors (detector and
+    structural) weigh the receipt against the REFUTER, not just the
+    dismissal. A detection-grade receipt outranks an unverified
+    dismissal (today's floor), but a proof-grade refuter of the same
+    claim family — a demotion gate whose refuting fact is
+    mechanically true regardless of interpretation — outranks the
+    receipt: the floor does not fire, the full demote stands, and the
+    overridden receipt is persisted through the suppressions.jsonl
+    chokepoint (``dropped: false``) so the decision is never silent.
+    Resolution is over the WHOLE set of receipts matching a
+    hypothesis, order-independently: if ANY matching receipt is not
+    dominated, the floor stands and no dominance row is written.  A
+    dominance whose record cannot be written is refused — the floor
+    stands (record-or-refuse; an unrecorded override would be
+    silent).  A heuristic refuter never dominates; findings with
+    confirming tool evidence are never refuted at all (the
+    ``is_tool_evidence`` guard above). Resolution is entirely
+    mechanical — no LLM output participates.
 
     When *source* is provided and every shared-state access in it is
     mechanically lock-protected (:func:`check_race_protection`), a
@@ -921,19 +1125,68 @@ def rescue_self_refuted(
             if conf not in ("refuted", "low"):
                 continue
             mechanism = h.get("mechanism", "")
-            for det, fam_re in detector_families:
-                if fam_re.search(mechanism):
-                    return RefutationVerdict(
-                        gate="anti_self_refutation",
-                        reason=(
-                            f"hypothesis '{mechanism[:80]}' raised then "
-                            f"dismissed ({conf}) against an active {det} "
-                            f"detector receipt on this function; the "
-                            f"mechanical receipt outranks an unverified "
-                            f"dismissal"
-                        ),
-                        demote_to="suspicious",
-                    )
+            matched = [
+                det for det, fam_re in detector_families
+                if fam_re.search(mechanism)
+            ]
+            if not matched:
+                continue
+            # Dominance: the receipts outrank an UNVERIFIED dismissal,
+            # but not a proof-grade refuter. Resolution is over the
+            # WHOLE matching set, order-independently: the full demote
+            # stands only when EVERY matching receipt is dominated —
+            # dominance over one receipt family must never silence
+            # another. Probe first, record after: a floor that fires
+            # writes no dominance rows (a row saying the demote stands
+            # must never accompany a floor that fired), and a dominance
+            # whose record cannot be written is REFUSED — the floor
+            # stands (an unrecorded override would be silent).
+            refuters = []
+            undominated = None
+            for det in matched:
+                refuter = _dominating_refuter(outcome, h, det)
+                if refuter is None:
+                    undominated = det
+                    break
+                refuters.append((det, refuter))
+            if undominated is None:
+                recorded = True
+                for det, refuter in refuters:
+                    if not _record_floor_dominance(
+                        outcome, config,
+                        refuter=refuter, receipt=det,
+                        floor_gate="anti_self_refutation",
+                    ):
+                        recorded = False
+                        break
+                if recorded:
+                    for det, refuter in refuters:
+                        logger.info(
+                            "receipt floor overridden for %s:%s — "
+                            "%s (%s) dominates %s",
+                            getattr(outcome, "file", "?"),
+                            getattr(outcome, "function", "?"),
+                            refuter.gate, refuter.refuter_grade, det,
+                        )
+                    continue
+                logger.info(
+                    "receipt floor dominance for %s:%s refused — "
+                    "demote-with-record could not write its record",
+                    getattr(outcome, "file", "?"),
+                    getattr(outcome, "function", "?"),
+                )
+                undominated = matched[0]
+            return RefutationVerdict(
+                gate="anti_self_refutation",
+                reason=(
+                    f"hypothesis '{mechanism[:80]}' raised then "
+                    f"dismissed ({conf}) against an active "
+                    f"{undominated} detector receipt on this "
+                    f"function; the mechanical receipt outranks an "
+                    f"unverified dismissal"
+                ),
+                demote_to="suspicious",
+            )
 
     for h in hypotheses:
         if not isinstance(h, dict):
@@ -984,19 +1237,59 @@ def rescue_self_refuted(
                 ),
                 demote_to="suspicious",
             )
-        receipt = next(
-            (ct for ct in fn_receipts
-             if _receipt_matches_mechanism(ct, mechanism)),
-            None,
-        )
-        if receipt:
+        matched_receipts = [
+            ct for ct in fn_receipts
+            if _receipt_matches_mechanism(ct, mechanism)
+        ]
+        if matched_receipts:
+            # Same dominance rule as the detector-receipt floor,
+            # resolved over the WHOLE matching set order-independently:
+            # the demote stands only when EVERY matching structural
+            # receipt is dominated; probe first, record after; a
+            # dominance whose record cannot be written is refused.
+            refuters = []
+            undominated = None
+            for receipt in matched_receipts:
+                refuter = _dominating_refuter(outcome, h, receipt)
+                if refuter is None:
+                    undominated = receipt
+                    break
+                refuters.append((receipt, refuter))
+            if undominated is None:
+                recorded = True
+                for receipt, refuter in refuters:
+                    if not _record_floor_dominance(
+                        outcome, config,
+                        refuter=refuter, receipt=receipt,
+                        floor_gate="anti_self_refutation",
+                    ):
+                        recorded = False
+                        break
+                if recorded:
+                    for receipt, refuter in refuters:
+                        logger.info(
+                            "receipt floor overridden for %s:%s — "
+                            "%s (%s) dominates %s",
+                            getattr(outcome, "file", "?"),
+                            getattr(outcome, "function", "?"),
+                            refuter.gate, refuter.refuter_grade,
+                            receipt,
+                        )
+                    continue
+                logger.info(
+                    "receipt floor dominance for %s:%s refused — "
+                    "demote-with-record could not write its record",
+                    getattr(outcome, "file", "?"),
+                    getattr(outcome, "function", "?"),
+                )
+                undominated = matched_receipts[0]
             return RefutationVerdict(
                 gate="anti_self_refutation",
                 reason=(
                     f"hypothesis '{mechanism[:80]}' self-refuted "
-                    f"against an active {receipt} receipt on this "
-                    f"function; the structural receipt outranks an "
-                    f"unverified self-refutation"
+                    f"against an active {undominated} receipt on "
+                    f"this function; the structural receipt outranks "
+                    f"an unverified self-refutation"
                 ),
                 demote_to="suspicious",
             )
@@ -1078,10 +1371,21 @@ def diagnose_rescue(
         mechanism = h.get("mechanism", "")
         if _extract_cwes_from_text(mechanism) & _SELF_REFUTATION_CWES:
             return None
-        if any(
-            _receipt_matches_mechanism(ct, mechanism)
-            for ct in fn_receipts
-        ):
+        receipt = next(
+            (ct for ct in fn_receipts
+             if _receipt_matches_mechanism(ct, mechanism)),
+            None,
+        )
+        if receipt:
+            # Mirror the gate's dominance rule: a proof-grade refuter
+            # of the receipt's family means the floor deliberately
+            # did not fire — report that instead of "would fire".
+            if _dominating_refuter(outcome, h, receipt) is not None:
+                return {
+                    "blocked_on": "proof_refuter_dominance",
+                    "receipt": receipt,
+                    **base,
+                }
             return None
     return {"blocked_on": "no_matching_receipt_or_cwe", **base}
 

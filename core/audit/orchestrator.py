@@ -2394,6 +2394,7 @@ def review_one_function(
             )
             rv = rescue_self_refuted(
                 outcome,
+                config=config,
                 negative_space=ctx.get("negative_space"),
                 source=_rescue_src or None,
                 pre_evidence=gap.get("_smt_pre_evidence"),
@@ -13799,6 +13800,7 @@ def _review_items(
 
                 rv = rescue_self_refuted(
                     outcome,
+                    config=config,
                     source=_read_raw_source(
                         config.target_path,
                         gap.get("file", ""),
@@ -21697,7 +21699,9 @@ _RECEIPT_FAMILY_HYP_RES = {
 }
 
 
-def _receipt_corroborated_hypothesis(outcome, receipts):
+def _receipt_corroborated_hypothesis(
+    outcome, receipts, *, config=None, source=None,
+):
     """Floor a clean verdict when the reviewer RAISED the receipt's
     exact shape and dismissed it without tool evidence.
 
@@ -21709,11 +21713,22 @@ def _receipt_corroborated_hypothesis(outcome, receipts):
     one of the concrete call sites the receipt flagged AND match the
     receipt family's token stems, and the outcome must carry no tool
     evidence. Returns a RefutationVerdict-shaped object or None.
+
+    Same dominance rule as the in-gate receipt floors: the receipt
+    outranks an UNVERIFIED dismissal, not a mechanical refuter. A
+    proof-grade refuter of the receipt's claim family, or the
+    race-protection witness corroborating a shared-writer dismissal
+    on *source*, overrides the floor — the clean verdict stands and
+    the overridden receipt is persisted (``dropped: false``) through
+    the suppressions chokepoint.  Record-or-refuse: an override whose
+    record cannot be written is refused and the floor stands.
     """
     from .evidence_grade import is_tool_evidence
     from .refutation import (
         RefutationVerdict,
+        _dominating_refuter,
         _receipt_matches_mechanism,
+        _record_floor_dominance,
     )
 
     if is_tool_evidence(outcome.evidence_tool or ""):
@@ -21721,6 +21736,14 @@ def _receipt_corroborated_hypothesis(outcome, receipts):
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses and outcome.review_result:
         hypotheses = outcome.review_result.get("hypotheses") or []
+
+    race_protected = False
+    if source:
+        try:
+            from .condition_smt import check_race_protection
+            race_protected = check_race_protection(source).protected
+        except Exception:
+            logger.debug("race-protection probe failed", exc_info=True)
 
     for receipt in receipts:
         check_type = receipt.get("check_type", "")
@@ -21750,6 +21773,72 @@ def _receipt_corroborated_hypothesis(outcome, receipts):
                 or (call_overlap and family_re
                     and family_re.search(mechanism))
             ):
+                continue
+            # Dominance: a proof-grade refuter of the receipt's
+            # family outranks the detection-grade receipt — the
+            # clean verdict stands, demote-with-record.
+            # Record-or-refuse: an override whose record cannot be
+            # written is refused (the floor stands) — an unrecorded
+            # override would be silent.
+            refuter = _dominating_refuter(outcome, h, check_type)
+            if refuter is not None and _record_floor_dominance(
+                outcome, config,
+                refuter=refuter, receipt=check_type,
+                floor_gate="receipt_corroborated_hypothesis",
+            ):
+                logger.info(
+                    "receipt floor overridden for %s:%s — %s (%s) "
+                    "dominates %s",
+                    outcome.file, outcome.function,
+                    refuter.gate, refuter.refuter_grade, check_type,
+                )
+                continue
+            if refuter is not None:
+                logger.info(
+                    "receipt floor dominance for %s:%s refused — "
+                    "demote-with-record could not write its record",
+                    outcome.file, outcome.function,
+                )
+            # Witness discharge, same authority the anti-self-
+            # refutation gate grants mechanically corroborated
+            # dismissals: when every shared-state access in the
+            # source is lock-protected, a shared-writer dismissal
+            # is corroborated, not unverified — re-flooring it
+            # manufactures a false positive.  Accept-with-record or
+            # nothing, same as the dominance route.
+            if (
+                refuter is None
+                and race_protected
+                and check_type == "shared_writer_race"
+                and _record_floor_dominance(
+                    outcome, config,
+                    refuter=RefutationVerdict(
+                        gate="race_protection_witness",
+                        reason=(
+                            "every shared-state access in the "
+                            "function is mechanically lock-protected"
+                        ),
+                        demote_to="clean",
+                    ),
+                    receipt=check_type,
+                    floor_gate="receipt_corroborated_hypothesis",
+                    verdict="witness_corroborates_dismissal",
+                    reason=(
+                        f"receipt floor overridden: the dismissal is "
+                        f"mechanically corroborated by the race-"
+                        f"protection witness (every shared-state "
+                        f"access lock-protected); the {check_type} "
+                        f"receipt does not outrank a corroborated "
+                        f"dismissal"
+                    ),
+                )
+            ):
+                logger.info(
+                    "receipt floor overridden for %s:%s — race-"
+                    "protection witness corroborates the dismissal "
+                    "(%s receipt does not outrank it)",
+                    outcome.file, outcome.function, check_type,
+                )
                 continue
             return RefutationVerdict(
                 gate="receipt_corroborated_hypothesis",
@@ -21857,6 +21946,7 @@ def _post_loop_receipt_rescue(
             # re-applies them to whatever verdict is current.
             rv = rescue_self_refuted(
                 outcome,
+                config=config,
                 negative_space=receipts or [],
                 detector_findings=detectors or None,
                 pre_evidence=pre_evidence,
@@ -21869,7 +21959,10 @@ def _post_loop_receipt_rescue(
             )
             continue
         if rv is None and receipts:
-            rv = _receipt_corroborated_hypothesis(outcome, receipts)
+            rv = _receipt_corroborated_hypothesis(
+                outcome, receipts,
+                config=config, source=_rescue_src or None,
+            )
         if rv is None:
             continue
         append_audit_log(config.out_dir, {

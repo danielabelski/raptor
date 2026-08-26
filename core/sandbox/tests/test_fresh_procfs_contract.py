@@ -525,3 +525,29 @@ def test_no_branded_names_in_target_view(tmp_path):
                  "_RAPTOR_", "CLAUDECODE="):
         assert name not in envblock, (
             f"framework-identity env reached the target: {name}")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
+def test_run_marker_content_masked_in_target_view(tmp_path):
+    """.raptor-run.json (RAPTOR git sha, finder identity, target
+    provenance, command line) sits inside the rw output bind — the
+    child view must serve an empty mask, writes must land on the mask,
+    and the real file must stay intact for the parent-side machinery."""
+    marker = tmp_path / ".raptor-run.json"
+    marker.write_text('{"manifest":{"base_sha":"mask-me-sha"}}',
+                      encoding="utf-8")
+    probe_out = tmp_path / "probe-out"
+    _run_untrusted_or_skip(
+        ["sh", "-c",
+         f"cat {marker} > {probe_out} 2>&1; "
+         f"echo tamper >> {marker} 2>/dev/null || true"],
+        tmp_path,
+    )
+    if not probe_out.exists():
+        pytest.skip("probe produced no output")
+    assert "mask-me-sha" not in probe_out.read_text(encoding="utf-8"), (
+        "run-marker content readable through the output bind")
+    real = marker.read_text(encoding="utf-8")
+    assert "mask-me-sha" in real and "tamper" not in real, (
+        "the real run marker was altered through the child view")

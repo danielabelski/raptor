@@ -824,6 +824,50 @@ def setup_mount_ns(target: str | None, output: str | None,
         finally:
             os.close(_evfd)
 
+    # 8a2. Mask the run-marker CONTENT inside the rw output bind.
+    # ``.raptor-run.json`` records the RAPTOR git sha/version, the
+    # operator's finder identity, the target's provenance, and the
+    # exact command line — a one-read dossier for any payload with the
+    # rw output grant. The child never needs it (every reader/writer
+    # is parent-side), so stack an empty read-only file over the
+    # child-view mount point. Same O_PATH pinning discipline as the
+    # .audit shadow above: the output bind can be shared with a live
+    # sibling, so never resolve a pathname twice. The lock file is
+    # 0-byte by contract already; the marker name itself remains
+    # visible (renaming the on-disk marker is a run-machinery contract
+    # change, out of scope here) — the CONTENT is the disclosure.
+    if output:
+        _mask_stub = f"{root}/run/.marker-mask"
+        _stub_fd_ok = False
+        try:
+            _sfd = os.open(_mask_stub,
+                           os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
+            os.close(_sfd)
+            _stub_fd_ok = True
+        except OSError:
+            pass
+        if _stub_fd_ok:
+            _marker = f"{root}{output}/.raptor-run.json"
+            try:
+                _mfd = os.open(_marker,
+                               os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError:
+                _mfd = -1
+            if _mfd >= 0:
+                try:
+                    _mst = os.fstat(_mfd)
+                    if stat_module.S_ISREG(_mst.st_mode):
+                        _mount(_mask_stub, f"/proc/self/fd/{_mfd}",
+                               None, MS_BIND)
+                except OSError as exc:
+                    warn_post_fork(
+                        b"sandbox: mount_ns: run-marker mask failed "
+                        b"(errno=%d); the run metadata stays readable "
+                        b"through the output bind\n" % (exc.errno or 0)
+                    )
+                finally:
+                    os.close(_mfd)
+
     # 8b. Bind any extra read-only paths the caller requested (via
     # readable_paths in the public sandbox API). Each is bind-mounted
     # at its original absolute path, so the child sees it exactly where

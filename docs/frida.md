@@ -415,6 +415,42 @@ always safe: the run cannot hang or lose its metadata, and because
 `frida_call_edge` only ever PROMOTES reachability, a capture-less run
 costs nothing while a captured one rescues functions.
 
+### heap-trace
+
+Heap lifecycle evidence for memory-corruption findings on binaries
+you cannot rebuild with ASAN: double frees, invalid frees,
+freed-memory-use candidates at libc boundaries, and leak-candidate
+allocation sites.
+
+Per-allocation events are never sent — allocator traffic aggregates
+in-agent and leaves on the controller's flush clock; only anomaly
+events (budgeted, target-attributed) stream live. The flush summary
+carries totals and the top outstanding allocation sites of the
+target's own code, symbolised when debug info allows. Anomaly events
+flow into the validation bridge as attributed runtime evidence.
+
+```bash
+raptor frida --target ./app --template heap-trace --duration 30
+```
+
+Honest limits: `uaf_candidate` sees uses only at hooked libc
+boundaries (compilers inline small constant `memcpy`/`strcpy` calls,
+which never reach a hook; direct pointer dereferences are invisible
+without whole-process Stalker instrumentation), the freed-range
+quarantine is bounded, and `invalid_free` is only emitted for
+spawn-mode runs (in attach mode a pre-attach allocation freed later
+is indistinguishable) and is suppressed entirely if any alloc-source
+export failed to hook. The malloc/calloc/realloc/memalign families
+are tracked; a custom allocator that manages its own mmap'd arenas
+is invisible (its frees are counted as `unknown_frees`, never
+reported as anomalies). In multi-threaded targets a realloc-move
+races the tracker by construction (the allocator's internal free
+happens before the hook can observe it), so cross-thread reuse can
+occasionally mis-sequence — one more reason every anomaly is a
+candidate for triage, not a verdict. A detected double free usually
+aborts the target moments later — the abort path is held briefly so
+the event drains before the process dies.
+
 ---
 
 ## Pipeline Integration

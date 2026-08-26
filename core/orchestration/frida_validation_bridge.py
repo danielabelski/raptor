@@ -366,7 +366,7 @@ def _callsite_match(
 # yet annotate_attack_paths floors path proximity on a bare name
 # match. Legacy categories (file/network/parser/process) keep their
 # original semantics.
-_TARGET_ATTRIBUTED_CATEGORIES = frozenset({"sink", "exec", "load"})
+_TARGET_ATTRIBUTED_CATEGORIES = frozenset({"sink", "exec", "load", "heap"})
 
 # Categories that never count as call evidence: seed-harvest's ingest
 # events exist to produce seeds (no callsite is captured, so they can

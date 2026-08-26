@@ -360,6 +360,88 @@ class TestPatchOracleLive:
             assert report["confidence"] == "site"
 
 
+_HEAP_VICTIM_C = """\
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+char *make_buffer(size_t n) { return malloc(n); }
+/* volatile pointer defeats gcc's builtin-memcpy inlining: the libc
+ * call must actually happen for the boundary hook to see it */
+void *(*volatile vmemcpy)(void *, const void *, size_t) = memcpy;
+int main(void) {
+    usleep(500000);
+    for (int i = 0; i < 8; i++) {
+        char *l = make_buffer(4096);
+        if (l) l[0] = 'x';
+    }
+    char *p = make_buffer(256);
+    char dst[64];
+    p[0] = 'x';
+    free(p);
+    vmemcpy(dst, p, 64);
+    usleep(500000);
+    char *q = make_buffer(128);
+    free(q);
+    free(q);  /* glibc aborts here; the hook records it first */
+    usleep(1500000);
+    return 0;
+}
+"""
+
+
+class TestHeapTraceLive:
+    """heap-trace end to end: a victim with a real use-after-free and
+    a real double free, both reported with owned-caller attribution,
+    plus leak-candidate sites in the summary."""
+
+    @pytest.fixture(scope="class")
+    def heap_victim(self, tmp_path_factory):
+        build_dir = tmp_path_factory.mktemp("heapvictim")
+        src = build_dir / "victim.c"
+        src.write_text(_HEAP_VICTIM_C)
+        binary = build_dir / "victim"
+        result = subprocess.run(
+            ["gcc", "-g", "-o", str(binary), str(src)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"gcc failed: {result.stderr[:200]}")
+        return binary
+
+    def test_anomalies_and_summary(self, heap_victim, run_dir):
+        rc = _run_frida_cli(heap_victim, run_dir, duration=5,
+                            template="heap-trace")
+        assert rc == 0
+
+        from packages.frida import parse_events
+
+        anomalies: dict[str, list[dict]] = {}
+        summary = None
+        for record in parse_events(run_dir / "events.jsonl"):
+            payload = record.get("payload", {})
+            if payload.get("category") != "heap":
+                continue
+            kind = payload.get("kind")
+            if kind == "summary":
+                summary = payload
+            elif kind:
+                anomalies.setdefault(kind, []).append(payload)
+
+        assert "uaf_candidate" in anomalies, f"kinds: {list(anomalies)}"
+        assert "double_free" in anomalies, f"kinds: {list(anomalies)}"
+        # Attribution: both anomalies called from the victim itself.
+        for kind in ("uaf_candidate", "double_free"):
+            assert any(a.get("caller_module") == heap_victim.name
+                       for a in anomalies[kind]), anomalies[kind]
+        # The alias pair (memcpy/memmove) must not double-report.
+        assert len(anomalies["uaf_candidate"]) == 1
+
+        assert summary is not None, "no flush summary arrived"
+        assert summary["allocs"] > summary["frees"]
+        sites = summary["top_owned_sites"]
+        assert sites and sites[0]["outstanding_bytes"] >= 8 * 4096
+
+
 class TestWrapperLiveE2E:
     """The surface every doc example points at — libexec/raptor-frida
     with the sandbox engaged — previously had no live coverage at all;

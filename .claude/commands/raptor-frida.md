@@ -47,6 +47,7 @@ libexec/raptor-frida --target ... --template ...
 | `sink-watch` | Argument-level sink evidence; parameterize with `--sink-watch <sinks.json|attack-paths.json>` instead of `--template`. |
 | `jni-trace` | Android/ART RegisterNatives mapping: Java method → native module + offset. |
 | `call-edges` | Dynamic call-graph edges (Stalker) → `frida_call_edge` reachability witness. |
+| `heap-trace` | Heap lifecycle: double-free / invalid-free / freed-memory-use candidates + leak sites. |
 
 List dynamically: `raptor frida --list-templates`.
 

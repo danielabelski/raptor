@@ -564,8 +564,12 @@ def run(cfg: RunConfig,
                 # Process.enumerateThreads(), which intermittently
                 # wedges the agent's JS thread on current builds.
                 try:
+                    # spawned: lets mode-dependent verdicts (e.g.
+                    # heap-trace invalid_free, meaningless on attach)
+                    # gate themselves agent-side.
                     script.post({"type": "raptor:flush",
-                                 "main_tid": result.resolved_pid or 0})
+                                 "main_tid": result.resolved_pid or 0,
+                                 "spawned": spawned})
                     result.flushes_completed += 1
                 except Exception:
                     logger.debug("flush post failed", exc_info=True)

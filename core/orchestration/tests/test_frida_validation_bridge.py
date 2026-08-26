@@ -50,6 +50,13 @@ def _make_frida_run(tmp_path: Path, name: str, events: list[dict],
     return run_dir
 
 
+def _heap_event(kind: str, fn: str, caller_module: str) -> dict:
+    return {"ts": 0.2, "type": "send", "payload": {
+        "category": "heap", "kind": kind, "fn": fn,
+        "caller_module": caller_module, "caller_offset": "0x12c0",
+        "tid": 0}}
+
+
 def _api_event(fn: str, args: dict | None = None) -> dict:
     """Build a single api-trace style event record."""
     payload: dict = {"category": "file", "fn": fn, "tid": 1}
@@ -209,6 +216,38 @@ class TestCollectRuntimeEvidence:
 # ---------------------------------------------------------------------------
 # Tests: annotate_attack_paths
 # ---------------------------------------------------------------------------
+
+
+class TestHeapEvidenceFlow:
+    """heap-trace anomaly events are attributed call observations and
+    feed runtime evidence; the aggregate summary (a _meta record)
+    must not."""
+
+    def test_anomalies_feed_evidence_summary_does_not(self, tmp_path):
+        summary = {"ts": 0.3, "type": "send", "payload": {
+            "_meta": "heap summary", "category": "heap",
+            "kind": "summary", "fn": "_heap_summary", "allocs": 5,
+            "tid": 0}}
+        _make_frida_run(
+            tmp_path, "run_heap",
+            [_heap_event("uaf_candidate", "memcpy", "victim"),
+             _heap_event("double_free", "free", "victim"),
+             summary],
+            target_binary="/bin/victim")
+        evidence = collect_runtime_evidence([tmp_path],
+                                            target_path="/bin/victim")
+        assert "memcpy" in evidence
+        assert "free" in evidence
+        assert "_heap_summary" not in evidence
+
+    def test_unattributed_heap_anomaly_dropped(self, tmp_path):
+        _make_frida_run(
+            tmp_path, "run_heap2",
+            [_heap_event("double_free", "free", "libother.so")],
+            target_binary="/bin/victim")
+        evidence = collect_runtime_evidence([tmp_path],
+                                            target_path="/bin/victim")
+        assert "free" not in evidence
 
 
 class TestAnnotateAttackPaths:

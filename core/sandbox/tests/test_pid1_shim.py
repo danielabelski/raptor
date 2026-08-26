@@ -304,7 +304,11 @@ class TestPid1ShimRaptorDirStrip(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("RD=<unset>", r.stdout)
 
-    def test_no_flag_keeps_raptor_dir(self):
+    def test_no_flag_still_strips_raptor_dir(self):
+        # RAPTOR_DIR joined the shim's base strip tuple (framework-
+        # identity values never reach targets); --strip-raptor-dir is
+        # retained for argv compatibility but no longer the deciding
+        # input. Only the keep-trust dispatch arm retains the value.
         r = subprocess.run(
             [str(SHIM_PATH), _sys.executable, "-c", self._PROBE],
             capture_output=True, text=True, timeout=10,
@@ -312,7 +316,7 @@ class TestPid1ShimRaptorDirStrip(unittest.TestCase):
                      RAPTOR_DIR="/somewhere/raptor"),
         )
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("RD=/somewhere/raptor", r.stdout)
+        self.assertIn("RD=<unset>", r.stdout)
 
     def test_strip_raptor_dir_missing_target_argv(self):
         r = subprocess.run(

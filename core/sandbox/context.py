@@ -200,7 +200,7 @@ _PROXY_PERSIST_LOCK = threading.Lock()
 
 def _sweep_marked_processes(token: str) -> list:
     """SIGKILL every process whose environment carries this run's
-    marker (`_RAPTOR_SBX_RUN=<token>`).
+    marker (`_SBX_RUN_ID=<token>`).
 
     Backstop teardown for the no-namespace path: the in-line subreaper
     sweeper (preexec._reaper_split) catches orphans while it lives,
@@ -211,7 +211,7 @@ def _sweep_marked_processes(token: str) -> list:
     per-run random UUID, so a false-positive kill requires the exact
     128-bit value in a foreign process env. Returns the pids killed.
     """
-    needle = f"_RAPTOR_SBX_RUN={token}".encode()
+    needle = f"_SBX_RUN_ID={token}".encode()
     me = os.getpid()
     killed: list = []
     for _pass in range(2):
@@ -277,7 +277,7 @@ def _run_teardown_first_timeout(
     hosts without an explicit operator opt-in):
 
     * marker scrub — the parent-side backstop finds survivors via the
-      ``_RAPTOR_SBX_RUN`` environ marker; a descendant that re-execs
+      ``_SBX_RUN_ID`` environ marker; a descendant that re-execs
       with a scrubbed environment is invisible to it. Inherent to
       marker-based sweeps; the pid-namespace cascade is the real
       containment and every namespace-capable host uses it.
@@ -2766,19 +2766,17 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             }
         else:
             from core.config import RaptorConfig as _RC
-            _strip_keys = set(_RC.TARGET_ENV_STRIP_SET)
-            if strip_trust_markers:
-                # RAPTOR_DIR joins the strip on untrusted-target
-                # paths: the libexec trust gate never accepted it, no
-                # sandboxed child legitimately derives paths from it
-                # (libexec scripts self-anchor via __file__; the netns
-                # coordinator exports its own), and to an untrusted
-                # target it is a pure "you are inside RAPTOR at
-                # <checkout path>" tell.
-                _strip_keys.add("RAPTOR_DIR")
+            # RAPTOR_DIR (plus the other framework-identity values)
+            # now lives in TARGET_ENV_STRIP_SET itself: the libexec
+            # trust gate never accepted it, no sandboxed child
+            # legitimately derives paths from it (libexec scripts
+            # self-anchor via __file__; the netns coordinator exports
+            # its own), and to a target it is a pure "you are inside
+            # RAPTOR at <checkout path>" tell. The old opt-in
+            # strip_trust_markers add is therefore subsumed.
             _env_for_target = {
                 k: v for k, v in kwargs["env"].items()
-                if k not in _strip_keys
+                if k not in _RC.TARGET_ENV_STRIP_SET
                 and k != "_RAPTOR_KEEP_TRUST_MARKERS"
             }
         if _ENV_RESTORE_KEY in _env_for_target:
@@ -4621,7 +4619,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                             import uuid as _uuid
                             _reap_token = _uuid.uuid4().hex
                             _penv = dict(_env_for_target)
-                            _penv["_RAPTOR_SBX_RUN"] = _reap_token
+                            _penv["_SBX_RUN_ID"] = _reap_token
                         if _reaper_cell is not None:
                             _death_r, _death_w = os.pipe()
                             _reaper_cell["death_fd"] = _death_r

@@ -581,6 +581,14 @@ class RaptorConfig:
     TARGET_ENV_STRIP_SET = frozenset({
         "CLAUDECODE", "_RAPTOR_TRUSTED",
         "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN",
+        # Framework-identity values: each one names RAPTOR (or its
+        # checkout / output layout) to any target that runs `env`,
+        # defeating the anti-fingerprint posture in one getenv. No
+        # sandboxed TARGET consumes them; RAPTOR's own children that
+        # do (libexec lifecycle helpers, nested skill dispatches) run
+        # on the keep-trust dispatch arm, which retains the full set
+        # by contract.
+        "RAPTOR_DIR", "RAPTOR_OUT_DIR", "RAPTOR_TARGET_KIND",
     })
 
     # CI markers ride the allowlist: RAPTOR's own interactivity gate

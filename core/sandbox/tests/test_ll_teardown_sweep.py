@@ -13,7 +13,7 @@ The fix is layered: the composed preexec forks a
 PR_SET_CHILD_SUBREAPER sweeper (every orphaned descendant reparents to
 it; it SIGKILL-sweeps on payload exit or death-pipe EOF and mirrors
 the payload's exit status), plus a parent-side marked-process backstop
-(each run injects a random `_RAPTOR_SBX_RUN` token into the child env;
+(each run injects a random `_SBX_RUN_ID` token into the child env;
 after the run, any /proc process still carrying it is killed — this
 covers the timeout path, where subprocess kills the sweeper itself).
 """
@@ -322,7 +322,7 @@ class TestSweepBackstopUnit(unittest.TestCase):
         token = uuid.uuid4().hex
         marked = subprocess.Popen(
             ["sleep", "30"],
-            env={"_RAPTOR_SBX_RUN": token, "PATH": "/usr/bin:/bin"},
+            env={"_SBX_RUN_ID": token, "PATH": "/usr/bin:/bin"},
         )
         unmarked = subprocess.Popen(["sleep", "30"])
         try:

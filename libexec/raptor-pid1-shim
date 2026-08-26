@@ -372,13 +372,19 @@ def main() -> int:
             _strip = (
                 ("_RAPTOR_DEATH_FD",) if keep_trust_markers
                 else ("_RAPTOR_DEATH_FD", "_RAPTOR_TRUSTED", "CLAUDECODE",
-                      "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN")
+                      "RAPTOR_SESSION_PID", "RAPTOR_SESSION_TOKEN",
+                      # Framework-identity values (checkout path,
+                      # output layout, target-kind override) are pure
+                      # "inside RAPTOR" tells — no target consumes
+                      # them and no libexec script accepts them as a
+                      # trust input.
+                      "RAPTOR_DIR", "RAPTOR_OUT_DIR",
+                      "RAPTOR_TARGET_KIND")
             )
             if strip_raptor_dir and not keep_trust_markers:
-                # Untrusted-target contract (--strip-raptor-dir): the
-                # checkout path is a pure "inside RAPTOR" tell — no
-                # libexec script accepts it as a trust input and an
-                # untrusted target has no legitimate use for it.
+                # --strip-raptor-dir predates RAPTOR_DIR joining the
+                # base strip tuple above; kept for argv compatibility
+                # with older callers — a no-op today.
                 _strip = (*_strip, "RAPTOR_DIR")
             for _m in _strip:
                 os.environ.pop(_m, None)

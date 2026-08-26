@@ -39,6 +39,15 @@ frida --version        # client version
 `raptor doctor` only checks the host side. Target reachability is the
 operator's responsibility.
 
+**Supported frida versions:** frida/frida-tools ≥ 16; frida 17 is
+what RAPTOR tests against. Templates carry dual-path guards for the
+APIs that changed across 16→17, and version gaps degrade LOUDLY —
+the runner warns when frida-python is too old to drive an rpc-only
+flush script (bundled templates also handle the posted
+`raptor:flush` message and are immune), and templates report
+inactive hook layers in their loaded `_meta` event rather than
+silently no-oping.
+
 ### Linux
 
 The kernel `yama.ptrace_scope` sysctl gates who can `ptrace` what:
@@ -229,8 +238,16 @@ raptor frida --target ./app --template binary-flow-trace --duration 20
 ### bb-coverage
 
 Basic-block coverage collection via Frida Stalker. Records which basic
-blocks execute during the traced session. Useful for measuring code
-coverage of specific inputs or comparing coverage between test cases.
+blocks execute during the traced session and writes a drcov-format
+`coverage.drcov` that `parse_drcov` / the coverage store consume
+directly. Useful for measuring code coverage of specific inputs or
+comparing coverage between test cases.
+
+Only the target module (and libraries in its directory) is stalked —
+that is all the drcov consumer reads, and it keeps Stalker overhead
+survivable. Coverage is emitted on the controller's flush clock, so a
+target that exits within ~0.3s of resume yields little or none: keep
+it alive via stdin or arguments.
 
 ```bash
 raptor frida --target ./app --template bb-coverage --duration 30

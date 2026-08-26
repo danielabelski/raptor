@@ -76,7 +76,8 @@ def run_dir(tmp_path):
     return d
 
 
-def _run_frida_cli(binary: Path, run_dir: Path, duration: int = 3) -> int:
+def _run_frida_cli(binary: Path, run_dir: Path, duration: int = 3,
+                   template: str = "api-trace") -> int:
     """Run the frida CLI in spawn mode via the packages.frida.cli module."""
     env = os.environ.copy()
     env["RAPTOR_DIR"] = str(RAPTOR_DIR)
@@ -90,7 +91,7 @@ def _run_frida_cli(binary: Path, run_dir: Path, duration: int = 3) -> int:
     cmd = [
         frida_python, "-m", "packages.frida.cli",
         "--target", str(binary),
-        "--template", "api-trace",
+        "--template", template,
         "--duration", str(duration),
         "--spawn",
         "--out", str(run_dir),
@@ -227,6 +228,63 @@ class TestLiveE2E:
         step_ev = result[0]["steps"][0]["runtime_evidence"]
         assert step_ev["function_observed"] is True
         assert step_ev["call_count"] >= 1
+
+
+_SLEEPER_C = """\
+#include <unistd.h>
+static int work(int x) { return x * 3; }
+int main(void) {
+    sleep(1);
+    volatile int v = 0;
+    for (int i = 0; i < 3; i++) { v += work(i); usleep(100000); }
+    sleep(1);
+    return v & 0x7f;
+}
+"""
+
+
+class TestBbCoverageLive:
+    """bb-coverage template end to end: stalk a real process, emit
+    drcov, and round-trip it through RAPTOR's own parser.
+
+    The victim sleeps briefly so the controller's flush clock gets a
+    chance to follow the main thread (a target that exits before the
+    first flush yields little coverage — documented limitation).
+    """
+
+    @pytest.fixture(scope="class")
+    def sleeper_binary(self, tmp_path_factory):
+        build_dir = tmp_path_factory.mktemp("sleeper")
+        src = build_dir / "sleeper.c"
+        src.write_text(_SLEEPER_C)
+        binary = build_dir / "sleeper"
+        result = subprocess.run(
+            ["gcc", "-o", str(binary), str(src)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"gcc failed: {result.stderr[:200]}")
+        return binary
+
+    def test_drcov_round_trips_through_parser(self, sleeper_binary, run_dir):
+        rc = _run_frida_cli(sleeper_binary, run_dir, duration=5,
+                            template="bb-coverage")
+        assert rc == 0
+
+        drcov = run_dir / "coverage.drcov"
+        assert drcov.is_file(), "flush clock produced no coverage.drcov"
+
+        from core.coverage.collect import parse_drcov
+
+        modules = parse_drcov(drcov)
+        victim = [m for path, m in modules.items()
+                  if Path(path).name == sleeper_binary.name]
+        assert victim, (
+            f"target module missing from drcov module table: "
+            f"{list(modules)}")
+        # Real coverage, not a header-only blob: main + work + the
+        # loop span multiple basic blocks.
+        assert len(victim[0]["offsets"]) >= 3
 
 
 class TestWrapperLiveE2E:

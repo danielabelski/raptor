@@ -105,6 +105,13 @@ if (main === null) {
     return n.indexOf('gum-') === 0 || n.indexOf('gdbus') >= 0
       || n.indexOf('frida') >= 0 || n.indexOf('pool-') === 0;
   }
+  // Process.enumerateThreads() intermittently WEDGES the agent's JS
+  // thread on current builds; it is kept off the steady-state path —
+  // the main thread is followed by tid (posted by the controller)
+  // and enumeration runs only after the pthread_create hook flags a
+  // new thread.
+  var pendingNewThreads = false;
+
   function followAll() {
     stalkInit();
     Process.enumerateThreads().forEach(function (t) {
@@ -155,9 +162,9 @@ if (main === null) {
     try {
       Interceptor.attach(addr, {
         onLeave: function (_ret) {
-          Process.enumerateThreads().forEach(function (t) {
-            if (followed.indexOf(t.id) < 0) follow(t.id);
-          });
+          // Flag only — enumerating from here would put the wedge
+          // risk on a target thread.
+          pendingNewThreads = true;
         },
       });
     } catch (_e) {}
@@ -262,11 +269,38 @@ if (main === null) {
   // thread is picked up on the first flush after resume.
   // No unfollow at teardown: frida cleans followed threads up at
   // detach, and an explicit Stalker.unfollow racing thread death has
-  // crashed the controller.
+  // crashed the controller. The message-driven flush path is
+  // preferred — script.post is fire-and-forget, so a delivery race
+  // cannot wedge the controller the way a blocking rpc call can;
+  // rpc.exports stays for manual/driver use.
+  // Emission runs BEFORE any thread enumeration so a wedge can only
+  // cost future ticks, never edges already collected.
+  function doFlush(mainTid) {
+    stalkInit();
+    if (typeof mainTid === 'number' && mainTid > 0 && mainTid !== jsTid
+        && followed.indexOf(mainTid) < 0) {
+      follow(mainTid);
+    }
+    flushNewEdges();
+    if (pendingNewThreads) {
+      pendingNewThreads = false;
+      followAll();
+    }
+  }
+
+  function onFlushMsg(msg) {
+    var mainTid = (msg !== null && typeof msg === 'object')
+      ? msg.main_tid : 0;
+    try { doFlush(mainTid); } catch (_e) {}
+    recv('raptor:flush', onFlushMsg);
+  }
+  recv('raptor:flush', onFlushMsg);
+
   rpc.exports = {
     flush: function () {
-      followAll();
-      flushNewEdges();
+      // Manual drivers have no tid to pass; enumerate on their behalf.
+      pendingNewThreads = true;
+      doFlush(0);
     },
   };
 }

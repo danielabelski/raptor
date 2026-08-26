@@ -137,6 +137,7 @@ class RunResult:
     device_id: str | None = None
     host_info: HostInfo | None = None
     children_observed: int = 0          # gated children instrumented
+    flushes_completed: int = 0          # flush signals (rpc returns / posts sent)
 
 
 def resolve_template(name: str) -> Path:
@@ -525,6 +526,8 @@ def run(cfg: RunConfig,
         # once more before teardown while the session can still
         # deliver messages.
         script_has_flush = False
+        # Post-accepting scripts need no export listing: the flush
+        # clock drives them via script.post either way.
         lister = getattr(script, "list_exports_sync", None)
         if callable(lister):
             listed: list = []
@@ -534,14 +537,48 @@ def run(cfg: RunConfig,
 
             if _bounded_frida_call(_list_exports, 5.0, "export-listing"):
                 script_has_flush = "flush" in listed
+        elif ("rpc.exports" in cfg.script_source
+                and "raptor:flush" not in cfg.script_source):
+            # No version pin, but no silent degradation either: a
+            # flush-driven script emits NOTHING without the
+            # controller clock. Bundled templates also handle the
+            # posted flush message (immune to this), so the warning
+            # covers operator scripts with only an rpc flush export.
+            logger.warning(
+                "this frida-python lacks list_exports_sync; an rpc-"
+                "only flush script will emit no batched output — "
+                "upgrade frida-tools (frida >= 16) or handle the "
+                "'raptor:flush' message")
 
-        flush_state = {"wedged": False}
+        # Fire-and-forget transport when the script handles the
+        # flush message: script.post cannot block the controller, so
+        # a delivery race costs one tick instead of wedging the run.
+        script_accepts_post = "raptor:flush" in cfg.script_source
 
-        def _script_flush() -> None:
-            # One wedged flush disables the rest: each timed-out call
-            # abandons a daemon worker, and piling those up helps
-            # nobody. The evidence emitted so far is already on disk.
-            if flush_state["wedged"]:
+        flush_state = {"consecutive_wedges": 0}
+
+        def _script_flush(final: bool = False) -> None:
+            if script_accepts_post:
+                # main_tid: a process's main thread id equals its pid;
+                # the agent follows it directly instead of calling
+                # Process.enumerateThreads(), which intermittently
+                # wedges the agent's JS thread on current builds.
+                try:
+                    script.post({"type": "raptor:flush",
+                                 "main_tid": result.resolved_pid or 0})
+                    result.flushes_completed += 1
+                except Exception:
+                    logger.debug("flush post failed", exc_info=True)
+                return
+            # Two consecutive wedged flushes disable the rest: each
+            # timed-out call abandons a daemon worker, and piling
+            # those up helps nobody. ONE wedge must not latch — the
+            # immediate post-resume flush intermittently wedges
+            # racing target startup, and latching there meant a
+            # flush-driven template silently emitted nothing for the
+            # whole run. The teardown flush always gets a shot: it is
+            # the last chance for cumulative output.
+            if flush_state["consecutive_wedges"] >= 2 and not final:
                 return
 
             def _call() -> None:
@@ -551,15 +588,20 @@ def run(cfg: RunConfig,
                 if exports is not None:
                     exports.flush()
 
-            if not _bounded_frida_call(_call, 5.0, "script-flush"):
-                flush_state["wedged"] = True
+            if _bounded_frida_call(_call, 5.0, "script-flush"):
+                flush_state["consecutive_wedges"] = 0
+                result.flushes_completed += 1
+            else:
+                flush_state["consecutive_wedges"] += 1
 
         # If we spawned, the process is suspended pre-load. Resume it
-        # AFTER load so hooks are in place before main() runs.
+        # AFTER load so hooks are in place before main() runs. No
+        # flush here: an rpc call racing the resume intermittently
+        # wedges in delivery (never reaches the agent) and everything
+        # queues behind it — the first flush comes 0.3s into the
+        # cadence loop instead.
         if spawned:
             device.resume(pid)
-        if script_has_flush:
-            _script_flush()
 
         # Sleep loop with SIGINT trap so Ctrl-C in the operator's shell
         # terminates the run cleanly rather than orphaning the script.
@@ -586,12 +628,17 @@ def run(cfg: RunConfig,
                 time.sleep(0.1)
                 interval = (0.3 if time.monotonic() < early_deadline
                             else 2.0)
-                if (script_has_flush
+                if ((script_has_flush or script_accepts_post)
                         and time.monotonic() - last_flush >= interval):
                     _script_flush()
                     last_flush = time.monotonic()
-            if script_has_flush:
-                _script_flush()
+            if script_has_flush or script_accepts_post:
+                _script_flush(final=True)
+                if result.flushes_completed == 0:
+                    logger.warning(
+                        "no flush call completed this run; a flush-"
+                        "driven template (call-edges, bb-coverage) "
+                        "has emitted no batched output")
         finally:
             if signal_installed:
                 signal.signal(signal.SIGINT, prev_handler)
@@ -689,6 +736,7 @@ def _write_metadata(cfg: RunConfig, result: RunResult) -> None:
         "unsafe_attach": cfg.unsafe_attach,
         "follow_children": cfg.follow_children,
         "children_observed": result.children_observed,
+        "flushes_completed": result.flushes_completed,
         "resolved_pid": result.resolved_pid,
     }
     save_json(cfg.out_dir / "metadata.json", payload)

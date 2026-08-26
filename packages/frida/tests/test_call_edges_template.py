@@ -50,6 +50,7 @@ class TestTemplateShape:
 class _FlushScript:
     def __init__(self):
         self.flush_calls = 0
+        self.posted: list[dict] = []
         self.exports_sync = SimpleNamespace(
             flush=lambda: setattr(self, "flush_calls",
                                   self.flush_calls + 1))
@@ -59,6 +60,9 @@ class _FlushScript:
 
     def load(self):
         pass
+
+    def post(self, message):
+        self.posted.append(message)
 
     def list_exports_sync(self):
         return ["flush", "dispose"]
@@ -92,8 +96,31 @@ class TestControllerFlush:
         )
         result = run(cfg, frida_mod_override=fake)
         assert result.ok
-        # At least the post-load flush and the pre-teardown flush.
-        assert script.flush_calls >= 2
+        # At least the pre-teardown flush (no immediate post-resume
+        # flush: an rpc racing the resume can wedge in delivery).
+        assert script.flush_calls >= 1
+        assert result.flushes_completed == script.flush_calls
+
+    def test_flush_message_preferred_over_rpc(self, tmp_path):
+        """A script handling the flush message gets fire-and-forget
+        posts — the blocking rpc export is never called."""
+        script = _FlushScript()
+        device = _Device(script)
+        fake = SimpleNamespace(__version__="t",
+                               get_local_device=lambda: device)
+        cfg = RunConfig(
+            target=TargetSpec(raw="1234", pid=1234),
+            out_dir=tmp_path,
+            script_source="// hook\nrecv('raptor:flush', onFlushMsg);",
+            script_origin="template:call-edges",
+            duration_sec=0.05,
+        )
+        result = run(cfg, frida_mod_override=fake)
+        assert result.ok
+        assert script.flush_calls == 0
+        assert len(script.posted) >= 1
+        assert all(m["type"] == "raptor:flush" for m in script.posted)
+        assert all("main_tid" in m for m in script.posted)
 
     def test_scripts_without_flush_are_untouched(self, tmp_path):
         # A script that declares no flush export must never get rpc
@@ -161,10 +188,11 @@ class TestBoundedFridaCalls:
         result = run(cfg, frida_mod_override=fake)
         elapsed = time.monotonic() - start
         assert result.ok
-        # One bounded attempt (5s cap), then flushing is disabled —
-        # never one 5s stall per cycle, never a 60s hang.
-        assert calls["n"] == 1
-        assert elapsed < 15
+        # Bounded attempts (5s cap each), latched after two
+        # consecutive wedges; the teardown flush always gets its shot
+        # — never one 5s stall per cycle, never a 60s hang.
+        assert calls["n"] <= 3
+        assert elapsed < 20
         assert json.loads(
             (tmp_path / "metadata.json").read_text())["ok"] is True
 

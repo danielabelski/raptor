@@ -35,11 +35,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RefutationVerdict:
-    """Result of a refutation gate firing."""
+    """Result of a refutation gate firing.
+
+    ``refuter_grade`` is the evidence class of the REFUTING FACT, not
+    of the hypothesis it defeats:
+
+    * ``"proof"`` — the refuting fact is mechanically true regardless
+      of how the hypothesis text is interpreted (e.g. a libc return
+      range).  Only proof-grade refuters may override a
+      detection-grade receipt floor (see :func:`rescue_self_refuted`).
+    * ``"heuristic"`` — the refuting fact rests on keyword/lookup
+      matching, partial call graphs, or unverified model claims.  A
+      heuristic refuter never outranks a detection receipt.
+
+    The default is ``"heuristic"`` so a producer that does not declare
+    a grade can never dominate a receipt by omission.
+    """
 
     gate: str
     reason: str  # human-readable explanation
     demote_to: str  # "clean" or "suspicious"
+    refuter_grade: str = "heuristic"  # "proof" or "heuristic"
 
 
 def refute_hypothesis(
@@ -334,6 +350,11 @@ def _refute_by_architecture(
         return None
 
     cwe_label = ", ".join(sorted(matched))
+    # Grade: HEURISTIC. The refuting fact ("the target is
+    # single-threaded") is the domain model's threading claim — an
+    # unverified LLM output derived from the untrusted target. The
+    # thread-primitive veto only bounds the failure direction; it
+    # cannot make the claim mechanically true.
     return RefutationVerdict(
         gate="architecture",
         reason=(
@@ -341,6 +362,7 @@ def _refute_by_architecture(
             f"reachable from signal handlers — {cwe_label} impossible"
         ),
         demote_to="clean",
+        refuter_grade="heuristic",
     )
 
 
@@ -470,6 +492,11 @@ def _refute_by_lifecycle(
         bool(cwes & _RESOURCE_LEAK_CWES)
         or bool(_RESOURCE_LEAK_KW.search(hyp_lower))
     )
+    # Grade: HEURISTIC (both verdicts below). The refuting fact
+    # ("this function only runs during init") comes from a line-order
+    # walk over a per-file call graph with one-hop indirection depth,
+    # an event-loop name table, and leak-keyword matching — every
+    # premise is a lookup over partial data, not a mechanical truth.
     if is_leak:
         return RefutationVerdict(
             gate="lifecycle",
@@ -478,6 +505,7 @@ def _refute_by_lifecycle(
                 f"event loop) — resource leak cannot accumulate"
             ),
             demote_to="clean",
+            refuter_grade="heuristic",
         )
 
     # DoS via resource exhaustion requires repeated triggering
@@ -490,6 +518,7 @@ def _refute_by_lifecycle(
                     f"requires repeated triggering, function runs once"
                 ),
                 demote_to="clean",
+                refuter_grade="heuristic",
             )
 
     return None
@@ -531,6 +560,11 @@ def _refute_by_contract(
         if not semantics:
             continue
         if _DEFENDER_PROVENANCE.search(semantics):
+            # Grade: HEURISTIC. The refuting fact is a provenance
+            # keyword match against an LLM-authored contract field —
+            # fragile on both sides (the gate already demotes only to
+            # suspicious for exactly that reason, and that fragility
+            # target stays regardless of any receipt on the function).
             return RefutationVerdict(
                 gate="contract",
                 reason=(
@@ -538,6 +572,7 @@ def _refute_by_contract(
                     f"input is '{semantics[:80]}' — not attacker-controlled"
                 ),
                 demote_to="suspicious",  # keyword match is fragile
+                refuter_grade="heuristic",
             )
 
     return None
@@ -665,6 +700,15 @@ def _refute_by_known_return_type(
 
     if best is not None:
         func_name, ret_type, max_val, _ = best
+        # Grade: PROOF. The refuting fact is the named function's
+        # return range — an ISO C / POSIX guarantee that is
+        # mechanically true regardless of how the hypothesis text is
+        # interpreted; the table admits only ranges that fit signed
+        # int, and the underflow/buffer-overflow bail-outs above keep
+        # the range argument applicable. Known residual: a target
+        # that shadows the libc name (macro or local redefinition)
+        # breaks the premise — the gate matches the NAME in the
+        # hypothesis text, not the resolved symbol.
         return RefutationVerdict(
             gate="input_bound_t0",
             reason=(
@@ -672,6 +716,7 @@ def _refute_by_known_return_type(
                 f" — cannot cause integer {cwe or 'overflow'}"
             ),
             demote_to="clean",
+            refuter_grade="proof",
         )
 
     return None
@@ -757,7 +802,6 @@ _INT_FAMILY_HYP_RE = re.compile(
     r"overflow|narrow|truncat|wraps?\b|int(?:8|16|32|64)\b|width",
     re.IGNORECASE,
 )
-
 
 def rescue_self_refuted(
     outcome,
@@ -1114,6 +1158,10 @@ def _refute_by_callee_inheritance(
     if _WRAPPER_EXCLUSION_RE.search(body):
         return None
 
+    # Grade: HEURISTIC. The refuting fact ("the bug belongs to the
+    # callee") comes from regex attribution over the hypothesis text
+    # plus an SLOC threshold and a transform-pattern exclusion list —
+    # interpretation of prose, not a mechanical property of the code.
     return RefutationVerdict(
         gate="callee_inheritance",
         reason=(
@@ -1122,6 +1170,7 @@ def _refute_by_callee_inheritance(
             f"does not transform data"
         ),
         demote_to="clean",
+        refuter_grade="heuristic",
     )
 
 

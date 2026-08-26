@@ -103,6 +103,12 @@ class AuditPipelineOpts:
     # trust marker, else off. Resolved via
     # core.project.trust.resolve_dynamic_validation at config build.
     dynamic_validation: bool | None = None
+    # Tri-state repo-trust assertion for trust-gated witnesses:
+    # True/False = explicit programmatic choice; None = defer to the
+    # active project's 'config' trust marker (the --trust-repo
+    # umbrella), else off.  Resolved via
+    # core.project.trust.resolve_repo_trust at config build.
+    repo_trusted: bool | None = None
     # Cross-run verdict reuse (--no-verdict-reuse to disable): import
     # prior-run verdicts for functions whose source hash is unchanged
     # instead of silently suppressing them.
@@ -227,6 +233,21 @@ def _resolve_dynamic(opts: AuditPipelineOpts) -> bool:
         return bool(opts.dynamic_validation)
 
 
+def _resolve_repo_trust(opts: AuditPipelineOpts) -> bool:
+    """Resolve the repo-trust assertion: explicit programmatic choice
+    wins; else the active project's ``config`` trust marker (with the
+    trust banner); else off.  Best-effort — a project-substrate error
+    must never break the audit (fails closed to untrusted)."""
+    try:
+        from core.project.trust import resolve_repo_trust
+        return resolve_repo_trust(
+            opts.repo_trusted, target_path=opts.target_path,
+            run_dir=opts.out_dir,
+        )
+    except Exception:  # noqa: BLE001 — fail-closed to off
+        return bool(opts.repo_trusted)
+
+
 def _make_llm_client(opts: AuditPipelineOpts):
     """Build the budget-capped LLM client both entry points share.
 
@@ -340,6 +361,7 @@ def _build_orchestrator_config(
         mode=mode,
         max_workers=opts.max_workers,
         dynamic_validation=_resolve_dynamic(opts),
+        repo_trusted=_resolve_repo_trust(opts),
         verdict_reuse=opts.verdict_reuse,
         edges=opts.edges,
         force=opts.force,

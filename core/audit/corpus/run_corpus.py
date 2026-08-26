@@ -1498,6 +1498,11 @@ def _run_audit_on_target(
             mode=review_mode,
             max_workers=max_workers,
             validate=False,
+            # Corpus fixtures are operator-curated pinned trees — the
+            # operator running the corpus IS asserting repo trust, and
+            # trust-gated witnesses (goconc) must behave here exactly
+            # as they do on a trusted project target.
+            repo_trusted=True,
         )
         run_audit_pipeline(pipeline_opts)
         rc = 0

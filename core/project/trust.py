@@ -276,6 +276,33 @@ def resolve_dynamic_validation(
     return False
 
 
+def resolve_repo_trust(
+    explicit: bool | None, *, banner: bool = True,
+    target_path: str | Path | None = None,
+    run_dir: str | Path | None = None,
+) -> bool:
+    """Resolve the repo-trust assertion for /audit-side consumers
+    (trust-gated witnesses): explicit per-run choice wins; else the
+    project's ``config`` marker — the same --trust-repo umbrella the
+    /agentic and /codeql entry points consume; else off.
+
+    Same one-target rule as :func:`resolve_dynamic_validation`: the
+    marker asserts trust for the active project's target only.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    markers, _name = active_project_trust(run_dir)
+    if "config" in markers:
+        run_target = target_path or os.environ.get("RAPTOR_CALLER_DIR")
+        if not run_target_matches_project(run_target, run_dir):
+            _emit_marker_target_mismatch(["config"], run_target and str(run_target))
+            return False
+        if banner:
+            emit_trust_banner(["config"])
+        return True
+    return False
+
+
 def resolve_build_execution(
     explicit: bool | None, *, banner: bool = True,
     target_path: str | Path | None = None,
@@ -311,6 +338,7 @@ __all__ = [
     "emit_trust_banner",
     "resolve_build_execution",
     "resolve_dynamic_validation",
+    "resolve_repo_trust",
     "resolve_trust_flag",
     "run_target_matches_project",
 ]

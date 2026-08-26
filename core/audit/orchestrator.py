@@ -505,6 +505,12 @@ class OrchestratorConfig:
     max_refinements: int = 2
     clean_check: bool = True
     dynamic_validation: bool = False
+    # Operator repo-trust assertion (the project 'config' trust marker
+    # / --trust-repo umbrella, resolved at config build).  Consumed by
+    # trust-gated witnesses (the Go internal-concurrency discharge)
+    # whose soundness bounds assume non-adversarial target code.
+    # Never auto-set from the scanned repo.
+    repo_trusted: bool = False
     caps: Any | None = None
     max_workers: int = 0  # 0 = auto (derive from model RPM), 1 = serial
     # Additional item kinds to review beyond functions/methods
@@ -2399,6 +2405,9 @@ def review_one_function(
                 source=_rescue_src or None,
                 pre_evidence=gap.get("_smt_pre_evidence"),
                 detector_findings=ctx.get("mechanical_detector_findings"),
+                target_path=config.target_path,
+                out_dir=config.out_dir,
+                repo_trusted=config.repo_trusted,
             )
             if rv is None:
                 # Durable receipt for the non-fire: when a structural
@@ -13808,6 +13817,9 @@ def _review_items(
                         gap.get("line_end"),
                     ) or None,
                     pre_evidence=gap.get("_smt_pre_evidence"),
+                    target_path=config.target_path,
+                    out_dir=config.out_dir,
+                    repo_trusted=config.repo_trusted,
                 )
                 if rv is not None:
                     append_audit_log(config.out_dir, {
@@ -21951,6 +21963,9 @@ def _post_loop_receipt_rescue(
                 detector_findings=detectors or None,
                 pre_evidence=pre_evidence,
                 source=_rescue_src or None,
+                target_path=config.target_path,
+                out_dir=config.out_dir,
+                repo_trusted=config.repo_trusted,
             )
         except Exception:
             logger.debug(

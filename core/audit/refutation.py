@@ -763,6 +763,155 @@ _TEARDOWN_DISCHARGEABLE_CWES = frozenset({
     "CWE-415", "CWE-416",
 })
 
+from pathlib import Path
+
+# Go internal-concurrency witness (goconc): the Go analog of the
+# race-protection discharge.  The C witness bails on Go sources, so a
+# race-family self-refutation on a Go function always floored even
+# when the package mechanically cannot race with the claimed state.
+# The fence below decides only which dismissals the witness may
+# EXAMINE (the proof is always the mechanical package analysis in
+# core/audit/goconc.py, never the phrasing).
+
+# The dismissal must be a concurrency claim at all.
+_GOCONC_CONCURRENCY_HYP_RE = re.compile(
+    r"race|concurren|goroutine|synchroni[sz]|interleav"
+    r"|torn\s+(?:read|write)|simultaneous|parallel",
+    re.IGNORECASE,
+)
+
+# In-family: the dismissal (or the reviewer's counter) names
+# PACKAGE-INTERNAL concurrency — a goroutine the library itself
+# spawns, or the package's own option-application machinery running
+# concurrently.  Claims about concurrent callers of an exported API
+# are a different family (the caller-contract race) and stay with the
+# floor.
+_GOCONC_INTERNAL_HYP_RE = re.compile(
+    r"package[-\s]?internal"
+    r"|internal\s+(?:goroutine|concurrency)"
+    r"|library[-\s]?internal"
+    r"|goroutines?\s+(?:spawned|started|launched)\s+"
+    r"(?:by|in|inside|within)\s+(?:the\s+|this\s+)?(?:same\s+)?"
+    r"(?:package|library|module)"
+    r"|(?:package|library)\s+spawns?\b"
+    r"|spawns?\s+no\s+goroutines?"
+    r"|no\s+goroutines?\s+(?:in|inside|within)\b"
+    r"|concurrent\w*\s+(?:\w+\s+){0,2}?\w*opt(?:s|ions?)?\b"
+    r"|\w*opt(?:s|ions?)\b[^.;]{0,80}?concurrent",
+    re.IGNORECASE,
+)
+
+# Hard out-of-family: the mechanism attributes the concurrency to an
+# actor outside the package — callers, clients, other packages, user/
+# application code, or "N goroutines calling" the API.  Checked on
+# the mechanism only and it wins over any in-family match — a counter
+# asserting "no internal goroutine" must not drag a claim about an
+# EXPLICITLY external actor into scope.  (An actor-NEUTRAL mechanism
+# may still be examined when the counter names package-internal
+# concurrency; the witness corroborates the counter.)
+_GOCONC_EXTERNAL_CALLER_RE = re.compile(
+    r"concurrent\s+(?:\w+\s+){0,2}?callers?"
+    r"|callers?\s+(?:\w+\s+){0,3}?(?:concurrent|simultaneous)"
+    r"|external\s+(?:callers?|goroutines?|code|threads?|users?)"
+    r"|caller[-\s]side\s+concurrenc"
+    r"|\bcallers?\b"
+    r"|\bclients?\b"
+    r"|\bother\s+packages?\b"
+    r"|outside\s+(?:this|the)\s+package"
+    r"|\busers?\s+of\b"
+    r"|\buser\s+code\b"
+    r"|\bapplication\s+(?:code|using|calling|invoking)\b"
+    r"|(?:multiple|two|several|many)\s+goroutines?\s+"
+    r"(?:that\s+)?(?:may\s+|might\s+|could\s+|can\s+)?"
+    r"(?:call|invoke|use|access|share)\w*\b",
+    re.IGNORECASE,
+)
+
+
+def _goconc_claim_in_family(mechanism: str, counter: str) -> bool:
+    """Applicability fence for the Go internal-concurrency witness.
+
+    True when the dismissed hypothesis is a concurrency claim whose
+    operative content is package-internal concurrency: either the
+    mechanism names it, or the reviewer's counter refutes it on
+    exactly that ground (the witness corroborates the counter).  A
+    mechanism that attributes the race to concurrent CALLERS of the
+    API is out of family unconditionally.
+    """
+    mech = mechanism or ""
+    if not _GOCONC_CONCURRENCY_HYP_RE.search(mech):
+        return False
+    if _GOCONC_EXTERNAL_CALLER_RE.search(mech):
+        return False
+    return bool(
+        _GOCONC_INTERNAL_HYP_RE.search(mech)
+        or _GOCONC_INTERNAL_HYP_RE.search(counter or "")
+    )
+
+
+def _record_goconc_discharge(
+    outcome,
+    out_dir,
+    *,
+    mechanism: str,
+    result,
+) -> bool:
+    """Accept-with-record: persist a goconc-discharged dismissal.
+
+    A witness overriding the receipt-free CWE-allowlist floor must
+    never be silent — the discharged dismissal goes through the
+    suppressions.jsonl single-writer chokepoint with ``dropped:
+    false`` and a verdict naming the witness, so operators can grep
+    every function the witness kept clean.  Returns True only when
+    the record call completed; the caller refuses the discharge on
+    False — an unrecordable discharge must not happen at all.
+    (``record_suppression`` itself swallows pure IO errors by its
+    single-writer contract; this guard covers a missing sink and
+    unexpected failures.)
+    """
+    if not out_dir:
+        logger.debug(
+            "goconc discharge for %s:%s refused (no out_dir to record)",
+            getattr(outcome, "file", "?"),
+            getattr(outcome, "function", "?"),
+        )
+        return False
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+
+        line = getattr(outcome, "line", 0) or 0
+        fpath = getattr(outcome, "file", "")
+        func = getattr(outcome, "function", "")
+        record_suppression(
+            Path(out_dir),
+            finding={
+                "finding_id": f"audit-refutation:{fpath}:{func}:{line}",
+                "rule_id": "audit:goconc-witness",
+                "file_path": fpath,
+                "line": line,
+                "function": func,
+            },
+            verdict="goconc_witness_corroborates_dismissal",
+            reason=(
+                f"race-family self-refutation accepted: the dismissal "
+                f"is mechanically corroborated by the Go internal-"
+                f"concurrency witness ({result.reasoning})"
+            ),
+            dropped=False,
+            extra={
+                "stage": "anti-self-refutation",
+                "witness": "goconc",
+                "floor_gate": "cwe_allowlist",
+                "spawn_count": result.spawn_count,
+                "claimed_types": list(result.claimed_types),
+                "hypothesis": (mechanism or "")[:160],
+            },
+        )
+        return True
+    except Exception:
+        logger.debug("goconc discharge record failed", exc_info=True)
+        return False
+
 
 # Pre-loop screen families whose injected evidence can corroborate a
 # same-family self-refutation, and the hypothesis-text family matcher.
@@ -998,6 +1147,9 @@ def rescue_self_refuted(
     source: str | None = None,
     pre_evidence: str | None = None,
     detector_findings: list | None = None,
+    target_path: Path | str | None = None,
+    out_dir: Path | str | None = None,
+    repo_trusted: bool | None = None,
 ) -> RefutationVerdict | None:
     """Rescue hypotheses the LLM formed then refuted without evidence.
 
@@ -1054,6 +1206,27 @@ def rescue_self_refuted(
     shape). UAF/double-free self-refutations are unaffected — lock
     protection says nothing about object lifetime.
 
+    On GO sources (where the C race witness bails), the same
+    authority is granted to the Go internal-concurrency witness
+    (:func:`core.audit.goconc.check_goroutine_isolation`): a
+    race-family (CWE-362/364/366) self-refutation whose operative
+    claim is package-internal concurrency is ACCEPTED when no
+    goroutine spawned inside the owning package can reach the claimed
+    state.  *target_path* (with the outcome's file path) locates the
+    package on disk; the claim-phrasing fence decides only which
+    dismissals the witness may examine — the proof is the package
+    analysis.  The arm runs only when the operator asserted repo
+    trust for the target (*repo_trusted*, or ``config.repo_trusted``
+    resolved from the project's ``config`` trust marker): the
+    witness's documented soundness bound — receiver-derived pointers
+    laundered through package globals — is reachable by a crafted
+    package on an untrusted target.  The discharge is never silent:
+    an accept-with-record row MUST land in
+    ``out_dir``/suppressions.jsonl (``dropped: false``) or the
+    discharge is refused.  The witness never touches hypotheses on
+    functions that carry a structural negative-space receipt — the
+    structural-receipt floor outranks it by construction.
+
     Returns a verdict that promotes clean → suspicious so the sweep
     pass can attempt mechanical verification.
     """
@@ -1081,6 +1254,46 @@ def rescue_self_refuted(
                 teardown_safe = False
         except Exception:
             logger.debug("safe-teardown probe failed", exc_info=True)
+
+    # Go internal-concurrency witness — lazy: the package is loaded
+    # and parsed only when a race-family dismissal is actually in
+    # scope for it.  Memoised per gate invocation.  Gated on the
+    # operator's repo-trust assertion (the project 'config' marker /
+    # trust-repo umbrella): the witness's documented soundness bound
+    # (receiver-derived pointers laundered through package globals)
+    # is exactly what a crafted package on an UNTRUSTED target could
+    # exploit to discharge a planted race, so without the assertion
+    # the arm stays off.
+    _goconc_target = target_path or getattr(config, "target_path", None)
+    _goconc_out = out_dir or getattr(config, "out_dir", None)
+    _goconc_trusted = (
+        repo_trusted if repo_trusted is not None
+        else bool(getattr(config, "repo_trusted", False))
+    )
+    _goconc_memo: list = []
+
+    def _goconc_probe():
+        if _goconc_memo:
+            return _goconc_memo[0]
+        result = None
+        fpath = getattr(outcome, "file", "") or ""
+        if source and fpath.endswith(".go") and _goconc_target:
+            try:
+                from .goconc import (
+                    check_goroutine_isolation,
+                    load_go_package,
+                )
+                pkg_files = load_go_package(_goconc_target, fpath)
+                if pkg_files:
+                    anchor = fpath.replace("\\", "/").rsplit("/", 1)[-1]
+                    result = check_goroutine_isolation(
+                        source, pkg_files, anchor_file=anchor,
+                    )
+            except Exception:
+                logger.debug("goconc probe failed", exc_info=True)
+                result = None
+        _goconc_memo.append(result)
+        return result
 
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses:
@@ -1227,6 +1440,39 @@ def rescue_self_refuted(
                 ),
             )
             continue
+        # Go internal-concurrency discharge: race-family only, Go
+        # sources only, in-family claims only, only under the
+        # operator's repo-trust assertion, and NEVER on a function
+        # carrying a structural receipt (the structural-receipt floor
+        # is a different lane and outranks the witness).  The
+        # discharge must be recorded or it does not happen.
+        if (
+            cwes
+            and cwes <= _LOCK_DISCHARGEABLE_RACE_CWES
+            and _goconc_trusted
+            and not fn_receipts
+            and _goconc_claim_in_family(mechanism, counter)
+        ):
+            _giso = _goconc_probe()
+            if _giso is not None and _giso.isolated:
+                if _record_goconc_discharge(
+                    outcome, _goconc_out,
+                    mechanism=mechanism, result=_giso,
+                ):
+                    logger.info(
+                        "anti-self-refutation: accepting self-"
+                        "refutation for %s — mechanically "
+                        "corroborated (goconc: %s)",
+                        getattr(outcome, "function", "?"),
+                        _giso.reasoning,
+                    )
+                    continue
+                logger.info(
+                    "anti-self-refutation: goconc discharge for %s "
+                    "refused — accept-with-record could not write "
+                    "its record",
+                    getattr(outcome, "function", "?"),
+                )
         if cwes & _SELF_REFUTATION_CWES:
             return RefutationVerdict(
                 gate="anti_self_refutation",

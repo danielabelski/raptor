@@ -315,6 +315,11 @@ class TestPlanTimeTracerHint:
         fake = SimpleNamespace(stdout="printable strings only", stderr="")
         monkeypatch.setattr(orch_mod, "_run_trusted",
                             lambda *a, **k: fake)
+        # The availability gate consults the host PATH before the
+        # (mocked) probe runs — pin it so the test is independent of
+        # whether the runner ships binutils.
+        monkeypatch.setattr(orch_mod.shutil, "which",
+                            lambda name: f"/usr/bin/{name}")
         plan = SimpleNamespace(hints=[])
         FuzzingOrchestrator._hint_binary_only_gap(plan, caps, binary)
         assert any("binary-only tracer" in h for h in plan.hints)

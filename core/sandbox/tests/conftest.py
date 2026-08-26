@@ -121,6 +121,10 @@ def _sandbox_state_guard():
         # test_unix_connect_scope.py patches probe_unix_scope and must
         # not leak a poisoned availability verdict into sibling tests.
         "_unix_scope_cache", "_unix_scope_unavailable_warned",
+        # Fresh-procfs (pid-ns remount) probe cache + warn-once flag —
+        # test_pidns_proc_mount.py seeds the cache to exercise the
+        # once-per-process WARNING and the per-run posture stamp.
+        "_pidns_fresh_proc_cache", "_pidns_proc_mount_unavailable_warned",
     ]
     saved = {name: getattr(mod, name) for name in state_names}
     # Snapshot+restore the speculative-failure cache as a deep copy

@@ -47,6 +47,14 @@ _landlock_cache = None
 # can run on this host (seccomp user-notify + pidfd_getfd + openat2 —
 # see core/sandbox/_unix_scope.py). None = not probed.
 _unix_scope_cache = None
+# _pidns_fresh_proc_cache: True when a fresh procfs can be mounted
+# inside a nested user+mount+pid namespace on this host (kernel policy
+# — refused e.g. under containers with a masked host /proc). None =
+# not probed. Consulted by the pid-ns spawn path to decide whether a
+# grandchild proc-remount failure on the accepted-degrade lane is new
+# signal or the known static host condition (warned once, stamped
+# per run).
+_pidns_fresh_proc_cache: bool | None = None
 # Seccomp cache: None = unchecked, 0 = unavailable, CDLL handle = available.
 _libseccomp_cache = None
 # ptrace cache: None = unchecked, True/False = probed result. Used by
@@ -134,6 +142,12 @@ _sandbox_unavailable_warned = False
 # AF_UNIX connect scoping unavailable (seccomp user-notify /
 # pidfd_getfd / openat2 missing) — allow_unix downgraded fail-closed.
 _unix_scope_unavailable_warned = False
+# Fresh procfs remount refused inside nested user+pid ns (kernel
+# policy, static per host) — /proc/<ns-pid> ENOENT for ptrace tools
+# in sandboxed children on runs that accept the degrade. Warned once;
+# the per-run stamp pidns_proc_mount_unavailable carries the posture
+# regardless.
+_pidns_proc_mount_unavailable_warned = False
 # Mount-ns unavailable but Landlock did engage — see THREAT_MODEL.md I2-(a).
 # Distinguished from `_mount_unavailable_warned` (which is set by the lower-
 # level mount probe); this flag is for the user-facing warning emitted from

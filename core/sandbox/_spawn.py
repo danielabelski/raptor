@@ -234,6 +234,73 @@ def _drain_status_pipe(status_r: int, parent_fds: set):
     return _parse_setup_status(raw)
 
 
+def _should_warn_proc_mount_failure(proc_rc: int, libc_loaded: bool,
+                                    expected_unavailable: bool) -> bool:
+    """Decide whether the grandchild's fresh-proc-mount failure warrants
+    a per-spawn stderr warning on the accepted-degrade lane.
+
+    The parent-side probe (``check_pidns_fresh_proc_available``) makes
+    the STATIC host condition — "the kernel refuses a fresh procfs
+    remount in a nested user-ns" — a once-per-process WARNING plus a
+    per-run ``pidns_proc_mount_unavailable`` posture stamp, so
+    repeating it from every spawn is pure noise that buries real
+    signals. Suppression is keyed to that EXACT probed condition:
+
+    - mount attempted (libc loaded) and failed, probe predicted it →
+      suppress (already logged once + stamped per run).
+    - mount failed but the probe said this host CAN remount → warn:
+      this is a genuinely different, unexpected degradation.
+    - libc itself failed to load (mount never attempted) → warn: a
+      different failure condition the probe never vouched for.
+    - mount succeeded → nothing to warn about.
+
+    Never consulted on the ``require_fresh_procfs`` contract lane —
+    a contract violation fails the run loudly regardless of what the
+    probe predicted.
+    """
+    if proc_rc == 0:
+        return False
+    if not libc_loaded:
+        return True
+    return not expected_unavailable
+
+
+def _pidns_proc_mount_expectation(skip_pid_ns: bool) -> bool:
+    """Parent-side (pre-fork): return True when the cached host probe
+    says the grandchild's fresh procfs remount will fail.
+
+    First time the condition is seen in this process, log ONCE at
+    WARNING with the posture consequence; every later spawn logs at
+    DEBUG only. The per-run posture is stamped separately by
+    context.py (``sandbox_info["pidns_proc_mount_unavailable"]``) so
+    forensic readers never depend on log dedup for the degradation
+    record.
+    """
+    if skip_pid_ns or sys.platform != "linux":
+        return False
+    from .probes import check_pidns_fresh_proc_available
+    if check_pidns_fresh_proc_available():
+        return False
+    if state.warn_once("_pidns_proc_mount_unavailable_warned"):
+        logger.warning(
+            "Sandbox: this host refuses a fresh procfs mount inside a "
+            "nested user+pid namespace (common under containers with a "
+            "masked host /proc) — /proc/<ns-pid> lookups will ENOENT "
+            "for ptrace-family tools (gdb) inside sandboxed children, "
+            "and the host-pid procfs listing surface stays visible on "
+            "runs that accept the degrade. Logged once per process; "
+            "affected runs are stamped pidns_proc_mount_unavailable "
+            "in sandbox_info."
+        )
+    else:
+        logger.debug(
+            "Sandbox: fresh procfs remount unavailable for this spawn "
+            "(static host condition, warned once earlier; run is "
+            "stamped pidns_proc_mount_unavailable)."
+        )
+    return True
+
+
 # Path to the raptor-gidmap-allow helper — same checkout-relative
 # resolution as the coord-launcher.  When built and granted CAP_SETGID
 # this binary writes gid_map WITHOUT denying setgroups, letting targets
@@ -1682,6 +1749,15 @@ def run_sandboxed(
              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
              "http_proxy", "https_proxy", "all_proxy"))
 
+        # Fresh-proc-mount expectation — resolved PRE-FORK (the probe
+        # spawns a subprocess and logs; both are off-limits after
+        # fork). The grandchild uses it to decide whether a
+        # mount-failure stderr warning on the accepted-degrade lane
+        # is new signal or the known static host condition already
+        # logged once + stamped per run.
+        _proc_mount_expected_unavailable = (
+            _pidns_proc_mount_expectation(skip_pid_ns))
+
         # Suppress Python 3.12+ DeprecationWarning about multi-threaded
         # fork(). Our post-fork code does namespace setup via ctypes
         # syscalls + Landlock + seccomp + execvp — no Python objects,
@@ -2329,12 +2405,25 @@ def run_sandboxed(
                             "host-procfs visibility for an "
                             "untrusted target")
                         os._exit(126)
-                    warn_post_fork(
-                        b"_spawn: grandchild fresh proc mount failed; "
-                        b"/proc/<ns-pid>/* will ENOENT for gdb/ptrace "
-                        b"and the HOST-pid procfs bind stays visible "
-                        b"in the sandbox\n"
-                    )
+                    # Accepted-degrade lane (no fresh-procfs contract):
+                    # when the parent-side probe already established
+                    # that this host class refuses the remount (logged
+                    # once at WARNING, stamped
+                    # pidns_proc_mount_unavailable in sandbox_info),
+                    # the per-spawn stderr repeat is suppressed — but
+                    # ONLY for that exact probed condition; a
+                    # divergent failure (probe said the remount works,
+                    # or libc itself failed to load) still warns on
+                    # every spawn (see _should_warn_proc_mount_failure).
+                    if _should_warn_proc_mount_failure(
+                            _proc_rc, _libc is not None,
+                            _proc_mount_expected_unavailable):
+                        warn_post_fork(
+                            b"_spawn: grandchild fresh proc mount "
+                            b"failed; /proc/<ns-pid>/* will ENOENT "
+                            b"for gdb/ptrace and the HOST-pid procfs "
+                            b"bind stays visible in the sandbox\n"
+                        )
                 # Step 12: Landlock. AFTER the fresh-proc mount (see
                 # above) and BEFORE seccomp so seccomp inherits
                 # PR_SET_NO_NEW_PRIVS. A failure raises into the

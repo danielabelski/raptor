@@ -274,6 +274,93 @@ def check_unshare_engages(unshare_flags) -> tuple:
         return state._unshare_engage_cache.setdefault(key, result)
 
 
+def check_pidns_fresh_proc_available() -> bool:
+    """Whether this host allows mounting a fresh procfs inside a nested
+    user+mount+pid namespace.
+
+    The pid-ns spawn grandchild remounts /proc so /proc/<ns-pid>
+    resolves for ptrace-family tools (gdb). Some host classes refuse
+    that mount by kernel policy — most commonly containers whose host
+    /proc carries masked overmounts (procfs "fully visible" rule) —
+    and the refusal is STATIC for the host: probing it once lets the
+    spawn path warn once per process instead of once per spawn, while
+    the per-run posture stamp (``pidns_proc_mount_unavailable``) keeps
+    the degradation on the forensic record.
+
+    Fail-visible bias: only a determinate "namespaces engage but the
+    proc mount is refused" returns False. Indeterminate outcomes
+    (unshare missing, the namespace layer itself refusing, probe
+    infrastructure failures) return True so the grandchild's per-spawn
+    warning is never suppressed on unverified evidence; infrastructure
+    failures are not cached so a later call re-probes.
+
+    Lock discipline matches ``check_net_available``: brief lock holds
+    around cache reads/writes, the slow subprocess probe runs outside
+    the lock.
+    """
+    with state._cache_lock:
+        if state._pidns_fresh_proc_cache is not None:
+            return state._pidns_fresh_proc_cache
+
+    available, cacheable = _probe_pidns_fresh_proc()
+
+    with state._cache_lock:
+        if cacheable and state._pidns_fresh_proc_cache is None:
+            state._pidns_fresh_proc_cache = available
+        return (state._pidns_fresh_proc_cache
+                if state._pidns_fresh_proc_cache is not None
+                else available)
+
+
+def _probe_pidns_fresh_proc() -> tuple[bool, bool]:
+    """Run the actual probe. Returns (available, cacheable). Never
+    touches the cache — ``check_pidns_fresh_proc_available`` owns
+    caching and locking."""
+    unshare_path = _find_sandbox_binary("unshare")
+    if unshare_path is None:
+        # No unshare → the namespace spawn path can't run at all, so
+        # the answer is never consulted; report available (nothing to
+        # suppress) and cache it.
+        return True, True
+    true_bin = next(
+        (p for p in ("/usr/bin/true", "/bin/true") if Path(p).exists()),
+        "true",
+    )
+    base = [unshare_path, "--user", "--map-root-user", "--mount",
+            "--pid", "--fork"]
+    try:
+        from core.config import RaptorConfig
+        env = RaptorConfig.get_safe_env()
+        with_proc = subprocess.run(
+            [*base, "--mount-proc", "--", true_bin],
+            capture_output=True, timeout=5, env=env,
+        )
+        if with_proc.returncode == 0:
+            return True, True
+        # Attribute the failure: only "namespaces engage WITHOUT
+        # --mount-proc but fail WITH it" is evidence about the proc
+        # mount specifically.
+        without_proc = subprocess.run(
+            [*base, "--", true_bin],
+            capture_output=True, timeout=5, env=env,
+        )
+        if without_proc.returncode == 0:
+            logger.debug(
+                "Sandbox: fresh procfs probe — namespaces engage but "
+                "--mount-proc is refused: %s",
+                (with_proc.stderr or b"").decode("utf-8", "replace").strip(),
+            )
+            return False, True
+        # Namespace layer itself refused — indeterminate for the proc
+        # mount question (and the spawn path that consults us won't
+        # engage anyway). Cacheable: a kernel refusal is static too.
+        return True, True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        # Probe infrastructure failure (load, transient OSError) — not
+        # a kernel verdict. Don't cache; re-probe next call.
+        return True, False
+
+
 def check_net_available() -> bool:
     """Check if network isolation via user namespaces is available.
 

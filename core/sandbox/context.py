@@ -4767,6 +4767,25 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         result.sandbox_info["mount_ns_active"] = bool(
             used_spawn and use_mount and not _skip_mount_ns
         )
+        # Fresh-procfs posture for pid-ns runs. When the host refuses
+        # the grandchild's procfs remount (static kernel policy —
+        # probed once, warned once per process by _spawn), stamp the
+        # per-run consequence so forensic readers see the degradation
+        # on every affected run, not only in the deduplicated log:
+        # /proc/<ns-pid> lookups ENOENT for ptrace-family tools inside
+        # the sandbox, and the host-pid procfs listing surface stays
+        # visible on runs that accept the degrade. NOT stamped on the
+        # require_fresh_procfs contract lane: a contract run that got
+        # this far PROVED its procfs was fresh (a grandchild mount
+        # failure aborts the run before any result exists), so a
+        # divergent probe verdict must not mislabel it degraded.
+        if (used_spawn and not _skip_pid_ns
+                and not _require_fresh_procfs
+                and sys.platform == "linux"):
+            from .probes import check_pidns_fresh_proc_available
+            if not check_pidns_fresh_proc_available():
+                result.sandbox_info[  # type: ignore[attr-defined]
+                    "pidns_proc_mount_unavailable"] = True
         # Telemetry-key posture (weakest-wins per run dir): without a
         # mount namespace or a read allowlist the child can read the
         # telemetry-MAC key and mint valid tokens — triage demotes

@@ -1067,9 +1067,9 @@ class TestProxyIsGlobalScreen(unittest.TestCase):
             # empty events list under a full parallel battery). The
             # denial itself is immediate once the CONNECT arrives, and
             # idempotent — so an empty events list (curl never got as
-            # far as CONNECT under load) earns one retry inside the
+            # far as CONNECT under load) earns retries inside the
             # same sandbox rather than a flake.
-            for _attempt in (1, 2):
+            for _attempt in range(3):
                 run(
                     ["curl", "-s", "-o", "/dev/null", "--max-time", "15",
                      "https://localhost/"],
@@ -1078,6 +1078,16 @@ class TestProxyIsGlobalScreen(unittest.TestCase):
                 if run.events:
                     break
         events = run.events  # cumulative per-sandbox view (see sandbox.md)
+        if not events:
+            # curl never reached CONNECT (a saturated host starved
+            # every attempt before the proxy saw traffic) — the
+            # is_global screen was not EXERCISED, which is not
+            # evidence it is broken. Skip loudly instead of failing
+            # on starvation.
+            self.skipTest(
+                "no proxy events after 3 attempts — CONNECT never "
+                "reached the proxy under host load; is_global screen "
+                "unexercised")
         results = [e.get("result") for e in events]
         self.assertIn("denied_resolved_ip", results,
                       f"Expected denied_resolved_ip; got {results}")

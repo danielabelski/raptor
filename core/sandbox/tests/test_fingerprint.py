@@ -145,15 +145,15 @@ def test_build_persona_rejects_negative_cpu_count(tmp_path):
 
 def test_build_persona_creates_all_expected_targets(tmp_path):
     persona = build_persona(tmp_path, cpu_count=4)
+    from core.sandbox.fingerprint import _DMI_STORY
     expected = {
         "/proc/cpuinfo", "/proc/version", "/proc/cmdline", "/proc/stat",
-        "/proc/uptime", "/proc/loadavg",
+        "/proc/uptime", "/proc/loadavg", "/proc/meminfo",
+        "/proc/sys/kernel/random/boot_id",
         "/etc/os-release", "/etc/machine-id", "/etc/hostname",
-        "/sys/class/dmi/id/sys_vendor",
-        "/sys/class/dmi/id/product_name",
         "/sys/devices/system/cpu/online",
         "/sys/devices/system/cpu/possible",
-    }
+    } | {f"/sys/class/dmi/id/{name}" for name in _DMI_STORY}
     assert set(persona.files) == expected
 
 

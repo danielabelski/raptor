@@ -2376,6 +2376,14 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             "Sandbox: cpu_count=%d ignored because sanitise_host_fingerprint=False",
             cpu_count,
         )
+    if _persona is not None and os.environ.get(
+            "TERM", "").startswith(("screen", "tmux")):
+        # A screen/tmux-flavoured TERM says "interactive operator
+        # multiplexer" — contradicting the persona's headless-VM
+        # story in one getenv. Normalise to the boring default.
+        # Rides the fake_home_env overlay (same merge point).
+        fake_home_env["TERM"] = "xterm-256color"
+
 
     # Cumulative proxy-event list spanning every run() call in this
     # sandbox() context. Per-run slices live on each result.sandbox_info;
@@ -5616,6 +5624,14 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
         "observe", "exclude_tmp_baseline",
         "tool_paths",
         "profile",
+        # Anti-fingerprint persona: STRENGTHENS the untrusted
+        # contract (identity surfaces get masked), so it passes the
+        # ratchet the other rejections enforce. run_untrusted always
+        # has target|output, which guarantees the mount-ns backend
+        # the persona needs on any host where untrusted runs at all
+        # (the fresh-procfs contract refuses the rest).
+        "sanitise_host_fingerprint", "require_sanitisation",
+        "cpu_count",
     })
     rejected = set(kwargs.keys()) - _UNTRUSTED_ALLOWED_KWARGS
     if rejected:

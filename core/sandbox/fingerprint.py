@@ -163,8 +163,56 @@ _CMDLINE = "BOOT_IMAGE=/boot/vmlinuz root=/dev/vda1 ro quiet\n"
 
 # DMI: canonical QEMU/KVM strings. Mirrors what a default-built QEMU
 # Standard PC presents — extremely common workload identity.
-_DMI_SYS_VENDOR = "QEMU\n"
-_DMI_PRODUCT_NAME = "Standard PC (i440FX + PIIX, 1996)\n"
+# One coherent "boring QEMU/SeaBIOS VM" story: every world-readable
+# DMI identity file agrees with every other. Values mirror a stock
+# QEMU i440FX guest.
+_DMI_STORY = {
+    "sys_vendor": "QEMU\n",
+    "product_name": "Standard PC (i440FX + PIIX, 1996)\n",
+    "product_family": "\n",
+    "product_version": "pc-i440fx-8.2\n",
+    "bios_vendor": "SeaBIOS\n",
+    "bios_version": "1.16.3-debian-1.16.3-2\n",
+    "bios_date": "04/01/2014\n",
+    "bios_release": "0.0\n",
+    "board_vendor": "QEMU\n",
+    "board_name": "Standard PC (i440FX + PIIX, 1996)\n",
+    "board_version": "pc-i440fx-8.2\n",
+    "chassis_vendor": "QEMU\n",
+    "chassis_type": "1\n",
+    "chassis_version": "pc-i440fx-8.2\n",
+    # World-readable identity stragglers: modalias CONCATENATES the
+    # whole DMI table (bvnAmazonEC2...pn<instance-type> on cloud
+    # hosts — the loudest single file), and asset tags / SKU can
+    # carry inventory ids (the EC2 instance id rides
+    # board_asset_tag). Empty is what stock QEMU reports for
+    # tags/SKU; modalias is synthesized from the story below.
+    "board_asset_tag": "\n",
+    "chassis_asset_tag": "\n",
+    "product_sku": "\n",
+}
+
+# dmi:bvn<bios_vendor>bvr<bios_version>bd<bios_date>... — the kernel
+# concatenates the table into ONE world-readable line; it must agree
+# with every per-file value above or the mask refutes itself.
+_DMI_STORY["modalias"] = (
+    "dmi:bvn{bv}:bvr{bvr}:bd{bd}:br{br}:svn{sv}:pn{pn}:pvr{pvr}:"
+    "rvn{rv}:rn{rn}:rvr{rvr}:cvn{cv}:ct{ct}:cvr{cvr}:sku{sku}:\n".format(
+        bv=_DMI_STORY["bios_vendor"].strip(),
+        bvr=_DMI_STORY["bios_version"].strip(),
+        bd=_DMI_STORY["bios_date"].strip(),
+        br=_DMI_STORY["bios_release"].strip(),
+        sv=_DMI_STORY["sys_vendor"].strip(),
+        pn=_DMI_STORY["product_name"].strip(),
+        pvr=_DMI_STORY["product_version"].strip(),
+        rv=_DMI_STORY["board_vendor"].strip(),
+        rn=_DMI_STORY["board_name"].strip(),
+        rvr=_DMI_STORY["board_version"].strip(),
+        cv=_DMI_STORY["chassis_vendor"].strip(),
+        ct=_DMI_STORY["chassis_type"].strip(),
+        cvr=_DMI_STORY["chassis_version"].strip(),
+        sku=_DMI_STORY["product_sku"].strip(),
+    ))
 
 # /proc/stat jiffy unit. USER_HZ is 100 on every mainstream Linux
 # build (it is the userspace-visible clock tick, fixed for ABI
@@ -303,21 +351,37 @@ def build_persona(tmpdir: Path, cpu_count: int,
 
     # /etc/{os-release, machine-id, hostname}
     files["/etc/os-release"] = _write(tmpdir / "os-release", _OS_RELEASE)
+
+    # /proc/sys/kernel/random/boot_id — host-real value is a stable
+    # host identifier ACROSS every sandbox on the machine (correlate
+    # two runs = same victim). Derive a per-install UUID from the
+    # machine-id seed; consistent with /etc/machine-id by
+    # construction, different across installs.
+    # Independent digest: slicing the machine-id would make the two
+    # values 30/32-nibble-identical — a one-line detector. Same seed,
+    # different domain separator.
+    _bid = hashlib.sha256(
+        b"raptor-boot-id-v1\0" + _MACHINE_ID.encode()).hexdigest()
+    _boot_id = (f"{_bid[0:8]}-{_bid[8:12]}-4{_bid[13:16]}-"
+                f"a{_bid[17:20]}-{_bid[20:32]}")
+    files["/proc/sys/kernel/random/boot_id"] = _write(
+        tmpdir / "boot_id", _boot_id + "\n",
+    )
     files["/etc/machine-id"] = _write(tmpdir / "machine-id", _MACHINE_ID + "\n")
     files["/etc/hostname"] = _write(tmpdir / "hostname", _HOSTNAME + "\n")
 
-    # /sys/class/dmi/id/ — sys_vendor + product_name only.
-    # The omitted identity files (board_serial, product_uuid, etc.)
-    # remain host-real but are typically blocked by Landlock's
-    # restrict_reads allowlist (DMI dir isn't on the default list).
+    # /sys/class/dmi/id/ — one CONSISTENT vendor story across every
+    # world-readable identity file. Masking only sys_vendor +
+    # product_name left bios_vendor/board_vendor reading the host's
+    # real platform ("QEMU" beside "Amazon EC2" is itself a detector).
+    # The root-only files (product_serial, product_uuid, *_serial)
+    # are unreadable from the sandbox uid and stay unmasked.
     dmi_dir = tmpdir / "dmi"
     dmi_dir.mkdir(exist_ok=True)
-    files["/sys/class/dmi/id/sys_vendor"] = _write(
-        dmi_dir / "sys_vendor", _DMI_SYS_VENDOR,
-    )
-    files["/sys/class/dmi/id/product_name"] = _write(
-        dmi_dir / "product_name", _DMI_PRODUCT_NAME,
-    )
+    for _dmi_name, _dmi_val in _DMI_STORY.items():
+        files[f"/sys/class/dmi/id/{_dmi_name}"] = _write(
+            dmi_dir / _dmi_name, _dmi_val,
+        )
 
     # /sys/devices/system/cpu/{online,possible} — match cpu_count.
     # Single-CPU systems write "0" (not "0-0") to match kernel format.
@@ -386,6 +450,49 @@ def build_persona(tmpdir: Path, cpu_count: int,
     files["/proc/loadavg"] = _write(
         tmpdir / "loadavg",
         f"0.08 0.12 0.10 1/{fake_processes // 100} {fake_processes}\n",
+    )
+
+    # /proc/meminfo — the host's real MemTotal survives every other
+    # mask and sizes the machine exactly (a 512-GiB box claiming to
+    # be a desktop VM is its own tell). Fabricate a consistent
+    # boring-VM story: ~4 GiB per claimed CPU minus the small
+    # firmware/kernel reservation every real machine shows (an EXACT
+    # power of two never appears on live Linux), ~40% available, no
+    # swap. Residuals: sysinfo(2) bypasses procfs and still returns
+    # host figures, and /proc/vmstat stays host-real — both
+    # unmaskable without syscall emulation; documented tells of the
+    # same class as CPUID/AT_HWCAP.
+    _mem_reserved_kb = 97848 + (
+        int(_MACHINE_ID[:4], 16) % 4096)  # per-install, plausible
+    _mem_total_kb = cpu_count * 4 * 1024 * 1024 - _mem_reserved_kb
+    _mem_avail_kb = int(_mem_total_kb * 0.4)
+    _mem_free_kb = int(_mem_total_kb * 0.25)
+    files["/proc/meminfo"] = _write(
+        tmpdir / "meminfo",
+        f"MemTotal:       {_mem_total_kb} kB\n"
+        f"MemFree:        {_mem_free_kb} kB\n"
+        f"MemAvailable:   {_mem_avail_kb} kB\n"
+        f"Buffers:        {_mem_total_kb // 100} kB\n"
+        f"Cached:         {_mem_total_kb // 8} kB\n"
+        f"SwapCached:     0 kB\n"
+        f"Active:         {_mem_total_kb // 4} kB\n"
+        f"Inactive:       {_mem_total_kb // 8} kB\n"
+        f"SwapTotal:      0 kB\n"
+        f"SwapFree:       0 kB\n"
+        f"Dirty:          64 kB\n"
+        f"Writeback:      0 kB\n"
+        f"Shmem:          {_mem_total_kb // 64} kB\n"
+        f"Slab:           {_mem_total_kb // 32} kB\n"
+        f"CommitLimit:    {_mem_total_kb // 2} kB\n"
+        f"Committed_AS:   {_mem_total_kb // 3} kB\n"
+        f"AnonPages:      {_mem_total_kb // 6} kB\n"
+        f"Mapped:         {_mem_total_kb // 24} kB\n"
+        f"KernelStack:    {max(_mem_total_kb // 2048, 2048)} kB\n"
+        f"PageTables:     {max(_mem_total_kb // 1024, 4096)} kB\n"
+        f"SReclaimable:   {_mem_total_kb // 48} kB\n"
+        f"SUnreclaim:     {_mem_total_kb // 96} kB\n"
+        f"VmallocTotal:   34359738367 kB\n"
+        f"VmallocUsed:    {_mem_total_kb // 128} kB\n",
     )
 
     return Persona(files=files, cpu_count=cpu_count, strict=strict)
@@ -590,9 +697,48 @@ def apply_overlay(persona: Persona, root_prefix: str = "") -> None:
     # Use the same _mount wrapper as mount_ns.py to keep OSError
     # semantics identical across the module boundary.
     from .mount_ns import _mount, MS_BIND
+
+    # /sys/devices/system/cpu directory LISTING: masking online/
+    # possible alone left readdir showing the host's real cpuN
+    # entries — the claimed CPU count contradicted one `ls`. Stack a
+    # tmpfs over the directory and populate exactly cpu_count stub
+    # dirs plus empty mount points for the persona's control files
+    # (the file loop below binds their content). Topology internals
+    # under cpuN/ read ENOENT — the accepted stub-dir cost; a probe
+    # that cross-checks THOSE is already doing active analysis the
+    # tracer lane exists to flag. Failure: skip (or raise under
+    # strict), same policy as the per-file binds.
+    _cpu_dir = f"{root_prefix}/sys/devices/system/cpu"
+    if os.path.isdir(_cpu_dir):
+        try:
+            _mount("tmpfs", _cpu_dir, "tmpfs", 0, "mode=755")
+            for _i in range(persona.cpu_count):
+                os.makedirs(f"{_cpu_dir}/cpu{_i}", exist_ok=True)
+            _cpu_range = (f"0-{persona.cpu_count - 1}\n"
+                          if persona.cpu_count > 1 else "0\n")
+            for _stub, _content in (
+                    ("online", _cpu_range), ("possible", _cpu_range),
+                    ("present", _cpu_range), ("offline", "\n"),
+                    ("kernel_max", f"{persona.cpu_count - 1}\n")):
+                with open(f"{_cpu_dir}/{_stub}", "w",
+                          encoding="utf-8") as _f:
+                    _f.write(_content)
+        except OSError as exc:
+            if persona.strict:
+                raise
+            logger.debug("fingerprint: cpu-dir overlay failed: %s", exc)
+
     for target, source in persona.files.items():
         inside = f"{root_prefix}{target}"
         if not os.path.exists(inside):
+            if target.startswith("/sys/class/dmi/"):
+                # DMI files are OPTIONAL host inventory (many VMs
+                # ship no board_*/asset entries at all). A missing
+                # target reads ENOENT inside too — consistent with a
+                # platform that lacks the entry, and nothing
+                # host-real leaks through — so strict personas skip
+                # rather than abort.
+                continue
             if persona.strict:
                 raise FileNotFoundError(
                     errno.ENOENT,

@@ -8,7 +8,6 @@ from pathlib import Path
 
 from packages.frida import cli
 from packages.frida.correlate import correlate_run
-from packages.frida.runner import load_script_source
 
 
 def _event(seq_ts: float, payload: dict) -> str:

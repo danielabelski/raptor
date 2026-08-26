@@ -1822,6 +1822,76 @@ class TestReceiptFlooredSuppressionExemption:
         assert o["a.go:W"]["status"] == "suspicious"
 
 
+class TestExcerptIncludeClosure:
+    """Excerpt trees carry the headers each labelled C file includes,
+    so source-level macro-expansion witnesses behave the same in
+    excerpt and full scope."""
+
+    def _repo(self, tmp_path):
+        src = tmp_path / "repo"
+        (src / "include" / "mini").mkdir(parents=True)
+        (src / "drivers").mkdir()
+        (src / "include" / "mini" / "iter.h").write_text(
+            "#include <mini/base.h>\n#define ITER(x) for (;;)\n",
+        )
+        (src / "include" / "mini" / "base.h").write_text(
+            "#define BASE 1\n",
+        )
+        (src / "include" / "mini" / "unrelated.h").write_text(
+            "#define OTHER 2\n",
+        )
+        (src / "drivers" / "d.c").write_text(
+            "#include <mini/iter.h>\nint f(void) { return BASE; }\n",
+        )
+        return src
+
+    def test_labelled_c_file_brings_its_closure(self, tmp_path):
+        src = self._repo(tmp_path)
+        dirs = run_corpus._build_excerpt_tree(
+            [_label(repo="r", file="drivers/d.c", fid="drivers/d.c:f")],
+            {"r": src},
+        )
+        try:
+            tree = dirs["r"]
+            assert (tree / "drivers" / "d.c").is_file()
+            assert (tree / "include" / "mini" / "iter.h").is_file()
+            assert (tree / "include" / "mini" / "base.h").is_file()
+            # Only the closure, not the whole header tree.
+            assert not (
+                tree / "include" / "mini" / "unrelated.h"
+            ).exists()
+        finally:
+            run_corpus._release_excerpt_trees(dirs)
+
+    def test_non_c_labels_copy_nothing_extra(self, tmp_path):
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.go").write_text("package p\n")
+        dirs = run_corpus._build_excerpt_tree(
+            [_label(repo="r", file="a.go", fid="a.go:f")], {"r": src},
+        )
+        try:
+            assert sorted(
+                p.name for p in dirs["r"].rglob("*") if p.is_file()
+            ) == ["a.go"]
+        finally:
+            run_corpus._release_excerpt_trees(dirs)
+
+    def test_unresolvable_closure_is_best_effort(self, tmp_path):
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "a.c").write_text(
+            "#include <nowhere/gone.h>\nint f(void) { return 0; }\n",
+        )
+        dirs = run_corpus._build_excerpt_tree(
+            [_label(repo="r", file="a.c", fid="a.c:f")], {"r": src},
+        )
+        try:
+            assert (dirs["r"] / "a.c").is_file()
+        finally:
+            run_corpus._release_excerpt_trees(dirs)
+
+
 class TestExcerptTreeKeepalive:
     """Excerpt trees are reaper-listed (corpus-excerpt-): written once,
     then read for a possibly multi-day run — mtime-quiet while live —

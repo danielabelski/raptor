@@ -553,6 +553,7 @@ def _build_excerpt_tree(
                 copied += 1
 
         copied += _copy_perlasm_drivers(tmp, src_dir)
+        copied += _copy_c_include_closure(tmp, src_dir, files)
         excerpt_dirs[repo_key] = tmp
         print(f"  Excerpt: {repo_key} — {copied} file(s)", flush=True)
 
@@ -566,6 +567,51 @@ def _release_excerpt_trees(excerpt_dirs: dict[str, Path]) -> None:
     for d in excerpt_dirs.values():
         keepalive_unregister(d)
         shutil.rmtree(str(d), ignore_errors=True)
+
+
+def _copy_c_include_closure(
+    tmp: Path, src_dir: Path, rel_files: set,
+) -> int:
+    """Copy the headers each labelled C file includes into the excerpt.
+
+    Source-level witnesses (macro expansion for the definite-assignment
+    prover) read macro definitions from the analysed tree's own
+    headers.  An excerpt tree holding only the labelled ``.c`` files
+    loses every header, so those witnesses refuse in excerpt scope
+    while proving in full scope — the transitive ``#include`` closure
+    of each labelled C file (resolved inside the fixture tree, copied
+    at the original relative paths) keeps the two scopes equivalent.
+    Best-effort: an unresolvable closure copies nothing extra and the
+    witnesses stay conservatively refused.  Returns the number of
+    files copied.
+    """
+    try:
+        from core.audit.defassign import resolve_include_closure
+    except ImportError:
+        return 0
+    copied = 0
+    root = src_dir.resolve()
+    for rel_file in sorted(rel_files):
+        if not str(rel_file).endswith((".c", ".h")):
+            continue
+        try:
+            closure, _unresolved = resolve_include_closure(
+                src_dir, str(rel_file),
+            )
+        except Exception:  # noqa: BLE001 — excerpt prep is best-effort
+            continue
+        for f in closure:
+            try:
+                rel = f.relative_to(root)
+            except ValueError:
+                continue
+            dst = tmp / rel
+            if dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(f), str(dst))
+            copied += 1
+    return copied
 
 
 def _copy_perlasm_drivers(tmp: Path, src_dir: Path) -> int:

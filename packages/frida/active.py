@@ -148,14 +148,17 @@ def watch_sinks(
     sinks_file: Path,
     out_dir: Path | None = None,
     duration_sec: float = 30.0,
+    stdin_file: Path | None = None,
 ) -> Path | None:
     """Launch a finding-parameterized sink watch of a target binary.
 
     Same sandboxed launch path as :func:`observe_target`, but the hook
     script is rendered from *sinks_file* (a sinks JSON or a validation
-    run's ``attack-paths.json``). The target is spawned bare — no PoC
-    input is fed — so sinks that only fire under crafted input gain no
-    evidence; absence of evidence is never used against a finding.
+    run's ``attack-paths.json``). When *stdin_file* is given its bytes
+    are fed to the spawned target on stdin (PoC delivery); without it
+    the target runs bare, so sinks that only fire under crafted input
+    gain no evidence — absence of evidence is never used against a
+    finding.
 
     Returns the run output directory on success, or None on failure.
     """
@@ -187,13 +190,19 @@ def watch_sinks(
         "--spawn",
         "--duration", str(max(1, int(duration_sec))),
     ]
+    if stdin_file is not None:
+        if not Path(stdin_file).is_file():
+            log.error("stdin file not found: %s", stdin_file)
+            return None
+        cmd.extend(["--stdin", str(Path(stdin_file).resolve())])
     if out_dir is not None:
         cmd.extend(["--out", str(out_dir)])
 
     env = _safe_env()
 
-    log.info("launching frida sink watch: %s (sinks=%s, duration=%ds)",
-             target, sinks_file, duration_sec)
+    log.info("launching frida sink watch: %s (sinks=%s, duration=%ds%s)",
+             target, sinks_file, duration_sec,
+             ", stdin=poc" if stdin_file is not None else "")
 
     try:
         result = subprocess.run(

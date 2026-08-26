@@ -9,6 +9,7 @@ treats it as a required input rather than constructing one itself.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -55,6 +56,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--duration", type=float, default=60.0,
                         help="Seconds to run before detaching. Default 60.")
+    parser.add_argument("--stdin", metavar="FILE", dest="stdin_file",
+                        help=("File fed to the spawned target on stdin "
+                              "(frida spawn inherits this process's "
+                              "stdio). Spawn mode only."))
     parser.add_argument("--spawn", action="store_true",
                         help=("Force spawn-and-attach. Implied when --target "
                               "is an existing file path."))
@@ -131,6 +136,20 @@ def main(argv: list[str] | None = None) -> int:
         unsafe_attach=args.unsafe_attach,
         follow_children=args.follow_children,
     )
+
+    if args.stdin_file:
+        # The spawned target inherits THIS process's stdio, so the
+        # PoC input is delivered by rebinding our own stdin. Done
+        # here (not in the runner) so operator scripts and templates
+        # behave identically.
+        try:
+            fd = os.open(args.stdin_file, os.O_RDONLY)
+        except OSError as e:
+            print(f"frida: unreadable --stdin file: {e}", file=sys.stderr)
+            return 2
+        os.dup2(fd, 0)
+        if fd != 0:
+            os.close(fd)
 
     try:
         result = run(cfg)

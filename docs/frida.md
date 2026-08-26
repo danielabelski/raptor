@@ -157,6 +157,7 @@ raptor frida --target <target> --template <name> --duration <seconds>
 | `--host <host[:port]>` | Connect to a remote frida-server. Default port 27042. Mutually exclusive with `--usb`. |
 | `--usb` | Connect to the first USB-attached device. Mutually exclusive with `--host`. |
 | `--duration <seconds>` | Seconds to run before detaching. Default 60. |
+| `--stdin <file>` | Feed a file to the spawned target on stdin (PoC delivery; spawn mode). |
 | `--spawn` | Force spawn-and-attach. Implied when `--target` is an existing file path. |
 | `--unsafe-attach` | Required for templates/modes needing `PTRACE_ATTACH` or `task_for_pid`. Logged in metadata. |
 | `--follow-children` | Trace fork()/exec() children too (Frida child gating); children get the same hook script, events land in the same `events.jsonl`. |
@@ -463,7 +464,9 @@ evidence for a target is reused rather than re-collected), and
 `/validate` Stage E auto-launches a finding-parameterized sink watch
 against the matched binaries — gated on the operator's dynamic-trust
 grant (`--dynamic` or the project `dynamic` marker), promote-only,
-deduplicated against fresh evidence. Frida sessions run under
+feeding the finding's `poc.payload` on stdin when one exists,
+per-binary evidence scoping, deduplicated via a helper-owned launch
+ledger. Frida sessions run under
 the same [sandbox](sandbox.md) constraints as every other RAPTOR
 subprocess, observed callsites and parser boundaries are folded back
 into `/understand` context maps, and `/binary map --runtime-dir`

@@ -516,6 +516,26 @@ class TestSandboxedHookSourcePaths:
         tool_paths = self._run_main(["--script", str(hook)])
         assert str(hook.parent.resolve()) in tool_paths
 
+    def test_wrapper_absolutizes_stdin_flag(self):
+        """Both --stdin forms must route through abs_if_file in the
+        wrapper's arg loop, like --script/--sink-watch — a relative
+        PoC path stops resolving once the sandboxed CLI's cwd moves
+        to the output dir."""
+        script_path = (Path(__file__).resolve().parents[3]
+                       / "libexec" / "raptor-frida")
+        text = script_path.read_text(encoding="utf-8")
+        assert "--script|--sink-watch|--stdin)" in text
+        assert '--stdin=$(abs_if_file "${a#--stdin=}")' in text
+
+    def test_stdin_file_parent_is_readable(self, tmp_path):
+        """PoC input delivery: the CLI dup2s the --stdin file onto
+        its own stdin, so restrict_reads must admit it."""
+        poc = tmp_path / "pocs" / "input.bin"
+        poc.parent.mkdir()
+        poc.write_bytes(b"RUN")
+        tool_paths = self._run_main(["--stdin", str(poc)])
+        assert str(poc.parent.resolve()) in tool_paths
+
     def test_equals_form_flag_is_granted(self, tmp_path):
         sinks = tmp_path / "findings" / "sinks.json"
         sinks.parent.mkdir()

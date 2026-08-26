@@ -14,7 +14,7 @@
 #   libexec/raptor-frida --target <pid|name|binary> --template <name>
 #                         [--script <path>] [--sink-watch <file>]
 #                         [--host HOST[:PORT]]
-#                         [--usb] [--duration N] [--spawn]
+#                         [--usb] [--duration N] [--stdin FILE] [--spawn]
 #                         [--unsafe-attach] [--out DIR]
 #
 # If --out is omitted, an output dir is resolved via
@@ -128,7 +128,7 @@ while [ $i -lt ${#ARGS[@]} ]; do
             TARGET="$(abs_target "${a#--target=}")"
             PASS_ARGS+=("--target=$TARGET")
             ;;
-        --script|--sink-watch)
+        --script|--sink-watch|--stdin)
             HOOK_FLAG="$a"
             i=$((i + 1))
             PASS_ARGS+=("$HOOK_FLAG" "$(abs_if_file "${ARGS[$i]:-}")")
@@ -138,6 +138,9 @@ while [ $i -lt ${#ARGS[@]} ]; do
             ;;
         --sink-watch=*)
             PASS_ARGS+=("--sink-watch=$(abs_if_file "${a#--sink-watch=}")")
+            ;;
+        --stdin=*)
+            PASS_ARGS+=("--stdin=$(abs_if_file "${a#--stdin=}")")
             ;;
         --out)
             i=$((i + 1))

@@ -13,7 +13,7 @@ Runtime instrumentation substrate. Attach to (or spawn) a target, load a hook sc
 /raptor-frida --target <pid|name|bundle-id|binary>
               (--template <name> | --script <path> | --sink-watch <file>)
               [--host HOST[:PORT]] [--usb]
-              [--duration N] [--spawn] [--unsafe-attach]
+              [--duration N] [--stdin FILE] [--spawn] [--unsafe-attach]
               [--follow-children]
 ```
 

@@ -781,6 +781,7 @@ Dynamic instrumentation via Frida.  Skill-dispatched.
 | `--host <host[:port]>` | Remote Frida server |
 | `--usb` | Connect via USB |
 | `--duration <secs>` | Instrumentation duration |
+| `--stdin <file>` | Feed a file to the spawned target on stdin (PoC delivery; spawn mode) |
 | `--spawn` | Spawn the target (rather than attach) |
 | `--unsafe-attach` | Attach without safety checks |
 | `--follow-children` | Trace fork()/exec() children too (child gating) |

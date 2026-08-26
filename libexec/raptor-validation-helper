@@ -1563,8 +1563,14 @@ def _annotate_runtime_evidence(wdir, target, findings, attack_paths,
 
     Evidence discovery is target-matched, and a frida run records the
     BINARY it spawned — not the /validate source tree — so the
-    findings' matched binaries are searched as well as *target*
-    (first match wins per function on collision).
+    findings' matched binaries are searched as well as *target*.
+    Evidence is SCOPED: a run against binary A annotates only the
+    paths whose finding matched binary A, so a shared sink name
+    firing in one binary cannot floor proximity on another binary's
+    findings (paths with no matched binary see only the *target*
+    evidence). Evidence discovered via
+    *target* itself (operator-run sessions) keeps its pre-existing
+    reach over all paths.
 
     Best-effort: any failure leaves the paths untouched. Saves
     attack-paths.json when evidence was applied and returns the
@@ -1575,34 +1581,86 @@ def _annotate_runtime_evidence(wdir, target, findings, attack_paths,
             annotate_attack_paths,
             collect_runtime_evidence,
         )
-        evidence_targets = [target]
-        for bp in (extra_targets or _finding_binaries(findings)):
-            if bp not in evidence_targets:
-                evidence_targets.append(bp)
-        evidence_map = {}
-        for et in evidence_targets:
-            if et is None:
+        # finding id → (file, line) lets the bridge upgrade
+        # function_observed to callsite_match when a resolved
+        # call site lands on the finding's own location.
+        finding_locations = {
+            f["id"]: (f["file"], f["line"])
+            for f in findings
+            if isinstance(f, dict)
+            and isinstance(f.get("id"), str)
+            and isinstance(f.get("file"), str)
+            and isinstance(f.get("line"), int)
+        }
+        finding_binary = {}
+        for f in findings:
+            if not isinstance(f, dict) or not isinstance(f.get("id"), str):
                 continue
-            for fn, ev in collect_runtime_evidence(
-                    [wdir, wdir.parent], target_path=str(et)).items():
-                evidence_map.setdefault(fn, ev)
-        if evidence_map and attack_paths:
-            # finding id → (file, line) lets the bridge upgrade
-            # function_observed to callsite_match when a resolved
-            # call site lands on the finding's own location.
-            finding_locations = {
-                f["id"]: (f["file"], f["line"])
-                for f in findings
-                if isinstance(f, dict)
-                and isinstance(f.get("id"), str)
-                and isinstance(f.get("file"), str)
-                and isinstance(f.get("line"), int)
-            }
-            attack_paths = annotate_attack_paths(
-                attack_paths, evidence_map,
-                finding_locations=finding_locations)
-            _save_artifact(wdir / "attack-paths.json", attack_paths)
-            print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
+            feas = f.get("feasibility")
+            bp = feas.get("binary_path", "") if isinstance(feas, dict) else ""
+            if isinstance(bp, str):
+                finding_binary[f["id"]] = bp
+
+        # target=None (the documented bare "B <workdir>" invocation)
+        # must keep its unfiltered discovery reach — str(None) would
+        # silently match nothing.
+        base_map = collect_runtime_evidence(
+            [wdir, wdir.parent],
+            target_path=str(target) if target is not None else None)
+        binary_maps = {}
+        for bp in (extra_targets or _finding_binaries(findings)):
+            m = collect_runtime_evidence(
+                [wdir, wdir.parent], target_path=str(bp))
+            if m:
+                binary_maps[bp] = m
+
+        # Per-binary runs must not ALSO ride the base map: evidence
+        # discovery name-matches a run's process name against the
+        # target's basename, so a binary named like the source tree
+        # (build/myapp under myapp/) would regain the global reach
+        # the scoping exists to remove. Two subtractions, both by run
+        # dir: every sink-watch-origin run (categorical — such runs
+        # are per-binary by construction, and gating on the finding's
+        # CURRENT status or the binary still existing on disk would
+        # let a disproven finding's old run leak back into global
+        # reach), plus any run a binary map claimed (covers operator
+        # observation runs against a matched binary).
+        excluded_runs = {ev.trace_id
+                         for m in binary_maps.values()
+                         for ev in m.values()}
+        with contextlib.suppress(Exception):
+            from packages.frida.evidence import discover_evidence
+            for fev in discover_evidence([wdir, wdir.parent]):
+                if (fev.script_origin or "").startswith("sink-watch:"):
+                    excluded_runs.add(str(fev.run_dir))
+        if excluded_runs:
+            base_map = {fn: ev for fn, ev in base_map.items()
+                        if ev.trace_id not in excluded_runs}
+
+        if (base_map or binary_maps) and attack_paths:
+            annotated = []
+            observed_fns = set(base_map)
+            for path in attack_paths:
+                scoped = dict(base_map)
+                if isinstance(path, dict):
+                    fid = path.get("finding")
+                    bp = (finding_binary.get(fid, "")
+                          if isinstance(fid, str) else "")
+                    if bp in binary_maps:
+                        for fn, ev in binary_maps[bp].items():
+                            scoped.setdefault(fn, ev)
+                        observed_fns.update(binary_maps[bp])
+                if scoped:
+                    annotated.extend(annotate_attack_paths(
+                        [path], scoped,
+                        finding_locations=finding_locations))
+                else:
+                    annotated.append(path)
+            attack_paths = annotated
+            if observed_fns:
+                _save_artifact(wdir / "attack-paths.json", attack_paths)
+                print(f"  Frida runtime evidence: {len(observed_fns)} "
+                      "functions observed")
     return attack_paths
 
 
@@ -1639,6 +1697,53 @@ def _finding_binaries(findings):
 
 _SINK_WATCH_MAX_BINARIES = 2
 _SINK_WATCH_DURATION_S = 20.0
+_SINK_WATCH_MAX_POC_BYTES = 1 << 20
+
+
+def _finding_poc_payload(findings, binary):
+    """PoC payload bytes for *binary*, or None for a bare spawn.
+
+    The first active finding matched to *binary* that carries a
+    string ``poc.payload`` wins (findings sharing a binary usually
+    share the input format; one payload per run keeps the launch
+    budget flat).
+    """
+    for f in findings or []:
+        if not isinstance(f, dict) or f.get("status") == "disproven":
+            continue
+        if f.get("ruling", {}).get("status") == "ruled_out":
+            continue
+        if f.get("feasibility", {}).get("binary_path", "") != binary:
+            continue
+        # findings.json is LLM-authored and schema validation is
+        # advisory — poc may be a bare string, not a dict.
+        poc = f.get("poc")
+        if not isinstance(poc, dict):
+            continue
+        payload = poc.get("payload")
+        if not isinstance(payload, str) or not payload:
+            continue
+        data = payload.encode("utf-8", errors="replace")
+        if len(data) > _SINK_WATCH_MAX_POC_BYTES:
+            continue
+        return data
+    return None
+
+
+def _write_poc_file(wdir, data, binary, run_stamp, index):
+    """Write the payload for an imminent launch; None on failure.
+
+    index keeps two watched binaries with the SAME basename from
+    overwriting each other's on-disk PoC record.
+    """
+    poc_path = (Path(wdir)
+                / f"frida-sink-watch-poc-{run_stamp}-{index}-"
+                  f"{Path(binary).name}")
+    try:
+        poc_path.write_bytes(data)
+    except OSError:
+        return None
+    return poc_path
 
 
 def _run_auto_sink_watch(workdir, target, data, dynamic=None):
@@ -1648,9 +1753,10 @@ def _run_auto_sink_watch(workdir, target, data, dynamic=None):
 
     Gate: ``core.project.trust.resolve_dynamic_validation`` — the same
     operator grant as witness execution and symbolic-witness replay;
-    no new execution authority. Promote-only: the target is spawned
-    bare (no PoC input), so a sink that fires under default execution
-    earns evidence and one that does not simply changes nothing.
+    no new execution authority. Promote-only: a matched finding's
+    ``poc.payload`` is fed to the target on stdin when one exists
+    (bare spawn otherwise), and either way a sink that fires earns
+    evidence while one that does not simply changes nothing.
 
     Best-effort throughout: no frida, no matched binaries, or a
     failed run each degrade to a skip line, never an error.
@@ -1700,38 +1806,53 @@ def _run_auto_sink_watch(workdir, target, data, dynamic=None):
         binaries = binaries[:_SINK_WATCH_MAX_BINARIES]
 
     from packages.frida.active import _STALENESS_THRESHOLD_S, watch_sinks
-    from packages.frida.evidence import discover_evidence
+
+    # Freshness ledger: written by THIS helper in the workdir root,
+    # which the sandboxed target cannot write to (its write grant is
+    # the run's own out dir) — run-dir metadata is forgeable by a
+    # hostile watched process and must not drive suppression.
+    ledger_path = wdir / "auto-sink-watch.json"
+    ledger = load_json(ledger_path) or {}
+    if not isinstance(ledger, dict):
+        ledger = {}
 
     launched = 0
     watched = []
     run_stamp = int(time.time())
     for i, binary in enumerate(binaries):
-        # Freshness: an existing sink-watch run against this binary
-        # suppresses a duplicate launch (target-matched discovery).
-        fresh = False
-        for ev in discover_evidence([wdir, wdir.parent],
-                                    target_path=binary):
-            origin = ev.script_origin or ""
-            if not origin.startswith("sink-watch:"):
+        poc_data = _finding_poc_payload(findings, binary)
+        entry = ledger.get(binary)
+        if isinstance(entry, dict) and isinstance(entry.get("ts"),
+                                                  (int, float)):
+            age = time.time() - entry["ts"]
+            # A bare launch must not suppress a PoC-bearing one: the
+            # payload may have been authored after the last run, and
+            # delivering it is the point of the feature.
+            poc_upgrade = poc_data is not None and entry.get("poc") is not True
+            if 0 <= age < _STALENESS_THRESHOLD_S and not poc_upgrade:
+                print(f"  Auto sink-watch: recent launch recorded for "
+                      f"{Path(binary).name}; skipped")
                 continue
-            with contextlib.suppress(OSError):
-                age = time.time() - (ev.run_dir / "metadata.json").stat().st_mtime
-                if 0 <= age < _STALENESS_THRESHOLD_S:
-                    fresh = True
-                    break
-        if fresh:
-            print(f"  Auto sink-watch: fresh evidence exists for "
-                  f"{Path(binary).name}; skipped")
-            continue
+        # Written only for an imminent launch — a skipped binary must
+        # not leave orphan PoC files behind.
+        poc_file = (None if poc_data is None
+                    else _write_poc_file(wdir, poc_data, binary,
+                                         run_stamp, i))
         run_dir = watch_sinks(
             binary, ap_path,
             out_dir=wdir / f"frida-sink-watch-{run_stamp}-{i}",
-            duration_sec=_SINK_WATCH_DURATION_S)
+            duration_sec=_SINK_WATCH_DURATION_S,
+            stdin_file=poc_file)
         if run_dir is not None:
             launched += 1
             watched.append(binary)
+            ledger[binary] = {"ts": time.time(), "run_dir": str(run_dir),
+                              "poc": poc_file is not None}
 
     if launched:
+        # Plain save: the ledger is helper-owned bookkeeping, not an
+        # LLM-derived working doc — no provenance stamp.
+        save_json(ledger_path, ledger)
         print(f"  Auto sink-watch: {launched} run(s) against "
               f"{len(watched)} binary(ies)")
         _annotate_runtime_evidence(wdir, target, findings, attack_paths,

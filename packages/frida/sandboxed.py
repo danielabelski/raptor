@@ -144,11 +144,12 @@ def main() -> int:
     # Operator-supplied inputs live at arbitrary paths outside the
     # default readable set; under restrict_reads the CLI would fail
     # before any hook loads: hook sources (--script JS, --sink-watch
-    # sinks/attack-paths JSON) with an "unreadable file" error, and a
-    # spawn-target binary (--target /path/to/bin) with frida's
-    # PermissionDeniedError. Grant each file's parent directory — the
-    # target may also dlopen sibling libraries.
-    for flag in ("--script", "--sink-watch", "--target"):
+    # sinks/attack-paths JSON) and --stdin PoC input with an
+    # "unreadable file" error, and a spawn-target binary
+    # (--target /path/to/bin) with frida's PermissionDeniedError.
+    # Grant each file's parent directory — the target may also
+    # dlopen sibling libraries.
+    for flag in ("--script", "--sink-watch", "--stdin", "--target"):
         value = _flag_value(cmd, flag)
         if not value:
             continue

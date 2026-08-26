@@ -35,6 +35,10 @@ def test_f_status_byte_roundtrip():
     assert parsed == ("F", "fresh procfs mount failed")
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="scrubs the /proc/self/environ image — Linux procfs only",
+)
 def test_scrub_env_image_values_zeroes_only_named_values():
     """The helper zeroes the named variables' VALUES in the execve-time
     environ image (what /proc/<pid>/environ serves) and touches nothing

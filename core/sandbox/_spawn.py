@@ -28,11 +28,20 @@ Flow:
     4. wait for child 'ready'          5. write 'ready' to sync pipe
     6. newuidmap / newgidmap           7. wait for parent 'go'
     8. write 'go' to sync pipe ──────▶ 9. setup_mount_ns()  (ctypes mount)
-                                       10. landlock_restrict_self()
-                                       11. install seccomp filter
-                                       12. os.unshare(NEWPID); os.fork()
-                                       13.  grandchild: execvp(cmd)
-    14. waitpid(child), collect output
+                                       10. os.unshare(NEWPID); os.fork()
+                                       11.  grandchild: fresh /proc mount
+                                       12.  grandchild: landlock_restrict_self()
+                                       13.  grandchild: install seccomp filter
+                                       14.  grandchild: execvp(cmd)
+    15. waitpid(child), collect output
+
+    Landlock/seccomp install in the GRANDCHILD, after the pid-ns
+    unshare and the fresh /proc mount: a landlocked process is denied
+    every mount(2) topology change (ruleset-independent), so the
+    historical child-side install order broke the fresh-proc remount
+    on every Landlock host and left the host-pid procfs bind visible
+    to the target. The setup child (death-pipe watcher) stays
+    unrestricted; the exec'ing process carries both layers.
 
 Graceful degrade:
     - If newuidmap is missing or fails: skip mount-ns, fall back to the
@@ -106,6 +115,10 @@ def _write_setup_status(fd: int, category: bytes, reason: str = "") -> None:
         b'P' bind-source pin violation (a bind source stopped
              resolving to its validation-time inode — tamper signal;
              the caller must fail loud, never degrade)
+        b'F' fresh-procfs mount failed under require_fresh_procfs
+             (host-procfs visibility refused for an untrusted
+             target — fail loud, operator override via
+             RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1)
     ``reason`` is a short diagnostic. The whole payload is one ``os.write``
     well under PIPE_BUF (4096) so it lands atomically. Runs in a dying
     child after fork — must not raise and must not touch the Python logger
@@ -124,7 +137,7 @@ def _parse_setup_status(raw: bytes):
 
     Returns ``None`` for empty input (EOF ⇒ the target execed; genuine
     result), else ``(category, reason)`` where category is one of
-    M/L/S/U/X/P. Kept standalone for unit-testing the contract.
+    M/L/S/U/X/P/F. Kept standalone for unit-testing the contract.
     """
     if not raw:
         return None
@@ -811,6 +824,7 @@ def run_sandboxed(
     etc_overlay: dict | None = None,
     skip_pid_ns: bool = False,
     skip_mount_ns: bool = False,
+    require_fresh_procfs: bool = False,
     proxy_unix_socket: str | None = None,
     proxy_forwarder_port: int | None = None,
     extra_unix_bridges: Sequence[tuple[int, str]] | None = None,
@@ -2055,19 +2069,23 @@ def run_sandboxed(
                         pass
                     os._exit(127)
 
-            # Step 10: Landlock. Must run BEFORE seccomp so seccomp
-            # inherits PR_SET_NO_NEW_PRIVS.
-            if landlock_fn:
-                _status_step = b"L"
-                landlock_fn()
-            # Step 11: seccomp.
-            if seccomp_fn:
-                _status_step = b"S"
-                seccomp_fn()
-            # Step 12 (below): pid-ns unshare.
+            # Steps 12 (Landlock) and 13 (seccomp) run in the
+            # GRANDCHILD — after the pid-ns unshare and the fresh
+            # /proc mount. A landlocked process is denied EVERY
+            # mount(2) topology change regardless of its ruleset
+            # (Landlock's sb_mount hook), so installing the layers
+            # here made the grandchild's fresh-proc remount fail
+            # EPERM on every Landlock-capable host, silently leaving
+            # the HOST-pid procfs bind visible to the target. The
+            # setup child (the death-pipe watcher — trusted code
+            # that execs nothing and processes no target bytes)
+            # intentionally stays unrestricted; the process that
+            # execs the target carries both layers exactly as
+            # before.
+            # Step 10 (below): pid-ns unshare.
             _status_step = b"U"
 
-            # Step 12: pid-ns via a second fork. NEWPID only takes
+            # Step 10: pid-ns via a second fork. NEWPID only takes
             # effect on a subsequent fork. This fork runs INSIDE the
             # already-forked child (single-threaded by then — no other
             # threads survived the parent fork) so the multi-threaded
@@ -2121,6 +2139,7 @@ def run_sandboxed(
                         b"leave the target running\n"
                     )
                     _libc = None
+                # Step 11: fresh /proc.
                 # /proc was bind-mounted from HOST in setup_mount_ns
                 # (step 6) before the pid-ns existed, so it exposes
                 # host pids. Inside the new pid-ns the grandchild has
@@ -2129,39 +2148,129 @@ def run_sandboxed(
                 # for instance) gets ENOENT — the host procfs doesn't
                 # know about the ns-local pid. Remount a FRESH proc fs
                 # in our newly-entered pid-ns so /proc/<ns-pid> resolves.
-                # Best-effort, but the return code is CHECKED: rc=-1
-                # used to pass silently, keeping the host-pid procfs
-                # bind with no operator-visible signal — the warning
-                # names both consequences (ns-pid lookups ENOENT AND
-                # host process visibility through the retained bind).
                 #
-                # DELIBERATE warn-and-continue, not abort: the
-                # credential contract does NOT rest on this mount.
-                # Access to sensitive per-pid files (environ, mem,
-                # fd/*) of host processes is refused by the kernel's
-                # pid-ns/user-ns ptrace_may_access rule REGARDLESS of
-                # which procfs instance is mounted — host tasks are
-                # unmapped in our user namespace. What the retained
-                # bind leaks is the world-readable listing surface
-                # (pid dentries, cmdline, stat), the documented
-                # in-policy /proc residual class. Aborting would turn
-                # an environmental quirk (kernels that disallow the
-                # second procfs mount in a nested user-ns) into a
-                # hard run failure with no credential gain.
+                # This mount MUST precede the Landlock install below —
+                # a landlocked process is denied every mount(2). And it
+                # is a CREDENTIAL boundary, not just tooling polish:
+                # with the host-pid procfs bind retained, the target
+                # can read /proc/<pid>/environ of the sandbox's own
+                # in-userns spawn-chain intermediary (an un-exec'd fork
+                # of the invoking process: same user namespace, so the
+                # kernel's ptrace gate passes, and its environ image is
+                # the parent's FULL pre-strip environment — session
+                # credential included). Host processes proper stay
+                # unreadable (they are unmapped in our user namespace);
+                # the spawn chain's own processes are the exception the
+                # earlier warn-and-continue rationale missed.
+                #
+                # skip_pid_ns runs (gdb) keep the host procfs bind on
+                # purpose: gdb's host-info probe needs the host pid
+                # view, mounting the HOST pid-ns's proc from inside the
+                # user-ns is EPERM anyway, and that lane is operator-
+                # driven instrumentation, not untrusted-target exec.
+                # Persona overlays on /proc (cpuinfo, version, stat,
+                # ...) were bind-mounted onto the OLD proc bind in
+                # setup_mount_ns; a fresh proc instance mounted on top
+                # would shadow them. Pin each overlaid file through
+                # the CURRENT view first (O_PATH — the fd survives
+                # the mount), then re-bind through /proc/self/fd/<fd>
+                # onto the fresh instance after the mount.
+                _persona_proc_pins: list = []
+                if persona is not None and not skip_pid_ns:
+                    for _pt in persona.files:
+                        if not _pt.startswith("/proc/"):
+                            continue
+                        try:
+                            _persona_proc_pins.append(
+                                (_pt, os.open(_pt, os.O_PATH)))
+                        except OSError:
+                            if persona.strict:
+                                _write_setup_status(
+                                    status_w, b"M",
+                                    f"persona re-overlay pin failed "
+                                    f"for {_pt}")
+                                os._exit(126)
                 _proc_rc = -1
-                try:
-                    if _libc is not None:
-                        _proc_rc = int(_libc.mount(
-                            b"proc", b"/proc", b"proc", 0, None))
-                except Exception:  # noqa: BLE001
-                    _proc_rc = -1
-                if _proc_rc != 0:
+                if not skip_pid_ns:
+                    try:
+                        if _libc is not None:
+                            _proc_rc = int(_libc.mount(
+                                b"proc", b"/proc", b"proc", 0, None))
+                    except Exception:  # noqa: BLE001
+                        _proc_rc = -1
+                    if _proc_rc == 0 and _persona_proc_pins:
+                        _MS_BIND_G = 4096
+                        for _pt, _pfd in _persona_proc_pins:
+                            _rb = -1
+                            try:
+                                _rb = int(_libc.mount(
+                                    f"/proc/self/fd/{_pfd}".encode(),
+                                    _pt.encode(), None, _MS_BIND_G,
+                                    None))
+                            except Exception:  # noqa: BLE001
+                                _rb = -1
+                            if _rb != 0:
+                                if persona.strict:
+                                    _write_setup_status(
+                                        status_w, b"M",
+                                        f"persona re-overlay bind "
+                                        f"failed for {_pt}")
+                                    os._exit(126)
+                                warn_post_fork(
+                                    b"_spawn: persona re-overlay bind "
+                                    b"failed; a /proc identity file "
+                                    b"reads host-real\n")
+                            try:
+                                os.close(_pfd)
+                            except OSError:
+                                pass
+                        _persona_proc_pins = []
+                if _persona_proc_pins:
+                    # Fresh mount not taken (failure path) — the old
+                    # proc bind with the original overlays is still
+                    # the visible instance; just drop the pins.
+                    for _pt, _pfd in _persona_proc_pins:
+                        try:
+                            os.close(_pfd)
+                        except OSError:
+                            pass
+                    _persona_proc_pins = []
+                if not skip_pid_ns and _proc_rc != 0:
+                    if require_fresh_procfs:
+                        # Untrusted-target contract: host-procfs
+                        # visibility is not an acceptable degrade
+                        # (see the environ note above). Fail loud;
+                        # the parent maps 'F' to SandboxSetupError
+                        # naming the operator override.
+                        _write_setup_status(
+                            status_w, b"F",
+                            "fresh procfs mount failed; refusing "
+                            "host-procfs visibility for an "
+                            "untrusted target")
+                        os._exit(126)
                     warn_post_fork(
                         b"_spawn: grandchild fresh proc mount failed; "
                         b"/proc/<ns-pid>/* will ENOENT for gdb/ptrace "
                         b"and the HOST-pid procfs bind stays visible "
                         b"in the sandbox\n"
                     )
+                # Step 12: Landlock. AFTER the fresh-proc mount (see
+                # above) and BEFORE seccomp so seccomp inherits
+                # PR_SET_NO_NEW_PRIVS. A failure raises into the
+                # child's catch-all, which reports the step byte and
+                # exits 126 — same fail-loud contract as when these
+                # ran pre-fork in the setup child.
+                if landlock_fn:
+                    _status_step = b"L"
+                    landlock_fn()
+                # Step 13: seccomp (ships the unix-scope notify fd to
+                # the parent from inside the filter-install closure —
+                # the socketpair fd is inherited across this fork and
+                # closed by the pre-exec fd sweep below).
+                if seccomp_fn:
+                    _status_step = b"S"
+                    seccomp_fn()
+                _status_step = b"X"
                 if rootfs is not None and not skip_pid_ns:
                     # Rootfs mode: split so the image entrypoint is PID 2
                     # (a PID-1 entrypoint has kill(2)-delivered signals
@@ -2938,7 +3047,7 @@ def run_sandboxed(
         _cleanup_stub(_root_dir)
         raise
 
-    # Step 14: collect output and wait. Everything from here down runs
+    # Step 15: collect output and wait. Everything from here down runs
     # under a try/finally so a TimeoutExpired (or any other unexpected
     # exception) still cleans up the mkdtemp stub — otherwise every
     # sandboxed command that exceeds `timeout` would leak a

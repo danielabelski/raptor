@@ -93,6 +93,18 @@ Landlock/seccomp-only containment on that host; every waived run
 emits a loud warning that same-UID `/proc` credential reads are not
 blocked in this mode.
 
+The same override also waives the **fresh-procfs requirement** on
+namespace-capable hosts: untrusted runs mount a pid-namespace-local
+`/proc` inside the sandbox (hiding the host process table and the
+spawn chain's own environ images). The requirement binds everywhere
+the contract would otherwise silently degrade: a failed fresh-proc
+mount aborts instead of warning, a mount-ns setup failure refuses
+the Landlock-only retry, and hosts whose mount-namespace backend
+cannot engage at all (`newuidmap` missing) refuse untrusted runs
+up front — each with a `SandboxSetupError` naming this override.
+With the override set, those runs proceed with the old warn-only
+degrade.
+
 Distinct from `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`, which waives a
 *missing sandbox module* at the tool-runner import seam — this one
 waives a missing *namespace tier* inside an otherwise-working

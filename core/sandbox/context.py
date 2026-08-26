@@ -2510,6 +2510,58 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         env_caller_filtered = kwargs.pop("env_caller_filtered", False)
         _skip_pid_ns = kwargs.pop("skip_pid_ns", False)
         _skip_mount_ns = kwargs.pop("skip_mount_ns", False)
+        # Untrusted-target contract knob (set by run_untrusted*): the
+        # grandchild's fresh-procfs mount stops being best-effort —
+        # a failure aborts the spawn (status byte 'F') instead of
+        # leaving the host-pid procfs bind visible to the target.
+        _require_fresh_procfs = kwargs.pop("require_fresh_procfs", False)
+        if _require_fresh_procfs and _skip_pid_ns:
+            # Contradictory by construction: skip_pid_ns keeps the
+            # host procfs on purpose (gdb lane), which is exactly the
+            # posture require_fresh_procfs refuses. The untrusted
+            # entry points reject skip_pid_ns outright; a direct
+            # caller combining the two gets a loud error rather than
+            # a silently-neutralised contract.
+            msg = (
+                "sandbox run(): require_fresh_procfs=True cannot be "
+                "combined with skip_pid_ns=True — the skip keeps the "
+                "host-pid /proc visible, which is the exact posture "
+                "the requirement refuses."
+            )
+            raise ValueError(msg)
+        from ._spawn import mount_ns_available as _mount_ns_avail
+        if (_require_fresh_procfs and use_sandbox
+                and not use_seatbelt
+                and not (use_mount and _mount_ns_avail())):
+            # The contract can only be met by the fork-based mount-ns
+            # backend (a pid-ns-local /proc needs a mount, and only
+            # _spawn.run_sandboxed performs one). Both availability
+            # views must agree: `use_mount` (the capability probe)
+            # AND mount_ns_available() (the spawn-backend probe that
+            # actually routes the run) — they cache independently,
+            # and the subprocess fallback engages whenever the
+            # LATTER is false. On hosts where the backend cannot
+            # engage (newuidmap missing, mount probe failed, spawn
+            # probe failed) the old behaviour silently ran
+            # the unshare/Landlock fallback with the HOST process
+            # table visible — never consulting the override that
+            # governs every other degraded-untrusted shape. Seatbelt
+            # (macOS) is exempt: no procfs there, the platform layer
+            # provides the process-info contract.
+            from .errors import SandboxSetupError
+            msg = (
+                "sandbox run(): the fresh-procfs contract cannot be "
+                "met — the mount-namespace backend is unavailable on "
+                "this host, and the fallback lanes leave the host-pid "
+                "/proc visible to the untrusted target."
+            )
+            raise SandboxSetupError(
+                msg,
+                "install newuidmap/newgidmap (uidmap package) so the "
+                "mount-ns backend can engage, or set "
+                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to explicitly "
+                "accept host-procfs-visible containment on this host.",
+            )
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)
         # Deterministic child cwd. With no cwd= the two execution paths
@@ -3691,6 +3743,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 inherit_netns=_inherit_netns,
                                 skip_pid_ns=_skip_pid_ns,
                                 skip_mount_ns=_skip_mount_ns,
+                                require_fresh_procfs=_require_fresh_procfs,
                                 proxy_unix_socket=_proxy_unix_path if _use_proxy_netns else None,
                                 proxy_forwarder_port=_proxy_forwarder_port if _use_proxy_netns else None,
                                 extra_unix_bridges=(
@@ -3741,6 +3794,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 "path (a sibling run sharing the output "
                                 "tree, or hostile code with write access "
                                 "to an ancestor directory) and re-run.",
+                            )
+                        if _setup_status is not None and _setup_status[0] == "F":
+                            from .errors import SandboxSetupError
+                            msg_0 = (
+                                f"sandbox fresh-procfs mount failed for an "
+                                f"untrusted run: {_setup_status[1]}"
+                            )
+                            raise SandboxSetupError(
+                                msg_0,
+                                "the sandbox could not replace the host-pid "
+                                "procfs bind with a pid-namespace-local "
+                                "/proc, and untrusted targets are refused "
+                                "host-procfs visibility (it exposes the "
+                                "spawn chain's pre-strip environment). "
+                                "This mount is expected to succeed on any "
+                                "user-namespace-capable kernel — treat a "
+                                "persistent failure as an environment bug "
+                                "worth reporting. To accept the degraded "
+                                "posture for this host anyway, set "
+                                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1.",
                             )
                         if _setup_status is not None and _setup_status[0] in ("L", "S", "U"):
                             from .errors import SandboxSetupError
@@ -3831,6 +3904,38 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "drop require_sanitisation= to "
                                     "accept host-real identity "
                                     "surfaces on degrade.",
+                                )
+                            # Fresh-procfs fail-closed gate: the
+                            # Landlock-only retry below runs with NO
+                            # pid namespace and the HOST /proc — the
+                            # exact posture require_fresh_procfs
+                            # exists to refuse. Without this gate an
+                            # untrusted run whose mount-ns setup (or
+                            # in-ns exec) failed silently re-ran with
+                            # the full host process table visible,
+                            # never consulting the operator override
+                            # that governs every other degraded-
+                            # untrusted shape.
+                            if _require_fresh_procfs:
+                                from .errors import SandboxSetupError
+                                msg_0 = (
+                                    f"sandbox mount-ns setup or exec "
+                                    f"failed ({_setup_status[0]}: "
+                                    f"{_setup_status[1]}) on an "
+                                    f"untrusted run — refusing the "
+                                    f"Landlock-only fallback, which "
+                                    f"exposes the host-pid /proc."
+                                )
+                                raise SandboxSetupError(
+                                    msg_0,
+                                    "fix the mount-ns failure (see the "
+                                    "child diagnostic above; for 'X' "
+                                    "the usual cause is a tool outside "
+                                    "the bind set — tool_paths= / "
+                                    "--sandbox-tool-path). To accept "
+                                    "host-procfs-visible containment "
+                                    "on this host instead, set "
+                                    "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1.",
                                 )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns
@@ -5308,6 +5413,23 @@ def _reopen_write_only(fd: int, flags: int) -> "int | None":
     return None
 
 
+def untrusted_fresh_procfs_required() -> bool:
+    """True unless the operator accepted the degraded-untrusted posture
+    (``RAPTOR_ALLOW_DEGRADED_UNTRUSTED`` truthy — same idiom as the
+    userns entry gate).
+
+    The untrusted entry points consume this internally. Direct
+    ``run()`` callers that execute attacker-derived payloads (LLM
+    exploits, candidate PoCs, target binaries) pass it as
+    ``require_fresh_procfs=`` so their runs carry the same
+    fresh-procfs contract instead of silently accepting host-procfs
+    visibility.
+    """
+    return os.environ.get(
+        "RAPTOR_ALLOW_DEGRADED_UNTRUSTED", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+
+
 def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | None = None,
                   limits: dict | None = None,
                   restrict_reads: bool = True,
@@ -5577,6 +5699,12 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                    omit_proc_reads=_degraded_no_pidns,
                    strict_env=True,
                    strip_trust_markers=True,
+                   # Untrusted contract: the fresh-procfs mount is
+                   # mandatory (host-procfs visibility exposes the
+                   # spawn chain's pre-strip environ image) unless the
+                   # operator explicitly accepted the degraded posture
+                   # (same truthiness idiom as the entry gate).
+                   require_fresh_procfs=untrusted_fresh_procfs_required(),
                    **kwargs)
     finally:
         for _wfd in _wo_fds:
@@ -5746,6 +5874,13 @@ def run_untrusted_networked(
         omit_proc_reads=_degraded_no_pidns,
         strict_env=True,
         strip_trust_markers=not keep_trust_markers,
+        # Same untrusted contract as run_untrusted(): mandatory
+        # fresh-procfs mount unless the operator accepted the
+        # degraded posture. Applies to the keep-trust dispatch lane
+        # too — dispatch children are trusted, but the pid-ns/procfs
+        # posture is about what the SANDBOXED TREE can read, and the
+        # dispatch tree runs target-influenced tools.
+        require_fresh_procfs=untrusted_fresh_procfs_required(),
         loopback_unix_bridges=loopback_unix_bridges,
         **kwargs,
     )

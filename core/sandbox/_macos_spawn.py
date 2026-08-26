@@ -425,6 +425,11 @@ def run_sandboxed(cmd: list[str], *,
                   # profile). macOS sandbox-exec doesn't use mount-ns;
                   # accepted + ignored for signature parity.
                   skip_mount_ns=False,
+                  # require_fresh_procfs: Linux-only — makes the
+                  # pid-ns-local /proc mount mandatory (abort instead
+                  # of host-procfs degrade). macOS has no procfs;
+                  # Seatbelt provides the process-info contract.
+                  require_fresh_procfs=False,
                   # rootfs: Linux-only — mount-ns pivot into an unpacked
                   # container-image tree. Accepted for signature parity
                   # but NOT ignored like the kwargs above: those are

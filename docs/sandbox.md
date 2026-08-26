@@ -50,8 +50,12 @@ process.
 1. **User namespace** -- unprivileged root-mapping foundation.
 2. **Network namespace** -- sandboxed process sees only an isolated
    loopback interface; no route out.
-3. **PID namespace** -- hides host PIDs; also blocks cross-process
-   `/proc/<pid>/environ` credential reads.
+3. **PID namespace** -- combined with a fresh in-namespace `/proc`
+   mount, hides host PIDs and blocks cross-process
+   `/proc/<pid>/environ` credential reads. The fresh mount is
+   mandatory for untrusted runs: if it fails, the run aborts rather
+   than exposing the host-pid process table (override with
+   `RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1`).
 4. **IPC namespace** -- isolates SysV shm/sem/message queues.
 5. **Mount namespace** -- per-sandbox `/tmp` and `/run`, host system
    dirs bind-mounted read-only, target and output bind-mounted at

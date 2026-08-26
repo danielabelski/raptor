@@ -790,6 +790,15 @@ _classify_output = _classify_json_output
 _SANDBOX_REFUSAL = "sandbox unavailable — refusing to execute target-derived code"
 
 
+def _fresh_procfs_required() -> bool:
+    """Same untrusted fresh-procfs contract as run_untrusted()."""
+    try:
+        from core.sandbox.context import untrusted_fresh_procfs_required
+    except ImportError:
+        return False
+    return untrusted_fresh_procfs_required()
+
+
 def _import_sandbox_run() -> Callable | None:
     """Import the sandbox entry point, or None when core.sandbox is missing.
 
@@ -1345,6 +1354,9 @@ def _run_native_binary(
             restrict_reads=True,
             target=str(target_root),
             output=str(cap_dir),
+            # The binary under test is target-derived: same
+            # fresh-procfs contract as run_untrusted().
+            require_fresh_procfs=_fresh_procfs_required(),
             timeout=timeout_s,
             caller_label="audit-dark-verify-native",
             tool_paths=[str(binary.parent)],

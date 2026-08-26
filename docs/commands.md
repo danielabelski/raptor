@@ -529,6 +529,11 @@ agentic pipeline with `--no-exploits`.
 
 Accepts the same flags as [/agentic](#agentic) minus `--no-patches`.
 
+Candidate patches can be verified dynamically with
+`libexec/raptor-frida-patch-verify` (same PoC input against the
+unpatched and patched builds under a frida sink watch) — see the
+Patch Verification section of the [Frida guide](frida.md).
+
 ---
 
 ## Code Understanding & Forensics

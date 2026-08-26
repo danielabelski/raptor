@@ -431,6 +431,38 @@ ingests evidence from prior runs.
 
 ---
 
+## Patch Verification
+
+`libexec/raptor-frida-patch-verify` turns a `/patch` candidate into a
+dynamically verified one: it runs the same proof-of-concept input
+against the unpatched binary and a build of the patched source, each
+under a sink watch, and compares target-attributed sink evidence.
+
+```bash
+libexec/raptor-frida-patch-verify \
+    --before ./build-orig/app --after ./build-patched/app \
+    --sink system --poc poc.txt --location src/handler.c:42
+```
+
+Verdicts (exit codes are verdict-bearing; 2 is reserved for errors):
+
+| Verdict | Exit | Meaning |
+|---------|------|---------|
+| `Closed` | 0 | Sink fired pre-patch, silent post-patch. `site`-level when the pre-patch firing resolved to `--location`, else `function`-level. |
+| `Still Fires` | 1 | Sink fired in both runs. A sanitising patch can legitimately leave the call in place — confirm manually. |
+| `Inconclusive` | 3 | Sink never fired pre-patch (the PoC does not demonstrate the vulnerable path), or the post-patch session produced no events at all (broken session, not a silent sink). |
+
+The comparison is function-level on the post-patch side by design:
+patches move source lines, so matching the patched run against the
+original finding's line would be unsound. Give `--duration` enough
+headroom for the PoC to reach the sink in the slower build — the
+sink not firing within the window is indistinguishable from it never
+firing. The report (`patch-verify.json`) carries both runs' evidence,
+and both binaries run under frida without a sandbox — only verify
+patches on binaries you built yourself.
+
+---
+
 ## Custom Scripts
 
 Operator-supplied scripts are loaded verbatim via `--script`. The script

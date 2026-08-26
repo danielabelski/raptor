@@ -287,6 +287,79 @@ class TestBbCoverageLive:
         assert len(victim[0]["offsets"]) >= 3
 
 
+_PATCH_VULN_C = """\
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+int main(void) {
+    char buf[128];
+    if (!fgets(buf, sizeof(buf), stdin)) return 1;
+    if (strncmp(buf, "RUN", 3) == 0) {
+        char cmd[160];
+        snprintf(cmd, sizeof(cmd), "echo triggered %s", buf + 3);
+        system(cmd);
+    }
+    return 0;
+}
+"""
+
+_PATCH_FIXED_C = """\
+#include <stdio.h>
+#include <string.h>
+int main(void) {
+    char buf[128];
+    if (!fgets(buf, sizeof(buf), stdin)) return 1;
+    if (strncmp(buf, "RUN", 3) == 0) {
+        fputs("command execution disabled\\n", stdout);
+    }
+    return 0;
+}
+"""
+
+
+class TestPatchOracleLive:
+    """Patch oracle end to end: the same PoC drives an unpatched and a
+    patched build under a sink watch, and the verdict comes out
+    Closed."""
+
+    @pytest.fixture(scope="class")
+    def patch_pair(self, tmp_path_factory):
+        build_dir = tmp_path_factory.mktemp("patchpair")
+        pair = []
+        for name, src_text in (("vuln", _PATCH_VULN_C),
+                               ("fixed", _PATCH_FIXED_C)):
+            src = build_dir / f"{name}.c"
+            src.write_text(src_text)
+            binary = build_dir / name
+            result = subprocess.run(
+                ["gcc", "-g", "-o", str(binary), str(src)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                pytest.skip(f"gcc failed: {result.stderr[:200]}")
+            pair.append(binary)
+        return tuple(pair)
+
+    def test_closed_verdict_on_real_patch(self, patch_pair, tmp_path,
+                                          monkeypatch):
+        before, after = patch_pair
+        poc = tmp_path / "poc.txt"
+        poc.write_text("RUN hello\n")
+
+        monkeypatch.setenv("RAPTOR_DIR", str(RAPTOR_DIR))
+        monkeypatch.setenv("PYTHONPATH", str(RAPTOR_DIR))
+        from packages.frida.patch_oracle import verify_patch
+
+        report = verify_patch(
+            before, after, ["system"], tmp_path / "out",
+            poc=poc, finding_location=("vuln.c", 10), duration=4)
+
+        assert report["verdict"] == "closed"
+        assert report["before"]["fired"]["system"]["call_count"] >= 1
+        if shutil.which("addr2line"):
+            assert report["confidence"] == "site"
+
+
 class TestWrapperLiveE2E:
     """The surface every doc example points at — libexec/raptor-frida
     with the sandbox engaged — previously had no live coverage at all;

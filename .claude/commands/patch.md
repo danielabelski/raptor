@@ -25,4 +25,11 @@ Generate secure patches to fix vulnerabilities.
 
 **Note:** Review patches before applying to production code.
 
+**Dynamic verification:** when the finding has a PoC input and you can
+build both the original and patched source, verify the patch at
+runtime: `libexec/raptor-frida-patch-verify --before <orig-binary>
+--after <patched-binary> --sink <sink-fn> --poc <input>
+[--location FILE:LINE]`. See the Patch Verification section of
+[docs/frida.md](../../docs/frida.md).
+
 ---

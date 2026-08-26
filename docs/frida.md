@@ -458,8 +458,12 @@ the event drains before the process dies.
 Beyond standalone use, `/binary` and `/agentic` launch Frida
 observation themselves when dynamic evidence collection is warranted
 (programmatic entry points `observe_target` / `observe_paired` /
-`auto_observe` in `packages/frida/`; existing fresh evidence for a
-target is reused rather than re-collected). Frida sessions run under
+`auto_observe` / `watch_sinks` in `packages/frida/`; existing fresh
+evidence for a target is reused rather than re-collected), and
+`/validate` Stage E auto-launches a finding-parameterized sink watch
+against the matched binaries — gated on the operator's dynamic-trust
+grant (`--dynamic` or the project `dynamic` marker), promote-only,
+deduplicated against fresh evidence. Frida sessions run under
 the same [sandbox](sandbox.md) constraints as every other RAPTOR
 subprocess, observed callsites and parser boundaries are folded back
 into `/understand` context maps, and `/binary map --runtime-dir`

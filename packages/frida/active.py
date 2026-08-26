@@ -24,7 +24,7 @@ from .evidence import discover_evidence
 
 log = get_logger("frida.active")
 
-__all__ = ["auto_observe", "observe_paired", "observe_target"]
+__all__ = ["auto_observe", "observe_paired", "observe_target", "watch_sinks"]
 
 _STALENESS_THRESHOLD_S = 3600.0
 _MAX_STDOUT_CAPTURE = 10 * 1024 * 1024  # 10MB cap on captured output
@@ -140,6 +140,86 @@ def observe_target(
         return run_dir
 
     log.error("frida observation produced no output directory")
+    return None
+
+
+def watch_sinks(
+    target: str,
+    sinks_file: Path,
+    out_dir: Path | None = None,
+    duration_sec: float = 30.0,
+) -> Path | None:
+    """Launch a finding-parameterized sink watch of a target binary.
+
+    Same sandboxed launch path as :func:`observe_target`, but the hook
+    script is rendered from *sinks_file* (a sinks JSON or a validation
+    run's ``attack-paths.json``). The target is spawned bare — no PoC
+    input is fed — so sinks that only fire under crafted input gain no
+    evidence; absence of evidence is never used against a finding.
+
+    Returns the run output directory on success, or None on failure.
+    """
+    from . import available
+
+    if not available():
+        log.warning("frida not available on this host; skipping sink watch")
+        return None
+
+    target_p = Path(target)
+    if not target_p.is_file():
+        log.error("target binary not found: %s", target)
+        return None
+    if not Path(sinks_file).is_file():
+        log.error("sinks file not found: %s", sinks_file)
+        return None
+
+    raptor_dir = os.environ.get("RAPTOR_DIR")
+    if not raptor_dir:
+        log.error("RAPTOR_DIR not set")
+        return None
+
+    libexec = Path(raptor_dir) / "libexec" / "raptor-frida"
+
+    cmd = [
+        str(libexec),
+        "--target", str(target_p.resolve()),
+        "--sink-watch", str(Path(sinks_file).resolve()),
+        "--spawn",
+        "--duration", str(max(1, int(duration_sec))),
+    ]
+    if out_dir is not None:
+        cmd.extend(["--out", str(out_dir)])
+
+    env = _safe_env()
+
+    log.info("launching frida sink watch: %s (sinks=%s, duration=%ds)",
+             target, sinks_file, duration_sec)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=duration_sec + 30,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("frida sink watch timed out for %s", target)
+        return None
+
+    if result.returncode != 0:
+        stderr_tail = result.stderr[-500:] if result.stderr else ""
+        log.error("frida sink watch failed (rc=%d): %s",
+                  result.returncode, stderr_tail)
+        return None
+
+    run_dir = (_extract_output_dir(result.stdout)
+               or _extract_output_dir(result.stderr or ""))
+    if run_dir and run_dir.is_dir() and (run_dir / "metadata.json").is_file():
+        log.info("sink watch complete: %s", run_dir)
+        return run_dir
+
+    log.error("frida sink watch produced no output directory")
     return None
 
 

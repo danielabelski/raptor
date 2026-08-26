@@ -15,6 +15,7 @@ Stages A-F do per-stage merging, validation, and schema hints.
 import contextlib
 import re
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -842,30 +843,8 @@ def prepare_B(workdir, target=None):
     _save_artifact(wdir / "attack-paths.json", attack_paths)
 
     # Frida runtime-evidence annotation (best-effort).
-    with contextlib.suppress(Exception):
-        from core.orchestration.frida_validation_bridge import (
-            annotate_attack_paths,
-            collect_runtime_evidence,
-        )
-        evidence_map = collect_runtime_evidence(
-            [wdir, wdir.parent], target_path=target)
-        if evidence_map and attack_paths:
-            # finding id → (file, line) lets the bridge upgrade
-            # function_observed to callsite_match when a resolved
-            # call site lands on the finding's own location.
-            finding_locations = {
-                f["id"]: (f["file"], f["line"])
-                for f in findings
-                if isinstance(f, dict)
-                and isinstance(f.get("id"), str)
-                and isinstance(f.get("file"), str)
-                and isinstance(f.get("line"), int)
-            }
-            attack_paths = annotate_attack_paths(
-                attack_paths, evidence_map,
-                finding_locations=finding_locations)
-            _save_artifact(wdir / "attack-paths.json", attack_paths)
-            print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
+    attack_paths = _annotate_runtime_evidence(
+        wdir, target, findings, attack_paths)
 
     if not (wdir / "attack-surface.json").exists():
         _save_artifact(wdir / "attack-surface.json", {"sources": [], "sinks": [], "trust_boundaries": []})
@@ -1578,6 +1557,187 @@ def _discover_and_match_binaries(workdir, target, data, build=None,
         _save_findings(workdir, data)
 
 
+def _annotate_runtime_evidence(wdir, target, findings, attack_paths,
+                               extra_targets=None):
+    """Annotate attack paths with discovered frida runtime evidence.
+
+    Evidence discovery is target-matched, and a frida run records the
+    BINARY it spawned — not the /validate source tree — so the
+    findings' matched binaries are searched as well as *target*
+    (first match wins per function on collision).
+
+    Best-effort: any failure leaves the paths untouched. Saves
+    attack-paths.json when evidence was applied and returns the
+    (possibly annotated) list either way.
+    """
+    with contextlib.suppress(Exception):
+        from core.orchestration.frida_validation_bridge import (
+            annotate_attack_paths,
+            collect_runtime_evidence,
+        )
+        evidence_targets = [target]
+        for bp in (extra_targets or _finding_binaries(findings)):
+            if bp not in evidence_targets:
+                evidence_targets.append(bp)
+        evidence_map = {}
+        for et in evidence_targets:
+            if et is None:
+                continue
+            for fn, ev in collect_runtime_evidence(
+                    [wdir, wdir.parent], target_path=str(et)).items():
+                evidence_map.setdefault(fn, ev)
+        if evidence_map and attack_paths:
+            # finding id → (file, line) lets the bridge upgrade
+            # function_observed to callsite_match when a resolved
+            # call site lands on the finding's own location.
+            finding_locations = {
+                f["id"]: (f["file"], f["line"])
+                for f in findings
+                if isinstance(f, dict)
+                and isinstance(f.get("id"), str)
+                and isinstance(f.get("file"), str)
+                and isinstance(f.get("line"), int)
+            }
+            attack_paths = annotate_attack_paths(
+                attack_paths, evidence_map,
+                finding_locations=finding_locations)
+            _save_artifact(wdir / "attack-paths.json", attack_paths)
+            print(f"  Frida runtime evidence: {len(evidence_map)} functions observed")
+    return attack_paths
+
+
+def _finding_binaries(findings):
+    """Matched, executable-looking binaries from active findings.
+
+    The path is findings-data-driven (LLM stages over hostile repo
+    content), so only compiled artifacts pass — same magic gate as
+    symbolic-witness replay — and disproven / ruled-out findings
+    contribute nothing.
+    """
+    binaries = []
+    for f in findings or []:
+        if not isinstance(f, dict) or f.get("status") == "disproven":
+            continue
+        if f.get("ruling", {}).get("status") == "ruled_out":
+            continue
+        bp = f.get("feasibility", {}).get("binary_path", "")
+        if not bp or bp in binaries or not Path(bp).is_file():
+            continue
+        try:
+            with open(bp, "rb") as fh:
+                magic = fh.read(4)
+        except OSError:
+            continue
+        if magic != b"\x7fELF" and magic[:2] != b"MZ" and magic not in (
+            b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+            b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+        ):
+            continue
+        binaries.append(bp)
+    return binaries
+
+
+_SINK_WATCH_MAX_BINARIES = 2
+_SINK_WATCH_DURATION_S = 20.0
+
+
+def _run_auto_sink_watch(workdir, target, data, dynamic=None):
+    """Stage E auto sink-watch: run the findings' own sink list against
+    the matched binaries under frida, then fold the runtime evidence
+    back into attack-paths.json.
+
+    Gate: ``core.project.trust.resolve_dynamic_validation`` — the same
+    operator grant as witness execution and symbolic-witness replay;
+    no new execution authority. Promote-only: the target is spawned
+    bare (no PoC input), so a sink that fires under default execution
+    earns evidence and one that does not simply changes nothing.
+
+    Best-effort throughout: no frida, no matched binaries, or a
+    failed run each degrade to a skip line, never an error.
+    """
+    wdir = Path(workdir)
+    ap_path = wdir / "attack-paths.json"
+    attack_paths = load_json(ap_path) or []
+    if not attack_paths:
+        return
+
+    try:
+        from packages.frida import available
+        from packages.frida.sink_watch import specs_from_file
+    except ImportError:
+        return
+    if not available():
+        return
+    try:
+        specs = specs_from_file(ap_path)
+    except (ValueError, OSError):
+        specs = []
+    if not specs:
+        return
+
+    try:
+        from core.project.trust import resolve_dynamic_validation
+    except ImportError:
+        return
+    if not resolve_dynamic_validation(dynamic, target_path=target):
+        print(
+            f"  Auto sink-watch: {len(specs)} watchable sink(s) skipped "
+            "— dynamic execution not granted (pass --dynamic or set "
+            "the project 'dynamic' trust marker)"
+        )
+        return
+
+    findings = data.get("findings", [])
+    binaries = _finding_binaries(findings)
+    if not binaries:
+        print("  Auto sink-watch: no matched binaries; skipped")
+        return
+    if len(binaries) > _SINK_WATCH_MAX_BINARIES:
+        print(
+            f"  Auto sink-watch: {len(binaries)} matched binaries, "
+            f"watching the first {_SINK_WATCH_MAX_BINARIES}"
+        )
+        binaries = binaries[:_SINK_WATCH_MAX_BINARIES]
+
+    from packages.frida.active import _STALENESS_THRESHOLD_S, watch_sinks
+    from packages.frida.evidence import discover_evidence
+
+    launched = 0
+    watched = []
+    run_stamp = int(time.time())
+    for i, binary in enumerate(binaries):
+        # Freshness: an existing sink-watch run against this binary
+        # suppresses a duplicate launch (target-matched discovery).
+        fresh = False
+        for ev in discover_evidence([wdir, wdir.parent],
+                                    target_path=binary):
+            origin = ev.script_origin or ""
+            if not origin.startswith("sink-watch:"):
+                continue
+            with contextlib.suppress(OSError):
+                age = time.time() - (ev.run_dir / "metadata.json").stat().st_mtime
+                if 0 <= age < _STALENESS_THRESHOLD_S:
+                    fresh = True
+                    break
+        if fresh:
+            print(f"  Auto sink-watch: fresh evidence exists for "
+                  f"{Path(binary).name}; skipped")
+            continue
+        run_dir = watch_sinks(
+            binary, ap_path,
+            out_dir=wdir / f"frida-sink-watch-{run_stamp}-{i}",
+            duration_sec=_SINK_WATCH_DURATION_S)
+        if run_dir is not None:
+            launched += 1
+            watched.append(binary)
+
+    if launched:
+        print(f"  Auto sink-watch: {launched} run(s) against "
+              f"{len(watched)} binary(ies)")
+        _annotate_runtime_evidence(wdir, target, findings, attack_paths,
+                                   extra_targets=watched)
+
+
 def _run_witness_execution(workdir, target, data, dynamic=None):
     """Stage E witness execution (P9) — dark-verify oracle for /validate.
 
@@ -1675,6 +1835,9 @@ def prepare_E(workdir, target=None, dynamic=None, build=None,
                                      mitigation_matrix=mitigation_matrix)
     else:
         print("  No --target provided, skipping binary discovery")
+
+    # --- Auto sink-watch (frida; gated on dynamic trust) ---
+    _run_auto_sink_watch(workdir, target, data, dynamic=dynamic)
 
     # --- Symbolic witness synthesis (angr; mechanical, no LLM) ---
     _run_symbolic_witnesses(workdir, data, dynamic=dynamic, target=target)

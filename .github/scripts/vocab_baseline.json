@@ -158,6 +158,21 @@
     "count": 13,
     "kind": "alternation"
   },
+  "core/audit/defassign.py::_C_KEYWORDS": {
+    "count": 42,
+    "kind": "literal",
+    "note": "ISO C keyword set (language constant, not target API names): a macro NAMED after a keyword is conditional instrumentation the definite-assignment prover must never expand; misses only widen refusal, never a proof"
+  },
+  "core/audit/defassign.py::_CTRL_ESCAPE": {
+    "count": 17,
+    "kind": "literal",
+    "note": "C control-transfer keywords plus the setjmp family (ISO/POSIX language constants): any of these inside a macro expansion refuses the definite-assignment proof — additions widen refusal, never a proof"
+  },
+  "core/audit/defassign.py::_ALLOWED_STATEMENTS": {
+    "count": 12,
+    "kind": "literal",
+    "note": "tree-sitter C statement-node allowlist for the definite-assignment walk (grammar constants, not target API names); anything outside it refuses the proof"
+  },
   "core/audit/api_boundary.py::_CALLER_CONDITIONAL_RE": {
     "count": 34,
     "kind": "alternation",

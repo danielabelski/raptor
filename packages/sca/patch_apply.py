@@ -29,7 +29,6 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-import tempfile
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -93,18 +92,26 @@ def apply_patch_to_target(
         # visible failure contract identical: a spawn failure is
         # still an OSError/SubprocessError mapping to rc 5 below,
         # never an abort that skips the exit-code translation.
-        with tempfile.TemporaryDirectory(
-                prefix="raptor-sca-apply-") as sandbox_out:
-            proc = run_untrusted(
-                ["git", "apply", "-"],
-                target=str(target),
-                output=sandbox_out,
-                writable_paths=[str(target)],
-                cwd=str(target),
-                input=patch_text,
-                capture_output=True, text=True, timeout=timeout,
-                caller_label="sca-patch-apply/git-apply",
-            )
+        # output == target is the sanctioned writable-target shape:
+        # the mount lane deliberately remounts a distinct target
+        # read-only EVEN under a writable_paths grant (the scanned
+        # tree must never self-modify), and patch application is the
+        # one flow whose entire purpose is writing the tree. Pre-fix
+        # this ran on the demoted subprocess lane (input= used to
+        # disqualify the fork backend) where only Landlock enforced —
+        # the shape mismatch surfaced when witness-fed calls started
+        # riding the mount lane. fake_home=False: a .home dir must
+        # not appear inside the operator's repository.
+        proc = run_untrusted(
+            ["git", "apply", "-"],
+            target=str(target),
+            output=str(target),
+            fake_home=False,
+            cwd=str(target),
+            input=patch_text,
+            capture_output=True, text=True, timeout=timeout,
+            caller_label="sca-patch-apply/git-apply",
+        )
     except (subprocess.SubprocessError, OSError) as e:
         print(f"{caller_label} --apply: git apply failed: {e}",
               file=sys.stderr)

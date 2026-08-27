@@ -175,16 +175,14 @@ def test_apply_routes_through_run_untrusted(
     assert call.get("target") == str(tmp_path), (
         "sandbox engagement requires target="
     )
-    assert call.get("output"), (
-        "sandbox needs a scratch dir (outside the operator's tree) "
-        "to land $HOME / temp files into"
+    assert call.get("output") == str(tmp_path), (
+        "output == target is the sanctioned writable-target shape: "
+        "the mount lane remounts a DISTINCT target read-only even "
+        "under a writable_paths grant, and applying a patch is the "
+        "one flow whose purpose is writing the tree"
     )
-    assert not call["output"].startswith(str(tmp_path)), (
-        "sandbox scratch dir must not litter the operator's checkout"
-    )
-    assert call.get("writable_paths") == [str(tmp_path)], (
-        "writes must be scoped to the target checkout "
-        "(worktree + .git)"
+    assert call.get("fake_home") is False, (
+        "a .home dir must not appear inside the operator's repository"
     )
     assert call.get("cwd") == str(tmp_path)
     assert call.get("timeout") == 60

@@ -3376,6 +3376,33 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # leaving the child rlimits-only with no signal outside audit
         # mode.
         _kwarg_plumb_native = use_seatbelt  # subprocess-backed spawn
+        # input= no longer disqualifies the fork backend: the spawn
+        # chain maps stdin FDs natively, so witness bytes convert to
+        # an UNLINKED private tempfile served as fd 0. Pre-fix,
+        # feeding a PoC its witness via input= silently routed the
+        # run onto the no-mount-ns fallback — host-pid /proc visible
+        # to exactly the attacker-derived code the witness drives
+        # (measured: the full host argv surface, including concurrent
+        # runs' credential-bearing command lines). pass_fds remains
+        # the one disqualifier (real multi-fd plumbing, no caller on
+        # the untrusted contract).
+        if (sys.platform != "darwin" and use_mount
+                and kwargs.get("input") is not None
+                and not kwargs.get("pass_fds")):
+            import tempfile as _tf_mod
+            _in_payload = kwargs.pop("input")
+            if isinstance(_in_payload, str):
+                _enc = kwargs.get("encoding") or "utf-8"
+                _in_payload = _in_payload.encode(_enc, "strict")
+            _stdin_spool = _tf_mod.TemporaryFile()
+            _stdin_spool.write(_in_payload)
+            _stdin_spool.flush()
+            _stdin_spool.seek(0)
+            kwargs["stdin"] = _stdin_spool
+            # Lifetime: this frame outlives the synchronous spawn (the
+            # child dup2s the fd before exec), and CPython closes the
+            # unlinked spool at frame exit — no path ever exists for
+            # any principal to race, and nothing leaks.
         spawn_eligible = ((use_mount or use_seatbelt)
                           and (_kwarg_plumb_native
                                or (not kwargs.get("pass_fds")
@@ -3508,21 +3535,26 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # contract whenever its tool happened to resolve outside the
         # bind tree, silently. The remedy is cheap and named:
         # tool_paths= extends the bind tree.
-        # Scope note: the pass_fds=/input= compat route (witness bytes
-        # fed to a PoC's stdin) is deliberately NOT gated here — those
-        # flows have always run on the fallback lane and refusing them
-        # would break every witness-replaying consumer at once.
-        # Plumbing input= through the fork backend, and then extending
-        # this gate to cover it, is the tracked follow-up; until then
-        # that route remains the documented host-procfs residual.
-        if (_require_fresh_procfs
-                and (_b_fallback_reason is not None or _skip_mount_ns)
+        # input= no longer reaches this gate (it converts to a spool
+        # fd at eligibility and rides the fork backend); pass_fds is
+        # the one remaining kwarg demoter, has no caller on the
+        # untrusted contract, and is now refused like every other
+        # route that would land untrusted work on a host-procfs lane.
+        # use_sandbox guard: --sandbox none / disabled= is the
+        # operator's EXPLICIT global escape hatch and the CLI flag is
+        # authoritative everywhere — an intentionally-unsandboxed run
+        # is not a silent host-procfs degrade, so the contract does
+        # not second-guess it.
+        if (_require_fresh_procfs and use_sandbox
+                and (not spawn_eligible or _skip_mount_ns)
                 and rootfs is None):
             from .errors import SandboxSetupError
             _reason = (
                 _b_fallback_reason
-                or "per-call skip_mount_ns=True bypasses the "
-                   "mount-ns backend"
+                or ("per-call skip_mount_ns=True bypasses the "
+                    "mount-ns backend" if _skip_mount_ns else
+                    "pass_fds= is not plumbed through the fork-based "
+                    "spawn path")
             )
             msg_0 = (
                 f"sandbox run(): the fresh-procfs contract cannot be "

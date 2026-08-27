@@ -204,10 +204,16 @@ class TestEvidenceBottleneck:
             self, tmp_path, no_audit_tiers):
         d = tmp_path / "audit"
         d.mkdir()
+        _pr, _pw = os.pipe()
+        os.close(_pw)
         with _audit_sandbox(d) as r:
-            # input= routes off the spawn tier; probes kill the
-            # Landlock-only tracer tier.
-            res = r(["cat"], input=b"", capture_output=True, timeout=60)
+            # pass_fds= routes off the spawn tier (input= now rides
+            # it); the probes fixture kills the Landlock-only tracer
+            # tier, so audit cannot engage anywhere.
+            res = r(["cat"], stdin=_pr, pass_fds=[_pr],
+                    pass_fds_declared=True, capture_output=True,
+                    timeout=60)
+        os.close(_pr)
         assert res.returncode == 0
         assert res.sandbox_info.get("audit_engaged") is False
         payload = json.loads((d / MARKER).read_text())

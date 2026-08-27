@@ -55,14 +55,17 @@ class _Base(unittest.TestCase):
 
 
 class TestStrictRefusesPerCallDemotion(_Base):
-    def test_input_kwarg_demotion_raises_under_strict(self):
+    def test_input_kwarg_no_longer_demotes_under_strict(self):
+        # input= converts to a private stdin spool and rides the fork
+        # backend — strict mode has nothing to refuse: the call runs
+        # WITH the mount-ns posture and the bytes arrive on stdin.
         from core.sandbox import sandbox
-        from core.sandbox.errors import SandboxSetupError
         with sandbox(profile="strict", target=self.tgt,
                      output=self.out) as run:
-            with self.assertRaises(SandboxSetupError):
-                run(["cat"], input="x", capture_output=True, text=True,
-                    timeout=30)
+            r = run(["cat"], input="witness-x", capture_output=True,
+                    text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("witness-x", r.stdout)
 
     def test_pass_fds_demotion_raises_under_strict(self):
         from core.sandbox import sandbox
@@ -85,7 +88,8 @@ class TestStrictRefusesPerCallDemotion(_Base):
 
 
 class TestDemotedCallGetsPrivateScratch(_Base):
-    """input= forces the Landlock-only path; under restrict_reads the
+    """pass_fds= forces the Landlock-only path (input= no longer
+    demotes — it rides the fork backend); under restrict_reads the
     demoted call must NOT keep the mount-time host /tmp / /dev/shm
     grants — it gets a per-call private scratch dir instead."""
 
@@ -116,10 +120,20 @@ class TestDemotedCallGetsPrivateScratch(_Base):
             f"raptor-demote-marker-{os.getpid()}")
         self.addCleanup(
             lambda: os.path.exists(marker) and os.unlink(marker))
+        # pass_fds= is the demotion lever now: input= rides the fork
+        # backend. The probe's stdin arrives via the same input= (it
+        # converts to a spool fd on the SPAWN lane only — on the
+        # demoted subprocess lane it stays subprocess-communicate),
+        # so feed it explicitly through the pipe we pass.
+        _pr, _pw = os.pipe()
+        os.write(_pw, b"go")
+        os.close(_pw)
+        self.addCleanup(lambda: (os.close(_pr) if _pr else None))
         with sandbox(target=self.tgt, output=self.out,
                      restrict_reads=True) as run:
             r = run(["/usr/bin/python3", "-c", self._PROBE, marker],
-                    input="go", capture_output=True, text=True,
+                    stdin=_pr, pass_fds=[_pr], pass_fds_declared=True,
+                    capture_output=True, text=True,
                     timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
         self.assertIn("hosttmp=denied", r.stdout, (

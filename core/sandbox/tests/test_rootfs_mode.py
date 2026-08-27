@@ -347,12 +347,16 @@ class TestRootfsPivotE2E(_RootfsE2EBase):
         with self.assertRaises(SandboxSetupError):
             self._run(["/bin/sh", "-c", "true"])
 
-    def test_input_kwarg_fails_closed(self):
-        """input= routes other callers to the Landlock-only subprocess
-        path; for rootfs that is a host-fs run and must refuse."""
-        from core.sandbox.errors import SandboxSetupError
-        with self.assertRaises(SandboxSetupError):
-            self._run(["/bin/init"], input="x")
+    def test_input_kwarg_rides_the_image(self):
+        """input= no longer demotes (stdin spool on the fork backend):
+        a rootfs run with witness bytes executes INSIDE the image —
+        the old host-fs refusal shape is gone because the host-fs
+        fallback is never taken. (Stdin content delivery is covered
+        by the non-rootfs suites; the image ships only the static
+        init, so this asserts the run lands in the image.)"""
+        r = self._run(["/bin/init"], input="w1")
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("IMAGE-SENTINEL", r.stdout)
 
 
 class TestRootfsHostDeviceContainment(_RootfsE2EBase):

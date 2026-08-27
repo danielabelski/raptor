@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import pytest
+from pathlib import Path
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -248,20 +249,23 @@ def _required_sanitisation_ctx(monkeypatch, tmp_path):
     return ctx
 
 
-def test_required_sanitisation_refuses_input_kwarg_demotion(
+def test_required_sanitisation_accepts_input_kwarg(
         monkeypatch, tmp_path):
-    """input= routes the call to the Landlock-only subprocess path
-    (spawn_eligible=False), where the persona never applies — a
-    require_sanitisation caller must get a refusal, not a silent
-    host-real run."""
+    """input= no longer demotes (it converts to a stdin spool on the
+    fork backend), so a require_sanitisation caller feeding witness
+    bytes RUNS — with the persona applied — instead of refusing.
+    pass_fds remains the demoter that must still refuse (covered by
+    the pass_fds test below alongside the speculative-cache one)."""
     ctx = _required_sanitisation_ctx(monkeypatch, tmp_path)
-    from core.sandbox.errors import SandboxSetupError
-    with pytest.raises(SandboxSetupError,
-                       match="require_sanitisation"):
-        with ctx.sandbox(target=str(tmp_path), output=str(tmp_path),
-                         sanitise_host_fingerprint=True,
-                         require_sanitisation=True) as _run:
-            _run(["/bin/cat"], input=b"host-real?")
+    with ctx.sandbox(target=str(tmp_path), output=str(tmp_path),
+                     sanitise_host_fingerprint=True,
+                     require_sanitisation=True) as _run:
+        r = _run(["/bin/cat", "/etc/machine-id"], input=b"unused",
+                 capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr[-300:]
+    host_mid = Path("/etc/machine-id").read_text().strip()
+    assert host_mid not in (r.stdout or ""), (
+        "persona did not apply on the input= path")
 
 
 def test_required_sanitisation_refuses_speculative_cache_demotion(

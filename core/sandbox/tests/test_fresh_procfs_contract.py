@@ -493,6 +493,29 @@ def test_no_mount_ns_host_refuses_untrusted_run(tmp_path):
     assert "NO-RAISE rc=0" in r.stdout
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="linux-only waiver")
+def test_waiver_warn_covers_pass_fds_demotion(monkeypatch, caplog):
+    """A waived untrusted call carrying pass_fds= lands on the
+    subprocess fallback even on a fully capable host — the waiver
+    warning must name that per-call shape, not just backend
+    unavailability. Without the waiver the helper stays silent (the
+    contract is intact and the refusal path owns the messaging)."""
+    import logging as _logging
+    from core.sandbox import context as _ctx
+    monkeypatch.setenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "1")
+    with caplog.at_level(_logging.WARNING, logger="core.sandbox.context"):
+        _ctx._warn_if_waiver_degrades({"pass_fds": [5]})
+    assert any("pass_fds" in rec.getMessage()
+               and "HOST process table" in rec.getMessage()
+               for rec in caplog.records), caplog.text
+
+    caplog.clear()
+    monkeypatch.delenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", raising=False)
+    with caplog.at_level(_logging.WARNING, logger="core.sandbox.context"):
+        _ctx._warn_if_waiver_degrades({"pass_fds": [5]})
+    assert not caplog.records, caplog.text
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
 def test_no_branded_names_in_target_view(tmp_path):

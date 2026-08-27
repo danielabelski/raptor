@@ -113,9 +113,10 @@ cache hit, `skip_mount_ns=`, and `pass_fds=`) — each with a
 stdin spool and ride the fork backend. `--sandbox none` remains
 authoritative: an explicitly disabled sandbox is the operator's
 global escape hatch, not a silent degrade. When the override waives
-the no-backend refusal, every affected run logs a WARNING.
-With the override set, those runs proceed with the old warn-only
-degrade.
+a refusal that lands the run on a host-procfs-visible lane — the
+no-backend refusal, or a per-call `pass_fds=` demotion — every
+affected untrusted run logs a WARNING. With the override set, those
+runs proceed with the old warn-only degrade.
 
 Distinct from `RAPTOR_ALLOW_UNSANDBOXED_TOOLS`, which waives a
 *missing sandbox module* at the tool-runner import seam — this one

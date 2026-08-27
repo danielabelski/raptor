@@ -224,6 +224,23 @@ _DMI_STORY["uevent"] = "MODALIAS=" + _DMI_STORY["modalias"]
 # tools converting jiffies to seconds divide by this.
 _USER_HZ = 100
 
+
+def _cpumask_str(cpu_count: int) -> str:
+    """Kernel-format cpumask for the claimed CPU count: comma-separated
+    32-bit words, each zero-padded to 8 hex digits (the shape both
+    /sys/.../node0/cpumap and /proc/schedstat's domain masks print).
+    One formatter for every mask surface — a width or grouping
+    disagreement between two files claiming the same CPUs is a
+    one-read contradiction."""
+    mask = (1 << cpu_count) - 1
+    words = []
+    while True:
+        words.append(f"{mask & 0xffffffff:08x}")
+        mask >>= 32
+        if not mask:
+            break
+    return ",".join(reversed(words))
+
 # /proc/cpuinfo block — per-processor. Per-CPU fields are templated
 # with the processor index and the global cpu_count. The `flags` field
 # is templated with the host's actual flags so capability dispatch
@@ -481,7 +498,7 @@ def build_persona(tmpdir: Path, cpu_count: int,
             f"cpu{_i} 0 0 0 0 0 0 "
             f"{int(fake_uptime_s * 1e7)} {int(fake_uptime_s * 2e6)} "
             f"{fake_processes * 40}")
-        _ss_lines.append("domain0 " + ",".join(["ff"]) + " "
+        _ss_lines.append(f"domain0 {_cpumask_str(cpu_count)} "
                          + " ".join(["0"] * 36))
     files["/proc/schedstat"] = _write(
         tmpdir / "schedstat", "\n".join(_ss_lines) + "\n")
@@ -494,7 +511,7 @@ def build_persona(tmpdir: Path, cpu_count: int,
     files["/sys/devices/system/node/node0/cpulist"] = _write(
         _node_dir / "cpulist", _cpu_range_str + "\n")
     files["/sys/devices/system/node/node0/cpumap"] = _write(
-        _node_dir / "cpumap", f"{(1 << cpu_count) - 1:08x}\n")
+        _node_dir / "cpumap", _cpumask_str(cpu_count) + "\n")
 
     # /etc/passwd and /etc/group: the host copies name the OPERATOR
     # (login, home path, group) to any target that reads them — the
@@ -798,6 +815,38 @@ def apply_overlay(persona: Persona, root_prefix: str = "") -> None:
             if persona.strict:
                 raise
             logger.debug("fingerprint: cpu-dir overlay failed: %s", exc)
+
+    # Same readdir cross-check exists one directory over: /sys/devices/
+    # system/node/node0 and /sys/bus/cpu/devices both enumerate the
+    # host's real cpuN entries. Tmpfs each and populate cpu_count
+    # symlinks into the (already masked) cpu dir; node0 also gets empty
+    # cpulist/cpumap mount points so the persona file loop below can
+    # bind its content over them (everything else under node0 reads
+    # ENOENT — the same accepted stub-dir cost as cpuN/ topology).
+    # Symlink targets are RELATIVE, matching what the kernel emits
+    # (readlink on an absolute-target cpuN entry is its own tell).
+    for _enum_dir, _link_prefix in (
+            (f"{root_prefix}/sys/devices/system/node/node0",
+             "../../cpu/"),
+            (f"{root_prefix}/sys/bus/cpu/devices",
+             "../../../devices/system/cpu/")):
+        if not os.path.isdir(_enum_dir):
+            continue
+        try:
+            _mount("tmpfs", _enum_dir, "tmpfs", 0, "mode=755")
+            for _i in range(persona.cpu_count):
+                os.symlink(f"{_link_prefix}cpu{_i}",
+                           f"{_enum_dir}/cpu{_i}")
+            if _enum_dir.endswith("/node0"):
+                for _stub in ("cpulist", "cpumap"):
+                    with open(f"{_enum_dir}/{_stub}", "w",
+                              encoding="utf-8"):
+                        pass
+        except OSError as exc:
+            if persona.strict:
+                raise
+            logger.debug("fingerprint: cpu-enum overlay failed for "
+                         "%s: %s", _enum_dir, exc)
 
     for target, source in persona.files.items():
         inside = f"{root_prefix}{target}"

@@ -29,18 +29,31 @@ def _poison(flags, reason="unshare: Operation not permitted"):
     state._unshare_engage_cache[tuple(flags)] = (False, reason)
 
 
+def _gate_flags(block_network=True):
+    """The EXACT flag-set the production gate probes for this shape —
+    mirrors the construction in context.run() (incl. the conditional
+    --cgroup) so cache poisoning hits the key the gate looks up."""
+    from core.sandbox.probes import unshare_supports_cgroup
+    flags = ["--user", "--pid", "--fork", "--ipc"]
+    if block_network:
+        flags.append("--net")
+    if unshare_supports_cgroup():
+        flags.append("--cgroup")
+    return flags
+
+
 @_linux_only
 class TestEngagementGateRaises:
     def test_block_network_engagement_failure_raises(self):
-        # The gate probes --user --pid --fork --ipc --net when block_network.
-        _poison(["--user", "--pid", "--fork", "--ipc", "--net"])
+        # The gate probes the exact production flag-set (see _gate_flags).
+        _poison(_gate_flags())
         with sandbox(block_network=True) as run, \
                 pytest.raises(SandboxSetupError) as ei:
             run(["echo", "hi"], capture_output=True, text=True)
         assert "Operation not permitted" in str(ei.value)
 
     def test_error_names_the_escape_hatch(self):
-        _poison(["--user", "--pid", "--fork", "--ipc", "--net"])
+        _poison(_gate_flags())
         with sandbox(block_network=True) as run, \
                 pytest.raises(SandboxSetupError) as ei:
             run(["echo", "hi"], capture_output=True, text=True)
@@ -75,7 +88,7 @@ class TestEngagementGateRaises:
     def test_failure_does_not_return_empty_result(self):
         # The whole point: a setup failure must NOT come back as a
         # CompletedProcess the caller could mistake for "ran, no output".
-        _poison(["--user", "--pid", "--fork", "--ipc", "--net"])
+        _poison(_gate_flags())
         returned = None
         with sandbox(block_network=True) as run:
             try:
@@ -87,7 +100,7 @@ class TestEngagementGateRaises:
     def test_engaging_flagset_still_runs(self):
         # Negative control: a flag-set marked as engaging runs normally,
         # so the gate doesn't break the happy path.
-        state._unshare_engage_cache[("--user", "--pid", "--fork", "--ipc", "--net")] = (True, "")
+        state._unshare_engage_cache[tuple(_gate_flags())] = (True, "")
         with sandbox(block_network=True) as run:
             r = run(["echo", "ok"], capture_output=True, text=True)
         assert r.returncode == 0
@@ -98,7 +111,7 @@ class TestEngagementGateRaises:
         # definitive refusal) must NOT fail loud: aborting a working scan on
         # a load blip is the worse failure. Proceed; a real namespace failure
         # still surfaces at spawn.
-        state._unshare_engage_cache[("--user", "--pid", "--fork", "--ipc", "--net")] = (None, "probe could not run: timeout")
+        state._unshare_engage_cache[tuple(_gate_flags())] = (None, "probe could not run: timeout")
         raised = False
         try:
             with sandbox(block_network=True) as run:
@@ -283,3 +296,21 @@ class TestExecStatusPipe:
         finally:
             os.close(r)
             os.close(w)
+
+
+def test_engage_probe_covers_the_cgroup_flag_source_pin():
+    """The real unshare command appends --cgroup when the CLI supports
+    it — the engagement gate must probe the SAME flag-set, or a kernel
+    or policy that refuses CLONE_NEWCGROUP slips past the gate and the
+    wrapper exits pre-exec: the exact silent-empty-output failure this
+    file guards against."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "context.py").read_text(
+        encoding="utf-8")
+    start = src.index('_engage_flags = ["--user"')
+    block = src[start:src.index("check_unshare_engages(_engage_flags)",
+                                start)]
+    assert "unshare_supports_cgroup()" in block, (
+        "the engagement probe no longer covers the conditional "
+        "--cgroup the real command appends")
+    assert '_engage_flags.append("--cgroup")' in block

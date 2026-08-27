@@ -188,6 +188,28 @@ def unshare_supports_kill_child() -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def unshare_supports_cgroup() -> bool:
+    """Whether this host's ``unshare`` supports ``--cgroup`` (util-linux
+    ≥ 2.32, 2018). With it, the subprocess-lane bootstrap gets a fresh
+    cgroup namespace so /proc/self/cgroup reads ``0::/`` instead of the
+    orchestrator's host cgroup path (a systemd session scope names the
+    operator's uid and login session to any target that reads it).
+    Probed via ``--help`` and cached; a host without the flag runs
+    without the mask, host-real cgroup visible on this lane only.
+    """
+    try:
+        from core.config import RaptorConfig
+        out = subprocess.run(
+            [_resolve_sandbox_binary("unshare"), "--help"],
+            capture_output=True, text=True, timeout=5,
+            env=RaptorConfig.get_safe_env(),
+        )
+        return "--cgroup" in (out.stdout or "") + (out.stderr or "")
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
 def check_unshare_engages(unshare_flags) -> tuple:
     """Return (engages, reason) for the EXACT unshare flag-set a real run uses.
 

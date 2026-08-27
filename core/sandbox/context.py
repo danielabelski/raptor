@@ -3145,6 +3145,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _engage_flags = ["--user", "--pid", "--fork", "--ipc"]
             if block_network:
                 _engage_flags.append("--net")
+            # --cgroup joins the real command below when the CLI
+            # supports it — the engagement probe must test the same
+            # flag-set, or a kernel/policy that refuses CLONE_NEWCGROUP
+            # slips past the gate and the wrapper exits pre-exec.
+            from .probes import unshare_supports_cgroup
+            if unshare_supports_cgroup():
+                _engage_flags.append("--cgroup")
             _engages, _engage_reason = check_unshare_engages(_engage_flags)
             if _engages is False:
                 # Definitive kernel refusal (rootless podman / nested userns).
@@ -3225,6 +3232,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             # namespaces (= full outbound network).
             from .probes import (
                 _resolve_sandbox_binary,
+                unshare_supports_cgroup,
                 unshare_supports_kill_child,
             )
             unshare_cmd = [_resolve_sandbox_binary("unshare"),
@@ -3233,6 +3241,13 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 unshare_cmd.append("--pid")
             if block_network:
                 unshare_cmd.append("--net")
+            # Fresh cgroup ns: /proc/self/cgroup reads "0::/" instead
+            # of the orchestrator's host cgroup path (a systemd session
+            # scope names the operator's uid + login session). Mirrors
+            # CLONE_NEWCGROUP on the fork-based spawn lane; gated on a
+            # cached capability probe like --kill-child.
+            if unshare_supports_cgroup():
+                unshare_cmd.append("--cgroup")
             # Belt-and-braces orphan teardown: if `unshare` is killed
             # directly (orchestrator still alive), --kill-child SIGKILLs the
             # pid-1 shim → kernel cascades the pid-ns. The PRIMARY teardown
@@ -3381,13 +3396,18 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
         # feeding a PoC its witness via input= silently routed the
         # run onto the no-mount-ns fallback — host-pid /proc visible
         # to exactly the attacker-derived code the witness drives
-        # (measured: the full host argv surface, including concurrent
-        # runs' credential-bearing command lines). pass_fds remains
-        # the one disqualifier (real multi-fd plumbing, no caller on
-        # the untrusted contract).
+        # (the full host argv surface, including concurrent runs'
+        # credential-bearing command lines). pass_fds remains the one
+        # disqualifier (real multi-fd plumbing, no caller on the
+        # untrusted contract).
         if (sys.platform != "darwin" and use_mount
                 and kwargs.get("input") is not None
                 and not kwargs.get("pass_fds")):
+            # subprocess.run's own contract, enforced here because the
+            # conversion below would otherwise silently prefer input=.
+            if kwargs.get("stdin") is not None:
+                raise ValueError(
+                    "stdin and input arguments may not both be used.")
             import tempfile as _tf_mod
             _in_payload = kwargs.pop("input")
             if isinstance(_in_payload, str):
@@ -3396,8 +3416,15 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             _stdin_spool = _tf_mod.TemporaryFile()
             _stdin_spool.write(_in_payload)
             _stdin_spool.flush()
-            _stdin_spool.seek(0)
-            kwargs["stdin"] = _stdin_spool
+            # Re-open the spool read-only through the fd-path so the
+            # target's fd 0 carries no write capability — the RW
+            # description would let it grow a host-tmp file to
+            # RLIMIT_FSIZE. The new description starts at offset 0.
+            _ro_fd = os.open(f"/proc/self/fd/{_stdin_spool.fileno()}",
+                             os.O_RDONLY)
+            _stdin_spool.close()
+            _stdin_spool_ro = open(_ro_fd, "rb")
+            kwargs["stdin"] = _stdin_spool_ro
             # Lifetime: this frame outlives the synchronous spawn (the
             # child dup2s the fd before exec), and CPython closes the
             # unlinked spool at frame exit — no path ever exists for
@@ -5635,28 +5662,41 @@ def _reopen_write_only(fd: int, flags: int) -> "int | None":
     return None
 
 
-def _warn_if_waiver_degrades() -> None:
+def _warn_if_waiver_degrades(
+        call_kwargs: dict | None = None) -> None:
     """Per-call WARNING when the fresh-procfs waiver actually bites.
 
     With RAPTOR_ALLOW_DEGRADED_UNTRUSTED set, an untrusted run on a
     host whose fork/mount-ns backend cannot engage proceeds on the
     host-procfs-visible fallback — silently, pre-fix, because the
     waiver zeroes the require flag before run() ever sees it. Every
-    other waived shape warns; this one should too.
+    other waived shape warns; this one should too. The same silent
+    degrade exists per-call: ``pass_fds=`` forces the subprocess
+    fallback regardless of backend health, so a waived untrusted call
+    carrying it lands on the host process table even on a fully
+    capable host — ``call_kwargs`` lets the entry points surface
+    that shape.
     """
     if untrusted_fresh_procfs_required() or sys.platform != "linux":
         return
-    try:
-        from ._spawn import mount_ns_available as _mna
-        if check_mount_available() and _mna():
-            return
-    except Exception:  # noqa: BLE001 — probe failure: warn anyway
-        pass
+    if call_kwargs is not None and call_kwargs.get("pass_fds"):
+        degrade_reason = (
+            "this call passes pass_fds=, which the fork-based spawn "
+            "path does not plumb")
+    else:
+        try:
+            from ._spawn import mount_ns_available as _mna
+            if check_mount_available() and _mna():
+                return
+        except Exception:  # noqa: BLE001 — probe failure: warn anyway
+            pass
+        degrade_reason = (
+            "the mount-ns backend cannot engage on this host")
     logger.warning(
         "run_untrusted: RAPTOR_ALLOW_DEGRADED_UNTRUSTED waives the "
-        "fresh-procfs contract and the mount-ns backend cannot engage "
-        "on this host — proceeding with the HOST process table "
-        "visible to the untrusted target."
+        "fresh-procfs contract and %s — proceeding with the HOST "
+        "process table visible to the untrusted target.",
+        degrade_reason,
     )
 
 
@@ -5969,7 +6009,7 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                 continue
             kwargs[_name] = _wfd
             _wo_fds.append(_wfd)
-    _warn_if_waiver_degrades()
+    _warn_if_waiver_degrades(kwargs)
     try:
         return run(cmd, block_network=True, target=target, output=output,
                    limits=limits,
@@ -6132,7 +6172,7 @@ def run_untrusted_networked(
             base_env = RaptorConfig.get_safe_env()
         kwargs["env"] = dict(base_env)
         kwargs["keep_trust_markers_for_dispatch"] = True
-    _warn_if_waiver_degrades()
+    _warn_if_waiver_degrades(kwargs)
     return run(
         cmd,
         block_network=False,

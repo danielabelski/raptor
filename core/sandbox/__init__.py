@@ -117,12 +117,16 @@ Sanitised host fingerprint (sanitise_host_fingerprint=True):
   non-round total), `/proc/{stat,uptime,loadavg,interrupts,softirqs,
   schedstat}` (internally consistent with the claimed CPU count and
   a per-install fake uptime), `/proc/sys/kernel/random/boot_id`
-  (independent per-install digest), `/sys/devices/system/cpu` (tmpfs
-  with exactly the claimed cpuN stubs) and node0 cpu lists,
-  `/proc/version` (trimmed to `Linux version <host-release>`), and
-  uname() nodename / domainname (via CLONE_NEWUTS + sethostname).
-  /proc/self/cgroup reads "0::/" on EVERY lane (fresh cgroup
-  namespace — observational only), persona or not.
+  (independent per-install digest), `/sys/devices/system/cpu`,
+  `/sys/devices/system/node/node0`, and `/sys/bus/cpu/devices`
+  (tmpfs with exactly the claimed cpuN entries) plus node0 cpu
+  lists, `/proc/version` (trimmed to `Linux version
+  <host-release>`), and uname() nodename / domainname (via
+  CLONE_NEWUTS + sethostname). /proc/self/cgroup reads "0::/" on
+  both namespace lanes (CLONE_NEWCGROUP on the fork lane; `unshare
+  --cgroup` on the subprocess lane where util-linux supports it),
+  persona or not; the no-namespace last-resort fallback keeps the
+  host cgroup path visible.
   All hide-intent values — no "sandbox" / "raptor" / "Generic CPU"
   / all-zero sentinels that anti-analysis-aware binaries can
   trivially detect. Implemented in core/sandbox/fingerprint.py.
@@ -168,8 +172,12 @@ Sanitised host fingerprint (sanitise_host_fingerprint=True):
     by flag-set differences. Trade-off accepted for SIMD compat.
   - Kernel memory-accounting bypasses of the meminfo story:
     sysinfo(2), /proc/vmstat, /proc/zoneinfo, and devtmpfs's
-    mountinfo `size=` option still reflect host RAM. Same class as
-    CPUID: syscall/kernel surfaces no file mask can reach.
+    mountinfo `size=` option still reflect host RAM (zoneinfo's
+    per-cpu pageset blocks also reveal the host CPU count). Same
+    class as CPUID: syscall/kernel surfaces no file mask can reach.
+  - Multi-NUMA hosts: only node0 is masked — a node1+ entry (and
+    the /sys/devices/system/node readdir) still shows the host's
+    real topology beside the claimed single-node story.
   - /sys/firmware/*, /dev/mem — host-real (UEFI/BIOS leakage);
     root-only DMI files (product_uuid, *_serial) stay unmasked but
     are unreadable from the sandbox uid.

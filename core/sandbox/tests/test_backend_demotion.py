@@ -67,6 +67,39 @@ class TestStrictRefusesPerCallDemotion(_Base):
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertIn("witness-x", r.stdout)
 
+    def test_input_stdin_spool_is_read_only(self):
+        # The converted spool must reach the target with NO write
+        # capability on fd 0 — a writable description would let the
+        # target grow a host-tmp file to RLIMIT_FSIZE.
+        from core.sandbox import sandbox
+        probe = ('import os\n'
+                 'print("IN=" + os.read(0, 64).decode())\n'
+                 'try:\n'
+                 '    os.write(0, b"x")\n'
+                 '    print("WRITE=allowed")\n'
+                 'except OSError:\n'
+                 '    print("WRITE=denied")\n')
+        with sandbox(profile="strict", target=self.tgt,
+                     output=self.out) as run:
+            r = run(["sh", "-c", "python3 -c '" + probe + "'"],
+                    input="witness-ro", capture_output=True,
+                    text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertIn("IN=witness-ro", r.stdout)
+        self.assertIn("WRITE=denied", r.stdout)
+
+    def test_input_and_stdin_together_raise(self):
+        # subprocess.run's own contract, kept across the spool
+        # conversion instead of silently preferring input=.
+        from core.sandbox import sandbox
+        _pr, _pw = os.pipe()
+        self.addCleanup(lambda: (os.close(_pr), os.close(_pw)))
+        with sandbox(profile="strict", target=self.tgt,
+                     output=self.out) as run:
+            with self.assertRaises(ValueError):
+                run(["cat"], input="x", stdin=_pr,
+                    capture_output=True, text=True, timeout=30)
+
     def test_pass_fds_demotion_raises_under_strict(self):
         from core.sandbox import sandbox
         from core.sandbox.errors import SandboxSetupError
@@ -150,6 +183,29 @@ class TestDemotedCallGetsPrivateScratch(_Base):
             (getattr(r, "sandbox_info", None) or {}).get(
                 "private_scratch"),
             "demoted restricted call must stamp private_scratch")
+
+    def test_demoted_lane_masks_host_cgroup(self):
+        # The subprocess-lane bootstrap unshares a cgroup namespace
+        # (where util-linux supports --cgroup), so /proc/self/cgroup
+        # reads "0::/" instead of the orchestrator's session scope —
+        # mirroring CLONE_NEWCGROUP on the fork lane.
+        from core.sandbox import sandbox
+        from core.sandbox.probes import unshare_supports_cgroup
+        if not unshare_supports_cgroup():
+            self.skipTest("unshare lacks --cgroup on this host")
+        _pr, _pw = os.pipe()
+        os.write(_pw, b"go")
+        os.close(_pw)
+        self.addCleanup(lambda: os.close(_pr))
+        with sandbox(target=self.tgt, output=self.out) as run:
+            r = run(["cat", "/proc/self/cgroup"],
+                    stdin=_pr, pass_fds=[_pr], pass_fds_declared=True,
+                    capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertIn("0::/", r.stdout, r.stdout)
+        for tell in ("user.slice", "session-", ".scope"):
+            self.assertNotIn(tell, r.stdout,
+                             f"host cgroup path leaked: {r.stdout!r}")
 
     def test_mounted_run_keeps_full_tmp_semantics(self):
         """No demotion → per-sandbox tmpfs /tmp stays writable."""

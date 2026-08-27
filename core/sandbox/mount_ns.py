@@ -42,6 +42,7 @@ import ctypes
 import os
 import re
 import stat as stat_module
+import time
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
@@ -316,6 +317,49 @@ def _refuse_image_symlink_components(root: str, abs_path: str) -> None:
             )
 
 
+_PHASE_TRACE_ENV = "RAPTOR_SANDBOX_PHASE_TRACE"
+# Per-entry copy markers are capped so a pathological host /etc can't
+# grow the trace file without bound.
+_PHASE_TRACE_MAX_ENTRIES = 4096
+
+
+def _phase_trace(marker: bytes) -> None:
+    """Append one setup-phase marker to the file named by
+    ``$RAPTOR_SANDBOX_PHASE_TRACE``. No-op when the variable is unset.
+
+    Diagnostic aid for setup wedges that only occur on specific hosts
+    (a CI runner whose /etc holds an entry this code blocks on): the
+    caller sets the env var to a host-visible path, and after a
+    timeout the LAST line of the file names the phase that never
+    completed.
+
+    Post-fork/pre-exec safe by construction: pure ``os.*`` fd ops,
+    one O_APPEND write per call, never raises. Written from the
+    sandbox child BEFORE pivot_root — the target file must live on a
+    host path (the caller's /tmp); markers stop at pivot_root by
+    design, so "trace ends at the pivot marker" means the wedge is
+    post-pivot.
+    """
+    path = os.environ.get(_PHASE_TRACE_ENV)
+    if not path:
+        return
+    try:
+        # O_NOFOLLOW: the trace path is typically under /tmp — refuse
+        # a symlink swap at the final component rather than append
+        # through it (same defence the safe-open pattern uses
+        # elsewhere in this module).
+        fd = os.open(path,
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT
+                     | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, b"mount_ns t=%dns: %s\n"
+                     % (time.monotonic_ns(), marker))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def _copy_etc_tree(src: str, dst: str) -> None:
     """Recursively copy *src* into *dst*, preserving directory
     structure and permission MODE BITS.
@@ -341,6 +385,7 @@ def _copy_etc_tree(src: str, dst: str) -> None:
     are silently skipped — the host /etc may contain entries readable
     only by host-root (shadow, gshadow).
     """
+    _traced = 0
     for dirpath, dirnames, filenames in os.walk(src):
         rel = os.path.relpath(dirpath, src)
         dst_dir = os.path.join(dst, rel) if rel != "." else dst
@@ -363,6 +408,11 @@ def _copy_etc_tree(src: str, dst: str) -> None:
         for fn in filenames:
             src_file = os.path.join(dirpath, fn)
             dst_file = os.path.join(dst_dir, fn)
+            if _traced < _PHASE_TRACE_MAX_ENTRIES:
+                # Marker BEFORE the entry is touched: on a wedge the
+                # last line of the trace names the offending entry.
+                _traced += 1
+                _phase_trace(b"etc copy entry: " + os.fsencode(src_file))
             try:
                 st = os.lstat(src_file)
                 if stat_module.S_ISLNK(st.st_mode):
@@ -646,8 +696,11 @@ def setup_mount_ns(target: str | None, output: str | None,
             continue
         inside = f"{root}/{d}"
         if d == "etc" and _etc_has_missing_targets:
+            _phase_trace(b"etc tmpfs mount: start")
             _mount("tmpfs", inside, "tmpfs", 0, "mode=755")
+            _phase_trace(b"etc tmpfs mount: done; etc copy: start")
             _copy_etc_tree(host_dir, inside)
+            _phase_trace(b"etc copy: done; stub pre-create: start")
             # Pre-create mount-point stubs for overlay targets that
             # don't exist on the host.
             for ns_target in etc_overlay:
@@ -678,8 +731,10 @@ def setup_mount_ns(target: str | None, output: str | None,
                             b"sandbox: mount_ns: etc_overlay pre-create "
                             b"failed (errno=%d)\n" % (exc.errno or 0,)
                         )
+            _phase_trace(b"stub pre-create: done; etc ro remount: start")
             _mount("tmpfs", inside, None,
                    MS_REMOUNT | MS_BIND | MS_RDONLY)
+            _phase_trace(b"etc ro remount: done")
         else:
             _mount(host_dir, inside, None, MS_BIND)
             _mount(host_dir, inside, None, _ro_remount_flags(inside))
@@ -1154,6 +1209,7 @@ def setup_mount_ns(target: str | None, output: str | None,
     # On kernel ≥5.12, MNT_LOCKED prevents remounting RO bind mounts
     # back to RW, so the old remount-RW approach silently failed.
     if etc_overlay:
+        _phase_trace(b"etc_overlay binds: start")
         for ns_target, host_source in etc_overlay.items():
             if not isinstance(ns_target, str) or not isinstance(host_source, str):
                 warn_post_fork(
@@ -1176,6 +1232,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                 )
                 continue
             inside = f"{root}{ns_target}"
+            _phase_trace(b"etc_overlay bind: " + os.fsencode(ns_target))
             if not os.path.exists(host_source):
                 warn_post_fork(
                     b"sandbox: mount_ns: etc_overlay source missing; "
@@ -1237,6 +1294,7 @@ def setup_mount_ns(target: str | None, output: str | None,
                     b"(errno=%d); overlay entry withdrawn "
                     b"(fail-closed)\n" % (exc.errno or 0)
                 )
+        _phase_trace(b"etc_overlay binds: done")
 
     # 8e. Caller-supplied stage_files — materialise arbitrary files in
     # the tmpfs root so they appear at their namespace path post-pivot.
@@ -1279,6 +1337,10 @@ def setup_mount_ns(target: str | None, output: str | None,
                 )
 
     # 9. pivot_root. put_old must be a directory INSIDE new_root.
+    # Last pre-pivot marker: the trace file lives on a HOST path, so
+    # by design no marker can follow this one — a trace ending here
+    # means the wedge (if any) is post-pivot (Landlock/seccomp/exec).
+    _phase_trace(b"pivot_root: start (final pre-pivot marker)")
     os.chdir(root)
     os.makedirs(".oldroot", exist_ok=True)
     _pivot_root(".", ".oldroot")

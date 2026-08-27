@@ -349,6 +349,13 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
     through a path that doesn't exist on the host.
     """
 
+    # Inner timeout for the sandboxed command. A healthy tmpfs+copy
+    # run completes in well under a second; 8s keeps generous headroom
+    # on a loaded runner while staying inside the 10s default-tier
+    # slow-test guard, so a wedge fails THIS test with the phase trace
+    # below instead of also tripping the tier guard at 15+s.
+    _SANDBOX_TIMEOUT = 8
+
     def setUp(self):
         if not _mount_ns_usable():
             self.skipTest(
@@ -357,12 +364,64 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
             )
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Per-phase watchdog trace: the overlay setup path has wedged
+        # on a CI runner whose /etc we cannot inspect or reproduce
+        # (every enumerated pathological-entry shape passes locally).
+        # The sandbox child appends a marker per setup phase (and per
+        # copied /etc entry) to this host-side file; on a timeout the
+        # failure message carries the trace so the CI log itself
+        # names the phase/entry that wedged.
+        self.phase_trace = os.path.join(self.tmp.name, "phase-trace.log")
+        os.environ["RAPTOR_SANDBOX_PHASE_TRACE"] = self.phase_trace
+        self.addCleanup(
+            os.environ.pop, "RAPTOR_SANDBOX_PHASE_TRACE", None)
+
+    def _run_overlay_cmd(self, cmd, etc_overlay):
+        """run_sandboxed with the shared config; on a setup wedge
+        (TimeoutExpired) fail with the phase trace inlined."""
+        import subprocess
+
+        from core.sandbox._spawn import run_sandboxed
+        try:
+            r = run_sandboxed(
+                cmd,
+                target=self.tmp.name, output=self.tmp.name,
+                block_network=True,
+                nproc_limit=1024,
+                limits={"memory_mb": 0, "max_file_mb": 10240,
+                        "cpu_seconds": 300},
+                writable_paths=[self.tmp.name, "/tmp"],
+                readable_paths=None,
+                allowed_tcp_ports=None,
+                seccomp_profile=None, seccomp_block_udp=False,
+                env=None, cwd=None, timeout=self._SANDBOX_TIMEOUT,
+                capture_output=True, text=True,
+                etc_overlay=etc_overlay,
+            )
+            # The trace is only useful on the wedge it exists to
+            # diagnose — prove on every green run that it actually
+            # records the overlay phases, so it can't silently rot.
+            trace = Path(self.phase_trace).read_text()
+            self.assertIn("etc copy: done", trace)
+            self.assertIn("pivot_root: start", trace)
+            return r
+        except subprocess.TimeoutExpired:
+            trace = "<no phase trace written>"
+            try:
+                trace = Path(self.phase_trace).read_text()
+            except OSError:
+                pass
+            self.fail(
+                f"sandbox setup wedged ({self._SANDBOX_TIMEOUT}s "
+                f"timeout). Phase trace (LAST line = the phase or "
+                f"/etc entry that never completed; a trace ending at "
+                f"the pivot_root marker means the wedge is "
+                f"post-pivot):\n{trace}"
+            )
 
     def test_overlay_file_visible_at_missing_host_path(self):
         """A file overlay'd to a path that doesn't exist on the host
         is readable inside the sandbox with the correct content."""
-        from core.sandbox._spawn import run_sandboxed
-
         # Pick a target path that definitely doesn't exist on the host.
         overlay_target = "/etc/raptor_test_overlay_missing.conf"
         assert not os.path.exists(overlay_target), (
@@ -375,19 +434,9 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
         with open(overlay_source, "w") as f:
             f.write(sentinel + "\n")
 
-        r = run_sandboxed(
+        r = self._run_overlay_cmd(
             ["cat", overlay_target],
-            target=self.tmp.name, output=self.tmp.name,
-            block_network=True,
-            nproc_limit=1024,
-            limits={"memory_mb": 0, "max_file_mb": 10240, "cpu_seconds": 300},
-            writable_paths=[self.tmp.name, "/tmp"],
-            readable_paths=None,
-            allowed_tcp_ports=None,
-            seccomp_profile=None, seccomp_block_udp=False,
-            env=None, cwd=None, timeout=15,
-            capture_output=True, text=True,
-            etc_overlay={overlay_target: overlay_source},
+            {overlay_target: overlay_source},
         )
         self.assertEqual(r.returncode, 0,
                          f"cat failed inside sandbox; stderr: {r.stderr!r}")
@@ -397,8 +446,6 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
     def test_host_etc_files_still_visible_with_tmpfs_overlay(self):
         """When tmpfs+copy is used for /etc, pre-existing host files
         (e.g. /etc/hostname) remain visible inside the sandbox."""
-        from core.sandbox._spawn import run_sandboxed
-
         overlay_target = "/etc/raptor_test_overlay_missing2.conf"
         assert not os.path.exists(overlay_target)
 
@@ -407,20 +454,10 @@ class TestEtcOverlayMissingHostTarget(unittest.TestCase):
             f.write("OVERLAY2\n")
 
         # Read /etc/hostname — a file that exists on any Linux host.
-        r = run_sandboxed(
+        r = self._run_overlay_cmd(
             ["sh", "-c",
              f"cat /etc/hostname && cat {overlay_target}"],
-            target=self.tmp.name, output=self.tmp.name,
-            block_network=True,
-            nproc_limit=1024,
-            limits={"memory_mb": 0, "max_file_mb": 10240, "cpu_seconds": 300},
-            writable_paths=[self.tmp.name, "/tmp"],
-            readable_paths=None,
-            allowed_tcp_ports=None,
-            seccomp_profile=None, seccomp_block_udp=False,
-            env=None, cwd=None, timeout=15,
-            capture_output=True, text=True,
-            etc_overlay={overlay_target: overlay_source},
+            {overlay_target: overlay_source},
         )
         self.assertEqual(r.returncode, 0,
                          f"sandbox cmd failed; stderr: {r.stderr!r}")

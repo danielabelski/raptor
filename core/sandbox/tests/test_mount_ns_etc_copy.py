@@ -63,6 +63,51 @@ def test_symlinks_recreated_as_symlinks(tmp_path, monkeypatch, src_tree):
     assert os.readlink(link) == "restricted.conf"
 
 
+def test_fifo_never_wedges_the_copy(tmp_path, monkeypatch, src_tree):
+    """A FIFO in /etc must not block the copy: the destination is a
+    fresh tmpfs, so the hard-link fast path always fails EXDEV and the
+    byte-copy fallback used to open(2) the FIFO — blocking forever
+    when it has no writer, wedging sandbox setup until the caller's
+    timeout. FIFOs are recreated with mkfifo instead."""
+    import threading
+
+    os.mkfifo(src_tree / "wedge.fifo", 0o620)
+    dst = tmp_path / "dst"
+
+    done = threading.Event()
+
+    def _run():
+        _copy(monkeypatch, src_tree, dst, force_byte_copy=True)
+        done.set()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    assert done.wait(10), "_copy_etc_tree blocked on the FIFO"
+
+    fifo = dst / "wedge.fifo"
+    assert stat.S_ISFIFO(os.lstat(fifo).st_mode)
+    assert stat.S_IMODE(os.lstat(fifo).st_mode) == 0o620
+    # The rest of the tree still copied.
+    assert (dst / "restricted.conf").read_text() == "secret=1\n"
+
+
+def test_socket_entries_skipped_silently(tmp_path, monkeypatch,
+                                         src_tree):
+    """Unix sockets in /etc cannot be copied or usefully recreated —
+    they must be skipped, never opened."""
+    import socket as socket_mod
+
+    s = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    s.bind(str(src_tree / "agent.sock"))
+    try:
+        dst = tmp_path / "dst"
+        _copy(monkeypatch, src_tree, dst, force_byte_copy=True)
+        assert not (dst / "agent.sock").exists()
+        assert (dst / "restricted.conf").exists()
+    finally:
+        s.close()
+
+
 def test_unreadable_entries_skipped_silently(tmp_path, monkeypatch,
                                              src_tree):
     if os.geteuid() == 0:

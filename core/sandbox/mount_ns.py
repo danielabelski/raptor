@@ -358,10 +358,22 @@ def _copy_etc_tree(src: str, dst: str) -> None:
             src_file = os.path.join(dirpath, fn)
             dst_file = os.path.join(dst_dir, fn)
             try:
-                if os.path.islink(src_file):
+                st = os.lstat(src_file)
+                if stat_module.S_ISLNK(st.st_mode):
                     link_target = os.readlink(src_file)
                     os.symlink(link_target, dst_file)
                     continue
+                if stat_module.S_ISFIFO(st.st_mode):
+                    # Recreate FIFOs instead of copying: the byte
+                    # copy below would block forever on a FIFO with
+                    # no writer (the hard-link fast path never saves
+                    # it — dst is a fresh tmpfs, so link(2) is always
+                    # EXDEV), wedging the whole sandbox setup until
+                    # the caller's timeout kills it.
+                    os.mkfifo(dst_file, stat_module.S_IMODE(st.st_mode))
+                    continue
+                if not stat_module.S_ISREG(st.st_mode):
+                    continue  # sockets, device nodes: nothing to copy
                 # Try hard-link first (fast, no copy; shares the
                 # source inode so mode/owner carry over exactly).
                 try:
@@ -370,17 +382,26 @@ def _copy_etc_tree(src: str, dst: str) -> None:
                 except OSError:
                     pass
                 # Byte copy, then re-apply the source's mode bits.
-                with open(src_file, "rb") as sf, open(dst_file, "wb") as df:
-                    while True:
-                        chunk = sf.read(65536)
-                        if not chunk:
-                            break
-                        df.write(chunk)
+                # O_NOFOLLOW + O_NONBLOCK + fstat S_ISREG re-check:
+                # the lstat above is advisory — an entry swapped for
+                # a FIFO/device between lstat and open must fail or
+                # be skipped, never block this pre-exec child.
+                sfd = os.open(
+                    src_file,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
                 try:
-                    mode = stat_module.S_IMODE(os.lstat(src_file).st_mode)
-                except OSError:
-                    mode = 0o644
-                os.chmod(dst_file, mode)
+                    if not stat_module.S_ISREG(os.fstat(sfd).st_mode):
+                        continue
+                    with open(dst_file, "wb") as df:
+                        while True:
+                            chunk = os.read(sfd, 65536)
+                            if not chunk:
+                                break
+                            df.write(chunk)
+                finally:
+                    os.close(sfd)
+                os.chmod(dst_file, stat_module.S_IMODE(st.st_mode))
             except OSError:
                 pass  # skip unreadable entries (shadow, etc.)
 

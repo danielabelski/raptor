@@ -39,7 +39,10 @@ CWE_TO_TOOL_DISPATCH: dict[str, dict[str, Any]] = {
     },
     "CWE-787": {
         "smt": "check-oob",
-        "cocci": None,
+        # Standing witness for the scatterlist-table shape: sized from
+        # the bare skb fragment count and mapped via skb_to_sgvec into
+        # a crypto request (frag_list segments uncounted).
+        "cocci": "scatterlist_frag_undersize.cocci",
         "joern": True,
         "codeql": "cpp/overflow-buffer",
         "sinks": ["memcpy", "strcpy", "strncpy", "sprintf", "gets"],

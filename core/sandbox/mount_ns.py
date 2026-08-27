@@ -351,7 +351,13 @@ def _copy_etc_tree(src: str, dst: str) -> None:
             except OSError:
                 mode = 0o755
             try:
-                os.makedirs(os.path.join(dst_dir, dn), mode, exist_ok=True)
+                dst_sub = os.path.join(dst_dir, dn)
+                os.makedirs(dst_sub, mode, exist_ok=True)
+                # makedirs' mode argument is masked by the process
+                # umask; re-apply the exact source mode the same way
+                # the byte-copy path below does (chmod is not
+                # umask-masked).
+                os.chmod(dst_sub, mode)
             except OSError:
                 pass
         for fn in filenames:
@@ -370,7 +376,13 @@ def _copy_etc_tree(src: str, dst: str) -> None:
                     # it — dst is a fresh tmpfs, so link(2) is always
                     # EXDEV), wedging the whole sandbox setup until
                     # the caller's timeout kills it.
+                    # mkfifo's mode argument is masked by the process
+                    # umask (it can only narrow, never widen, so it
+                    # stays as a tight initial mode); chmod to the
+                    # exact source mode afterwards — consistent with
+                    # the byte-copy path below.
                     os.mkfifo(dst_file, stat_module.S_IMODE(st.st_mode))
+                    os.chmod(dst_file, stat_module.S_IMODE(st.st_mode))
                     continue
                 if not stat_module.S_ISREG(st.st_mode):
                     continue  # sockets, device nodes: nothing to copy

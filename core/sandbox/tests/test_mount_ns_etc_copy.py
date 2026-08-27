@@ -11,10 +11,28 @@ from __future__ import annotations
 
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
 from core.sandbox.mount_ns import _copy_etc_tree
+
+
+@pytest.fixture(autouse=True)
+def hostile_umask():
+    """Force a restrictive umask for every test in this file.
+
+    Mode preservation must hold under ANY runner umask: mkfifo(2)'s
+    and mkdir(2)'s mode arguments are umask-masked, so a permissive
+    local umask (e.g. 0o002) hides a missing chmod that a CI umask
+    of 0o022 — or a paranoid 0o077 — exposes. Pinning the harshest
+    common value makes the assertions deterministic everywhere.
+    """
+    old = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(old)
 
 
 @pytest.fixture
@@ -71,7 +89,9 @@ def test_fifo_never_wedges_the_copy(tmp_path, monkeypatch, src_tree):
     timeout. FIFOs are recreated with mkfifo instead."""
     import threading
 
-    os.mkfifo(src_tree / "wedge.fifo", 0o620)
+    fifo_src = src_tree / "wedge.fifo"
+    os.mkfifo(fifo_src)
+    os.chmod(fifo_src, 0o620)  # exact source mode, umask-independent
     dst = tmp_path / "dst"
 
     done = threading.Event()
@@ -91,21 +111,44 @@ def test_fifo_never_wedges_the_copy(tmp_path, monkeypatch, src_tree):
     assert (dst / "restricted.conf").read_text() == "secret=1\n"
 
 
-def test_socket_entries_skipped_silently(tmp_path, monkeypatch,
-                                         src_tree):
+def test_socket_entries_skipped_silently(tmp_path, monkeypatch):
     """Unix sockets in /etc cannot be copied or usefully recreated —
-    they must be skipped, never opened."""
-    import socket as socket_mod
+    they must be skipped, never opened.
 
-    s = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
-    s.bind(str(src_tree / "agent.sock"))
+    The socket is bound in a short mkdtemp under /tmp rather than in
+    pytest's tmp_path: struct sockaddr_un's sun_path is 104 bytes on
+    macOS/BSD and 108 on Linux (NUL included), and macOS runners'
+    per-user tmp trees (/private/var/folders/...) blow that budget —
+    bind() fails "AF_UNIX path too long". Same short-base approach as
+    core/sandbox/proxy.py make_lane_dir.
+    """
+    import shutil
+    import socket as socket_mod
+    import tempfile
+
+    base = tempfile.mkdtemp(prefix=".raptor-etc-", dir="/tmp")
     try:
-        dst = tmp_path / "dst"
-        _copy(monkeypatch, src_tree, dst, force_byte_copy=True)
-        assert not (dst / "agent.sock").exists()
-        assert (dst / "restricted.conf").exists()
+        src = Path(base) / "src"
+        src.mkdir()
+        (src / "regular.conf").write_text("x=1\n")
+        sock_path = src / "agent.sock"
+        # Belt-and-braces: /tmp/.raptor-etc-XXXXXXXX/src/agent.sock is
+        # ~40 bytes, comfortably inside both platforms' budgets.
+        assert len(str(sock_path).encode()) <= 100, (
+            f"socket path {sock_path} exceeds the 100-byte sun_path "
+            f"budget; short-base construction is broken"
+        )
+        s = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        s.bind(str(sock_path))
+        try:
+            dst = tmp_path / "dst"
+            _copy(monkeypatch, src, dst, force_byte_copy=True)
+            assert not (dst / "agent.sock").exists()
+            assert (dst / "regular.conf").exists()
+        finally:
+            s.close()
     finally:
-        s.close()
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_unreadable_entries_skipped_silently(tmp_path, monkeypatch,

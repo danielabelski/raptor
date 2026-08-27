@@ -103,9 +103,17 @@ namespace-capable hosts: untrusted runs mount a pid-namespace-local
 spawn chain's own environ images). The requirement binds everywhere
 the contract would otherwise silently degrade: a failed fresh-proc
 mount aborts instead of warning, a mount-ns setup failure refuses
-the Landlock-only retry, and hosts whose mount-namespace backend
-cannot engage at all (`newuidmap` missing) refuse untrusted runs
-up front — each with a `SandboxSetupError` naming this override.
+the Landlock-only retry, hosts whose mount-namespace backend cannot
+engage at all (`newuidmap` missing) refuse untrusted runs up front,
+and so do the pre-flight demotions (a tool resolving outside the
+mount-ns bind tree — pass `tool_paths=` — a speculative-failure
+cache hit, `skip_mount_ns=`, and `pass_fds=`) — each with a
+`SandboxSetupError` naming this override. Witness bytes passed via
+`input=` do NOT degrade the lane: they convert to a private unlinked
+stdin spool and ride the fork backend. `--sandbox none` remains
+authoritative: an explicitly disabled sandbox is the operator's
+global escape hatch, not a silent degrade. When the override waives
+the no-backend refusal, every affected run logs a WARNING.
 With the override set, those runs proceed with the old warn-only
 degrade.
 
@@ -574,7 +582,7 @@ setting them manually either does nothing or weakens a boundary.
 
 | Variable | Set by | Purpose |
 |----------|--------|---------|
-| `RAPTOR_DIR` | `bin/raptor` (exported after symlink resolution) | Installation root; RAPTOR's own children derive libexec/tool paths. `get_safe_env()` **re-pins** it to the current tree so a multi-checkout operator's ambient value cannot cross-import trees. The only value ever added to `sys.path`. Stripped from untrusted-target envs (`strip_trust_markers` on direct paths, `--strip-raptor-dir` on the pid1-shim path) — the checkout path is a pure "inside RAPTOR" tell there; dispatch children keep it. |
+| `RAPTOR_DIR` | `bin/raptor` (exported after symlink resolution) | Installation root; RAPTOR's own children derive libexec/tool paths. `get_safe_env()` **re-pins** it to the current tree so a multi-checkout operator's ambient value cannot cross-import trees. The only value ever added to `sys.path`. Stripped from EVERY sandboxed target env by default (member of `TARGET_ENV_STRIP_SET`; the pid1-shim's mirror tuple follows, and `--strip-raptor-dir` survives as an argv-compat no-op) — the checkout path is a pure "inside RAPTOR" tell; only keep-trust dispatch children retain it. |
 | `RAPTOR_CALLER_DIR` | `bin/raptor` | Operator's `$PWD` at launch; default-target resolution for commands run without a path. Refuses control bytes. |
 | `_RAPTOR_TRUSTED` | `bin/raptor`, sandbox shims | Trust marker: `libexec/` scripts exit 2 unless it or `CLAUDECODE` is present. Stripped from target-bound envs BY DEFAULT at the sandbox env chokepoint (`TARGET_ENV_STRIP_SET` — trust markers + the session credential; the keep-trust skill dispatch is the only exception) so target-spawned processes cannot invoke libexec as trusted callers. Power users may set `_RAPTOR_TRUSTED=1` to drive libexec scripts directly — with the understanding that it bypasses the dispatch guard. |
 | `CLAUDECODE` | Claude Code | Same trust-marker role, set by the harness for its child processes; allowlisted, stripped from untrusted targets. |

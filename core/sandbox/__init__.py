@@ -106,11 +106,23 @@ Sanitised host fingerprint (sanitise_host_fingerprint=True):
   canonical "boring Debian 12 cloud VM on QEMU/KVM with Intel Xeon"
   values for hostname (`localhost`), `/etc/os-release` (Debian 12
   stub), `/etc/machine-id` (deterministic pseudo-random — looks
-  real, identical across operators), `/sys/class/dmi/id/*` (QEMU),
-  `/proc/cpuinfo` (canonical Xeon model + microcode + cache,
-  configurable processor count via cpu_count=N defaulting to 4),
+  real, PER-INSTALL: derived from the install path, so two operators
+  never share one), `/etc/{passwd,group}` (neutral system tables —
+  no operator login/home), the FULL `/sys/class/dmi/id/*` identity
+  story (one coherent QEMU/SeaBIOS guest across every world-readable
+  file INCLUDING `modalias` and its `uevent` twin, both synthesized
+  from the same story), `/proc/cpuinfo` (canonical Xeon model +
+  microcode + cache, configurable processor count via cpu_count=N
+  defaulting to 4), `/proc/meminfo` (consistent ~4 GiB/CPU story,
+  non-round total), `/proc/{stat,uptime,loadavg,interrupts,softirqs,
+  schedstat}` (internally consistent with the claimed CPU count and
+  a per-install fake uptime), `/proc/sys/kernel/random/boot_id`
+  (independent per-install digest), `/sys/devices/system/cpu` (tmpfs
+  with exactly the claimed cpuN stubs) and node0 cpu lists,
   `/proc/version` (trimmed to `Linux version <host-release>`), and
   uname() nodename / domainname (via CLONE_NEWUTS + sethostname).
+  /proc/self/cgroup reads "0::/" on EVERY lane (fresh cgroup
+  namespace — observational only), persona or not.
   All hide-intent values — no "sandbox" / "raptor" / "Generic CPU"
   / all-zero sentinels that anti-analysis-aware binaries can
   trivially detect. Implemented in core/sandbox/fingerprint.py.
@@ -154,15 +166,23 @@ Sanitised host fingerprint (sanitise_host_fingerprint=True):
     bypass our overlay.
   - Vendor leakage via flags-line — Intel vs AMD distinguishable
     by flag-set differences. Trade-off accepted for SIMD compat.
-  - /proc/meminfo, /sys/firmware/*, /dev/mem — host-real. UEFI/BIOS
-    + RAM size leakage. Out of v1 scope; meminfo masking deserves
-    its own audit (JVM heap auto-sizing, Postgres shared_buffers
-    consumers).
-  - /sys/class/dmi/id/{board_serial, product_uuid, chassis_*} —
-    only `sys_vendor` and `product_name` are bind-masked. Defended
-    by `restrict_reads=True`'s allowlist (DMI not on default
-    readable set); pass `restrict_reads=False` and the omitted
-    DMI identity files become host-real.
+  - Kernel memory-accounting bypasses of the meminfo story:
+    sysinfo(2), /proc/vmstat, /proc/zoneinfo, and devtmpfs's
+    mountinfo `size=` option still reflect host RAM. Same class as
+    CPUID: syscall/kernel surfaces no file mask can reach.
+  - /sys/firmware/*, /dev/mem — host-real (UEFI/BIOS leakage);
+    root-only DMI files (product_uuid, *_serial) stay unmasked but
+    are unreadable from the sandbox uid.
+  - The kernel RELEASE string (uname, /proc/version[_signature])
+    keeps the host flavor (e.g. a cloud-vendor suffix), which can
+    contradict the Debian story on cloud hosts — uname is
+    deliberately host-real (see above), so the persona's distro
+    story is only as strong as the kernel string allows.
+  - /proc/{uptime,stat} are STATIC per run (re-reading across a
+    sleep shows frozen values); mountinfo enumerates the mask
+    mounts themselves and tmpfs options carry the mounter's host
+    uid (intrinsic to unprivileged userns mounts — every rootless
+    container shows this).
   - sanitise_host_fingerprint=True with `target=None` AND
     `output=None` produces partial coverage: UTS-ns + affinity
     still apply (no mount-ns needed for those), but the file

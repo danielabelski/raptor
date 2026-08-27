@@ -195,21 +195,21 @@ _SECCOMP_BLOCK_ALWAYS = (
     # any future relaxation of the capability check would route around it.
     "open_by_handle_at", "name_to_handle_at",
 )
-# NOTE on namespace/mount syscalls (unshare, setns, mount, umount2,
-# pivot_root, chroot): we do NOT block these at the seccomp layer. Our
-# own sandbox bootstrap uses the `unshare` CLI, which calls unshare(2)
-# AFTER seccomp is installed in preexec_fn — blocking the syscall kills
-# our own unshare exec. Reinstalling seccomp after unshare would need a
-# C wrapper (unshare → prctl(PR_SET_SECCOMP) → execve) which is not
-# worth the complexity today. The residual risk — a child on a distro
-# without kernel.apparmor_restrict_unprivileged_userns=1 calling
-# unshare(CLONE_NEWUSER|CLONE_NEWNS) to get CAP_SYS_ADMIN in a nested
-# mount-ns and then attempting bind-mount tricks against Landlock's
-# path resolution — is bounded by: (1) Landlock path_beneath uses
-# dentry chains, not the bind-mount-visible path, so re-mounting
-# doesn't grant access to a new dentry; (2) NO_NEW_PRIVS is inherited
-# across fork/clone so seccomp can't be dropped; (3) Landlock rules
-# inherit across nested namespaces. Documented in the threat model.
+# NOTE on namespace/mount syscalls: LANE-DEPENDENT. The subprocess/
+# preexec lanes do NOT block them — their filter installs before the
+# `unshare` CLI bootstrap execs, so blocking unshare(2) there kills
+# the sandbox's own setup. The FORK-BACKEND lane DOES block namespace
+# creation (block_ns_creation below): its filter installs in the
+# grandchild after every namespace the sandbox itself needs exists,
+# which removed the old constraint outright. mount/umount2/pivot_root
+# stay unblocked at the seccomp layer on all lanes — a landlocked
+# process is already denied every mount(2) topology change
+# (Landlock's sb_mount hook), which is also why the grandchild mounts
+# its fresh /proc BEFORE the Landlock install. On the preexec lanes
+# the nested-namespace residual is bounded by: (1) Landlock
+# path_beneath uses dentry chains, not the bind-mount-visible path;
+# (2) NO_NEW_PRIVS is inherited so seccomp can't be dropped;
+# (3) Landlock rules inherit across nested namespaces.
 
 # Syscalls blocked in full, allowed in the debug AND frida profiles
 # (both are opt-in instrumentation profiles; the constant's name

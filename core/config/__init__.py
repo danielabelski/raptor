@@ -573,10 +573,6 @@ class RaptorConfig:
     # packages/fuzzing/env_hygiene.py; the strip regression harness is
     # table-driven off this constant.
     #
-    # Tier 2 (sandbox re-anonymisation follow-up, SAGE backlog
-    # 176d60fa): identity vars that today deliberately reach targets —
-    # RAPTOR_DIR, RAPTOR_OUT_DIR, RAPTOR_TARGET_KIND — move into this
-    # set once their target-side consumers are confirmed severable.
     # Extend THIS constant; do not scatter per-caller strips.
     TARGET_ENV_STRIP_SET = frozenset({
         "CLAUDECODE", "_RAPTOR_TRUSTED",

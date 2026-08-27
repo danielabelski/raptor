@@ -40,6 +40,10 @@ Directory structure::
             feasibility.json    — analyze_binary() output
             edges.json          — call-graph edges
             oracle-verdicts.json — per-function verdicts
+            binary-provenance.json — fact-provenance block (stripped-
+                                  ness, DWARF/symtab/dynsym presence,
+                                  fortification, name-provenance
+                                  census)
 
 Artifact envelope schema (every ``{artifact}.json``)::
 
@@ -62,6 +66,13 @@ Artifact payloads consumed by RAPTOR:
   * ``oracle-verdicts`` (written by :func:`store_oracle_verdicts`):
     ``{"binary_path": str, "tier": str, "verdicts": {name:
     {"classification": str, "address": int|null, "tier": str}}}``.
+  * ``binary-provenance`` (written by :func:`store_binary_provenance`):
+    ``{"provenance": {"probe", "build_id", "has_dwarf", "has_symtab",
+    "has_dynsym", "stripped", "fortified", ...}, "name_provenance_
+    counts": {tag: int}}`` — the authority record for how much a
+    name-keyed consumer may trust this binary's symbols. Persisted
+    next to the oracle's tier/suppression_grade so a later reader
+    can never re-derive authority the import seam didn't have.
 
 Partial caches are VALID: a consumer may have written only some
 artifact files for a build-ID. Readers must (and :meth:`BuildIDCache.get`
@@ -113,6 +124,7 @@ _KNOWN_ARTIFACTS = frozenset({
     "feasibility",
     "edges",
     "oracle-verdicts",
+    "binary-provenance",
 })
 
 
@@ -526,3 +538,36 @@ def store_oracle_verdicts(
             "under %s", written, cache.cache_dir,
         )
     return written
+
+
+def store_binary_provenance(
+    cache: BuildIDCache,
+    provenance: dict[str, Any],
+    *,
+    name_provenance_counts: dict[str, int] | None = None,
+    binary_sha256: str = "",
+    source_command: str = "",
+) -> Path | None:
+    """Persist a binary's fact-provenance block under its build-id.
+
+    *provenance* is the block assembled by
+    :func:`core.analysis.binary_provenance.binary_provenance_block`
+    (must carry a probed ``build_id``). Returns the artifact path, or
+    None when there is no valid build-id to key on — an unprobed
+    binary earns no persisted authority record.
+    """
+    if not isinstance(provenance, dict):
+        return None
+    build_id = provenance.get("build_id") or ""
+    if not isinstance(build_id, str) or not _valid_build_id(build_id):
+        return None
+    payload: dict[str, Any] = {"provenance": provenance}
+    if name_provenance_counts:
+        payload["name_provenance_counts"] = name_provenance_counts
+    return cache.put(
+        build_id,
+        "binary-provenance",
+        payload,
+        source_command=source_command,
+        binary_sha256=binary_sha256,
+    )

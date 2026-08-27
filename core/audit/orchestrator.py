@@ -2728,6 +2728,23 @@ def review_one_function(
     # Cheap mechanical checks that kill false-positive hypotheses.
     # Runs after G2 finding gates, before suspicious-demotion.
     if outcome.status in ("finding", "suspicious"):
+        # Binary items: journal which gates could actually run
+        # (records only — a gate blocked on missing inputs must be
+        # distinguishable from a gate that ran and passed). Own try:
+        # a records-only failure must never skip refutation below.
+        try:
+            from .binary_honesty import record_gate_engagement
+
+            record_gate_engagement(
+                config.out_dir,
+                outcome,
+                domain_model=domain_model,
+                checklist=checklist,
+                line_start=gap.get("line_start", 0),
+            )
+        except Exception:
+            logger.debug("gate-engagement record skipped", exc_info=True)
+
         try:
             from .refutation import refute_hypothesis
 
@@ -3473,6 +3490,24 @@ def _compute_audit_prep(config, *, joern_server=None, on_progress=None):
             "audit prep: binary target — source-only pre-passes "
             "skipped (macro recovery, source call edges, Joern)"
         )
+        # Run-level honesty records (never verdict-affecting): which
+        # channels are structurally disabled on this binary and why,
+        # plus the binary's fact-provenance block (build-id, stripped-
+        # ness, DWARF presence, fortification, name-provenance census)
+        # journaled and persisted in the build-id cache. Own try:
+        # records only, must never block prep.
+        try:
+            from .binary_honesty import (
+                declare_binary_channel_skips,
+                journal_binary_provenance,
+            )
+
+            declare_binary_channel_skips(config.out_dir, checklist)
+            journal_binary_provenance(config.out_dir, checklist)
+        except Exception:
+            logger.debug(
+                "binary run honesty records skipped", exc_info=True,
+            )
 
     # Fidelity-3 macro recovery: function definitions that only exist
     # post-expansion (DEFINE_HANDLER-style generators) are invisible to
@@ -7396,6 +7431,22 @@ def _run_audit_body(
                     continue
                 if "[hypothesis-consistency:" not in outcome.body:
                     continue
+                # Own try: records only, must never skip refutation.
+                try:
+                    from .binary_honesty import record_gate_engagement
+
+                    record_gate_engagement(
+                        config.out_dir,
+                        outcome,
+                        domain_model=domain_model,
+                        checklist=checklist,
+                        phase="post_promote",
+                    )
+                except Exception:
+                    logger.debug(
+                        "gate-engagement record skipped (post-promote)",
+                        exc_info=True,
+                    )
                 rv = refute_hypothesis(
                     outcome,
                     domain_model=domain_model,
@@ -8054,6 +8105,18 @@ def _run_audit_body(
             logger.info(diag_text)
     except Exception:
         logger.debug("tier diagnostics output failed", exc_info=True)
+
+    # Gate-engagement run summary (binary lane): which refutation
+    # gates were live vs could-not-run, aggregated from the per-item
+    # journal records. One line; absent on runs with no such records.
+    try:
+        from .binary_honesty import summarize_gate_engagement
+
+        _gate_line = summarize_gate_engagement(config.out_dir)
+        if _gate_line:
+            logger.info(_gate_line)
+    except Exception:
+        logger.debug("gate-engagement summary failed", exc_info=True)
 
     # Prefilter-kill ledger: structured record of every prefilter /
     # triage kill, spot-audited against the compiler analyzer so the
@@ -13673,6 +13736,24 @@ def _review_items(
 
         # ── Refutation gates (batch path) ─────────────────────────
         if outcome.status in ("finding", "suspicious"):
+            # Own try: records only, must never skip refutation.
+            try:
+                from .binary_honesty import record_gate_engagement
+
+                record_gate_engagement(
+                    config.out_dir,
+                    outcome,
+                    domain_model=domain_model,
+                    checklist=checklist,
+                    line_start=gap.get("line_start", 0),
+                    phase="review_batch",
+                )
+            except Exception:
+                logger.debug(
+                    "gate-engagement record skipped (batch)",
+                    exc_info=True,
+                )
+
             try:
                 from .refutation import refute_hypothesis
 

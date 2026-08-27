@@ -1365,6 +1365,11 @@
     "kind": "literal",
     "note": "Linux syscall names mirroring seccomp's block sets (drift-pinned by test_escalation_signatures.py::test_escape_primitives_match_seccomp_block_sets) \u2014 kernel ABI vocabulary like the tracer's _NAME_TO_TYPE entry, not project APIs"
   },
+  "core/sandbox/fingerprint.py::_DMI_STORY": {
+    "count": 17,
+    "kind": "literal",
+    "note": "DMI sysfs field names under /sys/class/dmi/id (bios_date, sys_vendor, ...) — a closed OS-defined kernel ABI enumeration whose values compose the fingerprint story, like the escalation-signatures syscall entry; not a learnable function-name vocabulary"
+  },
   "core/sandbox/profiles.py::_SANDBOX_KWARGS": {
     "count": 23,
     "kind": "literal"

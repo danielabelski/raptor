@@ -610,20 +610,8 @@
     "dead:dead_method:packages/fuzzing/corpus_manager.py:CorpusManager.create_from_directory": {
       "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
-    "dead:dead_method:packages/web/client.py:WebClient.get_cookies": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:packages/web/client.py:WebClient.set_auth": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
-    "dead:dead_method:packages/web/client.py:WebClient.set_bearer_token": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
-    },
     "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.get_findings": {
       "note": "public accessor on the alpha WebFuzzer API, kept as deliberate surface; previously kept alive only by a stale doc line about the unrelated core.sarif get_findings, removed in the docs curation pass"
-    },
-    "dead:dead_method:packages/web/fuzzer.py:WebFuzzer.set_sage_prior_recall": {
-      "note": "zero-reference symbol at baseline cut \u2014 triaged as public-API surface, planned wiring, or deletable-pending-owner-decision"
     },
     "imports:import_missing_symbol:packages/cve_env/cve_env/cli.py:cve_env:config": {
       "note": "nested src-layout false positive: pytest.ini's pythonpath entry (and the launcher shim's sys.path entry) is packages/cve_env, so bare `cve_env` resolves at runtime to the inner package packages/cve_env/cve_env/ where config.py exists; the indexer's packages/<pkg> alias rule maps `cve_env` to the outer __init__.py, a namespace anchor that exists only so pytest importlib mode namespaces the test tree"
@@ -741,6 +729,12 @@
     },
     "plumbing:orphan_env_var::SEMGREP_SEND_METRICS": {
       "note": "external consumer by design: the variable is semgrep's own phone-home suppression switch, exported into every child env so any invocation shape (including subcommands without the argv flags) stays offline"
+    },
+    "artifacts:orphan_reader::checkpoint-*-groups.json": {
+      "note": "glob-reader/concrete-writer false positive: run_corpus._clear_resume_state sweeps finished-run resume sidecars via glob(\"checkpoint-*-groups.json\"); the writers spell the concrete names (literal checkpoint-sec-groups.json / checkpoint-bf-groups.json paths and f\"checkpoint-{mode}-groups.json\", all written through _checkpoint_write), which the artifact indexer keys separately from the glob pattern, so the reader looks orphaned; twin of the baselined *.osv.json entry"
+    },
+    "artifacts:write_only_artifact::io-correlation.json": {
+      "note": "operator/LLM-facing output: packages/frida cli._maybe_correlate_io writes the ingest-payload/call-argument correlation report after a run and prints its path for the operator to inspect; no in-repo literal-name production reader by design (tests assert the file, the CLI only echoes the path)"
     }
   },
   "version": 1

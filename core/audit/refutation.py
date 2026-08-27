@@ -849,6 +849,78 @@ def _goconc_claim_in_family(mechanism: str, counter: str) -> bool:
     )
 
 
+# C lifetime witness family (W-FREEPATH / W-NOUSE / W-BRACKET /
+# W-DELEG + async-handoff): the C analog of the goconc discharge for
+# CWE-415/416 self-refutations.  The safe-teardown witness covers the
+# waiting-cancel / RCU idioms; these arms cover path-shaped safety
+# arguments (path-exclusive frees, no-use-after-release, paired
+# refcount brackets, delegation-only bodies, sentinel handoff paths)
+# over a goto-resolved CFG (core/audit/lifetime_witness.py).  The
+# claim-phrasing fences live in that module; the gate only decides
+# WHEN the witness may run: C sources, trust-gated, never on a
+# function carrying a structural receipt, record-or-refuse.
+
+
+def _record_lifetime_discharge(
+    outcome,
+    out_dir,
+    *,
+    mechanism: str,
+    result,
+) -> bool:
+    """Accept-with-record: persist a lifetime-witness discharge.
+
+    Same contract as the goconc record: the discharged dismissal goes
+    through the suppressions.jsonl single-writer chokepoint with
+    ``dropped: false`` and a verdict naming the witness.  Returns True
+    only when the record call completed; the caller refuses the
+    discharge on False — an unrecordable discharge must not happen.
+    """
+    if not out_dir:
+        logger.debug(
+            "lifetime discharge for %s:%s refused (no out_dir to record)",
+            getattr(outcome, "file", "?"),
+            getattr(outcome, "function", "?"),
+        )
+        return False
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+
+        line = getattr(outcome, "line", 0) or 0
+        fpath = getattr(outcome, "file", "")
+        func = getattr(outcome, "function", "")
+        record_suppression(
+            Path(out_dir),
+            finding={
+                "finding_id": f"audit-refutation:{fpath}:{func}:{line}",
+                "rule_id": "audit:lifetime-witness",
+                "file_path": fpath,
+                "line": line,
+                "function": func,
+            },
+            verdict="lifetime_witness_corroborates_dismissal",
+            reason=(
+                f"lifetime self-refutation accepted: the dismissal is "
+                f"mechanically corroborated by the C lifetime witness "
+                f"({result.reason})"
+            ),
+            dropped=False,
+            extra={
+                "stage": "anti-self-refutation",
+                "witness": "lifetime",
+                "floor_gate": "cwe_allowlist",
+                "arms": sorted({p.arm for p in result.proofs}),
+                "pointers": sorted({p.pointer for p in result.proofs}),
+                "covered_cwes": sorted(result.covered_cwes),
+                "hypothesis": (mechanism or "")[:160],
+            },
+        )
+        return True
+    except Exception:
+        logger.debug("lifetime discharge record failed", exc_info=True)
+        return False
+
+
 def _record_goconc_discharge(
     outcome,
     out_dir,
@@ -1671,6 +1743,35 @@ def rescue_self_refuted(
         _callerlock_memo.append(result)
         return result
 
+    # Study-learned vocabulary for the lifetime witness (seed growth
+    # rides the domain model only — never claim text).  Memoised per
+    # gate invocation.
+    _lt_vocab_memo: list = []
+
+    def _lifetime_vocab():
+        if _lt_vocab_memo:
+            return _lt_vocab_memo[0]
+        vocab = None
+        dm = domain_model
+        if dm is None and _witness_out:
+            try:
+                from core.json import load_json
+
+                dm = load_json(Path(_witness_out) / "domain-model.json")
+            except Exception:
+                dm = None
+        if isinstance(dm, dict):
+            try:
+                from .condition_smt import DomainVocabulary
+
+                dv = DomainVocabulary.from_domain_model(dm)
+                if dv.has_content:
+                    vocab = dv
+            except Exception:
+                logger.debug("lifetime vocab load failed", exc_info=True)
+        _lt_vocab_memo.append(vocab)
+        return vocab
+
     def _probe_ctx(detector_finding: dict | None = None) -> _ProbeContext:
         """Context the proof-grade probes may see (dominance lane)."""
         return _ProbeContext(
@@ -1903,6 +2004,60 @@ def rescue_self_refuted(
                 logger.info(
                     "anti-self-refutation: caller-lock discharge "
                     "for %s refused — accept-with-record could not "
+                    "write its record",
+                    getattr(outcome, "function", "?"),
+                )
+        # C lifetime witness discharge: CWE-415/416 claims on C
+        # sources whose non-lifetime remainder is already discharged,
+        # only under the operator's repo-trust assertion, and NEVER on
+        # a function carrying a structural receipt.  The witness's own
+        # claim-phrasing fences and proof obligations decide the rest;
+        # the discharge must be recorded or it does not happen.
+        if (
+            cwes
+            and cwes & _TEARDOWN_DISCHARGEABLE_CWES
+            and not (cwes - _TEARDOWN_DISCHARGEABLE_CWES - discharged)
+            and source
+            and _witness_trusted
+            and not fn_receipts
+            and (getattr(outcome, "file", "") or "").endswith(".c")
+            and _witness_target
+        ):
+            _lt = None
+            try:
+                from .lifetime_witness import check_lifetime_claim
+
+                _lt = check_lifetime_claim(
+                    source, mechanism, cwes,
+                    target_path=_witness_target,
+                    rel_file=getattr(outcome, "file", "") or "",
+                    vocab=_lifetime_vocab(),
+                )
+            except Exception:
+                logger.debug(
+                    "lifetime witness probe failed", exc_info=True,
+                )
+            if (
+                _lt is not None
+                and _lt.discharged
+                and (cwes & _TEARDOWN_DISCHARGEABLE_CWES)
+                <= _lt.covered_cwes
+            ):
+                if _record_lifetime_discharge(
+                    outcome, _witness_out,
+                    mechanism=mechanism, result=_lt,
+                ):
+                    logger.info(
+                        "anti-self-refutation: accepting self-"
+                        "refutation for %s — mechanically "
+                        "corroborated (lifetime: %s)",
+                        getattr(outcome, "function", "?"),
+                        _lt.reason,
+                    )
+                    continue
+                logger.info(
+                    "anti-self-refutation: lifetime discharge for "
+                    "%s refused — accept-with-record could not "
                     "write its record",
                     getattr(outcome, "function", "?"),
                 )

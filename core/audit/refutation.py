@@ -913,6 +913,138 @@ def _record_goconc_discharge(
         return False
 
 
+# TU-local caller-held-lock witness (caller_lock): the caller-context
+# analog of the race-protection discharge.  The in-function C witness
+# only sees lexical lock scopes inside the reviewed function, so a
+# race/TOCTOU self-refutation whose operative safety argument is a
+# lock the CALLER holds across the call always floored even when the
+# caller set is TU-complete and mechanically provable.  The fence
+# below decides only which dismissals the witness may EXAMINE (the
+# proof is always the mechanical TU analysis in
+# core/audit/caller_lock.py, never the phrasing).
+
+# Race/TOCTOU families the caller-held-lock witness can discharge.
+# CWE-367 is deliberately excluded from the in-function witness's
+# set (_LOCK_DISCHARGEABLE_RACE_CWES: a TOCTOU can span lock scopes)
+# but joins here: the witness proves the lock is held across the
+# whole call, so check and use both execute inside ONE held region —
+# the exclusion's reason does not apply.
+_CALLERLOCK_DISCHARGEABLE_CWES = frozenset({
+    "CWE-362", "CWE-364", "CWE-366", "CWE-367",
+})
+
+# A lock-ish object must be named somewhere in the dismissal — the
+# witness adjudicates lock-based serialization, nothing else.
+_CALLERLOCK_LOCK_TOKEN_RE = re.compile(
+    r"lock|mutex|rwsem|semaphore|spinlock", re.IGNORECASE,
+)
+
+# In-family: the dismissal (or the reviewer's counter) attributes the
+# safety to a lock held by the caller / held across or around the
+# call — the exact claim the TU-local caller analysis can adjudicate.
+# Claims attributing safety to the function's own locking, to
+# single-threadedness, or to anything else never match.
+_CALLERLOCK_HELD_BY_CALLER_RE = re.compile(
+    r"caller[-\s]held"
+    r"|\bheld\s+(?:by|in)\s+(?:the\s+|its\s+|every\s+|all\s+|each\s+"
+    r"|any\s+|both\s+|the\s+only\s+)?callers?\b"
+    r"|\bcallers?\b[^.;]{0,100}?\b(?:hold|holds|held|holding"
+    r"|acquires?|acquired|takes?|taken|took)\b"
+    r"|\b(?:hold|holds|held|holding|acquires?|acquired|takes?|taken"
+    r"|took)\b[^.;]{0,100}?\bcall(?:ers?|ing)?\b"
+    r"|\bheld\s+(?:across|around|over|during|for)\b[^.;]{0,60}?"
+    r"\bcall"
+    r"|\bcalled\s+(?:with|under|while)\b[^.;]{0,80}?\b(?:held"
+    r"|locked)\b"
+    r"|\b(?:under|with)\b[^.;]{0,60}?\bheld\s+by\b"
+    r"|serial\w*\s+(?:by|via|through|at)\s+(?:the\s+|its\s+|each\s+"
+    r"|every\s+)?call(?:er|ers|ing)?\b",
+    re.IGNORECASE,
+)
+
+
+def _callerlock_claim_in_family(mechanism: str, counter: str) -> bool:
+    """Applicability fence for the caller-held-lock witness.
+
+    True when the dismissed race/TOCTOU hypothesis's operative safety
+    argument is caller-held lock serialization: a lock-ish token
+    appears in the dismissal, and either the mechanism or the
+    reviewer's counter attributes the protection to a lock the caller
+    holds (the witness corroborates the counter, mirroring the goconc
+    precedent).  The fence decides only which dismissals the witness
+    may examine — never the verdict.
+    """
+    both = f"{mechanism or ''} {counter or ''}"
+    if not _CALLERLOCK_LOCK_TOKEN_RE.search(both):
+        return False
+    return bool(
+        _CALLERLOCK_HELD_BY_CALLER_RE.search(mechanism or "")
+        or _CALLERLOCK_HELD_BY_CALLER_RE.search(counter or "")
+    )
+
+
+def _record_callerlock_discharge(
+    outcome,
+    out_dir,
+    *,
+    mechanism: str,
+    result,
+) -> bool:
+    """Accept-with-record: persist a caller-lock-discharged dismissal.
+
+    Same never-silent contract as the goconc discharge: the record
+    goes through the suppressions.jsonl single-writer chokepoint with
+    ``dropped: false`` and a verdict naming the witness; returns True
+    only when the record call completed, and the caller refuses the
+    discharge on False (an unrecordable discharge must not happen).
+    """
+    if not out_dir:
+        logger.debug(
+            "caller-lock discharge for %s:%s refused (no out_dir to "
+            "record)",
+            getattr(outcome, "file", "?"),
+            getattr(outcome, "function", "?"),
+        )
+        return False
+    try:
+        from core.analysis.reach_chokepoint import record_suppression
+
+        line = getattr(outcome, "line", 0) or 0
+        fpath = getattr(outcome, "file", "")
+        func = getattr(outcome, "function", "")
+        record_suppression(
+            Path(out_dir),
+            finding={
+                "finding_id": f"audit-refutation:{fpath}:{func}:{line}",
+                "rule_id": "audit:callerlock-witness",
+                "file_path": fpath,
+                "line": line,
+                "function": func,
+            },
+            verdict="callerlock_witness_corroborates_dismissal",
+            reason=(
+                f"race/TOCTOU self-refutation accepted: the dismissal "
+                f"is mechanically corroborated by the TU-local caller-"
+                f"held-lock witness ({result.reasoning})"
+            ),
+            dropped=False,
+            extra={
+                "stage": "anti-self-refutation",
+                "witness": "caller_lock",
+                "floor_gate": "cwe_allowlist",
+                "lock_class": result.lock_class,
+                "lock_object": result.lock_object,
+                "call_sites": result.call_sites,
+                "callers": list(result.callers),
+                "hypothesis": (mechanism or "")[:160],
+            },
+        )
+        return True
+    except Exception:
+        logger.debug("caller-lock discharge record failed", exc_info=True)
+        return False
+
+
 # Pre-loop screen families whose injected evidence can corroborate a
 # same-family self-refutation, and the hypothesis-text family matcher.
 _INT_CONTRACT_PRE_EVIDENCE = ("check-parsed-int-contract",
@@ -1512,6 +1644,33 @@ def rescue_self_refuted(
         _goconc_memo.append(result)
         return result
 
+    # TU-local caller-held-lock witness — lazy: the defining TU and
+    # the tree-visibility scan run only when a race/TOCTOU dismissal
+    # is actually in scope for it.  Memoised per gate invocation.
+    # C only; same trust gate as the other source-level witnesses
+    # (TU-locality claims are launderable by a crafted tree).
+    _callerlock_memo: list = []
+
+    def _callerlock_probe():
+        if _callerlock_memo:
+            return _callerlock_memo[0]
+        result = None
+        fpath = getattr(outcome, "file", "") or ""
+        if source and fpath.endswith(".c") and _witness_target:
+            try:
+                from .caller_lock import check_caller_lock_serialization
+                result = check_caller_lock_serialization(
+                    source,
+                    getattr(outcome, "function", "") or "",
+                    rel_file=fpath,
+                    target_path=_witness_target,
+                )
+            except Exception:
+                logger.debug("caller-lock probe failed", exc_info=True)
+                result = None
+        _callerlock_memo.append(result)
+        return result
+
     def _probe_ctx(detector_finding: dict | None = None) -> _ProbeContext:
         """Context the proof-grade probes may see (dominance lane)."""
         return _ProbeContext(
@@ -1702,6 +1861,49 @@ def rescue_self_refuted(
                     "anti-self-refutation: goconc discharge for %s "
                     "refused — accept-with-record could not write "
                     "its record",
+                    getattr(outcome, "function", "?"),
+                )
+        # TU-local caller-held-lock discharge: race/TOCTOU families
+        # only, C translation units only, in-family claims only
+        # (the dismissal must attribute the safety to caller-held
+        # serialization), only under the operator's repo-trust
+        # assertion, and NEVER on a function carrying a structural
+        # receipt (that floor is a different lane and outranks the
+        # witness).  CWE-367 is dischargeable HERE and not by the
+        # in-function witness because the caller holds the lock
+        # across the whole call — check and use both execute inside
+        # one held region.  The discharge must be recorded or it
+        # does not happen.  The floor-membership conjunct keeps the
+        # arm scoped to dismissals the CWE-allowlist floor would
+        # actually catch: a pure CWE-367 claim never floors, so
+        # there is nothing to discharge (and a record claiming
+        # otherwise would be misleading).
+        if (
+            cwes
+            and cwes <= _CALLERLOCK_DISCHARGEABLE_CWES
+            and cwes & _SELF_REFUTATION_CWES
+            and _witness_trusted
+            and not fn_receipts
+            and _callerlock_claim_in_family(mechanism, counter)
+        ):
+            _clw = _callerlock_probe()
+            if _clw is not None and _clw.held:
+                if _record_callerlock_discharge(
+                    outcome, _witness_out,
+                    mechanism=mechanism, result=_clw,
+                ):
+                    logger.info(
+                        "anti-self-refutation: accepting self-"
+                        "refutation for %s — mechanically "
+                        "corroborated (caller_lock: %s)",
+                        getattr(outcome, "function", "?"),
+                        _clw.reasoning,
+                    )
+                    continue
+                logger.info(
+                    "anti-self-refutation: caller-lock discharge "
+                    "for %s refused — accept-with-record could not "
+                    "write its record",
                     getattr(outcome, "function", "?"),
                 )
         if cwes & _SELF_REFUTATION_CWES:

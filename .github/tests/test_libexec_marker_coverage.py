@@ -298,6 +298,11 @@ unset _symhops''',
         ("raptor-cc-trust-check", 3, (_CC_TRUST_EXTRA_ECHO,)),
     ],
     "libexec/raptor-frida": [("raptor-frida", 1, ())],
+    # exit 2: patch-verify's exit codes 0/1/3 are verdict-bearing; 2 is
+    # its reserved non-verdict failure code.
+    "libexec/raptor-frida-patch-verify": [
+        ("raptor-frida-patch-verify", 2, ()),
+    ],
     "libexec/raptor-llm-scorecard": [("raptor-llm-scorecard", 1, ())],
     "libexec/raptor-sage-mcp": [("raptor-sage-mcp", 3, ())],
     "libexec/raptor-sage-setup": [("raptor-sage-setup", 3, ())],
@@ -314,6 +319,7 @@ ENV_STRIP_LINES = {
     "bin/raptor-sca": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
     "libexec/raptor-agentic": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
     "libexec/raptor-frida": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
+    "libexec/raptor-frida-patch-verify": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
     "libexec/raptor-llm-scorecard": '. "$REPO_ROOT/core/security/_dangerous_env_strip.sh"',
     "libexec/raptor-threat-model": '. "$RAPTOR_DIR/core/security/_dangerous_env_strip.sh"',
 }

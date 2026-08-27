@@ -50,10 +50,10 @@ def _capture_warnings(monkeypatch):
 
 
 def _write_config(tmp_path, monkeypatch, models):
-    cfg = tmp_path / "models.json"
-    cfg.write_text(json.dumps({"models": models}))
-    monkeypatch.setenv("RAPTOR_CONFIG", str(cfg))
-    return cfg
+    cfg_path = tmp_path / "models.json"
+    cfg_path.write_text(json.dumps({"models": models}))
+    monkeypatch.setenv("RAPTOR_CONFIG", str(cfg_path))
+    return cfg_path
 
 
 class TestUnknownRoleWarnsAtLoad:

@@ -239,3 +239,13 @@ def test_bundle_then_reproduce_happy_path(tmp_path):
     assert manifest["tier"] == "1.5"  # bumped
     assert manifest["reproduction"]["reproduced"] is True
     assert manifest["reproduction"]["runs"] == 3
+    # Per-run diagnostics recorded for every run: on a divergent run
+    # the manifest (and the CLI report echoed on failure) names the
+    # shape — returncode, signal, isolation degradation — instead of
+    # a bare outcome string.
+    run_details = manifest["reproduction"]["run_details"]
+    assert len(run_details) == 3
+    for i, rec in enumerate(run_details, 1):
+        assert rec["run"] == i
+        assert rec["outcome"] == "exit_signal"
+        assert "returncode" in rec

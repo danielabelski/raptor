@@ -177,6 +177,17 @@ def _cmd_reproduce(args) -> int:
     print(render_bundle(bundle))
     print(f"  reproduced: {result.reproduced} "
           f"(attempted={result.attempted}, {result.reason})")
+    # Per-run diagnostics: name the lane and shape of every run so a
+    # divergent run (isolation degradation, clean-exit-with-no-input)
+    # is diagnosable straight from the report/CI log.
+    for rec in result.run_details:
+        extras = ", ".join(
+            f"{k}={rec[k]!r}" for k in rec if k not in ("run", "outcome")
+        )
+        line = f"    run {rec.get('run', '?')}: {rec.get('outcome', '?')}"
+        if extras:
+            line += f" ({extras})"
+        print(line)
     # Exit 0 when it reproduced; 1 when attempted-but-not; 2 when
     # not attempted (couldn't run) — so scripts can branch.
     if result.reproduced:

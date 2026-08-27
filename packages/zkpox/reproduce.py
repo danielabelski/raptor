@@ -40,7 +40,7 @@ from pathlib import Path
 
 from core.sandbox import SandboxSetupError
 from core.witness.types import WitnessOutcome
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from packages.zkpox.bundle import ZKPoXBundle
@@ -86,6 +86,13 @@ class ReproductionResult:
     # consumers must not read tier 1.5 as mechanical proof unless this
     # field says so.
     evidence_grade: str = ""
+    # Per-run diagnostics: returncode plus a bounded extract of
+    # sandbox_info (signal, crashed, blocked, isolation degradation).
+    # Outcome strings alone cannot distinguish "the witness genuinely
+    # doesn't reproduce" from "the sandbox lane degraded / stdin never
+    # arrived on one run" — these records name the lane and the shape
+    # for each run so a divergent run is diagnosable from the report.
+    run_details: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -97,6 +104,7 @@ class ReproductionResult:
             "deterministic": self.deterministic,
             "reason": self.reason,
             "evidence_grade": self.evidence_grade,
+            "run_details": [dict(d) for d in self.run_details],
         }
 
 
@@ -107,6 +115,7 @@ def _finalize(
     *,
     reason: str = "",
     grades: list[str] | None = None,
+    details: list[dict] | None = None,
 ) -> ReproductionResult:
     """Build the result from the per-run observed outcomes."""
     reproduced = bool(observed) and all(o == expected for o in observed)
@@ -142,6 +151,7 @@ def _finalize(
         deterministic=deterministic,
         reason=reason,
         evidence_grade=grade,
+        run_details=list(details or []),
     )
 
 
@@ -335,6 +345,7 @@ def _reproduce_replay(
 
     observed: list[str] = []
     grades: list[str] = []
+    details: list[dict] = []
     for _i in range(n):
         try:
             # run_untrusted, not run: the target binary is untrusted
@@ -358,6 +369,11 @@ def _reproduce_replay(
         except Exception as e:  # noqa: BLE001 — best-effort per run
             observed.append("error")
             grades.append("")
+            details.append({
+                "run": _i + 1,
+                "outcome": "error",
+                "error": str(e)[:200],
+            })
             log.debug("reproduce replay run raised: %s", e)
             continue
         sandbox_info = getattr(result, "sandbox_info", None)
@@ -367,8 +383,26 @@ def _reproduce_replay(
         )
         observed.append(outcome.value)
         grades.append(str(_detail.get("evidence_grade") or ""))
+        rec: dict[str, Any] = {
+            "run": _i + 1,
+            "outcome": outcome.value,
+            "returncode": returncode,
+        }
+        if isinstance(sandbox_info, dict):
+            for key in ("signal", "signal_provenance", "crashed",
+                        "seccomp_killed", "resource_exceeded",
+                        "sanitizer", "mount_ns_degraded",
+                        "sandbox_disabled"):
+                value = sandbox_info.get(key)
+                if value not in (None, False):
+                    rec[key] = (value if isinstance(value, (bool, int))
+                                else str(value)[:200])
+            blocked = sandbox_info.get("blocked")
+            if blocked:
+                rec["blocked"] = [str(b)[:120] for b in list(blocked)[:5]]
+        details.append(rec)
 
-    return _finalize(expected, observed, n, grades=grades)
+    return _finalize(expected, observed, n, grades=grades, details=details)
 
 
 def attach_reproduction(

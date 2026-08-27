@@ -491,6 +491,7 @@ func carry(v any) {
         r = check_goroutine_isolation(_RECORD_SCAN, files)
         assert r.isolated is False
 
+    @needs_ts_go
     def test_zero_spawn_callback_escape_func_literal_refuses(self):
         # A spawn-free package handing a closure to an imported worker
         # pool: the callee runs it on a goroutine no go statement
@@ -511,6 +512,7 @@ func carry(v any) {
         assert "function value" in r.reasoning
         assert r.spawn_count == 0
 
+    @needs_ts_go
     def test_zero_spawn_callback_escape_func_name_refuses(self):
         files = {
             "record.go": _STORE_PKG["record.go"],
@@ -525,6 +527,7 @@ func carry(v any) {
         assert r.isolated is False
         assert "function value" in r.reasoning
 
+    @needs_ts_go
     def test_zero_spawn_locally_bound_closure_to_import_refuses(self):
         # One level of local indirection must not hide the closure
         # from the escape probe: f := func(){...}; ext.Schedule(f).
@@ -544,6 +547,7 @@ func carry(v any) {
         assert r.isolated is False
         assert "function value" in r.reasoning
 
+    @needs_ts_go
     def test_func_typed_parameter_forward_to_import_refuses(self):
         # A package-owned wrapper forwarding its func-typed FORMAL to
         # an import is the same escape one hop later.
@@ -561,6 +565,7 @@ func carry(v any) {
         assert r.isolated is False
         assert "function value" in r.reasoning
 
+    @needs_ts_go
     def test_package_level_func_var_to_import_refuses(self):
         for decl in (
             "var hook = func() {\n}\n",   # func-literal initialized
@@ -579,6 +584,7 @@ func carry(v any) {
             assert r.isolated is False, decl
             assert "function value" in r.reasoning
 
+    @needs_ts_go
     def test_zero_spawn_local_callbacks_still_witness(self):
         # Control: a spawn-free package whose function values only go
         # to package-local callees keeps the witness.
@@ -595,6 +601,7 @@ func carry(v any) {
         assert r.isolated is True
         assert r.spawn_count == 0
 
+    @needs_ts_go
     def test_callback_to_external_callee_refuses(self):
         files = _pkg({
             "cb.go": (
@@ -607,6 +614,7 @@ func carry(v any) {
         assert r.isolated is False
         assert "function value" in r.reasoning
 
+    @needs_ts_go
     def test_callback_to_package_rooted_chain_allowed(self):
         # withLock-style helpers and sync primitives reached through
         # package-owned state keep the witness (their spawning
@@ -657,6 +665,7 @@ func carry(v any) {
         )
         assert r.isolated is False
 
+    @needs_ts_go
     def test_other_package_file_excluded_by_parsed_clause(self):
         files = _pkg({
             "main.go": (
@@ -718,6 +727,19 @@ func hello() {
 
     def test_result_default_is_refusal(self):
         assert GoroutineIsolationResult().isolated is False
+
+    def test_missing_grammar_refuses(self, monkeypatch):
+        # Runs everywhere (grammar installed or not): without the Go
+        # grammar the witness must refuse with the exact conservative
+        # result — never guess from unparsed source.
+        import core.audit.goconc as goconc_mod
+
+        monkeypatch.setattr(goconc_mod, "_go_parser", lambda: None)
+        r = check_goroutine_isolation(_RECORD_SCAN, _pkg())
+        assert r.isolated is False
+        assert r.spawn_count == -1
+        assert r.claimed_types == ()
+        assert r.reasoning == "tree-sitter Go grammar unavailable"
 
 
 # ---------------------------------------------------------------------------

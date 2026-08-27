@@ -691,13 +691,18 @@ from a related count after a transform (e.g. nents vs orig_nents).
 
 def _format_item(item: StudyItem, *, role: str = "focus") -> str:
     """Format a study item as a readable text block for the LLM prompt."""
+    from core.security.prompt_envelope import neutralize_tag_forgery
     tag = "[FOCUS]" if role == "focus" else "[CONTEXT]"
-    parts = [f"## {tag} {item.kind}: {item.name}"]
+    # The NAME is target-derived too: source extraction restricts it
+    # to identifier charset, but binary-derived items carry raw
+    # symbol names — a hostile name would otherwise forge a peer
+    # heading or an envelope tag in the trusted prompt region.
+    parts = [f"## {tag} {item.kind}: "
+             f"{neutralize_tag_forgery(item.name)}"]
     parts.append(f"File: {item.file}:{item.line or '?'}")
 
     # Doc comments and definitions are target-repo text — neutralise
     # envelope/role forgery before interpolation.
-    from core.security.prompt_envelope import neutralize_tag_forgery
     if item.doc_comment:
         parts.append(
             f"Doc comment:\n{neutralize_tag_forgery(item.doc_comment)}")
@@ -726,9 +731,12 @@ def _format_item(item: StudyItem, *, role: str = "focus") -> str:
     if item.paired_with:
         parts.append(f"Paired with: {', '.join(item.paired_with)}")
     if item.calls:
-        parts.append(f"Calls: {', '.join(item.calls[:20])}")
+        parts.append("Calls: "
+                     + neutralize_tag_forgery(", ".join(item.calls[:20])))
     if item.callers:
-        parts.append(f"Called by: {', '.join(item.callers[:20])}")
+        parts.append("Called by: "
+                     + neutralize_tag_forgery(
+                         ", ".join(item.callers[:20])))
     if item.lock_sites:
         parts.append(f"Lock sites: {', '.join(item.lock_sites)}")
     if item.rcu_usage:

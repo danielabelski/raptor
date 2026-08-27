@@ -34,6 +34,28 @@ _STOPWORDS = frozenset((
 ))
 
 
+def _name_variants(function_name: str) -> "tuple[str, ...]":
+    """The function name plus its r2-undecorated form, when distinct.
+
+    Binary audits key functions with r2 decoration (sym.main,
+    sym.imp.strcpy, fcn.00401000) while binary-study models carry the
+    bare Ghidra names. Matching considers BOTH forms — rewriting the
+    name in place regressed source audits whose inventories
+    legitimately produce dotted names (Lua Class.method, a source
+    object named `sym`).
+    """
+    for _pfx in ("sym.imp.", "sym.", "fcn.", "imp."):
+        if (function_name.startswith(_pfx)
+                and len(function_name) > len(_pfx)):
+            # a name that IS a bare prefix would yield an empty
+            # variant — and "" is a substring of everything (spurious
+            # +5 on every item) and matches a contract with no
+            # function key (KeyError swallowed into silent primer
+            # loss)
+            return (function_name, function_name[len(_pfx):])
+    return (function_name,)
+
+
 def _paths_match(a: str, b: str) -> bool:
     """Check if two paths refer to the same file (suffix-match on components).
 
@@ -137,7 +159,8 @@ def _relevance_score(
 ) -> float:
     """Score how relevant a concept/invariant/contract is to a function."""
     score = 0.0
-    fn_lower = function_name.lower()
+    variants = _name_variants(function_name)
+    fn_lowers = tuple(v.lower() for v in variants)
     source_lower = source.lower() if source else ""
 
     # Statement and negation join the text: derived invariants keep
@@ -151,8 +174,9 @@ def _relevance_score(
     ).lower()
     item_id = (item.get("id") or item.get("concept") or item.get("name") or "").lower()
 
-    # Direct naming match (case-insensitive, no double-count)
-    if fn_lower in desc or fn_lower in item_id:
+    # Direct naming match (case-insensitive, no double-count) —
+    # either name form counts, once.
+    if any(v in desc or v in item_id for v in fn_lowers):
         score += 5.0
 
     # Evidence references this file or function.
@@ -163,14 +187,14 @@ def _relevance_score(
             ev_file = ev.get("file", "")
             if ev_file and _paths_match(file_path, ev_file):
                 ev_item = ev.get("item", "")
-                if ev_item and ev_item == function_name:
+                if ev_item and ev_item in variants:
                     score += 6.0
                 else:
                     score += 1.5
                 break
 
     # Contract is FOR this function specifically
-    if item.get("function") == function_name:
+    if item.get("function") in variants:
         score += 8.0
     item_file = item.get("file") or item.get("source") or ""
     item_file = re.split(r":\d", item_file, maxsplit=1)[0]
@@ -726,7 +750,8 @@ def primers_from_domain_model(
     # --- Contracts (rich schema: function/input_semantics/output_semantics) ---
     for contract in model.get("contracts", []):
         cf = (contract.get("function") or "").lower()
-        if cf != function_name.lower():
+        if cf not in tuple(v.lower()
+                           for v in _name_variants(function_name)):
             continue
         lines = [f"DOMAIN-SPECIFIC: CONTRACT FOR {contract['function']}"]
         if contract.get("input_semantics"):

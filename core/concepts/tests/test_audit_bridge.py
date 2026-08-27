@@ -894,3 +894,58 @@ class TestProvenanceTierTags:
         )
         assert block is not None
         assert "**sg_page_ownership** [stale-unverified]" in block
+
+
+class TestNameVariantJoin:
+    """Binary audits key functions with r2 decoration; source
+    inventories legitimately emit dotted names. Matching considers
+    BOTH forms — an in-place strip regressed source exact joins."""
+
+    def test_source_dotted_name_keeps_exact_join(self):
+        from core.concepts.audit_bridge import _relevance_score
+        contract = {"function": "sym.lookup", "file": "src/symtab.lua"}
+        assert _relevance_score(
+            contract, "src/symtab.lua", "sym.lookup", "") >= 10.0
+
+    def test_r2_decorated_name_joins_bare_contract(self):
+        from core.concepts.audit_bridge import _relevance_score
+        contract = {"function": "parse_header", "file": "g1.c"}
+        for decorated in ("sym.parse_header", "sym.imp.parse_header",
+                          "fcn.parse_header"):
+            assert _relevance_score(
+                contract, "binary:/x", decorated, "") >= 8.0
+
+    def test_primers_contract_loop_joins_decorated_names(
+        self, tmp_path,
+    ):
+        import json
+
+        from core.concepts.audit_bridge import (
+            _load_cached,
+            primers_from_domain_model,
+        )
+        (tmp_path / "domain-model.json").write_text(json.dumps({
+            "concepts": [], "invariants": [],
+            "contracts": [{
+                "function": "parse_header", "file": "g1.c",
+                "input_semantics": "len bounds data",
+            }],
+        }))
+        _load_cached.cache_clear()
+        primers = primers_from_domain_model(
+            tmp_path, "binary:/x", "sym.parse_header")
+        assert primers, "decorated name found no contract primer"
+        assert any("parse_header" in p for p in primers)
+
+    def test_bare_prefix_name_yields_no_empty_variant(self):
+        """A name that IS a bare r2 prefix must not produce an
+        empty-string variant — "" substring-matches every item (+5
+        noise) and joins a contract missing its function key
+        (KeyError swallowed into silent primer loss)."""
+        from core.concepts.audit_bridge import (
+            _name_variants,
+            _relevance_score,
+        )
+        assert _name_variants("sym.") == ("sym.",)
+        unrelated = {"id": "x", "description": "nothing related"}
+        assert _relevance_score(unrelated, "f.c", "sym.", "") < 5.0

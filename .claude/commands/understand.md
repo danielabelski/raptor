@@ -16,6 +16,7 @@ This command is mode-routed — there is no single CLI to call blindly:
 | Case | Route |
 |------|-------|
 | `<target>` is a compiled artefact (ELF/Mach-O/PE/JAR/APK/...) with `--map` | `libexec/raptor-understand --map --target <t> --out "$OUTPUT_DIR"` (mechanical, no LLM) |
+| `<target>` is a compiled artefact (or `.gpr` / `re-database.json` / a binary run dir) with `--study` | `libexec/raptor-binary-study <t> "$OUTPUT_DIR" [--identifier ...] [--concept ...] [--model M \| --prep-only]` (decomp-tree + standard study pipeline) |
 | `--model` passed with `--hunt` or `--trace` | `libexec/raptor-understand` (multi-model substrate) |
 | Everything else — source-tree `--map`, `--trace`, `--hunt`, `--teach`, `--study` | **In-session workflow below** (you are the LLM); `libexec/raptor-understand` rejects source-tree `--map` by design |
 
@@ -50,6 +51,47 @@ The binary path is evidence-first by design:
 - SMT is only run against explicit conditions supplied in `--constraint-file`
 - no trust boundary or unchecked flow is invented when the binary evidence cannot prove it
 - Mach-O slices, app bundle metadata and Objective-C / Swift selectors are structure, not attacker-control claims
+
+### Binary `--study`
+
+For a compiled artefact, `--study` routes through
+`libexec/raptor-binary-study`: it materializes the binary's RE
+database (`re-database.json` — produced by a prior
+`raptor-ghidra import --decompile-all` or attach; the binary `--map`
+pipeline writes its own artifact family, not this one) as a
+**decomp-tree** (pseudo-source: one C-like
+file per call-graph community, a synthesized `types.h`, and a
+`decomp-map.json` sidecar resolving every file:line back to
+`function@address`), then drives the STANDARD study pipeline over
+it. `domain-model.json` comes out schema-identical, so /audit's
+vocabulary, IRIS, and every other consumer work unchanged.
+
+Running phase 2:
+- default (no flag): the full study loop runs mechanically via the
+  configured LLM (or the claude CLI transport when none is
+  configured); `--model <name>` overrides the model. Both drive
+  prep → LLM study-run → reading-list drain, bounded passes. With
+  `--gpr <project.gpr>` the loop decompiles bounded batches of
+  functions the reading list asks for between passes.
+- `--prep-only`: prep writes `study-list.json`; YOU are phase 2 —
+  follow the in-session study workflow below over the decomp-tree,
+  citing decomp-tree file:line as evidence, then run
+  `libexec/raptor-binary-study <input> "$OUTPUT_DIR" --finalize` to
+  apply the confidence ceiling mechanically.
+
+Binary confidence discipline (enforced mechanically at the end of
+the `--model` loop, or by `--finalize` after in-session phase 2):
+decompilation is derived evidence — EVERY concept/invariant in a
+binary study clamps to at most `traced`, carries a
+`decompiled-evidence` tag, and never keeps a compiled mechanical
+rule (a fabricated external citation cannot lift the ceiling: the
+receipt verifier confines evidence to the tree, so no external
+citation can verify). The clamped model is re-promoted to the
+project-canonical store so /audit sees the ceiling. The audit joins
+the vocabulary via normalized function names (r2 `sym.`/`fcn.`
+decorations are stripped at the scoring boundary) and decomp-tree
+filenames. The tool never imports the hostile bundle itself; it
+refuses when no database exists.
 
 For deeper evidence after the static map:
 

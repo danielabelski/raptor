@@ -993,6 +993,18 @@ def main() -> int:
     ap.add_argument("--include-dir", action="append", default=None,
                     dest="include_dirs", metavar="DIR",
                     help="Additional include search directories (repeatable).")
+    ap.add_argument("--skip-compile", action="store_true",
+                    help="Skip phase 3b (invariant->rule compilation) "
+                         "— for callers that gate rule minting on "
+                         "their own evidence policy (e.g. binary "
+                         "study, where decompiled evidence never "
+                         "compiles rules).")
+    ap.add_argument("--redb", default=None, metavar="PATH",
+                    help="Passed through to raptor-study-prep for "
+                         "binary targets (re-database.json).")
+    ap.add_argument("--redb-map", default=None, metavar="PATH",
+                    help="Passed through to raptor-study-prep "
+                         "(decomp-map.json sidecar).")
     ap.add_argument("-v", "--verbose", action="store_true")
     parsed = ap.parse_args()
 
@@ -1074,6 +1086,10 @@ def main() -> int:
             prep_cmd.extend(["--include-dir", d])
     if parsed.model:
         prep_cmd.extend(["--model", parsed.model])
+    if parsed.redb:
+        prep_cmd.extend(["--redb", parsed.redb])
+    if parsed.redb_map:
+        prep_cmd.extend(["--redb-map", parsed.redb_map])
 
     rc = _run(prep_cmd, verbose=parsed.verbose)
     if rc != 0:
@@ -1118,7 +1134,10 @@ def main() -> int:
 
     # --- Phase 3b: compile invariants into mechanical rules ---
     dm_path_check = output_dir / "domain-model.json"
-    if exit_code == 0 and dm_path_check.is_file():
+    if parsed.skip_compile:
+        print("study-loop: rule compilation skipped (--skip-compile)",
+              file=sys.stderr)
+    elif exit_code == 0 and dm_path_check.is_file():
         try:
             dm_check = load_json(
                 dm_path_check, strict=True,

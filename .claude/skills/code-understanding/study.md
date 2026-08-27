@@ -91,6 +91,36 @@ When running in-session (Claude IS the LLM), skip `raptor-study-run` and do the 
 
 Stop when a pass produces no new unresolved follow-ups. This is the in-session equivalent of `raptor-study-loop` draining `reading-list.json` — your own judgement drives the iteration instead of a JSON file.
 
+## Binary targets
+
+A compiled artefact studies through `libexec/raptor-binary-study`
+(see the /understand command doc for routing). The pipeline is the
+same as source; only the corpus differs:
+
+- the corpus is a **decomp-tree** rendered from the binary's RE
+  database — decompiled functions grouped by call-graph community,
+  provenance headers (`function @ address`, callers/callees), and a
+  synthesized `types.h` from recovered types;
+- evidence citations use decomp-tree `file:line` exactly like
+  source; `decomp-map.json` resolves them to `function@address`
+  (addresses are content-stable per build — better than mtime-based
+  staleness);
+- prep merges mechanical items straight from the database
+  (callers/callees from xrefs — no grep needed), so stripped
+  binaries with auto-named functions still enumerate fully;
+- **confidence is capped**: decompilation is derived evidence, so
+  EVERY binary-study concept/invariant clamps to at most `traced`,
+  carries the `decompiled-evidence` qualifier, and NEVER compiles
+  mechanical rules (`raptor-binary-study --finalize` applies the cap
+  after an in-session phase 2). A future corroboration channel must
+  carry verified receipts to earn an exemption;
+- binary-specific concept classes worth extracting: allocator/
+  deallocator wrapper pairs and ownership transfer, length/size
+  parameter contracts (which argument bounds which buffer),
+  error-code conventions, locking discipline, input-ingress wrapper
+  conventions, switch-dispatch discriminants, and recovered-name
+  proposals for auto-named functions.
+
 ## Study item fields
 
 Each item in `study-list.json` carries:

@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+# ruff: noqa: RUF100, I001
+# (preamble protection; see .github/tests/test_libexec_marker_coverage.py)
+"""/understand --study for BINARY targets.
+
+Materializes a binary's RE database as a decomp-tree (pseudo-source),
+then drives the standard study pipeline over it — prep's extraction,
+the study loop, domain-model.json — unchanged. Evidence citations
+land in the tree; the decomp-map.json sidecar resolves any file:line
+back to a stable function@address.
+
+Input resolution (first match wins):
+  * a re-database.json file          — used directly
+  * a run directory                  — <dir>/re-database.json
+  * a .gpr Ghidra project            — cached database via the
+                                       RAPTOR-owned cache candidates
+  * a binary                         — out/ghidra-import-<stem>/
+                                       re-database.json (one-shot
+                                       import cache)
+
+The database must already exist: this tool never imports the hostile
+bundle itself (run `raptor-ghidra import --decompile-all` or attach
+first). With ``--gpr`` it CAN decompile bounded batches of functions
+the study's reading list asks for, between passes, via the sandboxed
+decompile server.
+
+Confidence discipline: decompilation is derived evidence, not ground
+truth. Concepts and invariants whose evidence is decomp-tree-only are
+clamped to at most "traced", tagged ``decompiled-evidence``, and
+never carry a compiled mechanical rule.
+
+Usage:
+    raptor-binary-study <input> <output_dir> [--identifier A,B]
+        [--concept X] [--model M] [--batch-target N] [--prep-only]
+        [--gpr <project.gpr>] [--max-passes N] [--decompile-batch N]
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# ─── trust-marker check (do not import; inline by design) ───
+# fmt: off
+import os  # noqa: E402
+if not (os.environ.get("CLAUDECODE")
+        or os.environ.get("_RAPTOR_TRUSTED")):
+    sys.stderr.write(
+        f"{sys.argv[0]}: internal dispatch script.\n"
+        "  Run via 'bin/raptor' instead.\n"
+        "  Tests / power users: set _RAPTOR_TRUSTED=1 to bypass.\n"
+    )
+    sys.exit(2)
+# fmt: on
+# ─── end trust-marker check ─────────────────────────────────
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import core.startup.process_init  # noqa: E402,F401
+
+import argparse  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+
+from core.json import load_json, save_json  # noqa: E402
+
+#: Read ceiling shared with the other RE-database readers.
+_MAX_DB_BYTES = 64 * 1024 * 1024
+
+#: Confidence order for the decomp clamp — from the model's own
+#: grade ladder so a legal below-ceiling grade ("observed") is never
+#: demoted to the floor by the unknown-grade fallback.
+try:
+    from core.concepts.model import CONFIDENCE_GRADES
+    _CONF_ORDER = list(CONFIDENCE_GRADES)
+except Exception:  # noqa: BLE001 — study.md grading table fallback
+    _CONF_ORDER = ["inferred", "observed", "traced", "corroborated",
+                   "documented", "tested"]
+_DECOMP_MAX_CONF = "traced"
+_DECOMP_TAG = "decompiled-evidence"
+
+
+def _fail(msg: str) -> int:
+    print(f"error: {msg}", file=sys.stderr)
+    return 1
+
+
+def _resolve_redb_path(arg: Path) -> "Path | None":
+    """First existing re-database.json for *arg* (see module doc)."""
+    if arg.is_file() and arg.suffix == ".json":
+        return arg
+    if arg.is_dir():
+        cand = arg / "re-database.json"
+        return cand if cand.is_file() else None
+    if arg.suffix == ".gpr":
+        from packages.ghidra.roundtrip import redb_cache_candidates
+        for cand in redb_cache_candidates(arg):
+            if cand.is_file():
+                return cand
+        return None
+    if arg.is_file():
+        # Same candidate chain as the .gpr route (stem-keyed): the
+        # one-shot import cache today, the path-hashed attach slots
+        # when that series lands — no second resolution order to
+        # drift.
+        from packages.ghidra.roundtrip import redb_cache_candidates
+        for cand in redb_cache_candidates(arg):
+            if cand.is_file():
+                return cand
+        return None
+    return None
+
+
+def _load_db(redb_path: Path):
+    from packages.ghidra.model import REDatabase
+    raw = load_json(redb_path, max_bytes=_MAX_DB_BYTES)
+    if raw is None:
+        raise ValueError(
+            f"unparseable or oversized database file: {redb_path}")
+    if not isinstance(raw, dict):
+        raise ValueError(f"wrong-shape database: {redb_path}")
+    return REDatabase.from_dict(raw)
+
+
+def _run(cmd: list[str], verbose: bool) -> int:
+    printable = " ".join(str(c) for c in cmd)
+    print(f"binary-study: running {printable}", file=sys.stderr)
+    try:
+        result = subprocess.run(cmd, check=False)
+    except OSError as exc:
+        print(f"binary-study: failed to run {cmd[0]}: {exc}",
+              file=sys.stderr)
+        return 1
+    del verbose
+    return result.returncode
+
+
+def _pending_reading_names(output_dir: Path) -> list[str]:
+    """Function-name candidates from unresolved reading-list items."""
+    path = output_dir / "reading-list.json"
+    if not path.is_file():
+        return []
+    try:
+        from core.concepts.reading_list import ReadingList
+        rl = ReadingList.load(path)
+    except Exception:  # noqa: BLE001 — corrupt list means no candidates
+        return []
+    names: list[str] = []
+    token = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+    for item in rl.pending():
+        if item.source_function:
+            names.append(item.source_function)
+        names.extend(token.findall(item.question or "")[:8])
+    seen: set[str] = set()
+    out = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _decompile_batch(db, gpr: Path, names: list[str], batch: int) -> int:
+    """Decompile up to *batch* named functions into *db* in place.
+
+    Uses the sandboxed persistent decompile server (same engine
+    raptor-ghidra decompile prefers); failures skip the function with
+    a note — a batch member must never abort the pass.
+    """
+    want = []
+    have = {f.name for f in db.functions if f.decompilation}
+    known: dict = {}
+    ambiguous: set = set()
+    junk = re.compile(r"[^A-Za-z0-9_.$@:<>~*&,()\[\]+-]")
+    for f in db.functions:
+        # reading-list names come from study items, whose names are
+        # charset-SANITIZED — index both forms or a function with a
+        # junk-charactered raw name can never be enrich-decompiled
+        for key in {f.name, junk.sub("_", str(f.name))[:200]}:
+            if key in known and known[key] is not f:
+                ambiguous.add(key)
+            else:
+                known[key] = f
+    skipped_ambiguous = 0
+    for n in names:
+        f = known.get(n)
+        if n in ambiguous:
+            # the server decompiles BY NAME — with duplicates it may
+            # return a different same-named function than the one we
+            # would enrich; skip rather than mislabel
+            skipped_ambiguous += 1
+            continue
+        if f is not None and n not in have and not f.is_external:
+            want.append(f)
+        if len(want) >= batch:
+            break
+    if skipped_ambiguous:
+        print(f"binary-study: {skipped_ambiguous} reading-list "
+              "name(s) skipped (ambiguous duplicate symbol names — "
+              "the server resolves by name)", file=sys.stderr)
+    if not want:
+        return 0
+    done = 0
+    try:
+        from packages.ghidra.server import GhidraServer
+        with GhidraServer(gpr) as srv:
+            srv.open()
+            for f in want:
+                try:
+                    code = srv.decompile(f.name, timeout=30)
+                except Exception as exc:  # noqa: BLE001 — skip, keep batch
+                    print(f"binary-study: decompile {f.name} failed: "
+                          f"{str(exc)[:200]}", file=sys.stderr)
+                    continue
+                if code:
+                    f.decompilation = str(code)
+                    done += 1
+    except Exception as exc:  # noqa: BLE001 — server unavailable
+        print(f"binary-study: decompile server unavailable: "
+              f"{str(exc)[:300]}", file=sys.stderr)
+    return done
+
+
+def _clamp_domain_model(output_dir: Path, tree_root: Path) -> None:
+    """Clamp the whole model to the binary confidence ceiling.
+
+    Every entry in a binary study derives from decompilation: the
+    study corpus IS the decomp-tree, and the receipt verifier
+    confines evidence paths to it — so a citation OUTSIDE the tree
+    cannot have been verified and must not lift confidence (the
+    previous any-external-citation escape was fabricable by the
+    model). Everything is capped at "traced", tagged, and stripped
+    of compiled mechanical rules. A future corroboration channel
+    (runtime evidence, source alignment) must come with VERIFIED
+    receipts and its own explicit exemption here.
+    """
+    path = output_dir / "domain-model.json"
+    if not path.is_file():
+        return
+    data = load_json(path, max_bytes=_MAX_DB_BYTES)
+    if not isinstance(data, dict):
+        return
+    del tree_root  # every entry clamps; kept for signature stability
+
+    def _clamp(conf: object) -> str:
+        c = str(conf or "inferred")
+        try:
+            if (_CONF_ORDER.index(c)
+                    > _CONF_ORDER.index(_DECOMP_MAX_CONF)):
+                return _DECOMP_MAX_CONF
+        except ValueError:
+            return "inferred"
+        return c
+
+    clamped = 0
+    for c in data.get("concepts", []) or []:
+        if not isinstance(c, dict):
+            continue
+        new_conf = _clamp(c.get("confidence"))
+        if new_conf != c.get("confidence"):
+            clamped += 1
+        c["confidence"] = new_conf
+        tags = c.get("qualified_by") or []
+        if not isinstance(tags, list):
+            # in-session phase 2 hand-writes this JSON — schema
+            # drift must not crash the clamp and leave the model
+            # unclamped-but-promoted
+            tags = [str(tags)]
+        if _DECOMP_TAG not in tags:
+            tags.append(_DECOMP_TAG)
+        c["qualified_by"] = tags
+    for inv in data.get("invariants", []) or []:
+        if not isinstance(inv, dict):
+            continue
+        new_conf = _clamp(inv.get("confidence"))
+        if new_conf != inv.get("confidence"):
+            clamped += 1
+        inv["confidence"] = new_conf
+        # Invariant has no qualified_by; mechanism_tags is its
+        # surfaced tag channel.
+        tags = inv.get("mechanism_tags") or []
+        if not isinstance(tags, list):
+            tags = [str(tags)]
+        if _DECOMP_TAG not in tags:
+            tags.append(_DECOMP_TAG)
+        inv["mechanism_tags"] = tags
+        if inv.get("mechanical_rule"):
+            inv["mechanical_rule"] = None
+            clamped += 1
+    if clamped:
+        print(f"binary-study: clamped {clamped} decomp-only "
+              f"grading(s)/rule(s) to the binary evidence ceiling "
+              f"({_DECOMP_MAX_CONF}, no compiled rules)",
+              file=sys.stderr)
+    checkers_exist = ((output_dir / "checkers").is_dir()
+                      or (output_dir / "compiled-invariants.json")
+                      .is_file())
+    if checkers_exist:
+        # The pipeline runs with --skip-compile; artifacts here mean
+        # an out-of-band compile pass ran against this output dir.
+        print(
+            "binary-study: WARNING — compiled checker artifacts exist "
+            "in this output dir; rules minted from decompiled-only "
+            "evidence violate the binary grading policy. Review "
+            "checkers/ and compiled-invariants.json before use.",
+            file=sys.stderr,
+        )
+    save_json(path, data)
+    # The study loop already PROMOTED the unclamped model to the
+    # project-canonical location (<project>/concepts/) — the copy
+    # the audit prefers. Re-promote the clamped one or the ceiling
+    # never reaches the audit.
+    try:
+        from core.concepts.study import _promote_to_project
+        _promote_to_project(path, output_dir)
+    except Exception as exc:  # noqa: BLE001 — promotion is best-effort
+        print(f"binary-study: canonical re-promotion failed: "
+              f"{str(exc)[:200]}", file=sys.stderr)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="raptor-binary-study",
+        description="/understand --study for a binary target "
+                    "(decomp-tree + standard study pipeline).",
+    )
+    ap.add_argument("input", type=Path,
+                    help="binary | .gpr | re-database.json | run dir")
+    ap.add_argument("output_dir", type=Path,
+                    help="Output directory for study artefacts.")
+    ap.add_argument("--identifier", default=None,
+                    help="Comma-separated identifiers to study.")
+    ap.add_argument("--concept", default=None,
+                    help="Comma-separated abstract concepts to study.")
+    ap.add_argument("--model", default=None,
+                    help="LLM model override for study-run.")
+    ap.add_argument("--batch-target", type=int, default=80,
+                    help="Items per Phase-2 study batch.")
+    ap.add_argument("--prep-only", action="store_true",
+                    help="Materialize the tree and run prep only "
+                         "(phase 2 runs in-session).")
+    ap.add_argument("--finalize", action="store_true",
+                    help="Apply the binary confidence ceiling to an "
+                         "existing domain-model.json in output_dir "
+                         "(and re-promote it) — the mechanical step "
+                         "after an in-session phase 2.")
+    ap.add_argument("--gpr", type=Path, default=None,
+                    help="Ghidra project for reading-list-driven "
+                         "incremental decompilation between passes.")
+    ap.add_argument("--max-passes", type=int, default=3,
+                    help="Outer prep+study passes (default 3).")
+    ap.add_argument("--decompile-batch", type=int, default=12,
+                    help="Max functions decompiled between passes.")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    parsed = ap.parse_args()
+
+    if parsed.finalize:
+        out = parsed.output_dir
+        if not (out / "domain-model.json").is_file():
+            return _fail(f"no domain-model.json in {out} to finalize")
+        if not (out / "decomp-tree" / "decomp-map.json").is_file():
+            # The clamp degrades whatever it touches — pointed at a
+            # SOURCE study's output dir it would demote source-earned
+            # knowledge and re-promote the damage canonically.
+            return _fail(
+                f"{out} is not a binary-study output dir (no "
+                "decomp-tree/decomp-map.json) — refusing to clamp a "
+                "non-binary domain model")
+        _clamp_domain_model(out, out / "decomp-tree")
+        print("binary-study: finalized (binary confidence ceiling "
+              "applied and re-promoted)", file=sys.stderr)
+        return 0
+
+    redb_path = _resolve_redb_path(parsed.input)
+    if redb_path is None:
+        return _fail(
+            f"no re-database.json found for {parsed.input} — run "
+            "'raptor-ghidra import <target> --decompile-all' (or "
+            "attach) first; this tool never imports the bundle itself"
+        )
+    try:
+        db = _load_db(redb_path)
+    except Exception as exc:  # noqa: BLE001 — honest one-line error
+        return _fail(f"unreadable RE database {redb_path}: "
+                     f"{str(exc)[:300]}")
+
+    output_dir = parsed.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tree_root = output_dir / "decomp-tree"
+
+    if (output_dir / "domain-model.json").is_file() and not (
+            tree_root / "decomp-map.json").is_file():
+        # A prior SOURCE study lives here (shared --out dirs are the
+        # documented pipeline-handoff pattern): study-run would merge
+        # it as prior and the clamp would then degrade source-earned
+        # grades canonically. Check BEFORE writing the tree — the
+        # tree itself is the binary marker.
+        return _fail(
+            f"{output_dir} holds a domain-model.json from a NON-"
+            "binary study — use a separate output dir, or move the "
+            "model aside; a binary study would clamp source-earned "
+            "knowledge")
+
+    from packages.ghidra.decomp_tree import write_decomp_tree
+    tree = write_decomp_tree(db, tree_root)
+    print(f"binary-study: {tree.coverage_line()}", file=sys.stderr)
+    if tree.functions_decompiled == 0:
+        print(
+            "binary-study: WARNING — no decompilation in the database; "
+            "study will see call structure and types only. Re-import "
+            "with --decompile-all for full-fidelity study.",
+            file=sys.stderr,
+        )
+
+    libexec = Path(__file__).resolve().parent
+    common = ["--redb", str(redb_path),
+              "--redb-map", str(tree.sidecar_path)]
+
+    if parsed.prep_only:
+        cmd = [sys.executable, str(libexec / "raptor-study-prep"),
+               str(tree_root), str(output_dir),
+               "--root", str(tree_root), *common]
+        if parsed.identifier:
+            cmd.extend(["--identifier", parsed.identifier])
+        if parsed.concept:
+            cmd.extend(["--concept", parsed.concept])
+        rc = _run(cmd, parsed.verbose)
+        if rc == 0:
+            print(
+                "binary-study: prep complete — study-list.json is "
+                "ready for in-session phase 2 (read items, write "
+                "domain-model.json, then re-run prep with unresolved "
+                "names). Evidence must cite decomp-tree file:line.",
+                file=sys.stderr,
+            )
+        return rc
+
+    # Fresh-run semantics are owned here: a study-list.json from an
+    # older run in a reused output dir would short-circuit prep.
+    (output_dir / "study-list.json").unlink(missing_ok=True)
+
+    identifiers = parsed.identifier
+    last_pending: "set[str] | None" = None
+    loop_rc = 0
+    for pass_no in range(1, max(1, parsed.max_passes) + 1):
+        cmd = [sys.executable, str(libexec / "raptor-study-loop"),
+               str(tree_root), str(output_dir),
+               "--root", str(tree_root), *common,
+               # Decomp-only invariants never mint rules; the clamp
+               # enforces the grading, this prevents the wasted (and
+               # policy-violating) compile pass entirely.
+               "--skip-compile",
+               "--batch-target", str(parsed.batch_target)]
+        if identifiers:
+            cmd.extend(["--identifier", identifiers])
+        if parsed.concept and pass_no == 1:
+            cmd.extend(["--concept", parsed.concept])
+        if parsed.model:
+            cmd.extend(["--model", parsed.model])
+        if parsed.verbose:
+            cmd.append("-v")
+        rc = _run(cmd, parsed.verbose)
+        if rc != 0:
+            print(f"binary-study: study-loop failed on pass "
+                  f"{pass_no} (exit {rc})", file=sys.stderr)
+            # Fall through to the clamp: pass 1 may have already
+            # PROMOTED an unclamped model to the project store.
+            loop_rc = rc
+            break
+        identifiers = None  # later passes are reading-list-driven
+
+        pending = _pending_reading_names(output_dir)
+        if not pending:
+            print(f"binary-study: converged after pass {pass_no} "
+                  "(reading list drained)", file=sys.stderr)
+            break
+        if last_pending is not None and set(pending) == last_pending:
+            print(
+                f"binary-study: no progress on pass {pass_no} — "
+                f"{len(pending)} reading-list item(s) remain "
+                "unresolved; stopping", file=sys.stderr,
+            )
+            break
+        last_pending = set(pending)
+
+        if parsed.gpr is not None:
+            got = _decompile_batch(db, parsed.gpr, pending,
+                                   parsed.decompile_batch)
+            if got:
+                print(f"binary-study: decompiled {got} function(s) "
+                      "for the reading list; refreshing the tree",
+                      file=sys.stderr)
+                tree = write_decomp_tree(db, tree_root)
+                # Persist the enrichment so later runs (and the
+                # sidecar) agree with what study saw — unless the
+                # enriched database would cross the shared read
+                # ceiling and brick every capped reader of this
+                # cache thereafter.
+                import json as _json
+                enriched = db.to_dict()
+                approx = len(_json.dumps(enriched))
+                if approx <= _MAX_DB_BYTES:
+                    save_json(redb_path, enriched)
+                else:
+                    print(
+                        "binary-study: NOT persisting the enriched "
+                        f"database ({approx} bytes exceeds the "
+                        f"{_MAX_DB_BYTES}-byte read ceiling); the "
+                        "in-memory copy still feeds this run",
+                        file=sys.stderr,
+                    )
+
+        # Force a fresh, reading-list-NARROWED prep on the next pass:
+        # prep short-circuits on a cached study-list.json, and
+        # re-running phase 2 over the full item set to resolve a
+        # handful of reading-list entries re-spends the whole study.
+        (output_dir / "study-list.json").unlink(missing_ok=True)
+
+    _clamp_domain_model(output_dir, tree_root)
+    if loop_rc != 0:
+        return loop_rc
+
+    dm = output_dir / "domain-model.json"
+    if dm.is_file():
+        data = load_json(dm, max_bytes=_MAX_DB_BYTES)
+        if isinstance(data, dict):
+            print(
+                "binary-study: domain-model.json — "
+                f"{len(data.get('concepts') or [])} concept(s), "
+                f"{len(data.get('invariants') or [])} invariant(s), "
+                f"{len(data.get('contracts') or [])} contract(s)",
+                file=sys.stderr,
+            )
+    print(f"binary-study: artefacts in {output_dir}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

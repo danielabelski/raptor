@@ -2255,6 +2255,225 @@ def _chase_reading_list_definitions(
     return sorted(candidates, key=_priority)
 
 
+def _redb_mechanical_items(
+    redb_path: Path,
+    sidecar_path: Path,
+    existing: "set[tuple[str, str]]",
+    identifiers: "list[str] | None" = None,
+) -> "list[StudyItem]":
+    """Mechanical study items from a binary's RE database.
+
+    The regex extractors above rediscover structure from the
+    decomp-tree text; this merge adds what the database KNOWS
+    outright — every emitted function (with callers/callees resolved
+    from xrefs, better than any grep) and every recovered struct —
+    for items the extractors did not already find. Anchors point into
+    the decomp-tree via the sidecar, so evidence citations stay
+    file:line like every other study item.
+
+    Degrades to an empty list (with a stderr note) on unreadable
+    inputs — binary enrichment must never break a source study run
+    that passed a bad flag.
+    """
+    try:
+        from packages.ghidra.model import REDatabase
+    except ImportError as exc:
+        print(f"study-prep: --redb ignored (packages.ghidra "
+              f"unavailable: {exc})", file=sys.stderr)
+        return []
+    cap = 64 * 1024 * 1024
+    try:
+        raw = load_json(redb_path, max_bytes=cap)
+        db = REDatabase.from_dict(raw) if isinstance(raw, dict) else None
+        side = load_json(sidecar_path, max_bytes=cap)
+    except Exception as exc:  # noqa: BLE001 — degrade, never abort prep
+        print(f"study-prep: --redb ignored (unreadable: {exc})",
+              file=sys.stderr)
+        return []
+    if db is None or not isinstance(side, dict):
+        print("study-prep: --redb ignored (wrong-shape database or "
+              "sidecar)", file=sys.stderr)
+        return []
+    files = side.get("files")
+    if not isinstance(files, dict):
+        print("study-prep: --redb ignored (sidecar has no files map)",
+              file=sys.stderr)
+        return []
+
+    from packages.ghidra.model import REFunction
+
+    # Symbol names are attacker-chosen binary content. Source items
+    # get identifier-charset names by construction (regex/AST
+    # extraction); the merge is the first producer that bypasses that
+    # guarantee, and names/neighbor lists land in LLM prompt headers.
+    # Keep the charset a symbol legitimately needs (C++ mangling,
+    # operators, templates) and replace the rest.
+    _sym_junk = re.compile(r"[^A-Za-z0-9_.$@:<>~*&,()\[\]+-]")
+
+    def _safe_sym(name: str) -> str:
+        return _sym_junk.sub("_", name)[:200]
+
+    by_name: dict[str, REFunction] = {}
+    for fn in db.functions:
+        if isinstance(fn.name, str) and fn.name:
+            by_name.setdefault(fn.name, fn)
+
+    # callers/callees from xrefs, one indexed pass (containment via
+    # sorted starts — per-xref linear scans are quadratic on large
+    # binaries).
+    starts: list[int] = []
+    ordered = sorted(
+        (f for f in db.functions
+         if isinstance(f.address, int)
+         and isinstance(f.size, int) and f.size > 0),
+        key=lambda f: f.address,
+    )
+    starts = [f.address for f in ordered]
+    addr_map = {f.address: f for f in db.functions
+                if isinstance(f.address, int)}
+
+    def _containing(addr):
+        if not isinstance(addr, int) or isinstance(addr, bool):
+            return None
+        i = bisect.bisect_right(starts, addr) - 1
+        for j in range(i, max(-1, i - 64), -1):
+            f = ordered[j]
+            if f.address <= addr < f.address + f.size:
+                return f
+        return addr_map.get(addr)
+
+    callers_of: dict[str, list[str]] = {}
+    callees_of: dict[str, list[str]] = {}
+    for x in db.xrefs:
+        if getattr(x, "kind", None) != "call":
+            continue
+        src_fn = _containing(getattr(x, "from_addr", None))
+        to_addr = getattr(x, "to_addr", None)
+        dst_fn = (addr_map.get(to_addr)
+                  if isinstance(to_addr, int) else None)
+        if src_fn is None or dst_fn is None:
+            continue
+        if src_fn.address == dst_fn.address:
+            continue
+        # RAW names throughout the graph maps — the scope expansion
+        # and membership tests join on them; sanitization happens
+        # once, at StudyItem construction.
+        cs = callers_of.setdefault(dst_fn.name, [])
+        if len(cs) < 16 and src_fn.name not in cs:
+            cs.append(src_fn.name)
+        ce = callees_of.setdefault(src_fn.name, [])
+        if len(ce) < 16 and dst_fn.name not in ce:
+            ce.append(dst_fn.name)
+
+    # Respect identifier scoping: the regex items above went through
+    # prep's relevance filter, and an unscoped mechanical merge would
+    # re-inflate a narrowed study back to every function in the
+    # binary. With identifiers, merge only matching functions and
+    # their 1-hop call-graph neighbors; without, merge everything
+    # (whole-binary study is the intent then).
+    scope: "set[str] | None" = None
+    if identifiers:
+        idents = {i.strip().lower() for i in identifiers if i.strip()}
+        scope = set()
+        ident_res = [re.compile(r"(?:^|[^a-z0-9])" + re.escape(i)
+                                + r"(?:$|[^a-z0-9])")
+                     for i in idents]
+        for fn_name in by_name:
+            low = fn_name.lower()
+            # word-boundary match: reading-list tokens like "out"
+            # must not substring-match half the binary back in
+            if any(r.search(low) for r in ident_res):
+                scope.add(fn_name)
+        for fn_name in list(scope):
+            scope.update(callers_of.get(fn_name, []))
+            scope.update(callees_of.get(fn_name, []))
+
+    merged: list[StudyItem] = []
+    for fname, entries in files.items():
+        if not isinstance(entries, list):
+            continue
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            name = e.get("function")
+            line = e.get("start_line")
+            if not isinstance(name, str) or not name:
+                continue
+            safe_name = _safe_sym(name)
+            if (("function", name) in existing
+                    or ("function", safe_name) in existing):
+                continue
+            if scope is not None and name not in scope:
+                continue
+            # intra-merge dedup on BOTH forms: two hostile raw names
+            # can sanitize to the same safe name and would otherwise
+            # emit duplicate items with colliding ids
+            existing.add(("function", name))
+            existing.add(("function", safe_name))
+            hit = by_name.get(name)
+            defn = ""
+            if hit is not None and getattr(hit, "decompilation", None):
+                defn = str(hit.decompilation)[:4000]
+            elif hit is not None and getattr(hit, "signature", None):
+                defn = str(hit.signature)[:512]
+            merged.append(StudyItem(
+                id=f"func_{safe_name}_"
+                   f"{line if isinstance(line, int) else 0}",
+                kind="function",
+                name=safe_name,
+                file=str(fname)[:255],
+                line=line if isinstance(line, int) else None,
+                definition=defn,
+                callers=[_safe_sym(c)
+                         for c in callers_of.get(name, [])],
+                # `calls` is the field the prompt renders and the
+                # scheduler reads; `callees` has no consumer.
+                calls=[_safe_sym(c)
+                       for c in callees_of.get(name, [])],
+            ))
+    seen_types: set[str] = set()
+    for t in db.types:
+        tname = getattr(t, "name", "") or ""
+        tkind = str(getattr(t, "kind", "") or "")
+        if not isinstance(tname, str) or not tname:
+            continue
+        # Only aggregate types carry study value here: function_sig
+        # entries are named after functions (a "struct main" item is
+        # noise), and typedefs carry no fields. The tree's types.h
+        # renders those as comments; the merge skips them entirely.
+        if tkind == "enum":
+            item_kind = "flag_enum"
+        elif tkind in ("struct", "union"):
+            item_kind = "struct"
+        else:
+            continue
+        if (("struct", tname) in existing
+                or ("flag_enum", tname) in existing
+                or tname in seen_types):
+            # the regex pass tags enums in types.h as kind="struct" —
+            # match either kind or the same type studies twice
+            continue
+        if scope is not None and not any(
+                r.search(tname.lower()) for r in ident_res):
+            continue
+        seen_types.add(tname)
+        tfields = [
+            str(f.get("name", ""))[:200]
+            for f in (getattr(t, "fields", None) or [])
+            if isinstance(f, dict) and f.get("name")
+        ][:64]
+        safe_tname = _safe_sym(tname)
+        merged.append(StudyItem(
+            id=f"{item_kind}_{safe_tname}",
+            kind=item_kind,
+            name=safe_tname,
+            file="types.h",
+            definition="",
+            fields=[_safe_sym(f) for f in tfields],
+        ))
+    return merged
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         prog="raptor-study-prep",
@@ -2282,6 +2501,15 @@ def main() -> None:
                     help="Worker threads for file extraction (default: cpu_count).")
     ap.add_argument("--model", default=None,
                     help="LLM model override for concept seeding.")
+    ap.add_argument("--redb", default=None, metavar="PATH",
+                    help="re-database.json for a binary target: merge "
+                         "mechanically-derived function/struct items "
+                         "(callers/callees from xrefs, structs from "
+                         "recovered types) anchored into the "
+                         "decomp-tree the target points at.")
+    ap.add_argument("--redb-map", default=None, metavar="PATH",
+                    help="decomp-map.json sidecar for --redb (default: "
+                         "<target>/decomp-map.json).")
     ap.add_argument("--force", action="store_true",
                     help="Re-run even if study-list.json already exists.")
     parsed, _extras = ap.parse_known_args(sys.argv[1:])
@@ -2949,6 +3177,30 @@ def main() -> None:
                   file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - marker pass is best-effort
         print(f"study-prep: stale-doc pass skipped: {exc}", file=sys.stderr)
+
+    if parsed.redb:
+        redb_path = Path(parsed.redb)
+        sidecar_path = (Path(parsed.redb_map) if parsed.redb_map
+                        else Path(target) / "decomp-map.json")
+        existing_keys = {(it.kind, it.name) for it in items}
+        if parsed.reading_list and not identifiers:
+            # A reading list exists but yielded no identifiers (e.g.
+            # concept-only items with failed seeding) — an unscoped
+            # merge would re-inflate a narrowed pass to the whole
+            # binary. Skip the merge; the regex items are already
+            # reading-list-scoped.
+            redb_items = []
+            print("study-prep: --redb merge skipped (reading list "
+                  "present but no identifiers to scope by)",
+                  file=sys.stderr)
+        else:
+            redb_items = _redb_mechanical_items(
+                redb_path, sidecar_path, existing_keys,
+                identifiers=identifiers or None)
+        if redb_items:
+            items.extend(redb_items)
+            print(f"study-prep: merged {len(redb_items)} mechanical "
+                  f"item(s) from {redb_path.name}", file=sys.stderr)
 
     out_path = output_dir / "study-list.json"
     out_data = {

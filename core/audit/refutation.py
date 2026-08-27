@@ -953,13 +953,23 @@ _INT_FAMILY_HYP_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Demotion gates whose refuting fact is proof-grade (mechanically true
-# regardless of interpretation). Membership here IS the dominance
-# authority: the receipt-floor probe consults ONLY these gates, so a
-# heuristic gate firing at probe time can never masquerade as a
-# proof-grade refuter. Today that is the known-return-type table;
-# an SMT-unsat-backed refuter would join it.
-_PROOF_GATES = (_refute_by_known_return_type,)
+@dataclass
+class _ProbeContext:
+    """What a proof-gate probe may see beyond the hypothesis text.
+
+    ``source`` is the reviewed function's raw disk span,
+    ``target_path`` the analysed tree's root (for gates that read the
+    tree's own headers), ``repo_trusted`` the operator's repo-trust
+    assertion (trust-gated gates refuse without it), and
+    ``detector_finding`` the receipt's own record when the floor being
+    probed is a mechanical-detector receipt (its description can name
+    the exact variable the detector flagged).
+    """
+
+    source: str | None = None
+    target_path: Any = None
+    repo_trusted: bool = False
+    detector_finding: dict | None = None
 
 
 def _bounded_name_near_overflow_claim(mechanism_lower: str) -> bool:
@@ -980,25 +990,13 @@ def _bounded_name_near_overflow_claim(mechanism_lower: str) -> bool:
     return False
 
 
-def _probe_proof_refuter(outcome, hypothesis) -> RefutationVerdict | None:
-    """Ask the proof-grade demotion gates whether they refute a
-    hypothesis the reviewer raised then dismissed.
-
-    The dismissed hypothesis never went through the demotion gates
-    (they run on finding/suspicious outcomes only), so the receipt
-    floor used to weigh the receipt against nothing but the LLM's
-    unverified dismissal. This probe supplies the missing refuter
-    side: a synthetic outcome carrying the hypothesis mechanism is
-    run through the PROOF gates alone, and only a proof-grade verdict
-    with a confident clean target counts. Probe context is TIGHTER
-    than the live gates: the refuting fact must sit next to the claim
-    it refutes (see :func:`_bounded_name_near_overflow_claim`).
-    """
-    if not isinstance(hypothesis, dict):
-        return None
+def _probe_input_bound(
+    outcome, hypothesis, ctx: _ProbeContext | None,
+) -> RefutationVerdict | None:
+    """Return-range probe (Gate 4's table).  Probe context is TIGHTER
+    than the live gate: the refuting fact must sit next to the claim
+    it refutes (see :func:`_bounded_name_near_overflow_claim`)."""
     mechanism = hypothesis.get("mechanism") or ""
-    if not mechanism:
-        return None
     if not _bounded_name_near_overflow_claim(mechanism.lower()):
         return None
     explicit = _CWE_ID_RE.findall(
@@ -1011,9 +1009,175 @@ def _probe_proof_refuter(outcome, hypothesis) -> RefutationVerdict | None:
         review_result={"cwe": explicit[0]} if explicit else {},
         evidence_tool="",
     )
+    return _refute_by_known_return_type(probe, None)
+
+
+# Names the detector-receipt description may use to pin the exact
+# variable a mechanical uninitialised-value detector flagged.
+_UNINIT_VAR_QUOTED_RE = re.compile(
+    r"[Vv]ariable\s+['\"`]([A-Za-z_][A-Za-z0-9_]*)['\"`]",
+)
+_C_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _uninit_claim_variables(
+    mechanism: str,
+    detector_finding: dict | None,
+    source: str,
+) -> set[str]:
+    """Variables an uninitialised-value claim concerns, resolved
+    against the function's own declarations.
+
+    When a detector receipt is in scope it MUST name its variable
+    (``Variable 'x'``) and that variable must be among the function's
+    declarations — otherwise the whole extraction refuses: proving a
+    variable GUESSED from prose does not cover the receipt's claim.
+    Prose identifiers that name declared locals join the set (proving
+    more is stricter).  A candidate set consisting solely of
+    PARAMETERS also refuses: parameters are assigned by the caller by
+    definition, an uninitialised-value detector cannot flag one, so a
+    parameter-only "proof" is trivial and covers nothing (the
+    prose-only-parameter laundering shape).
+    """
+    from .defassign import (
+        function_local_names,
+        function_parameter_names,
+    )
+
+    declared = function_local_names(source)
+    if not declared:
+        return set()
+    receipt_vars: set[str] = set()
+    if detector_finding is not None:
+        desc = ""
+        if isinstance(detector_finding, dict):
+            desc = str(detector_finding.get("description") or "")
+        receipt_vars = {
+            m.group(1) for m in _UNINIT_VAR_QUOTED_RE.finditer(desc)
+        }
+        if not receipt_vars or not receipt_vars <= declared:
+            return set()
+    prose_vars = {
+        w for w in _C_IDENT_RE.findall(mechanism or "") if w in declared
+    }
+    candidates = receipt_vars | prose_vars
+    if not candidates or candidates <= function_parameter_names(source):
+        return set()
+    return candidates
+
+
+def _probe_definite_assignment(
+    outcome, hypothesis, ctx: _ProbeContext | None,
+) -> RefutationVerdict | None:
+    """Definite-assignment probe for uninitialised-value claims on C.
+
+    Proves the variable named by the detector receipt (and any
+    declared locals the dismissed hypothesis names) is assigned on
+    every path to every use in the function — a dataflow tautology
+    over the macro-expanded source (:mod:`core.audit.defassign`),
+    hence proof-grade.  Every candidate variable must prove; any
+    refusal is no proof.  A receipt that does not name its variable,
+    or a candidate set consisting solely of parameters, refuses (see
+    :func:`_uninit_claim_variables`).
+
+    TRUST-GATED: macro expansion reads the target tree's own headers,
+    and a crafted tree can make the expansion diverge from what the
+    build compiles (unreadable/generated headers, include-path games,
+    command-line definitions).  The probe therefore runs only under
+    the operator's repo-trust assertion — the same gate, for the same
+    reason, as the Go internal-concurrency witness.
+    """
+    if ctx is None or not ctx.source or not ctx.target_path:
+        return None
+    if not ctx.repo_trusted:
+        return None
+    fpath = getattr(outcome, "file", "") or ""
+    if not fpath.endswith(".c"):
+        return None
+    mechanism = hypothesis.get("mechanism") or ""
+    if not _DETECTOR_FAMILY_HYP_RES["uninitialized_return"].search(
+        mechanism,
+    ):
+        return None
+    try:
+        variables = _uninit_claim_variables(
+            mechanism, ctx.detector_finding, ctx.source,
+        )
+        if not variables:
+            return None
+        from .defassign import check_definite_assignment
+        proofs = []
+        for var in sorted(variables):
+            res = check_definite_assignment(
+                ctx.source, var,
+                target_path=ctx.target_path, rel_file=fpath,
+            )
+            if not res.proven:
+                logger.debug(
+                    "definite-assignment probe: no proof for %s (%s)",
+                    var, res.reason,
+                )
+                return None
+            proofs.append(res)
+    except Exception:
+        logger.debug(
+            "definite-assignment probe failed", exc_info=True,
+        )
+        return None
+    facts = "; ".join(
+        f"{p.variable}: {p.reason}" for p in proofs
+    )
+    # Grade: PROOF. The refuting fact is a definite-assignment walk
+    # over the macro-expanded function source — mechanically true
+    # however the claim's prose is read. Conservative by
+    # construction: every unresolvable construct in the prover
+    # refuses, so reaching this point means the obligations fully
+    # discharged.
+    return RefutationVerdict(
+        gate="definite_assignment",
+        reason=(
+            f"definite assignment proven for the claimed "
+            f"variable(s) — {facts[:400]}"
+        ),
+        demote_to="clean",
+        refuter_grade="proof",
+    )
+
+
+# Proof-grade probe registry. Membership here IS the dominance
+# authority: the receipt-floor probe consults ONLY these probes, so a
+# heuristic gate firing at probe time can never masquerade as a
+# proof-grade refuter. Each member has the uniform signature
+# ``(outcome, hypothesis, ctx) -> RefutationVerdict | None`` and
+# decides its own applicability; only a verdict with
+# ``refuter_grade == "proof"`` and a clean demote target counts.
+# Today: the known-return-type table and the definite-assignment
+# prover; an SMT-unsat-backed refuter would join it.
+_PROOF_GATES = (_probe_input_bound, _probe_definite_assignment)
+
+
+def _probe_proof_refuter(
+    outcome, hypothesis, ctx: _ProbeContext | None = None,
+) -> RefutationVerdict | None:
+    """Ask the proof-grade probes whether they refute a hypothesis the
+    reviewer raised then dismissed.
+
+    The dismissed hypothesis never went through the demotion gates
+    (they run on finding/suspicious outcomes only), so the receipt
+    floor used to weigh the receipt against nothing but the LLM's
+    unverified dismissal. This probe supplies the missing refuter
+    side: the hypothesis is run through the PROOF probes alone
+    (:data:`_PROOF_GATES`), and only a proof-grade verdict with a
+    confident clean target counts.
+    """
+    if not isinstance(hypothesis, dict):
+        return None
+    mechanism = hypothesis.get("mechanism") or ""
+    if not mechanism:
+        return None
     for gate_fn in _PROOF_GATES:
         try:
-            v = gate_fn(probe, None)
+            v = gate_fn(outcome, hypothesis, ctx)
         except Exception:
             logger.debug("proof-refuter probe failed", exc_info=True)
             continue
@@ -1037,6 +1201,14 @@ _INT_RECEIPT_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Receipt names the definite-assignment prover may dominate: only
+# uninitialised-value receipts (the cocci uninitialized_return
+# detector and typestate-uninit shapes) corroborate the claim a
+# definite-assignment fact refutes.
+_UNINIT_RECEIPT_TOKEN_RE = re.compile(
+    r"uninit", re.IGNORECASE,
+)
+
 
 def _refuter_covers_receipt(
     refuter: RefutationVerdict, receipt: str,
@@ -1047,15 +1219,18 @@ def _refuter_covers_receipt(
     receipt families its refuting fact covers."""
     if refuter.gate == "input_bound_t0":
         return bool(_INT_RECEIPT_TOKEN_RE.search(receipt or ""))
+    if refuter.gate == "definite_assignment":
+        return bool(_UNINIT_RECEIPT_TOKEN_RE.search(receipt or ""))
     return False
 
 
 def _dominating_refuter(
     outcome, hypothesis, receipt: str,
+    ctx: _ProbeContext | None = None,
 ) -> RefutationVerdict | None:
     """Proof-grade refuter that refutes the dismissed hypothesis AND
     covers the receipt's claim family, or None (floor stands)."""
-    refuter = _probe_proof_refuter(outcome, hypothesis)
+    refuter = _probe_proof_refuter(outcome, hypothesis, ctx)
     if refuter is None:
         return None
     if not _refuter_covers_receipt(refuter, receipt):
@@ -1264,9 +1439,9 @@ def rescue_self_refuted(
     # is exactly what a crafted package on an UNTRUSTED target could
     # exploit to discharge a planted race, so without the assertion
     # the arm stays off.
-    _goconc_target = target_path or getattr(config, "target_path", None)
-    _goconc_out = out_dir or getattr(config, "out_dir", None)
-    _goconc_trusted = (
+    _witness_target = target_path or getattr(config, "target_path", None)
+    _witness_out = out_dir or getattr(config, "out_dir", None)
+    _witness_trusted = (
         repo_trusted if repo_trusted is not None
         else bool(getattr(config, "repo_trusted", False))
     )
@@ -1277,13 +1452,13 @@ def rescue_self_refuted(
             return _goconc_memo[0]
         result = None
         fpath = getattr(outcome, "file", "") or ""
-        if source and fpath.endswith(".go") and _goconc_target:
+        if source and fpath.endswith(".go") and _witness_target:
             try:
                 from .goconc import (
                     check_goroutine_isolation,
                     load_go_package,
                 )
-                pkg_files = load_go_package(_goconc_target, fpath)
+                pkg_files = load_go_package(_witness_target, fpath)
                 if pkg_files:
                     anchor = fpath.replace("\\", "/").rsplit("/", 1)[-1]
                     result = check_goroutine_isolation(
@@ -1294,6 +1469,15 @@ def rescue_self_refuted(
                 result = None
         _goconc_memo.append(result)
         return result
+
+    def _probe_ctx(detector_finding: dict | None = None) -> _ProbeContext:
+        """Context the proof-grade probes may see (dominance lane)."""
+        return _ProbeContext(
+            source=source,
+            target_path=_witness_target,
+            repo_trusted=_witness_trusted,
+            detector_finding=detector_finding,
+        )
 
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses:
@@ -1321,14 +1505,16 @@ def rescue_self_refuted(
                else getattr(df, "detector", "")) or ""
         fam = det.rsplit(":", 1)[-1]
         if fam in _DETECTOR_FAMILY_HYP_RES:
-            detector_families.append((det, _DETECTOR_FAMILY_HYP_RES[fam]))
+            detector_families.append(
+                (det, _DETECTOR_FAMILY_HYP_RES[fam], df),
+            )
     # The pre-loop screen's parsed-int/integer-narrowing receipt is a
     # detector receipt in everything but plumbing: same family
     # semantics, same dismissal modes (refuted OR low).
     if pre_evidence and any(
         t in pre_evidence for t in _INT_CONTRACT_PRE_EVIDENCE
     ):
-        detector_families.append((pre_evidence, _INT_FAMILY_HYP_RE))
+        detector_families.append((pre_evidence, _INT_FAMILY_HYP_RE, None))
 
     if detector_families:
         for h in hypotheses:
@@ -1339,7 +1525,8 @@ def rescue_self_refuted(
                 continue
             mechanism = h.get("mechanism", "")
             matched = [
-                det for det, fam_re in detector_families
+                (det, det_finding)
+                for det, fam_re, det_finding in detector_families
                 if fam_re.search(mechanism)
             ]
             if not matched:
@@ -1356,8 +1543,10 @@ def rescue_self_refuted(
             # stands (an unrecorded override would be silent).
             refuters = []
             undominated = None
-            for det in matched:
-                refuter = _dominating_refuter(outcome, h, det)
+            for det, det_finding in matched:
+                refuter = _dominating_refuter(
+                    outcome, h, det, ctx=_probe_ctx(det_finding),
+                )
                 if refuter is None:
                     undominated = det
                     break
@@ -1388,7 +1577,7 @@ def rescue_self_refuted(
                     getattr(outcome, "file", "?"),
                     getattr(outcome, "function", "?"),
                 )
-                undominated = matched[0]
+                undominated = matched[0][0]
             return RefutationVerdict(
                 gate="anti_self_refutation",
                 reason=(
@@ -1449,14 +1638,14 @@ def rescue_self_refuted(
         if (
             cwes
             and cwes <= _LOCK_DISCHARGEABLE_RACE_CWES
-            and _goconc_trusted
+            and _witness_trusted
             and not fn_receipts
             and _goconc_claim_in_family(mechanism, counter)
         ):
             _giso = _goconc_probe()
             if _giso is not None and _giso.isolated:
                 if _record_goconc_discharge(
-                    outcome, _goconc_out,
+                    outcome, _witness_out,
                     mechanism=mechanism, result=_giso,
                 ):
                     logger.info(
@@ -1496,7 +1685,9 @@ def rescue_self_refuted(
             refuters = []
             undominated = None
             for receipt in matched_receipts:
-                refuter = _dominating_refuter(outcome, h, receipt)
+                refuter = _dominating_refuter(
+                    outcome, h, receipt, ctx=_probe_ctx(),
+                )
                 if refuter is None:
                     undominated = receipt
                     break

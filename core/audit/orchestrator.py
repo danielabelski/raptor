@@ -21739,6 +21739,7 @@ def _receipt_corroborated_hypothesis(
     from .refutation import (
         RefutationVerdict,
         _dominating_refuter,
+        _ProbeContext,
         _receipt_matches_mechanism,
         _record_floor_dominance,
     )
@@ -21748,6 +21749,12 @@ def _receipt_corroborated_hypothesis(
     hypotheses = getattr(outcome, "hypotheses", None) or []
     if not hypotheses and outcome.review_result:
         hypotheses = outcome.review_result.get("hypotheses") or []
+
+    probe_ctx = _ProbeContext(
+        source=source,
+        target_path=getattr(config, "target_path", None) if config else None,
+        repo_trusted=bool(getattr(config, "repo_trusted", False)),
+    )
 
     race_protected = False
     if source:
@@ -21792,7 +21799,9 @@ def _receipt_corroborated_hypothesis(
             # Record-or-refuse: an override whose record cannot be
             # written is refused (the floor stands) — an unrecorded
             # override would be silent.
-            refuter = _dominating_refuter(outcome, h, check_type)
+            refuter = _dominating_refuter(
+                outcome, h, check_type, ctx=probe_ctx,
+            )
             if refuter is not None and _record_floor_dominance(
                 outcome, config,
                 refuter=refuter, receipt=check_type,

@@ -13,6 +13,86 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Fact-provenance vocabulary for binary-derived names.
+#
+# Every name the binary lane produces is only as trustworthy as the
+# place it came from; downstream consumers that key decisions on a
+# function NAME (cross-engine joins, hypothesis matching, audit
+# journal keys) need to know which of these classes minted it.
+# Minted at the import seams (Ghidra export parse, r2 import,
+# objdump/nm fallback) and carried on the item from then on — a
+# consumer must never re-derive authority the producer didn't have.
+#
+#   dwarf             — name from debug info (.debug_info)
+#   symtab            — name from the static symbol table (.symtab)
+#   dynsym_plt        — name from the dynamic symbol table / PLT
+#                       import thunks
+#   demangled         — tool-demangled from a mangled linkage name
+#   pattern_recovered — tool-applied via signature/FunctionID matching
+#   decompiler        — reconstructed by a decompiler
+#   tool_synthetic    — tool-invented placeholder (FUN_*, fcn.*, sub_*)
+#   llm               — LLM-assigned
+#
+# The empty string means UNKNOWN provenance; consumers must treat
+# unknown as the lowest trust class, never assume better.
+# ---------------------------------------------------------------------------
+
+NAME_PROVENANCE_DWARF = "dwarf"
+NAME_PROVENANCE_SYMTAB = "symtab"
+NAME_PROVENANCE_DYNSYM_PLT = "dynsym_plt"
+NAME_PROVENANCE_DEMANGLED = "demangled"
+NAME_PROVENANCE_PATTERN_RECOVERED = "pattern_recovered"
+NAME_PROVENANCE_DECOMPILER = "decompiler"
+NAME_PROVENANCE_TOOL_SYNTHETIC = "tool_synthetic"
+NAME_PROVENANCE_LLM = "llm"
+
+KNOWN_NAME_PROVENANCES = frozenset({
+    NAME_PROVENANCE_DWARF,
+    NAME_PROVENANCE_SYMTAB,
+    NAME_PROVENANCE_DYNSYM_PLT,
+    NAME_PROVENANCE_DEMANGLED,
+    NAME_PROVENANCE_PATTERN_RECOVERED,
+    NAME_PROVENANCE_DECOMPILER,
+    NAME_PROVENANCE_TOOL_SYNTHETIC,
+    NAME_PROVENANCE_LLM,
+})
+
+# Placeholder-name prefixes across the engines this package parses.
+# Ghidra: FUN_/thunk_FUN_/Ordinal_; r2: fcn./loc./sub./aav./entry0/
+# entry.; IDA: sub_.
+_TOOL_SYNTHETIC_NAME_PREFIXES = (
+    "FUN_", "thunk_FUN_", "Ordinal_",
+    "fcn.", "loc.", "sub.", "sub_", "aav.",
+    "entry0", "entry.",
+)
+
+
+def looks_tool_synthetic(name: str) -> bool:
+    """Does this name look like a tool-invented placeholder?
+
+    Single definition for every import seam. Deliberately also
+    applied to names that arrive with a BETTER claimed provenance:
+    a symbol table entry literally named ``fcn.00401000`` (forged
+    symtab, or a stripped-then-repacked binary) must not ride as a
+    real name — under-claiming is the safe direction.
+    """
+    if not name:
+        return True
+    return name.startswith(_TOOL_SYNTHETIC_NAME_PREFIXES)
+
+
+def normalise_name_provenance(value: object) -> str:
+    """Coerce a serialised provenance tag to the known vocabulary.
+
+    Unknown or wrong-typed values collapse to ``""`` (unknown) —
+    a tag outside the vocabulary must never ride into consumers as
+    if it carried trust.
+    """
+    if isinstance(value, str) and value in KNOWN_NAME_PROVENANCES:
+        return value
+    return ""
+
 
 @dataclass
 class REFunction:
@@ -28,6 +108,9 @@ class REFunction:
     is_external: bool = False
     decompilation: Optional[str] = None
     source_tool: str = ""
+    #: Where the NAME came from — one of KNOWN_NAME_PROVENANCES, or
+    #: "" when the importing seam could not tell (treat as lowest).
+    name_provenance: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -48,6 +131,8 @@ class REFunction:
             d["is_external"] = True
         if self.decompilation is not None:
             d["decompilation"] = self.decompilation
+        if self.name_provenance:
+            d["name_provenance"] = self.name_provenance
         return d
 
     @classmethod
@@ -69,6 +154,9 @@ class REFunction:
             decompilation=(None if d.get("decompilation") is None
                            else str(d.get("decompilation"))),
             source_tool=str(d.get("source_tool", "")),
+            name_provenance=normalise_name_provenance(
+                d.get("name_provenance", ""),
+            ),
         )
 
 
@@ -323,7 +411,7 @@ class REDatabase:
             f.name: f.address for f in self.functions
             if not f.is_auto_named
         }
-        deltas = Counter()
+        deltas: Counter[int] = Counter()
         for f in other.functions:
             if f.is_auto_named:
                 continue
@@ -378,6 +466,7 @@ class REDatabase:
                     calling_convention=f.calling_convention,
                     decompilation=f.decompilation,
                     source_tool=f.source_tool,
+                    name_provenance=f.name_provenance,
                 )
                 for f in other.functions
             ]
@@ -419,12 +508,12 @@ class REDatabase:
             seen: set = set()
             merged: List[Dict[str, Any]] = []
             for item in (*self_items, *other_items):
-                key = (
+                item_key = (
                     item.get("name", item.get("value", "")),
                     item.get("address"),
                 )
-                if key not in seen:
-                    seen.add(key)
+                if item_key not in seen:
+                    seen.add(item_key)
                     merged.append(item)
             setattr(result, attr, merged)
 

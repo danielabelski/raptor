@@ -8,12 +8,18 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .model import (
+    NAME_PROVENANCE_DEMANGLED,
+    NAME_PROVENANCE_PATTERN_RECOVERED,
+    NAME_PROVENANCE_SYMTAB,
+    NAME_PROVENANCE_TOOL_SYNTHETIC,
     REComment,
     REDatabase,
     REFunction,
     RESegment,
     REType,
     REXref,
+    looks_tool_synthetic,
+    normalise_name_provenance,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +46,19 @@ def parse_export(path: Path) -> REDatabase:
     if not isinstance(data, dict):
         raise ValueError("Ghidra export must be a JSON object")
 
-    return parse_dict(data)
+    db = parse_dict(data)
+
+    # Ghidra's IMPORTED source type conflates debug-info and symbol
+    # table names; when the original binary is reachable, split the
+    # provisional tag with a section probe (best-effort — an absent
+    # or non-ELF binary leaves the conservative symtab tag).
+    try:
+        from core.analysis.binary_provenance import refine_import_provenance
+        refine_import_provenance(db)
+    except Exception:
+        logger.debug("import-provenance refinement failed", exc_info=True)
+
+    return db
 
 
 def parse_dict(data: Dict[str, Any]) -> REDatabase:
@@ -107,7 +125,59 @@ def _parse_function(d: Dict[str, Any]) -> REFunction:
         is_external=bool(d.get("is_external", False)),
         decompilation=d.get("decompilation"),
         source_tool=str(d.get("source_tool", "ghidra")),
+        name_provenance=_function_name_provenance(d, name, is_auto),
     )
+
+
+# Demangled C++/Rust names carry decoration a FunctionID pattern name
+# never has. Heuristic split of Ghidra's ANALYSIS source type between
+# the demangler and FID — both are tool-recovered (same trust band),
+# so a miss here cannot upgrade a name's authority.
+_DEMANGLED_DECORATION = ("::", "(", "<", "~")
+
+
+def _function_name_provenance(
+    d: Dict[str, Any],
+    name: str,
+    is_auto: bool,
+) -> str:
+    """Map a Ghidra export function record to a name-provenance tag.
+
+    Precedence:
+
+    1. A placeholder-looking name is ``tool_synthetic`` no matter what
+       the record claims — a forged better tag on a ``FUN_*``/``fcn.*``
+       name is the dangerous direction.
+    2. An explicit ``name_provenance`` (round-tripped databases) wins.
+    3. Ghidra's ``symbol_source`` maps: DEFAULT → tool_synthetic,
+       ANALYSIS → demangled/pattern_recovered, IMPORTED → symtab
+       (provisionally — the export cannot tell debug-info names from
+       symbol-table names; ``refine_import_provenance`` splits when
+       the binary is available). USER_DEFINED and unknown values map
+       to "" (unknown).
+    4. No symbol_source (older export scripts): auto-named functions
+       tag tool_synthetic, everything else stays unknown.
+    """
+    if looks_tool_synthetic(name):
+        return NAME_PROVENANCE_TOOL_SYNTHETIC
+
+    explicit = normalise_name_provenance(d.get("name_provenance", ""))
+    if explicit:
+        return explicit
+
+    source = str(d.get("symbol_source", "") or "").strip().lower()
+    if source == "default":
+        return NAME_PROVENANCE_TOOL_SYNTHETIC
+    if source == "analysis":
+        if any(t in name for t in _DEMANGLED_DECORATION):
+            return NAME_PROVENANCE_DEMANGLED
+        return NAME_PROVENANCE_PATTERN_RECOVERED
+    if source == "imported":
+        return NAME_PROVENANCE_SYMTAB
+
+    if is_auto:
+        return NAME_PROVENANCE_TOOL_SYNTHETIC
+    return ""
 
 
 def _looks_auto_named(name: str) -> bool:
@@ -115,8 +185,6 @@ def _looks_auto_named(name: str) -> bool:
 
     Ghidra uses ``FUN_XXXXXXXX`` for auto-analysed functions.
     r2 uses ``fcn.XXXXXXXX``.  IDA uses ``sub_XXXXXXXX``.
+    Single definition in :func:`packages.ghidra.model.looks_tool_synthetic`.
     """
-    if not name:
-        return True
-    prefixes = ("FUN_", "fcn.", "sub_", "thunk_FUN_", "Ordinal_")
-    return name.startswith(prefixes)
+    return looks_tool_synthetic(name)

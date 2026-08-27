@@ -17,7 +17,14 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .model import REDatabase, REFunction
+from .model import (
+    NAME_PROVENANCE_DYNSYM_PLT,
+    NAME_PROVENANCE_SYMTAB,
+    NAME_PROVENANCE_TOOL_SYNTHETIC,
+    REDatabase,
+    REFunction,
+    looks_tool_synthetic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +120,15 @@ def disassemble_function(
 
 
 def _extract_functions_nm(binary_path: Path) -> List[REFunction]:
-    """Extract function symbols from nm output."""
+    """Extract function symbols from nm output.
+
+    Plain ``nm`` reads the static symbol table (``symtab``
+    provenance); the ``nm -D`` fallback for stripped binaries reads
+    the dynamic symbol table (``dynsym_plt``). The distinction rides
+    on each function so downstream consumers can tell which symbol
+    source minted the name.
+    """
+    provenance = NAME_PROVENANCE_SYMTAB
     result = _run_binutil(
         ["nm", "--defined-only", "-S", str(binary_path)], binary_path,
     )
@@ -121,6 +136,7 @@ def _extract_functions_nm(binary_path: Path) -> List[REFunction]:
         return []
 
     if result.returncode != 0:
+        provenance = NAME_PROVENANCE_DYNSYM_PLT
         result = _run_binutil(
             ["nm", "-D", "-S", str(binary_path)], binary_path,
         )
@@ -135,11 +151,19 @@ def _extract_functions_nm(binary_path: Path) -> List[REFunction]:
         addr, size, kind, name = parsed
         if kind not in ("T", "t", "W", "w"):
             continue
+        # A symbol table entry wearing a placeholder name (forged or
+        # repacked binary) must not ride as a real symbol name.
+        synthetic = looks_tool_synthetic(name)
         functions.append(REFunction(
             name=name,
             address=addr,
             size=size,
+            is_auto_named=synthetic,
             source_tool="nm",
+            name_provenance=(
+                NAME_PROVENANCE_TOOL_SYNTHETIC if synthetic
+                else provenance
+            ),
         ))
 
     return functions

@@ -130,8 +130,27 @@ public class ExportRaptor extends GhidraScript {
             Address entry = func.getEntryPoint();
             String name = func.getName();
 
-            boolean isAuto = func.getSymbol().getSource() == SourceType.ANALYSIS
+            SourceType symSource = func.getSymbol().getSource();
+            boolean isAuto = symSource == SourceType.ANALYSIS
                     || name.startsWith("FUN_");
+
+            // Raw symbol source, exported alongside the conflated
+            // isAuto flag: DEFAULT (tool placeholder), ANALYSIS
+            // (FunctionID / demangler), IMPORTED (debug info or
+            // symbol table), USER_DEFINED (analyst rename). The
+            // Python parser mints the name-provenance tag from this.
+            String symSourceName;
+            if (symSource == SourceType.DEFAULT) {
+                symSourceName = "default";
+            } else if (symSource == SourceType.ANALYSIS) {
+                symSourceName = "analysis";
+            } else if (symSource == SourceType.IMPORTED) {
+                symSourceName = "imported";
+            } else if (symSource == SourceType.USER_DEFINED) {
+                symSourceName = "user_defined";
+            } else {
+                symSourceName = symSource.toString();
+            }
 
             JsonObject f = new JsonObject();
             f.addProperty("name", name);
@@ -139,6 +158,7 @@ public class ExportRaptor extends GhidraScript {
             f.addProperty("size", func.getBody().getNumAddresses());
             f.addProperty("source_tool", "ghidra");
             f.addProperty("is_auto_named", isAuto);
+            f.addProperty("symbol_source", symSourceName);
             f.addProperty("is_thunk", func.isThunk());
             f.addProperty("is_external", func.isExternal());
 

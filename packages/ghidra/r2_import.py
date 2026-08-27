@@ -14,9 +14,16 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from typing import Tuple
+
 from .model import (
+    NAME_PROVENANCE_DWARF,
+    NAME_PROVENANCE_DYNSYM_PLT,
+    NAME_PROVENANCE_SYMTAB,
+    NAME_PROVENANCE_TOOL_SYNTHETIC,
     REDatabase,
     REFunction,
+    looks_tool_synthetic,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +54,42 @@ def _normalise_r2_name(name: str) -> str:
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
+
+
+def _classify_r2_name(
+    raw_name: str,
+    *,
+    is_imported: bool = False,
+) -> Tuple[str, str, bool]:
+    """Classify an r2 flag name BEFORE normalisation discards prefixes.
+
+    r2's namespaces carry exactly the provenance the cross-engine
+    name normalisation strips: ``dbg.`` (DWARF-derived), ``sym.``
+    (symbol table), ``sym.imp.`` (import thunk — dynamic symbols),
+    ``fcn.``/``loc.``/``entry0`` (r2-invented placeholders).
+
+    Returns ``(normalised_name, name_provenance, is_auto_named)``.
+    A placeholder-looking name is always ``tool_synthetic`` even when
+    it wears a better namespace (``sym.fcn.**`` — a forged symbol
+    table entry must not launder a placeholder into a real name).
+    Unprefixed non-placeholder names stay at unknown provenance
+    unless the caller knows they came from the import table.
+    """
+    if raw_name.startswith(("sym.imp.", "imp.")):
+        provenance = NAME_PROVENANCE_DYNSYM_PLT
+    elif raw_name.startswith("dbg."):
+        provenance = NAME_PROVENANCE_DWARF
+    elif raw_name.startswith("sym."):
+        provenance = NAME_PROVENANCE_SYMTAB
+    elif is_imported:
+        provenance = NAME_PROVENANCE_DYNSYM_PLT
+    else:
+        provenance = ""
+
+    name = _normalise_r2_name(raw_name)
+    if looks_tool_synthetic(name):
+        return name, NAME_PROVENANCE_TOOL_SYNTHETIC, True
+    return name, provenance, False
 
 
 def import_binary_r2(
@@ -110,25 +153,35 @@ def _context_map_to_redb(ctx, binary_path: Path) -> REDatabase:
         if fn.address in seen_addrs:
             continue
         seen_addrs.add(fn.address)
+        name, provenance, is_auto = _classify_r2_name(
+            fn.name, is_imported=fn.is_imported,
+        )
         functions.append(REFunction(
-            name=_normalise_r2_name(fn.name),
+            name=name,
             address=fn.address,
             size=fn.size,
+            is_auto_named=is_auto,
             is_external=fn.is_imported,
             decompilation=fn.decompiled or None,
             source_tool="r2",
+            name_provenance=provenance,
         ))
 
     for fn in ctx.imported_functions:
         if fn.address in seen_addrs:
             continue
         seen_addrs.add(fn.address)
+        name, provenance, is_auto = _classify_r2_name(
+            fn.name, is_imported=True,
+        )
         functions.append(REFunction(
-            name=_normalise_r2_name(fn.name),
+            name=name,
             address=fn.address,
             size=fn.size,
+            is_auto_named=is_auto,
             is_external=True,
             source_tool="r2",
+            name_provenance=provenance,
         ))
 
     imports = [{"name": name} for name in ctx.imports]
@@ -181,12 +234,21 @@ def _context_map_to_redb_dict(
             if addr in seen_addrs:
                 continue
             seen_addrs.add(addr)
+            is_imported = bool(
+                fn.get("is_imported", False)
+                or fn_list_key == "imported_functions",
+            )
+            name, provenance, is_auto = _classify_r2_name(
+                fn.get("name", ""), is_imported=is_imported,
+            )
             functions.append(REFunction(
-                name=_normalise_r2_name(fn.get("name", "")),
+                name=name,
                 address=addr,
                 size=fn.get("size", 0) or 0,
-                is_external=fn.get("is_imported", False),
+                is_auto_named=is_auto,
+                is_external=is_imported,
                 source_tool="r2",
+                name_provenance=provenance,
             ))
 
     imports = [{"name": name} for name in ctx_dict.get("imports", [])]

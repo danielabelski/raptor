@@ -213,6 +213,10 @@ _DMI_STORY["modalias"] = (
         cvr=_DMI_STORY["chassis_version"].strip(),
         sku=_DMI_STORY["product_sku"].strip(),
     ))
+# /sys/class/dmi/id/uevent is the modalias's TWIN: the kernel frames
+# the identical concatenated table as "MODALIAS=dmi:...". Masking one
+# and not the other hands the whole real story back in one read.
+_DMI_STORY["uevent"] = "MODALIAS=" + _DMI_STORY["modalias"]
 
 # /proc/stat jiffy unit. USER_HZ is 100 on every mainstream Linux
 # build (it is the userspace-visible clock tick, fixed for ABI
@@ -447,6 +451,73 @@ def build_persona(tmpdir: Path, cpu_count: int,
     # /proc/loadavg — low-load values + a plausible "running/total
     # tasks" pair + last-pid (matches `processes` in /proc/stat for
     # internal consistency).
+    # Per-CPU accounting files: their COLUMN/ROW count is a cpu-count
+    # cross-check one read away (/proc/interrupts headers, softirqs
+    # columns, schedstat rows all showed the host's CPUs beside the
+    # story's N). Minimal internally-consistent stubs — a probe that
+    # cross-references the VALUES against real interrupt controllers
+    # is already active analysis.
+    _hdr = "          " + "".join(f"CPU{i}       " for i in range(cpu_count))
+    _timer_row = "LOC:" + "".join(
+        f"{(fake_uptime_s * 250) // cpu_count:>11}" for i in range(cpu_count))
+    files["/proc/interrupts"] = _write(
+        tmpdir / "interrupts",
+        _hdr.rstrip() + "\n" + _timer_row
+        + "   Local timer interrupts\n",
+    )
+    _si_names = ("HI", "TIMER", "NET_TX", "NET_RX", "BLOCK", "IRQ_POLL",
+                 "TASKLET", "SCHED", "HRTIMER", "RCU")
+    _si_lines = ["                    "
+                 + "".join(f"CPU{i}       " for i in range(cpu_count))]
+    for _si_i, _si in enumerate(_si_names):
+        _si_val = (fake_uptime_s * (17 + _si_i * 3)) // cpu_count
+        _si_lines.append(f"{_si + ':':>12}" + "".join(
+            f"{_si_val:>11}" for i in range(cpu_count)))
+    files["/proc/softirqs"] = _write(
+        tmpdir / "softirqs", "\n".join(_si_lines) + "\n")
+    _ss_lines = ["version 15", f"timestamp {fake_uptime_s * _USER_HZ}"]
+    for _i in range(cpu_count):
+        _ss_lines.append(
+            f"cpu{_i} 0 0 0 0 0 0 "
+            f"{int(fake_uptime_s * 1e7)} {int(fake_uptime_s * 2e6)} "
+            f"{fake_processes * 40}")
+        _ss_lines.append("domain0 " + ",".join(["ff"]) + " "
+                         + " ".join(["0"] * 36))
+    files["/proc/schedstat"] = _write(
+        tmpdir / "schedstat", "\n".join(_ss_lines) + "\n")
+
+    # NUMA node cpu lists: /sys/devices/system/node/node0/{cpulist,
+    # cpumap} showed the host range beside the masked cpu dir.
+    _node_dir = tmpdir / "node0"
+    _node_dir.mkdir(exist_ok=True)
+    _cpu_range_str = f"0-{cpu_count - 1}" if cpu_count > 1 else "0"
+    files["/sys/devices/system/node/node0/cpulist"] = _write(
+        _node_dir / "cpulist", _cpu_range_str + "\n")
+    files["/sys/devices/system/node/node0/cpumap"] = _write(
+        _node_dir / "cpumap", f"{(1 << cpu_count) - 1:08x}\n")
+
+    # /etc/passwd and /etc/group: the host copies name the OPERATOR
+    # (login, home path, group) to any target that reads them — the
+    # persona claims a neutral box, so it supplies neutral system
+    # tables. uid 0 matches what the target sees via getuid(); the
+    # "sandbox" user matches USER/LOGNAME on fake-home runs.
+    files["/etc/passwd"] = _write(
+        tmpdir / "passwd",
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n"
+        "sandbox:x:1000:1000:sandbox:/home/sandbox:/bin/bash\n",
+    )
+    files["/etc/group"] = _write(
+        tmpdir / "group",
+        "root:x:0:\n"
+        "daemon:x:1:\n"
+        "bin:x:2:\n"
+        "nogroup:x:65534:\n"
+        "sandbox:x:1000:\n",
+    )
+
     files["/proc/loadavg"] = _write(
         tmpdir / "loadavg",
         f"0.08 0.12 0.10 1/{fake_processes // 100} {fake_processes}\n",

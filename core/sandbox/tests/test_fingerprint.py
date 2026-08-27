@@ -149,10 +149,14 @@ def test_build_persona_creates_all_expected_targets(tmp_path):
     expected = {
         "/proc/cpuinfo", "/proc/version", "/proc/cmdline", "/proc/stat",
         "/proc/uptime", "/proc/loadavg", "/proc/meminfo",
+        "/proc/interrupts", "/proc/softirqs", "/proc/schedstat",
         "/proc/sys/kernel/random/boot_id",
         "/etc/os-release", "/etc/machine-id", "/etc/hostname",
+        "/etc/passwd", "/etc/group",
         "/sys/devices/system/cpu/online",
         "/sys/devices/system/cpu/possible",
+        "/sys/devices/system/node/node0/cpulist",
+        "/sys/devices/system/node/node0/cpumap",
     } | {f"/sys/class/dmi/id/{name}" for name in _DMI_STORY}
     assert set(persona.files) == expected
 

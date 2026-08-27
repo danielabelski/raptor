@@ -2466,5 +2466,15 @@
     "count": 15,
     "kind": "literal",
     "note": "result-dict field names of the web scanner's evidence/summary records (schema keys), not a name vocabulary"
+  },
+  "core/sandbox/fingerprint.py::_DMI_STORY": {
+    "count": 17,
+    "kind": "literal",
+    "note": "kernel-defined /sys/class/dmi/id file names (fixed external contract, one entry per world-readable DMI identity file the persona masks) - not a learnable vocabulary"
+  },
+  "core/sandbox/fingerprint.py::_si_names": {
+    "count": 10,
+    "kind": "literal",
+    "note": "kernel-defined /proc/softirqs row names (fixed external contract mirrored verbatim for the persona stub) - not a learnable vocabulary"
   }
 }

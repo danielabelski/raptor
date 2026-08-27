@@ -102,6 +102,7 @@ CLONE_NEWUTS  = getattr(os, "CLONE_NEWUTS",  0x04000000)
 CLONE_NEWIPC  = getattr(os, "CLONE_NEWIPC",  0x08000000)
 CLONE_NEWUSER = getattr(os, "CLONE_NEWUSER", 0x10000000)
 CLONE_NEWPID  = getattr(os, "CLONE_NEWPID",  0x20000000)
+CLONE_NEWCGROUP = getattr(os, "CLONE_NEWCGROUP", 0x02000000)
 CLONE_NEWNET  = getattr(os, "CLONE_NEWNET",  0x40000000)
 
 
@@ -1944,7 +1945,16 @@ def run_sandboxed(
         try:
             # Step 3: create namespaces. Leaves us as "nobody" in the
             # new user-ns until the parent runs newuidmap on us.
-            ns_flags = CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWIPC
+            # CLONE_NEWCGROUP: without it every process in the
+            # sandbox reads its HOST cgroup path from
+            # /proc/self/cgroup — the operator's session scope (a
+            # host-layout identity string) on systemd hosts, and a
+            # surface no file mask can cover (the path is per-reader).
+            # A fresh cgroup namespace makes it read "0::/". Purely
+            # observational: no cgroup controllers are delegated or
+            # modified.
+            ns_flags = (CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWIPC
+                        | CLONE_NEWCGROUP)
             if block_network and not inherit_netns:
                 ns_flags |= CLONE_NEWNET
             if persona is not None:

@@ -109,6 +109,19 @@ _OBSERVE_EXTRA_TRACE_SYSCALLS = (
 
 # libseccomp comparison ops (scmp_compare)
 _SCMP_CMP_EQ = 4         # equal to: arg == datum_a
+
+# Namespace-creation clone flags (linux/sched.h). A sandboxed payload
+# that can create namespaces — a nested user namespace above all —
+# reaches the kernel code paths behind most container-escape CVEs
+# even though uid_map writes are refused. Nothing a target build or
+# PoC legitimately runs creates namespaces, so on install points that
+# come AFTER the sandbox's own namespace setup these are pure attack
+# surface.
+_CLONE_NS_FLAGS = {
+    "NEWUSER": 0x10000000, "NEWNS": 0x00020000, "NEWPID": 0x20000000,
+    "NEWNET": 0x40000000, "NEWIPC": 0x08000000, "NEWUTS": 0x04000000,
+    "NEWCGROUP": 0x02000000, "NEWTIME": 0x00000080,
+}
 _SCMP_CMP_MASKED_EQ = 7  # masked equal: (arg & datum_a) == datum_b
 
 # MSG_FASTOPEN (include/linux/socket.h): sendto/sendmsg flag that makes
@@ -463,7 +476,8 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                           audit_mode: bool = False,
                           observe_mode: bool = False,
                           allow_unix_sockets: bool = False,
-                          unix_scope_export_sock=None):
+                          unix_scope_export_sock=None,
+                          block_ns_creation: bool = False):
     """Create a preexec_fn that installs the seccomp filter for `profile`.
 
     Runs POST-fork in the child. Same fork-safety rules as Landlock: capture
@@ -477,6 +491,18 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
     the child, so UDP client-side is unnecessary. Disabled by default
     because UDP/DNS is needed for normal sandbox use (e.g. block_network=True
     with no proxy — DNS still used inside the net-ns for loopback lookups).
+
+    ``block_ns_creation=True`` denies namespace creation to the child:
+    unshare/clone with any CLONE_NEW* flag and setns return EPERM, and
+    clone3 returns ENOSYS (its flags live in a user-memory struct that
+    seccomp cannot inspect; ENOSYS makes glibc and runtimes fall back
+    to the filterable clone). ONLY safe on install points that run
+    AFTER the sandbox's own namespace setup (the fork-backend
+    grandchild): the subprocess/preexec lanes install the filter
+    BEFORE exec'ing the unshare CLI bootstrap and must keep the
+    syscalls. Hard-denied even under audit mode — TRACE resumes (i.e.
+    grants) the syscall, and namespace creation is an escape
+    primitive, not an observable.
 
     `audit_mode=True` swaps the deny action from SCMP_ACT_ERRNO(EPERM) to
     SCMP_ACT_TRACE — the kernel pauses the tracee and notifies the
@@ -604,6 +630,11 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
             audit_names += list(_OBSERVE_EXTRA_TRACE_SYSCALLS)
         audit_extra = [(name, _resolve(name)) for name in audit_names]
     resolved_blocks = [(name, _resolve(name)) for name in blocked_syscalls]
+    ns_syscall_nums = None
+    if block_ns_creation:
+        ns_syscall_nums = {
+            n: _resolve(n) for n in ("unshare", "setns", "clone", "clone3")
+        }
     # Sockets: filter by argument (family). Same syscall number, multiple rules.
     socket_num = _resolve("socket")
     socketpair_num = _resolve("socketpair")
@@ -774,6 +805,55 @@ def _make_seccomp_preexec(profile: str, block_udp: bool = False,
                         if ret < 0:
                             _os_write(2, b"sandbox: seccomp audit rule failed -- "
                                          b"refusing to exec without filter\n")
+                            os._exit(126)
+
+                # Namespace creation (block_ns_creation) — see the
+                # docstring. Per-flag MASKED_EQ rules so unshare(0)/
+                # clone without CLONE_NEW* stay usable (fork, threads);
+                # setns has no legitimate in-sandbox caller and is
+                # denied whole; clone3's flags hide in a user-memory
+                # struct, so it returns ENOSYS and callers fall back
+                # to the filterable clone. hard_deny: an escape
+                # primitive never downgrades to allow-and-log.
+                if block_ns_creation and ns_syscall_nums:
+                    _errno_enosys = 38
+                    for _fl in _CLONE_NS_FLAGS.values():
+                        for _sysname in ("unshare", "clone"):
+                            _num = ns_syscall_nums.get(_sysname, -1)
+                            if _num < 0:
+                                continue
+                            arg = _ScmpArgCmp(arg=0,
+                                              op=_SCMP_CMP_MASKED_EQ,
+                                              datum_a=_fl, datum_b=_fl)
+                            arg_arr = (_ScmpArgCmp * 1)(arg)
+                            ret = lib.seccomp_rule_add_array(
+                                ctx, hard_deny, _num, 1, arg_arr,
+                            )
+                            if ret < 0:
+                                _os_write(2, b"sandbox: seccomp ns-creation rule "
+                                             b"failed -- refusing to exec "
+                                             b"without filter\n")
+                                os._exit(126)
+                    _sn = ns_syscall_nums.get("setns", -1)
+                    if _sn >= 0:
+                        null_args = ctypes.POINTER(_ScmpArgCmp)()
+                        ret = lib.seccomp_rule_add_array(
+                            ctx, hard_deny, _sn, 0, null_args,
+                        )
+                        if ret < 0:
+                            _os_write(2, b"sandbox: seccomp setns rule failed"
+                                         b" -- refusing to exec without filter\n")
+                            os._exit(126)
+                    _c3 = ns_syscall_nums.get("clone3", -1)
+                    if _c3 >= 0:
+                        null_args = ctypes.POINTER(_ScmpArgCmp)()
+                        ret = lib.seccomp_rule_add_array(
+                            ctx, _SCMP_ACT_ERRNO(_errno_enosys), _c3, 0,
+                            null_args,
+                        )
+                        if ret < 0:
+                            _os_write(2, b"sandbox: seccomp clone3 rule failed"
+                                         b" -- refusing to exec without filter\n")
                             os._exit(126)
 
                 # socket() with blocked family — one rule per family.

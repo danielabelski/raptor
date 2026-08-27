@@ -1674,6 +1674,14 @@ def run_sandboxed(
             observe_mode=bool(observe_mode) and _audit_engaged,
             allow_unix_sockets=_allow_unix,
             unix_scope_export_sock=_unix_scope_child_sock,
+            # This filter installs in the GRANDCHILD, after every
+            # namespace the sandbox itself needs already exists — the
+            # one install point where denying namespace creation to
+            # the target costs nothing and closes the nested-userns
+            # kernel attack surface. The subprocess/preexec lanes
+            # must NOT set this (their filter precedes the unshare
+            # CLI bootstrap).
+            block_ns_creation=True,
         ) if seccomp_profile else None
 
         # Tracer-ready pipe: the tracer subprocess writes a byte once

@@ -1304,6 +1304,158 @@ class TestDetectorCorroboratedDismissal:
         assert r is None
 
 
+class TestScatterlistOobDetectorCorroboratedDismissal:
+    """An active scatterlist_frag_undersize receipt outranks a
+    raised-then-dismissed out-of-bounds hypothesis on the same
+    function; the floor is family-locked — lifetime or race dismissals
+    never floor against it, and without the receipt the OOB dismissal
+    is not floorable at all (CWE-787 is not in the receipt-free
+    allowlist)."""
+
+    _DETECTORS = [{"detector": "cocci:scatterlist_frag_undersize"}]
+
+    _OOB_MECHANISMS = [
+        # Bare-count sizing phrasing.
+        "Out-of-bounds scatterlist write: nsg = "
+        "skb_shinfo(skb)->nr_frags + 1 undercounts the entries "
+        "skb_to_sgvec needs for a frag_list skb",
+        # Non-linear-buffer phrasing.
+        "on a chained skb the walk needs more entries than the sg "
+        "table holds, writing out of bounds",
+        # Table-overrun phrasing.
+        "the sg table is too small so the mapping overruns the "
+        "scatterlist on fragmented packets",
+        # Receipt-echo phrasing (a reviewer quoting the detector).
+        "Mechanical finding scatterlist_frag_undersize: nsg = "
+        "skb_shinfo(skb)->nr_frags + 1 misses frag_list segments",
+        # Natural reviewer spellings of the same defect.
+        "the loop undercounts the entries required for the chained "
+        "fragments",
+        "skb_to_sgvec writes past the end of the sg array",
+        "the mapping walks beyond the table when the skb is chained",
+        "the mapping exceeds the allocated entries",
+        "too few slots for all the segments of the buffer",
+    ]
+
+    def _outcome(self, conf="refuted", mechanism=None):
+        return _Outcome(
+            status="clean",
+            hypotheses=[{
+                "mechanism": mechanism or self._OOB_MECHANISMS[0],
+                "confidence": conf,
+                "counter": "skb_to_sgvec returns -EMSGSIZE so the "
+                           "overrun cannot happen in practice",
+            }],
+        )
+
+    def test_refuted_oob_dismissal_floored(self):
+        for mech in self._OOB_MECHANISMS:
+            r = rescue_self_refuted(
+                self._outcome("refuted", mech),
+                detector_findings=self._DETECTORS,
+            )
+            assert r is not None, mech
+            assert r.gate == "anti_self_refutation"
+            assert r.demote_to == "suspicious"
+            assert "scatterlist_frag_undersize" in r.reason
+
+    def test_low_oob_dismissal_floored(self):
+        r = rescue_self_refuted(
+            self._outcome("low"), detector_findings=self._DETECTORS,
+        )
+        assert r is not None
+        assert "scatterlist_frag_undersize" in r.reason
+
+    def test_no_receipt_no_engagement(self):
+        # Without the receipt an OOB dismissal has no lane: CWE-787
+        # is not in the receipt-free allowlist.
+        r = rescue_self_refuted(self._outcome("refuted"))
+        assert r is None
+
+    def test_lifetime_dismissal_not_floored_by_oob_receipt(self):
+        # The archived rxkad lifetime-dismissal shapes: mentions of
+        # sg / skb_to_sgvec inside a free/use claim are NOT the OOB
+        # family. The receipt-free CWE-allowlist floor may still hold
+        # them (pre-existing lane, unchanged) — what must never happen
+        # is the OOB detector receipt being consumed cross-family.
+        for mech in (
+            "UAF/double-free of sg: sg freed at L523 (skb_to_sgvec "
+            "failure) and again used/freed later",
+            "Type-state tool claims sg is freed at line 537 and then "
+            "used by the decrypt call",
+        ):
+            r = rescue_self_refuted(
+                self._outcome("refuted", mech),
+                detector_findings=self._DETECTORS,
+            )
+            if r is not None:
+                assert "scatterlist_frag_undersize" not in r.reason, mech
+                assert "detector receipt" not in r.reason, mech
+
+    def test_race_dismissal_not_floored_by_oob_receipt(self):
+        r = rescue_self_refuted(
+            self._outcome(
+                "refuted",
+                "data race on call->state between softirq and "
+                "recvmsg contexts",
+            ),
+            detector_findings=self._DETECTORS,
+        )
+        if r is not None:
+            assert "scatterlist_frag_undersize" not in r.reason
+            assert "detector receipt" not in r.reason
+
+    def test_frag_list_mention_in_other_family_not_consumed(self):
+        # Hostile phrasings that name frag_list / fragmented / a
+        # non-linear skb inside genuinely other-family mechanisms:
+        # the fragmented-layout token alone must never consume the
+        # OOB receipt — only a sizing/bounds context may.
+        for mech in (
+            "use-after-free: the frag_list child skb is freed twice "
+            "on the error path",
+            "refcount leak: skb_get is not balanced when the "
+            "frag_list is spliced into the parent",
+            "TOCTOU race: a concurrent writer can grow the "
+            "non-linear skb under us",
+            "info-leak: uninitialized padding bytes are read back "
+            "when copying fragmented packets to userspace",
+            "double-free triggered when processing a fragmented skb "
+            "queue entry",
+            "the refcount is undercounted leading to premature free",
+            "race window during refill leaves the descriptor ring "
+            "undersized until the next doorbell",
+            "integer overflow: len * size wraps to a small value so "
+            "the allocation is undersized",
+            "the OOB data handling path frees the urgent skb twice",
+        ):
+            r = rescue_self_refuted(
+                self._outcome("refuted", mech),
+                detector_findings=self._DETECTORS,
+            )
+            if r is not None:
+                assert "scatterlist_frag_undersize" not in r.reason, mech
+                assert "detector receipt" not in r.reason, mech
+
+    def test_integer_overflow_dismissal_not_floored(self):
+        # Bare integer-overflow phrasing belongs to the parsed-int /
+        # narrowing lane, not this receipt's family.
+        r = rescue_self_refuted(
+            self._outcome(
+                "refuted",
+                "the size computation could overflow int32 if callers "
+                "fail to validate numsrc",
+            ),
+            detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+    def test_medium_confidence_not_consumed(self):
+        r = rescue_self_refuted(
+            self._outcome("medium"), detector_findings=self._DETECTORS,
+        )
+        assert r is None
+
+
 class TestDiagnoseRescue:
     """diagnose_rescue mirrors the Gate-5 precondition chain and names
     the first broken link, so a silent non-fire is explainable from a

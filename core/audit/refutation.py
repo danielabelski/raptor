@@ -933,6 +933,48 @@ _DETECTOR_FAMILY_HYP_RES: dict[str, re.Pattern] = {
     # detector receipt carries a constructive domain proof, so this
     # regex only needs to recognise the hypothesis phrasing, never
     # decide the code.
+    # Out-of-bounds on an undersized scatterlist: a hypothesis about
+    # a scatterlist/sg table too small for a fragmented (frag_list /
+    # non-linear) skb, or an OOB write past it. The paired
+    # `scatterlist_frag_undersize` receipt carries the mechanical
+    # sizing evidence (bare frag count mapped via skb_to_sgvec), so
+    # this regex only recognises the hypothesis phrasing. Kept away
+    # from lifetime ("sg freed then used") and bare integer-overflow
+    # phrasings — those are other families' lanes.
+    "scatterlist_frag_undersize": re.compile(
+        # \boob\b: out-of-bounds shorthand, NOT out-of-band socket
+        # vocabulary (OOB data / MSG_OOB lives in other families).
+        r"out.of.bounds|\boob\b(?![-\s]+(?:data|band|byte|message))|"
+        # undersiz* only next to a table/segment-shaped object — a
+        # ring/allocation "undersized" by a race or an integer wrap
+        # is another family's lane.
+        r"undersiz\w*[^.;]{0,80}?(?:scatterlist|"
+        r"sg (?:table|list|array|vec|entr\w*)|entr\w*|segments?|"
+        r"fragments?|frag_list|mapping|\btable\b)|"
+        r"(?:scatterlist|sg (?:table|list|array|vec|entr\w*)|"
+        r"frag_list|fragmented|non.linear|\btable\b|mapping)"
+        r"[^.;]{0,80}?undersiz|"
+        r"undercount\w*[^.;]{0,80}?(?:entr\w*|segments?|fragments?|"
+        r"scatterlist|sg |slots?)|"
+        r"(?:scatterlist|sg (?:table|list|array|vec|entr\w*))"
+        r"[^.;]{0,80}?(?:overflow|overrun|too small|too few|short|"
+        r"exceed|past the end|beyond)|"
+        r"(?:overflow|overrun|writes? past|walks? (?:beyond|past)|"
+        r"exceed\w*)[^.;]{0,80}?(?:scatterlist|"
+        r"sg (?:table|list|array|vec|entr\w*)|allocated entr\w*|"
+        r"the table)|"
+        r"too few (?:sg )?(?:slots?|entr\w*|elements?)|"
+        # Fragmented-layout claims only in a sizing/bounds context —
+        # a UAF/refcount/race/info-leak sentence that merely mentions
+        # frag_list or a fragmented skb is another family's lane.
+        r"(?:frag_list|fragmented|non.linear)[^.;]{0,120}?"
+        r"(?:overflow|overrun|out.of.bounds|undersiz|undercount|"
+        r"too small|too few|not counted|uncounted|unaccounted|"
+        r"more (?:segments?|entries|fragments?) than)|"
+        r"(?:too small|too few|not counted|uncounted|unaccounted)"
+        r"[^.;]{0,120}?(?:frag_list|fragmented|non.linear)",
+        re.IGNORECASE,
+    ),
     "return_domain": re.compile(
         r"(?:return|error|failure)[^.;]{0,160}?(?:other than|"
         r"instead of|outside|beyond|different from|not the exact|"

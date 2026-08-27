@@ -496,6 +496,7 @@ int main(void){
 """
 
 
+@pytest.mark.slow  # compile + three real sandboxed replays
 @pytest.mark.skipif(shutil.which("gcc") is None and
                     shutil.which("cc") is None,
                     reason="no C compiler")

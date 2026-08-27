@@ -6,6 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from packages.frida import runner as runner_module
 from packages.frida.runner import (
     RunConfig,
     TargetSpec,
@@ -164,18 +167,23 @@ class TestBoundedFridaCalls:
             duration_sec=0.05,
         )
 
-    def test_wedged_flush_cannot_lose_metadata(self, tmp_path):
+    def test_wedged_flush_cannot_lose_metadata(self, tmp_path,
+                                               monkeypatch):
         """frida rpc calls park on events with NO timeout; a wedged
         flush must be abandoned (and further flushes skipped), never
         allowed to hang the run past the metadata write."""
         import json
         import time
 
+        # Shrink the per-call cap so the wedge is proven without
+        # waiting out the production 5s bound.
+        monkeypatch.setattr(runner_module, "_FLUSH_RPC_TIMEOUT_S", 0.5)
+
         calls = {"n": 0}
 
         def _wedge():
             calls["n"] += 1
-            time.sleep(60)
+            time.sleep(10)
 
         script = _FlushScript()
         script.exports_sync = SimpleNamespace(flush=_wedge)
@@ -188,14 +196,15 @@ class TestBoundedFridaCalls:
         result = run(cfg, frida_mod_override=fake)
         elapsed = time.monotonic() - start
         assert result.ok
-        # Bounded attempts (5s cap each), latched after two
+        # Bounded attempts (one cap each), latched after two
         # consecutive wedges; the teardown flush always gets its shot
-        # — never one 5s stall per cycle, never a 60s hang.
+        # — never one full stall per cycle, never a 10s hang.
         assert calls["n"] <= 3
-        assert elapsed < 20
+        assert elapsed < 8
         assert json.loads(
             (tmp_path / "metadata.json").read_text())["ok"] is True
 
+    @pytest.mark.slow  # waits out the real 30s script-load wedge cap
     def test_wedged_load_fails_the_run_with_metadata(self, tmp_path):
         import json
         import time

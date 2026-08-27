@@ -273,6 +273,11 @@ def load_script_source(template: str | None,
     return p.read_text(encoding="utf-8"), f"file:{p}"
 
 
+# Hard cap on one blocking rpc flush call (see _bounded_frida_call).
+# Module-level (read at call time) so tests can shrink the wedge wait.
+_FLUSH_RPC_TIMEOUT_S = 5.0
+
+
 def _bounded_frida_call(fn, timeout_s: float, what: str) -> bool:
     """Run a blocking frida call with a hard time bound.
 
@@ -592,7 +597,8 @@ def run(cfg: RunConfig,
                 if exports is not None:
                     exports.flush()
 
-            if _bounded_frida_call(_call, 5.0, "script-flush"):
+            if _bounded_frida_call(_call, _FLUSH_RPC_TIMEOUT_S,
+                                   "script-flush"):
                 flush_state["consecutive_wedges"] = 0
                 result.flushes_completed += 1
             else:

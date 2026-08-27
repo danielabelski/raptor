@@ -187,6 +187,12 @@ def build_binary_checklist(
         # context assembly and the journal.
         metadata["address"] = func.address
         metadata["size"] = _clamped_size(func)
+        # Name provenance rides in metadata for the same reason: a
+        # downstream consumer joining on this NAME must be able to
+        # see whether the import seam minted it from debug info, a
+        # symbol table, or thin air. Auto-named functions without a
+        # tag are tool placeholders by construction; "" = unknown.
+        metadata["name_provenance"] = _item_name_provenance(func)
 
         # Duplicate symbol names (cross-TU statics, or a forged
         # symtab aliasing a hot name) would collapse journal/coverage
@@ -203,6 +209,7 @@ def build_binary_checklist(
             "address": func.address,
             "size": _clamped_size(func),
             "source_tool": func.source_tool,
+            "name_provenance": metadata["name_provenance"],
             "metadata": metadata,
         }
         if func.signature:
@@ -219,6 +226,13 @@ def build_binary_checklist(
 
     total_funcs = len(db.functions)
     named = sum(1 for f in db.functions if not f.is_auto_named)
+
+    provenance_counts: Dict[str, int] = {}
+    for f in db.functions:
+        tag = _item_name_provenance(f) or "unknown"
+        provenance_counts[tag] = provenance_counts.get(tag, 0) + 1
+
+    binary_provenance = _binary_provenance_block(bp, db)
 
     return {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
@@ -247,10 +261,47 @@ def build_binary_checklist(
             "total_functions": total_funcs,
             "named_functions": named,
             "auto_named": total_funcs - named,
+            "auto_named_ratio": (
+                round((total_funcs - named) / total_funcs, 4)
+                if total_funcs else 0.0
+            ),
+            "name_provenance_counts": provenance_counts,
             "architecture": db.architecture,
             "source_tool": db.source_tool,
+            "provenance": binary_provenance,
         },
     }
+
+
+def _item_name_provenance(func) -> str:
+    """Resolve one function's name-provenance tag for checklist use.
+
+    An auto-named function without an explicit tag is a tool
+    placeholder by construction (legacy databases predating the
+    provenance field); everything else passes through, "" = unknown.
+    """
+    tag = getattr(func, "name_provenance", "") or ""
+    if not tag and getattr(func, "is_auto_named", False):
+        return "tool_synthetic"
+    return tag
+
+
+def _binary_provenance_block(bp, db) -> Dict[str, Any]:
+    """Per-binary provenance facts (build-id, stripped-ness, DWARF,
+    fortification) for ``binary_stats`` — best-effort, honest about
+    what could not be probed."""
+    import_names = [
+        (imp.get("name") or "") for imp in (db.imports or [])
+    ]
+    try:
+        from core.analysis.binary_provenance import binary_provenance_block
+        path = Path(bp)
+        return binary_provenance_block(
+            path if path.is_file() else None, import_names,
+        )
+    except Exception:
+        logger.debug("binary provenance probe failed", exc_info=True)
+        return {"probe": "error"}
 
 
 def _build_callee_index(db) -> Dict[int, List[str]]:

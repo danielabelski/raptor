@@ -179,10 +179,15 @@ def test_bundle_witness_not_in_store(tmp_path):
 # ----------------------------------------------------------------------
 
 
+# Deterministic on delivered input: the null write cannot depend on
+# scheduling or ASLR, and the read retries EINTR so a signal landing
+# mid-read cannot turn a crash run into a clean exit.
 _CRASHER = (
+    "#include <errno.h>\n"
     "#include <unistd.h>\n"
-    "int main(void){char b[64]; ssize_t n=read(0,b,63); "
-    "if(n>0&&b[0]=='B'){int*p=0;*p=42;} return 0;}\n"
+    "int main(void){char b[64]; ssize_t n;\n"
+    "do { n = read(0, b, 63); } while (n < 0 && errno == EINTR);\n"
+    "if (n > 0 && b[0]=='B'){ int *p = 0; *p = 42; } return 0;}\n"
 )
 
 

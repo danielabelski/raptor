@@ -485,11 +485,16 @@ def test_real_sanitizer_witness_reproduces(tmp_path):
     assert result.observed_outcomes == ["sanitizer_report"] * 3
 
 
-# stdin-driven crasher: reads stdin, NULL-derefs on input starting 'B'
+# stdin-driven crasher: reads stdin, NULL-derefs on input starting 'B'.
+# The read retries EINTR so a signal landing mid-read cannot turn a
+# crash run into a clean exit; the null write itself cannot depend on
+# scheduling or ASLR.
 _CRASHER_SRC = """
+#include <errno.h>
 #include <unistd.h>
 int main(void){
-    char b[64]; ssize_t n = read(0, b, 63);
+    char b[64]; ssize_t n;
+    do { n = read(0, b, 63); } while (n < 0 && errno == EINTR);
     if (n > 0 && b[0]=='B'){ int *p=0; *p=42; }
     return 0;
 }

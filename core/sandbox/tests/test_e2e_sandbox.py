@@ -2257,8 +2257,13 @@ class TestRunUntrustedNetworked(unittest.TestCase):
             # different real-shaped host. We don't expect the child
             # to actually succeed (no real upstream); we expect the
             # proxy to log a denial OR the child to fail.
+            # /usr/bin/python3 explicitly: a PATH-resolved python may
+            # live outside the mount-ns bind tree on dev hosts (venv,
+            # ~/.local wrapper), and the fresh-procfs contract now
+            # refuses that shape for untrusted runs — this test is
+            # about the PROXY, so keep the tool hermetically in-tree.
             r = run_untrusted_networked(
-                ["python3", "-c",
+                ["/usr/bin/python3", "-c",
                  "import socket; s = socket.socket(); s.settimeout(2); s.connect(('1.1.1.1', 443))"],
                 target=d, output=d,
                 proxy_hosts=["api.anthropic.com"],

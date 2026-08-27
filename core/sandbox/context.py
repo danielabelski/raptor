@@ -3498,6 +3498,57 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                    "call, or drop require_sanitisation= to accept "
                    "host-real identity surfaces on degrade.",
             )
+        # Fresh-procfs fail-closed gate (pre-spawn arm): the same
+        # routes that abandon the mount-ns spawn (B fallback for a
+        # cmd[0] outside the bind tree — a venv-resolved python being
+        # the everyday case — the speculative-failure cache, and the
+        # pass_fds/input= compat path) land on lanes where the HOST
+        # /proc stays visible. The no-backend and M/X-retry arms are
+        # gated; without this arm an untrusted run dodged the
+        # contract whenever its tool happened to resolve outside the
+        # bind tree, silently. The remedy is cheap and named:
+        # tool_paths= extends the bind tree.
+        # Scope note: the pass_fds=/input= compat route (witness bytes
+        # fed to a PoC's stdin) is deliberately NOT gated here — those
+        # flows have always run on the fallback lane and refusing them
+        # would break every witness-replaying consumer at once.
+        # Plumbing input= through the fork backend, and then extending
+        # this gate to cover it, is the tracked follow-up; until then
+        # that route remains the documented host-procfs residual.
+        if (_require_fresh_procfs
+                and (_b_fallback_reason is not None or _skip_mount_ns)
+                and rootfs is None):
+            from .errors import SandboxSetupError
+            _reason = (
+                _b_fallback_reason
+                or "per-call skip_mount_ns=True bypasses the "
+                   "mount-ns backend"
+            )
+            msg_0 = (
+                f"sandbox run(): the fresh-procfs contract cannot be "
+                f"met for this call ({_reason}) — the fallback lanes "
+                f"leave the host-pid /proc visible to the untrusted "
+                f"target."
+            )
+            _override_hint = (
+                "Alternatively set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 "
+                "to explicitly accept host-procfs-visible containment."
+            )
+            if _b_fallback_reason and "previously failed mount-ns" in (
+                    _b_fallback_reason):
+                # The speculative-cache route needs its own remedy —
+                # the shared audit-oriented text talks about tracer
+                # attachment, which is not what this refusal is about.
+                _remedy = (
+                    "the binary previously failed to exec inside the "
+                    "mount-ns view; extend tool_paths=/readable_paths= "
+                    "to cover its runtime dependencies so the mount-ns "
+                    "lane can serve it. " + _override_hint)
+            elif _b_fallback_instr:
+                _remedy = _b_fallback_instr + " " + _override_hint
+            else:
+                _remedy = _override_hint
+            raise SandboxSetupError(msg_0, _remedy)
         # Audit mode (b2/b3) requires the _spawn path because the
         # tracer needs to PTRACE_SEIZE a target the parent forked
         # itself. The Landlock-only fallback uses bare subprocess.run

@@ -10,6 +10,7 @@ BEFORE exec'ing the unshare CLI bootstrap and must keep the
 syscalls.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -95,3 +96,53 @@ PY
     assert "clone3-enosys: True" in out, out
     assert "exec-ok: True" in out, out
     assert "mp-ok: True" in out, out
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "linux", reason="namespace sandbox")
+def test_out_of_tree_tool_refuses_untrusted_run(tmp_path, monkeypatch):
+    """The fresh-procfs contract covers the tool-visibility pre-flight:
+    an untrusted cmd[0] that resolves OUTSIDE the mount-ns bind tree
+    (a venv python is the everyday shape) must refuse rather than
+    silently run on a host-procfs-visible fallback lane; tool_paths=
+    is the named remedy and the operator override restores the
+    degrade."""
+    from core.sandbox import context as _ctx
+    from core.sandbox.errors import SandboxSetupError
+    bindir = tmp_path / "outside-bin"
+    bindir.mkdir()
+    tool = bindir / "sbx-out-of-tree-tool"
+    tool.write_text("#!/bin/sh\necho tool-ran\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH",
+                       f"{bindir}:{os.environ.get('PATH', '/usr/bin')}")
+    monkeypatch.delenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", raising=False)
+    workdir = tmp_path / "w"
+    workdir.mkdir()
+    try:
+        with pytest.raises(SandboxSetupError,
+                           match="fresh-procfs contract"):
+            _ctx.run_untrusted(["sbx-out-of-tree-tool"],
+                               target=str(workdir), output=str(workdir),
+                               timeout=60, capture_output=True, text=True)
+    except (pytest.skip.Exception, pytest.fail.Exception):
+        raise
+    except Exception as e:  # noqa: BLE001 — host without the lane
+        pytest.skip(f"mount-ns lane unavailable: {e}")
+
+    r = _ctx.run_untrusted(["sbx-out-of-tree-tool"],
+                           target=str(workdir), output=str(workdir),
+                           timeout=60, capture_output=True, text=True,
+                           tool_paths=[str(bindir)])
+    assert "tool-ran" in (r.stdout or ""), (
+        "tool_paths= remedy did not restore the mount-ns lane")
+
+    monkeypatch.setenv("RAPTOR_ALLOW_DEGRADED_UNTRUSTED", "1")
+    # The override's promise is narrow: the GATE stops refusing. The
+    # fallback lane then applies its own posture (here: Landlock's
+    # read allowlist still denies the out-of-tree binary, so the exec
+    # itself may fail) — that is the lane's business, not the gate's.
+    r = _ctx.run_untrusted(["sbx-out-of-tree-tool"],
+                           target=str(workdir), output=str(workdir),
+                           timeout=60, capture_output=True, text=True)
+    assert isinstance(r.returncode, int), "override run did not execute"

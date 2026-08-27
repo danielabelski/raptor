@@ -19,7 +19,7 @@ Raw binaries degrade to r2, then objdump.
 /ghidra detach [<project.gpr>]
 /ghidra status
 /ghidra import <project.gpr | binary> [--out <dir>] [--enrich] [--decompile-all]
-/ghidra diff <old.gpr> <new.gpr> [--out <dir>] [--label-old <v1>] [--label-new <v2>] [--json]
+/ghidra diff <old.gpr> <new.gpr> [--matched] [--out <dir>] [--label-old <v1>] [--label-new <v2>] [--json]
 /ghidra decompile <project.gpr> <function_name_or_addr> [--timeout <s>]
 /ghidra list <project.gpr>
 /ghidra export <out-dir> [--to <project.gpr>] [--target <path>]
@@ -80,6 +80,27 @@ import changes. Human output ends with the priority review targets
 `version-diff.json` document instead.
 
 - `--label-old` / `--label-new` — human labels for the versions
+- `--matched` — match functions across versions by the tier cascade
+  (exact name → normalized decompilation hash → string/import anchors →
+  call-graph propagation → decompilation similarity) instead of by
+  name. Use whenever either side is stripped or symbols were renamed:
+  renamed functions report as changes (with `name_new` and the match
+  tier) rather than an added+removed pair, a pure rename or rebase does
+  not read as a code change, and ambiguous functions stay unmatched
+  rather than being force-paired. A pair whose structure matches but
+  whose hex constants differ reports `constants changed`; call-target
+  differences (mapped through the match) report `call targets
+  changed`. Writes `binary-match.json` (pairs with tier + score,
+  unmatched sets, stats) next to `version-diff.json`. Matching
+  quality depends on decompilation coverage — import both projects
+  with `--decompile-all` first for best results (the CLI hints when
+  coverage is low).
+
+**Patch-diff workflow** (find what a security fix changed): import the
+pre-patch and post-patch binaries into two `.gpr` projects, run
+`/ghidra diff old.gpr new.gpr --matched`, then start the audit from
+the changed functions — they carry each pair's match tier so low-tier
+(similarity-matched) pairs get verified first.
 
 ### decompile
 

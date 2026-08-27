@@ -100,6 +100,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("--label-old", default="", help="Label for old version")
     p_diff.add_argument("--label-new", default="", help="Label for new version")
     p_diff.add_argument("--program", default=None, help="Program name in multi-binary project")
+    p_diff.add_argument("--decompile-all", action="store_true",
+                        help="Decompile every function during both "
+                             "imports (slow) — feeds the hash and "
+                             "similarity match tiers and the "
+                             "code-change comparison")
+    p_diff.add_argument("--matched", action="store_true",
+                        help="Match functions across versions by the tier "
+                             "cascade (name, decompilation hash, string/"
+                             "import anchors, call graph, similarity) "
+                             "instead of by name — required for stripped "
+                             "or renamed binaries; writes binary-match.json")
     p_diff.add_argument("--json", action="store_true", help="JSON output to stdout")
 
     # decompile
@@ -466,21 +477,57 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 
     print(f"importing: {old_gpr.name}", file=sys.stderr)
     bridge_old = GhidraBridge(old_gpr, program_name=args.program)
-    db_old = bridge_old.import_project(out_dir / "old")
+    db_old = bridge_old.import_project(out_dir / "old",
+                                       decompile=args.decompile_all)
     bridge_old.close()
 
     print(f"importing: {new_gpr.name}", file=sys.stderr)
     bridge_new = GhidraBridge(new_gpr, program_name=args.program)
-    db_new = bridge_new.import_project(out_dir / "new")
+    db_new = bridge_new.import_project(out_dir / "new",
+                                       decompile=args.decompile_all)
     bridge_new.close()
 
     label_old = args.label_old or db_old.metadata.get("program_name", old_gpr.stem)
     label_new = args.label_new or db_new.metadata.get("program_name", new_gpr.stem)
 
+    matches = None
+    if args.matched:
+        from packages.ghidra.match import match_databases
+
+        def _decomp_ratio(db) -> float:
+            # thunks/externals never decompile; counting them would
+            # under-report coverage and fire the hint spuriously
+            body_fns = [f for f in db.functions
+                        if not (f.is_thunk or f.is_external)
+                        and isinstance(f.size, int) and f.size > 1]
+            if not body_fns:
+                return 1.0
+            return sum(1 for f in body_fns
+                       if f.decompilation) / len(body_fns)
+
+        if min(_decomp_ratio(db_old), _decomp_ratio(db_new)) < 0.3:
+            print("matched: hint: few functions carry decompilation "
+                  "— the hash and similarity tiers are starved and "
+                  "the call-graph tier refuses unverifiable "
+                  "candidates. Re-run with --decompile-all "
+                  "for stronger matching.",
+                  file=sys.stderr)
+        matches = match_databases(db_old, db_new)
+        match_path = out_dir / "binary-match.json"
+        match_path.write_text(json.dumps(matches.to_dict(), indent=2))
+        stats = matches.stats
+        print(f"matched: {stats.get('matched', 0)} pairs, "
+              f"{stats.get('unmatched_old', 0)} old / "
+              f"{stats.get('unmatched_new', 0)} new unmatched "
+              f"-> {match_path}", file=sys.stderr)
+        for note in matches.notes:
+            print(f"matched: note: {note}", file=sys.stderr)
+
     diff = diff_databases(
         db_old, db_new,
         label_old=label_old,
         label_new=label_new,
+        matches=matches,
     )
     diff.write_json(out_dir / "version-diff.json")
 

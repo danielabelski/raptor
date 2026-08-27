@@ -51,9 +51,12 @@ def _load_changed_names(diff_path: Path) -> Set[str]:
         if name:
             names.add(name)
     for entry in data.get("changed", []):
-        name = entry.get("name", "")
-        if name:
-            names.add(name)
+        # matched diffs carry both names for renamed pairs; the
+        # checklist may be keyed on either side's naming
+        for key in ("name", "name_new"):
+            name = entry.get(key, "")
+            if name:
+                names.add(name)
 
     return names
 

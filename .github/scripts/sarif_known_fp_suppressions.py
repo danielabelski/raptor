@@ -119,6 +119,41 @@ KNOWN_FP_RULES: tuple[KnownFP, ...] = (
     KnownFP(
         rule_id="py/clear-text-storage-of-sensitive-information",
         sink_file_prefixes=(
+            "core/threat_model/__init__.py",
+            "core/project/cli.py",
+        ),
+        justification=(
+            "Threat-model markdown persistence (save_model and the "
+            "project threat-model sync action render THREAT_MODEL.md "
+            "via render_markdown). Source is the heuristically-named "
+            "local `secrets` in core/threat_model/__init__.py "
+            "from_context_map: _summaries_from_entries builds finding "
+            "LABELS from context-map hardcoded_secrets entries — "
+            "name/id plus file:line location and trust tag — never "
+            "the credential value itself. The threat model is the "
+            "operator-facing review document; persisting those labels "
+            "is its purpose. Triaged FP."
+        ),
+    ),
+    KnownFP(
+        rule_id="py/clear-text-logging-sensitive-data",
+        sink_file_prefixes=(
+            "core/project/cli.py",
+        ),
+        justification=(
+            "`project threat-model export` prints render_markdown() "
+            "of the threat model to stdout on explicit operator "
+            "request. Same flow class as the storage entry above: "
+            "the taint source is the heuristically-named `secrets` "
+            "local in core/threat_model/__init__.py whose values are "
+            "finding labels (name + file:line + trust tag) derived "
+            "from context-map hardcoded_secrets summaries, not "
+            "secret material. Triaged FP."
+        ),
+    ),
+    KnownFP(
+        rule_id="py/clear-text-storage-of-sensitive-information",
+        sink_file_prefixes=(
             "core/sandbox/summary.py",
             "core/sandbox/observe.py",
         ),

@@ -2624,9 +2624,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
             raise SandboxSetupError(
                 msg,
                 "install newuidmap/newgidmap (uidmap package) so the "
-                "mount-ns backend can engage, or set "
-                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to explicitly "
-                "accept host-procfs-visible containment on this host.",
+                "mount-ns backend can engage. "
+                + _fresh_procfs_override_hint(),
             )
         _inherit_netns = kwargs.pop("inherit_netns", False)
         _start_new_session = kwargs.pop("start_new_session", True)
@@ -3562,10 +3561,7 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                 f"leave the host-pid /proc visible to the untrusted "
                 f"target."
             )
-            _override_hint = (
-                "Alternatively set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 "
-                "to explicitly accept host-procfs-visible containment."
-            )
+            _override_hint = _fresh_procfs_override_hint()
             if _b_fallback_reason and "previously failed mount-ns" in (
                     _b_fallback_reason):
                 # The speculative-cache route needs its own remedy —
@@ -3986,9 +3982,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                 "This mount is expected to succeed on any "
                                 "user-namespace-capable kernel — treat a "
                                 "persistent failure as an environment bug "
-                                "worth reporting. To accept the degraded "
-                                "posture for this host anyway, set "
-                                "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1.",
+                                "worth reporting. "
+                                + _fresh_procfs_override_hint(),
                             )
                         if _setup_status is not None and _setup_status[0] in ("L", "S", "U"):
                             from .errors import SandboxSetupError
@@ -4107,10 +4102,8 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                                     "child diagnostic above; for 'X' "
                                     "the usual cause is a tool outside "
                                     "the bind set — tool_paths= / "
-                                    "--sandbox-tool-path). To accept "
-                                    "host-procfs-visible containment "
-                                    "on this host instead, set "
-                                    "RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1.",
+                                    "--sandbox-tool-path). "
+                                    + _fresh_procfs_override_hint(),
                                 )
                             # Populate the per-cmd cache so future
                             # calls for the same binary skip mount-ns
@@ -5642,6 +5635,56 @@ def _reopen_write_only(fd: int, flags: int) -> "int | None":
     return None
 
 
+def _warn_if_waiver_degrades() -> None:
+    """Per-call WARNING when the fresh-procfs waiver actually bites.
+
+    With RAPTOR_ALLOW_DEGRADED_UNTRUSTED set, an untrusted run on a
+    host whose fork/mount-ns backend cannot engage proceeds on the
+    host-procfs-visible fallback — silently, pre-fix, because the
+    waiver zeroes the require flag before run() ever sees it. Every
+    other waived shape warns; this one should too.
+    """
+    if untrusted_fresh_procfs_required() or sys.platform != "linux":
+        return
+    try:
+        from ._spawn import mount_ns_available as _mna
+        if check_mount_available() and _mna():
+            return
+    except Exception:  # noqa: BLE001 — probe failure: warn anyway
+        pass
+    logger.warning(
+        "run_untrusted: RAPTOR_ALLOW_DEGRADED_UNTRUSTED waives the "
+        "fresh-procfs contract and the mount-ns backend cannot engage "
+        "on this host — proceeding with the HOST process table "
+        "visible to the untrusted target."
+    )
+
+
+def _fresh_procfs_override_hint() -> str:
+    """The override sentence for a fresh-procfs refusal, told honestly.
+
+    Every in-tree untrusted caller derives require_fresh_procfs from
+    :func:`untrusted_fresh_procfs_required`, so for them the override
+    env var IS consulted (a truthy value means the flag arrives False
+    and no refusal fires). A direct caller passing a literal
+    ``require_fresh_procfs=True`` made an explicit ask the env var
+    does not relax — telling that caller to set the override would be
+    a lie, so the hint says which situation the reader is in.
+    """
+    if not untrusted_fresh_procfs_required():
+        return (
+            "RAPTOR_ALLOW_DEGRADED_UNTRUSTED is already set, but this "
+            "call passed an explicit require_fresh_procfs=True, which "
+            "the override does not relax — drop the explicit flag (or "
+            "derive it from untrusted_fresh_procfs_required()) to "
+            "honour the override."
+        )
+    return (
+        "Alternatively set RAPTOR_ALLOW_DEGRADED_UNTRUSTED=1 to "
+        "explicitly accept host-procfs-visible containment."
+    )
+
+
 def untrusted_fresh_procfs_required() -> bool:
     """True unless the operator accepted the degraded-untrusted posture
     (``RAPTOR_ALLOW_DEGRADED_UNTRUSTED`` truthy — same idiom as the
@@ -5926,6 +5969,7 @@ def run_untrusted(cmd: list[str], *, target: str | None = None, output: str | No
                 continue
             kwargs[_name] = _wfd
             _wo_fds.append(_wfd)
+    _warn_if_waiver_degrades()
     try:
         return run(cmd, block_network=True, target=target, output=output,
                    limits=limits,
@@ -6088,6 +6132,7 @@ def run_untrusted_networked(
             base_env = RaptorConfig.get_safe_env()
         kwargs["env"] = dict(base_env)
         kwargs["keep_trust_markers_for_dispatch"] = True
+    _warn_if_waiver_degrades()
     return run(
         cmd,
         block_network=False,

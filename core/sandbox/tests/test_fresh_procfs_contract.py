@@ -126,11 +126,17 @@ def test_branded_tmp_regex_copies_in_sync():
 
 def _run_untrusted_or_skip(cmd, tmp_path, **kw):
     from core.sandbox import context as _ctx
+    from core.sandbox.errors import SandboxSetupError
     try:
         result = _ctx.run_untrusted(
             cmd, target=str(tmp_path), output=str(tmp_path),
             timeout=kw.pop("timeout", 90), **kw,
         )
+    except SandboxSetupError as e:
+        # Derives from BaseException by design — the bare Exception
+        # arm below never catches it, which on mount-ns-less hosts
+        # turned these into failures instead of skips.
+        pytest.skip(f"sandbox unavailable: {e}")
     except Exception as e:  # noqa: BLE001 — host without userns etc.
         pytest.skip(f"sandbox unavailable: {e}")
     if getattr(result, "returncode", 1) != 0:

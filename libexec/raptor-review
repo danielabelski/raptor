@@ -222,6 +222,15 @@ def _load_suppression_records(
         return []
     records = []
     try:
+        # Bounded + regular-file-gated: the file sits inside a run
+        # dir whose rw grant sandboxed code holds — attacker bytes.
+        # An unbounded read_text() was an OOM lever and a FIFO there
+        # a plantable hang.
+        import os as _os
+        import stat as _stat
+        _st = _os.stat(path)
+        if not _stat.S_ISREG(_st.st_mode) or _st.st_size > 64 * 1024 * 1024:
+            return []
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:

@@ -2359,6 +2359,11 @@ def run_sandboxed(
                             _persona_proc_pins.append(
                                 (_pt, os.open(_pt, os.O_PATH)))
                         except OSError:
+                            if not persona.strict:
+                                warn_post_fork(
+                                    b"sandbox: persona re-overlay pin "
+                                    b"failed; a /proc identity file "
+                                    b"reads host-real\n")
                             if persona.strict:
                                 _write_setup_status(
                                     status_w, b"M",

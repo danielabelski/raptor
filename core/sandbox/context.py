@@ -3424,6 +3424,27 @@ def sandbox(block_network=_UNSET, target: str | None = None, output: str | None 
                              os.O_RDONLY)
             _stdin_spool.close()
             _stdin_spool_ro = open(_ro_fd, "rb")
+            # Integrity gate on the description the child will read:
+            # a short or empty spool silently turns a witness-driven
+            # run into "input never arrived" — the target exits clean
+            # and the caller records a wrong verdict instead of an
+            # error. Fail loud here instead.
+            _spool_size = os.fstat(_ro_fd).st_size
+            if _spool_size != len(_in_payload):
+                _stdin_spool_ro.close()
+                from .errors import SandboxSetupError
+                msg_0 = (
+                    f"sandbox stdin spool integrity check failed: "
+                    f"wrote {len(_in_payload)} input= bytes but the "
+                    f"re-opened spool holds {_spool_size} — refusing "
+                    f"to run the target with truncated stdin."
+                )
+                raise SandboxSetupError(
+                    msg_0,
+                    "the tempdir filesystem dropped buffered writes "
+                    "on reopen; check TMPDIR (disk full, exotic "
+                    "filesystem) or pass stdin=<fd> directly.",
+                )
             kwargs["stdin"] = _stdin_spool_ro
             # Lifetime: this frame outlives the synchronous spawn (the
             # child dup2s the fd before exec), and CPython closes the

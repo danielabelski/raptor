@@ -88,6 +88,39 @@ class TestStrictRefusesPerCallDemotion(_Base):
         self.assertIn("IN=witness-ro", r.stdout)
         self.assertIn("WRITE=denied", r.stdout)
 
+    def test_truncated_stdin_spool_fails_loud(self):
+        # A spool that silently loses the input= bytes must abort the
+        # run: handing the target an empty fd 0 turns a witness-driven
+        # run into a clean exit and a wrong verdict downstream.
+        import tempfile as _tf
+        from unittest import mock
+
+        from core.sandbox import sandbox
+        from core.sandbox.errors import SandboxSetupError
+
+        real_temporary_file = _tf.TemporaryFile
+
+        def _lossy_temporary_file(*a, **k):
+            f = real_temporary_file(*a, **k)
+
+            class _Lossy:
+                def __getattr__(self, name):
+                    return getattr(f, name)
+
+                def write(self, data):
+                    return len(data)  # claim success, write nothing
+
+            return _Lossy()
+
+        with mock.patch.object(
+                _tf, "TemporaryFile", _lossy_temporary_file), \
+                sandbox(profile="strict", target=self.tgt,
+                        output=self.out) as run:
+            with self.assertRaises(SandboxSetupError) as cm:
+                run(["cat"], input="witness-x", capture_output=True,
+                    text=True, timeout=30)
+        self.assertIn("spool integrity", str(cm.exception))
+
     def test_input_and_stdin_together_raise(self):
         # subprocess.run's own contract, kept across the spool
         # conversion instead of silently preferring input=.

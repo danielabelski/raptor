@@ -735,6 +735,15 @@
     },
     "artifacts:write_only_artifact::io-correlation.json": {
       "note": "operator/LLM-facing output: packages/frida cli._maybe_correlate_io writes the ingest-payload/call-argument correlation report after a run and prints its path for the operator to inspect; no in-repo literal-name production reader by design (tests assert the file, the CLI only echoes the path)"
+    },
+    "artifacts:orphan_reader::auto-sink-watch.json": {
+      "note": "single-literal read/variable write false positive: libexec/raptor-validation-helper's auto sink-watch builds ledger_path from the one literal with load_json in the classification window (read), then writes via save_json(ledger_path, ...) further down the same function through the variable — invisible to the literal-name index; helper-owned freshness ledger, both halves in one function by design (same class as the baselined coverage-read.json entry)"
+    },
+    "artifacts:write_only_artifact::binary-match.json": {
+      "note": "operator/LLM-facing output: the ghidra diff --matched CLI writes the tiered function-matching report (pairs with tier + score, unmatched sets, stats) next to version-diff.json and prints its path to the operator; no in-repo literal-name production reader by design"
+    },
+    "artifacts:write_only_artifact::patch-verify.json": {
+      "note": "operator/LLM-facing output: the frida runtime regression oracle writes both runs' evidence as patch-verify.json and prints its path; the machine-consumed verdict rides the CLI exit code and the in-process return value, so no in-repo literal-name production reader exists by design (tests read the file back)"
     }
   },
   "version": 1

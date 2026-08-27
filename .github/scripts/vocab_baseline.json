@@ -237,6 +237,11 @@
     "count": 10,
     "kind": "literal"
   },
+  "core/audit/caller_lock.py::_C_CALL_KEYWORDS": {
+    "count": 12,
+    "kind": "literal",
+    "note": "C keywords plus preprocessor/GNU forms (sizeof, typeof, __typeof__, defined, ...) that look call-shaped to the caller-lock witness's call-identifier scan — a closed language enumeration, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
+  },
   "core/audit/callsite_consistency.py::_CONDITION_FIELDS": {
     "count": 14,
     "kind": "literal",
@@ -500,6 +505,11 @@
   "core/audit/fix_history.py::_GENERIC_CALLEES": {
     "count": 19,
     "kind": "literal"
+  },
+  "core/audit/goconc.py::_GO_BUILTIN_TYPES": {
+    "count": 21,
+    "kind": "literal",
+    "note": "Go predeclared type identifiers (bool, byte, ... uintptr, comparable) — a closed language-spec enumeration the goroutine-isolation walk treats as freely mentionable, like the callsite-consistency keyword entries; not a learnable function-name vocabulary"
   },
   "core/audit/invariant_gate.py::_ANCHOR_STOPWORDS": {
     "count": 109,

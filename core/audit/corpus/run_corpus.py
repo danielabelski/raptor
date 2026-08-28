@@ -1209,6 +1209,10 @@ def _run_audit(
                 group_rows.append({
                     "function_id": label.function_id,
                     "bug_class": label.bug_class,
+                    # Repo group the row belongs to — scopes the merge
+                    # fence's receipt lookup (receipt keys are
+                    # repo-relative).
+                    "repo": repo_key,
                     "expected": expected,
                     "expected_mechanism": label.expected_mechanism,
                     "expected_mode_results": dict(
@@ -2943,6 +2947,17 @@ def _run_ensemble_audit(
                 winner["bug_first_actual"] = bf_r["actual"]
                 winner["mode"] = "ensemble"
 
+                # A lane floor that fired is mechanical evidence and
+                # must survive the merge regardless of which lane's
+                # row wins — the Phase-2 quality suppression exempts
+                # on this flag, and a winner copied from the other
+                # lane silently dropped it (clean minted over a FIRED
+                # structural floor).
+                winner["receipt_floored"] = bool(
+                    sec_r.get("receipt_floored")
+                    or bf_r.get("receipt_floored"),
+                )
+
                 # Attributed spend/time for a label is what BOTH
                 # passes spent reviewing it — the losing pass's cost
                 # is real attributed money, not infra.  Keeping only
@@ -2998,10 +3013,41 @@ def _run_ensemble_audit(
             logger.exception("Phase 2 classification failed")
             print("  Phase 2 classification failed (continuing)", flush=True)
 
-        suppressed = _suppress_quality_findings(merged_results)
+        from core.audit.merge_fence import load_standing_receipts
+
+        # Fence dirs are the lane ROOTS (base_out + "-sec"/"-bf"),
+        # NEVER run_dirs: a fresh pass appends the PER-GROUP audit
+        # dirs (<lane>/<repo_key>) to run_dirs, under which the
+        # artifact's group resolves to "" while every fresh row
+        # carries repo=<repo_key> — the scoped lookup could never
+        # match and the fence silently unarmed on the primary path.
+        # The resume path already passed exactly these lane roots,
+        # so both shapes feed the index one identical layout
+        # (<lane_root>/<repo_group>/mechanical-findings.json) with
+        # no second plumbing contract to drift.
+        fence_dirs = [d for d in (sec_out, bf_out) if d.is_dir()]
+        if not fence_dirs:
+            # Lane out-dirs gone (resume after deletion): no receipt
+            # artifact to read — the fence is unarmed for this
+            # segment.  Say so; silent unarming is invisible to the
+            # operator.
+            print("  Merge fence: no lane run dirs — fence unarmed "
+                  "for this segment", flush=True)
+        suppressed = _suppress_quality_findings(
+            merged_results,
+            receipt_index=load_standing_receipts(fence_dirs),
+            record_dir=base_out,
+        )
         if suppressed:
             print(f"  Phase 2 suppressed: {suppressed} quality finding(s) "
                   f"demoted to clean", flush=True)
+        fence_held = sum(
+            1 for r in merged_results if r.get("merge_fence")
+        )
+        if fence_held:
+            print(f"  Merge fence: {fence_held} Phase-2 clean "
+                  f"demotion(s) blocked by standing receipt(s)",
+                  flush=True)
 
     # --- File-level over-alert dampening (#4) ---
     _dampened = _dampen_file_pileup_dicts(merged_results)
@@ -3044,7 +3090,12 @@ def _run_ensemble_audit(
 _PHASE2_FAILURE_ABORT = 3
 
 
-def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
+def _suppress_quality_findings(
+    merged_results: list[dict[str, Any]],
+    *,
+    receipt_index: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
+    record_dir: Path | None = None,
+) -> int:
     """Phase 2 quality-finding suppression: demote non-security quality
     findings to clean — they are real defects but not exploitable.
 
@@ -3053,7 +3104,40 @@ def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
     Errored classifications (``phase2_classification == "error"``) are
     never suppression inputs: only a POSITIVE quality_finding ruling
     from a live call may demote. Returns the number demoted.
+
+    *receipt_index* (from
+    :func:`core.audit.merge_fence.load_standing_receipts` over the
+    lanes' run dirs) arms the merge-lane receipt fence: a row whose
+    function carries a standing floor-class detector receipt with no
+    mechanical refutation is held at its merged grade instead of
+    demoted — an LLM quality opinion must not mint clean over a
+    standing receipt (rxkad merge-level wrong-clean class).  Each hold
+    writes a ``merge_fence_receipt_stands`` row (``dropped: false``)
+    to *record_dir*'s suppressions.jsonl.
     """
+    from core.audit.merge_fence import (
+        bare_key,
+        hold_clean_mint,
+        standing_receipts_for,
+    )
+
+    # Reduced key forms (line-suffix stripped, receiver stripped)
+    # shared by more than one function under review: the receipt
+    # artifact keys by bare name, so a receipt on such a key cannot
+    # be attributed to one of the twins — the fence's reduced-form
+    # fallbacks must not hold a receipt-free twin (same ambiguity
+    # guard the outcome parser applies to stripped keys).
+    ambiguous_bare: set[str] = set()
+    if receipt_index:
+        form_owner: dict[str, str] = {}
+        for r in merged_results:
+            fid = str(r.get("function_id", "") or "")
+            head, _, tail = fid.rpartition(":")
+            stripped = head if (head and tail.isdigit()) else fid
+            for form in {stripped, bare_key(fid)}:
+                if form_owner.setdefault(form, fid) != fid:
+                    ambiguous_bare.add(form)
+
     suppressed = 0
     for r in merged_results:
         if (
@@ -3074,6 +3158,19 @@ def _suppress_quality_findings(merged_results: list[dict[str, Any]]) -> int:
                 # receipt corroborating the reviewer's own hypothesis)
                 # is mechanical evidence — an LLM quality opinion must
                 # not un-do it (moby CVE-2024-36623/36621 class).
+                continue
+            fence_receipts = standing_receipts_for(
+                receipt_index, r.get("function_id", ""),
+                repo=r.get("repo"),
+                ambiguous_bare_keys=ambiguous_bare,
+            )
+            if fence_receipts:
+                # Merge-lane receipt fence: the receipt is STANDING
+                # (present in a lane's mechanical findings, no
+                # recorded proof-grade refutation) even though no
+                # lane floor fired on it — the merge may not lower
+                # the grade below suspicious on prose alone.
+                hold_clean_mint(r, fence_receipts, record_dir)
                 continue
             r["actual"] = "clean"
             r["phase2_suppressed"] = True

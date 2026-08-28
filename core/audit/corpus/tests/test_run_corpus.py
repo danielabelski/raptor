@@ -1822,6 +1822,503 @@ class TestReceiptFlooredSuppressionExemption:
         assert o["a.go:W"]["status"] == "suspicious"
 
 
+_RXKAD_KEY = "net/rxrpc/rxkad.c:rxkad_verify_packet_2"
+
+_RXKAD_RECEIPT = {
+    "file": "net/rxrpc/rxkad.c",
+    "function": "rxkad_verify_packet_2",
+    "detector": "cocci:scatterlist_frag_undersize",
+    "line": 510,
+    "description": (
+        "scatterlist sized from bare fragment count "
+        "'skb_shinfo(skb)->nr_frags' at line 510 but 'skb' is mapped "
+        "via skb_to_sgvec at line 520"
+    ),
+}
+
+
+def _fence_lane(tmp_path, name, mech, suppressions=None):
+    import json
+
+    lane = tmp_path / name
+    grp = lane / "linux-kernel"
+    grp.mkdir(parents=True)
+    (grp / "mechanical-findings.json").write_text(json.dumps(mech))
+    if suppressions:
+        with (grp / "suppressions.jsonl").open("w") as fh:
+            for rec in suppressions:
+                fh.write(json.dumps(rec) + "\n")
+    return lane
+
+
+class TestMergeFenceReceiptStands:
+    """Merge-lane receipt fence: a standing floor-class detector
+    receipt with no mechanical refutation blocks the Phase-2
+    quality suppression from minting clean — prose may not override
+    a standing receipt; a recorded proof-grade refutation may."""
+
+    def _row(self, **over):
+        row = {
+            "function_id": _RXKAD_KEY,
+            "expected": "suspicious",
+            "actual": "suspicious",
+            "evidence_tool": "",
+            "receipt_floored": False,
+            "phase2_classification": "quality_finding",
+            "phase2_is_security": False,
+            "phase2_primitive": "none",
+        }
+        row.update(over)
+        return row
+
+    def _index(self, tmp_path, suppressions=None):
+        from core.audit.merge_fence import load_standing_receipts
+
+        lane = _fence_lane(
+            tmp_path, "lane-sec", {_RXKAD_KEY: [_RXKAD_RECEIPT]},
+            suppressions=suppressions,
+        )
+        return load_standing_receipts([lane])
+
+    def test_unrefuted_receipt_blocks_clean(self, tmp_path):
+        import json
+
+        rows = [self._row()]
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=self._index(tmp_path),
+            record_dir=tmp_path / "merged",
+        )
+        assert n == 0
+        assert rows[0]["actual"] == "suspicious"
+        assert rows[0]["merge_fence"] == "receipt_stands"
+        assert not rows[0].get("phase2_suppressed")
+        sink = tmp_path / "merged" / "suppressions.jsonl"
+        recs = [json.loads(ln) for ln in sink.read_text().splitlines()]
+        assert [r["verdict"] for r in recs] == [
+            "merge_fence_receipt_stands",
+        ]
+        assert recs[0]["dropped"] is False
+        assert recs[0]["receipts"] == [
+            "cocci:scatterlist_frag_undersize",
+        ]
+
+    def test_tool_refuted_receipt_allows_clean(self, tmp_path):
+        from core.audit.refutation import DOMINANCE_VERDICT
+
+        dominance = {
+            "file_path": "net/rxrpc/rxkad.c",
+            "function": "rxkad_verify_packet_2",
+            "verdict": DOMINANCE_VERDICT,
+            "receipt": "cocci:scatterlist_frag_undersize",
+            "dropped": False,
+        }
+        rows = [self._row()]
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=self._index(
+                tmp_path, suppressions=[dominance],
+            ),
+            record_dir=tmp_path / "merged",
+        )
+        assert n == 1
+        assert rows[0]["actual"] == "clean"
+        assert "merge_fence" not in rows[0]
+        assert not (tmp_path / "merged" / "suppressions.jsonl").exists()
+
+    def test_no_receipt_untouched_by_fence(self, tmp_path):
+        rows = [self._row(
+            function_id="net/ipv4/esp4.c:esp_output_tail",
+        )]
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=self._index(tmp_path),
+            record_dir=tmp_path / "merged",
+        )
+        assert n == 1
+        assert rows[0]["actual"] == "clean"
+        assert "merge_fence" not in rows[0]
+        assert not (tmp_path / "merged" / "suppressions.jsonl").exists()
+
+    def test_grade_above_suspicious_never_lowered(self, tmp_path):
+        rows = [self._row(actual="finding", expected="finding")]
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=self._index(tmp_path),
+            record_dir=tmp_path / "merged",
+        )
+        assert n == 0
+        assert rows[0]["actual"] == "finding"
+        assert rows[0]["merge_fence"] == "receipt_stands"
+
+    def test_security_ruling_never_engages_fence(self, tmp_path):
+        # Phase 2 does not attempt a demotion — the fence has nothing
+        # to block and must not touch the row.
+        rows = [self._row(
+            phase2_classification="security_finding",
+            phase2_is_security=True,
+        )]
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=self._index(tmp_path),
+            record_dir=tmp_path / "merged",
+        )
+        assert n == 0
+        assert rows[0]["actual"] == "suspicious"
+        assert "merge_fence" not in rows[0]
+        assert not (tmp_path / "merged" / "suppressions.jsonl").exists()
+
+    def test_record_failure_fence_still_holds(self, tmp_path, caplog):
+        import logging
+
+        blocker = tmp_path / "merged"
+        blocker.write_text("a file where the record dir should be")
+        rows = [self._row()]
+        with caplog.at_level(
+            logging.WARNING, "core.audit.merge_fence",
+        ):
+            n = run_corpus._suppress_quality_findings(
+                rows,
+                receipt_index=self._index(tmp_path),
+                record_dir=blocker,
+            )
+        assert n == 0
+        assert rows[0]["actual"] == "suspicious"
+        assert rows[0]["merge_fence"] == "receipt_stands"
+        assert any(
+            "fence still holds" in r.message for r in caplog.records
+        )
+
+    def test_unarmed_call_keeps_prior_behavior(self):
+        # Without a receipt index (legacy call shape) the suppression
+        # demotes exactly as before — the fence is merge-lane opt-in.
+        rows = [self._row()]
+        assert run_corpus._suppress_quality_findings(rows) == 1
+        assert rows[0]["actual"] == "clean"
+
+
+class TestMergeFenceRxkadMergeCleanRegression:
+    """The rxkad merge-level wrong-clean shape: both lanes graded
+    rxkad_verify_packet_2 suspicious with the
+    cocci:scatterlist_frag_undersize receipt standing in BOTH lanes'
+    mechanical findings and no lane floor fired; the ensemble Phase-2
+    quality classification then minted a merge-level clean from prose
+    (callee-enforced bound).  The fence must hold the merged grade at
+    suspicious with an audit record — and must not shield the
+    receipt-free sibling (esp_output_tail) from the same Phase-2
+    demotion."""
+
+    def test_merge_clean_attempt_holds_suspicious(self, tmp_path):
+        import json
+
+        from core.audit.merge_fence import load_standing_receipts
+
+        leak_hits = [
+            {"file": "net/rxrpc/rxkad.c",
+             "function": "rxkad_verify_packet_2",
+             "detector": "cocci:resource_leak_err", "line": 516},
+            {"file": "net/rxrpc/rxkad.c",
+             "function": "rxkad_verify_packet_2",
+             "detector": "cocci:resource_leak_err", "line": 541},
+        ]
+        mech = {_RXKAD_KEY: [*leak_hits, _RXKAD_RECEIPT]}
+        sec = _fence_lane(tmp_path, "run-out-sec", mech)
+        bf = _fence_lane(tmp_path, "run-out-bf", mech)
+        base_out = tmp_path / "run-out"
+        base_out.mkdir()
+
+        rxkad = {
+            "function_id": _RXKAD_KEY,
+            "bug_class": "variant",
+            "repo": "linux-kernel",
+            "expected": "suspicious",
+            "mode": "ensemble",
+            "actual": "suspicious",
+            "match": True,
+            "hypothesis": (
+                "The scatterlist table sized from nr_frags+1 (line "
+                "510) can be overrun by skb_to_sgvec when the skb "
+                "carries a frag_list, causing an out-of-bounds write."
+            ),
+            "evidence_tool": (
+                "llm-claimed:cocci:scatterlist_frag_undersize L510 — "
+                "structural match confirmed (nsg omits frag_list), "
+                "exploit conclusion refuted by callee-enforced "
+                "-EMSGSIZE bound in skb_to_sgvec, handled at line 521"
+            ),
+            "receipt_floored": False,
+            "ensemble_source": "both_agree",
+            "security_actual": "suspicious",
+            "bug_first_actual": "suspicious",
+            # Phase-2 clean attempt: quality ruling, no primitive —
+            # the exact shape that minted the wrong clean.
+            "phase2_classification": "quality_finding",
+            "phase2_is_security": False,
+            "phase2_primitive": "none",
+        }
+        esp = {
+            "function_id": "net/ipv4/esp4.c:esp_output_tail",
+            "expected": "clean",
+            "actual": "suspicious",
+            "evidence_tool": "",
+            "receipt_floored": False,
+            "phase2_classification": "quality_finding",
+            "phase2_is_security": False,
+            "phase2_primitive": "none",
+        }
+        rows = [rxkad, esp]
+
+        n = run_corpus._suppress_quality_findings(
+            rows,
+            receipt_index=load_standing_receipts([sec, bf]),
+            record_dir=base_out,
+        )
+
+        # rxkad: held at suspicious over the standing receipt.
+        assert rxkad["actual"] == "suspicious"
+        assert rxkad["merge_fence"] == "receipt_stands"
+        assert rxkad["merge_fence_receipts"] == [
+            "cocci:scatterlist_frag_undersize",
+        ]
+        # esp: no floor-class receipt — the Phase-2 demotion stands.
+        assert n == 1
+        assert esp["actual"] == "clean"
+        assert "merge_fence" not in esp
+
+        recs = [
+            json.loads(ln)
+            for ln in (base_out / "suppressions.jsonl")
+            .read_text().splitlines()
+        ]
+        assert len(recs) == 1
+        assert recs[0]["verdict"] == "merge_fence_receipt_stands"
+        assert recs[0]["dropped"] is False
+        assert recs[0]["function"] == "rxkad_verify_packet_2"
+        assert recs[0]["held_status"] == "suspicious"
+
+
+class _FenceLabel:
+    def __init__(self, fid):
+        self.function_id = fid
+
+
+def _ensemble_row(fid, actual, **over):
+    r = {"function_id": fid, "expected": "clean", "actual": actual,
+         "evidence_tool": "", "cost_usd": 0.0, "duration_s": 0.0,
+         "match": False, "counter_hypothesis": "",
+         "hypothesis": "structural overflow claim", "model": "stub"}
+    r.update(over)
+    return r
+
+
+def _live_ensemble_merge(
+    tmp_path, monkeypatch, sec_rows, bf_rows,
+    mech_sec=None, mech_bf=None, phase2=None, shape="fresh",
+):
+    """Drive the REAL _run_ensemble_audit with stubbed lane passes
+    and a stubbed Phase-2 classifier.
+
+    *shape* selects which faithful path shape the stubbed lane pass
+    reproduces — the fence must engage on BOTH:
+
+    * ``"fresh"`` (the primary path): ``_run_audit`` returns the
+      PER-GROUP audit dirs (``<lane>/grp``) as its run dirs, and
+      fresh rows carry ``repo=<group>`` (callers stamp them);
+    * ``"resume"``: the checkpoint-resume branch has only the lane
+      ROOTS, and legacy checkpoint rows may carry no repo.
+    """
+    import core.llm.concurrency as conc
+
+    out = tmp_path / "ens-out"
+    sec_dir = Path(str(out) + "-sec")
+    bf_dir = Path(str(out) + "-bf")
+    for d, mech in ((sec_dir, mech_sec), (bf_dir, mech_bf)):
+        (d / "grp").mkdir(parents=True, exist_ok=True)
+        if mech is not None:
+            (d / "grp" / "mechanical-findings.json").write_text(
+                json.dumps(mech),
+            )
+    sec_ret = sec_dir / "grp" if shape == "fresh" else sec_dir
+    bf_ret = bf_dir / "grp" if shape == "fresh" else bf_dir
+
+    def fake_run_audit(labels, source_dirs, **kw):
+        if kw.get("mode") == "security":
+            return [dict(r) for r in sec_rows], [sec_ret]
+        wanted = {lb.function_id for lb in labels}
+        return [
+            dict(r) for r in bf_rows if r["function_id"] in wanted
+        ], [bf_ret]
+
+    def fake_phase2(findings, *, model=""):
+        for f in findings:
+            over = (phase2 or {}).get(f["function_id"], {})
+            f["phase2_classification"] = over.get(
+                "cls", "quality_finding",
+            )
+            f["phase2_is_security"] = over.get("sec", False)
+            f["phase2_primitive"] = over.get("prim", "none")
+        return 0.0
+
+    monkeypatch.setattr(run_corpus, "_run_audit", fake_run_audit)
+    monkeypatch.setattr(
+        run_corpus, "_run_phase2_classify", fake_phase2,
+    )
+    monkeypatch.setattr(
+        run_corpus, "_start_shared_joern", lambda dirs: None,
+    )
+    monkeypatch.setattr(conc, "derive_max_workers", lambda model: 1)
+    labels = [_FenceLabel(r["function_id"]) for r in sec_rows]
+    merged, _run_dirs = run_corpus._run_ensemble_audit(
+        labels, {"grp": tmp_path / "nonexistent-src"},
+        model="stub", out_dir=out,
+    )
+    return merged, out
+
+
+class TestMergeFloorFlagSurvivesMerge:
+    """A lane floor that fired (receipt_floored) is mechanical
+    evidence; the ensemble merge must carry it on the merged row
+    regardless of which lane's row wins — a winner copied from the
+    other lane used to drop the flag, letting Phase-2 mint clean over
+    a FIRED structural floor."""
+
+    def test_bf_winner_keeps_sec_lane_floor_flag(
+        self, tmp_path, monkeypatch,
+    ):
+        sec_rows = [_ensemble_row(
+            "x.c:victim", "suspicious", receipt_floored=True,
+        )]
+        bf_rows = [_ensemble_row("x.c:victim", "finding")]
+        merged, _out = _live_ensemble_merge(
+            tmp_path, monkeypatch, sec_rows, bf_rows,
+        )
+        (m,) = merged
+        assert m["receipt_floored"] is True
+        assert m["actual"] != "clean"
+        assert not m.get("phase2_suppressed")
+
+    def test_floored_winner_still_exempt(self, tmp_path, monkeypatch):
+        # Control: the floored row itself wins the merge.
+        sec_rows = [_ensemble_row(
+            "x.c:victim", "suspicious", receipt_floored=True,
+        )]
+        bf_rows = [_ensemble_row("x.c:victim", "suspicious")]
+        merged, _out = _live_ensemble_merge(
+            tmp_path, monkeypatch, sec_rows, bf_rows,
+        )
+        assert merged[0]["actual"] == "suspicious"
+
+    def test_unfloored_rows_unaffected(self, tmp_path, monkeypatch):
+        # No lane floor fired: the Phase-2 demotion proceeds as
+        # before.
+        sec_rows = [_ensemble_row("x.c:victim", "suspicious")]
+        bf_rows = [_ensemble_row("x.c:victim", "finding")]
+        merged, _out = _live_ensemble_merge(
+            tmp_path, monkeypatch, sec_rows, bf_rows,
+        )
+        assert merged[0]["actual"] == "clean"
+        assert merged[0]["receipt_floored"] is False
+
+
+class TestMergeFenceLiveEnsemble:
+    """The fence through the REAL ensemble merge: standing receipt in
+    the lanes' artifacts + Phase-2 clean attempt.  Exercised on BOTH
+    faithful path shapes — the fresh path (per-group run dirs,
+    repo-stamped rows: the incident's own path) and the
+    checkpoint-resume path (lane roots, legacy repo-less rows)."""
+
+    def _assert_fenced(self, merged, out):
+        import json as _json
+
+        (m,) = merged
+        assert m["actual"] == "suspicious"
+        assert m["merge_fence"] == "receipt_stands"
+        sink = out / "suppressions.jsonl"
+        recs = [
+            _json.loads(ln) for ln in sink.read_text().splitlines()
+        ]
+        fence = [
+            r for r in recs
+            if r.get("verdict") == "merge_fence_receipt_stands"
+        ]
+        assert len(fence) == 1
+        assert fence[0]["dropped"] is False
+
+    def test_fresh_path_receipt_holds(self, tmp_path, monkeypatch):
+        # The primary path: _run_audit returns per-group dirs and
+        # stamps rows with their repo group.  A group-resolution
+        # regression here unarms the fence on every fresh run.
+        mech = {_RXKAD_KEY: [_RXKAD_RECEIPT]}
+        sec_rows = [_ensemble_row(
+            _RXKAD_KEY, "suspicious", repo="grp",
+        )]
+        bf_rows = [_ensemble_row(
+            _RXKAD_KEY, "suspicious", repo="grp",
+        )]
+        merged, out = _live_ensemble_merge(
+            tmp_path, monkeypatch, sec_rows, bf_rows,
+            mech_sec=mech, mech_bf=mech, shape="fresh",
+        )
+        self._assert_fenced(merged, out)
+
+    def test_resume_path_receipt_holds(self, tmp_path, monkeypatch):
+        mech = {_RXKAD_KEY: [_RXKAD_RECEIPT]}
+        sec_rows = [_ensemble_row(_RXKAD_KEY, "suspicious")]
+        bf_rows = [_ensemble_row(_RXKAD_KEY, "suspicious")]
+        merged, out = _live_ensemble_merge(
+            tmp_path, monkeypatch, sec_rows, bf_rows,
+            mech_sec=mech, mech_bf=mech, shape="resume",
+        )
+        self._assert_fenced(merged, out)
+
+
+class TestMergeFenceUnarmedNotice:
+    """Resume with the lane out-dirs deleted: the fence cannot read
+    receipts — it unarms with a printed notice (never silently) and
+    Phase-2 behaves as before the fence existed."""
+
+    def test_notice_printed_and_demotion_proceeds(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        import core.llm.concurrency as conc
+
+        out = tmp_path / "run-out"
+        out.mkdir()
+        stamp = {
+            "model": "stub", "profile": "deployed",
+            "triage": True, "prefilter": True,
+        }
+        rows = [_ensemble_row(_RXKAD_KEY, "suspicious")]
+        for name in ("checkpoint-sec.json", "checkpoint-bf.json"):
+            (out / name).write_text(
+                json.dumps({"stamp": stamp, "rows": rows}),
+            )
+        # lane out dirs (run-out-sec / run-out-bf) deliberately absent
+
+        def fake_phase2(findings, *, model=""):
+            for f in findings:
+                f["phase2_classification"] = "quality_finding"
+                f["phase2_is_security"] = False
+                f["phase2_primitive"] = "none"
+            return 0.0
+
+        monkeypatch.setattr(
+            run_corpus, "_run_phase2_classify", fake_phase2,
+        )
+        monkeypatch.setattr(
+            run_corpus, "_start_shared_joern", lambda dirs: None,
+        )
+        monkeypatch.setattr(
+            conc, "derive_max_workers", lambda model: 1,
+        )
+        merged, _dirs = run_corpus._run_ensemble_audit(
+            [_FenceLabel(_RXKAD_KEY)],
+            {"grp": out / "nosrc"}, model="stub", out_dir=out,
+        )
+        assert "fence unarmed" in capsys.readouterr().out
+        assert merged[0]["actual"] == "clean"
+
+
 class TestExcerptIncludeClosure:
     """Excerpt trees carry the headers each labelled C file includes,
     so source-level macro-expansion witnesses behave the same in

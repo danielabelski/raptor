@@ -1199,6 +1199,23 @@ _INT_FAMILY_HYP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Detector receipt families the anti-self-refutation floor consumes
+# (the last ``:``-segment of a mechanical detector name).  The
+# merge-lane receipt fence (:mod:`core.audit.merge_fence`) reuses this
+# exact taxonomy — one source of truth for what counts as a
+# floor-grade detection receipt; a family added here is covered by
+# the fence automatically.
+FLOOR_DETECTOR_FAMILIES: frozenset[str] = frozenset(
+    _DETECTOR_FAMILY_HYP_RES,
+)
+
+# Verdict string of the demote-with-record row a proof-grade refuter
+# writes when it dominates a receipt floor (see
+# :func:`_record_floor_dominance`).  The merge-lane receipt fence
+# treats a receipt named by such a row as mechanically refuted.
+DOMINANCE_VERDICT = "refuter_dominates_receipt"
+
+
 @dataclass
 class _ProbeContext:
     """What a proof-gate probe may see beyond the hypothesis text.
@@ -1495,7 +1512,7 @@ def _record_floor_dominance(
     refuter: RefutationVerdict,
     receipt: str,
     floor_gate: str,
-    verdict: str = "refuter_dominates_receipt",
+    verdict: str = DOMINANCE_VERDICT,
     reason: str | None = None,
 ) -> bool:
     """Demote-with-record: persist the overridden detection receipt.

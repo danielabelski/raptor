@@ -245,6 +245,15 @@ jobs:
           Every change passed the full raptor-sca signal set
           (vulns / KEV / EPSS / yanked / license / hygiene /
           supply-chain / capability-delta / reachability)."
+          # Replay the bump commit onto current main before opening the
+          # PR — a branch cut from the dispatch-time checkout can be
+          # merges stale when the SCA automation runs back-to-back, and a
+          # stale base turns any file overlap into a PR merge conflict.
+          # A genuine overlap (something else touched the bumped
+          # manifests) fails HERE, loudly, instead of opening a
+          # conflicted PR.
+          git fetch origin main
+          git rebase origin/main
           # Fetch the remote branch so ``--force-with-lease`` has a baseline
           # to compare against, but only when it already exists remotely: a
           # bare fetch of a missing ref prints a misleading

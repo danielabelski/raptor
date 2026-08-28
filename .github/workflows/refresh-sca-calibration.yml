@@ -146,6 +146,17 @@ jobs:
           Sources: CISA KEV (Public Domain), FIRST EPSS (free for any use).
           See packages/sca/data/calibration/ATTRIBUTION.md for the full
           source list and licensing."
+          # Replay the data commit onto current main before opening the
+          # PR. The job's checkout is main-at-dispatch-time; when several
+          # refresh workflows run back-to-back the branch can be merges
+          # stale, and a stale base turns any file overlap into a merge
+          # conflict on the PR (add/add on same-day outputs). The refresh
+          # workflows keep disjoint write sets, so this rebase is
+          # conflict-free; a genuine overlap (operator edit racing the
+          # refresh) fails HERE, loudly, instead of opening a conflicted
+          # PR that needs manual resolution.
+          git fetch origin main
+          git rebase origin/main
           # Force-push so weekly re-runs update the same branch (and
           # therefore the same open PR). Safe: branch is namespaced
           # ``auto/`` and never touched by humans.

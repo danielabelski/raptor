@@ -565,7 +565,15 @@ modes; the `libexec/raptor-understand` substrate (binary `--map`,
 multi-model `--hunt`/`--trace`) accepts exactly one of its three
 modes per invocation.  Study is multi-language: C/C++ resolve through
 the study-prep corpus; Python, Go, Java, JavaScript/TypeScript, and
-Rust identifiers resolve in-process.
+Rust identifiers resolve in-process.  Compiled artefacts route through
+`libexec/raptor-binary-study`: the binary's RE database (from a prior
+`/ghidra import --decompile-all` or attach) is materialized as a
+decomp-tree — pseudo-source plus a `decomp-map.json` sidecar resolving
+every file:line back to `function@address` — and the standard study
+pipeline runs over it.  The resulting `domain-model.json` is
+schema-identical, with every concept clamped to at most `traced`
+confidence and tagged `decompiled-evidence` (decompilation is derived
+evidence).
 
 **Common flags**
 
@@ -759,6 +767,40 @@ harness generation, and fuzzing.
 
 See [binary analysis](binary-analysis.md) for the full binary
 investigation guide.
+
+### /ghidra
+
+Ghidra RE bridge: import, query, and diff Ghidra `.gpr` projects, and
+export RAPTOR findings back into them.
+
+```
+/ghidra attach <project.gpr> [--enrich] [--decompile-all]
+/ghidra detach [<project.gpr>]
+/ghidra status
+/ghidra import <project.gpr | binary> [--out <dir>] [--enrich] [--decompile-all]
+/ghidra diff <old.gpr> <new.gpr> [--matched] [--program <name>] [--decompile-all] [--out <dir>] [--label-old <v1>] [--label-new <v2>] [--json]
+/ghidra decompile <project.gpr> <function_name_or_addr> [--timeout <s>]
+/ghidra list <project.gpr>
+/ghidra export <out-dir> [--to <project.gpr>] [--target <path>]
+```
+
+`attach` binds a `.gpr` to the active [/project](#project) (also
+managed via `/project ghidra add|remove|list|clear`) and caches its
+functions, xrefs, types, and comments as `re-database.json`; analysis
+runs then inject the cached context into review prompts
+automatically. `import` is the one-shot equivalent. `diff` compares
+two versions and reports added/removed/changed functions; with
+`--matched`, functions are matched across versions by a tier cascade
+(exact name, decompilation hash, string/import anchors, call graph,
+similarity) so stripped or renamed binaries diff correctly — pairs
+land in `binary-match.json`. The patch-diff workflow (find what a
+security fix changed) is: import both versions, `diff --matched`,
+then audit the changed functions first.
+
+The sandboxed `analyzeHeadless` subprocess is the default engine;
+raw binaries degrade to r2, then objdump (reduced fidelity). Findings
+export writes RAPTOR results back into the Ghidra project as
+bookmarks/comments.
 
 ---
 

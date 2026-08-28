@@ -11,6 +11,13 @@ evidence from the artefact itself; the binary oracle joins that evidence
 with source-level findings; exploit feasibility assesses what the
 compiled mitigations actually permit.
 
+Two related surfaces live elsewhere: the Ghidra RE bridge
+([/ghidra](commands.md#ghidra) — attach/import `.gpr` projects,
+cross-version `diff --matched`, findings export) and binary
+`--study` ([/understand](commands.md#understand) — semantic concept
+extraction over a decomp-tree materialized from an imported RE
+database).
+
 See also: [commands](python-cli.md), [validation](validation.md),
 [Frida](frida.md), [sandbox](sandbox.md).
 

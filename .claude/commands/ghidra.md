@@ -19,7 +19,7 @@ Raw binaries degrade to r2, then objdump.
 /ghidra detach [<project.gpr>]
 /ghidra status
 /ghidra import <project.gpr | binary> [--out <dir>] [--enrich] [--decompile-all]
-/ghidra diff <old.gpr> <new.gpr> [--matched] [--out <dir>] [--label-old <v1>] [--label-new <v2>] [--json]
+/ghidra diff <old.gpr> <new.gpr> [--matched] [--program <name>] [--decompile-all] [--out <dir>] [--label-old <v1>] [--label-new <v2>] [--json]
 /ghidra decompile <project.gpr> <function_name_or_addr> [--timeout <s>]
 /ghidra list <project.gpr>
 /ghidra export <out-dir> [--to <project.gpr>] [--target <path>]

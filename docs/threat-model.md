@@ -74,8 +74,11 @@ raptor project threat-model init --from-context-map out/projects/myapp/understan
 ```
 
 That pulls in mapped entry points, trust boundaries, sinks, unchecked flows,
-hardcoded secrets, and turns them into starter focus areas. It is not meant to
-be perfect first time. It gives you a decent first pass so you can tidy it up
+hardcoded secrets, and turns them into starter focus areas. Secret VALUES are
+redacted before they reach the threat-model artifacts — `threat-model.json`,
+`THREAT_MODEL.md`, and report output carry `[REDACTED]` markers with the
+variable name and file:line kept readable, never the literal credential. It
+is not meant to be perfect first time. It gives you a decent first pass so you can tidy it up
 without starting from a blank page.
 
 ## Inspect It

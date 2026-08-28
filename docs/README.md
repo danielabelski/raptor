@@ -33,6 +33,7 @@ overview:
 | `/review` | Query audit state (findings, gaps, coverage, notes) |
 | `/sca` | Software composition analysis |
 | `/binary` | Black-box binary investigation |
+| `/ghidra` | Ghidra RE bridge (attach, import, cross-version diff, findings export) |
 | `/frida` | Dynamic instrumentation |
 | `/project` | Workspace management |
 | `/crash-analysis` | Crash root-cause analysis |

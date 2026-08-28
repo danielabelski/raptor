@@ -127,7 +127,10 @@ A capability probe runs before every campaign, checking for:
 - `radare2` with `r2pipe` and `r2ghidra` (for binary pre-analysis).
 
 Use `--plan-only` to see the probe output and campaign plan without
-actually starting a run.
+actually starting a run. The plan warns up front when the target
+binary looks uninstrumented and the AFL++ install ships no
+binary-only tracer (QEMU / FRIDA mode), rather than letting the
+campaign refuse at start time.
 
 ## Usage
 

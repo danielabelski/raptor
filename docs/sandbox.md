@@ -28,7 +28,13 @@ For CLI flag reference, see [commands](commands.md).
   and `~/.config/raptor/models.json` all come back empty or denied.
 - Dangerous syscalls blocked: `io_uring`, `ptrace` (in `full`),
   `keyctl`, `bpf`, `userfaultfd`, `perf_event_open`, tty-injection
-  ioctls, plus raw/packet/netlink sockets.
+  ioctls, raw/packet/netlink sockets, plus namespace creation on the
+  fork-backend lane (`unshare` / `clone` with any `CLONE_NEW*` flag /
+  `setns`; `clone3` returns ENOSYS) so a target cannot build a nested
+  namespace to confuse the supervisor. The subprocess/preexec lanes
+  cannot install that seccomp rule (their own bootstrap needs
+  `unshare`); there a nested namespace is bounded by Landlock and
+  no-new-privs instead.
 - No core dumps, memory/CPU caps, and a per-sandbox process cap that
   bounds fork bombs.
 - Environment sanitised through a strict allowlist; API keys and other
@@ -61,7 +67,12 @@ process.
 4. **IPC namespace** -- isolates SysV shm/sem/message queues.
 5. **Mount namespace** -- per-sandbox `/tmp` and `/run`, host system
    dirs bind-mounted read-only, target and output bind-mounted at
-   their original absolute paths. **Disabled on Ubuntu 24.04 by
+   their original absolute paths. When a caller-supplied `/etc`
+   overlay targets entries the host does not have, `/etc` becomes a
+   private tmpfs populated by a budgeted copy of the host's (64 MiB /
+   8192 entries, breadth-first so `passwd`, `hosts`, and TLS trust
+   roots copy first; `/etc/skel` and non-regular entries are never
+   copied). **Disabled on Ubuntu 24.04 by
    default** (AppArmor gates unprivileged user namespaces); see
    [Troubleshooting](#troubleshooting).
 6. **Landlock + seccomp-bpf + rlimits** -- always applied when
@@ -186,7 +197,8 @@ Every CONNECT attempt is recorded and persisted to
 ```
 
 Results: `allowed`, `denied_host`, `denied_resolved_ip`, `dns_failed`,
-`upstream_failed`, `timed_out`, `bad_request`, `handler_error`.
+`upstream_failed`, `timed_out`, `bad_request`, `handler_error`, plus
+`would_deny_host` in [audit mode](#audit-mode).
 
 ---
 
@@ -203,8 +215,9 @@ want visibility into policy violations -- far better than
 Audited layers: the egress-proxy hostname gate logs-and-allows (the
 resolved-IP block stays enforcing), blocked syscalls are traced and
 logged instead of denied — **except escape primitives** (ptrace family,
-keyctl, bpf, userfaultfd, io_uring, tty-injection ioctls), which stay
-hard-denied even under audit — and file opens / network connects that
+keyctl, bpf, userfaultfd, io_uring, tty-injection ioctls, and — on the
+lane that blocks it — namespace creation), which stay hard-denied even
+under audit — and file opens / network connects that
 would have been blocked are logged with the offending path or address.
 
 | Invocation | Effect |
@@ -444,6 +457,32 @@ time instead — and only the build subprocess sees them.
 
 If a build tool still fails with "JDK not found" or similar: install
 the toolchain into a standard location for your distro.
+
+---
+
+## Host-fingerprint sanitisation
+
+Opt-in (`sandbox(..., sanitise_host_fingerprint=True)`): the mount-ns
+child bind-mounts canonical files over the host's identity surfaces
+(`/proc/cpuinfo`, `/proc/version`, `/etc/os-release`,
+`/etc/machine-id`, `/etc/hostname`, DMI vendor/product, UTS
+nodename/domainname, CPU affinity) so a hostile target that
+fingerprints its environment sees a boring Debian 12 cloud VM on
+QEMU/KVM instead of analysis infrastructure. The `/etc/passwd` and
+`/etc/group` tables are replaced with neutral stubs, so the operator's
+username never reaches the target. Capability surfaces stay real (CPU
+flags, kernel release, arch, mitigation sysctls) so exploit
+feasibility analysis keeps working. The persona defaults to claiming
+4 CPUs; pass `cpu_count=HOST_CPU_COUNT` to expose the real count for
+parallelism-hungry targets.
+
+The persona only exists on the full mount-ns lane. On a demoted
+(Landlock-only) lane it cannot apply: by default the run proceeds with
+a one-shot WARNING; with `require_sanitisation=True` it refuses
+instead of degrading silently. Linux only — on macOS
+`is_supported()` is False and callers soft-degrade with a warning.
+Known residuals (direct `cpuid` execution, `AT_HWCAP`) are documented
+in `core/sandbox/fingerprint.py`.
 
 ---
 

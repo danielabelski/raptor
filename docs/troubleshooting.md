@@ -45,10 +45,14 @@ libexec script).
 
 ### Exit code 3: sandbox cannot engage
 
-The `SandboxSetupError` includes `reason` and `instructions` fields with
-the specific fix. RAPTOR does not auto-degrade — if you can't fix the
-underlying cause, downgrade explicitly: `--sandbox network-only` or
-`--sandbox none`.
+The `SandboxSetupError` includes `reason`, `instructions`, and
+`setup_category` fields. `setup_category: "X"` means every isolation
+layer engaged and the target's own exec failed inside the sandbox (the
+errno is named in the message, e.g. `ETXTBSY` from a lingering writer)
+— a per-invocation condition that is safe to retry at full isolation.
+Every other category means isolation itself could not engage: RAPTOR
+does not auto-degrade — if you can't fix the underlying cause,
+downgrade explicitly: `--sandbox network-only` or `--sandbox none`.
 
 ### Mount namespace on Ubuntu 24.04+
 

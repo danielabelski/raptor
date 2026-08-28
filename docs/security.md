@@ -141,7 +141,7 @@ process inside the sandbox cannot replay them to pass this gate.
 | Write/Bash confused deputy | Rule of Two (human or sandbox) | Permission prompt (interactive) |
 | Direct libexec invocation | Trusted-caller marker | Exits before sys.path modified |
 | Network exfil from child process | Network namespace / SBPL | Egress proxy hostname allowlist |
-| Filesystem writes outside output | Landlock / SBPL file-write deny | seccomp closes AF_UNIX/AF_NETLINK |
+| Filesystem writes outside output | Landlock / SBPL file-write deny | seccomp closes AF_NETLINK (and AF_UNIX on lanes where namespaces don't already neutralise it) |
 | Long-game findings poisoning | Per-run output isolation | Output schema validation |
 
 ### What Is Not Fully Defended

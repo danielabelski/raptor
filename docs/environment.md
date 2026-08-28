@@ -604,7 +604,6 @@ setting them manually either does nothing or weakens a boundary.
 | `SAGE_ENABLED` | `raptor-sage-setup` | Written as `true` into `.claude/settings.local.json` so sessions enable SAGE; default `false`, truthy `true`/`1`/`yes` (fail-closed). Removed by teardown. |
 | `SAGE_IDENTITY_PATH`, `SAGE_PROJECT`, `SAGE_PROVIDER` | `raptor-sage-setup` → `.mcp.json` | Agent identity/namespace for the SAGE MCP wrapper (container-internal defaults). |
 | `SAGE_EMBED_DIM` | `raptor-sage-setup` | Compose-time embedding dimension (default 768); no Python reads it at runtime — pairs with `SAGE_EMBED_MODEL` before setup. |
-| `RAPTOR_SAGE_BOOT_CAPTURE` | `raptor-sage-setup` (boot-payload capture) | Setup-only bypass letting the capture probe talk to the SAGE MCP process directly instead of through the boot-payload guard shim. Setting it manually disables the guard's instruction-surface verification for that session. |
 
 Namespace look-alikes that are **not** environment variables: grep
 also surfaces `RAPTOR_GD_*` / `RAPTOR_FLOW_*` (Joern guard-dominance

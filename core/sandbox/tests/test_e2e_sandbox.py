@@ -1696,6 +1696,100 @@ class TestE2ELandlockReadRestriction(unittest.TestCase):
                              f"stderr={r.stderr[:200]!r}")
 
 
+class TestE2EHomeToolchainSeam(unittest.TestCase):
+    """tool_paths= is the declared-visibility seam for $HOME-resident
+    toolchains.
+
+    The sandbox deliberately hides $HOME: home-rooted PATH entries are
+    scrubbed from the child env and the mount-ns bind tree contains no
+    home dirs. A toolchain that lives ONLY under $HOME (rustup's
+    ~/.cargo/bin on CI runners) therefore fails at exec with ENOENT —
+    unless the caller DECLARES its dirs via tool_paths=, which binds
+    them read-only into the mount view, grants them to Landlock, and
+    (the piece under test here) keeps their PATH entries through the
+    home-scrub so the tool resolves by name.
+
+    Models the rustup shape end-to-end with a synthetic toolchain: a
+    proxy in one home dir re-execs the real binary from a second home
+    dir (the ~/.cargo/bin → ~/.rustup/toolchains double-hop), under
+    fake_home so the seam is proven independent of where $HOME points.
+    """
+
+    def setUp(self):
+        if not check_net_available():
+            self.skipTest("User namespaces not available")
+        home = os.path.expanduser("~")
+        try:
+            self._holder = TemporaryDirectory(prefix=".toolseam-", dir=home)
+        except OSError:
+            self.skipTest("home directory not writable")
+        self.addCleanup(self._holder.cleanup)
+        base = Path(self._holder.name)
+        self.proxy_dir = base / "proxybin"
+        self.real_dir = base / "toolchain" / "bin"
+        self.real_dir.mkdir(parents=True)
+        self.proxy_dir.mkdir()
+        # Both hops are /bin/sh scripts: portable (coreutils may be a
+        # multi-call binary that dispatches on argv[0], so copying
+        # /usr/bin/echo under another name breaks), and the interpreter
+        # lives in the always-bound system dirs — the paths under test
+        # are the two HOME-resident hop dirs themselves.
+        real = self.real_dir / "seamtool-real"
+        real.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+        real.chmod(0o755)
+        proxy = self.proxy_dir / "seamtool"
+        proxy.write_text(f"#!/bin/sh\nexec {real} \"$@\"\n")
+        proxy.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{self.proxy_dir}{os.pathsep}{old_path}"
+        self.addCleanup(os.environ.__setitem__, "PATH", old_path)
+
+    def test_undeclared_home_tool_fails_visibly(self):
+        """Without the declaration the exec fails and SAYS so — the
+        pid1-shim errno line, not a silent empty-output run."""
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["seamtool", "hi"],
+                block_network=True, target=out, output=out,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("exec of target failed", r.stderr)
+
+    def test_declared_tool_paths_resolve_home_toolchain(self):
+        """Declaring BOTH hop dirs makes the toolchain work under
+        fake_home + mount-ns, by name, through the re-exec chain."""
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["seamtool", "hello-seam"],
+                block_network=True, target=out, output=out,
+                fake_home=True,
+                tool_paths=[str(self.proxy_dir), str(self.real_dir)],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                f"declared home toolchain failed under the sandbox: "
+                f"stderr={r.stderr[:400]!r}")
+            self.assertIn("hello-seam", r.stdout)
+
+    def test_proxy_dir_alone_is_not_enough(self):
+        """The double-hop needs BOTH dirs: with only the proxy dir
+        declared, the proxy resolves but its re-exec target is missing
+        from the mount view."""
+        with TemporaryDirectory() as out:
+            r = sandbox_run(
+                ["seamtool", "hi"],
+                block_network=True, target=out, output=out,
+                tool_paths=[str(self.proxy_dir)],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertNotEqual(
+                r.returncode, 0,
+                "re-exec through an undeclared second hop dir should "
+                "not succeed inside the mount view")
+
+
 class TestE2EBuildToolCompatibility(unittest.TestCase):
     """Smoke-test common build tools under the sandbox's default config.
 
@@ -1718,6 +1812,47 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
         if not path:
             self.skipTest(f"{tool} not installed")
         return path
+
+    def _toolchain_paths(self, *tools):
+        """tool_paths declaration for tools that may live under $HOME.
+
+        System-dir installs need no declaration (the mount view binds
+        /usr etc. already); a $HOME-resident install (rustup on CI
+        runners) is invisible and PATH-scrubbed unless declared. For
+        cargo/rustc the rustup layout is a double-hop — the
+        ~/.cargo/bin proxies re-exec ~/.rustup/toolchains/<tc>/bin —
+        so RUSTUP_HOME joins the declaration alongside each tool's own
+        bin dir. Returns None when everything is system-resident, so
+        the default-tool case stays byte-identical to an undeclared
+        run.
+        """
+        import shutil
+        system_prefixes = ("/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/")
+
+        def _system(d):
+            return any(d == p.rstrip("/") or d.startswith(p)
+                       for p in system_prefixes)
+
+        dirs = []
+
+        def _add(d):
+            if d and not _system(d) and os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
+
+        for tool in tools:
+            path = shutil.which(tool)
+            if not path:
+                continue
+            _add(os.path.dirname(path))
+            _add(os.path.dirname(os.path.realpath(path)))
+        if any(t in ("cargo", "rustc") for t in tools):
+            home = os.path.expanduser("~")
+            _add(os.environ.get("RUSTUP_HOME")
+                 or os.path.join(home, ".rustup"))
+            cargo_home = (os.environ.get("CARGO_HOME")
+                          or os.path.join(home, ".cargo"))
+            _add(os.path.join(cargo_home, "bin"))
+        return dirs or None
 
     def test_pip_version(self):
         self._require("pip")
@@ -1752,6 +1887,7 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
                 ["cargo", "--version"],
                 block_network=True,
                 target=out, output=out,
+                tool_paths=self._toolchain_paths("cargo"),
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(r.returncode, 0,
@@ -1777,6 +1913,7 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
             r = sandbox_run(
                 ["rustc", "-o", str(bin_path), str(src)],
                 block_network=True, target=out, output=out,
+                tool_paths=self._toolchain_paths("rustc"),
                 capture_output=True, text=True, timeout=60,
             )
             self.assertEqual(r.returncode, 0,
@@ -1800,12 +1937,17 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
         """
         self._require("cargo")
         self._require("rustc")
+        # cargo spawns rustc by name, so BOTH toolchains join the
+        # declaration (plus the rustup double-hop dirs, see
+        # _toolchain_paths).
+        tool_paths = self._toolchain_paths("cargo", "rustc")
         with TemporaryDirectory() as out:
             r = sandbox_run(
                 ["cargo", "new", "--bin", "--offline", "--vcs", "none", "hello"],
                 block_network=True,
                 target=out, output=out,
                 cwd=out,
+                tool_paths=tool_paths,
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(r.returncode, 0,
@@ -1822,6 +1964,7 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
                 block_network=True,
                 target=str(proj), output=str(proj),
                 cwd=str(proj), env=env,
+                tool_paths=tool_paths,
                 capture_output=True, text=True, timeout=120,
             )
             self.assertEqual(r.returncode, 0,
@@ -1995,6 +2138,7 @@ class TestE2EBuildToolCompatibility(unittest.TestCase):
                 ["rustc", "--version"],
                 block_network=True,
                 target=out, output=out,
+                tool_paths=self._toolchain_paths("rustc"),
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(r.returncode, 0,

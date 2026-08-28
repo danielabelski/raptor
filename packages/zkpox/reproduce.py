@@ -31,13 +31,14 @@ means different things depending on what the witness *is*:
 **Spawn failures are not outcomes.** A run whose child never
 successfully exec'd the target (exec-status category from the sandbox,
 the supervisor's ``spawn_failed`` record on the recompile lane, or the
-bounded 125/126/127-with-no-output shape on lanes that re-encode exec
-errors as exit codes) is recorded in ``run_details`` with provenance
-``spawn_failure``, retried once, and excluded from the
-reproduced/deterministic verdict — counting it would let a transient
-ETXTBSY read as "non-deterministic witness". See
-:func:`_spawn_failure_reason` for the precise-vs-heuristic split and
-its bounds.
+bounded 125/126/127-with-no-output shape) is recorded in
+``run_details`` with provenance ``spawn_failure``, retried once, and
+excluded from the reproduced/deterministic verdict — counting it would
+let a transient ETXTBSY read as "non-deterministic witness". The
+bounded shape applies on EVERY lane, including the exec-status-pipe
+one: the pipe reports failure best-effort only, so its silence never
+vetoes the heuristic. See :func:`_spawn_failure_reason` for the
+precise-vs-heuristic split and its bounds.
 
 The full tier model lives in the package docstring
 (``packages/zkpox/__init__.py``).
@@ -87,17 +88,24 @@ _NO_SETUP_STATUS = object()
 
 def _stderr_is_sandbox_diagnostic_only(stderr: object) -> bool:
     """True iff ``stderr`` is empty or carries only the sandbox layer's
-    own pre-exec diagnostics (lines prefixed ``sandbox:`` — the
+    own pre-exec diagnostics: lines prefixed ``sandbox:`` (the
     convention of ``warn_post_fork``, the seccomp preexec, and the
-    pid1-shim's exec-failure line)."""
+    pid1-shim's exec-failure line), or the spawn child's
+    ``sandbox child failure:`` block (one marker line followed by the
+    child's traceback — written before the target's first instruction,
+    so the whole block is sandbox-layer by construction). A target
+    could print either shape to have itself classified a spawn
+    failure, but that buys it only retries and an honest "runs did not
+    execute" non-reproduction — a target that wants to dodge
+    reproduction can already just exit 0."""
     if not stderr:
         return True
     text = (stderr.decode("utf-8", errors="replace")
             if isinstance(stderr, bytes) else str(stderr))
-    return all(
-        line.startswith("sandbox:")
-        for line in text.splitlines() if line.strip()
-    )
+    lines = [line for line in text.splitlines() if line.strip()]
+    if lines and lines[0].startswith("sandbox child failure:"):
+        return True
+    return all(line.startswith("sandbox:") for line in lines)
 
 
 def _spawn_failure_reason(result: Any) -> str | None:
@@ -107,30 +115,40 @@ def _spawn_failure_reason(result: Any) -> str | None:
 
     Precise signal first: results from the exec-status-pipe lanes
     (mount-ns spawn path, macOS seatbelt shim) carry ``_setup_status``.
-    ``None`` there is pipe-EOF kernel truth that the target DID exec —
-    a target that then legitimately exits 126 counts as an outcome and
-    is never reclassified. Any category tuple means setup or exec
-    failed before the target ran.
+    Any category tuple means setup or exec failed before the target
+    ran — authoritative, no heuristic needed.
 
-    Lanes without the attribute (pid1-shim subprocess lane, the
-    Landlock-only retry, plain subprocess fallbacks) re-encode exec
-    failure as exit 125/126/127 with no side channel, which is
-    ambiguous with a target that chooses those codes. The heuristic is
-    therefore bounded to the pre-first-output window: a failed exec
-    happens before the target's first instruction, so the child writes
-    NOTHING except (possibly) the sandbox layer's own ``sandbox:``-
-    prefixed diagnostics; any signal/sanitizer evidence or any target
-    output disqualifies the reclassification. The residual ambiguity —
-    a target that exits 125-127 without ever producing output — costs
-    one bounded retry and, when persistent, an honest "runs did not
-    execute" non-reproduction, never a false "reproduced". No new
-    forgery power either: a target that wants to dodge reproduction
-    can already just exit 0.
+    ``_setup_status`` ``None`` (pipe EOF) is authoritative only in the
+    POSITIVE direction. EOF normally means the target exec'd (CLOEXEC
+    reaped the write end), but the channel is best-effort at reporting
+    failure: the child-side write runs suppressed in a dying process
+    and the parent-side drain maps an unreadable pipe to the same
+    ``None`` — so a lost status byte is indistinguishable from a clean
+    exec. A spawn-lane replay run has been observed exiting 126 with
+    pipe EOF, no output, and no crash evidence; counting it as an
+    outcome flipped a deterministic SIGSEGV witness to
+    "non-deterministic". Silence therefore never vetoes the bounded
+    heuristic below — only a category tuple short-circuits.
+
+    The heuristic (status ``None`` or attribute absent — the pid1-shim
+    subprocess lane, the Landlock-only retry, plain subprocess
+    fallbacks — where exec failure is re-encoded as exit 125/126/127
+    with no side channel): a bare 125-127 exit is ambiguous with a
+    target that chooses those codes, so the reclassification is
+    bounded to the pre-first-output window. A failed exec happens
+    before the target's first instruction, so the child writes NOTHING
+    except (possibly) the sandbox layer's own diagnostics
+    (see :func:`_stderr_is_sandbox_diagnostic_only`); any
+    signal/sanitizer evidence or any target output disqualifies the
+    reclassification. The residual ambiguity — a target that exits
+    125-127 without ever producing output — costs one bounded retry
+    and, when persistent, an honest "runs did not execute"
+    non-reproduction, never a false "reproduced". No new forgery power
+    either: a target that wants to dodge reproduction can already just
+    exit 0.
     """
     status: Any = getattr(result, "_setup_status", _NO_SETUP_STATUS)
-    if status is not _NO_SETUP_STATUS:
-        if status is None:
-            return None  # exec-status lane: the target exec'd
+    if status is not _NO_SETUP_STATUS and status is not None:
         try:
             cat, why = status[0], status[1]
         except (TypeError, IndexError, KeyError):

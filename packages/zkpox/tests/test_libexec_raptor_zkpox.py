@@ -249,3 +249,86 @@ def test_bundle_then_reproduce_happy_path(tmp_path):
         assert rec["run"] == i
         assert rec["outcome"] == "exit_signal"
         assert "returncode" in rec
+
+
+@pytest.mark.skipif(
+    shutil.which("cc") is None and shutil.which("gcc") is None,
+    reason="no C compiler",
+)
+def test_reproduce_first_run_silent_exit_126_is_spawn_failure(tmp_path):
+    """A first replay run that exits 126 with no output, no crash
+    evidence, and no exec-status category — the shape a lost/absent
+    setup status leaves behind — must classify as a spawn failure and
+    retry, not enter the verdict as an observed outcome.
+
+    Driven through the REAL CLI: the target's first execution inside
+    the sandbox exits 126 silently (exec succeeds, so the exec-status
+    pipe reports EOF exactly like a lost status byte does); every
+    later execution dies by SIGSEGV. Pre-fix the 126 was counted as
+    no_obvious_effect and one such run flipped a deterministic
+    SIGSEGV witness to "non-deterministic", reproduced=False.
+    """
+    from core.hash import sha256_file
+    from core.witness.store import WitnessStore
+    from core.witness.types import (
+        Witness,
+        WitnessOutcome,
+        WitnessSource,
+        compute_bytes_hash,
+    )
+
+    cc = shutil.which("cc") or shutil.which("gcc")
+    src = tmp_path / "segv.c"
+    src.write_text("int main(void){int *p = 0; *p = 42; return 0;}\n")
+    helper = tmp_path / "segv-helper"
+    subprocess.run([cc, "-O0", "-o", str(helper), str(src)],
+                   check=True, timeout=30)
+    # The pinned target: first run drops a marker in its own (writable
+    # output) dir and exits 126 writing nothing — the silent
+    # exec-failure shape; later runs exec a genuine SIGSEGV. The crash
+    # must be a real fault (not kill(2)): the target runs as the
+    # pid-namespace init, which ignores kill-raised signals without a
+    # handler, while kernel-generated faults are always delivered.
+    crasher = tmp_path / "crasher"
+    crasher.write_text(
+        "#!/bin/sh\n"
+        'd=$(dirname "$0")\n'
+        'if [ ! -e "$d/.spawned-once" ]; then\n'
+        '  : > "$d/.spawned-once" 2>/dev/null\n'
+        "  exit 126\n"
+        "fi\n"
+        'exec "$d/segv-helper"\n'
+    )
+    crasher.chmod(0o755)
+
+    crash_input = b"B" + b"\x00" * 8
+    store = WitnessStore(tmp_path / "w")
+    store.put(Witness(
+        bytes_hash=compute_bytes_hash(crash_input),
+        bytes_len=len(crash_input),
+        source=WitnessSource.FUZZ,
+        observed_outcome=WitnessOutcome.EXIT_SIGNAL,
+        outcome_detail={"finding_id": "F1"},
+        target_binary_hash=sha256_file(crasher),
+    ), crash_input)
+    wh = compute_bytes_hash(crash_input)
+
+    out = tmp_path / "out"
+    r = _run(["bundle", str(tmp_path / "w"), wh, "--out", str(out)])
+    assert r.returncode == 0, r.stderr
+    bundle_dir = out / "zkpox" / wh
+
+    r = _run(["reproduce", str(bundle_dir), "--binary", str(crasher),
+              "--n", "3"])
+    assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    rep = manifest["reproduction"]
+    assert rep["reproduced"] is True
+    assert rep["spawn_failures"] == 1
+    assert rep["observed_outcomes"] == ["exit_signal"] * 3
+    sf = [d for d in rep["run_details"]
+          if d.get("outcome") == "spawn_failure"]
+    assert len(sf) == 1
+    assert sf[0]["run"] == 1
+    assert sf[0]["returncode"] == 126
+    assert manifest["tier"] == "1.5"

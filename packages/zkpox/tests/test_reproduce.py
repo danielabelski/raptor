@@ -402,22 +402,51 @@ def test_replay_spawn_failure_retried_and_verdict_unaffected(
     assert result.as_dict()["spawn_failures"] == 1
 
 
-def test_replay_target_exit_126_on_status_lane_is_an_outcome(
+def test_replay_silent_exit_126_on_status_lane_is_spawn_failure(
         tmp_path, monkeypatch):
-    """The precise signal wins over the exit code: a result whose
-    ``_setup_status`` is None (exec-status pipe EOF — the target DID
-    exec) counts as a genuine outcome even at returncode 126, with no
-    retry."""
+    """``_setup_status`` None (exec-status pipe EOF) does NOT veto the
+    bounded heuristic: the pipe reports failure best-effort only (the
+    child-side write runs suppressed in a dying process; the parent
+    drain maps an unreadable pipe to the same None), so a silent
+    125-127 exit on the status lane is a spawn failure like on any
+    other lane. Pre-fix, None short-circuited as "the target DID exec"
+    and a spawn-lane run that exited 126 with EOF, no output, and no
+    crash evidence entered the verdict as no_obvious_effect — flipping
+    a deterministic SIGSEGV witness to "non-deterministic"."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = []
+    for r in [_exec_failed_result(precise=False),
+              _crash_result(), _crash_result(), _crash_result()]:
+        r._setup_status = None  # attribute present, pipe said EOF
+        seq.append(r)
+    calls = iter(seq)
+    count = {"n": 0}
+
+    def fake_run_untrusted(cmd, **kwargs):
+        count["n"] += 1
+        return next(calls)
+
+    monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=3)
+    assert count["n"] == 4  # 3 runs + exactly one bounded retry
+    assert result.spawn_failures == 1
+    assert result.observed_outcomes == ["exit_signal"] * 3
+    assert result.reproduced is True
+    assert "non-deterministic" not in result.reason
+
+
+def test_replay_exit_126_with_output_on_status_lane_is_an_outcome(
+        tmp_path, monkeypatch):
+    """The heuristic's own bounds still protect the status lane's
+    genuine outcomes: a target that exec'd (pipe EOF), exited 126,
+    and demonstrably ran (produced output) is never reclassified."""
     bundle, data, fake_bin = _replay_fixture(tmp_path)
     count = {"n": 0}
 
     def fake_run_untrusted(cmd, **kwargs):
         count["n"] += 1
-        r = types.SimpleNamespace(
-            sandbox_info={"crashed": False}, returncode=126,
-            stdout=b"", stderr=b"",
-        )
-        r._setup_status = None  # attribute present, pipe said EOF
+        r = _exec_failed_result(precise=False, stdout=b"chose 126\n")
+        r._setup_status = None
         return r
 
     monkeypatch.setattr(core.sandbox, "run_untrusted", fake_run_untrusted)
@@ -456,6 +485,33 @@ def test_replay_sandbox_prefixed_stderr_stays_in_heuristic_window(
             precise=False, returncode=125,
             stderr=(b"sandbox: pid1-shim: exec of target failed "
                     b"(ETXTBSY): Text file busy\n")),
+        _crash_result(),
+    ]
+    calls = iter(seq)
+    monkeypatch.setattr(core.sandbox, "run_untrusted",
+                        lambda cmd, **k: next(calls))
+    result = reproduce_witness(bundle, data, binary_path=fake_bin, n=1)
+    assert result.spawn_failures == 1
+    assert result.observed_outcomes == ["exit_signal"]
+    assert result.reproduced is True
+
+
+def test_replay_child_failure_traceback_stays_in_heuristic_window(
+        tmp_path, monkeypatch):
+    """The spawn child's own pre-exec failure diagnostic — a
+    ``sandbox child failure:`` marker line followed by the child's
+    traceback — is sandbox-layer output (written before the target's
+    first instruction) and does not disqualify the spawn-failure
+    classification. This is the stderr shape left behind when the
+    child's setup failed AND its best-effort status write was lost."""
+    bundle, data, fake_bin = _replay_fixture(tmp_path)
+    seq = [
+        _exec_failed_result(
+            precise=False, returncode=126,
+            stderr=(b"sandbox child failure:\n"
+                    b"Traceback (most recent call last):\n"
+                    b'  File "core/sandbox/_spawn.py", line 1, in x\n'
+                    b"OSError: [Errno 13] Permission denied\n")),
         _crash_result(),
     ]
     calls = iter(seq)

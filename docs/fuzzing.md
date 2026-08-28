@@ -273,7 +273,9 @@ Crash triage processes the `crashes/` directory from AFL++ output:
    - SIGFPE (08) -- floating point exception.
 4. **Witness wrapping** -- each crash is wrapped into a Witness object,
    stored under `<out>/witnesses/`, and can be consumed by
-   [/validate](validation.md) and [/crash-analysis](crash-analysis.md).
+   [/validate](validation.md), [/crash-analysis](crash-analysis.md), and
+   [ZKPoX proof-of-exploit bundling](zkpox.md) (the run summary reports
+   how many witnesses are ZKPoX-eligible).
 
 After triage, the top N crashes (controlled by `--max-crashes`) are sent to the
 LLM for exploitability assessment and PoC generation.  The LLM analysis

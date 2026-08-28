@@ -70,6 +70,7 @@ overview:
 | [CVE Patch Discovery](cve-diff.md) | Find, acquire, and diff the fix commit for a CVE |
 | [CVE Environment Builder](cve-env.md) | Agentic pre-patch environment build + verify; core/env provisioning API |
 | [Frida](frida.md) | Dynamic instrumentation |
+| [ZKPoX](zkpox.md) | Proof of exploit: witness eligibility, bundles, sandboxed reproduction |
 | [Sandbox](sandbox.md) | Process isolation and sandboxing |
 | [LLM Providers](llm.md) | Provider configuration, Bedrock, multi-model workflows, cost management |
 | [SAGE](sage.md) | Persistent memory: setup, HMAC key, CPU/GPU, use cases, upgrades |
